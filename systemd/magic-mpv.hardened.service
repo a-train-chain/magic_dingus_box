@@ -1,0 +1,28 @@
+[Unit]
+Description=Magic Dingus mpv (hardened)
+After=sound.target
+
+[Service]
+Type=simple
+User=magic
+Group=magic
+RuntimeDirectory=magic
+EnvironmentFile=/etc/magic_dingus_box.env
+ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
+  --input-ipc-server=/run/magic/mpv.sock \
+  --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \
+  --audio-device=${AUDIO_DEVICE}
+Restart=on-failure
+RestartSec=2s
+
+# Hardening
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths=/data
+
+[Install]
+WantedBy=multi-user.target
+
+

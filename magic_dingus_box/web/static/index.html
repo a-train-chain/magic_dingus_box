@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magic Dingus Box - Content Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Magic Dingus Box</h1>
+            <p class="subtitle">Content Manager</p>
+        </header>
+
+        <!-- Collapsible Device Selector -->
+        <section class="collapsible-section device-selector-wrapper">
+            <div class="section-header" onclick="toggleSection('deviceSelector')">
+                <h2>
+                    <span class="collapse-icon" id="deviceSelectorIcon">▼</span>
+                    Device Connection
+                    <span class="section-status" id="deviceConnectionStatus">Not Connected</span>
+                </h2>
+            </div>
+            <div class="section-content" id="deviceSelector">
+                <div id="deviceStatus" class="device-status">
+                    <span class="icon">🔍</span>
+                    <span id="statusText">Searching for devices...</span>
+                </div>
+                <div id="deviceList" class="device-list"></div>
+                <button id="manualConnect" class="btn-secondary">Connect to IP Address</button>
+            </div>
+        </section>
+
+        <!-- Tab Navigation -->
+        <nav class="tabs">
+            <button class="tab active" data-tab="videos">📹 Videos & Playlists</button>
+            <button class="tab" data-tab="roms">🎮 ROMs & Games</button>
+        </nav>
+
+        <!-- Videos Tab -->
+        <section id="videos" class="tab-content active">
+            <!-- Upload Videos Section (Collapsible) -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('videoUploadSection')">
+                    <h3>
+                        <span class="collapse-icon" id="videoUploadSectionIcon">▼</span>
+                        Upload Videos
+                    </h3>
+                </div>
+                <div class="section-content" id="videoUploadSection">
+                    <div class="file-input-wrapper">
+                        <input type="file" id="videoUpload" accept="video/*" multiple>
+                        <label for="videoUpload" class="file-label">
+                            <span class="icon">📁</span>
+                            <span class="text">Choose video files or drag & drop</span>
+                        </label>
+                    </div>
+                    <div id="uploadProgress"></div>
+                </div>
+            </div>
+
+            <!-- Video Library (Collapsible) -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('videoLibrary')">
+                    <h3>
+                        <span class="collapse-icon" id="videoLibraryIcon">▼</span>
+                        Video Library
+                        <span class="count-badge" id="videoCount">0</span>
+                    </h3>
+                </div>
+                <div class="section-content" id="videoLibrary">
+                    <div id="videoList" class="grid-list"></div>
+                </div>
+            </div>
+
+            <!-- Video Playlists Section -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('videoPlaylistBuilder')">
+                    <h3>
+                        <span class="collapse-icon" id="videoPlaylistBuilderIcon">▼</span>
+                        Create / Edit Video Playlist
+                    </h3>
+                </div>
+                <div class="section-content" id="videoPlaylistBuilder">
+                    <form id="videoPlaylistForm" class="form">
+                        <div class="form-group">
+                            <label for="videoPlaylistTitle">Title</label>
+                            <input type="text" id="videoPlaylistTitle" placeholder="My Video Playlist">
+                        </div>
+                        <div class="form-group">
+                            <label for="videoPlaylistCurator">Curator</label>
+                            <input type="text" id="videoPlaylistCurator" placeholder="Your Name">
+                        </div>
+                        <div class="form-group">
+                            <label for="videoPlaylistDesc">Description</label>
+                            <textarea id="videoPlaylistDesc" placeholder="About this playlist" rows="2"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="videoPlaylistLoop">
+                                Loop playlist
+                            </label>
+                        </div>
+                    </form>
+
+                    <div class="playlist-content">
+                        <div class="source-panel">
+                            <h4>Available Videos</h4>
+                            <div id="videoPlaylistAvailable" class="content-pool"></div>
+                        </div>
+                        
+                        <div class="playlist-panel">
+                            <h4>Playlist Items</h4>
+                            <div id="videoPlaylistItems" class="playlist-items-list"></div>
+                            <div class="empty-state" id="videoPlaylistEmpty">
+                                Drag videos here to build your playlist
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="saveVideoPlaylist" class="btn-primary">Save Playlist</button>
+                        <button id="cancelVideoPlaylistEdit" class="btn-secondary" style="display:none;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Existing Video Playlists -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('existingVideoPlaylists')">
+                    <h3>
+                        <span class="collapse-icon" id="existingVideoPlaylistsIcon">▼</span>
+                        Video Playlists
+                        <span class="count-badge" id="videoPlaylistCount">0</span>
+                    </h3>
+                </div>
+                <div class="section-content" id="existingVideoPlaylists">
+                    <div id="videoPlaylistsList" class="list"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ROMs Tab -->
+        <section id="roms" class="tab-content">
+            <!-- Upload ROMs Section (Collapsible) -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('romUploadSection')">
+                    <h3>
+                        <span class="collapse-icon" id="romUploadSectionIcon">▼</span>
+                        Upload ROMs
+                    </h3>
+                </div>
+                <div class="section-content" id="romUploadSection">
+                    <div class="system-selector">
+                        <label for="systemSelect">System:</label>
+                        <select id="systemSelect">
+                            <option value="nes">NES</option>
+                            <option value="snes">SNES</option>
+                            <option value="n64">Nintendo 64</option>
+                            <option value="ps1">PlayStation</option>
+                        </select>
+                    </div>
+                    <div class="file-input-wrapper">
+                        <input type="file" id="romUpload" multiple>
+                        <label for="romUpload" class="file-label">
+                            <span class="icon">🎮</span>
+                            <span class="text">Choose ROM files</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ROM Library (Collapsible) -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('romLibrary')">
+                    <h3>
+                        <span class="collapse-icon" id="romLibraryIcon">▼</span>
+                        ROM Library
+                        <span class="count-badge" id="romCount">0</span>
+                    </h3>
+                </div>
+                <div class="section-content" id="romLibrary">
+                    <div id="romsList" class="accordion"></div>
+                </div>
+            </div>
+
+            <!-- Game Playlists Section -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('gamePlaylistBuilder')">
+                    <h3>
+                        <span class="collapse-icon" id="gamePlaylistBuilderIcon">▼</span>
+                        Create / Edit Game Playlist
+                    </h3>
+                </div>
+                <div class="section-content" id="gamePlaylistBuilder">
+                    <form id="gamePlaylistForm" class="form">
+                        <div class="form-group">
+                            <label for="gamePlaylistTitle">Title</label>
+                            <input type="text" id="gamePlaylistTitle" placeholder="My Game Playlist">
+                        </div>
+                        <div class="form-group">
+                            <label for="gamePlaylistCurator">Curator</label>
+                            <input type="text" id="gamePlaylistCurator" placeholder="Your Name">
+                        </div>
+                        <div class="form-group">
+                            <label for="gamePlaylistDesc">Description</label>
+                            <textarea id="gamePlaylistDesc" placeholder="About this playlist" rows="2"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="gamePlaylistLoop">
+                                Loop playlist
+                            </label>
+                        </div>
+                    </form>
+
+                    <div class="playlist-content">
+                        <div class="source-panel">
+                            <h4>Available ROMs</h4>
+                            <div id="gamePlaylistAvailable" class="content-pool"></div>
+                        </div>
+                        
+                        <div class="playlist-panel">
+                            <h4>Playlist Items</h4>
+                            <div id="gamePlaylistItems" class="playlist-items-list"></div>
+                            <div class="empty-state" id="gamePlaylistEmpty">
+                                Drag games here to build your playlist
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="saveGamePlaylist" class="btn-primary">Save Playlist</button>
+                        <button id="cancelGamePlaylistEdit" class="btn-secondary" style="display:none;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Existing Game Playlists -->
+            <div class="collapsible-section">
+                <div class="section-header" onclick="toggleSection('existingGamePlaylists')">
+                    <h3>
+                        <span class="collapse-icon" id="existingGamePlaylistsIcon">▼</span>
+                        Game Playlists
+                        <span class="count-badge" id="gamePlaylistCount">0</span>
+                    </h3>
+                </div>
+                <div class="section-content" id="existingGamePlaylists">
+                    <div id="gamePlaylistsList" class="list"></div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="/static/manager.js"></script>
+</body>
+</html>
+

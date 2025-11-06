@@ -1,0 +1,53 @@
+{
+  "bezels": [
+    {
+      "id": "procedural",
+      "name": "Simple (Built-in)",
+      "file": null,
+      "description": "Procedurally generated bezel"
+    },
+    {
+      "id": "nes_tv",
+      "name": "NES TV",
+      "file": "nes_tv.png",
+      "description": "Nintendo Entertainment System with TV"
+    },
+    {
+      "id": "n64_tv",
+      "name": "N64 TV",
+      "file": "n64_tv.png",
+      "description": "Nintendo 64 with TV"
+    },
+    {
+      "id": "ps1_tv",
+      "name": "PlayStation TV",
+      "file": "ps1_tv.png",
+      "description": "Sony PlayStation with TV"
+    },
+    {
+      "id": "retro_tv_1",
+      "name": "Retro TV 1",
+      "file": "retro_tv_1.png",
+      "description": "Classic retro television"
+    },
+    {
+      "id": "retro_tv_2",
+      "name": "Retro TV 2",
+      "file": "retro_tv_2.png",
+      "description": "Modern retro television"
+    },
+    {
+      "id": "tv_retro_1",
+      "name": "Vintage TV",
+      "file": "tv_retro_1.png",
+      "description": "Vintage television set"
+    },
+    {
+      "id": "tv_modern_1",
+      "name": "Modern TV",
+      "file": "tv_modern_1.png",
+      "description": "Modern television set"
+    }
+  ]
+}
+

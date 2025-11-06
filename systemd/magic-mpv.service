@@ -1,0 +1,18 @@
+[Unit]
+Description=Magic Dingus mpv
+After=sound.target
+
+[Service]
+Type=simple
+RuntimeDirectory=magic
+# Note: mpv runs with --wid embedding (no separate window)
+# The UI app will provide the window ID via IPC after startup
+ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
+  --input-ipc-server=/run/magic/mpv.sock \
+  --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \
+  --audio-device=alsa:device=hw:1,0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+

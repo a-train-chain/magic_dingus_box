@@ -1,0 +1,28 @@
+[Unit]
+Description=Magic Dingus UI (hardened)
+After=network-online.target magic-mpv.service graphical.target
+Wants=network-online.target magic-mpv.service
+
+[Service]
+Type=simple
+User=magic
+Group=magic
+EnvironmentFile=/etc/magic_dingus_box.env
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+WorkingDirectory=/opt/magic_dingus_box
+ExecStart=/usr/bin/python3 -m magic_dingus_box.main
+Restart=always
+RestartSec=2s
+
+# Hardening
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths=/data
+
+[Install]
+WantedBy=graphical.target
+
+

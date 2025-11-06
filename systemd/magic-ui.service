@@ -1,0 +1,17 @@
+[Unit]
+Description=Magic Dingus UI
+After=network-online.target magic-mpv.service graphical.target
+Wants=network-online.target magic-mpv.service
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+WorkingDirectory=/opt/magic_dingus_box
+ExecStart=/usr/bin/python3 -m magic_dingus_box.main
+Restart=always
+
+[Install]
+# Requires X11 for --wid embedding
+WantedBy=graphical.target
+
