@@ -1,0 +1,18 @@
+title: Wes Montgomery
+curator: Alex Chaney
+description: ''
+loop: false
+items:
+  - title: Windy
+    artist: Wes Montgomery
+    source_type: local
+    path: dev_data/media/Wes Montgomery - Windy.mp4
+  - title: Four On Six (1965)
+    artist: Wes Montgomery
+    source_type: local
+    path: dev_data/media/Wes Montgomery-Four On Six (1965)-Guitarra de Jazz.mp4
+  - title: TV show in Brussels, Belgium, april 4th, 1965 (colorized)
+    artist: Wes Montgomery
+    source_type: local
+    path: dev_data/media/Wes Montgomery, TV show in Brussels, Belgium, april 4th, 1965 (colorized).mp4
+

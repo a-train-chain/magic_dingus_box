@@ -1,0 +1,22 @@
+curator: Alex Chaney
+items:
+- artist: Danny Gatton
+  path: dev_data/media/ACL Danny Gatton.mp4
+  source_type: local
+  title: ACL Danny Gatton
+- artist: Danny Gatton
+  path: dev_data/media/Remington Ride - Danny Gatton.mp4
+  source_type: local
+  title: Remington Ride
+- artist: Danny Gatton
+  path: dev_data/media/Danny Gatton and Funhouse at Gallaghers  2.19.88 - Washington,
+    DC.mp4
+  source_type: local
+  title: Danny Gatton and Funhouse at Gallaghers  2.19.88 - Washington, DC
+- artist: Vince Gill with Danny Gatton, Albert Lee, Mark OConnor, John Hughey
+  path: dev_data/media/Vince Gill with Danny Gatton, Albert Lee, Mark OConnor, John
+    Hughey-Back Home In Indiana.mp4
+  source_type: local
+  title: Back Home In Indiana
+loop: false
+title: Danny Gatton
