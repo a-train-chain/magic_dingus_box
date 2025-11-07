@@ -102,7 +102,8 @@ def run() -> None:
             # Prepare a pre-scaled bezel PNG for mpv overlay when video is playing
             try:
                 from pathlib import Path as _P
-                overlay_path = _P("/run/magic/bezel_overlay.png") if config.platform == "linux" else _P("/tmp/bezel_overlay.png")
+                # Use /tmp on Linux to avoid permission issues with /run/magic when UI runs as non-root
+                overlay_path = _P("/tmp/bezel_overlay.png")
                 written = bezel_loader.write_scaled_bezel_png(bezel_style, target_resolution, overlay_path)
                 if written is not None:
                     bezel_overlay_file = str(written)
