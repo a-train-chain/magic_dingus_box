@@ -24,6 +24,7 @@ from .ui.settings_menu import SettingsMenuManager, MenuSection
 from .ui.settings_renderer import SettingsMenuRenderer
 from .inputs.keyboard import KeyboardInputProvider
 from .inputs.gpio import GPIOInputProvider  # type: ignore
+from .inputs.joystick import JoystickInputProvider
 from .web.admin import create_app
 from .display.display_manager import DisplayManager, DisplayMode
 from .display.bezel_loader import BezelLoader
@@ -362,6 +363,15 @@ def run() -> None:
 
     # Input providers
     kb_provider = KeyboardInputProvider()
+    js_provider = None
+    try:
+        pygame.joystick.init()
+        if pygame.joystick.get_count() > 0:
+            js = pygame.joystick.Joystick(0)
+            js_provider = JoystickInputProvider(js)
+            log.info(f"Joystick connected: {js.get_name()} (buttons={js.get_numbuttons()}, hats={js.get_numhats()}, axes={js.get_numaxes()})")
+    except Exception as exc:
+        log.warning(f"Joystick init failed: {exc}")
     gpio_provider = None
     if config.platform == "linux" and os.getenv("MAGIC_USE_GPIO", "0") == "1":
         try:
@@ -488,10 +498,18 @@ def run() -> None:
             mapped = kb_provider.translate(event)
             if mapped is not None:
                 events.append(mapped)
+            if js_provider is not None:
+                mapped_js = js_provider.translate(event)
+                if mapped_js is not None:
+                    events.append(mapped_js)
 
         # Check for hold-to-seek keyboard events
         for ev in kb_provider.poll_seeking():
             events.append(ev)
+        # Check joystick continuous inputs
+        if js_provider is not None:
+            for ev in js_provider.poll():
+                events.append(ev)
 
         if gpio_provider is not None:
             for ev in gpio_provider.poll():  # type: ignore[attr-defined]
