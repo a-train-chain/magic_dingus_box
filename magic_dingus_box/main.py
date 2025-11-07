@@ -150,6 +150,42 @@ def run() -> None:
 
     # Preserve mpv's service-level scaling/filters as configured in systemd
 
+    # Manage mpv bezel overlay (helpers placed before intro so intro can use them)
+    mpv_bezel_overlay_active = False
+    def _activate_mpv_bezel_overlay() -> None:
+        nonlocal mpv_bezel_overlay_active
+        if mpv_bezel_overlay_active:
+            return
+        if display_mode != DisplayMode.MODERN_WITH_BEZEL:
+            return
+        if not bezel_overlay_file:
+            return
+        try:
+            # Minimal overlay graph: no scaling, overlay full-screen bezel PNG at (0,0)
+            lavfi = (
+                f"movie='{bezel_overlay_file}',format=rgba[bz];"
+                f"[vid1]format=rgba[v];"
+                f"[v][bz]overlay=x=0:y=0:format=auto"
+            )
+            mpv.set_property("lavfi-complex", lavfi)
+            try:
+                mpv.set_property("hwdec", "auto-copy")
+            except Exception:
+                pass
+            mpv_bezel_overlay_active = True
+        except Exception as exc:
+            logging.getLogger("magic.main").warning(f"mpv overlay enable failed: {exc}")
+
+    def _deactivate_mpv_bezel_overlay() -> None:
+        nonlocal mpv_bezel_overlay_active
+        if not mpv_bezel_overlay_active:
+            return
+        try:
+            mpv.set_property("lavfi-complex", "")
+        except Exception:
+            pass
+        mpv_bezel_overlay_active = False
+
     # Embed mpv into pygame window (X11/Linux only)
     if config.platform == "linux":
         try:
@@ -201,6 +237,8 @@ def run() -> None:
                 pass
             mpv.load_file(str(intro_path))
             mpv.resume()
+            # Ensure bezel frame is present during intro playback
+            _activate_mpv_bezel_overlay()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -235,6 +273,8 @@ def run() -> None:
             
             # Stop intro playback to return mpv to idle
             mpv.stop()
+            # Remove mpv overlay so pygame bezel takes over for UI
+            _deactivate_mpv_bezel_overlay()
             log.info("Intro complete")
             played_intro = True
     except Exception as exc:

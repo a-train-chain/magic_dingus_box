@@ -44,6 +44,7 @@ Notes:
 - On macOS, mpv and the UI run in separate windows (no embedding support)
 - On Pi with X11, mpv embeds into the pygame window for true overlay
 - Local dev data directory is `dev_data/` by default.
+- For the bezel-on-top CRT effect (video behind the frame), the full illusion is only exact on Linux/Pi with X11 embedding. On macOS dev, mpv is a separate window and can appear above; you can reduce this by starting mpv with `--ontop=no`, but the full effect requires Linux/Pi.
 
 ## Emulator Support (RetroArch)
 
