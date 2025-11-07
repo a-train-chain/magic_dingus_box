@@ -104,10 +104,19 @@ def run() -> None:
                 from pathlib import Path as _P
                 # Use /tmp on Linux to avoid permission issues with /run/magic when UI runs as non-root
                 overlay_path = _P("/tmp/bezel_overlay.png")
-                written = bezel_loader.write_scaled_bezel_png(bezel_style, target_resolution, overlay_path)
-                if written is not None:
-                    bezel_overlay_file = str(written)
-                    log.info(f"Prepared bezel overlay file: {bezel_overlay_file}")
+                # Create overlay image with a transparent window matching the 4:3 content area
+                overlay_surface = pygame.Surface(target_resolution, pygame.SRCALPHA)
+                overlay_surface.fill((0, 0, 0, 0))
+                # Draw bezel first
+                overlay_surface.blit(bezel, (0, 0))
+                # Punch a fully transparent hole in the content area so video shows through
+                hole = pygame.Surface((display_mgr.content_rect.width, display_mgr.content_rect.height), pygame.SRCALPHA)
+                hole.fill((255, 255, 255, 0))  # fully transparent
+                overlay_surface.blit(hole, (display_mgr.content_rect.x, display_mgr.content_rect.y), special_flags=pygame.BLEND_RGBA_MULT)
+                # Save the overlay
+                pygame.image.save(overlay_surface, str(overlay_path))
+                bezel_overlay_file = str(overlay_path)
+                log.info(f"Prepared bezel overlay file: {bezel_overlay_file}")
             except Exception as _exc:
                 log.warning(f"Failed to prepare bezel overlay file: {_exc}")
         else:
