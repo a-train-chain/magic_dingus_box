@@ -57,10 +57,15 @@ def run() -> None:
         display_info = pygame.display.Info()
         # Use current display size, or user's configured size if set
         modern_res_str = settings_store.get_modern_resolution()
-        if modern_res_str == "auto" or modern_res_str == "1920x1080":
-            # Auto-detect actual screen size
-            modern_resolution = (display_info.current_w, display_info.current_h)
-            log.info(f"Auto-detected display resolution: {modern_resolution[0]}x{modern_resolution[1]}")
+        if modern_res_str == "auto":
+            # Auto-detect actual screen size but clamp to 1080p for performance
+            detected = (display_info.current_w, display_info.current_h)
+            if detected[0] > 1920 or detected[1] > 1080:
+                modern_resolution = (1920, 1080)
+                log.info(f"Auto-detected {detected[0]}x{detected[1]} -> clamped to {modern_resolution[0]}x{modern_resolution[1]} for performance")
+            else:
+                modern_resolution = detected
+                log.info(f"Auto-detected display resolution: {modern_resolution[0]}x{modern_resolution[1]}")
         else:
             modern_resolution = config._parse_resolution(modern_res_str)
     else:

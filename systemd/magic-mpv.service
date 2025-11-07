@@ -15,7 +15,7 @@ ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --input-ipc-server=/run/magic/mpv.sock \
   --input-vo-keyboard=no --input-default-bindings=no \
   --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \
-  --vo=x11 --hwdec=auto-safe \
+  --vo=gpu --hwdec=auto-safe \
   --force-window=no \
   --audio-device=alsa:device=hw:0,0
 Restart=on-failure
