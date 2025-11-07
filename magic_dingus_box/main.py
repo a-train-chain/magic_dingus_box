@@ -310,6 +310,10 @@ def run() -> None:
                 # Present with pygame bezel; preserve video area and blit content overlay (CRT effects)
                 display_mgr.present(screen, bezel, preserve_video_area=True, skip_content_blit=False)
                 pygame.display.flip()
+                # Ensure bezel remains topmost even if mpv repaints after our draw
+                if display_mode == DisplayMode.MODERN_WITH_BEZEL and bezel is not None:
+                    screen.blit(bezel, (0, 0))
+                    pygame.display.flip()
                 
                 # End conditions: duration elapsed or mpv signaled EOF
                 if (time.time() - intro_start) >= intro_duration:
@@ -873,6 +877,10 @@ def run() -> None:
         display_mgr.present(screen, bezel, preserve_video_area=ui_hidden)
 
         pygame.display.flip()
+        # Ensure bezel remains topmost during playback (mpv may repaint)
+        if ui_hidden and display_mode == DisplayMode.MODERN_WITH_BEZEL and bezel is not None:
+            screen.blit(bezel, (0, 0))
+            pygame.display.flip()
         clock.tick(60)
 
     try:
