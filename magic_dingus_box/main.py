@@ -869,13 +869,13 @@ def run() -> None:
         # Render settings menu overlay (drawn over main UI)
         settings_renderer.render(content_surface, settings_menu, renderer.theme, game_playlists)
 
-        # Apply CRT effects to the entire composed frame (over everything)
-        crt_effects.apply_all(content_surface, time.time())
+        # Apply CRT effects only when UI/content will be shown
+        if not ui_hidden:
+            crt_effects.apply_all(content_surface, time.time())
 
         # Composite content to actual screen with display mode handling
-        # When UI is hidden (video playing), preserve video area so mpv shows through beneath overlays.
-        # Always draw the pygame bezel for consistent sizing.
-        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden)
+        # When UI is hidden (video playing), do not blit UI/content; preserve video area and draw bezel only
+        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=ui_hidden)
 
         pygame.display.flip()
         # Ensure bezel remains topmost during playback (mpv may repaint)
