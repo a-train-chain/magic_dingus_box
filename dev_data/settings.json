@@ -10,6 +10,6 @@
   "phosphor_mask": 0.5,
   "interlacing": 0.5,
   "screen_flicker": 0.25,
-  "intro_video": "/Users/alexanderchaney/Documents/Projects/magic_dingus_box/dev_data/media/MDB Logo.mp4",
+  "intro_video": "",
   "intro_duration": 10.0
 }
