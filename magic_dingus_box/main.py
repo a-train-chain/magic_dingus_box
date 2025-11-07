@@ -168,9 +168,35 @@ def run() -> None:
     try:
         mpv.set_property("input-vo-keyboard", "no")
         mpv.set_property("input-default-bindings", "no")
-        mpv.set_property("audio-device", config.audio_device)
     except Exception:
         pass
+    # Auto-select HDMI audio device on Linux if available
+    if config.platform == "linux":
+        try:
+            devices = mpv.get_property("audio-device-list") or []
+            chosen = None
+            # Prefer ALSA HDMI devices (vc4hdmi on Pi)
+            for d in devices:
+                name = str(d.get("name", "")).lower()
+                desc = str(d.get("description", "")).lower()
+                if name.startswith("alsa:") and ("hdmi" in name or "hdmi" in desc or "vc4hdmi" in name or "vc4hdmi" in desc):
+                    chosen = d.get("name")
+                    break
+            # Fallback: alsa:sysdefault if present
+            if chosen is None:
+                for d in devices:
+                    name = str(d.get("name", "")).lower()
+                    if name.startswith("alsa:sysdefault"):
+                        chosen = d.get("name")
+                        break
+            # Apply if found
+            if chosen:
+                mpv.set_property("audio-device", chosen)
+                logging.getLogger("magic.main").info(f"Using HDMI audio device: {chosen}")
+            else:
+                logging.getLogger("magic.main").warning("No HDMI ALSA device found; using mpv default audio device")
+        except Exception as _exc:
+            logging.getLogger("magic.main").warning(f"Audio device auto-select failed: {_exc}")
     controller = PlaybackController(
         mpv_client=mpv,
         settings_store=settings_store,

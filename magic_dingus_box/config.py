@@ -41,7 +41,7 @@ class AppConfig:
         # Audio device: HDMI by default on Pi; on macOS let mpv choose
         self.audio_device = os.getenv(
             "MAGIC_AUDIO_DEVICE",
-            "alsa:hdmi" if self.platform == "linux" else "auto",
+            "auto" if self.platform == "linux" else "auto",
         )
 
         # Optional modules/features
