@@ -185,6 +185,8 @@ def run() -> None:
             mpv.resume()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
+            # Optional: apply CRT effects during intro (default off for performance)
+            intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
             intro_start = time.time()
             
             while True:
@@ -194,9 +196,10 @@ def run() -> None:
                         pygame.quit()
                         return
                 
-                # Clear overlay surface to fully transparent and render CRT effects
+                # Clear overlay surface to fully transparent, then optionally apply CRT effects
                 content_surface.fill((0, 0, 0, 0))
-                crt_effects.apply_all(content_surface, time.time())
+                if intro_effects_enabled:
+                    crt_effects.apply_all(content_surface, time.time())
                 # Present via display manager to ensure identical placement and bezel stacking
                 # (on Mac bezel will show, on Linux it composites over embedded mpv)
                 display_mgr.present(screen, bezel)
