@@ -180,8 +180,14 @@ def run() -> None:
     # Sample mode manager
     sample_mode = SampleModeManager()
     
-    # Enable 1-second audio fade-in for smooth transitions
-    mpv.enable_audio_fade(fade_duration=1.0)
+    # Enable 1-second audio fade-in for smooth transitions (macOS/dev only to avoid CPU on Pi)
+    if config.platform != "linux":
+        mpv.enable_audio_fade(fade_duration=1.0)
+    # Ensure normal playback speed
+    try:
+        mpv.set_property("speed", 1.0)
+    except Exception:
+        pass
 
     # Preserve mpv's service-level scaling/filters as configured in systemd
 

@@ -8,6 +8,8 @@ Type=simple
 User=alexanderchaney
 Group=alexanderchaney
 RuntimeDirectory=magic
+EnvironmentFile=/etc/magic_dingus_box.env
+Environment=AUDIO_DEVICE=alsa:hdmi
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
@@ -18,7 +20,8 @@ ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \
   --vo=gpu --hwdec=auto-safe \
   --force-window=no \
-  --audio-device=alsa:device=hw:0,0
+  --audio-device=${AUDIO_DEVICE} \
+  --vd-lavc-threads=2
 Restart=on-failure
 
 [Install]
