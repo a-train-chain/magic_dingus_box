@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
-
 import pygame
 
 
@@ -198,15 +196,13 @@ def apply_interlacing(surface: pygame.Surface, frame_count: int, intensity: floa
     surface.blit(interlace_surf, (0, 0))
 
 
-def apply_subtle_flicker(surface: pygame.Surface, time: float, intensity: float = 0.3, *, additive: bool = True) -> None:
+def apply_subtle_flicker(surface: pygame.Surface, time: float, intensity: float = 0.3) -> None:
     """Apply subtle screen flicker (simulates CRT instability).
     
     Args:
         surface: Surface to apply effect to (modified in-place)
         time: Current time in seconds (for sine wave)
         intensity: Flicker amount (0.0 = none, 1.0 = maximum)
-        additive: When True use additive blending (original behaviour). When False
-            generate a standard alpha overlay suitable for compositing.
     """
     if intensity <= 0:
         return
@@ -222,21 +218,12 @@ def apply_subtle_flicker(surface: pygame.Surface, time: float, intensity: float 
     flicker_surf = pygame.Surface((w, h), pygame.SRCALPHA)
     
     if brightness_delta > 0:
-        if additive:
-            # Brighten slightly using additive blend
-            flicker_surf.fill((brightness_delta, brightness_delta, brightness_delta, 255))
-            surface.blit(flicker_surf, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
-        else:
-            # Convert additive brighten into standard alpha overlay (approximation)
-            alpha = min(80, brightness_delta * 30)
-            if alpha <= 0:
-                return
-            flicker_surf.fill((255, 255, 255, alpha))
-            surface.blit(flicker_surf, (0, 0))
+        # Brighten slightly
+        flicker_surf.fill((brightness_delta, brightness_delta, brightness_delta, 255))
+        surface.blit(flicker_surf, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
     elif brightness_delta < 0:
-        alpha = abs(brightness_delta) * (3 if additive else 18)
-        if alpha <= 0:
-            return
+        # Darken slightly
+        alpha = abs(brightness_delta) * 3
         flicker_surf.fill((0, 0, 0, alpha))
         surface.blit(flicker_surf, (0, 0))
 
@@ -283,69 +270,6 @@ class CRTEffectsManager:
         
         # Frame counter for interlacing
         self.frame_count = 0
-
-    def has_overlay_layers(self, include_flicker: bool = False) -> bool:
-        """Return True if any overlay-style effects are currently enabled."""
-
-        return any(
-            (
-                self.bloom_enabled,
-                self.warmth_enabled,
-                self.glow_enabled,
-                self.phosphor_mask_enabled,
-                self.interlacing_enabled,
-                self.scanlines_enabled,
-                self.flicker_enabled if include_flicker else False,
-            )
-        )
-
-    def build_overlay_surface(
-        self,
-        size: Tuple[int, int],
-        current_time: float = 0.0,
-        *,
-        include_flicker: bool = False,
-        frame_index: Optional[int] = None,
-    ) -> pygame.Surface:
-        """Create a surface containing the active effects as an overlay.
-
-        Args:
-            size: (width, height) for the overlay surface.
-            current_time: Timestamp for time-based effects.
-            include_flicker: Whether to bake flicker into the overlay.
-            frame_index: Frame count for interlacing. Uses current frame_count if None.
-
-        Returns:
-            A pygame surface with RGBA data representing the overlay.
-        """
-
-        if frame_index is None:
-            frame_index = self.frame_count
-
-        overlay = pygame.Surface(size, pygame.SRCALPHA)
-
-        if self.bloom_enabled:
-            apply_screen_bloom(overlay, self.bloom_amount)
-
-        if self.warmth_enabled:
-            apply_color_warmth(overlay, self.warmth_amount)
-
-        if self.glow_enabled:
-            apply_phosphor_glow(overlay, self.glow_intensity)
-
-        if self.phosphor_mask_enabled:
-            apply_rgb_phosphor_mask(overlay, self.phosphor_mask_intensity)
-
-        if self.interlacing_enabled:
-            apply_interlacing(overlay, frame_index, self.interlacing_intensity)
-
-        if self.scanlines_enabled:
-            apply_enhanced_scanlines(overlay, self.scanlines_intensity)
-
-        if include_flicker and self.flicker_enabled:
-            apply_subtle_flicker(overlay, current_time, self.flicker_intensity, additive=False)
-
-        return overlay
     
     def load_settings(self, settings_store) -> None:
         """Load effect settings from settings store.
@@ -395,17 +319,28 @@ class CRTEffectsManager:
         """
         # Increment frame counter for interlacing
         self.frame_count += 1
-
-        overlay = self.build_overlay_surface(
-            surface.get_size(),
-            current_time,
-            include_flicker=False,
-            frame_index=self.frame_count,
-        )
-        surface.blit(overlay, (0, 0))
-
+        
+        # Apply effects in order for best visual result
+        if self.bloom_enabled:
+            apply_screen_bloom(surface, self.bloom_amount)
+        
+        if self.warmth_enabled:
+            apply_color_warmth(surface, self.warmth_amount)
+        
+        if self.glow_enabled:
+            apply_phosphor_glow(surface, self.glow_intensity)
+        
+        if self.phosphor_mask_enabled:
+            apply_rgb_phosphor_mask(surface, self.phosphor_mask_intensity)
+        
+        if self.interlacing_enabled:
+            apply_interlacing(surface, self.frame_count, self.interlacing_intensity)
+        
+        if self.scanlines_enabled:
+            apply_enhanced_scanlines(surface, self.scanlines_intensity)
+        
         if self.flicker_enabled:
-            apply_subtle_flicker(surface, current_time, self.flicker_intensity, additive=True)
+            apply_subtle_flicker(surface, current_time, self.flicker_intensity)
     
     def get_scanlines_label(self) -> str:
         """Get label for current scanlines setting."""
