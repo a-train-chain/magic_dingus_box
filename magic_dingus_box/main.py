@@ -175,20 +175,39 @@ def run() -> None:
         try:
             devices = mpv.get_property("audio-device-list") or []
             chosen = None
-            # Prefer ALSA HDMI devices (vc4hdmi on Pi)
+            # Normalize names and build priority candidates
+            def norm(s: str) -> str:
+                return str(s or "").lower()
+            hdmi_candidates = []
+            default_candidates = []
+            sysdefault_candidates = []
+            generic_alsa = None
             for d in devices:
-                name = str(d.get("name", "")).lower()
-                desc = str(d.get("description", "")).lower()
-                if name.startswith("alsa:") and ("hdmi" in name or "hdmi" in desc or "vc4hdmi" in name or "vc4hdmi" in desc):
-                    chosen = d.get("name")
-                    break
-            # Fallback: alsa:sysdefault if present
-            if chosen is None:
-                for d in devices:
-                    name = str(d.get("name", "")).lower()
-                    if name.startswith("alsa:sysdefault"):
-                        chosen = d.get("name")
-                        break
+                name = norm(d.get("name", ""))
+                desc = norm(d.get("description", ""))
+                if name == "alsa":
+                    generic_alsa = d.get("name")
+                if name.startswith(("alsa:", "alsa/")):
+                    if "hdmi" in name or "vc4hdmi" in name or "hdmi" in desc or "vc4hdmi" in desc:
+                        hdmi_candidates.append(d.get("name"))
+                    elif name.startswith(("alsa:default", "alsa/default")):
+                        default_candidates.append(d.get("name"))
+                    elif name.startswith(("alsa:sysdefault", "alsa/sysdefault")):
+                        sysdefault_candidates.append(d.get("name"))
+            # Prefer specific HDMI ports (vc4hdmi1 then vc4hdmi0), else any HDMI
+            def prefer_port(names: list[str], port: str) -> str | None:
+                for n in names:
+                    if port in n:
+                        return n
+                return None
+            chosen = prefer_port(hdmi_candidates, "vc4hdmi1") or prefer_port(hdmi_candidates, "vc4hdmi0") or (hdmi_candidates[0] if hdmi_candidates else None)
+            # Fallback chain
+            if chosen is None and default_candidates:
+                chosen = default_candidates[0]
+            if chosen is None and sysdefault_candidates:
+                chosen = sysdefault_candidates[0]
+            if chosen is None and generic_alsa:
+                chosen = generic_alsa
             # Apply if found
             if chosen:
                 mpv.set_property("audio-device", chosen)
