@@ -122,9 +122,17 @@ class DisplayManager:
             )
             screen.blit(scaled_content, self.content_rect)
             
-            # Draw bezel ON TOP so frame overlays content edges
+            # Draw bezel ON TOP so frame overlays content edges, but keep screen window transparent
             if self.mode == DisplayMode.MODERN_WITH_BEZEL and bezel:
-                screen.blit(bezel, (0, 0))
+                try:
+                    bezel_with_hole = pygame.Surface(self.target_resolution, pygame.SRCALPHA)
+                    bezel_with_hole.blit(bezel, (0, 0))
+                    # Clear alpha inside content_rect so underlying video (mpv) shows through
+                    bezel_with_hole.fill((255, 255, 255, 0), self.content_rect, special_flags=pygame.BLEND_RGBA_MIN)
+                    screen.blit(bezel_with_hole, (0, 0))
+                except Exception:
+                    # Fallback: draw bezel as-is
+                    screen.blit(bezel, (0, 0))
     
     def load_bezel_image(self, bezel_path: Path) -> Optional[pygame.Surface]:
         """Load and scale a bezel image from file.
