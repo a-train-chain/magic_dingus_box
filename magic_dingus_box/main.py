@@ -252,7 +252,7 @@ def run() -> None:
                 pass
             mpv.load_file(str(intro_path))
             mpv.resume()
-            # Use mpv overlay bezel during intro to ensure proper compositing inside mpv
+            # Use mpv overlay bezel during intro to ensure bezel is on top of video
             _activate_mpv_bezel_overlay()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
