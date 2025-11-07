@@ -138,3 +138,19 @@ class BezelLoader:
                 return None
         return None
 
+    def write_scaled_bezel_png(self, bezel_id: str, target_size: Tuple[int, int], out_path: Path) -> Optional[Path]:
+        """Load bezel, scale to target_size, and write as PNG to out_path.
+        
+        Returns out_path on success, or None on failure.
+        """
+        try:
+            surf = self.load_bezel(bezel_id, target_size)
+            if surf is None:
+                return None
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(surf, str(out_path))
+            return out_path
+        except Exception as e:
+            self._log.warning(f"Failed to write scaled bezel to {out_path}: {e}")
+            return None
+
