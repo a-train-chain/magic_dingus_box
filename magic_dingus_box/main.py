@@ -109,10 +109,15 @@ def run() -> None:
                 overlay_surface.fill((0, 0, 0, 0))
                 # Draw bezel first
                 overlay_surface.blit(bezel, (0, 0))
-                # Punch a fully transparent hole in the content area so video shows through
-                hole = pygame.Surface((display_mgr.content_rect.width, display_mgr.content_rect.height), pygame.SRCALPHA)
-                hole.fill((255, 255, 255, 0))  # fully transparent
-                overlay_surface.blit(hole, (display_mgr.content_rect.x, display_mgr.content_rect.y), special_flags=pygame.BLEND_RGBA_MULT)
+                # Punch a fully transparent hole in the content area so video shows through.
+                # Use BLEND_RGBA_MIN with alpha=0 to force dest alpha to 0 in that rect.
+                hole_rect = pygame.Rect(
+                    display_mgr.content_rect.x,
+                    display_mgr.content_rect.y,
+                    display_mgr.content_rect.width,
+                    display_mgr.content_rect.height,
+                )
+                overlay_surface.fill((255, 255, 255, 0), hole_rect, special_flags=pygame.BLEND_RGBA_MIN)
                 # Save the overlay
                 pygame.image.save(overlay_surface, str(overlay_path))
                 bezel_overlay_file = str(overlay_path)
