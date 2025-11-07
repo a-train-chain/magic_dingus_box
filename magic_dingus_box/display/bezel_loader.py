@@ -120,3 +120,21 @@ class BezelLoader:
             self._log.error(f"Failed to load bezel {bezel_path}: {e}")
             return None
 
+    def get_bezel_image_path(self, bezel_id: str) -> Optional[Path]:
+        """Return the absolute file path for a bezel image, if available.
+        
+        Args:
+            bezel_id: Bezel identifier (from bezels.json)
+        
+        Returns:
+            Path to bezel PNG if defined and exists, otherwise None.
+        """
+        for b in self._available_bezels:
+            if b.id == bezel_id and b.file:
+                p = self.bezels_dir / b.file
+                if p.exists():
+                    return p
+                self._log.warning(f"Bezel file not found: {p}")
+                return None
+        return None
+
