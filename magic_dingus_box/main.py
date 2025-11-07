@@ -91,6 +91,7 @@ def run() -> None:
     
     # Load bezel if needed
     bezel = None
+    bezel_overlay_file = None
     if display_mode == DisplayMode.MODERN_WITH_BEZEL:
         # Try to load bezel from file first
         bezel_style = settings_store.get("bezel_style", "retro_tv_1")
@@ -98,6 +99,16 @@ def run() -> None:
         
         if bezel:
             log.info(f"Loaded bezel: {bezel_style}")
+            # Prepare a pre-scaled bezel PNG for mpv overlay when video is playing
+            try:
+                from pathlib import Path as _P
+                overlay_path = _P("/run/magic/bezel_overlay.png") if config.platform == "linux" else _P("/tmp/bezel_overlay.png")
+                written = bezel_loader.write_scaled_bezel_png(bezel_style, target_resolution, overlay_path)
+                if written is not None:
+                    bezel_overlay_file = str(written)
+                    log.info(f"Prepared bezel overlay file: {bezel_overlay_file}")
+            except Exception as _exc:
+                log.warning(f"Failed to prepare bezel overlay file: {_exc}")
         else:
             # Fallback to procedural bezel
             bezel = display_mgr.generate_bezel()
@@ -136,6 +147,8 @@ def run() -> None:
     
     # Enable 1-second audio fade-in for smooth transitions
     mpv.enable_audio_fade(fade_duration=1.0)
+
+    # Preserve mpv's service-level scaling/filters as configured in systemd
 
     # Embed mpv into pygame window (X11/Linux only)
     if config.platform == "linux":
@@ -179,30 +192,13 @@ def run() -> None:
         
         if intro_path is not None:
             log.info(f"Playing intro video: {intro_path}")
-            # If in bezel mode and we have a bezel image, overlay it via mpv to guarantee stacking
-            bezel_overlay_active = False
-            if display_mode == DisplayMode.MODERN_WITH_BEZEL:
-                try:
-                    bezel_image_path = bezel_loader.get_bezel_image_path(settings_store.get("bezel_style", "retro_tv_1"))
-                except Exception:
-                    bezel_image_path = None
-                if bezel_image_path is not None:
-                    # Build lavfi-complex graph to scale bezel to video and overlay at (0,0)
-                    # Use scale2ref so bezel matches the current video size automatically.
-                    lavfi = (
-                        f"movie='{str(bezel_image_path)}',format=rgba[bz];"
-                        f"[vid1]format=rgba[v];"
-                        f"[bz][v]scale2ref=w=iw:h=ih[bzs][vs];"
-                        f"[vs][bzs]overlay=x=0:y=0:format=auto"
-                    )
-                    try:
-                        mpv.set_property("lavfi-complex", lavfi)
-                        bezel_overlay_active = True
-                        log.info("Applied mpv bezel overlay for intro")
-                    except Exception as exc:
-                        log.warning(f"Failed to apply mpv overlay: {exc}")
             # Ensure we don't loop the intro
             mpv.set_loop_file(False)
+            # Allow filters while keeping hwdec (copy) if possible
+            try:
+                mpv.set_property("hwdec", "auto-copy")
+            except Exception:
+                pass
             mpv.load_file(str(intro_path))
             mpv.resume()
             
@@ -222,8 +218,8 @@ def run() -> None:
                 content_surface.fill((0, 0, 0, 0))
                 if intro_effects_enabled:
                     crt_effects.apply_all(content_surface, time.time())
-                # Present via display manager; when mpv overlay is active, bezel is handled by mpv
-                display_mgr.present(screen, None if bezel_overlay_active else bezel)
+                # Present via display manager; bezel is drawn by pygame
+                display_mgr.present(screen, bezel)
                 pygame.display.flip()
                 
                 # End conditions: duration elapsed or mpv signaled EOF
@@ -239,13 +235,6 @@ def run() -> None:
             
             # Stop intro playback to return mpv to idle
             mpv.stop()
-            # Clear any temporary overlay
-            try:
-                if bezel_overlay_active:
-                    mpv.set_property("lavfi-complex", "")
-                    log.info("Cleared mpv bezel overlay after intro")
-            except Exception:
-                pass
             log.info("Intro complete")
             played_intro = True
     except Exception as exc:
@@ -290,6 +279,42 @@ def run() -> None:
         nonlocal transition_dir, transition_start
         transition_dir = direction
         transition_start = time.time()
+
+    # Manage mpv bezel overlay during normal video playback (UI hidden)
+    mpv_bezel_overlay_active = False
+    def _activate_mpv_bezel_overlay() -> None:
+        nonlocal mpv_bezel_overlay_active
+        if mpv_bezel_overlay_active:
+            return
+        if display_mode != DisplayMode.MODERN_WITH_BEZEL:
+            return
+        if not bezel_overlay_file:
+            return
+        try:
+            # Minimal overlay graph: no scaling, overlay full-screen bezel PNG at (0,0)
+            lavfi = (
+                f"movie='{bezel_overlay_file}',format=rgba[bz];"
+                f"[vid1]format=rgba[v];"
+                f"[v][bz]overlay=x=0:y=0:format=auto"
+            )
+            mpv.set_property("lavfi-complex", lavfi)
+            try:
+                mpv.set_property("hwdec", "auto-copy")
+            except Exception:
+                pass
+            mpv_bezel_overlay_active = True
+        except Exception as exc:
+            logging.getLogger("magic.main").warning(f"mpv overlay enable failed: {exc}")
+
+    def _deactivate_mpv_bezel_overlay() -> None:
+        nonlocal mpv_bezel_overlay_active
+        if not mpv_bezel_overlay_active:
+            return
+        try:
+            mpv.set_property("lavfi-complex", "")
+        except Exception:
+            pass
+        mpv_bezel_overlay_active = False
 
     # Playlist watcher (hot reload)
     playlists_dirty = threading.Event()
@@ -711,6 +736,8 @@ def run() -> None:
                         has_playback = True
                     # Hide UI (volume already at 100% from fade)
                     ui_hidden = True
+                    # Activate mpv bezel overlay while video is playing
+                    _activate_mpv_bezel_overlay()
                 transition_dir = 0
 
         # Auto-progression: advance to next track/playlist when current track ends
@@ -736,6 +763,10 @@ def run() -> None:
                     controller.next_item()
                     sample_mode.clear_markers()  # Clear markers when auto-advancing tracks
                     log.info("Auto-advanced to next track")
+
+        # If UI became visible, ensure mpv overlay is off so pygame bezel shows
+        if not ui_hidden:
+            _deactivate_mpv_bezel_overlay()
 
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds
