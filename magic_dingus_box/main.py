@@ -252,7 +252,8 @@ def run() -> None:
                 pass
             mpv.load_file(str(intro_path))
             mpv.resume()
-            # Do not use mpv overlay during intro; let embedded video show through with pygame bezel
+            # Use mpv overlay bezel during intro to ensure proper compositing inside mpv
+            _activate_mpv_bezel_overlay()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -270,8 +271,8 @@ def run() -> None:
                 content_surface.fill((0, 0, 0, 0))
                 if intro_effects_enabled:
                     crt_effects.apply_all(content_surface, time.time())
-                # Present via display manager; preserve video area and skip content blit so mpv shows through.
-                display_mgr.present(screen, bezel, preserve_video_area=True, skip_content_blit=True)
+                # Present; when mpv overlay is active, do not draw pygame bezel over it.
+                display_mgr.present(screen, None if mpv_bezel_overlay_active else bezel, preserve_video_area=True, skip_content_blit=True)
                 pygame.display.flip()
                 
                 # End conditions: duration elapsed or mpv signaled EOF
@@ -287,6 +288,8 @@ def run() -> None:
             
             # Stop intro playback to return mpv to idle
             mpv.stop()
+            # Remove mpv overlay so pygame bezel/UI take over after intro
+            _deactivate_mpv_bezel_overlay()
             log.info("Intro complete")
             played_intro = True
     except Exception as exc:
