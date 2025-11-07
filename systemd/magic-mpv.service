@@ -7,6 +7,7 @@ Type=simple
 RuntimeDirectory=magic
 Environment=DISPLAY=:0
 ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
+  --no-config \
   --input-ipc-server=/run/magic/mpv.sock \
   --input-vo-keyboard=no --input-default-bindings=no \
   --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \

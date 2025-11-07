@@ -6,7 +6,8 @@ import sys
 import threading
 import time
 import signal
-from typing import List
+from pathlib import Path
+from typing import List, Optional
 
 import pygame
 
@@ -89,6 +90,8 @@ def run() -> None:
     crt_effects = CRTEffectsManager()
     crt_effects.load_settings(settings_store)
     
+    overlay_output_dir = Path("/run/magic") if config.platform == "linux" else Path("/tmp")
+
     # Load bezel if needed
     bezel = None
     bezel_overlay_file = None
@@ -101,8 +104,11 @@ def run() -> None:
             log.info(f"Loaded bezel: {bezel_style}")
             # Prepare a pre-scaled bezel PNG for mpv overlay when video is playing
             try:
-                from pathlib import Path as _P
-                overlay_path = _P("/run/magic/bezel_overlay.png") if config.platform == "linux" else _P("/tmp/bezel_overlay.png")
+                overlay_output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                overlay_path = overlay_output_dir / "bezel_overlay.png"
                 written = bezel_loader.write_scaled_bezel_png(bezel_style, target_resolution, overlay_path)
                 if written is not None:
                     bezel_overlay_file = str(written)
@@ -113,6 +119,138 @@ def run() -> None:
             # Fallback to procedural bezel
             bezel = display_mgr.generate_bezel()
             log.info("Using procedural bezel (image not found)")
+            try:
+                overlay_output_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                overlay_path = overlay_output_dir / "bezel_overlay.png"
+                pygame.image.save(bezel, str(overlay_path))
+                bezel_overlay_file = str(overlay_path)
+                log.info(f"Generated procedural bezel overlay file: {bezel_overlay_file}")
+            except Exception as _exc:
+                log.warning(f"Failed to write procedural bezel overlay: {_exc}")
+
+    crt_overlay_file: Optional[str] = None
+    mpv_overlays_active = False
+
+    def _escape_lavfi_path(path: str) -> str:
+        return path.replace("\\", "\\\\").replace("'", r"\'")
+
+    def _prepare_crt_overlay(current_time: float = 0.0) -> None:
+        nonlocal crt_overlay_file
+        if display_mode == DisplayMode.CRT_NATIVE:
+            crt_overlay_file = None
+            return
+
+        try:
+            overlay_output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        overlay_path = overlay_output_dir / "crt_overlay.png"
+
+        try:
+            if not crt_effects.has_overlay_layers(include_flicker=False):
+                crt_overlay_file = None
+                if overlay_path.exists():
+                    try:
+                        overlay_path.unlink()
+                    except Exception:
+                        pass
+                return
+
+            effect_width = display_mgr.content_rect.width
+            effect_height = display_mgr.content_rect.height
+            if effect_width <= 0 or effect_height <= 0:
+                crt_overlay_file = None
+                return
+
+            overlay_surface = pygame.Surface(target_resolution, pygame.SRCALPHA)
+            effect_surface = crt_effects.build_overlay_surface(
+                (effect_width, effect_height),
+                current_time=current_time,
+                include_flicker=False,
+                frame_index=0,
+            )
+            overlay_surface.blit(effect_surface, display_mgr.content_rect.topleft)
+            pygame.image.save(overlay_surface, str(overlay_path))
+            crt_overlay_file = str(overlay_path)
+            log.info(f"Prepared CRT overlay file: {crt_overlay_file}")
+        except Exception as exc:
+            log.warning(f"Failed to prepare CRT overlay file: {exc}")
+            crt_overlay_file = None
+
+    def _apply_mpv_overlays(force: bool = False) -> None:
+        nonlocal mpv_overlays_active
+
+        if display_mode == DisplayMode.CRT_NATIVE:
+            return
+
+        if mpv_overlays_active and not force:
+            return
+
+        if not bezel_overlay_file and not crt_overlay_file:
+            return
+
+        try:
+            parts: list[str] = []
+            overlay_order: list[str] = []
+
+            if crt_overlay_file:
+                parts.append(f"movie='{_escape_lavfi_path(crt_overlay_file)}',format=rgba[crt]")
+                overlay_order.append("crt")
+
+            if bezel_overlay_file:
+                parts.append(f"movie='{_escape_lavfi_path(bezel_overlay_file)}',format=rgba[bz]")
+                overlay_order.append("bz")
+
+            if not overlay_order:
+                return
+
+            parts.append("[vid1]format=rgba[v]")
+            chain_label = "[v]"
+
+            for idx, label in enumerate(overlay_order):
+                is_last = idx == len(overlay_order) - 1
+                if is_last:
+                    parts.append(f"{chain_label}[{label}]overlay=x=0:y=0:format=auto")
+                else:
+                    next_label = f"[v{idx + 1}]"
+                    parts.append(f"{chain_label}[{label}]overlay=x=0:y=0:format=auto{next_label}")
+                    chain_label = next_label
+
+            lavfi = ";".join(parts)
+            if not lavfi:
+                return
+
+            mpv.set_property("lavfi-complex", lavfi)
+            try:
+                mpv.set_property("hwdec", "auto-copy")
+            except Exception:
+                pass
+            mpv_overlays_active = True
+        except Exception as exc:
+            log.warning(f"mpv overlay enable failed: {exc}")
+
+    def _clear_mpv_overlays() -> None:
+        nonlocal mpv_overlays_active
+        if not mpv_overlays_active:
+            return
+        try:
+            mpv.set_property("lavfi-complex", "")
+        except Exception:
+            pass
+        mpv_overlays_active = False
+
+    def _refresh_mpv_overlay_assets(current_time: float = 0.0, *, force: bool = False) -> None:
+        prior_active = mpv_overlays_active
+        _prepare_crt_overlay(current_time=current_time)
+        if prior_active or force:
+            _clear_mpv_overlays()
+            _apply_mpv_overlays(force=True)
+
+    _refresh_mpv_overlay_assets()
 
     clock = pygame.time.Clock()
 
@@ -174,7 +312,6 @@ def run() -> None:
     # Optional intro video playback with CRT overlay (Linux embedded mpv)
     played_intro = False
     try:
-        from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
         default_intro = config.media_dir / "intro.mp4"
         intro_path = None
@@ -206,6 +343,9 @@ def run() -> None:
             # Optional: apply CRT effects during intro (default off for performance)
             intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
             intro_start = time.time()
+
+            _refresh_mpv_overlay_assets(current_time=intro_start, force=True)
+            _apply_mpv_overlays(force=True)
             
             while True:
                 # Allow quit during intro
@@ -234,6 +374,7 @@ def run() -> None:
                 clock.tick(60)
             
             # Stop intro playback to return mpv to idle
+            _clear_mpv_overlays()
             mpv.stop()
             log.info("Intro complete")
             played_intro = True
@@ -279,42 +420,6 @@ def run() -> None:
         nonlocal transition_dir, transition_start
         transition_dir = direction
         transition_start = time.time()
-
-    # Manage mpv bezel overlay during normal video playback (UI hidden)
-    mpv_bezel_overlay_active = False
-    def _activate_mpv_bezel_overlay() -> None:
-        nonlocal mpv_bezel_overlay_active
-        if mpv_bezel_overlay_active:
-            return
-        if display_mode != DisplayMode.MODERN_WITH_BEZEL:
-            return
-        if not bezel_overlay_file:
-            return
-        try:
-            # Minimal overlay graph: no scaling, overlay full-screen bezel PNG at (0,0)
-            lavfi = (
-                f"movie='{bezel_overlay_file}',format=rgba[bz];"
-                f"[vid1]format=rgba[v];"
-                f"[v][bz]overlay=x=0:y=0:format=auto"
-            )
-            mpv.set_property("lavfi-complex", lavfi)
-            try:
-                mpv.set_property("hwdec", "auto-copy")
-            except Exception:
-                pass
-            mpv_bezel_overlay_active = True
-        except Exception as exc:
-            logging.getLogger("magic.main").warning(f"mpv overlay enable failed: {exc}")
-
-    def _deactivate_mpv_bezel_overlay() -> None:
-        nonlocal mpv_bezel_overlay_active
-        if not mpv_bezel_overlay_active:
-            return
-        try:
-            mpv.set_property("lavfi-complex", "")
-        except Exception:
-            pass
-        mpv_bezel_overlay_active = False
 
     # Playlist watcher (hot reload)
     playlists_dirty = threading.Event()
@@ -521,6 +626,7 @@ def run() -> None:
                             next_mode = modes[(current_idx + 1) % len(modes)]
                             settings_store.set("scanlines_mode", next_mode)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             log.info(f"Scanlines: {next_mode}")
                         elif section == MenuSection.CYCLE_WARMTH:
@@ -532,6 +638,7 @@ def run() -> None:
                             next_warmth = warmths[(current_idx + 1) % len(warmths)]
                             settings_store.set("color_warmth", next_warmth)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             log.info(f"Color warmth: {int(next_warmth*100)}%")
                         elif section == MenuSection.CYCLE_GLOW:
@@ -543,6 +650,7 @@ def run() -> None:
                             next_intensity = intensities[(current_idx + 1) % len(intensities)]
                             settings_store.set("phosphor_glow", next_intensity)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             if next_intensity == 0.0:
                                 log.info("Phosphor glow: OFF")
@@ -556,6 +664,7 @@ def run() -> None:
                             next_intensity = intensities[(current_idx + 1) % len(intensities)]
                             settings_store.set("phosphor_mask", next_intensity)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             if next_intensity == 0.0:
                                 log.info("RGB mask: OFF")
@@ -569,6 +678,7 @@ def run() -> None:
                             next_intensity = intensities[(current_idx + 1) % len(intensities)]
                             settings_store.set("screen_bloom", next_intensity)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             if next_intensity == 0.0:
                                 log.info("Screen bloom: OFF")
@@ -582,6 +692,7 @@ def run() -> None:
                             next_intensity = intensities[(current_idx + 1) % len(intensities)]
                             settings_store.set("interlacing", next_intensity)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             if next_intensity == 0.0:
                                 log.info("Interlacing: OFF")
@@ -595,6 +706,7 @@ def run() -> None:
                             next_intensity = intensities[(current_idx + 1) % len(intensities)]
                             settings_store.set("screen_flicker", next_intensity)
                             crt_effects.load_settings(settings_store)
+                            _refresh_mpv_overlay_assets(current_time=time.time())
                             settings_menu.rebuild_current_submenu()
                             if next_intensity == 0.0:
                                 log.info("Screen flicker: OFF")
@@ -737,7 +849,7 @@ def run() -> None:
                     # Hide UI (volume already at 100% from fade)
                     ui_hidden = True
                     # Activate mpv bezel overlay while video is playing
-                    _activate_mpv_bezel_overlay()
+                    _apply_mpv_overlays()
                 transition_dir = 0
 
         # Auto-progression: advance to next track/playlist when current track ends
@@ -766,7 +878,7 @@ def run() -> None:
 
         # If UI became visible, ensure mpv overlay is off so pygame bezel shows
         if not ui_hidden:
-            _deactivate_mpv_bezel_overlay()
+            _clear_mpv_overlays()
 
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds

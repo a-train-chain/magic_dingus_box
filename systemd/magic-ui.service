@@ -5,11 +5,16 @@ Wants=network-online.target magic-mpv.service
 
 [Service]
 Type=simple
+User=alexanderchaney
+Group=alexanderchaney
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
 WorkingDirectory=/opt/magic_dingus_box
 ExecStart=/opt/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
 Restart=always
+RestartSec=1
 
 [Install]
 # Requires X11 for --wid embedding
