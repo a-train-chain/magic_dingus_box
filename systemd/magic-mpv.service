@@ -1,6 +1,7 @@
 [Unit]
 Description=Magic Dingus mpv
-After=sound.target graphical.target
+After=sound.target graphical.target lightdm.service
+Wants=lightdm.service
 
 [Service]
 Type=simple

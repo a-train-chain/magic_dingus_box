@@ -1,7 +1,8 @@
 [Unit]
 Description=Magic Dingus UI
-After=network-online.target magic-mpv.service graphical.target
-Wants=network-online.target magic-mpv.service
+After=network-online.target magic-mpv.service graphical.target lightdm.service
+Wants=network-online.target magic-mpv.service lightdm.service
+Requires=magic-mpv.service
 
 [Service]
 Type=simple

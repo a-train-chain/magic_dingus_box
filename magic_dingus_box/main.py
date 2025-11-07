@@ -263,10 +263,23 @@ def run() -> None:
             wm_info = pygame.display.get_wm_info()
             if "window" in wm_info:
                 wid = wm_info["window"]
-                # Give mpv a moment to connect, then set wid
-                time.sleep(0.2)
-                mpv.set_property("wid", int(wid))
-                log.info("mpv embedded into pygame window with wid=%s", wid)
+                # Robustly wait for mpv IPC then set wid with retries
+                deadline = time.time() + 3.0
+                set_ok = False
+                while time.time() < deadline:
+                    try:
+                        mpv.set_property("wid", int(wid))
+                        # Verify mpv is responsive
+                        _ = mpv.get_property("idle-active")
+                        set_ok = True
+                        break
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                if set_ok:
+                    log.info("mpv embedded into pygame window with wid=%s", wid)
+                else:
+                    log.warning("mpv embed (wid) not confirmed before timeout; continuing")
         except Exception as exc:
             log.warning("Failed to embed mpv: %s", exc)
 
