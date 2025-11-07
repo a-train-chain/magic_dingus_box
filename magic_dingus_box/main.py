@@ -39,6 +39,20 @@ def run() -> None:
     
     # Load persistent settings
     settings_store = SettingsStore(config.settings_file)
+    # Ensure sensible defaults: bezel on (modern_bezel), retro_tv_1, no CRT effects
+    settings_store.ensure_defaults({
+        "display_mode": "modern_bezel",
+        "modern_resolution": "auto",
+        "bezel_style": "retro_tv_1",
+        # CRT effects all off by default
+        "scanlines_mode": "off",
+        "color_warmth": 0.0,
+        "phosphor_glow": 0.0,
+        "phosphor_mask": 0.0,
+        "screen_bloom": 0.0,
+        "interlacing": 0.0,
+        "screen_flicker": 0.0
+    })
     
     # Determine display mode (settings override env vars)
     display_mode_str = settings_store.get_display_mode()

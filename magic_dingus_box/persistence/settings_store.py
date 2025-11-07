@@ -70,6 +70,20 @@ class SettingsStore:
         self._settings[key] = value
         self.save()
     
+    def ensure_defaults(self, defaults: Dict[str, Any]) -> None:
+        """Ensure provided defaults exist without overwriting existing values.
+        
+        Args:
+            defaults: Mapping of key->default_value
+        """
+        changed = False
+        for k, v in defaults.items():
+            if k not in self._settings:
+                self._settings[k] = v
+                changed = True
+        if changed:
+            self.save()
+    
     def get_display_mode(self) -> str:
         """Get display mode setting."""
         return self.get("display_mode", "crt_native")
