@@ -194,13 +194,13 @@ def run() -> None:
                         default_candidates.append(d.get("name"))
                     elif name.startswith(("alsa:sysdefault", "alsa/sysdefault")):
                         sysdefault_candidates.append(d.get("name"))
-            # Prefer specific HDMI ports (vc4hdmi1 then vc4hdmi0), else any HDMI
+            # Prefer specific HDMI ports (vc4hdmi0 then vc4hdmi1), else any HDMI
             def prefer_port(names: list[str], port: str) -> str | None:
                 for n in names:
                     if port in n:
                         return n
                 return None
-            chosen = prefer_port(hdmi_candidates, "vc4hdmi1") or prefer_port(hdmi_candidates, "vc4hdmi0") or (hdmi_candidates[0] if hdmi_candidates else None)
+            chosen = prefer_port(hdmi_candidates, "vc4hdmi0") or prefer_port(hdmi_candidates, "vc4hdmi1") or (hdmi_candidates[0] if hdmi_candidates else None)
             # Fallback chain
             if chosen is None and default_candidates:
                 chosen = default_candidates[0]
