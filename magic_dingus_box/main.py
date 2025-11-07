@@ -239,6 +239,72 @@ def run() -> None:
     # Manage mpv bezel overlay (helpers placed before intro so intro can use them)
     mpv_bezel_overlay_active = False
     mpv_bezel_overlay_vf_active = False
+    
+    # -------- Audio device helpers (ensure HDMI binding on Pi) --------
+    def _choose_hdmi_device(dev_list) -> str | None:
+        def norm(s: str) -> str:
+            return str(s or "").lower()
+        hdmi = []
+        default = []
+        sysdef = []
+        generic = None
+        for d in (dev_list or []):
+            name = norm(d.get("name", ""))
+            desc = norm(d.get("description", ""))
+            if name == "alsa":
+                generic = d.get("name")
+            if name.startswith(("alsa:", "alsa/")):
+                if "hdmi" in name or "vc4hdmi" in name or "hdmi" in desc or "vc4hdmi" in desc:
+                    hdmi.append(d.get("name"))
+                elif name.startswith(("alsa:default", "alsa/default")):
+                    default.append(d.get("name"))
+                elif name.startswith(("alsa:sysdefault", "alsa/sysdefault")):
+                    sysdef.append(d.get("name"))
+        # Prefer vc4hdmi0 then vc4hdmi1, else first HDMI
+        def prefer(names, token):
+            for n in names:
+                if token in str(n):
+                    return n
+            return None
+        chosen = prefer(hdmi, "vc4hdmi0") or prefer(hdmi, "vc4hdmi1") or (hdmi[0] if hdmi else None)
+        if chosen is None and default:
+            chosen = default[0]
+        if chosen is None and sysdef:
+            chosen = sysdef[0]
+        if chosen is None and generic:
+            chosen = generic
+        return chosen
+    
+    def _apply_audio_device(timeout_seconds: float = 2.0) -> None:
+        """Bind mpv to HDMI device and ensure AO opens; safe no-op on non-Linux."""
+        if config.platform != "linux":
+            return
+        start = time.time()
+        chosen = None
+        try:
+            devs = mpv.get_property("audio-device-list")
+            chosen = _choose_hdmi_device(devs)
+        except Exception:
+            chosen = None
+        if not chosen:
+            logging.getLogger("magic.main").warning("HDMI device not found in list; will retry binding")
+        while time.time() - start < timeout_seconds:
+            try:
+                if chosen:
+                    mpv.set_property("audio-device", chosen)
+                mpv.set_property("mute", False)
+                mpv.set_property("volume", 100)
+                # Favor stereo/48k for HDMI sinks
+                mpv.set_property("audio-channels", "stereo")
+                mpv.set_property("audio-samplerate", 48000)
+                ao = mpv.get_property("ao")
+                if isinstance(ao, list) and len(ao) > 0:
+                    if chosen:
+                        logging.getLogger("magic.main").info(f"HDMI audio active via {chosen}")
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
     def _activate_mpv_bezel_overlay() -> None:
         nonlocal mpv_bezel_overlay_active
         if mpv_bezel_overlay_active:
@@ -374,6 +440,8 @@ def run() -> None:
             mpv.resume()
             # Ensure any mpv overlay is off; we'll draw bezel via pygame for consistent sizing
             _deactivate_mpv_bezel_overlay_vf()
+            # Bind HDMI audio and verify AO opens for intro
+            _apply_audio_device(timeout_seconds=2.0)
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -924,6 +992,8 @@ def run() -> None:
                         if controller.playlist is None or controller.playlist != selected_playlist:
                             controller.load_playlist(selected_playlist)
                             controller.play_current()
+                            # Ensure HDMI audio is bound for playlist playback
+                            _apply_audio_device(timeout_seconds=2.0)
                         has_playback = True
                     # Hide UI (volume already at 100% from fade)
                     ui_hidden = True
@@ -974,6 +1044,14 @@ def run() -> None:
         display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=ui_hidden)
 
         pygame.display.flip()
+        # Periodically ensure AO is active during playback (bind again if needed)
+        if ui_hidden and config.platform == "linux":
+            try:
+                ao = mpv.get_property("ao")
+                if isinstance(ao, list) and len(ao) == 0:
+                    _apply_audio_device(timeout_seconds=1.0)
+            except Exception:
+                pass
         # Ensure bezel remains topmost during playback (mpv may repaint)
         if ui_hidden and display_mode == DisplayMode.MODERN_WITH_BEZEL and bezel is not None:
             screen.blit(bezel, (0, 0))
