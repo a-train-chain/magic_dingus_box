@@ -257,8 +257,8 @@ def run() -> None:
                 content_surface.fill((0, 0, 0, 0))
                 if intro_effects_enabled:
                     crt_effects.apply_all(content_surface, time.time())
-                # Present via display manager; bezel is drawn by pygame
-                display_mgr.present(screen, bezel)
+                # Present via display manager; preserve video area so embedded mpv shows through
+                display_mgr.present(screen, bezel, preserve_video_area=True)
                 pygame.display.flip()
                 
                 # End conditions: duration elapsed or mpv signaled EOF
@@ -820,7 +820,8 @@ def run() -> None:
         crt_effects.apply_all(content_surface, time.time())
 
         # Composite content to actual screen with display mode handling
-        display_mgr.present(screen, bezel)
+        # When UI is hidden (video playing), preserve video area so mpv shows through beneath overlays
+        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden)
 
         pygame.display.flip()
         clock.tick(60)

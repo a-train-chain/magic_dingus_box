@@ -80,20 +80,40 @@ class DisplayManager:
         """Get the surface that all UI components should render to."""
         return self.content_surface
     
-    def present(self, screen: pygame.Surface, bezel: Optional[pygame.Surface] = None) -> None:
+    def present(self, screen: pygame.Surface, bezel: Optional[pygame.Surface] = None, preserve_video_area: bool = False) -> None:
         """Composite the content surface to the actual screen.
         
         Args:
             screen: The actual pygame display surface
             bezel: Optional pre-generated bezel surface
+            preserve_video_area: If True, do not overpaint the 4:3 content area so embedded
+                mpv video remains visible underneath; fill only outside that area.
         """
         if self.mode == DisplayMode.CRT_NATIVE:
             # Fill background then blit content (ensures no artifacts with alpha)
             screen.fill((0, 0, 0))
             screen.blit(self.content_surface, (0, 0))
         else:
-            # Fill screen with black (pillarboxing/letterboxing)
-            screen.fill((0, 0, 0))
+            if preserve_video_area:
+                # Fill only outside the content_rect so the mpv-rendered video in the content area
+                # remains visible underneath our overlays.
+                w, h = self.target_resolution
+                
+                # Top bar
+                if self.content_rect.top > 0:
+                    screen.fill((0, 0, 0), pygame.Rect(0, 0, w, self.content_rect.top))
+                # Bottom bar
+                if self.content_rect.bottom < h:
+                    screen.fill((0, 0, 0), pygame.Rect(0, self.content_rect.bottom, w, h - self.content_rect.bottom))
+                # Left bar
+                if self.content_rect.left > 0:
+                    screen.fill((0, 0, 0), pygame.Rect(0, self.content_rect.top, self.content_rect.left, self.content_rect.height))
+                # Right bar
+                if self.content_rect.right < w:
+                    screen.fill((0, 0, 0), pygame.Rect(self.content_rect.right, self.content_rect.top, w - self.content_rect.right, self.content_rect.height))
+            else:
+                # Fill screen with black (pillarboxing/letterboxing)
+                screen.fill((0, 0, 0))
             
             # Scale and blit content to center FIRST
             scaled_content = pygame.transform.scale(
