@@ -8,7 +8,7 @@ Type=simple
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
 WorkingDirectory=/opt/magic_dingus_box
-ExecStart=/usr/bin/python3 -m magic_dingus_box.main
+ExecStart=/opt/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
 Restart=always
 
 [Install]

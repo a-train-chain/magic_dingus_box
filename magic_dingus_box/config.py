@@ -38,10 +38,10 @@ class AppConfig:
         default_socket = "/run/magic/mpv.sock" if self.platform == "linux" else "/tmp/mpv-magic.sock"
         self.mpv_socket = os.getenv("MPV_SOCKET", default_socket)
 
-        # Audio device: on Pi target USB DAC at hw:1,0; on macOS let mpv choose
+        # Audio device: HDMI by default on Pi; on macOS let mpv choose
         self.audio_device = os.getenv(
             "MAGIC_AUDIO_DEVICE",
-            "alsa:device=hw:1,0" if self.platform == "linux" else "auto",
+            "alsa:device=hw:0,0" if self.platform == "linux" else "auto",
         )
 
         # Optional modules/features

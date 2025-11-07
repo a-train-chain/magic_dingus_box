@@ -208,10 +208,20 @@ See **[CRT_EFFECTS_GUIDE.md](CRT_EFFECTS_GUIDE.md)** for:
 
 ## Deployment (Raspberry Pi OS Lite)
 
-- Composite (NTSC) via `/boot/config.txt` with mpv embedded in pygame window. USB DAC for audio.
-- Read-only root; `/data` used for playlists, media, and logs.
-- Requires X11 (e.g., Openbox) for window embedding: mpv renders into pygame window via `--wid`
-- Systemd services will start `mpv` (background IPC server) and the UI on boot.
+- One-command setup and autostart:
+  ```bash
+  # On the Pi, from the repo root
+  bash scripts/setup_pi.sh
+  ```
+  - Installs X11 (LightDM/Openbox), Python deps, mpv, git-lfs
+  - Deploys app to `/opt/magic_dingus_box` with a venv
+  - Enables systemd services (`magic-mpv`, `magic-ui`) for HDMI output
+  - Default audio device: HDMI (override via `MAGIC_AUDIO_DEVICE`)
+
+- Composite (NTSC) via `/boot/config.txt` with mpv embedded in pygame window.
+- `/data` is used for playlists, media, and logs.
+- Requires X11 (Openbox) for window embedding; mpv renders into the pygame window via `--wid`.
+- Systemd services start `mpv` (IPC server) and the UI on boot.
 
 See `NTSC_config.md` for composite video settings.
 

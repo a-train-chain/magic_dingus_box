@@ -118,6 +118,13 @@ def run() -> None:
 
     # mpv + controller
     mpv = MpvClient(config.mpv_socket)
+    # Ensure keys go to pygame/app, not mpv, and set audio device
+    try:
+        mpv.set_property("input-vo-keyboard", "no")
+        mpv.set_property("input-default-bindings", "no")
+        mpv.set_property("audio-device", config.audio_device)
+    except Exception:
+        pass
     controller = PlaybackController(
         mpv_client=mpv,
         settings_store=settings_store,
@@ -160,7 +167,13 @@ def run() -> None:
         intro_path = None
         if isinstance(intro_setting, str) and intro_setting:
             p = Path(intro_setting).expanduser()
-            intro_path = p if p.exists() else None
+            if p.exists():
+                intro_path = p
+            else:
+                # Auto-clear invalid cross-OS path and fall back to default if present
+                settings_store.set("intro_video", "")
+                if default_intro.exists():
+                    intro_path = default_intro
         elif default_intro.exists():
             intro_path = default_intro
         
