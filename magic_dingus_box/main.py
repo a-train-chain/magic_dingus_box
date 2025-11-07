@@ -288,8 +288,8 @@ def run() -> None:
                 pass
             mpv.load_file(str(intro_path))
             mpv.resume()
-            # Use mpv overlay bezel during intro via vf-lavfi to ensure bezel is on top of video
-            _activate_mpv_bezel_overlay_vf()
+            # Ensure any mpv overlay is off; we'll draw bezel via pygame for consistent sizing
+            _deactivate_mpv_bezel_overlay_vf()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -307,8 +307,8 @@ def run() -> None:
                 content_surface.fill((0, 0, 0, 0))
                 if intro_effects_enabled:
                     crt_effects.apply_all(content_surface, time.time())
-                # Present; when mpv overlay is active, do not draw pygame bezel over it.
-                display_mgr.present(screen, None if mpv_bezel_overlay_active else bezel, preserve_video_area=True, skip_content_blit=True)
+                # Present with pygame bezel; preserve video area and blit content overlay (CRT effects)
+                display_mgr.present(screen, bezel, preserve_video_area=True, skip_content_blit=False)
                 pygame.display.flip()
                 
                 # End conditions: duration elapsed or mpv signaled EOF
@@ -324,8 +324,7 @@ def run() -> None:
             
             # Stop intro playback to return mpv to idle
             mpv.stop()
-            # Remove mpv overlay so pygame bezel/UI take over after intro
-            _deactivate_mpv_bezel_overlay_vf()
+            # Ensure mpv overlay remains off so pygame bezel/UI take over after intro
             log.info("Intro complete")
             played_intro = True
     except Exception as exc:
@@ -827,8 +826,7 @@ def run() -> None:
                         has_playback = True
                     # Hide UI (volume already at 100% from fade)
                     ui_hidden = True
-                    # Activate mpv bezel overlay while video is playing
-                    _activate_mpv_bezel_overlay()
+                    # Use pygame bezel during playback; do not activate mpv overlay
                 transition_dir = 0
 
         # Auto-progression: advance to next track/playlist when current track ends
@@ -871,8 +869,8 @@ def run() -> None:
 
         # Composite content to actual screen with display mode handling
         # When UI is hidden (video playing), preserve video area so mpv shows through beneath overlays.
-        # If mpv is drawing the bezel via overlay, do not draw the pygame bezel on top.
-        display_mgr.present(screen, None if mpv_bezel_overlay_active else bezel, preserve_video_area=ui_hidden)
+        # Always draw the pygame bezel for consistent sizing.
+        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden)
 
         pygame.display.flip()
         clock.tick(60)
