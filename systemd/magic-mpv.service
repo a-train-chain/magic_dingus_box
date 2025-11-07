@@ -4,8 +4,12 @@ After=sound.target graphical.target
 
 [Service]
 Type=simple
+User=alexanderchaney
+Group=alexanderchaney
 RuntimeDirectory=magic
 Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
 ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --no-config \
   --input-ipc-server=/run/magic/mpv.sock \
