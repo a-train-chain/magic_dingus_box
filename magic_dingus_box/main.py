@@ -167,6 +167,7 @@ def run() -> None:
 
     # Manage mpv bezel overlay (helpers placed before intro so intro can use them)
     mpv_bezel_overlay_active = False
+    mpv_bezel_overlay_vf_active = False
     def _activate_mpv_bezel_overlay() -> None:
         nonlocal mpv_bezel_overlay_active
         if mpv_bezel_overlay_active:
@@ -200,6 +201,41 @@ def run() -> None:
         except Exception:
             pass
         mpv_bezel_overlay_active = False
+    
+    def _activate_mpv_bezel_overlay_vf() -> None:
+        nonlocal mpv_bezel_overlay_vf_active
+        if mpv_bezel_overlay_vf_active:
+            return
+        if display_mode != DisplayMode.MODERN_WITH_BEZEL:
+            return
+        if not bezel_overlay_file:
+            return
+        try:
+            # Use vf-lavfi referencing [in] to avoid complex graph issues
+            vf_graph = (
+                f"lavfi=[movie='{bezel_overlay_file}',format=rgba[bz];"
+                f"[in]format=rgba[v];"
+                f"[v][bz]overlay=x=0:y=0:format=auto]"
+            )
+            mpv.set_property("vf", vf_graph)
+            try:
+                mpv.set_property("hwdec", "auto-copy")
+            except Exception:
+                pass
+            mpv_bezel_overlay_vf_active = True
+        except Exception as exc:
+            logging.getLogger("magic.main").warning(f"mpv vf overlay enable failed: {exc}")
+    
+    def _deactivate_mpv_bezel_overlay_vf() -> None:
+        nonlocal mpv_bezel_overlay_vf_active
+        if not mpv_bezel_overlay_vf_active:
+            return
+        try:
+            # Clear entire vf chain (assumes we only applied overlay in this app context)
+            mpv.set_property("vf", "")
+        except Exception:
+            pass
+        mpv_bezel_overlay_vf_active = False
 
     # Embed mpv into pygame window (X11/Linux only)
     if config.platform == "linux":
@@ -252,8 +288,8 @@ def run() -> None:
                 pass
             mpv.load_file(str(intro_path))
             mpv.resume()
-            # Use mpv overlay bezel during intro to ensure bezel is on top of video
-            _activate_mpv_bezel_overlay()
+            # Use mpv overlay bezel during intro via vf-lavfi to ensure bezel is on top of video
+            _activate_mpv_bezel_overlay_vf()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -289,7 +325,7 @@ def run() -> None:
             # Stop intro playback to return mpv to idle
             mpv.stop()
             # Remove mpv overlay so pygame bezel/UI take over after intro
-            _deactivate_mpv_bezel_overlay()
+            _deactivate_mpv_bezel_overlay_vf()
             log.info("Intro complete")
             played_intro = True
     except Exception as exc:
