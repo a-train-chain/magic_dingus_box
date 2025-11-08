@@ -38,6 +38,25 @@ sudo systemctl daemon-reload
 sudo systemctl enable magic-mpv.service magic-ui.service
 sudo systemctl restart magic-mpv.service magic-ui.service
 
-echo "[5/5] Done. App should appear on HDMI after login."
+echo "[5/5] Checking GPU memory configuration..."
+GPU_MEM=$(vcgencmd get_mem gpu | cut -d= -f2 | cut -d M -f1)
+if [ "$GPU_MEM" -lt 256 ]; then
+    echo ""
+    echo "⚠️  WARNING: GPU memory is only ${GPU_MEM}MB!"
+    echo "    Hardware video decoding requires at least 256MB (512MB recommended)"
+    echo ""
+    echo "    To fix this, add to /boot/config.txt:"
+    echo "    gpu_mem=512"
+    echo ""
+    echo "    See boot_config_template.txt for full configuration"
+    echo ""
+elif [ "$GPU_MEM" -lt 512 ]; then
+    echo "✅ GPU memory (${GPU_MEM}MB) is adequate, but 512MB recommended for best performance"
+else
+    echo "✅ GPU memory (${GPU_MEM}MB) is properly configured"
+fi
+
+echo ""
+echo "Done! App should appear on HDMI after login."
 echo "You can check status with: sudo systemctl status magic-ui magic-mpv"
 

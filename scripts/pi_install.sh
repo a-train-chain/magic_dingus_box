@@ -19,5 +19,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable magic-mpv.service magic-ui.service
 
 sudo mkdir -p /data/{playlists,media,logs}
-echo "Install complete. Configure /boot/config.txt for NTSC composite and reboot."
+
+echo ""
+echo "Install complete!"
+echo ""
+echo "⚠️  IMPORTANT: Configure GPU memory for hardware video decoding"
+echo ""
+echo "Edit /boot/config.txt and add:"
+echo "  gpu_mem=512"
+echo "  start_x=1"
+echo ""
+echo "Then reboot: sudo reboot"
+echo ""
+echo "See boot_config_template.txt for full configuration options."
 
