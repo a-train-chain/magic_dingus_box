@@ -63,11 +63,12 @@ echo "✅ Configuring HDMI settings..."
 add_or_update_config "gpu_mem" "512"
 add_or_update_config "start_x" "1"
 
-# HDMI force settings
-add_or_update_config "hdmi_force_hotplug" "1"
-add_or_update_config "hdmi_drive" "2"
-add_or_update_config "hdmi_group" "2"
-add_or_update_config "hdmi_mode" "82"
+# HDMI force settings for port 0 (port closest to power/USB-C)
+# Using :0 suffix to explicitly target HDMI port 0
+add_or_update_config "hdmi_force_hotplug:0" "1"
+add_or_update_config "hdmi_drive:0" "2"
+add_or_update_config "hdmi_group:0" "2"
+add_or_update_config "hdmi_mode:0" "82"
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
@@ -76,7 +77,7 @@ echo ""
 echo "Settings applied:"
 echo "  • GPU Memory: 512MB (for video decoding)"
 echo "  • H.264 codec enabled"
-echo "  • HDMI forced on (no more 'no signal'!)"
+echo "  • HDMI port 0 forced on (port closest to power)"
 echo "  • Resolution: 1920x1080 @ 60Hz"
 echo ""
 echo "⚠️  You MUST reboot for changes to take effect:"

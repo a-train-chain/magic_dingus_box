@@ -22,10 +22,12 @@ sudo reboot
 The script automatically:
 - ✅ Sets GPU memory to 512MB (required for video decoding)
 - ✅ Enables H.264 hardware codec
-- ✅ **Forces HDMI output** (fixes "no signal")
+- ✅ **Forces HDMI port 0 output** (port closest to power/USB-C)
 - ✅ Sets resolution to 1920x1080 @ 60Hz
 - ✅ Disables any conflicting composite video settings
 - ✅ Creates a backup of your original config
+
+**Note:** Make sure your HDMI cable is plugged into **HDMI port 0** (the port closest to the power/USB-C port on Pi 4/5)!
 
 ## After Reboot
 
@@ -104,11 +106,11 @@ Add these lines:
 gpu_mem=512
 start_x=1
 
-# Force HDMI output
-hdmi_force_hotplug=1
-hdmi_drive=2
-hdmi_group=2
-hdmi_mode=82
+# Force HDMI port 0 output (port closest to power)
+hdmi_force_hotplug:0=1
+hdmi_drive:0=2
+hdmi_group:0=2
+hdmi_mode:0=82
 
 # Disable composite (if present)
 #enable_tvout=1
