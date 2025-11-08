@@ -123,11 +123,23 @@ echo ""
 echo "═══════════════════════════════════════════════════════"
 echo "✨ Update complete!"
 echo ""
+echo "Services Status:"
+if systemctl is-active --quiet magic-mpv.service && systemctl is-active --quiet magic-ui.service; then
+    echo "  ✅ Both services are running"
+else
+    echo "  ⚠️  Services may need manual start:"
+    echo "     sudo systemctl start magic-mpv.service magic-ui.service"
+fi
+echo ""
 echo "To view logs:"
 echo "  journalctl -u magic-mpv.service -f"
 echo "  journalctl -u magic-ui.service -f"
 echo ""
 echo "To check for hardware decoding:"
 echo "  journalctl -u magic-mpv.service -n 50 | grep -i 'hwdec\\|hardware'"
+echo ""
+echo "📺 If you see 'no signal' on your monitor:"
+echo "   Run: ./scripts/fix_hdmi.sh"
+echo "   Then: sudo reboot"
 echo "═══════════════════════════════════════════════════════"
 

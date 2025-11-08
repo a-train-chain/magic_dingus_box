@@ -1,0 +1,89 @@
+#!/bin/bash
+# Fix HDMI "no signal" issue by configuring boot config properly
+
+set -e
+
+echo "═══════════════════════════════════════════════════════"
+echo "  Fix HDMI Display Output"
+echo "═══════════════════════════════════════════════════════"
+echo ""
+
+# Detect boot config location
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    BOOT_CONFIG="/boot/config.txt"
+else
+    echo "❌ Error: Cannot find boot config file"
+    exit 1
+fi
+
+echo "📝 Boot config: $BOOT_CONFIG"
+echo ""
+
+# Backup original
+echo "💾 Creating backup..."
+sudo cp "$BOOT_CONFIG" "${BOOT_CONFIG}.backup.$(date +%Y%m%d_%H%M%S)"
+
+echo ""
+echo "🔧 Applying HDMI fixes..."
+
+# Function to add or update config line
+add_or_update_config() {
+    local key="$1"
+    local value="$2"
+    
+    if sudo grep -q "^${key}=" "$BOOT_CONFIG"; then
+        # Update existing
+        sudo sed -i "s/^${key}=.*/${key}=${value}/" "$BOOT_CONFIG"
+        echo "   ✓ Updated: ${key}=${value}"
+    elif sudo grep -q "^#${key}=" "$BOOT_CONFIG"; then
+        # Uncomment and update
+        sudo sed -i "s/^#${key}=.*/${key}=${value}/" "$BOOT_CONFIG"
+        echo "   ✓ Enabled: ${key}=${value}"
+    else
+        # Add new
+        echo "${key}=${value}" | sudo tee -a "$BOOT_CONFIG" > /dev/null
+        echo "   ✓ Added: ${key}=${value}"
+    fi
+}
+
+# Remove/disable composite video settings that conflict with HDMI
+echo ""
+echo "🚫 Disabling composite video output..."
+sudo sed -i 's/^enable_tvout=/#enable_tvout=/' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i 's/^sdtv_mode=/#sdtv_mode=/' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i 's/^sdtv_aspect=/#sdtv_aspect=/' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i 's/^hdmi_ignore_hotplug=/#hdmi_ignore_hotplug=/' "$BOOT_CONFIG" 2>/dev/null || true
+
+echo ""
+echo "✅ Configuring HDMI settings..."
+
+# Required settings
+add_or_update_config "gpu_mem" "512"
+add_or_update_config "start_x" "1"
+
+# HDMI force settings
+add_or_update_config "hdmi_force_hotplug" "1"
+add_or_update_config "hdmi_drive" "2"
+add_or_update_config "hdmi_group" "2"
+add_or_update_config "hdmi_mode" "82"
+
+echo ""
+echo "═══════════════════════════════════════════════════════"
+echo "✨ HDMI configuration complete!"
+echo ""
+echo "Settings applied:"
+echo "  • GPU Memory: 512MB (for video decoding)"
+echo "  • H.264 codec enabled"
+echo "  • HDMI forced on (no more 'no signal'!)"
+echo "  • Resolution: 1920x1080 @ 60Hz"
+echo ""
+echo "⚠️  You MUST reboot for changes to take effect:"
+echo "     sudo reboot"
+echo ""
+echo "After reboot, check:"
+echo "  vcgencmd get_mem gpu     # Should show 512M"
+echo "  tvservice -s             # Should show HDMI mode"
+echo "═══════════════════════════════════════════════════════"
+
