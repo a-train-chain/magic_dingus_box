@@ -49,3 +49,11 @@ __pycache__/
 .idea/
 .vscode/
 
+# Runtime-only: exclude docs and markdown from repo (keep root README.md)
+docs/
+*.md
+!README.md
+
+# Exclude tests from runtime repo
+tests/
+
