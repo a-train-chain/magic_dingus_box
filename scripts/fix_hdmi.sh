@@ -50,11 +50,18 @@ add_or_update_config() {
 
 # Remove/disable composite video settings that conflict with HDMI
 echo ""
-echo "🚫 Disabling composite video output..."
+echo "🚫 Removing conflicting settings..."
 sudo sed -i 's/^enable_tvout=/#enable_tvout=/' "$BOOT_CONFIG" 2>/dev/null || true
 sudo sed -i 's/^sdtv_mode=/#sdtv_mode=/' "$BOOT_CONFIG" 2>/dev/null || true
 sudo sed -i 's/^sdtv_aspect=/#sdtv_aspect=/' "$BOOT_CONFIG" 2>/dev/null || true
 sudo sed -i 's/^hdmi_ignore_hotplug=/#hdmi_ignore_hotplug=/' "$BOOT_CONFIG" 2>/dev/null || true
+
+# Remove OLD generic HDMI settings (without :0) that conflict with port-specific settings
+echo "🧹 Removing duplicate generic HDMI settings..."
+sudo sed -i '/^hdmi_force_hotplug=[0-9]$/d' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i '/^hdmi_drive=[0-9]$/d' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i '/^hdmi_group=[0-9]$/d' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i '/^hdmi_mode=[0-9]$/d' "$BOOT_CONFIG" 2>/dev/null || true
 
 echo ""
 echo "✅ Configuring HDMI settings..."
@@ -69,7 +76,9 @@ add_or_update_config "start_x" "1"
 add_or_update_config "hdmi_force_hotplug:0" "1"
 add_or_update_config "hdmi_drive:0" "2"
 
-# Remove any forced resolution settings that may be incompatible
+# Remove any forced resolution settings that may be incompatible (including port-specific ones)
+sudo sed -i 's/^hdmi_group:0=/#hdmi_group:0=/' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i 's/^hdmi_mode:0=/#hdmi_mode:0=/' "$BOOT_CONFIG" 2>/dev/null || true
 sudo sed -i 's/^hdmi_group/#hdmi_group/' "$BOOT_CONFIG" 2>/dev/null || true
 sudo sed -i 's/^hdmi_mode/#hdmi_mode/' "$BOOT_CONFIG" 2>/dev/null || true
 
@@ -88,6 +97,9 @@ echo "     sudo reboot"
 echo ""
 echo "After reboot, check:"
 echo "  vcgencmd get_mem gpu     # Should show 512M"
-echo "  tvservice -s             # Should show HDMI mode"
+echo ""
+echo "To verify clean config:"
+echo "  sudo cat $BOOT_CONFIG | grep -v '^#' | grep hdmi"
+echo "  # Should only show port-specific settings (:0)"
 echo "═══════════════════════════════════════════════════════"
 
