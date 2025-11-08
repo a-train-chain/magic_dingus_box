@@ -17,11 +17,15 @@ ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --no-config \
   --input-ipc-server=/run/magic/mpv.sock \
   --input-vo-keyboard=no --input-default-bindings=no \
-  --vf=scale=720:480:force_original_aspect_ratio=increase,crop=720:480,setdar=4/3 \
-  --vo=gpu --hwdec=auto-safe \
+  --vo=gpu --hwdec=auto \
+  --hwdec-codecs=all \
+  --gpu-context=drm \
   --force-window=no \
   --audio-device=${AUDIO_DEVICE} \
-  --vd-lavc-threads=2
+  --vd-lavc-threads=4 \
+  --video-sync=audio \
+  --interpolation=no \
+  --profile=fast
 Restart=on-failure
 
 [Install]
