@@ -1,13 +1,36 @@
 # Deploy Video Performance Fix to Raspberry Pi
 
-## Quick Deployment Steps
+## 🚀 One-Command Update (Fastest!)
+
+```bash
+# SSH to your Pi, then run:
+cd ~/magic_dingus_box && ./scripts/update_pi.sh
+```
+
+This single script will:
+- ✅ Pull latest changes from GitHub
+- ✅ Check GPU memory allocation
+- ✅ Deploy updated service files
+- ✅ Restart all services
+- ✅ Show status and verify everything works
+
+**First time? You may need to make it executable:**
+```bash
+chmod +x ~/magic_dingus_box/scripts/update_pi.sh
+```
+
+---
+
+## Manual Deployment Steps
+
+If you prefer to do it step-by-step:
 
 ### 1. SSH into Your Pi
 
 **Option A: Using Hostname (Easiest - No IP needed!)**
 ```bash
 # Default Raspberry Pi hostname
-ssh alexanderchaney@raspberrypi.local
+ssh alexanderchaney@magicpi.local
 
 # Or if you changed your hostname
 ssh alexanderchaney@<your-hostname>.local

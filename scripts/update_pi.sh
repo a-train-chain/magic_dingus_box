@@ -1,0 +1,120 @@
+#!/bin/bash
+# Magic Dingus Box - Auto Update and Restart Script
+# Run this on your Pi to pull latest changes and restart services
+
+set -e  # Exit on error
+
+echo "═══════════════════════════════════════════════════════"
+echo "  Magic Dingus Box - Update & Restart"
+echo "═══════════════════════════════════════════════════════"
+echo ""
+
+# Get the directory where the script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+echo "📁 Project directory: $PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+# Check if we're in a git repository
+if [ ! -d ".git" ]; then
+    echo "❌ Error: Not in a git repository"
+    exit 1
+fi
+
+echo ""
+echo "⬇️  Pulling latest changes from GitHub..."
+git fetch origin
+git pull origin main
+
+echo ""
+echo "🔍 Checking GPU memory allocation..."
+GPU_MEM=$(vcgencmd get_mem gpu | cut -d= -f2 | cut -d M -f1)
+echo "   Current GPU memory: ${GPU_MEM}MB"
+
+if [ "$GPU_MEM" -lt 128 ]; then
+    echo "⚠️  WARNING: GPU memory is less than 128MB!"
+    echo "   Video decoding may not work properly."
+    echo "   Recommended: Edit /boot/config.txt and add: gpu_mem=256"
+    echo ""
+    read -p "Continue anyway? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+elif [ "$GPU_MEM" -lt 256 ]; then
+    echo "⚠️  GPU memory is adequate but 256MB+ recommended for best performance"
+else
+    echo "✅ GPU memory allocation looks good"
+fi
+
+echo ""
+echo "📋 Deploying updated service files..."
+
+# Copy service files if they exist
+if [ -f "$PROJECT_DIR/systemd/magic-mpv.service" ]; then
+    sudo cp "$PROJECT_DIR/systemd/magic-mpv.service" /etc/systemd/system/
+    echo "   ✓ magic-mpv.service"
+fi
+
+if [ -f "$PROJECT_DIR/systemd/magic-ui.service" ]; then
+    sudo cp "$PROJECT_DIR/systemd/magic-ui.service" /etc/systemd/system/
+    echo "   ✓ magic-ui.service"
+fi
+
+echo ""
+echo "🔄 Reloading systemd daemon..."
+sudo systemctl daemon-reload
+
+echo ""
+echo "🔃 Restarting services..."
+echo "   Stopping services..."
+sudo systemctl stop magic-ui.service || true
+sudo systemctl stop magic-mpv.service || true
+
+sleep 2
+
+echo "   Starting mpv service..."
+sudo systemctl start magic-mpv.service
+
+sleep 2
+
+echo "   Starting UI service..."
+sudo systemctl start magic-ui.service
+
+sleep 2
+
+echo ""
+echo "✅ Services restarted!"
+echo ""
+echo "📊 Service Status:"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Check MPV service
+if systemctl is-active --quiet magic-mpv.service; then
+    echo "✅ magic-mpv.service is running"
+else
+    echo "❌ magic-mpv.service failed to start"
+    sudo systemctl status magic-mpv.service --no-pager -n 10
+fi
+
+# Check UI service
+if systemctl is-active --quiet magic-ui.service; then
+    echo "✅ magic-ui.service is running"
+else
+    echo "❌ magic-ui.service failed to start"
+    sudo systemctl status magic-ui.service --no-pager -n 10
+fi
+
+echo ""
+echo "═══════════════════════════════════════════════════════"
+echo "✨ Update complete!"
+echo ""
+echo "To view logs:"
+echo "  journalctl -u magic-mpv.service -f"
+echo "  journalctl -u magic-ui.service -f"
+echo ""
+echo "To check for hardware decoding:"
+echo "  journalctl -u magic-mpv.service -n 50 | grep -i 'hwdec\\|hardware'"
+echo "═══════════════════════════════════════════════════════"
+
