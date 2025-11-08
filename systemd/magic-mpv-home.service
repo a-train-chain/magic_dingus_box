@@ -31,6 +31,9 @@ Restart=on-failure
 RestartSec=5
 StartLimitInterval=200
 StartLimitBurst=5
+# Quick shutdown (don't wait forever)
+TimeoutStopSec=10
+KillMode=mixed
 
 [Install]
 WantedBy=graphical.target
