@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Magic Dingus Box
-Comment=Start Magic Dingus Box UI
-Exec=/home/alexanderchaney/magic_dingus_box/scripts/start_app.sh
-Terminal=false
-Hidden=false
-X-GNOME-Autostart-enabled=true
-
