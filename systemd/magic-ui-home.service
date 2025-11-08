@@ -13,9 +13,8 @@ Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XAUTHORITY=/var/run/lightdm/alexanderchaney/:0
 WorkingDirectory=/home/alexanderchaney/magic_dingus_box
-# Wait for X server to be fully ready before starting
-ExecStartPre=/bin/sleep 5
-ExecStartPre=/bin/sh -c 'while ! xset -display :0 q >/dev/null 2>&1; do sleep 1; done'
+# Wait for X server to be ready (simple delay)
+ExecStartPre=/bin/sleep 10
 ExecStart=/home/alexanderchaney/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
 Restart=always
 RestartSec=5

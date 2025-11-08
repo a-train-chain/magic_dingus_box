@@ -13,7 +13,7 @@ Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XAUTHORITY=/var/run/lightdm/alexanderchaney/:0
 # Wait for X server to be ready
-ExecStartPre=/bin/sleep 3
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --no-config \
   --input-ipc-server=/run/magic/mpv.sock \
