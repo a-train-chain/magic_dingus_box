@@ -1,5 +1,12 @@
 # Magic Dingus Box - Raspberry Pi Boot Configuration
-# Copy these settings to /boot/config.txt (or /boot/firmware/config.txt on newer Pi OS)
+# 
+# Location depends on Pi OS version:
+# - Older Pi OS: /boot/config.txt
+# - Newer Pi OS (Bookworm+): /boot/firmware/config.txt
+#
+# To find yours: ls /boot/config.txt /boot/firmware/config.txt 2>/dev/null
+# 
+# Copy these settings to the correct location for your system
 
 # ============================================
 # GPU Memory Allocation (REQUIRED)

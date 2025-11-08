@@ -39,14 +39,25 @@ sudo systemctl enable magic-mpv.service magic-ui.service
 sudo systemctl restart magic-mpv.service magic-ui.service
 
 echo "[5/5] Checking GPU memory configuration..."
+
+# Detect correct boot config location
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    BOOT_CONFIG="/boot/config.txt"
+else
+    BOOT_CONFIG="/boot/config.txt (or /boot/firmware/config.txt)"
+fi
+
 GPU_MEM=$(vcgencmd get_mem gpu | cut -d= -f2 | cut -d M -f1)
 if [ "$GPU_MEM" -lt 256 ]; then
     echo ""
     echo "⚠️  WARNING: GPU memory is only ${GPU_MEM}MB!"
     echo "    Hardware video decoding requires at least 256MB (512MB recommended)"
     echo ""
-    echo "    To fix this, add to /boot/config.txt:"
+    echo "    To fix this, add to $BOOT_CONFIG:"
     echo "    gpu_mem=512"
+    echo "    start_x=1"
     echo ""
     echo "    See boot_config_template.txt for full configuration"
     echo ""

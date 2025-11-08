@@ -25,7 +25,17 @@ echo "Install complete!"
 echo ""
 echo "⚠️  IMPORTANT: Configure GPU memory for hardware video decoding"
 echo ""
-echo "Edit /boot/config.txt and add:"
+
+# Detect correct boot config location
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    BOOT_CONFIG="/boot/config.txt"
+else
+    BOOT_CONFIG="/boot/config.txt (or /boot/firmware/config.txt)"
+fi
+
+echo "Edit $BOOT_CONFIG and add:"
 echo "  gpu_mem=512"
 echo "  start_x=1"
 echo ""

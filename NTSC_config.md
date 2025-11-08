@@ -2,10 +2,18 @@
 
 ## Required for All Setups (HDMI or Composite)
 
-Edit `/boot/config.txt` (or `/boot/firmware/config.txt` on newer Pi OS):
+**Find your boot config location (varies by Pi OS version):**
 
 ```bash
+# Find which file exists on your system
+ls /boot/config.txt /boot/firmware/config.txt 2>/dev/null
+
+# Edit the one that exists:
+# Older Pi OS:
 sudo nano /boot/config.txt
+
+# Newer Pi OS (Bookworm+):
+sudo nano /boot/firmware/config.txt
 ```
 
 **Add these lines (REQUIRED for video playback):**

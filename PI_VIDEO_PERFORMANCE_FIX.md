@@ -40,10 +40,16 @@ vcgencmd get_mem gpu
 
 **For 720p video, you need at least 128MB GPU memory.**
 
-If it's less, edit `/boot/config.txt` (or `/boot/firmware/config.txt` on newer Pi OS):
+If it's less, edit your boot config file:
 
 ```bash
-sudo nano /boot/config.txt
+# Find which file exists on your system
+ls /boot/config.txt /boot/firmware/config.txt 2>/dev/null
+
+# Edit the one that exists:
+sudo nano /boot/firmware/config.txt  # newer Pi OS
+# OR
+sudo nano /boot/config.txt  # older Pi OS
 ```
 
 Add or modify:

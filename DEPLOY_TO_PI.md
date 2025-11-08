@@ -77,9 +77,13 @@ vcgencmd get_mem gpu
 **If it shows less than 128MB, you MUST increase it:**
 
 ```bash
-sudo nano /boot/config.txt
-# Or on newer Pi OS:
+# Find which config file exists on your system:
+ls /boot/config.txt /boot/firmware/config.txt 2>/dev/null
+
+# Edit the one that exists (newer Pi OS uses /boot/firmware):
 sudo nano /boot/firmware/config.txt
+# OR for older Pi OS:
+sudo nano /boot/config.txt
 ```
 
 Add or modify this line:

@@ -29,21 +29,34 @@ git pull origin main
 
 echo ""
 echo "🔍 Checking GPU memory allocation..."
+
+# Detect correct boot config location
+if [ -f /boot/firmware/config.txt ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    BOOT_CONFIG="/boot/config.txt"
+else
+    BOOT_CONFIG="/boot/config.txt or /boot/firmware/config.txt"
+fi
+
 GPU_MEM=$(vcgencmd get_mem gpu | cut -d= -f2 | cut -d M -f1)
 echo "   Current GPU memory: ${GPU_MEM}MB"
 
 if [ "$GPU_MEM" -lt 128 ]; then
     echo "⚠️  WARNING: GPU memory is less than 128MB!"
     echo "   Video decoding may not work properly."
-    echo "   Recommended: Edit /boot/config.txt and add: gpu_mem=256"
+    echo "   Recommended: Edit $BOOT_CONFIG and add:"
+    echo "   gpu_mem=512"
+    echo "   start_x=1"
     echo ""
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
-elif [ "$GPU_MEM" -lt 256 ]; then
-    echo "⚠️  GPU memory is adequate but 256MB+ recommended for best performance"
+elif [ "$GPU_MEM" -lt 512 ]; then
+    echo "⚠️  GPU memory is adequate but 512MB recommended for best performance"
+    echo "   Edit $BOOT_CONFIG and set: gpu_mem=512"
 else
     echo "✅ GPU memory allocation looks good"
 fi
