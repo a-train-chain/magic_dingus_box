@@ -27,14 +27,17 @@ start_x=1
 # ============================================
 
 ## Option 1: HDMI Output (Default - REQUIRED)
-# Force HDMI port 0 output (prevents "no signal" issues)
+# Force HDMI port 0 to stay active (prevents "no signal" during boot)
 # Note: :0 means HDMI port 0 (port closest to power/USB-C)
 hdmi_force_hotplug:0=1
 hdmi_drive:0=2
-hdmi_group:0=2
-hdmi_mode:0=82
-# These force 1920x1080 @ 60Hz on HDMI 0 - change if needed:
-# Common modes: 82=1080p60, 85=1280x720p60, 4=1280x720p60
+# Let Pi auto-detect best resolution for your TV/monitor
+# (Forced modes can cause "no signal" with some displays)
+
+# Uncomment these ONLY if auto-detection fails:
+#hdmi_group:0=2
+#hdmi_mode:0=82
+# Common modes: 82=1080p60, 85=1280x720p60, 16=1024x768p60
 
 ## Option 2: NTSC Composite Output (Retro TV)
 # Uncomment these for composite video output:

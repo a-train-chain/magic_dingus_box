@@ -65,10 +65,13 @@ add_or_update_config "start_x" "1"
 
 # HDMI force settings for port 0 (port closest to power/USB-C)
 # Using :0 suffix to explicitly target HDMI port 0
+# Only force hotplug and drive mode - let Pi auto-detect resolution
 add_or_update_config "hdmi_force_hotplug:0" "1"
 add_or_update_config "hdmi_drive:0" "2"
-add_or_update_config "hdmi_group:0" "2"
-add_or_update_config "hdmi_mode:0" "82"
+
+# Remove any forced resolution settings that may be incompatible
+sudo sed -i 's/^hdmi_group/#hdmi_group/' "$BOOT_CONFIG" 2>/dev/null || true
+sudo sed -i 's/^hdmi_mode/#hdmi_mode/' "$BOOT_CONFIG" 2>/dev/null || true
 
 echo ""
 echo "═══════════════════════════════════════════════════════"
@@ -78,7 +81,7 @@ echo "Settings applied:"
 echo "  • GPU Memory: 512MB (for video decoding)"
 echo "  • H.264 codec enabled"
 echo "  • HDMI port 0 forced on (port closest to power)"
-echo "  • Resolution: 1920x1080 @ 60Hz"
+echo "  • Resolution: Auto-detect (best for your display)"
 echo ""
 echo "⚠️  You MUST reboot for changes to take effect:"
 echo "     sudo reboot"
