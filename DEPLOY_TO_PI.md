@@ -3,9 +3,34 @@
 ## Quick Deployment Steps
 
 ### 1. SSH into Your Pi
+
+**Option A: Using Hostname (Easiest - No IP needed!)**
+```bash
+# Default Raspberry Pi hostname
+ssh alexanderchaney@raspberrypi.local
+
+# Or if you changed your hostname
+ssh alexanderchaney@<your-hostname>.local
+```
+
+**Option B: Using IP Address**
 ```bash
 ssh alexanderchaney@<your-pi-ip-address>
 ```
+
+**Option C: Find Your Pi's IP Address**
+```bash
+# On Mac/Linux, scan your network
+arp -a | grep -i "b8:27:eb\|dc:a6:32\|e4:5f:01"  # Raspberry Pi MAC prefixes
+
+# Or use nmap (install with: brew install nmap)
+nmap -sn 192.168.1.0/24 | grep -B 2 "Raspberry Pi"
+```
+
+**Option D: Physical Access (No Network Needed)**
+- Connect keyboard and monitor directly to your Pi
+- Login at the console
+- Then follow the same steps below
 
 ### 2. Navigate to Your Project Directory
 ```bash
@@ -163,6 +188,45 @@ sudo systemctl restart magic-mpv.service
 - [ ] Both services restarted without errors
 - [ ] Hardware decoding confirmed in logs
 - [ ] Video plays smoothly with audio in sync
+
+## Finding or Setting Your Pi's Hostname
+
+### Check Current Hostname (On the Pi)
+```bash
+hostname
+# Or
+hostname -I  # Shows IP address
+```
+
+### Set a Custom Hostname (Optional)
+```bash
+# Use raspi-config
+sudo raspi-config
+# Navigate to: System Options > Hostname
+
+# Or edit directly
+sudo hostnamectl set-hostname my-magic-box
+sudo reboot
+```
+
+After setting hostname, you can SSH with:
+```bash
+ssh alexanderchaney@my-magic-box.local
+```
+
+### Why .local Works
+Raspberry Pi OS includes Avahi/mDNS which broadcasts the hostname on your local network. The `.local` suffix tells your computer to look for the device via mDNS instead of DNS.
+
+**Requirements:**
+- Pi must be on the same network as your computer
+- mDNS/Avahi must be running on Pi (enabled by default)
+- Your Mac/Linux supports mDNS (built-in on macOS, Avahi on Linux)
+
+**If .local doesn't work:**
+- Wait 30 seconds after Pi boots for mDNS to advertise
+- Check if Pi is on the same network/subnet
+- On some routers, mDNS is blocked - use IP address instead
+- Windows users: Install Bonjour Print Services for .local support
 
 ## Need More Help?
 
