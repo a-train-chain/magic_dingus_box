@@ -11,11 +11,17 @@ Group=alexanderchaney
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+Environment=XAUTHORITY=/var/run/lightdm/alexanderchaney/:0
 WorkingDirectory=/home/alexanderchaney/magic_dingus_box
+# Wait for X server to be fully ready before starting
+ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/sh -c 'while ! xset -display :0 q >/dev/null 2>&1; do sleep 1; done'
 ExecStart=/home/alexanderchaney/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
 Restart=always
-RestartSec=3
+RestartSec=5
+# Don't restart too quickly if it fails
+StartLimitInterval=200
+StartLimitBurst=5
 
 [Install]
 WantedBy=graphical.target

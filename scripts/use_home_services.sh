@@ -15,6 +15,13 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "📁 Project directory: $PROJECT_DIR"
 
+# Ensure xset is installed (needed for X11 wait check)
+if ! command -v xset &> /dev/null; then
+    echo "📦 Installing x11-xserver-utils (required for X11 detection)..."
+    sudo apt-get update -qq
+    sudo apt-get install -y x11-xserver-utils
+fi
+
 # Check if venv exists in home directory
 if [ ! -d "$HOME/magic_dingus_box/venv" ]; then
     echo "⚠️  Warning: Virtual environment not found at $HOME/magic_dingus_box/venv"
@@ -25,6 +32,13 @@ if [ ! -d "$HOME/magic_dingus_box/venv" ]; then
     pip install --upgrade pip
     pip install -r requirements.txt
     echo "✅ Virtual environment created"
+fi
+
+# Create environment file for audio device if it doesn't exist
+if [ ! -f /etc/magic_dingus_box.env ]; then
+    echo "📝 Creating /etc/magic_dingus_box.env..."
+    echo "AUDIO_DEVICE=alsa" | sudo tee /etc/magic_dingus_box.env > /dev/null
+    echo "✅ Created environment file (will auto-detect HDMI audio)"
 fi
 
 echo ""
