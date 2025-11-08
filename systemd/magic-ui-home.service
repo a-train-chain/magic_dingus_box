@@ -1,7 +1,7 @@
 [Unit]
 Description=Magic Dingus UI (Home Directory)
-After=network-online.target magic-mpv.service graphical.target lightdm.service
-Wants=network-online.target magic-mpv.service lightdm.service
+After=graphical.target lightdm.service magic-mpv.service
+Wants=magic-mpv.service
 Requires=magic-mpv.service
 
 [Service]
