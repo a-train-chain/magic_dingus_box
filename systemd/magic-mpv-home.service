@@ -1,0 +1,33 @@
+[Unit]
+Description=Magic Dingus mpv (Home Directory)
+After=sound.target graphical.target lightdm.service
+Wants=lightdm.service
+
+[Service]
+Type=simple
+User=alexanderchaney
+Group=alexanderchaney
+RuntimeDirectory=magic
+Environment=AUDIO_DEVICE=alsa/hdmi:CARD=vc4hdmi0,DEV=0
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
+  --no-config \
+  --input-ipc-server=/run/magic/mpv.sock \
+  --input-vo-keyboard=no --input-default-bindings=no \
+  --vo=gpu --hwdec=auto \
+  --hwdec-codecs=all \
+  --gpu-context=drm \
+  --force-window=no \
+  --audio-device=${AUDIO_DEVICE} \
+  --vd-lavc-threads=4 \
+  --video-sync=audio \
+  --interpolation=no \
+  --profile=fast
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target
+

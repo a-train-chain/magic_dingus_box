@@ -1,0 +1,22 @@
+[Unit]
+Description=Magic Dingus UI (Home Directory)
+After=network-online.target magic-mpv.service graphical.target lightdm.service
+Wants=network-online.target magic-mpv.service lightdm.service
+Requires=magic-mpv.service
+
+[Service]
+Type=simple
+User=alexanderchaney
+Group=alexanderchaney
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+WorkingDirectory=/home/alexanderchaney/magic_dingus_box
+ExecStart=/home/alexanderchaney/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target
+
