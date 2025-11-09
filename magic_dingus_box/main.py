@@ -785,6 +785,10 @@ def run() -> None:
     transition_duration = 1.0
     volume_menu = 75  # Volume when menu is visible
     volume_video = 100  # Volume when watching video
+    
+    # Track current playing playlist and position for resume functionality
+    current_playing_playlist = None  # Playlist object currently playing
+    saved_playback_position = None  # Saved position in seconds when navigating back to UI
 
     def start_fade(direction: int) -> None:
         nonlocal transition_dir, transition_start
@@ -1126,42 +1130,113 @@ def run() -> None:
                     overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.SELECT:
-                if not ui_hidden:
-                    # Select playlist and start video immediately
-                    # If audio is already playing (has_playback=True), re-enable video
-                    if has_playback:
+                if ui_hidden:
+                    # Navigate back to UI while keeping audio playing
+                    nonlocal current_playing_playlist, saved_playback_position, selected_index
+                    try:
+                        # Disable video track but keep audio playing
+                        mpv.set_property("video", "no")
+                        # Save current playlist and position for resume
+                        if controller.playlist:
+                            current_playing_playlist = controller.playlist
+                            elapsed, _ = controller.elapsed_and_duration()
+                            saved_playback_position = elapsed if elapsed is not None else None
+                            log.info(f"Saved playback position: {saved_playback_position}s for playlist: {current_playing_playlist.title}")
+                            # Update selected_index to match the currently playing playlist
+                            # Compare by source_path for reliability
+                            if current_playing_playlist.source_path:
+                                for idx, pl in enumerate(playlists):
+                                    if (pl.source_path == current_playing_playlist.source_path and
+                                        pl.source_path is not None):
+                                        selected_index = idx
+                                        break
+                        # Exit fullscreen and restore pygame window
+                        mpv.set_fullscreen(False)
+                        # Restore pygame window
                         try:
-                            mpv.set_property("video", "auto")  # Re-enable video track
-                            mpv.set_fullscreen(True)  # Set fullscreen for video playback
-                            log.info("Re-enabled video track and set fullscreen for playback")
-                        except Exception as vid_exc:
-                            log.warning(f"Could not re-enable video or set fullscreen: {vid_exc}")
-                    else:
-                        # New playlist selected - load and start immediately
-                        if playlists and selected_index < len(playlists):
-                            selected_playlist = playlists[selected_index]
+                            import subprocess
+                            subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
+                                          capture_output=True, timeout=2, check=False)
+                            # Minimize mpv window
+                            subprocess.run(["xdotool", "search", "--class", "mpv", "windowminimize"], 
+                                          capture_output=True, timeout=2, check=False)
+                        except Exception:
+                            pass
+                        # Show UI with fade-in
+                        start_fade(1)
+                        ui_hidden = False
+                        log.info("Navigated back to UI, audio continues playing")
+                    except Exception as nav_exc:
+                        log.warning(f"Could not navigate back to UI: {nav_exc}")
+                else:
+                    # UI is visible - handle playlist selection
+                    nonlocal current_playing_playlist, saved_playback_position
+                    if playlists and selected_index < len(playlists):
+                        selected_playlist = playlists[selected_index]
+                        
+                        # Check if this is the same playlist that's currently playing
+                        # Compare by source_path for reliability (playlists may be reloaded)
+                        is_same_playlist = (current_playing_playlist is not None and 
+                                           has_playback and
+                                           current_playing_playlist.source_path == selected_playlist.source_path and
+                                           current_playing_playlist.source_path is not None)
+                        
+                        if is_same_playlist:
+                            # Same playlist - resume from saved position
+                            try:
+                                # Re-enable video track
+                                mpv.set_property("video", "auto")
+                                mpv.set_fullscreen(True)
+                                # Seek to saved position if available
+                                if saved_playback_position is not None:
+                                    controller.seek_absolute(saved_playback_position)
+                                    log.info(f"Resumed playlist from position: {saved_playback_position}s")
+                                # Ensure mpv window is visible
+                                import subprocess
+                                time.sleep(0.3)
+                                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
+                                              capture_output=True, timeout=2, check=False)
+                                pygame.display.iconify()
+                                # Start fade-out transition
+                                start_fade(-1)
+                                ui_hidden = True
+                                log.info("Resumed same playlist with video")
+                            except Exception as resume_exc:
+                                log.warning(f"Could not resume playlist: {resume_exc}")
+                        else:
+                            # Different playlist (or no playlist playing) - switch to new playlist
+                            # Stop current playback if different playlist
+                            if has_playback and controller.playlist:
+                                # Compare by source_path for reliability
+                                if (controller.playlist.source_path != selected_playlist.source_path or
+                                    controller.playlist.source_path is None):
+                                    try:
+                                        mpv.stop()
+                                    except Exception:
+                                        pass
+                            
                             # Set volume to menu level (75%) before starting playback
-                            # It will fade to 100% during transition
                             try:
                                 mpv.set_volume(volume_menu)
                             except Exception:
                                 pass
-                            # Load playlist and start playback immediately
-                            if controller.playlist is None or controller.playlist != selected_playlist:
-                                controller.load_playlist(selected_playlist)
-                                controller.play_current()
-                                # Ensure HDMI audio is bound for playlist playback
-                                _apply_audio_device(timeout_seconds=2.0)
+                            
+                            # Load new playlist and start playback
+                            controller.load_playlist(selected_playlist)
+                            controller.play_current()
+                            current_playing_playlist = selected_playlist
+                            saved_playback_position = None  # Reset saved position for new playlist
+                            
+                            # Ensure HDMI audio is bound for playlist playback
+                            _apply_audio_device(timeout_seconds=2.0)
                             
                             # Ensure mpv is fullscreen and visible
                             try:
                                 mpv.set_fullscreen(True)
-                                # Raise mpv window to front
                                 import subprocess
-                                time.sleep(0.3)  # Wait for mpv window to be created
+                                time.sleep(0.3)
                                 subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
                                               capture_output=True, timeout=2, check=False)
-                                # Minimize pygame window to let mpv video show through
                                 pygame.display.iconify()
                                 log.info("Video playback started, pygame window minimized, mpv raised")
                             except Exception as vid_exc:
@@ -1172,6 +1247,7 @@ def run() -> None:
                             start_fade(-1)
                             # Hide UI immediately (don't wait for fade)
                             ui_hidden = True
+                            log.info(f"Switched to new playlist: {selected_playlist.title}")
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.NEXT:
@@ -1294,14 +1370,17 @@ def run() -> None:
                     if current_playlist_idx >= 0:
                         next_playlist_idx = (current_playlist_idx + 1) % len(playlists)
                         selected_index = next_playlist_idx
-                        controller.load_playlist(playlists[next_playlist_idx])
+                        next_playlist = playlists[next_playlist_idx]
+                        controller.load_playlist(next_playlist)
                         controller.play_current()
+                        current_playing_playlist = next_playlist
+                        saved_playback_position = None  # Reset saved position for new playlist
                         # Ensure pygame window stays minimized for next video
                         try:
                             pygame.display.iconify()
                         except Exception:
                             pass
-                        log.info("Auto-advanced to next playlist: %s", playlists[next_playlist_idx].title)
+                        log.info("Auto-advanced to next playlist: %s", next_playlist.title)
                 else:
                     # Just advance to next track in current playlist
                     controller.next_item()
