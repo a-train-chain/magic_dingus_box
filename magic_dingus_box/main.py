@@ -303,10 +303,55 @@ def run() -> None:
         """Bind mpv to HDMI device and ensure AO opens; safe no-op on non-Linux."""
         if config.platform != "linux":
             return
-        # mpv audio device is configured at initialization
-        # This is kept for compatibility but simplified
-        chosen = "plughw:CARD=vc4hdmi0,DEV=0"
-        logging.getLogger("magic.main").debug("mpv audio device already configured")
+        try:
+            # Try to get available audio devices
+            audio_devices = mpv.get_property("audio-device-list")
+            if not audio_devices:
+                log.warning("Could not get audio device list")
+                return
+            
+            # Find HDMI audio devices
+            hdmi_candidates = []
+            default_candidates = []
+            sysdefault_candidates = []
+            generic_alsa = None
+            
+            for d in audio_devices:
+                if not isinstance(d, dict):
+                    continue
+                name = d.get("name", "")
+                if "hdmi" in name.lower() or "vc4hdmi" in name.lower():
+                    hdmi_candidates.append(d.get("name"))
+                elif name.startswith(("alsa:default", "alsa/default")):
+                    default_candidates.append(d.get("name"))
+                elif name.startswith(("alsa:sysdefault", "alsa/sysdefault")):
+                    sysdefault_candidates.append(d.get("name"))
+                elif name.startswith("alsa/"):
+                    generic_alsa = d.get("name")
+            
+            # Prefer specific HDMI ports (vc4hdmi0 then vc4hdmi1), else any HDMI
+            def prefer_port(names: list[str], port: str) -> str | None:
+                for n in names:
+                    if port in n:
+                        return n
+                return None
+            chosen = prefer_port(hdmi_candidates, "vc4hdmi0") or prefer_port(hdmi_candidates, "vc4hdmi1") or (hdmi_candidates[0] if hdmi_candidates else None)
+            # Fallback chain
+            if chosen is None and default_candidates:
+                chosen = default_candidates[0]
+            if chosen is None and sysdefault_candidates:
+                chosen = sysdefault_candidates[0]
+            if chosen is None and generic_alsa:
+                chosen = generic_alsa
+            
+            # Apply if found
+            if chosen:
+                mpv.set_property("audio-device", chosen)
+                log.info(f"Applied audio device for playlist playback: {chosen}")
+            else:
+                log.warning("No suitable audio device found; using mpv default")
+        except Exception as exc:
+            log.warning(f"Failed to apply audio device: {exc}")
     def _activate_mpv_bezel_overlay() -> None:
         nonlocal mpv_bezel_overlay_active
         if mpv_bezel_overlay_active:
