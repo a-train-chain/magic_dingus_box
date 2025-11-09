@@ -1221,31 +1221,68 @@ def run() -> None:
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.NEXT:
-                # Next track (triggered by quick press)
-                controller.next_item()
-                has_playback = True
-                sample_mode.clear_markers()  # Clear markers when changing tracks
+                # Next track (works during video playback)
+                if has_playback:
+                    controller.next_item()
+                    sample_mode.clear_markers()  # Clear markers when changing tracks
+                    log.debug("Next track (during playback)")
+                else:
+                    # If no playback, start first track of selected playlist
+                    if playlists and selected_index < len(playlists):
+                        selected_playlist = playlists[selected_index]
+                        if controller.playlist is None or controller.playlist != selected_playlist:
+                            controller.load_playlist(selected_playlist)
+                        controller.play_current()
+                        _apply_audio_device(timeout_seconds=2.0)
+                        has_playback = True
+                        mpv.set_fullscreen(True)
+                        ui_hidden = True
+                        start_fade(-1)
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.PREV:
-                # Previous track (triggered by quick press)
-                controller.previous_item()
-                has_playback = True
-                sample_mode.clear_markers()  # Clear markers when changing tracks
+                # Previous track (works during video playback)
+                if has_playback:
+                    controller.previous_item()
+                    sample_mode.clear_markers()  # Clear markers when changing tracks
+                    log.debug("Previous track (during playback)")
+                else:
+                    # If no playback, go to previous playlist
+                    if playlists:
+                        selected_index = (selected_index - 1) % len(playlists)
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.SEEK_LEFT:
-                # Seek backward (triggered by hold or arrow keys)
-                controller.seek_relative(-2)
+                # Seek backward (works during video playback)
+                if has_playback:
+                    controller.seek_relative(-2)
+                    log.debug("Seek backward (during playback)")
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.SEEK_RIGHT:
-                # Seek forward (triggered by hold or arrow keys)
-                controller.seek_relative(2)
+                # Seek forward (works during video playback)
+                if has_playback:
+                    controller.seek_relative(2)
+                    log.debug("Seek forward (during playback)")
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.PLAY_PAUSE:
-                controller.toggle_pause()
+                # Play/Pause (works during video playback)
+                if has_playback:
+                    controller.toggle_pause()
+                    log.debug("Toggle pause (during playback)")
+                else:
+                    # If no playback, start selected playlist
+                    if playlists and selected_index < len(playlists):
+                        selected_playlist = playlists[selected_index]
+                        if controller.playlist is None or controller.playlist != selected_playlist:
+                            controller.load_playlist(selected_playlist)
+                        controller.play_current()
+                        _apply_audio_device(timeout_seconds=2.0)
+                        has_playback = True
+                        mpv.set_fullscreen(True)
+                        ui_hidden = True
+                        start_fade(-1)
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.TOGGLE_LOOP:
