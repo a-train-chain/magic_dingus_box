@@ -1215,6 +1215,22 @@ def run() -> None:
                         pass
                     start_fade(+1)  # This will fade volume from 100% (video) to 75% (menu)
                     
+                    # CRITICAL: Map pygame window back and raise it to front
+                    try:
+                        import subprocess
+                        wm_info = pygame.display.get_wm_info()
+                        if "window" in wm_info:
+                            pygame_wid = wm_info["window"]
+                            # Map the window back (make it visible)
+                            subprocess.run(["xdotool", "windowmap", str(pygame_wid)], 
+                                          capture_output=True, timeout=1, check=False)
+                            # Raise it to front
+                            subprocess.run(["xdotool", "windowraise", str(pygame_wid)], 
+                                          capture_output=True, timeout=1, check=False)
+                            log.info(f"Mapped and raised pygame window (ID: {pygame_wid}) for UI")
+                    except Exception as map_exc:
+                        log.warning(f"Could not map pygame window: {map_exc}")
+                    
                     # CRITICAL: Immediately render UI to cover the video
                     # Render UI content
                     renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, show_overlay=True, ui_alpha=0.0, ui_hidden=False, has_playback=has_playback, sample_mode=sample_mode)
@@ -1481,36 +1497,38 @@ def run() -> None:
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds
         
-        # When UI is hidden and video is playing, skip all rendering and manage z-order
+        # When UI is hidden and video is playing, skip all rendering and hide pygame window
         if ui_hidden and has_playback and transition_dir == 0:
-            # Video is playing - don't render pygame, ensure mpv is on top, pygame is behind
-            # Only check z-order occasionally (not every frame) to avoid crashes
+            # Video is playing - hide pygame window completely so mpv is visible
             try:
                 import subprocess
-                # Only manage z-order every 30 frames (~0.5 seconds) to avoid overhead
-                if not hasattr(run, '_z_order_frame_count'):
-                    run._z_order_frame_count = 0
-                run._z_order_frame_count += 1
+                # Cache pygame window ID to avoid calling get_wm_info every frame
+                if not hasattr(run, '_cached_pygame_wid'):
+                    try:
+                        wm_info = pygame.display.get_wm_info()
+                        run._cached_pygame_wid = wm_info.get("window") if "window" in wm_info else None
+                    except Exception:
+                        run._cached_pygame_wid = None
                 
-                if run._z_order_frame_count % 30 == 0:
-                    # Get window IDs (cache pygame_wid to avoid calling get_wm_info every frame)
-                    if not hasattr(run, '_cached_pygame_wid'):
-                        try:
-                            wm_info = pygame.display.get_wm_info()
-                            run._cached_pygame_wid = wm_info.get("window") if "window" in wm_info else None
-                        except Exception:
-                            run._cached_pygame_wid = None
+                # Only manage windows occasionally (not every frame) to avoid overhead
+                if not hasattr(run, '_window_manage_frame_count'):
+                    run._window_manage_frame_count = 0
+                run._window_manage_frame_count += 1
+                
+                if run._window_manage_frame_count % 30 == 0:  # Every 30 frames (~0.5 seconds)
+                    # Hide pygame window completely (unmap it)
+                    if run._cached_pygame_wid:
+                        subprocess.run(["xdotool", "windowunmap", str(run._cached_pygame_wid)], 
+                                      capture_output=True, timeout=0.5, check=False)
                     
+                    # Ensure mpv is visible and fullscreen
                     mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
                                                   capture_output=True, timeout=1, check=False)
-                    
-                    # CRITICAL: Ensure mpv is on top and pygame is behind
                     if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
                         mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
-                        # Lower pygame first, then raise mpv
-                        if run._cached_pygame_wid:
-                            subprocess.run(["xdotool", "windowlower", str(run._cached_pygame_wid)], 
-                                          capture_output=True, timeout=0.5, check=False)
+                        # Map mpv window if it's unmapped, then raise it
+                        subprocess.run(["xdotool", "windowmap", mpv_wid], 
+                                      capture_output=True, timeout=0.5, check=False)
                         subprocess.run(["xdotool", "windowraise", mpv_wid], 
                                       capture_output=True, timeout=0.5, check=False)
                         # Ensure mpv is fullscreen
