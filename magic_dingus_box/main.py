@@ -466,6 +466,8 @@ def run() -> None:
             try:
                 pygame.display.iconify()
                 log.info("Minimized pygame window for intro video playback")
+                # Ensure mpv window will be on top
+                time.sleep(0.3)
             except Exception as icon_exc:
                 log.warning(f"Could not minimize window: {icon_exc}")
             
@@ -1226,29 +1228,21 @@ def run() -> None:
                                 else:
                                     log.warning("Could not find mpv window")
                                 
-                                # Keep pygame window visible but lower it behind mpv so joystick input still works
-                                # Get pygame window ID and lower it
+                                # Minimize pygame window so mpv video is visible
+                                # We'll use direct joystick polling so we don't need the window visible
                                 try:
-                                    wm_info = pygame.display.get_wm_info()
-                                    if "window" in wm_info:
-                                        pygame_wid = wm_info["window"]
-                                        # Lower pygame window behind mpv (but keep it visible for input)
-                                        subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
-                                                      capture_output=True, timeout=1, check=False)
-                                        # Raise mpv again to ensure it's on top
-                                        if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
-                                            mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
-                                            subprocess.run(["xdotool", "windowraise", mpv_wid], 
-                                                          capture_output=True, timeout=1, check=False)
-                                        log.info("Video playback started, pygame window lowered behind mpv (still receives input)")
-                                    else:
-                                        # Fallback: minimize if we can't get window ID
-                                        pygame.display.iconify()
-                                        log.info("Video playback started, pygame window minimized (fallback)")
-                                except Exception as win_exc:
-                                    # Fallback: minimize if lowering fails
                                     pygame.display.iconify()
-                                    log.warning(f"Could not lower window, minimized instead: {win_exc}")
+                                    log.info("Video playback started, pygame window minimized (joystick polling works)")
+                                except Exception as win_exc:
+                                    log.warning(f"Could not minimize window: {win_exc}")
+                                
+                                # Ensure mpv stays on top - raise it again after a short delay
+                                time.sleep(0.2)
+                                if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                                    mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                                    subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                                  capture_output=True, timeout=1, check=False)
+                                    log.info(f"Ensured mpv window (ID: {mpv_wid}) is on top")
                             except Exception as vid_exc:
                                 log.warning(f"Could not start video playback: {vid_exc}")
                             
