@@ -1312,6 +1312,12 @@ def run() -> None:
         if not ui_hidden:
             _deactivate_mpv_bezel_overlay()
 
+        # When UI is hidden and video is playing, skip all rendering
+        if ui_hidden and has_playback and transition_dir == 0:
+            # Video is playing - don't render pygame, just tick clock
+            clock.tick(60)
+            continue
+        
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds
         renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, show_overlay=show_overlay, ui_alpha=ui_alpha, ui_hidden=ui_hidden, has_playback=has_playback, sample_mode=sample_mode)
@@ -1331,17 +1337,6 @@ def run() -> None:
         display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=skip_content)
 
         pygame.display.flip()
-        # Periodically ensure audio is active during playback (bind again if needed)
-        if ui_hidden and config.platform == "linux":
-            try:
-                # mpv maintains audio automatically via systemd service
-                pass
-            except Exception:
-                pass
-        # Ensure bezel remains topmost during playback (mpv may repaint)
-        if ui_hidden and display_mode == DisplayMode.MODERN_WITH_BEZEL and bezel is not None:
-            screen.blit(bezel, (0, 0))
-            pygame.display.flip()
         clock.tick(60)
 
     try:
