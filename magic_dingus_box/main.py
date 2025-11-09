@@ -1211,8 +1211,6 @@ def run() -> None:
                                 time.sleep(0.3)
                                 subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
                                               capture_output=True, timeout=2, check=False)
-                                # Minimize pygame window
-                                pygame.display.iconify()
                                 log.info("Video restored at saved position")
                             except Exception as vid_exc:
                                 log.warning(f"Could not restore video: {vid_exc}")
@@ -1220,6 +1218,13 @@ def run() -> None:
                             # Start fade-out transition and hide UI
                             start_fade(-1)
                             ui_hidden = True
+                            
+                            # Minimize pygame window AFTER setting ui_hidden to ensure it stays minimized
+                            try:
+                                pygame.display.iconify()
+                                log.info("Pygame window minimized for video playback")
+                            except Exception:
+                                pass
                             
                         else:
                             # Different playlist selected - load and start new playlist
@@ -1248,16 +1253,21 @@ def run() -> None:
                                 time.sleep(0.3)
                                 subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
                                               capture_output=True, timeout=2, check=False)
-                                # Minimize pygame window
-                                pygame.display.iconify()
-                                log.info("New playlist started, pygame window minimized, mpv raised")
+                                log.info("New playlist started, mpv raised")
                             except Exception as vid_exc:
                                 log.warning(f"Could not start video playback: {vid_exc}")
                             
                             has_playback = True
-                            # Start fade-out transition
+                            # Start fade-out transition and hide UI
                             start_fade(-1)
                             ui_hidden = True
+                            
+                            # Minimize pygame window AFTER setting ui_hidden to ensure it stays minimized
+                            try:
+                                pygame.display.iconify()
+                                log.info("Pygame window minimized for video playback")
+                            except Exception:
+                                pass
                 
                 overlay_last_interaction_ts = time.time()
 
@@ -1404,9 +1414,23 @@ def run() -> None:
         if not ui_hidden:
             _deactivate_mpv_bezel_overlay()
 
-        # When UI is hidden and video is playing, skip all rendering
-        if ui_hidden and has_playback and transition_dir == 0:
-            # Video is playing - don't render pygame, just tick clock
+        # When UI is hidden and video is playing, skip all rendering completely
+        # This ensures pygame window stays minimized and doesn't interfere with video
+        if ui_hidden and has_playback:
+            # Ensure pygame window stays minimized
+            try:
+                import subprocess
+                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowminimize"], 
+                              capture_output=True, timeout=0.5, check=False)
+            except Exception:
+                pass
+            # Ensure mpv window stays on top
+            try:
+                import subprocess
+                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
+                              capture_output=True, timeout=0.5, check=False)
+            except Exception:
+                pass
             clock.tick(60)
             continue
         
@@ -1417,16 +1441,12 @@ def run() -> None:
         # Render settings menu overlay (drawn over main UI)
         settings_renderer.render(content_surface, settings_menu, renderer.theme, game_playlists)
 
-        # Apply CRT effects only when UI/content will be shown (and during fade-out)
-        if not ui_hidden or (transition_dir < 0 and ui_alpha > 0):
+        # Apply CRT effects only when UI/content will be shown
+        if not ui_hidden:
             crt_effects.apply_all(content_surface, time.time())
 
         # Composite content to actual screen with display mode handling
-        # When UI is hidden (video playing), do not blit UI/content; preserve video area and draw bezel only
-        # During fade-out (transition_dir < 0), still render UI with alpha fade so it fades out smoothly
-        # Only skip content blit when UI is fully hidden (not during fade)
-        skip_content = ui_hidden and (transition_dir == 0 or ui_alpha <= 0)
-        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=skip_content)
+        display_mgr.present(screen, bezel, preserve_video_area=False, skip_content_blit=False)
 
         pygame.display.flip()
         clock.tick(60)
