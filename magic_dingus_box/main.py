@@ -668,6 +668,28 @@ def run() -> None:
             
             log.info("Intro complete - UI faded in")
             played_intro = True
+            
+            # Ensure pygame window is raised and visible after intro
+            try:
+                import subprocess
+                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
+                              capture_output=True, timeout=2, check=False)
+                log.info("Raised pygame window after intro")
+            except Exception as raise_exc:
+                log.warning(f"Could not raise pygame window: {raise_exc}")
+            
+            # Ensure UI is rendered once with actual playlists after intro fade
+            # This ensures the UI is visible before entering the main loop
+            try:
+                renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, 
+                              show_overlay=False, ui_alpha=1.0, ui_hidden=False, 
+                              has_playback=False, sample_mode=None)
+                crt_effects.apply_all(content_surface, time.time())
+                display_mgr.present(screen, bezel, preserve_video_area=False, skip_content_blit=False)
+                pygame.display.flip()
+                log.info("Rendered UI with playlists after intro")
+            except Exception as render_exc:
+                log.warning(f"Failed to render UI after intro: {render_exc}")
     except Exception as exc:
         log.warning(f"Intro playback failed: {exc}")
     
