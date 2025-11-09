@@ -1,8 +1,9 @@
 [Unit]
-Description=Magic Dingus UI
+Description=Magic Dingus UI (X11)
 After=network-online.target magic-mpv.service graphical.target lightdm.service
 Wants=network-online.target magic-mpv.service lightdm.service
 Requires=magic-mpv.service
+After=graphical-session.target
 
 [Service]
 Type=simple
@@ -12,12 +13,15 @@ Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+Environment=SDL_AUDIODRIVER=alsa
+Environment=MPV_SOCKET=/run/user/1000/magic/mpv.sock
 WorkingDirectory=/opt/magic_dingus_box
-ExecStart=/usr/bin/python3 -m magic_dingus_box.main
-Restart=always
-RestartSec=1
+# Wait for X11 socket and XAUTHORITY to be ready (max 30 seconds)
+ExecStartPre=/bin/bash -c 'for i in {1..30}; do [ -S /tmp/.X11-unix/X0 ] && [ -f "$HOME/.Xauthority" ] && break || sleep 1; done; sleep 2'
+ExecStart=/opt/magic_dingus_box/venv/bin/python -m magic_dingus_box.main
+Restart=on-failure
+RestartSec=5
 
 [Install]
-# Requires X11 for --wid embedding
 WantedBy=graphical.target
 

@@ -31,7 +31,8 @@ class AppConfig:
         # UI settings
         self.screen_width = 720
         self.screen_height = 480
-        self.fullscreen = self.platform == "linux"
+        # Enable fullscreen for proper display
+        self.fullscreen = True
         self.enable_scanlines = True
 
         # mpv IPC socket

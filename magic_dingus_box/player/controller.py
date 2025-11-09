@@ -30,75 +30,6 @@ class PlaybackController:
         self.loop = playlist.loop
         self._apply_loop()
 
-    def _apply_playlist_video_settings(self) -> None:
-        """Apply video settings optimized for playlist videos.
-        
-        These settings are separate from intro video settings and can be
-        configured via settings store.
-        
-        Common causes of slow video playback:
-        - display-resample: CPU intensive, can cause slowdowns
-        - video-latency-hacks: Can cause slowdowns on some systems
-        - Hardware decoding not working (check hwdec status)
-        - Video codec not hardware decodable
-        - Resolution too high for Pi
-        - Frame rate too high (60fps harder than 30fps)
-        """
-        if not self.settings_store:
-            # Default: Use desync mode (same as intro) for best performance
-            video_sync = "desync"  # Same as intro video - fastest, no sync overhead
-            video_latency_hacks = False  # Disable (can cause slowdowns)
-        else:
-            # Get settings from store - default to desync for best performance
-            video_sync = self.settings_store.get("playlist_video_sync", "desync")
-            video_latency_hacks = self.settings_store.get("playlist_video_latency_hacks", False)
-        
-        try:
-            # CRITICAL: Ensure hardware decoding is enabled FIRST
-            # Check current status and force enable if needed
-            current_hwdec = None
-            try:
-                current_hwdec = self.mpv.get_property("hwdec")
-            except Exception:
-                pass
-            
-            if not current_hwdec or current_hwdec == "no" or current_hwdec == "":
-                self.mpv.set_property("hwdec", "v4l2m2m")
-                self._log.info("FORCED hardware decoding ON for playlist video (was: %s)", current_hwdec)
-            else:
-                self._log.info("Hardware decoding already enabled: %s", current_hwdec)
-            
-            # Apply sync and performance settings
-            self.mpv.set_property("speed", 1.0)
-            self.mpv.set_property("video-sync", video_sync)
-            self.mpv.set_property("video-latency-hacks", video_latency_hacks)
-            
-            # Additional performance optimizations
-            try:
-                self.mpv.set_property("interpolation", False)  # Disable interpolation
-                self.mpv.set_property("tscale", "oversample")  # Fast temporal scaling
-                # Ensure fast software scaling if needed
-                self.mpv.set_property("sws-fast", True)
-                # Enable frame dropping for very high CPU situations
-                self.mpv.set_property("framedrop", "decoder+vo")  # Drop frames if decoding is slow
-            except Exception:
-                pass
-            
-            # Verify hardware decoding is actually enabled
-            final_hwdec = None
-            try:
-                final_hwdec = self.mpv.get_property("hwdec")
-            except Exception:
-                pass
-            
-            self._log.info(f"Playlist video settings: sync={video_sync}, latency-hacks={video_latency_hacks}, hwdec={final_hwdec}")
-            
-            # Warn if hardware decoding is not working
-            if not final_hwdec or final_hwdec == "no":
-                self._log.warning("WARNING: Hardware decoding is NOT enabled! Video will be slow.")
-        except Exception as exc:
-            self._log.warning(f"Failed to apply playlist video settings: {exc}")
-
     def play_current(self) -> None:
         item = self._current_item()
         if item is None:
@@ -138,23 +69,11 @@ class PlaybackController:
             if resolved is None:
                 self._log.warning("Item path not found: %s", item.path)
                 return
-            
-            # Apply playlist-specific video settings BEFORE loading
-            self._apply_playlist_video_settings()
-            
             self.mpv.load_file(resolved, item.start, item.end)
             self.paused = False
-            
-            # Ensure settings are applied after loading
+            # Ensure normal playback speed (fix slow-motion issues)
             try:
                 self.mpv.set_property("speed", 1.0)
-                # Re-apply playlist video settings after load
-                self._apply_playlist_video_settings()
-                
-                # Note: Videos are pre-transcoded to 640p@30fps offline for best performance.
-                # No real-time scaling needed - the _resolve_local_path method automatically
-                # prefers .30fps.* versions when available.
-                
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 self.mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
@@ -163,7 +82,7 @@ class PlaybackController:
                 self.mpv.set_fullscreen(True)
                 # Wait a moment for fullscreen to activate, then ensure proper scaling
                 import time as time_module
-                time_module.sleep(0.3)
+                time_module.sleep(0.2)
                 # Force window to fill screen
                 try:
                     self.mpv.set_property("window-scale", 1.0)  # Scale to window size

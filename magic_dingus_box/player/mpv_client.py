@@ -146,12 +146,4 @@ class MpvClient:
     def get_fullscreen(self) -> bool:
         """Get current fullscreen state."""
         return bool(self.get_property("fullscreen") or False)
-    
-    def add_video_filter(self, filter_string: str) -> None:
-        """Add a video filter to the current playback.
-        
-        Args:
-            filter_string: Video filter string (e.g., "scale=720:-2:flags=fast_bilinear")
-        """
-        self._send(["vf", "add", filter_string])
 
