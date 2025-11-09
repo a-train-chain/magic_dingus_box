@@ -54,9 +54,10 @@ def run() -> None:
         "interlacing": 0.0,
         "screen_flicker": 0.0,
         # Playlist video settings (separate from intro video)
-        # Options: "desync", "display-resample", "audio", "display-vdrop"
-        "playlist_video_sync": "display-resample",
-        "playlist_video_latency_hacks": True
+        # Options: "desync" (fastest, no sync), "audio" (sync to audio, good balance), 
+        #          "display-resample" (CPU intensive, can be slow), "display-vdrop" (drop frames)
+        "playlist_video_sync": "audio",  # Default: sync to audio (less CPU than display-resample)
+        "playlist_video_latency_hacks": False  # Default: disabled (can cause slowdowns)
     })
     
     # Determine display mode (settings override env vars)
