@@ -420,8 +420,8 @@ def run() -> None:
     try:
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
-        # Use original intro.mp4 (not transcoded - intro video should use original quality)
-        intro_original = config.media_dir / "intro.mp4"
+        # Use intro.30fps.mp4 (pre-transcoded version for consistent performance)
+        intro_30fps = config.media_dir / "intro.30fps.mp4"
         intro_path = None
         
         if isinstance(intro_setting, str) and intro_setting:
@@ -430,11 +430,11 @@ def run() -> None:
             if p.exists():
                 intro_path = p
         else:
-            # Use original intro.mp4 (not the transcoded version)
-            if intro_original.exists():
-                intro_path = intro_original
+            # Use intro.30fps.mp4 (pre-transcoded version)
+            if intro_30fps.exists():
+                intro_path = intro_30fps
             else:
-                log.warning(f"Intro video not found: {intro_original}")
+                log.warning(f"Intro video not found: {intro_30fps}")
         
         if intro_path is not None:
             log.info(f"Playing ONLY intro video: {intro_path}")
