@@ -1214,9 +1214,27 @@ def run() -> None:
                                 time.sleep(0.3)  # Wait for mpv window to be created
                                 subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
                                               capture_output=True, timeout=2, check=False)
-                                # Minimize pygame window to let mpv video show through
-                                pygame.display.iconify()
-                                log.info("Video playback started, pygame window minimized, mpv raised")
+                                # Keep pygame window visible but lower it behind mpv so joystick input still works
+                                # Get pygame window ID and lower it
+                                try:
+                                    wm_info = pygame.display.get_wm_info()
+                                    if "window" in wm_info:
+                                        pygame_wid = wm_info["window"]
+                                        # Lower pygame window behind mpv (but keep it visible for input)
+                                        subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
+                                                      capture_output=True, timeout=1, check=False)
+                                        # Raise mpv again to ensure it's on top
+                                        subprocess.run(["xdotool", "search", "--class", "mpv", "windowraise"], 
+                                                      capture_output=True, timeout=1, check=False)
+                                        log.info("Video playback started, pygame window lowered behind mpv (still receives input)")
+                                    else:
+                                        # Fallback: minimize if we can't get window ID
+                                        pygame.display.iconify()
+                                        log.info("Video playback started, pygame window minimized (fallback)")
+                                except Exception as win_exc:
+                                    # Fallback: minimize if lowering fails
+                                    pygame.display.iconify()
+                                    log.warning(f"Could not lower window, minimized instead: {win_exc}")
                             except Exception as vid_exc:
                                 log.warning(f"Could not start video playback: {vid_exc}")
                             
