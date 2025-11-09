@@ -462,20 +462,20 @@ def run() -> None:
             except Exception:
                 pass
             # mpv hardware decoding enabled via v4l2m2m
-            # Lower pygame window behind mpv (z-order management)
+            # Hide pygame window completely (unmap it) so mpv is visible
             try:
                 import subprocess
                 wm_info = pygame.display.get_wm_info()
                 if "window" in wm_info:
                     pygame_wid = wm_info["window"]
-                    # Lower pygame window so mpv can be on top
-                    subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
+                    # Unmap pygame window completely so mpv can be visible
+                    subprocess.run(["xdotool", "windowunmap", str(pygame_wid)], 
                                   capture_output=True, timeout=1, check=False)
-                    log.info(f"Lowered pygame window (ID: {pygame_wid}) behind mpv for intro video")
+                    log.info(f"Unmapped pygame window (ID: {pygame_wid}) for intro video")
                 # Ensure mpv window will be on top
                 time.sleep(0.3)
             except Exception as icon_exc:
-                log.warning(f"Could not lower pygame window: {icon_exc}")
+                log.warning(f"Could not unmap pygame window: {icon_exc}")
             
             # Load ONLY the intro video - no playlist, no other files
             # Use loadfile with "replace" mode to ensure it replaces any existing file
@@ -1289,18 +1289,17 @@ def run() -> None:
                                 else:
                                     log.warning("Could not find mpv window")
                                 
-                                # Lower pygame window behind mpv (z-order management)
-                                # pygame window stays visible but behind mpv
+                                # Hide pygame window completely (unmap it) so mpv is visible
                                 try:
                                     wm_info = pygame.display.get_wm_info()
                                     if "window" in wm_info:
                                         pygame_wid = wm_info["window"]
-                                        # Lower pygame window so mpv can be on top
-                                        subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
+                                        # Unmap pygame window completely so mpv can be visible
+                                        subprocess.run(["xdotool", "windowunmap", str(pygame_wid)], 
                                                       capture_output=True, timeout=1, check=False)
-                                        log.info(f"Lowered pygame window (ID: {pygame_wid}) behind mpv for video playback")
+                                        log.info(f"Unmapped pygame window (ID: {pygame_wid}) for video playback")
                                 except Exception as win_exc:
-                                    log.warning(f"Could not lower pygame window: {win_exc}")
+                                    log.warning(f"Could not unmap pygame window: {win_exc}")
                                 
                                 # Ensure mpv stays on top - raise it after a short delay
                                 time.sleep(0.2)
