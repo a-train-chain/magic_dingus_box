@@ -1135,18 +1135,17 @@ def run() -> None:
                     # Hide video, dim audio, show menu
                     log.info("SELECT pressed - showing UI while audio continues")
                     
-                    # CRITICAL: Restore pygame window FIRST so it can receive input
+                    # Raise pygame window to front (it's already visible, just behind mpv)
                     try:
                         import subprocess
-                        # Restore and raise the pygame window
-                        result = subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
-                                              capture_output=True, timeout=2, check=False)
-                        if result.returncode == 0:
-                            log.info("Restored pygame window for UI display")
-                        else:
-                            log.warning(f"xdotool failed to restore window: {result.stderr.decode()}")
-                    except Exception as restore_exc:
-                        log.warning(f"Could not restore window: {restore_exc}")
+                        wm_info = pygame.display.get_wm_info()
+                        if "window" in wm_info:
+                            pygame_wid = wm_info["window"]
+                            subprocess.run(["xdotool", "windowraise", str(pygame_wid)], 
+                                          capture_output=True, timeout=1, check=False)
+                            log.info("Raised pygame window to front")
+                    except Exception as raise_exc:
+                        log.warning(f"Could not raise pygame window: {raise_exc}")
                     
                     # Stop video output but keep audio playing
                     try:
