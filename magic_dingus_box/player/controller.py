@@ -45,37 +45,55 @@ class PlaybackController:
         - Frame rate too high (60fps harder than 30fps)
         """
         if not self.settings_store:
-            # Default settings optimized for performance on Raspberry Pi
-            # Use "audio" sync mode - syncs to audio, less CPU intensive than display-resample
-            video_sync = "audio"  # Sync to audio (less CPU than display-resample)
+            # Default: Use desync mode (same as intro) for best performance
+            video_sync = "desync"  # Same as intro video - fastest, no sync overhead
             video_latency_hacks = False  # Disable (can cause slowdowns)
         else:
-            # Get settings from store with performance-focused defaults
-            video_sync = self.settings_store.get("playlist_video_sync", "audio")
+            # Get settings from store - default to desync for best performance
+            video_sync = self.settings_store.get("playlist_video_sync", "desync")
             video_latency_hacks = self.settings_store.get("playlist_video_latency_hacks", False)
         
         try:
+            # CRITICAL: Ensure hardware decoding is enabled FIRST
+            # Check current status and force enable if needed
+            current_hwdec = None
+            try:
+                current_hwdec = self.mpv.get_property("hwdec")
+            except Exception:
+                pass
+            
+            if not current_hwdec or current_hwdec == "no" or current_hwdec == "":
+                self.mpv.set_property("hwdec", "v4l2m2m")
+                self._log.info("FORCED hardware decoding ON for playlist video (was: %s)", current_hwdec)
+            else:
+                self._log.info("Hardware decoding already enabled: %s", current_hwdec)
+            
+            # Apply sync and performance settings
             self.mpv.set_property("speed", 1.0)
             self.mpv.set_property("video-sync", video_sync)
             self.mpv.set_property("video-latency-hacks", video_latency_hacks)
             
-            # Additional performance optimizations for playlist videos
-            # Ensure hardware decoding is enabled
+            # Additional performance optimizations
             try:
-                current_hwdec = self.mpv.get_property("hwdec")
-                if not current_hwdec or current_hwdec == "no":
-                    self.mpv.set_property("hwdec", "v4l2m2m")
-                    self._log.info("Enabled hardware decoding for playlist video")
+                self.mpv.set_property("interpolation", False)  # Disable interpolation
+                self.mpv.set_property("tscale", "oversample")  # Fast temporal scaling
+                # Ensure fast software scaling if needed
+                self.mpv.set_property("sws-fast", True)
             except Exception:
                 pass
             
-            # Disable interpolation for performance
+            # Verify hardware decoding is actually enabled
+            final_hwdec = None
             try:
-                self.mpv.set_property("interpolation", False)
+                final_hwdec = self.mpv.get_property("hwdec")
             except Exception:
                 pass
             
-            self._log.info(f"Applied playlist video settings: video-sync={video_sync}, latency-hacks={video_latency_hacks}, hwdec={self.mpv.get_property('hwdec')}")
+            self._log.info(f"Playlist video settings: sync={video_sync}, latency-hacks={video_latency_hacks}, hwdec={final_hwdec}")
+            
+            # Warn if hardware decoding is not working
+            if not final_hwdec or final_hwdec == "no":
+                self._log.warning("WARNING: Hardware decoding is NOT enabled! Video will be slow.")
         except Exception as exc:
             self._log.warning(f"Failed to apply playlist video settings: {exc}")
 

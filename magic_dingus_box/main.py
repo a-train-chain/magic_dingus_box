@@ -54,9 +54,9 @@ def run() -> None:
         "interlacing": 0.0,
         "screen_flicker": 0.0,
         # Playlist video settings (separate from intro video)
-        # Options: "desync" (fastest, no sync), "audio" (sync to audio, good balance), 
+        # Options: "desync" (fastest, no sync - RECOMMENDED for Pi), "audio" (sync to audio), 
         #          "display-resample" (CPU intensive, can be slow), "display-vdrop" (drop frames)
-        "playlist_video_sync": "audio",  # Default: sync to audio (less CPU than display-resample)
+        "playlist_video_sync": "desync",  # Default: same as intro video for best performance
         "playlist_video_latency_hacks": False  # Default: disabled (can cause slowdowns)
     })
     
