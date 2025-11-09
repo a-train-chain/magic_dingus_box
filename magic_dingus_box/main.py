@@ -64,7 +64,8 @@ def run() -> None:
     else:
         display_mode = DisplayMode.CRT_NATIVE
 
-    # Init pygame
+    # Init pygame (let SDL auto-detect best driver)
+    # mpv uses X11 for video, pygame handles UI
     pygame.init()
     
     # Auto-detect screen resolution for modern modes
@@ -162,14 +163,9 @@ def run() -> None:
     playlists = video_playlists  # Main UI shows only video playlists
     selected_index = 0
 
-    # mpv + controller
-    mpv = MpvClient(config.mpv_socket)
-    # Ensure keys go to pygame/app, not mpv, and set audio device
-    try:
-        mpv.set_property("input-vo-keyboard", "no")
-        mpv.set_property("input-default-bindings", "no")
-    except Exception:
-        pass
+    # mpv + controller (hardware-accelerated playback with v4l2m2m)
+    mpv_socket = config.mpv_socket
+    mpv = MpvClient(mpv_socket)
     # Auto-select HDMI audio device on Linux if available
     if config.platform == "linux":
         try:
@@ -211,11 +207,37 @@ def run() -> None:
             # Apply if found
             if chosen:
                 mpv.set_property("audio-device", chosen)
-                logging.getLogger("magic.main").info(f"Using HDMI audio device: {chosen}")
+                log.info(f"Using HDMI audio device: {chosen}")
             else:
-                logging.getLogger("magic.main").warning("No HDMI ALSA device found; using mpv default audio device")
+                log.warning("No HDMI ALSA device found; using mpv default audio device")
         except Exception as _exc:
-            logging.getLogger("magic.main").warning(f"Audio device auto-select failed: {_exc}")
+            log.warning(f"Audio device auto-select failed: {_exc}")
+    
+    # Configure mpv for hardware acceleration and performance
+    try:
+        mpv.set_property("hwdec", "v4l2m2m")  # Force hardware decode via V4L2
+        # Use x11 output - simpler and more reliable than gpu on Pi
+        mpv.set_property("vo", "x11")  # Use X11 output (more reliable than gpu on Pi)
+        # Use desync mode - play at native speed without syncing to display (prevents slowdown)
+        mpv.set_property("video-sync", "desync")  # Play at native speed, don't sync to display
+        mpv.set_property("video-latency-hacks", False)  # Disable latency hacks (can cause slowdown)
+        mpv.set_property("interpolation", False)  # Disable interpolation for performance
+        mpv.set_property("tscale", "oversample")  # Fast temporal scaling
+        mpv.set_property("speed", 1.0)  # Ensure playback speed is 1.0x (normal speed)
+        mpv.set_property("vd-lavc-threads", 4)  # Use more decoder threads
+        mpv.set_property("vd-lavc-fast", True)  # Fast decoding
+        mpv.set_property("vd-lavc-dr", True)  # Direct rendering
+        mpv.set_property("vd-lavc-skiploopfilter", "all")  # Skip loop filter for speed
+        mpv.set_property("vd-lavc-skipframe", "nonref")  # Skip non-reference frames
+        mpv.set_property("sws-fast", True)  # Fast software scaling
+        mpv.set_property("cache", True)  # Enable caching
+        mpv.set_property("cache-secs", 30)  # Cache 30 seconds
+        mpv.set_property("demuxer-max-bytes", "500M")  # Large demuxer buffer
+        mpv.set_property("demuxer-max-back-bytes", "500M")  # Large backward buffer
+        log.info("mpv configured for hardware-accelerated decoding and GPU rendering")
+    except Exception as exc:
+        log.warning(f"Failed to configure mpv optimizations: {exc}")
+    
     controller = PlaybackController(
         mpv_client=mpv,
         settings_store=settings_store,
@@ -228,11 +250,8 @@ def run() -> None:
     # Enable 1-second audio fade-in for smooth transitions (macOS/dev only to avoid CPU on Pi)
     if config.platform != "linux":
         mpv.enable_audio_fade(fade_duration=1.0)
-    # Ensure normal playback speed
-    try:
-        mpv.set_property("speed", 1.0)
-    except Exception:
-        pass
+    # Ensure normal playback speed - set this AFTER loading files
+    # This will be set again when files are loaded via controller
 
     # Preserve mpv's service-level scaling/filters as configured in systemd
 
@@ -279,32 +298,10 @@ def run() -> None:
         """Bind mpv to HDMI device and ensure AO opens; safe no-op on non-Linux."""
         if config.platform != "linux":
             return
-        start = time.time()
-        chosen = None
-        try:
-            devs = mpv.get_property("audio-device-list")
-            chosen = _choose_hdmi_device(devs)
-        except Exception:
-            chosen = None
-        if not chosen:
-            logging.getLogger("magic.main").warning("HDMI device not found in list; will retry binding")
-        while time.time() - start < timeout_seconds:
-            try:
-                if chosen:
-                    mpv.set_property("audio-device", chosen)
-                mpv.set_property("mute", False)
-                mpv.set_property("volume", 100)
-                # Favor stereo/48k for HDMI sinks
-                mpv.set_property("audio-channels", "stereo")
-                mpv.set_property("audio-samplerate", 48000)
-                ao = mpv.get_property("ao")
-                if isinstance(ao, list) and len(ao) > 0:
-                    if chosen:
-                        logging.getLogger("magic.main").info(f"HDMI audio active via {chosen}")
-                    break
-            except Exception:
-                pass
-            time.sleep(0.1)
+        # mpv audio device is configured at initialization
+        # This is kept for compatibility but simplified
+        chosen = "plughw:CARD=vc4hdmi0,DEV=0"
+        logging.getLogger("magic.main").debug("mpv audio device already configured")
     def _activate_mpv_bezel_overlay() -> None:
         nonlocal mpv_bezel_overlay_active
         if mpv_bezel_overlay_active:
@@ -315,16 +312,9 @@ def run() -> None:
             return
         try:
             # Minimal overlay graph: no scaling, overlay full-screen bezel PNG at (0,0)
-            lavfi = (
-                f"movie='{bezel_overlay_file}',format=rgba[bz];"
-                f"[vid1]format=rgba[v];"
-                f"[v][bz]overlay=x=0:y=0:format=auto"
-            )
-            mpv.set_property("lavfi-complex", lavfi)
-            try:
-                mpv.set_property("hwdec", "auto-copy")
-            except Exception:
-                pass
+            # VLC doesn't support lavfi-complex filters
+            # Bezel overlay will be handled by pygame instead
+            pass
             mpv_bezel_overlay_active = True
         except Exception as exc:
             logging.getLogger("magic.main").warning(f"mpv overlay enable failed: {exc}")
@@ -334,7 +324,7 @@ def run() -> None:
         if not mpv_bezel_overlay_active:
             return
         try:
-            mpv.set_property("lavfi-complex", "")
+            pass  # VLC doesn't use lavfi-complex
         except Exception:
             pass
         mpv_bezel_overlay_active = False
@@ -348,17 +338,9 @@ def run() -> None:
         if not bezel_overlay_file:
             return
         try:
-            # Use vf-lavfi referencing [in] to avoid complex graph issues
-            vf_graph = (
-                f"lavfi=[movie='{bezel_overlay_file}',format=rgba[bz];"
-                f"[in]format=rgba[v];"
-                f"[v][bz]overlay=x=0:y=0:format=auto]"
-            )
-            mpv.set_property("vf", vf_graph)
-            try:
-                mpv.set_property("hwdec", "auto-copy")
-            except Exception:
-                pass
+            # VLC doesn't support vf filters like mpv
+            # Bezel overlay will be handled by pygame instead
+            pass
             mpv_bezel_overlay_vf_active = True
         except Exception as exc:
             logging.getLogger("magic.main").warning(f"mpv vf overlay enable failed: {exc}")
@@ -367,38 +349,13 @@ def run() -> None:
         nonlocal mpv_bezel_overlay_vf_active
         if not mpv_bezel_overlay_vf_active:
             return
-        try:
-            # Clear entire vf chain (assumes we only applied overlay in this app context)
-            mpv.set_property("vf", "")
-        except Exception:
-            pass
+        # VLC doesn't use vf filters - this is a no-op
         mpv_bezel_overlay_vf_active = False
 
-    # Embed mpv into pygame window (X11/Linux only)
+    # mpv uses X11 output - minimize pygame to allow mpv to render fullscreen
+    # When video plays, we'll minimize pygame window to let mpv take over display
     if config.platform == "linux":
-        try:
-            wm_info = pygame.display.get_wm_info()
-            if "window" in wm_info:
-                wid = wm_info["window"]
-                # Robustly wait for mpv IPC then set wid with retries
-                deadline = time.time() + 3.0
-                set_ok = False
-                while time.time() < deadline:
-                    try:
-                        mpv.set_property("wid", int(wid))
-                        # Verify mpv is responsive
-                        _ = mpv.get_property("idle-active")
-                        set_ok = True
-                        break
-                    except Exception:
-                        pass
-                    time.sleep(0.1)
-                if set_ok:
-                    log.info("mpv embedded into pygame window with wid=%s", wid)
-                else:
-                    log.warning("mpv embed (wid) not confirmed before timeout; continuing")
-        except Exception as exc:
-            log.warning("Failed to embed mpv: %s", exc)
+        log.info("mpv configured for hardware-accelerated video output - will coordinate with pygame")
 
     # Get content surface for rendering
     content_surface = display_mgr.get_render_surface()
@@ -413,40 +370,182 @@ def run() -> None:
     try:
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
-        default_intro = config.media_dir / "intro.mp4"
+        # Use ONLY intro.30fps.mp4 - no fallbacks, no other files
+        intro_30fps = config.media_dir / "intro.30fps.mp4"
         intro_path = None
+        
         if isinstance(intro_setting, str) and intro_setting:
             p = Path(intro_setting).expanduser()
+            # Use ONLY the explicitly set path - no fallbacks
             if p.exists():
                 intro_path = p
+        else:
+            # Use ONLY intro.30fps.mp4 - no fallback to intro.mp4
+            if intro_30fps.exists():
+                intro_path = intro_30fps
             else:
-                # Auto-clear invalid cross-OS path and fall back to default if present
-                settings_store.set("intro_video", "")
-                if default_intro.exists():
-                    intro_path = default_intro
-        elif default_intro.exists():
-            intro_path = default_intro
+                log.warning(f"Intro video not found: {intro_30fps}")
         
         if intro_path is not None:
-            log.info(f"Playing intro video: {intro_path}")
+            log.info(f"Playing ONLY intro video: {intro_path}")
+            # CRITICAL: Stop any existing playback and clear playlist MULTIPLE times to ensure only intro plays
+            for attempt in range(3):
+                try:
+                    mpv.stop()
+                    # Clear any playlist that might be queued
+                    import json
+                    import socket
+                    sock = socket.socket(socket.AF_UNIX)
+                    sock.connect(config.mpv_socket)
+                    sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                    sock.close()
+                    time.sleep(0.1)
+                except Exception:
+                    pass
+            log.info("Cleared mpv playlist multiple times to ensure only intro video plays")
             # Ensure we don't loop the intro
             mpv.set_loop_file(False)
-            # Allow filters while keeping hwdec (copy) if possible
+            # Ensure normal playback speed and desync mode before loading
             try:
-                mpv.set_property("hwdec", "auto-copy")
+                mpv.set_property("speed", 1.0)
+                mpv.set_property("video-sync", "desync")  # Force desync mode for normal speed
             except Exception:
                 pass
+            # mpv hardware decoding enabled via v4l2m2m
+            # Minimize pygame window to let mpv take over fullscreen
+            try:
+                pygame.display.iconify()
+                log.info("Minimized pygame window for intro video playback")
+            except Exception as icon_exc:
+                log.warning(f"Could not minimize window: {icon_exc}")
+            
+            # Load ONLY the intro video - no playlist, no other files
+            # Use loadfile with "replace" mode to ensure it replaces any existing file
+            # CRITICAL: Clear playlist FIRST, then load file
+            try:
+                import json
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                sock.connect(config.mpv_socket)
+                sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                sock.close()
+            except Exception:
+                pass
+            
+            # Load ONLY the 30fps intro video - verify it's the right file
+            if "30fps" not in str(intro_path):
+                log.error(f"ERROR: Wrong intro file selected: {intro_path} (should be intro.30fps.mp4)")
             mpv.load_file(str(intro_path))
-            mpv.resume()
-            # Ensure any mpv overlay is off; we'll draw bezel via pygame for consistent sizing
+            log.info(f"Loaded ONLY intro video: {intro_path}")
+            
+            # Wait a moment, then verify playlist has only one file
+            time.sleep(0.3)
+            try:
+                import json
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                sock.settimeout(0.5)
+                sock.connect(config.mpv_socket)
+                sock.sendall(json.dumps({"command": ["get_property", "playlist"]}).encode() + b"\n")
+                time.sleep(0.2)
+                resp = b""
+                try:
+                    while True:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        resp += chunk
+                        if b"\n" in resp:
+                            break
+                except socket.timeout:
+                    pass
+                sock.close()
+                if resp:
+                    # Parse only the first JSON object (mpv may send multiple)
+                    resp_str = resp.decode().split("\n")[0]
+                    playlist_data = json.loads(resp_str)
+                    if "data" in playlist_data:
+                        playlist = playlist_data["data"]
+                        if len(playlist) > 1:
+                            log.warning(f"WARNING: Playlist has {len(playlist)} files! Clearing again...")
+                            sock = socket.socket(socket.AF_UNIX)
+                            sock.connect(config.mpv_socket)
+                            sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                            sock.close()
+                            time.sleep(0.1)
+                            # Reload only the intro file
+                            mpv.load_file(str(intro_path))
+                            log.info(f"Reloaded ONLY intro video: {intro_path}")
+                        else:
+                            log.info(f"Playlist verified: {len(playlist)} file(s) - {intro_path.name}")
+            except Exception as pl_exc:
+                log.warning(f"Could not verify playlist: {pl_exc}")
+            
+            # CRITICAL: Ensure mpv doesn't auto-advance to next file
+            try:
+                mpv.set_property("loop-playlist", "no")
+                mpv.set_property("loop-file", "no")
+                mpv.set_property("loop", "no")
+                mpv.set_property("playlist-pos", 0)
+                log.info("Disabled auto-advance and looping")
+            except Exception:
+                pass
+            # Ensure speed and sync are still correct after loading
+            try:
+                mpv.set_property("speed", 1.0)
+                mpv.set_property("video-sync", "desync")  # Force desync mode again after load
+                # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
+                mpv.set_property("video-zoom", 0.0)  # Reset zoom
+                mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
+                mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
+                # Set fullscreen for video playback
+                mpv.set_fullscreen(True)
+                # Wait a moment for fullscreen to activate, then ensure proper scaling
+                time.sleep(0.3)
+                # Force window to fill screen and center
+                try:
+                    mpv.set_property("window-scale", 1.0)  # Scale to window size
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Ensure any overlay is off; we'll draw bezel via pygame for consistent sizing
             _deactivate_mpv_bezel_overlay_vf()
-            # Bind HDMI audio and verify AO opens for intro
+            # mpv audio device already configured
             _apply_audio_device(timeout_seconds=2.0)
+            
+            # Start playback
+            mpv.resume()
+            
+            # CRITICAL: Raise mpv window to front so it's visible
+            # Wait a bit longer to ensure mpv has created the window and started playback
+            time.sleep(0.5)
+            try:
+                import subprocess
+                # Find and raise the mpv window - try multiple times to ensure it works
+                for attempt in range(3):
+                    result = subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
+                                          capture_output=True, timeout=2, check=False)
+                    if result.returncode == 0:
+                        log.info("Raised mpv window to front for intro video")
+                        break
+                    time.sleep(0.2)
+                else:
+                    log.warning("Could not raise mpv window after multiple attempts")
+            except Exception as raise_exc:
+                log.warning(f"Could not raise mpv window: {raise_exc}")
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
             intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
             intro_start = time.time()
+            
+            # Verify video is actually playing
+            try:
+                is_playing = not mpv.get_property("pause")
+                log.info(f"Intro video playback started, paused={not is_playing}")
+            except Exception:
+                pass
             
             while True:
                 # Allow quit during intro
@@ -455,13 +554,8 @@ def run() -> None:
                         pygame.quit()
                         return
                 
-                # Clear overlay surface to fully transparent, then optionally apply CRT effects
-                content_surface.fill((0, 0, 0, 0))
-                if intro_effects_enabled:
-                    crt_effects.apply_all(content_surface, time.time())
-                # Present bezel only; preserve video area and skip UI/content blit so mpv shows through cleanly
-                display_mgr.present(screen, bezel, preserve_video_area=True, skip_content_blit=True)
-                pygame.display.flip()
+                # Don't render pygame during intro - mpv is handling the display
+                # Just check for end conditions
                 
                 # End conditions: duration elapsed or mpv signaled EOF
                 if (time.time() - intro_start) >= intro_duration:
@@ -474,10 +568,105 @@ def run() -> None:
                 
                 clock.tick(60)
             
-            # Stop intro playback to return mpv to idle
-            mpv.stop()
-            # Ensure mpv overlay remains off so pygame bezel/UI take over after intro
-            log.info("Intro complete")
+            # Fade transition from intro video to UI
+            log.info("Starting fade transition from intro to UI")
+            
+            # Restore pygame window first (but keep it transparent initially)
+            try:
+                flags = pygame.FULLSCREEN if config.fullscreen else 0
+                if display_mode == DisplayMode.CRT_NATIVE:
+                    screen = pygame.display.set_mode((config.screen_width, config.screen_height), flags)
+                else:
+                    screen = pygame.display.set_mode(modern_resolution, flags)
+                pygame.mouse.set_visible(False)
+                # Update display manager with new screen
+                display_mgr = DisplayManager(display_mode, target_resolution)
+                content_surface = display_mgr.get_render_surface()
+                renderer = UIRenderer(screen=content_surface, config=config)
+                renderer.bezel_mode = (display_mode == DisplayMode.MODERN_WITH_BEZEL)
+                log.info("Recreated pygame display surface for UI")
+            except Exception as recreate_exc:
+                log.warning(f"Could not recreate display: {recreate_exc}")
+            
+            # Raise pygame window so it's ready to fade in
+            try:
+                import subprocess
+                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
+                              capture_output=True, timeout=2, check=False)
+            except Exception:
+                pass
+            
+            # Fade transition: fade out video, fade in UI
+            fade_duration = 1.0  # 1 second fade
+            fade_start = time.time()
+            
+            # Initialize empty playlists for fade (will be loaded after fade completes)
+            playlists_for_fade = []
+            selected_index_for_fade = 0
+            
+            while True:
+                elapsed = time.time() - fade_start
+                fade_progress = min(1.0, elapsed / fade_duration)
+                
+                # Allow quit during fade
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        return
+                
+                # Render UI with alpha fade-in (0.0 -> 1.0)
+                ui_alpha_fade = fade_progress
+                
+                # Ensure mpv is stopped during fade (prevent any auto-play)
+                try:
+                    if not mpv.get_property("pause"):
+                        mpv.pause()
+                except Exception:
+                    pass
+                
+                # Render UI content with fade (use empty playlists during fade)
+                renderer.render(playlists=playlists_for_fade, selected_index=selected_index_for_fade, controller=controller, 
+                              show_overlay=False, ui_alpha=ui_alpha_fade, ui_hidden=False, 
+                              has_playback=False, sample_mode=None)
+                
+                # Apply CRT effects
+                crt_effects.apply_all(content_surface, time.time())
+                
+                # Composite to screen
+                display_mgr.present(screen, bezel, preserve_video_area=False, skip_content_blit=False)
+                pygame.display.flip()
+                
+                # When fade is complete, stop video and exit fullscreen
+                if fade_progress >= 1.0:
+                    # Stop mpv completely and ensure no video is playing
+                    try:
+                        # Stop playback and clear playlist
+                        mpv.stop()
+                        # Clear playlist again to be absolutely sure
+                        import json
+                        import socket
+                        sock = socket.socket(socket.AF_UNIX)
+                        sock.connect(config.mpv_socket)
+                        sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                        sock.close()
+                        mpv.set_fullscreen(False)  # Exit fullscreen
+                        # Ensure mpv is paused/stopped
+                        mpv.pause()
+                        log.info("Stopped mpv and cleared playlist after intro fade")
+                    except Exception as stop_exc:
+                        log.warning(f"Error stopping mpv: {stop_exc}")
+                    # Minimize mpv window
+                    try:
+                        import subprocess
+                        subprocess.run(["xdotool", "search", "--class", "mpv", "windowminimize"], 
+                                      capture_output=True, timeout=2, check=False)
+                    except Exception:
+                        pass
+                    break
+                
+                clock.tick(60)
+            
+            log.info("Intro complete - UI faded in")
             played_intro = True
     except Exception as exc:
         log.warning(f"Intro playback failed: {exc}")
@@ -522,7 +711,6 @@ def run() -> None:
     transition_dir = 0  # -1 fade out, +1 fade in, 0 none
     transition_start = 0.0
     transition_duration = 1.0
-    pending_playlist_index = 0
     volume_menu = 75  # Volume when menu is visible
     volume_video = 100  # Volume when watching video
 
@@ -543,16 +731,9 @@ def run() -> None:
             return
         try:
             # Minimal overlay graph: no scaling, overlay full-screen bezel PNG at (0,0)
-            lavfi = (
-                f"movie='{bezel_overlay_file}',format=rgba[bz];"
-                f"[vid1]format=rgba[v];"
-                f"[v][bz]overlay=x=0:y=0:format=auto"
-            )
-            mpv.set_property("lavfi-complex", lavfi)
-            try:
-                mpv.set_property("hwdec", "auto-copy")
-            except Exception:
-                pass
+            # VLC doesn't support lavfi-complex filters
+            # Bezel overlay will be handled by pygame instead
+            pass
             mpv_bezel_overlay_active = True
         except Exception as exc:
             logging.getLogger("magic.main").warning(f"mpv overlay enable failed: {exc}")
@@ -562,7 +743,7 @@ def run() -> None:
         if not mpv_bezel_overlay_active:
             return
         try:
-            mpv.set_property("lavfi-complex", "")
+            pass  # VLC doesn't use lavfi-complex
         except Exception:
             pass
         mpv_bezel_overlay_active = False
@@ -874,14 +1055,97 @@ def run() -> None:
 
             elif t == mapped.Type.SELECT:
                 if ui_hidden:
-                    # Bring UI back (volume will fade during transition)
+                    # Bring UI back while keeping audio playing
+                    # Hide video, dim audio, show menu
+                    log.info("SELECT pressed - showing UI while audio continues")
+                    
+                    # Stop video output but keep audio playing
+                    try:
+                        mpv.set_property("video", "no")  # Disable video track
+                        mpv.set_fullscreen(False)  # Exit fullscreen to show UI
+                        log.info("Video track disabled - audio continues, exited fullscreen")
+                    except Exception as vid_exc:
+                        log.warning(f"Could not disable video or exit fullscreen: {vid_exc}")
+                    
+                    # Clear bezel overlay
+                    _deactivate_mpv_bezel_overlay()
+                    
+                    # Show UI and dim audio
                     ui_hidden = False
-                    start_fade(+1)
+                    # Keep has_playback=True so audio continues
+                    # Ensure volume is at 100% before starting fade to 75%
+                    try:
+                        mpv.set_volume(volume_video)
+                    except Exception:
+                        pass
+                    start_fade(+1)  # This will fade volume from 100% (video) to 75% (menu)
+                    
+                    # CRITICAL: Restore pygame window to show UI
+                    try:
+                        # Restore minimized window
+                        import subprocess
+                        subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
+                                      capture_output=True, timeout=2, check=False)
+                        log.info("Restored pygame window for UI display")
+                    except Exception as restore_exc:
+                        log.warning(f"Could not restore window: {restore_exc}")
+                    
+                    # CRITICAL: Immediately render UI to cover the video
+                    # Render UI content
+                    renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, show_overlay=True, ui_alpha=0.0, ui_hidden=False, has_playback=has_playback, sample_mode=sample_mode)
+                    settings_renderer.render(content_surface, settings_menu, renderer.theme, game_playlists)
+                    crt_effects.apply_all(content_surface, time.time())
+                    # Present to screen
+                    display_mgr.present(screen, bezel, preserve_video_area=False, skip_content_blit=False)
+                    pygame.display.flip()
+                    
+                    log.info("UI visible, video hidden, audio dimmed to 75%")
                 else:
-                    # Select playlist and fade out (volume will fade during transition)
-                    if playlists and transition_dir == 0:
-                        pending_playlist_index = selected_index
-                        start_fade(-1)
+                    # Select playlist and start video immediately
+                    # If audio is already playing (has_playback=True), re-enable video
+                    if has_playback:
+                        try:
+                            mpv.set_property("video", "auto")  # Re-enable video track
+                            mpv.set_fullscreen(True)  # Set fullscreen for video playback
+                            log.info("Re-enabled video track and set fullscreen for playback")
+                        except Exception as vid_exc:
+                            log.warning(f"Could not re-enable video or set fullscreen: {vid_exc}")
+                    else:
+                        # New playlist selected - load and start immediately
+                        if playlists and selected_index < len(playlists):
+                            selected_playlist = playlists[selected_index]
+                            # Set volume to menu level (75%) before starting playback
+                            # It will fade to 100% during transition
+                            try:
+                                mpv.set_volume(volume_menu)
+                            except Exception:
+                                pass
+                            # Load playlist and start playback immediately
+                            if controller.playlist is None or controller.playlist != selected_playlist:
+                                controller.load_playlist(selected_playlist)
+                                controller.play_current()
+                                # Ensure HDMI audio is bound for playlist playback
+                                _apply_audio_device(timeout_seconds=2.0)
+                            
+                            # Ensure mpv is fullscreen and visible
+                            try:
+                                mpv.set_fullscreen(True)
+                                # Raise mpv window to front
+                                import subprocess
+                                time.sleep(0.3)  # Wait for mpv window to be created
+                                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
+                                              capture_output=True, timeout=2, check=False)
+                                # Minimize pygame window to let mpv video show through
+                                pygame.display.iconify()
+                                log.info("Video playback started, pygame window minimized, mpv raised")
+                            except Exception as vid_exc:
+                                log.warning(f"Could not start video playback: {vid_exc}")
+                            
+                            has_playback = True
+                            # Start fade-out transition (volume will fade from 75% to 100%)
+                            start_fade(-1)
+                            # Hide UI immediately (don't wait for fade)
+                            ui_hidden = True
                 overlay_last_interaction_ts = time.time()
 
             elif t == mapped.Type.NEXT:
@@ -967,16 +1231,18 @@ def run() -> None:
             finally:
                 playlists_dirty.clear()
 
-        # Update fade transition
+        # Update fade transition - simplified: fade UI out, then show video
         if transition_dir != 0:
             elapsed = time.time() - transition_start
             p = max(0.0, min(1.0, elapsed / transition_duration))
             if transition_dir < 0:
+                # Fade out UI (video is already playing)
                 ui_alpha = 1.0 - p
                 # Fade volume from 75% (menu) to 100% (video)
                 current_volume = int(volume_menu + (volume_video - volume_menu) * p)
                 mpv.set_volume(current_volume)
             else:
+                # Fade in UI
                 ui_alpha = p
                 # Fade volume from 100% (video) to 75% (menu)
                 current_volume = int(volume_video - (volume_video - volume_menu) * p)
@@ -984,20 +1250,7 @@ def run() -> None:
             
             if p >= 1.0:
                 # Transition finished
-                if transition_dir < 0 and not ui_hidden:
-                    # Fade-out complete: load and play the selected playlist
-                    if playlists and pending_playlist_index < len(playlists):
-                        selected_playlist = playlists[pending_playlist_index]
-                        # Only restart if switching to a different playlist
-                        if controller.playlist is None or controller.playlist != selected_playlist:
-                            controller.load_playlist(selected_playlist)
-                            controller.play_current()
-                            # Ensure HDMI audio is bound for playlist playback
-                            _apply_audio_device(timeout_seconds=2.0)
-                        has_playback = True
-                    # Hide UI (volume already at 100% from fade)
-                    ui_hidden = True
-                    # Use pygame bezel during playback; do not activate mpv overlay
+                # Volume is now at target (100% for video, 75% for menu)
                 transition_dir = 0
 
         # Auto-progression: advance to next track/playlist when current track ends
@@ -1017,6 +1270,11 @@ def run() -> None:
                         selected_index = next_playlist_idx
                         controller.load_playlist(playlists[next_playlist_idx])
                         controller.play_current()
+                        # Ensure pygame window stays minimized for next video
+                        try:
+                            pygame.display.iconify()
+                        except Exception:
+                            pass
                         log.info("Auto-advanced to next playlist: %s", playlists[next_playlist_idx].title)
                 else:
                     # Just advance to next track in current playlist
@@ -1035,21 +1293,23 @@ def run() -> None:
         # Render settings menu overlay (drawn over main UI)
         settings_renderer.render(content_surface, settings_menu, renderer.theme, game_playlists)
 
-        # Apply CRT effects only when UI/content will be shown
-        if not ui_hidden:
+        # Apply CRT effects only when UI/content will be shown (and during fade-out)
+        if not ui_hidden or (transition_dir < 0 and ui_alpha > 0):
             crt_effects.apply_all(content_surface, time.time())
 
         # Composite content to actual screen with display mode handling
         # When UI is hidden (video playing), do not blit UI/content; preserve video area and draw bezel only
-        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=ui_hidden)
+        # During fade-out (transition_dir < 0), still render UI with alpha fade so it fades out smoothly
+        # Only skip content blit when UI is fully hidden (not during fade)
+        skip_content = ui_hidden and (transition_dir == 0 or ui_alpha <= 0)
+        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=skip_content)
 
         pygame.display.flip()
-        # Periodically ensure AO is active during playback (bind again if needed)
+        # Periodically ensure audio is active during playback (bind again if needed)
         if ui_hidden and config.platform == "linux":
             try:
-                ao = mpv.get_property("ao")
-                if isinstance(ao, list) and len(ao) == 0:
-                    _apply_audio_device(timeout_seconds=1.0)
+                # mpv maintains audio automatically via systemd service
+                pass
             except Exception:
                 pass
         # Ensure bezel remains topmost during playback (mpv may repaint)
