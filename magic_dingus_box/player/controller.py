@@ -69,16 +69,24 @@ class PlaybackController:
             if resolved is None:
                 self._log.warning("Item path not found: %s", item.path)
                 return
-            self.mpv.load_file(resolved, item.start, item.end)
-            self.paused = False
-            # Ensure normal playback speed and optimize for performance
+            
+            # Set video sync mode BEFORE loading (critical for smooth playback)
+            # Use desync mode to prevent video from syncing to display (avoids slowdown)
             try:
                 self.mpv.set_property("speed", 1.0)
-                # Ensure video sync is set for smooth playback
-                try:
-                    self.mpv.set_property("video-sync", "display-resample")
-                except Exception:
-                    pass
+                self.mpv.set_property("video-sync", "desync")  # Match intro video settings
+            except Exception:
+                pass
+            
+            self.mpv.load_file(resolved, item.start, item.end)
+            self.paused = False
+            
+            # Ensure normal playback speed and sync settings after loading
+            # Match intro video configuration for smooth playback
+            try:
+                self.mpv.set_property("speed", 1.0)
+                self.mpv.set_property("video-sync", "desync")  # Force desync mode for smooth playback
+                self.mpv.set_property("video-latency-hacks", False)  # Disable latency hacks (can cause slowdown)
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 self.mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
@@ -87,7 +95,7 @@ class PlaybackController:
                 self.mpv.set_fullscreen(True)
                 # Wait a moment for fullscreen to activate, then ensure proper scaling
                 import time as time_module
-                time_module.sleep(0.2)
+                time_module.sleep(0.3)  # Match intro video wait time
                 # Force window to fill screen
                 try:
                     self.mpv.set_property("window-scale", 1.0)  # Scale to window size
