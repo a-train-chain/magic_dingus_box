@@ -1504,19 +1504,24 @@ def run() -> None:
                     mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
                                                   capture_output=True, timeout=1, check=False)
                     
-                    # Ensure mpv is on top
+                    # CRITICAL: Ensure mpv is on top and pygame is behind
                     if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
                         mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                        # Lower pygame first, then raise mpv
+                        if run._cached_pygame_wid:
+                            subprocess.run(["xdotool", "windowlower", str(run._cached_pygame_wid)], 
+                                          capture_output=True, timeout=0.5, check=False)
                         subprocess.run(["xdotool", "windowraise", mpv_wid], 
                                       capture_output=True, timeout=0.5, check=False)
-                    
-                    # Ensure pygame is behind mpv
-                    if run._cached_pygame_wid:
-                        subprocess.run(["xdotool", "windowlower", str(run._cached_pygame_wid)], 
-                                      capture_output=True, timeout=0.5, check=False)
+                        # Ensure mpv is fullscreen
+                        try:
+                            mpv.set_fullscreen(True)
+                        except Exception:
+                            pass
             except Exception:
                 pass
-            # Skip to clock tick without rendering (pygame window is behind mpv)
+            # CRITICAL: Don't call pygame.display.flip() - this would render the screen
+            # Just tick the clock and continue without any rendering
             clock.tick(60)
             continue
         
@@ -1535,9 +1540,13 @@ def run() -> None:
         # During fade-out (transition_dir < 0), still render UI with alpha fade so it fades out smoothly
         # Only skip content blit when UI is fully hidden (not during fade)
         skip_content = ui_hidden and (transition_dir == 0 or ui_alpha <= 0)
-        display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=skip_content)
-
-        pygame.display.flip()
+        
+        # CRITICAL: When video is playing and UI is hidden, don't render anything at all
+        # This prevents pygame from covering mpv
+        if not (ui_hidden and has_playback and transition_dir == 0):
+            display_mgr.present(screen, bezel, preserve_video_area=ui_hidden, skip_content_blit=skip_content)
+            pygame.display.flip()
+        
         # Periodically ensure audio is active during playback (bind again if needed)
         if ui_hidden and config.platform == "linux":
             try:
@@ -1545,10 +1554,9 @@ def run() -> None:
                 pass
             except Exception:
                 pass
-        # Ensure bezel remains topmost during playback (mpv may repaint)
-        if ui_hidden and display_mode == DisplayMode.MODERN_WITH_BEZEL and bezel is not None:
-            screen.blit(bezel, (0, 0))
-            pygame.display.flip()
+        
+        # NOTE: Bezel drawing removed when video is playing - mpv handles its own display
+        # Don't draw bezel via pygame when video is playing (would cover mpv)
         clock.tick(60)
 
     try:
