@@ -487,8 +487,20 @@ def run() -> None:
             # Load ONLY the 30fps intro video - verify it's the right file
             if "30fps" not in str(intro_path):
                 log.error(f"ERROR: Wrong intro file selected: {intro_path} (should be intro.30fps.mp4)")
+            
+            # CRITICAL: Set fullscreen BEFORE loading file so mpv window is created properly
+            try:
+                mpv.set_fullscreen(True)
+                log.info("Set mpv to fullscreen before loading intro video")
+            except Exception:
+                pass
+            
+            # Load the intro video file
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
+            
+            # Wait for file to start loading
+            time.sleep(0.5)
             
             # Wait a moment, then verify playlist has only one file
             time.sleep(0.3)
@@ -550,7 +562,7 @@ def run() -> None:
                 mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
                 mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
-                # Set fullscreen for video playback
+                # Ensure fullscreen is still set (may have been set before loading)
                 mpv.set_fullscreen(True)
                 # Wait a moment for fullscreen to activate, then ensure proper scaling
                 time.sleep(0.3)
