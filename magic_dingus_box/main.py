@@ -574,16 +574,25 @@ def run() -> None:
             time.sleep(0.5)
             try:
                 import subprocess
-                # Find and raise the mpv window - try multiple times to ensure it works
-                for attempt in range(3):
-                    result = subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                                          capture_output=True, timeout=2, check=False)
-                    if result.returncode == 0:
-                        log.info("Raised mpv window to front for intro video")
-                        break
-                    time.sleep(0.2)
+                # Find mpv window ID first
+                mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
+                                              capture_output=True, timeout=2, check=False)
+                if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                    mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                    # Map and raise the mpv window - try multiple times to ensure it works
+                    for attempt in range(3):
+                        subprocess.run(["xdotool", "windowmap", mpv_wid], 
+                                      capture_output=True, timeout=1, check=False)
+                        result = subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                              capture_output=True, timeout=1, check=False)
+                        if result.returncode == 0:
+                            log.info(f"Raised mpv window (ID: {mpv_wid}) to front for intro video")
+                            break
+                        time.sleep(0.2)
+                    else:
+                        log.warning("Could not raise mpv window after multiple attempts")
                 else:
-                    log.warning("Could not raise mpv window after multiple attempts")
+                    log.warning("Could not find mpv window for intro video")
             except Exception as raise_exc:
                 log.warning(f"Could not raise mpv window: {raise_exc}")
             
