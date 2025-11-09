@@ -79,6 +79,8 @@ class PlaybackController:
                 self.mpv.set_property("tscale", "oversample")  # Fast temporal scaling
                 # Ensure fast software scaling if needed
                 self.mpv.set_property("sws-fast", True)
+                # Enable frame dropping for very high CPU situations
+                self.mpv.set_property("framedrop", "decoder+vo")  # Drop frames if decoding is slow
             except Exception:
                 pass
             
@@ -162,15 +164,17 @@ class PlaybackController:
                     if video_params and isinstance(video_params, dict):
                         width = video_params.get("w", 0)
                         height = video_params.get("h", 0)
-                        if width > 720:
-                            # Video is higher than 720p - add scale filter using mpv's filter syntax
+                        if width > 640:
+                            # Video is higher than 640p - scale down aggressively for performance
+                            # Scale to max 640p width (more aggressive than 720p for better performance)
                             # mpv uses lavfi filters: scale=width:height:flags
                             # Use fast bilinear scaling for performance
-                            scale_filter = "scale=720:-2:flags=fast_bilinear"
+                            target_width = 640 if width > 640 else 720
+                            scale_filter = f"scale={target_width}:-2:flags=fast_bilinear"
                             # Apply filter using mpv's video filter method
                             try:
                                 self.mpv.add_video_filter(scale_filter)
-                                self._log.info(f"Added scale filter: {width}x{height} -> 720p (for performance)")
+                                self._log.info(f"Added scale filter: {width}x{height} -> {target_width}p (for performance)")
                             except Exception as filter_exc:
                                 self._log.warning(f"Could not add scale filter: {filter_exc}")
                                 # Fallback: try setting vf property directly (less reliable)
@@ -182,9 +186,10 @@ class PlaybackController:
                             self._log.info(f"Video resolution {width}x{height} is OK, no scaling needed")
                     else:
                         # Video params not available yet, add scale filter anyway for safety
-                        self._log.info("Video params not available, adding scale filter preemptively")
+                        # Use 640p as default for maximum performance
+                        self._log.info("Video params not available, adding scale filter preemptively (640p)")
                         try:
-                            scale_filter = "scale=720:-2:flags=fast_bilinear"
+                            scale_filter = "scale=640:-2:flags=fast_bilinear"
                             self.mpv.add_video_filter(scale_filter)
                         except Exception:
                             pass
