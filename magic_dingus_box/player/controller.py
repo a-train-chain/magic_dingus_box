@@ -30,6 +30,29 @@ class PlaybackController:
         self.loop = playlist.loop
         self._apply_loop()
 
+    def _apply_playlist_video_settings(self) -> None:
+        """Apply video settings optimized for playlist videos.
+        
+        These settings are separate from intro video settings and can be
+        configured via settings store.
+        """
+        if not self.settings_store:
+            # Default settings if no settings store
+            video_sync = "display-resample"  # Sync to display for smoother playback
+            video_latency_hacks = True  # Enable latency hacks for better sync
+        else:
+            # Get settings from store with defaults optimized for playlist videos
+            video_sync = self.settings_store.get("playlist_video_sync", "display-resample")
+            video_latency_hacks = self.settings_store.get("playlist_video_latency_hacks", True)
+        
+        try:
+            self.mpv.set_property("speed", 1.0)
+            self.mpv.set_property("video-sync", video_sync)
+            self.mpv.set_property("video-latency-hacks", video_latency_hacks)
+            self._log.info(f"Applied playlist video settings: video-sync={video_sync}, latency-hacks={video_latency_hacks}")
+        except Exception as exc:
+            self._log.warning(f"Failed to apply playlist video settings: {exc}")
+
     def play_current(self) -> None:
         item = self._current_item()
         if item is None:
@@ -70,23 +93,17 @@ class PlaybackController:
                 self._log.warning("Item path not found: %s", item.path)
                 return
             
-            # Set video sync mode BEFORE loading (critical for smooth playback)
-            # Use desync mode to prevent video from syncing to display (avoids slowdown)
-            try:
-                self.mpv.set_property("speed", 1.0)
-                self.mpv.set_property("video-sync", "desync")  # Match intro video settings
-            except Exception:
-                pass
+            # Apply playlist-specific video settings BEFORE loading
+            self._apply_playlist_video_settings()
             
             self.mpv.load_file(resolved, item.start, item.end)
             self.paused = False
             
-            # Ensure normal playback speed and sync settings after loading
-            # Match intro video configuration for smooth playback
+            # Ensure settings are applied after loading
             try:
                 self.mpv.set_property("speed", 1.0)
-                self.mpv.set_property("video-sync", "desync")  # Force desync mode for smooth playback
-                self.mpv.set_property("video-latency-hacks", False)  # Disable latency hacks (can cause slowdown)
+                # Re-apply playlist video settings after load
+                self._apply_playlist_video_settings()
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 self.mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
@@ -95,7 +112,7 @@ class PlaybackController:
                 self.mpv.set_fullscreen(True)
                 # Wait a moment for fullscreen to activate, then ensure proper scaling
                 import time as time_module
-                time_module.sleep(0.3)  # Match intro video wait time
+                time_module.sleep(0.3)
                 # Force window to fill screen
                 try:
                     self.mpv.set_property("window-scale", 1.0)  # Scale to window size
