@@ -875,6 +875,7 @@ def run() -> None:
             continue
         
         # Input handling
+        # IMPORTANT: Always process events even when window is minimized (for joystick input)
         events = []
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -887,6 +888,9 @@ def run() -> None:
                 mapped_js = js_provider.translate(event)
                 if mapped_js is not None:
                     events.append(mapped_js)
+                    # Debug logging for joystick events when UI is hidden
+                    if ui_hidden and mapped_js.type == mapped_js.Type.SELECT:
+                        log.info(f"Joystick SELECT event detected (ui_hidden={ui_hidden})")
 
         # Check for hold-to-seek keyboard events
         for ev in kb_provider.poll_seeking():
@@ -1131,6 +1135,19 @@ def run() -> None:
                     # Hide video, dim audio, show menu
                     log.info("SELECT pressed - showing UI while audio continues")
                     
+                    # CRITICAL: Restore pygame window FIRST so it can receive input
+                    try:
+                        import subprocess
+                        # Restore and raise the pygame window
+                        result = subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
+                                              capture_output=True, timeout=2, check=False)
+                        if result.returncode == 0:
+                            log.info("Restored pygame window for UI display")
+                        else:
+                            log.warning(f"xdotool failed to restore window: {result.stderr.decode()}")
+                    except Exception as restore_exc:
+                        log.warning(f"Could not restore window: {restore_exc}")
+                    
                     # Stop video output but keep audio playing
                     try:
                         mpv.set_property("video", "no")  # Disable video track
@@ -1151,16 +1168,6 @@ def run() -> None:
                     except Exception:
                         pass
                     start_fade(+1)  # This will fade volume from 100% (video) to 75% (menu)
-                    
-                    # CRITICAL: Restore pygame window to show UI
-                    try:
-                        # Restore minimized window
-                        import subprocess
-                        subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
-                                      capture_output=True, timeout=2, check=False)
-                        log.info("Restored pygame window for UI display")
-                    except Exception as restore_exc:
-                        log.warning(f"Could not restore window: {restore_exc}")
                     
                     # CRITICAL: Immediately render UI to cover the video
                     # Render UI content
