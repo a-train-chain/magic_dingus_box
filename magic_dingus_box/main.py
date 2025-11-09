@@ -1430,6 +1430,25 @@ def run() -> None:
 
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds
+        
+        # When UI is hidden and video is playing, skip all rendering to avoid covering mpv
+        if ui_hidden and has_playback and transition_dir == 0:
+            # Video is playing - don't render anything, just ensure mpv is on top
+            try:
+                import subprocess
+                mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
+                                              capture_output=True, timeout=1, check=False)
+                if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                    mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                    subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                  capture_output=True, timeout=0.5, check=False)
+            except Exception:
+                pass
+            # Skip to clock tick without rendering
+            clock.tick(60)
+            continue
+        
+        # Normal rendering when UI is visible or during transitions
         renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, show_overlay=show_overlay, ui_alpha=ui_alpha, ui_hidden=ui_hidden, has_playback=has_playback, sample_mode=sample_mode)
 
         # Render settings menu overlay (drawn over main UI)
