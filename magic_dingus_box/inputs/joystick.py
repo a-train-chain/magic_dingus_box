@@ -76,14 +76,64 @@ class JoystickInputProvider(InputProvider):
         return None
 
     def poll(self):  # type: ignore[no-untyped-def]
-        """Emit repeated rotate events while stick is held past the deadzone."""
+        """Emit repeated rotate events while stick is held past the deadzone.
+        Also poll buttons directly (works even when window doesn't have focus)."""
         events = []
+        
+        # Poll stick for continuous rotation
         if self._rotate_dir != 0:
             now = time.time()
             interval = 1.0 / self.rotate_repeat_hz
             if (now - self._last_rotate_emit) >= interval:
                 events.append(InputEvent(InputEvent.Type.ROTATE, delta=self._rotate_dir))
                 self._last_rotate_emit = now
+        
+        # Poll buttons directly (works even without window focus)
+        # This is critical when pygame window is behind mpv
+        try:
+            # Track button states to detect presses
+            if not hasattr(self, '_button_states'):
+                self._button_states = {}
+            
+            # Check all buttons
+            for btn_id in [self.BTN_A, self.BTN_B, self.BTN_L, self.BTN_R, self.BTN_START, self.BTN_SELECT]:
+                current_state = self.js.get_button(btn_id)
+                prev_state = self._button_states.get(btn_id, False)
+                
+                # Detect button press (transition from False to True)
+                if current_state and not prev_state:
+                    if btn_id == self.BTN_A:
+                        events.append(InputEvent(InputEvent.Type.SELECT))
+                    elif btn_id == self.BTN_B:
+                        events.append(InputEvent(InputEvent.Type.SETTINGS_MENU))
+                    elif btn_id == self.BTN_START:
+                        events.append(InputEvent(InputEvent.Type.PLAY_PAUSE))
+                    elif btn_id == self.BTN_L:
+                        events.append(InputEvent(InputEvent.Type.PREV))
+                    elif btn_id == self.BTN_R:
+                        events.append(InputEvent(InputEvent.Type.NEXT))
+                    elif btn_id == self.BTN_SELECT:
+                        events.append(InputEvent(InputEvent.Type.TOGGLE_LOOP))
+                
+                self._button_states[btn_id] = current_state
+            
+            # Poll hat (D-pad) directly
+            if self.js.get_numhats() > 0:
+                hat_value = self.js.get_hat(0)
+                hat_x, hat_y = hat_value
+                prev_hat = self._hat_last
+                
+                # Detect hat changes
+                if hat_y != prev_hat[1]:
+                    if hat_y == -1:
+                        events.append(InputEvent(InputEvent.Type.ROTATE, delta=1))
+                    elif hat_y == 1:
+                        events.append(InputEvent(InputEvent.Type.ROTATE, delta=-1))
+                    self._hat_last = (hat_x, hat_y)
+        except Exception:
+            # If polling fails, fall back to event-based input
+            pass
+        
         return events
 
 
