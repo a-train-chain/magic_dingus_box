@@ -1132,7 +1132,6 @@ def run() -> None:
             elif t == mapped.Type.SELECT:
                 if ui_hidden:
                     # Navigate back to UI while keeping audio playing
-                    nonlocal current_playing_playlist, saved_playback_position, selected_index
                     try:
                         # Disable video track but keep audio playing
                         mpv.set_property("video", "no")
@@ -1170,7 +1169,6 @@ def run() -> None:
                         log.warning(f"Could not navigate back to UI: {nav_exc}")
                 else:
                     # UI is visible - handle playlist selection
-                    nonlocal current_playing_playlist, saved_playback_position
                     if playlists and selected_index < len(playlists):
                         selected_playlist = playlists[selected_index]
                         
