@@ -505,8 +505,15 @@ def run() -> None:
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
             
-            # Wait for file to start loading
-            time.sleep(0.5)
+            # Wait for file to start loading and window to be created
+            time.sleep(1.0)  # Increased wait time for file to load
+            
+            # CRITICAL: Set fullscreen AGAIN after file loads (window might be created at wrong size)
+            try:
+                mpv.set_fullscreen(True)
+                log.info("Re-set mpv to fullscreen after file load")
+            except Exception:
+                pass
             
             # Wait a moment, then verify playlist has only one file
             time.sleep(0.3)
@@ -568,10 +575,12 @@ def run() -> None:
                 mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
                 mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
-                # Ensure fullscreen is still set (may have been set before loading)
+                # CRITICAL: Force fullscreen again after all properties are set
                 mpv.set_fullscreen(True)
                 # Wait a moment for fullscreen to activate, then ensure proper scaling
-                time.sleep(0.3)
+                time.sleep(0.5)  # Increased wait time
+                # Force fullscreen one more time to ensure it sticks
+                mpv.set_fullscreen(True)
                 # Force window to fill screen and center
                 try:
                     mpv.set_property("window-scale", 1.0)  # Scale to window size
@@ -586,6 +595,14 @@ def run() -> None:
             
             # Start playback
             mpv.resume()
+            
+            # CRITICAL: Ensure fullscreen is set one final time after playback starts
+            time.sleep(0.3)
+            try:
+                mpv.set_fullscreen(True)
+                log.info("Final fullscreen set after playback start")
+            except Exception:
+                pass
             
             # CRITICAL: Raise mpv window to front so it's visible
             # Wait a bit longer to ensure mpv has created the window and started playback
@@ -1467,24 +1484,36 @@ def run() -> None:
         # When UI is hidden and video is playing, skip all rendering and manage z-order
         if ui_hidden and has_playback and transition_dir == 0:
             # Video is playing - don't render pygame, ensure mpv is on top, pygame is behind
+            # Only check z-order occasionally (not every frame) to avoid crashes
             try:
                 import subprocess
-                # Get window IDs
-                mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
-                                              capture_output=True, timeout=1, check=False)
-                wm_info = pygame.display.get_wm_info()
-                pygame_wid = wm_info.get("window") if "window" in wm_info else None
+                # Only manage z-order every 30 frames (~0.5 seconds) to avoid overhead
+                if not hasattr(run, '_z_order_frame_count'):
+                    run._z_order_frame_count = 0
+                run._z_order_frame_count += 1
                 
-                # Ensure mpv is on top
-                if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
-                    mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
-                    subprocess.run(["xdotool", "windowraise", mpv_wid], 
-                                  capture_output=True, timeout=0.5, check=False)
-                
-                # Ensure pygame is behind mpv
-                if pygame_wid:
-                    subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
-                                  capture_output=True, timeout=0.5, check=False)
+                if run._z_order_frame_count % 30 == 0:
+                    # Get window IDs (cache pygame_wid to avoid calling get_wm_info every frame)
+                    if not hasattr(run, '_cached_pygame_wid'):
+                        try:
+                            wm_info = pygame.display.get_wm_info()
+                            run._cached_pygame_wid = wm_info.get("window") if "window" in wm_info else None
+                        except Exception:
+                            run._cached_pygame_wid = None
+                    
+                    mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
+                                                  capture_output=True, timeout=1, check=False)
+                    
+                    # Ensure mpv is on top
+                    if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                        mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                        subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                      capture_output=True, timeout=0.5, check=False)
+                    
+                    # Ensure pygame is behind mpv
+                    if run._cached_pygame_wid:
+                        subprocess.run(["xdotool", "windowlower", str(run._cached_pygame_wid)], 
+                                      capture_output=True, timeout=0.5, check=False)
             except Exception:
                 pass
             # Skip to clock tick without rendering (pygame window is behind mpv)
