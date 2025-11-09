@@ -420,21 +420,21 @@ def run() -> None:
     try:
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
-        # Use ONLY intro.30fps.mp4 - no fallbacks, no other files
-        intro_30fps = config.media_dir / "intro.30fps.mp4"
+        # Use original intro.mp4 (not transcoded - intro video should use original quality)
+        intro_original = config.media_dir / "intro.mp4"
         intro_path = None
         
         if isinstance(intro_setting, str) and intro_setting:
             p = Path(intro_setting).expanduser()
-            # Use ONLY the explicitly set path - no fallbacks
+            # Use the explicitly set path
             if p.exists():
                 intro_path = p
         else:
-            # Use ONLY intro.30fps.mp4 - no fallback to intro.mp4
-            if intro_30fps.exists():
-                intro_path = intro_30fps
+            # Use original intro.mp4 (not the transcoded version)
+            if intro_original.exists():
+                intro_path = intro_original
             else:
-                log.warning(f"Intro video not found: {intro_30fps}")
+                log.warning(f"Intro video not found: {intro_original}")
         
         if intro_path is not None:
             log.info(f"Playing ONLY intro video: {intro_path}")

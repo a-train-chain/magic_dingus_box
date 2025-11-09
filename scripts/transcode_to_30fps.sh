@@ -14,7 +14,7 @@ mkdir -p "$BACKUP_DIR"
 # Video extensions to process
 VIDEO_EXTS=("mp4" "mkv" "avi" "mov" "m4v")
 
-# Find all video files
+# Find all video files (excluding intro.mp4 which should not be transcoded)
 find_videos() {
     find "$MEDIA_DIR" -maxdepth 1 -type f \( \
         -iname "*.mp4" -o \
@@ -22,7 +22,7 @@ find_videos() {
         -iname "*.avi" -o \
         -iname "*.mov" -o \
         -iname "*.m4v" \
-    \) ! -name "*.30fps.*"
+    \) ! -name "*.30fps.*" ! -name "intro.mp4"
 }
 
 # Check if video needs transcoding (resolution > 640p or fps > 30)
