@@ -1208,11 +1208,24 @@ def run() -> None:
                             # Ensure mpv is fullscreen and visible
                             try:
                                 mpv.set_fullscreen(True)
-                                # Raise mpv window to front
+                                # Wait for mpv window to be created and video to start loading
                                 import subprocess
-                                time.sleep(0.3)  # Wait for mpv window to be created
-                                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                                              capture_output=True, timeout=2, check=False)
+                                time.sleep(0.5)  # Increased wait time for video to start
+                                
+                                # First, ensure mpv window exists and is mapped
+                                mpv_wid_result = subprocess.run(["xdotool", "search", "--class", "mpv"], 
+                                                              capture_output=True, timeout=2, check=False)
+                                if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                                    mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                                    # Map and raise mpv window
+                                    subprocess.run(["xdotool", "windowmap", mpv_wid], 
+                                                  capture_output=True, timeout=1, check=False)
+                                    subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                                  capture_output=True, timeout=1, check=False)
+                                    log.info(f"Raised mpv window (ID: {mpv_wid})")
+                                else:
+                                    log.warning("Could not find mpv window")
+                                
                                 # Keep pygame window visible but lower it behind mpv so joystick input still works
                                 # Get pygame window ID and lower it
                                 try:
@@ -1223,8 +1236,10 @@ def run() -> None:
                                         subprocess.run(["xdotool", "windowlower", str(pygame_wid)], 
                                                       capture_output=True, timeout=1, check=False)
                                         # Raise mpv again to ensure it's on top
-                                        subprocess.run(["xdotool", "search", "--class", "mpv", "windowraise"], 
-                                                      capture_output=True, timeout=1, check=False)
+                                        if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
+                                            mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                                            subprocess.run(["xdotool", "windowraise", mpv_wid], 
+                                                          capture_output=True, timeout=1, check=False)
                                         log.info("Video playback started, pygame window lowered behind mpv (still receives input)")
                                     else:
                                         # Fallback: minimize if we can't get window ID
