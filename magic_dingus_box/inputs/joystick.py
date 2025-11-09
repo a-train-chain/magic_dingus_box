@@ -15,15 +15,15 @@ class JoystickInputProvider(InputProvider):
         self._last_rotate_emit = 0.0
         self._rotate_dir = 0  # -1, 0, +1
         self._hat_last = (0, 0)
-        # Button mapping (may vary per controller; these are common defaults)
-        self.BTN_A = 0          # Select
-        self.BTN_B = 1          # Settings menu toggle
-        self.BTN_X = 2
+        # Button mapping for N64 controller
+        self.BTN_A = 1          # Select (A Button)
+        self.BTN_B = 2          # Settings menu toggle (B Button)
+        self.BTN_X = 0
         self.BTN_Y = 3
-        self.BTN_L = 4          # Previous
-        self.BTN_R = 5          # Next
+        self.BTN_L = 4          # Skip backward (Left Trigger)
+        self.BTN_R = 5          # Skip forward (Right Trigger)
         self.BTN_SELECT = 6
-        self.BTN_START = 7      # Play/Pause
+        self.BTN_START = 7      # Pause (Z Trigger)
 
     def translate(self, raw_event):  # type: ignore[no-untyped-def]
         et = raw_event.type
@@ -45,14 +45,16 @@ class JoystickInputProvider(InputProvider):
             return None
 
         if et == pygame.JOYHATMOTION:
-            # Use D-pad left/right for seek
+            # Use D-pad up/down for playlist navigation (ROTATE)
             hat_x, hat_y = raw_event.value
             # Trigger only on edge transitions
             ev = None
-            if hat_x == -1 and self._hat_last[0] != -1:
-                ev = InputEvent(InputEvent.Type.SEEK_LEFT)
-            elif hat_x == 1 and self._hat_last[0] != 1:
-                ev = InputEvent(InputEvent.Type.SEEK_RIGHT)
+            if hat_y == -1 and self._hat_last[1] != -1:
+                # D-pad Down = navigate down (ROTATE +1)
+                ev = InputEvent(InputEvent.Type.ROTATE, delta=1)
+            elif hat_y == 1 and self._hat_last[1] != 1:
+                # D-pad Up = navigate up (ROTATE -1)
+                ev = InputEvent(InputEvent.Type.ROTATE, delta=-1)
             self._hat_last = (hat_x, hat_y)
             return ev
 
