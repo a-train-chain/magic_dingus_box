@@ -462,14 +462,23 @@ def run() -> None:
             except Exception:
                 pass
             # mpv hardware decoding enabled via v4l2m2m
-            # Minimize pygame window to let mpv take over fullscreen
+            # Hide pygame window completely to let mpv take over fullscreen
             try:
-                pygame.display.iconify()
-                log.info("Minimized pygame window for intro video playback")
+                import subprocess
+                wm_info = pygame.display.get_wm_info()
+                if "window" in wm_info:
+                    pygame_wid = wm_info["window"]
+                    # Actually hide the window (not just minimize)
+                    subprocess.run(["xdotool", "windowunmap", str(pygame_wid)], 
+                                  capture_output=True, timeout=1, check=False)
+                    log.info(f"Hidden pygame window (ID: {pygame_wid}) for intro video playback")
+                else:
+                    pygame.display.iconify()
+                    log.info("Minimized pygame window for intro video playback (fallback)")
                 # Ensure mpv window will be on top
                 time.sleep(0.3)
             except Exception as icon_exc:
-                log.warning(f"Could not minimize window: {icon_exc}")
+                log.warning(f"Could not hide window: {icon_exc}")
             
             # Load ONLY the intro video - no playlist, no other files
             # Use loadfile with "replace" mode to ensure it replaces any existing file
@@ -1158,17 +1167,20 @@ def run() -> None:
                     # Hide video, dim audio, show menu
                     log.info("SELECT pressed - showing UI while audio continues")
                     
-                    # Raise pygame window to front (it's already visible, just behind mpv)
+                    # Restore and raise pygame window to front
                     try:
                         import subprocess
                         wm_info = pygame.display.get_wm_info()
                         if "window" in wm_info:
                             pygame_wid = wm_info["window"]
+                            # Map (show) the window if it was hidden
+                            subprocess.run(["xdotool", "windowmap", str(pygame_wid)], 
+                                          capture_output=True, timeout=1, check=False)
                             subprocess.run(["xdotool", "windowraise", str(pygame_wid)], 
                                           capture_output=True, timeout=1, check=False)
-                            log.info("Raised pygame window to front")
+                            log.info(f"Restored and raised pygame window (ID: {pygame_wid}) to front")
                     except Exception as raise_exc:
-                        log.warning(f"Could not raise pygame window: {raise_exc}")
+                        log.warning(f"Could not restore pygame window: {raise_exc}")
                     
                     # Stop video output but keep audio playing
                     try:
@@ -1249,21 +1261,31 @@ def run() -> None:
                                 else:
                                     log.warning("Could not find mpv window")
                                 
-                                # Minimize pygame window so mpv video is visible
+                                # Hide pygame window completely so mpv video is visible
                                 # We'll use direct joystick polling so we don't need the window visible
                                 try:
-                                    pygame.display.iconify()
-                                    log.info("Video playback started, pygame window minimized (joystick polling works)")
+                                    wm_info = pygame.display.get_wm_info()
+                                    if "window" in wm_info:
+                                        pygame_wid = wm_info["window"]
+                                        # Actually hide the window (not just minimize)
+                                        subprocess.run(["xdotool", "windowunmap", str(pygame_wid)], 
+                                                      capture_output=True, timeout=1, check=False)
+                                        log.info(f"Hidden pygame window (ID: {pygame_wid}) for video playback")
+                                    else:
+                                        pygame.display.iconify()
+                                        log.info("Minimized pygame window (fallback)")
                                 except Exception as win_exc:
-                                    log.warning(f"Could not minimize window: {win_exc}")
+                                    log.warning(f"Could not hide window: {win_exc}")
                                 
                                 # Ensure mpv stays on top - raise it again after a short delay
                                 time.sleep(0.2)
                                 if mpv_wid_result.returncode == 0 and mpv_wid_result.stdout:
                                     mpv_wid = mpv_wid_result.stdout.decode().strip().split('\n')[0]
+                                    subprocess.run(["xdotool", "windowmap", mpv_wid], 
+                                                  capture_output=True, timeout=1, check=False)
                                     subprocess.run(["xdotool", "windowraise", mpv_wid], 
                                                   capture_output=True, timeout=1, check=False)
-                                    log.info(f"Ensured mpv window (ID: {mpv_wid}) is on top")
+                                    log.info(f"Ensured mpv window (ID: {mpv_wid}) is visible and on top")
                             except Exception as vid_exc:
                                 log.warning(f"Could not start video playback: {vid_exc}")
                             
