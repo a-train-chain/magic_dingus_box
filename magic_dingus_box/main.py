@@ -215,26 +215,48 @@ def run() -> None:
     
     # Configure mpv for hardware acceleration and performance
     try:
-        mpv.set_property("hwdec", "v4l2m2m")  # Force hardware decode via V4L2
+        # Try rpi4 hardware decoder first (best for Pi 4), fallback to v4l2m2m
+        try:
+            mpv.set_property("hwdec", "rpi4")  # Best for Raspberry Pi 4
+        except Exception:
+            try:
+                mpv.set_property("hwdec", "v4l2m2m")  # Fallback to V4L2
+            except Exception:
+                mpv.set_property("hwdec", "auto-copy")  # Last resort
+        
         # Use x11 output - simpler and more reliable than gpu on Pi
         mpv.set_property("vo", "x11")  # Use X11 output (more reliable than gpu on Pi)
-        # Use desync mode - play at native speed without syncing to display (prevents slowdown)
-        mpv.set_property("video-sync", "desync")  # Play at native speed, don't sync to display
-        mpv.set_property("video-latency-hacks", False)  # Disable latency hacks (can cause slowdown)
+        
+        # Use display-resample for better sync (can help with slow video)
+        # This syncs video to display refresh rate which can prevent slowdown
+        mpv.set_property("video-sync", "display-resample")  # Sync to display, resample audio
+        mpv.set_property("video-latency-hacks", True)  # Enable latency hacks for smoother playback
         mpv.set_property("interpolation", False)  # Disable interpolation for performance
         mpv.set_property("tscale", "oversample")  # Fast temporal scaling
         mpv.set_property("speed", 1.0)  # Ensure playback speed is 1.0x (normal speed)
+        
+        # Decoder optimizations
         mpv.set_property("vd-lavc-threads", 4)  # Use more decoder threads
         mpv.set_property("vd-lavc-fast", True)  # Fast decoding
         mpv.set_property("vd-lavc-dr", True)  # Direct rendering
         mpv.set_property("vd-lavc-skiploopfilter", "all")  # Skip loop filter for speed
         mpv.set_property("vd-lavc-skipframe", "nonref")  # Skip non-reference frames
+        
+        # Scaling optimizations
         mpv.set_property("sws-fast", True)  # Fast software scaling
+        mpv.set_property("scale", "lanczos")  # Use lanczos for better quality/speed balance
+        
+        # Caching
         mpv.set_property("cache", True)  # Enable caching
         mpv.set_property("cache-secs", 30)  # Cache 30 seconds
         mpv.set_property("demuxer-max-bytes", "500M")  # Large demuxer buffer
         mpv.set_property("demuxer-max-back-bytes", "500M")  # Large backward buffer
-        log.info("mpv configured for hardware-accelerated decoding and GPU rendering")
+        
+        # Performance tuning
+        mpv.set_property("opengl-glfinish", False)  # Don't wait for GL finish (faster)
+        mpv.set_property("opengl-swapinterval", 0)  # Disable VSync (can cause slowdown)
+        
+        log.info("mpv configured for hardware-accelerated decoding and optimized playback")
     except Exception as exc:
         log.warning(f"Failed to configure mpv optimizations: {exc}")
     
@@ -405,10 +427,10 @@ def run() -> None:
             log.info("Cleared mpv playlist multiple times to ensure only intro video plays")
             # Ensure we don't loop the intro
             mpv.set_loop_file(False)
-            # Ensure normal playback speed and desync mode before loading
+            # Ensure normal playback speed and optimized sync mode before loading
             try:
                 mpv.set_property("speed", 1.0)
-                mpv.set_property("video-sync", "desync")  # Force desync mode for normal speed
+                mpv.set_property("video-sync", "display-resample")  # Use display-resample for smooth playback
             except Exception:
                 pass
             # mpv hardware decoding enabled via v4l2m2m
@@ -493,7 +515,7 @@ def run() -> None:
             # Ensure speed and sync are still correct after loading
             try:
                 mpv.set_property("speed", 1.0)
-                mpv.set_property("video-sync", "desync")  # Force desync mode again after load
+                mpv.set_property("video-sync", "display-resample")  # Use display-resample for smooth playback
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins

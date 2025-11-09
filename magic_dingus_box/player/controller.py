@@ -71,7 +71,31 @@ class PlaybackController:
                 return
             self.mpv.load_file(resolved, item.start, item.end)
             self.paused = False
-            # Actively unpause to ensure playback starts even if mpv defaulted to paused
+            # Ensure normal playback speed and optimize for performance
+            try:
+                self.mpv.set_property("speed", 1.0)
+                # Ensure video sync is set for smooth playback
+                try:
+                    self.mpv.set_property("video-sync", "display-resample")
+                except Exception:
+                    pass
+                # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
+                self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
+                self.mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
+                self.mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
+                # Set fullscreen for video playback
+                self.mpv.set_fullscreen(True)
+                # Wait a moment for fullscreen to activate, then ensure proper scaling
+                import time as time_module
+                time_module.sleep(0.2)
+                # Force window to fill screen
+                try:
+                    self.mpv.set_property("window-scale", 1.0)  # Scale to window size
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Actively unpause to ensure playback starts
             self.mpv.resume()
         else:
             self._log.warning("Unsupported source_type=%s", item.source_type)
@@ -130,12 +154,15 @@ class PlaybackController:
         """Check if the current track has ended.
         
         Returns True when mpv reports end-of-file. If loop-file is enabled,
-        mpv will never report eof-reached (file loops forever), so this will
-        naturally return False for looping tracks.
+        mpv will loop automatically (handled by checking state).
         """
         if not self.playlist:
             return False
         eof = self.mpv.get_property("eof-reached")
+        # If looping is enabled and we reach the end, restart the current track
+        if eof and self.loop:
+            self.play_current()
+            return False
         return eof is True
 
     # Internals
@@ -151,28 +178,62 @@ class PlaybackController:
         """Resolve item.path to an absolute filesystem path.
 
         Priority:
-        1) Relative to the playlist YAML directory (common in dev)
-        2) Relative to current working directory
+        1) Prefer .30fps.* version if it exists (for smoother playback on Pi)
+        2) Relative to the playlist YAML directory (common in dev)
+        3) Relative to current working directory
         Returns None if the file cannot be resolved.
         """
+        def check_30fps_version(path: Path) -> Optional[str]:
+            """Check if a .30fps.* version exists and return it if found."""
+            if not path.exists():
+                return None
+            # Check for .30fps.* version in the same directory
+            parent = path.parent
+            name_no_ext = path.stem
+            ext = path.suffix
+            # Try .30fps.{ext} pattern
+            fps_version = parent / f"{name_no_ext}.30fps{ext}"
+            if fps_version.exists():
+                return str(fps_version)
+            return None
+        
         try:
             if not item.path:
                 return None
             p = Path(item.path).expanduser()
-            if p.is_absolute() and p.exists():
-                return str(p)
+            
+            # Check absolute path first
+            if p.is_absolute():
+                # Check for 30fps version first
+                fps_path = check_30fps_version(p)
+                if fps_path:
+                    return fps_path
+                if p.exists():
+                    return str(p)
+            
             # Try relative to playlist file
             if self.playlist and self.playlist.source_path is not None:
                 candidate = (self.playlist.source_path.parent / p).resolve()
+                fps_path = check_30fps_version(candidate)
+                if fps_path:
+                    return fps_path
                 if candidate.exists():
                     return str(candidate)
+            
             # Fallback: relative to CWD
             candidate = (Path.cwd() / p).resolve()
+            fps_path = check_30fps_version(candidate)
+            if fps_path:
+                return fps_path
             if candidate.exists():
                 return str(candidate)
+            
             # Also try sibling media/ under the playlist directory for dev parity
             if self.playlist and self.playlist.source_path is not None:
                 candidate = (self.playlist.source_path.parent / ".." / "media" / p.name).resolve()
+                fps_path = check_30fps_version(candidate)
+                if fps_path:
+                    return fps_path
                 if candidate.exists():
                     return str(candidate)
         except Exception:
