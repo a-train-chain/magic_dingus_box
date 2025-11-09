@@ -151,50 +151,9 @@ class PlaybackController:
                 # Re-apply playlist video settings after load
                 self._apply_playlist_video_settings()
                 
-                # CRITICAL: Add video filter to downscale high-resolution videos for performance
-                # Scale videos down to max 720p width (maintains aspect ratio)
-                # This dramatically reduces CPU/GPU load for 1280x720 and higher videos
-                try:
-                    # Wait a moment for video to load, then check resolution
-                    import time as time_module
-                    time_module.sleep(0.1)
-                    
-                    # Get current video properties to check resolution
-                    video_params = self.mpv.get_property("video-params")
-                    if video_params and isinstance(video_params, dict):
-                        width = video_params.get("w", 0)
-                        height = video_params.get("h", 0)
-                        if width > 640:
-                            # Video is higher than 640p - scale down aggressively for performance
-                            # Scale to max 640p width (more aggressive than 720p for better performance)
-                            # mpv uses lavfi filters: scale=width:height:flags
-                            # Use fast bilinear scaling for performance
-                            target_width = 640 if width > 640 else 720
-                            scale_filter = f"scale={target_width}:-2:flags=fast_bilinear"
-                            # Apply filter using mpv's video filter method
-                            try:
-                                self.mpv.add_video_filter(scale_filter)
-                                self._log.info(f"Added scale filter: {width}x{height} -> {target_width}p (for performance)")
-                            except Exception as filter_exc:
-                                self._log.warning(f"Could not add scale filter: {filter_exc}")
-                                # Fallback: try setting vf property directly (less reliable)
-                                try:
-                                    self.mpv.set_property("vf", scale_filter)
-                                except Exception:
-                                    pass
-                        else:
-                            self._log.info(f"Video resolution {width}x{height} is OK, no scaling needed")
-                    else:
-                        # Video params not available yet, add scale filter anyway for safety
-                        # Use 640p as default for maximum performance
-                        self._log.info("Video params not available, adding scale filter preemptively (640p)")
-                        try:
-                            scale_filter = "scale=640:-2:flags=fast_bilinear"
-                            self.mpv.add_video_filter(scale_filter)
-                        except Exception:
-                            pass
-                except Exception as scale_exc:
-                    self._log.warning(f"Could not add scale filter: {scale_exc}")
+                # Note: Videos are pre-transcoded to 640p@30fps offline for best performance.
+                # No real-time scaling needed - the _resolve_local_path method automatically
+                # prefers .30fps.* versions when available.
                 
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
