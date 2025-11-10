@@ -549,8 +549,8 @@ def run() -> None:
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
             
-            # Wait a moment, then verify playlist has only one file
-            time.sleep(0.3)
+            # Wait for video to load and get dimensions
+            time.sleep(0.5)  # Give mpv time to load video metadata
             try:
                 import json
                 import socket
@@ -605,19 +605,39 @@ def run() -> None:
             try:
                 mpv.set_property("speed", 1.0)
                 mpv.set_property("video-sync", "desync")  # Force desync mode again after load
+                # Set fullscreen FIRST (before setting scaling properties)
+                mpv.set_fullscreen(True)
+                # Wait for fullscreen to activate and video to be ready
+                time.sleep(0.3)
                 # Set video scaling to fill screen height with margins (letterboxing/pillarboxing)
                 mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
                 mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
-                # Set fullscreen for video playback
-                mpv.set_fullscreen(True)
-                # Wait a moment for fullscreen to activate, then ensure proper scaling
-                time.sleep(0.3)
-                # Force window to fill screen and center
+                # Get video dimensions and calculate scale to fill height
                 try:
-                    mpv.set_property("window-scale", 1.0)  # Scale to window size
-                except Exception:
-                    pass
+                    # Wait a bit more for video params to be available
+                    time.sleep(0.2)
+                    video_w = mpv.get_property("video-params/w")
+                    video_h = mpv.get_property("video-params/h")
+                    if video_w and video_h and screen_height:
+                        # Calculate zoom needed to fill height: zoom = screen_height / video_height
+                        # video-zoom is a multiplier, so we need: zoom = (screen_height / video_height) - 1
+                        # Actually, video-zoom=0 means no zoom. To fill height, we calculate the scale factor
+                        video_height = float(video_h)
+                        zoom_factor = (screen_height / video_height) - 1.0
+                        mpv.set_property("video-zoom", zoom_factor)
+                        log.debug(f"Set video-zoom to {zoom_factor} to fill height (video_h={video_height}, screen_h={screen_height})")
+                    else:
+                        log.debug(f"Video params not available yet: w={video_w}, h={video_h}, screen_h={screen_height}")
+                        # Fallback: try setting window-scale
+                        mpv.set_property("window-scale", 1.0)
+                except Exception as scale_exc:
+                    log.debug(f"Could not calculate video zoom: {scale_exc}")
+                    # Fallback: use window-scale
+                    try:
+                        mpv.set_property("window-scale", 1.0)
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # Ensure any overlay is off; we'll draw bezel via pygame for consistent sizing
@@ -649,12 +669,33 @@ def run() -> None:
             # Ensure mpv window is ready before starting playback (do this BEFORE playback starts)
             try:
                 window_mgr.ensure_mpv_above(max_attempts=1)
+                # Remove decorations from mpv window for seamless display
+                mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
+                if mpv_id:
+                    window_mgr.remove_window_decorations(mpv_id)
+                    window_mgr.hide_cursor_aggressive()
                 log.debug("Ensured mpv window stacking before intro playback")
             except Exception:
                 pass
             
             # Start playback - no window operations after this to avoid interruptions
             mpv.resume()
+            
+            # After playback starts, ensure video scaling is correct (retry in case video wasn't ready)
+            time.sleep(0.5)  # Wait for video to start playing
+            try:
+                video_w = mpv.get_property("video-params/w")
+                video_h = mpv.get_property("video-params/h")
+                if video_w and video_h and screen_height:
+                    video_height = float(video_h)
+                    # video-zoom: positive values zoom in, negative zoom out
+                    # To fill height: we need zoom = (screen_height / video_height) - 1
+                    zoom_factor = (screen_height / video_height) - 1.0
+                    if zoom_factor > 0:
+                        mpv.set_property("video-zoom", zoom_factor)
+                        log.debug(f"Adjusted video-zoom to {zoom_factor} to fill height")
+            except Exception:
+                pass
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -809,7 +850,10 @@ def run() -> None:
                 if pg_id:
                     window_mgr.map_window(pg_id)
                     window_mgr.raise_window(pg_id)
-                    log.debug("Raised pygame window after intro")
+                    # Remove decorations and hide cursor after intro
+                    window_mgr.remove_window_decorations(pg_id)
+                    window_mgr.hide_cursor_aggressive()
+                    log.debug("Raised pygame window after intro and removed decorations")
             except Exception:
                 pass
             
@@ -1547,6 +1591,10 @@ def run() -> None:
             if frame_count % 60 == 0:
                 try:
                     transition_mgr.ensure_ui_visible()
+                    # Also ensure pygame window has no decorations (some WMs reapply them)
+                    pg_id = window_mgr.pygame_window_id or pygame_window_id
+                    if pg_id:
+                        window_mgr.remove_window_decorations(pg_id)
                 except Exception:
                     pass
 
@@ -1556,12 +1604,19 @@ def run() -> None:
             clock.tick(60)
             continue
         
-        # Ensure cursor stays hidden (re-hide periodically)
+        # Ensure cursor stays hidden and windows have no decorations (re-check periodically)
         if frame_count % 120 == 0:  # Every 2 seconds
             pygame.mouse.set_visible(False)
             if config.platform == "linux":
                 # Aggressively hide cursor periodically
                 window_mgr.hide_cursor_aggressive()
+                # Ensure pygame window has no decorations (some WMs reapply them)
+                try:
+                    pg_id = window_mgr.pygame_window_id or pygame_window_id
+                    if pg_id:
+                        window_mgr.remove_window_decorations(pg_id)
+                except Exception:
+                    pass
                 # Also ensure mpv window has no decorations
                 try:
                     mpv_id = transition_mgr._get_mpv_id(max_attempts=1)
