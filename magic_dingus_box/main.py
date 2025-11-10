@@ -101,7 +101,8 @@ def run() -> None:
         modern_resolution = (config.screen_width, config.screen_height)
     
     pygame.display.set_caption("Magic Dingus Box")
-    flags = pygame.FULLSCREEN if config.fullscreen else 0
+    # Use NOFRAME flag to create borderless window for seamless transitions
+    flags = pygame.FULLSCREEN if config.fullscreen else pygame.NOFRAME
     
     # Create screen with appropriate resolution
     if display_mode == DisplayMode.CRT_NATIVE:
@@ -149,6 +150,11 @@ def run() -> None:
             if "window" in wm_info:
                 pygame_window_id = str(wm_info["window"])
                 log.info(f"Got pygame window ID: {pygame_window_id}")
+                # Remove window decorations immediately for seamless appearance
+                window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pygame_window_id)
+                window_mgr_temp.remove_window_decorations(pygame_window_id)
+                # Hide cursor aggressively
+                window_mgr_temp.hide_cursor_aggressive()
         except Exception as wid_exc:
             log.warning(f"Could not get pygame window ID: {wid_exc}")
     
@@ -688,7 +694,8 @@ def run() -> None:
             
             # Restore pygame window first (but keep it transparent initially)
             try:
-                flags = pygame.FULLSCREEN if config.fullscreen else 0
+                # Use NOFRAME flag to create borderless window for seamless transitions
+                flags = pygame.FULLSCREEN if config.fullscreen else pygame.NOFRAME
                 if display_mode == DisplayMode.CRT_NATIVE:
                     screen = pygame.display.set_mode((config.screen_width, config.screen_height), flags)
                 else:
@@ -699,6 +706,16 @@ def run() -> None:
                 content_surface = display_mgr.get_render_surface()
                 renderer = UIRenderer(screen=content_surface, config=config)
                 renderer.bezel_mode = (display_mode == DisplayMode.MODERN_WITH_BEZEL)
+                # Remove window decorations and hide cursor
+                try:
+                    wm_info = pygame.display.get_wm_info()
+                    if "window" in wm_info:
+                        pg_id = str(wm_info["window"])
+                        window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pg_id)
+                        window_mgr_temp.remove_window_decorations(pg_id)
+                        window_mgr_temp.hide_cursor_aggressive()
+                except Exception:
+                    pass
                 log.info("Recreated pygame display surface for UI")
             except Exception as recreate_exc:
                 log.warning(f"Could not recreate display: {recreate_exc}")
@@ -1327,6 +1344,12 @@ def run() -> None:
                         try:
                             mpv.set_fullscreen(True)
                             log.debug("Set mpv fullscreen after transition")
+                            # Ensure mpv window has no decorations after fullscreen
+                            time.sleep(0.1)  # Wait for fullscreen to apply
+                            mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
+                            if mpv_id:
+                                window_mgr.remove_window_decorations(mpv_id)
+                                window_mgr.hide_cursor_aggressive()
                         except Exception as vid_exc:
                             log.warning(f"Could not set mpv fullscreen: {vid_exc}")
                         
@@ -1504,12 +1527,13 @@ def run() -> None:
         if frame_count % 120 == 0:  # Every 2 seconds
             pygame.mouse.set_visible(False)
             if config.platform == "linux":
+                # Aggressively hide cursor periodically
+                window_mgr.hide_cursor_aggressive()
+                # Also ensure mpv window has no decorations
                 try:
-                    import subprocess
-                    subprocess.run(
-                        ["xsetroot", "-cursor_name", "none"],
-                        timeout=0.1, check=False
-                    )
+                    mpv_id = transition_mgr._get_mpv_id(max_attempts=1)
+                    if mpv_id:
+                        window_mgr.remove_window_decorations(mpv_id)
                 except Exception:
                     pass
         

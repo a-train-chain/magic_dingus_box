@@ -104,24 +104,8 @@ class TransitionManager:
             self._log.warning("transition_to_ui: Could not find pygame window")
             return False
         
-        # Step 0: Hide cursor immediately (X11 level)
-        try:
-            import subprocess
-            import os
-            env = os.environ.copy()
-            env["DISPLAY"] = ":0"
-            # Move cursor off-screen
-            subprocess.run(
-                ["xdotool", "mousemove", "10000", "10000"],
-                timeout=0.1, check=False, env=env
-            )
-            # Hide cursor using xsetroot
-            subprocess.run(
-                ["xsetroot", "-cursor_name", "none"],
-                timeout=0.1, check=False
-            )
-        except Exception:
-            pass
+        # Step 0: Hide cursor aggressively (X11 level) - do this FIRST
+        self.window_mgr.hide_cursor_aggressive()
         
         # Step 1: Hide mpv window FIRST (before touching pygame) to prevent any overlap
         # Use batched operations for better performance
@@ -170,6 +154,8 @@ class TransitionManager:
                 ["windowsize", pygame_id, str(self.screen_width), str(self.screen_height)],
                 ["windowmove", pygame_id, "0", "0"]
             ], timeout=0.3)
+            # Remove decorations while window is still unmapped (user won't see this)
+            self.window_mgr.remove_window_decorations(pygame_id)
             self._log.debug(f"Prepared pygame window {pygame_id} size/position while unmapped")
         except Exception as prep_exc:
             self._log.debug(f"Window prep failed: {prep_exc}")
@@ -177,17 +163,14 @@ class TransitionManager:
         # Small delay to ensure all hide operations complete before showing pygame
         time.sleep(0.1)
         
-        # Step 4: Show pygame window instantly (it's already the right size/position)
+        # Step 4: Show pygame window instantly (it's already the right size/position, no decorations)
         try:
             import subprocess
             import os
             env = os.environ.copy()
             env["DISPLAY"] = ":0"
-            # Ensure cursor is still hidden
-            subprocess.run(
-                ["xsetroot", "-cursor_name", "none"],
-                timeout=0.1, check=False
-            )
+            # Hide cursor again before showing window
+            self.window_mgr.hide_cursor_aggressive()
             # Remove HIDDEN state
             subprocess.run(
                 ["xprop", "-id", pygame_id, "-f", "_NET_WM_STATE", "32a", "-remove", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN"],
@@ -200,16 +183,20 @@ class TransitionManager:
             # Map window (make visible) - do this atomically
             self.window_mgr.map_window(pygame_id)
             self.window_mgr.remove_window_state(pygame_id, "_NET_WM_STATE_ICONIC")
+            # Ensure decorations are still removed after mapping (some WMs reapply them)
+            self.window_mgr.remove_window_decorations(pygame_id)
             # Small delay to ensure mapping completes
             time.sleep(0.05)
             # Raise window
             self.window_mgr.raise_window(pygame_id)
+            # Hide cursor one more time after window is shown
+            self.window_mgr.hide_cursor_aggressive()
             # Activate for immediate focus
             subprocess.run(
                 ["xdotool", "windowactivate", pygame_id],
                 timeout=0.3, check=False, env=env
             )
-            self._log.debug(f"Showed pygame window {pygame_id} instantly")
+            self._log.debug(f"Showed pygame window {pygame_id} instantly (borderless)")
         except Exception as show_exc:
             self._log.warning(f"Failed to show pygame window: {show_exc}")
             return False
@@ -249,24 +236,12 @@ class TransitionManager:
             self._log.warning("transition_to_video: Could not find mpv window after retries")
             return False
         
-        # Step 0: Hide cursor immediately (X11 level)
-        try:
-            import subprocess
-            import os
-            env = os.environ.copy()
-            env["DISPLAY"] = ":0"
-            # Move cursor off-screen
-            subprocess.run(
-                ["xdotool", "mousemove", "10000", "10000"],
-                timeout=0.1, check=False, env=env
-            )
-            # Hide cursor using xsetroot
-            subprocess.run(
-                ["xsetroot", "-cursor_name", "none"],
-                timeout=0.1, check=False
-            )
-        except Exception:
-            pass
+        # Step 0: Hide cursor aggressively (X11 level) - do this FIRST
+        self.window_mgr.hide_cursor_aggressive()
+        
+        # Step 0.5: Ensure mpv window has no decorations (do this before hiding)
+        # Some window managers add decorations when window is mapped, so remove them immediately
+        self.window_mgr.remove_window_decorations(mpv_id)
         
         # Step 1: Hide mpv window completely BEFORE any operations
         # Use batched operations for better performance
@@ -293,6 +268,8 @@ class TransitionManager:
                 ["windowsize", mpv_id, str(self.screen_width), str(self.screen_height)],
                 ["windowmove", mpv_id, "0", "0"]
             ], timeout=0.5)
+            # Remove decorations while window is still unmapped (user won't see this)
+            self.window_mgr.remove_window_decorations(mpv_id)
             # Remove BELOW state, prepare for ABOVE
             self.window_mgr.remove_window_state(mpv_id, "_NET_WM_STATE_BELOW")
             self._log.debug(f"Prepared mpv window {mpv_id} position/size while hidden")
@@ -317,17 +294,14 @@ class TransitionManager:
         # Small delay to ensure all hide operations complete before showing mpv
         time.sleep(0.1)
         
-        # Step 4: Show mpv window instantly (it's already the right size/position)
+        # Step 4: Show mpv window instantly (it's already the right size/position, no decorations)
         try:
             import subprocess
             import os
             env = os.environ.copy()
             env["DISPLAY"] = ":0"
-            # Ensure cursor is still hidden
-            subprocess.run(
-                ["xsetroot", "-cursor_name", "none"],
-                timeout=0.1, check=False
-            )
+            # Hide cursor again before showing window
+            self.window_mgr.hide_cursor_aggressive()
             # Remove HIDDEN state
             subprocess.run(
                 ["xprop", "-id", mpv_id, "-f", "_NET_WM_STATE", "32a", "-remove", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN"],
@@ -340,16 +314,20 @@ class TransitionManager:
             # Map window (make visible) - do this atomically
             self.window_mgr.map_window(mpv_id)
             self.window_mgr.remove_window_state(mpv_id, "_NET_WM_STATE_ICONIC")
+            # Ensure decorations are still removed after mapping (some WMs reapply them)
+            self.window_mgr.remove_window_decorations(mpv_id)
             # Small delay to ensure mapping completes
             time.sleep(0.05)
             # Raise window
             self.window_mgr.raise_window(mpv_id)
+            # Hide cursor one more time after window is shown
+            self.window_mgr.hide_cursor_aggressive()
             # Activate for immediate focus
             subprocess.run(
                 ["xdotool", "windowactivate", mpv_id],
                 timeout=0.3, check=False, env=env
             )
-            self._log.debug(f"Showed mpv window {mpv_id} instantly")
+            self._log.debug(f"Showed mpv window {mpv_id} instantly (borderless)")
         except Exception as show_exc:
             self._log.warning(f"Failed to show mpv window: {show_exc}")
             return False

@@ -268,6 +268,76 @@ class WindowManager:
             "-add", "_NET_WM_STATE", state
         ], timeout=1.0)
     
+    def remove_window_decorations(self, window_id: str) -> bool:
+        """Remove window decorations (borders, title bar) using _MOTIF_WM_HINTS.
+        
+        This sets the window to be borderless/undecorated for seamless transitions.
+        
+        Args:
+            window_id: X11 window ID
+            
+        Returns:
+            True if successful
+        """
+        if self.platform != "linux":
+            return False
+        
+        try:
+            # _MOTIF_WM_HINTS format: [flags, functions, decorations, input_mode, status]
+            # decorations = 0 means no decorations
+            # Use xprop to set _MOTIF_WM_HINTS
+            result = subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_MOTIF_WM_HINTS", "32c", "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
+                capture_output=True,
+                timeout=1.0,
+                check=False
+            )
+            if result.returncode == 0:
+                self._log.debug(f"Removed decorations from window {window_id}")
+                return True
+        except Exception as exc:
+            self._log.debug(f"Failed to remove decorations: {exc}")
+        return False
+    
+    def hide_cursor_aggressive(self) -> bool:
+        """Aggressively hide cursor using multiple methods.
+        
+        Returns:
+            True if at least one method succeeded
+        """
+        if self.platform != "linux":
+            return False
+        
+        success = False
+        try:
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            
+            # Method 1: xsetroot (sets root cursor to blank)
+            result = subprocess.run(
+                ["xsetroot", "-cursor_name", "none"],
+                timeout=0.5, check=False, env=env
+            )
+            if result.returncode == 0:
+                success = True
+            
+            # Method 2: Move cursor way off-screen
+            subprocess.run(
+                ["xdotool", "mousemove", "10000", "10000"],
+                timeout=0.5, check=False, env=env
+            )
+            
+            # Method 3: Use xdotool to hide cursor on all windows
+            subprocess.run(
+                ["xdotool", "search", "--class", ".*", "mousemove", "--window", "%1", "10000", "10000"],
+                timeout=0.5, check=False, env=env
+            )
+            
+        except Exception:
+            pass
+        
+        return success
+    
     def ensure_mpv_visible(self, max_attempts: int = 3) -> bool:
         """Ensure mpv window is visible and raised (common operation).
         
