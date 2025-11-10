@@ -1315,6 +1315,22 @@ def run() -> None:
                         selected_playlist = playlists[selected_index]
                         log.info(f"Starting playlist: {selected_playlist.title}")
                         
+                        # Check if this is a game (emulated_game) - games launch RetroArch which blocks
+                        current_item = selected_playlist.items[0] if selected_playlist.items else None
+                        is_game = current_item and current_item.source_type == "emulated_game"
+                        
+                        if is_game:
+                            # For games: hide pygame window before launch, restore after
+                            try:
+                                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                                if pg_id:
+                                    window_mgr.hide_cursor_aggressive()
+                                    # Hide pygame window so RetroArch can take over
+                                    window_mgr.unmap_window(pg_id)
+                                    log.debug("Hidden pygame window before game launch")
+                            except Exception:
+                                pass
+                        
                         # Ensure HDMI audio device is set
                         _apply_audio_device(timeout_seconds=2.0)
                         
@@ -1322,6 +1338,23 @@ def run() -> None:
                         controller.load_playlist(selected_playlist)
                         controller.load_current(start_playback=False)  # Load but keep paused
                         playing_playlist = selected_playlist
+                        
+                        # After game exits, restore pygame window
+                        if is_game:
+                            try:
+                                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                                if pg_id:
+                                    # Restore pygame window after RetroArch exits
+                                    window_mgr.map_window(pg_id)
+                                    window_mgr.raise_window(pg_id)
+                                    window_mgr.remove_window_decorations(pg_id)
+                                    window_mgr.hide_cursor_aggressive()
+                                    log.debug("Restored pygame window after game exit")
+                            except Exception:
+                                pass
+                            # Games don't use mpv, so skip video transition logic
+                            overlay_last_interaction_ts = time.time()
+                            continue
                         
                         # Step 2: Set UI state for video playback (will be hidden by transition)
                         has_playback = True

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -95,21 +97,28 @@ class RetroArchLauncher:
         self._log.info(f"Launching: {' '.join(cmd)}")
         
         try:
-            # Run RetroArch and wait for it to exit
-            result = subprocess.run(
+            # Launch RetroArch asynchronously so we can find and modify its window
+            process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
             )
             
-            if result.returncode == 0:
+            # Wait a moment for RetroArch window to appear, then remove decorations
+            if sys.platform.startswith("linux"):
+                self._remove_retroarch_decorations()
+            
+            # Wait for RetroArch to exit
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
                 self._log.info("Game exited normally")
                 return True
             else:
-                self._log.warning(f"RetroArch exited with code {result.returncode}")
-                if result.stderr:
-                    self._log.debug(f"stderr: {result.stderr}")
+                self._log.warning(f"RetroArch exited with code {process.returncode}")
+                if stderr:
+                    self._log.debug(f"stderr: {stderr}")
                 return False
                 
         except Exception as e:
@@ -124,6 +133,63 @@ class RetroArchLauncher:
                     self._log.debug("Cleaned up temp config")
                 except:
                     pass
+    
+    def _remove_retroarch_decorations(self) -> None:
+        """Find RetroArch window and remove its decorations for seamless display."""
+        if not sys.platform.startswith("linux"):
+            return
+        
+        try:
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            
+            # Wait for RetroArch window to appear (up to 2 seconds)
+            retroarch_window_id = None
+            for attempt in range(20):  # 20 attempts * 0.1s = 2 seconds max
+                time.sleep(0.1)
+                try:
+                    # Try to find RetroArch window by class name or window title
+                    result = subprocess.run(
+                        ["xdotool", "search", "--class", "retroarch"],
+                        capture_output=True,
+                        timeout=0.5,
+                        check=False,
+                        env=env
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        retroarch_window_id = result.stdout.decode().strip().split("\n")[0]
+                        self._log.info(f"Found RetroArch window: {retroarch_window_id}")
+                        break
+                except Exception:
+                    pass
+            
+            if retroarch_window_id:
+                # Remove window decorations using _MOTIF_WM_HINTS
+                subprocess.run(
+                    ["xprop", "-id", retroarch_window_id, "-f", "_MOTIF_WM_HINTS", "32c", 
+                     "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
+                    timeout=1.0,
+                    check=False,
+                    env=env
+                )
+                
+                # Hide cursor aggressively
+                subprocess.run(
+                    ["xsetroot", "-cursor_name", "none"],
+                    timeout=0.5,
+                    check=False,
+                    env=env
+                )
+                subprocess.run(
+                    ["xdotool", "mousemove", "10000", "10000"],
+                    timeout=0.5,
+                    check=False,
+                    env=env
+                )
+                
+                self._log.info("Removed RetroArch window decorations and hid cursor")
+        except Exception as exc:
+            self._log.debug(f"Could not remove RetroArch decorations: {exc}")
 
 
 # Core mappings for common systems
