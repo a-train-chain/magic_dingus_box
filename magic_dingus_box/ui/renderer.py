@@ -64,8 +64,9 @@ class UIRenderer:
         if not has_playback:
             menu_surf.fill(t.bg)
         else:
-            # Menu over video: no panel background to avoid mid-screen rectangle
-            menu_surf.fill((0, 0, 0, 0))
+            # Menu over video: semi-transparent dark background so UI is visible
+            # Use 80% opacity black background so UI elements are clearly visible
+            menu_surf.fill((0, 0, 0, 204))  # 204/255 = 80% opacity
         
         # Draw all text and UI elements on the offscreen surface (100% opaque)
         # Product title header with underline (centered)

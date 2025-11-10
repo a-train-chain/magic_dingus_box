@@ -42,7 +42,6 @@ class PlaylistWatcher:
                     state[str(p)] = p.stat().st_mtime
                 except Exception:
                     pass
-        self._last_state = state
         return state
 
     def _loop(self) -> None:
@@ -53,6 +52,7 @@ class PlaylistWatcher:
                 current = self._snapshot()
                 if current != self._last_state:
                     self.on_change()
+                    self._last_state = current
             except Exception as exc:
                 log.debug("watcher error: %s", exc)
 

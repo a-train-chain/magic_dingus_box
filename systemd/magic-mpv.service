@@ -2,6 +2,8 @@
 Description=Magic Dingus mpv
 After=sound.target graphical.target lightdm.service
 Wants=lightdm.service
+# Wait for X11 socket and user session to be ready
+After=graphical-session.target
 
 [Service]
 Type=simple
@@ -9,10 +11,12 @@ User=alexanderchaney
 Group=alexanderchaney
 RuntimeDirectory=magic
 Environment=AUDIO_DEVICE=alsa/hdmi:CARD=vc4hdmi0,DEV=0
-EnvironmentFile=/etc/magic_dingus_box.env
+EnvironmentFile=-/etc/magic_dingus_box.env
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+# Wait for X11 socket and XAUTHORITY to be ready (max 30 seconds)
+ExecStartPre=/bin/bash -c 'for i in {1..30}; do [ -S /tmp/.X11-unix/X0 ] && [ -f "$HOME/.Xauthority" ] && break || sleep 1; done; sleep 2'
 ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --no-config \
   --input-ipc-server=/run/magic/mpv.sock \
@@ -27,7 +31,8 @@ ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \
   --loop-playlist=no --loop-file=no --loop=no \
   --audio-device=${AUDIO_DEVICE}
 Restart=on-failure
+RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 

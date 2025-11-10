@@ -124,6 +124,20 @@ class MpvClient:
 
     def set_property(self, name: str, value: Any) -> None:
         self._send(["set_property", name, value])
+    
+    def set_properties_batch(self, properties: dict[str, Any]) -> None:
+        """Set multiple properties in a single IPC call for better performance.
+        
+        Args:
+            properties: Dictionary of property names to values
+        """
+        if not properties:
+            return
+        # mpv doesn't have a native batch command, but we can send multiple
+        # set_property commands in quick succession without waiting for responses
+        # This reduces round-trip overhead
+        for name, value in properties.items():
+            self._send(["set_property", name, value], expect_response=False)
 
     def get_property(self, name: str) -> Any:
         resp = self._send(["get_property", name], expect_response=True)
@@ -146,4 +160,27 @@ class MpvClient:
     def get_fullscreen(self) -> bool:
         """Get current fullscreen state."""
         return bool(self.get_property("fullscreen") or False)
+
+    def playlist_clear(self) -> None:
+        """Clear the playlist."""
+        self._send(["playlist-clear"])  # type: ignore[list-item]
+    
+    def get_playlist(self) -> list[dict[str, Any]]:
+        """Get current playlist.
+        
+        Returns:
+            List of playlist items, each with 'filename' and optionally 'current' flag
+        """
+        playlist = self.get_property("playlist")
+        if isinstance(playlist, list):
+            return playlist
+        return []
+    
+    def set_video_enabled(self, enabled: bool) -> None:
+        """Enable or disable video track.
+        
+        Args:
+            enabled: True to enable video, False to disable (audio-only mode)
+        """
+        self.set_property("video", "auto" if enabled else "no")
 

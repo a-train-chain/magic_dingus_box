@@ -22,13 +22,19 @@ def setup_logging(config: AppConfig, verbose: bool = False) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Always attach a console handler for early visibility
+    # Check if handlers already exist to prevent duplicates
+    has_stream_handler = any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers)
+    has_file_handler = any(isinstance(h, RotatingFileHandler) for h in root_logger.handlers)
+
+    # Always attach a console handler for early visibility (if not already present)
+    if not has_stream_handler:
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     stream_handler.setFormatter(formatter)
     root_logger.addHandler(stream_handler)
 
-    # Try to attach a rotating file handler if possible
+    # Try to attach a rotating file handler if possible (if not already present)
+    if not has_file_handler:
     log_file: Path = config.logs_dir / "magic-ui.log"
     try:
         config.ensure_data_dirs()

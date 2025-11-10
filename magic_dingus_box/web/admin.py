@@ -11,6 +11,35 @@ import yaml
 from flask import Flask, jsonify, request, send_file
 
 
+def _sanitize_filename(name: str, allowed_extensions: Optional[list[str]] = None) -> str:
+    """Sanitize filename to prevent path traversal attacks.
+    
+    Args:
+        name: Original filename
+        allowed_extensions: Optional list of allowed extensions (e.g., ['.yaml', '.yml'])
+        
+    Returns:
+        Sanitized filename (basename only, no path separators)
+        
+    Raises:
+        ValueError: If filename contains path separators or invalid characters
+    """
+    # Get basename to remove any path components
+    basename = os.path.basename(name)
+    
+    # Reject if still contains path separators (shouldn't happen after basename, but be safe)
+    if '/' in basename or '\\' in basename or '..' in basename:
+        raise ValueError("Filename contains invalid path characters")
+    
+    # Validate extension if required
+    if allowed_extensions:
+        ext = os.path.splitext(basename)[1].lower()
+        if ext not in allowed_extensions:
+            raise ValueError(f"Filename must have one of these extensions: {', '.join(allowed_extensions)}")
+    
+    return basename
+
+
 def get_local_ip() -> str:
     """Get local IP address of this device."""
     try:
@@ -229,6 +258,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def put_playlist(name):  # type: ignore[no-redef]
         """Create or update a playlist."""
         try:
+            # Sanitize filename to prevent path traversal
+            safe_name = _sanitize_filename(name, allowed_extensions=['.yaml', '.yml'])
+            
             # Accept JSON or YAML
             if request.is_json:
                 data = request.get_json()
@@ -239,17 +271,36 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Validate it's valid YAML
                 yaml.safe_load(yaml_content)
             
-            p = playlists_dir / name
+            p = playlists_dir / safe_name
+            # Ensure path stays within playlists_dir (resolve to absolute, then check)
+            p_resolved = p.resolve()
+            playlists_dir_resolved = playlists_dir.resolve()
+            if not str(p_resolved).startswith(str(playlists_dir_resolved)):
+                return {"error": "Invalid path"}, 400
+            
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(yaml_content)
-            return {"ok": True, "filename": name}
+            return {"ok": True, "filename": safe_name}
+        except ValueError as e:
+            return {"error": str(e)}, 400
         except Exception as e:
             return {"error": str(e)}, 400
 
     @app.delete("/admin/playlists/<name>")
     def delete_playlist(name):  # type: ignore[no-redef]
         """Delete a playlist."""
-        p = playlists_dir / name
+        try:
+            safe_name = _sanitize_filename(name, allowed_extensions=['.yaml', '.yml'])
+        except ValueError as e:
+            return {"error": str(e)}, 400
+        
+        p = playlists_dir / safe_name
+        # Ensure path stays within playlists_dir
+        p_resolved = p.resolve()
+        playlists_dir_resolved = playlists_dir.resolve()
+        if not str(p_resolved).startswith(str(playlists_dir_resolved)):
+            return {"error": "Invalid path"}, 400
+        
         if p.exists():
             p.unlink()
             return {"ok": True}
@@ -280,7 +331,20 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if "file" not in request.files:
             return {"error": "file field required"}, 400
         f = request.files["file"]
-        out = media_dir / f.filename
+        
+        # Sanitize filename to prevent path traversal
+        try:
+            safe_filename = _sanitize_filename(f.filename)
+        except ValueError as e:
+            return {"error": str(e)}, 400
+        
+        out = media_dir / safe_filename
+        # Ensure path stays within media_dir
+        out_resolved = out.resolve()
+        media_dir_resolved = media_dir.resolve()
+        if not str(out_resolved).startswith(str(media_dir_resolved)):
+            return {"error": "Invalid path"}, 400
+        
         out.parent.mkdir(parents=True, exist_ok=True)
         f.save(str(out))
         return {"ok": True, "path": str(out.relative_to(data_dir))}
@@ -322,7 +386,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if "file" not in request.files:
             return {"error": "file field required"}, 400
         f = request.files["file"]
-        out = roms_dir / system / f.filename
+        
+        # Sanitize system name and filename to prevent path traversal
+        try:
+            safe_system = _sanitize_filename(system)
+            safe_filename = _sanitize_filename(f.filename)
+        except ValueError as e:
+            return {"error": str(e)}, 400
+        
+        out = roms_dir / safe_system / safe_filename
+        # Ensure path stays within roms_dir
+        out_resolved = out.resolve()
+        roms_dir_resolved = roms_dir.resolve()
+        if not str(out_resolved).startswith(str(roms_dir_resolved)):
+            return {"error": "Invalid path"}, 400
+        
         out.parent.mkdir(parents=True, exist_ok=True)
         f.save(str(out))
         return {"ok": True, "path": str(out.relative_to(data_dir))}

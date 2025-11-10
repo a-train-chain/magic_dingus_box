@@ -30,12 +30,17 @@ class PlaybackController:
         self.loop = playlist.loop
         self._apply_loop()
 
-    def play_current(self) -> None:
+    def load_current(self, start_playback: bool = False) -> None:
+        """Load the current item without starting playback (for seamless transitions).
+        
+        Args:
+            start_playback: If True, start playback immediately. If False, load but keep paused.
+        """
         item = self._current_item()
         if item is None:
             return
         
-        # Handle emulated games
+        # Handle emulated games (always start immediately, no transition needed)
         if item.source_type == "emulated_game":
             if item.path and item.emulator_core:
                 resolved = self._resolve_local_path(item)
@@ -70,7 +75,6 @@ class PlaybackController:
                 self._log.warning("Item path not found: %s", item.path)
                 return
             self.mpv.load_file(resolved, item.start, item.end)
-            self.paused = False
             # Ensure normal playback speed (fix slow-motion issues)
             try:
                 self.mpv.set_property("speed", 1.0)
@@ -78,22 +82,27 @@ class PlaybackController:
                 self.mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 self.mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
                 self.mpv.set_property("video-aspect", -1)  # Use video's native aspect ratio
-                # Set fullscreen for video playback
-                self.mpv.set_fullscreen(True)
-                # Wait a moment for fullscreen to activate, then ensure proper scaling
-                import time as time_module
-                time_module.sleep(0.2)
-                # Force window to fill screen
+                # Force window to fill screen (non-blocking)
                 try:
                     self.mpv.set_property("window-scale", 1.0)  # Scale to window size
                 except Exception:
                     pass
             except Exception:
                 pass
-            # Actively unpause to ensure playback starts
-            self.mpv.resume()
+            
+            if start_playback:
+                self.paused = False
+                self.mpv.resume()
+            else:
+                # Keep paused - transition manager will handle showing and resuming
+                self.paused = True
+                self.mpv.pause()
         else:
             self._log.warning("Unsupported source_type=%s", item.source_type)
+
+    def play_current(self) -> None:
+        """Load and start playback of current item (for direct playback without transitions)."""
+        self.load_current(start_playback=True)
 
     def next_item(self) -> None:
         if not self.playlist or not self.playlist.items:

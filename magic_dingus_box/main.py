@@ -25,10 +25,18 @@ from .ui.settings_renderer import SettingsMenuRenderer
 from .inputs.keyboard import KeyboardInputProvider
 from .inputs.gpio import GPIOInputProvider  # type: ignore
 from .inputs.joystick import JoystickInputProvider
+try:
+    from .inputs.evdev_keyboard import EvdevKeyboardInputProvider
+    from .inputs.evdev_joystick import EvdevJoystickInputProvider
+    EVDEV_AVAILABLE = True
+except ImportError:
+    EVDEV_AVAILABLE = False
 from .web.admin import create_app
 from .display.display_manager import DisplayManager, DisplayMode
 from .display.bezel_loader import BezelLoader
 from .display.crt_effects import CRTEffectsManager
+from .display.window_manager import WindowManager
+from .display.transition_manager import TransitionManager
 
 
 def run() -> None:
@@ -105,8 +113,54 @@ def run() -> None:
     
     pygame.mouse.set_visible(False)
     
+    # Hide cursor at X11 level (more aggressive, persists during transitions)
+    if config.platform == "linux":
+        try:
+            import subprocess
+            import os
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            # Hide cursor using unclutter or xdotool
+            subprocess.run(
+                ["unclutter", "-idle", "0", "-root"],
+                timeout=2.0, check=False, env=env
+            )
+            # Also use xdotool to hide cursor
+            subprocess.run(
+                ["xdotool", "search", "--name", ".*", "key", "XF86ScreenSaver"],
+                timeout=1.0, check=False, env=env
+            )
+        except Exception:
+            pass
+        # Set cursor to blank using xsetroot
+        try:
+            subprocess.run(
+                ["xsetroot", "-cursor_name", "none"],
+                timeout=1.0, check=False
+            )
+        except Exception:
+            pass
+    
+    # Get pygame window ID for direct window management
+    pygame_window_id = None
+    if config.platform == "linux":
+        try:
+            wm_info = pygame.display.get_wm_info()
+            if "window" in wm_info:
+                pygame_window_id = str(wm_info["window"])
+                log.info(f"Got pygame window ID: {pygame_window_id}")
+        except Exception as wid_exc:
+            log.warning(f"Could not get pygame window ID: {wid_exc}")
+    
     # Initialize display manager
     display_mgr = DisplayManager(display_mode, target_resolution)
+    
+    # Initialize window manager for X11 stacking control
+    window_mgr = WindowManager(debounce_ms=200.0, pygame_window_id=pygame_window_id)
+    
+    # Initialize transition manager for seamless mpv <-> UI transitions
+    screen_width, screen_height = target_resolution
+    transition_mgr = TransitionManager(window_mgr, screen_width, screen_height)
     
     # Initialize bezel loader
     bezel_loader = BezelLoader(config.repo_root / "assets")
@@ -219,27 +273,36 @@ def run() -> None:
             log.warning(f"Audio device auto-select failed: {_exc}")
     
     # Configure mpv for hardware acceleration and performance
+    # Batch property setting reduces IPC overhead significantly
     try:
-        mpv.set_property("hwdec", "v4l2m2m")  # Force hardware decode via V4L2
-        # Use x11 output - simpler and more reliable than gpu on Pi
-        mpv.set_property("vo", "x11")  # Use X11 output (more reliable than gpu on Pi)
-        # Use desync mode - play at native speed without syncing to display (prevents slowdown)
-        mpv.set_property("video-sync", "desync")  # Play at native speed, don't sync to display
-        mpv.set_property("video-latency-hacks", False)  # Disable latency hacks (can cause slowdown)
-        mpv.set_property("interpolation", False)  # Disable interpolation for performance
-        mpv.set_property("tscale", "oversample")  # Fast temporal scaling
-        mpv.set_property("speed", 1.0)  # Ensure playback speed is 1.0x (normal speed)
-        mpv.set_property("vd-lavc-threads", 4)  # Use more decoder threads
-        mpv.set_property("vd-lavc-fast", True)  # Fast decoding
-        mpv.set_property("vd-lavc-dr", True)  # Direct rendering
-        mpv.set_property("vd-lavc-skiploopfilter", "all")  # Skip loop filter for speed
-        mpv.set_property("vd-lavc-skipframe", "nonref")  # Skip non-reference frames
-        mpv.set_property("sws-fast", True)  # Fast software scaling
-        mpv.set_property("cache", True)  # Enable caching
-        mpv.set_property("cache-secs", 30)  # Cache 30 seconds
-        mpv.set_property("demuxer-max-bytes", "500M")  # Large demuxer buffer
-        mpv.set_property("demuxer-max-back-bytes", "500M")  # Large backward buffer
-        log.info("mpv configured for hardware-accelerated decoding and GPU rendering")
+        mpv_properties = {
+            # Hardware/decoder settings (set first)
+            "hwdec": "v4l2m2m",  # Force hardware decode via V4L2
+            "vd-lavc-threads": 4,  # Use more decoder threads
+            "vd-lavc-fast": True,  # Fast decoding
+            "vd-lavc-dr": True,  # Direct rendering
+            "vd-lavc-skiploopfilter": "all",  # Skip loop filter for speed
+            "vd-lavc-skipframe": "nonref",  # Skip non-reference frames
+            # Video output settings
+            "vo": "x11",  # Use X11 output (more reliable than gpu on Pi)
+            "x11-bypass-compositor": True,  # Bypass compositor for lower latency
+            "sws-fast": True,  # Fast software scaling
+            # Sync/playback settings
+            "video-sync": "desync",  # Play at native speed, don't sync to display
+            "video-latency-hacks": False,  # Disable latency hacks (can cause slowdown)
+            "video-sync-max-audio-change": 0.125,  # Tighter audio sync tolerance
+            "video-sync-max-factor": 2.0,  # Limit sync factor changes
+            "interpolation": False,  # Disable interpolation for performance
+            "tscale": "oversample",  # Fast temporal scaling
+            "speed": 1.0,  # Ensure playback speed is 1.0x (normal speed)
+            # Caching settings
+            "cache": True,  # Enable caching
+            "cache-secs": 30,  # Cache 30 seconds
+            "demuxer-max-bytes": "500M",  # Large demuxer buffer
+            "demuxer-max-back-bytes": "500M",  # Large backward buffer
+        }
+        mpv.set_properties_batch(mpv_properties)
+        log.info("mpv configured for hardware-accelerated decoding with performance optimizations")
     except Exception as exc:
         log.warning(f"Failed to configure mpv optimizations: {exc}")
     
@@ -402,8 +465,8 @@ def run() -> None:
         # VLC doesn't use vf filters - this is a no-op
         mpv_bezel_overlay_vf_active = False
 
-    # mpv uses X11 output - minimize pygame to allow mpv to render fullscreen
-    # When video plays, we'll minimize pygame window to let mpv take over display
+    # mpv uses X11 output - keep pygame window behind mpv using window stacking
+    # When video plays, pygame window stays behind mpv but remains findable for instant UI switching
     if config.platform == "linux":
         log.info("mpv configured for hardware-accelerated video output - will coordinate with pygame")
 
@@ -461,14 +524,6 @@ def run() -> None:
                 mpv.set_property("video-sync", "desync")  # Force desync mode for normal speed
             except Exception:
                 pass
-            # mpv hardware decoding enabled via v4l2m2m
-            # Minimize pygame window to let mpv take over fullscreen
-            try:
-                pygame.display.iconify()
-                log.info("Minimized pygame window for intro video playback")
-            except Exception as icon_exc:
-                log.warning(f"Could not minimize window: {icon_exc}")
-            
             # Load ONLY the intro video - no playlist, no other files
             # Use loadfile with "replace" mode to ensure it replaces any existing file
             # CRITICAL: Clear playlist FIRST, then load file
@@ -564,26 +619,36 @@ def run() -> None:
             # mpv audio device already configured
             _apply_audio_device(timeout_seconds=2.0)
             
-            # Start playback
-            mpv.resume()
-            
-            # CRITICAL: Raise mpv window to front so it's visible
-            # Wait a bit longer to ensure mpv has created the window and started playback
-            time.sleep(0.5)
+            # Ensure pygame window is hidden before starting intro playback
             try:
-                import subprocess
-                # Find and raise the mpv window - try multiple times to ensure it works
-                for attempt in range(3):
-                    result = subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                                          capture_output=True, timeout=2, check=False)
-                    if result.returncode == 0:
-                        log.info("Raised mpv window to front for intro video")
-                        break
-                    time.sleep(0.2)
-                else:
-                    log.warning("Could not raise mpv window after multiple attempts")
-            except Exception as raise_exc:
-                log.warning(f"Could not raise mpv window: {raise_exc}")
+                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                if pg_id:
+                    import subprocess
+                    import os
+                    env = os.environ.copy()
+                    env["DISPLAY"] = ":0"
+                    # Unmap pygame window to ensure it's completely hidden during intro
+                    subprocess.run(
+                        ["xdotool", "windowunmap", pg_id],
+                        timeout=0.3, check=False, env=env
+                    )
+                    subprocess.run(
+                        ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
+                        timeout=0.3, check=False, env=env
+                    )
+                    log.debug("Hidden pygame window before intro playback")
+            except Exception:
+                pass
+            
+            # Ensure mpv window is ready before starting playback (do this BEFORE playback starts)
+            try:
+                window_mgr.ensure_mpv_above(max_attempts=1)
+                log.debug("Ensured mpv window stacking before intro playback")
+            except Exception:
+                pass
+            
+            # Start playback - no window operations after this to avoid interruptions
+            mpv.resume()
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -640,9 +705,10 @@ def run() -> None:
             
             # Raise pygame window so it's ready to fade in
             try:
-                import subprocess
-                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
-                              capture_output=True, timeout=2, check=False)
+                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                if pg_id:
+                    window_mgr.map_window(pg_id)
+                    window_mgr.raise_window(pg_id)
             except Exception:
                 pass
             
@@ -705,11 +771,12 @@ def run() -> None:
                         log.info("Stopped mpv and cleared playlist after intro fade")
                     except Exception as stop_exc:
                         log.warning(f"Error stopping mpv: {stop_exc}")
-                    # Minimize mpv window
+                    # Ensure pygame window is on top for UI display
                     try:
-                        import subprocess
-                        subprocess.run(["xdotool", "search", "--class", "mpv", "windowminimize"], 
-                                      capture_output=True, timeout=2, check=False)
+                        pg_id = window_mgr.pygame_window_id or pygame_window_id
+                        if pg_id:
+                            window_mgr.map_window(pg_id)
+                            window_mgr.raise_window(pg_id)
                     except Exception:
                         pass
                     break
@@ -721,12 +788,13 @@ def run() -> None:
             
             # Ensure pygame window is raised and visible after intro
             try:
-                import subprocess
-                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
-                              capture_output=True, timeout=2, check=False)
-                log.info("Raised pygame window after intro")
-            except Exception as raise_exc:
-                log.warning(f"Could not raise pygame window: {raise_exc}")
+                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                if pg_id:
+                    window_mgr.map_window(pg_id)
+                    window_mgr.raise_window(pg_id)
+                    log.debug("Raised pygame window after intro")
+            except Exception:
+                pass
             
             # Ensure UI is rendered once with actual playlists after intro fade
             # This ensures the UI is visible before entering the main loop
@@ -765,6 +833,22 @@ def run() -> None:
             log.info(f"Joystick connected: {js.get_name()} (buttons={js.get_numbuttons()}, hats={js.get_numhats()}, axes={js.get_numaxes()})")
     except Exception as exc:
         log.warning(f"Joystick init failed: {exc}")
+    
+    # Evdev providers (Linux only - work even when pygame doesn't have focus)
+    evdev_kb_provider = None
+    evdev_js_provider = None
+    if config.platform == "linux" and EVDEV_AVAILABLE:
+        try:
+            evdev_kb_provider = EvdevKeyboardInputProvider()
+            log.info("Evdev keyboard input enabled")
+        except Exception as exc:
+            log.warning(f"Evdev keyboard unavailable: {exc}")
+        try:
+            evdev_js_provider = EvdevJoystickInputProvider()
+            log.info("Evdev joystick input enabled")
+        except Exception as exc:
+            log.warning(f"Evdev joystick unavailable: {exc}")
+    
     gpio_provider = None
     if config.platform == "linux" and os.getenv("MAGIC_USE_GPIO", "0") == "1":
         try:
@@ -851,6 +935,7 @@ def run() -> None:
         running = False
     
     signal.signal(signal.SIGTERM, _handle_sigterm)
+    frame_count = 0  # Track frames for occasional window operations
     while running:
         # Handle startup animation first
         if showing_startup_animation:
@@ -902,6 +987,14 @@ def run() -> None:
 
         if gpio_provider is not None:
             for ev in gpio_provider.poll():  # type: ignore[attr-defined]
+                events.append(ev)
+        
+        # Check evdev providers (Linux only - work even when pygame doesn't have focus)
+        if evdev_kb_provider is not None:
+            for ev in evdev_kb_provider.poll():
+                events.append(ev)
+        if evdev_js_provider is not None:
+            for ev in evdev_js_provider.poll():
                 events.append(ev)
 
         for mapped in events:
@@ -1131,143 +1224,122 @@ def run() -> None:
 
             elif t == mapped.Type.SELECT:
                 if ui_hidden:
-                    # User pressed SELECT while watching video - show UI, keep audio playing
-                    # Save current playback position
-                    try:
-                        saved_position = mpv.get_property("time-pos")
-                        log.info(f"Saving playback position: {saved_position}s")
-                    except Exception:
-                        saved_position = None
+                    # User pressed SELECT while watching video - seamless transition to UI
+                    log.info("SELECT pressed during video - transitioning to UI")
                     
-                    # Update selected_index to show currently playing playlist
+                    # Update selected_index to show currently playing playlist (if any)
                     if playing_playlist is not None:
                         try:
                             selected_index = playlists.index(playing_playlist)
-                            log.info(f"Highlighting currently playing playlist: {playing_playlist.title}")
+                            log.info(f"Highlighting playlist: {playing_playlist.title}")
                         except (ValueError, AttributeError):
-                            pass  # Keep current selection if playlist not found
+                            pass
                     
-                    # Disable video track to keep only audio
+                    # Pause mpv BEFORE transition to prevent any visual artifacts
                     try:
-                        mpv.set_property("video", "no")  # Disable video track
-                        mpv.set_fullscreen(False)  # Exit fullscreen
-                        log.info("Disabled video track, keeping audio playing")
-                    except Exception as vid_exc:
-                        log.warning(f"Could not disable video: {vid_exc}")
+                        mpv.pause()
+                        log.debug("Paused mpv before transition to UI")
+                    except Exception as pause_exc:
+                        log.debug(f"Could not pause mpv: {pause_exc}")
                     
-                    # Restore pygame window and show UI
-                    try:
-                        # Restore pygame window
-                        flags = pygame.FULLSCREEN if config.fullscreen else 0
-                        if display_mode == DisplayMode.CRT_NATIVE:
-                            screen = pygame.display.set_mode((config.screen_width, config.screen_height), flags)
-                        else:
-                            screen = pygame.display.set_mode(modern_resolution, flags)
-                        pygame.mouse.set_visible(False)
-                        
-                        # Raise pygame window to front
-                        import subprocess
-                        time.sleep(0.1)
-                        subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowmap", "windowraise"], 
-                                      capture_output=True, timeout=2, check=False)
-                        log.info("Restored pygame window and raised to front")
-                    except Exception as restore_exc:
-                        log.warning(f"Could not restore pygame window: {restore_exc}")
-                    
-                    # Minimize mpv window
-                    try:
-                        import subprocess
-                        subprocess.run(["xdotool", "search", "--class", "mpv", "windowminimize"], 
-                                      capture_output=True, timeout=2, check=False)
-                    except Exception:
-                        pass
-                    
-                    # Start fade-in transition and show UI
-                    start_fade(1)
+                    # Show UI immediately
+                    ui_alpha = 1.0
                     ui_hidden = False
                     
+                    # Force refresh window IDs before transition
+                    transition_mgr.invalidate_cache()
+                    try:
+                        wm_info = pygame.display.get_wm_info()
+                        if "window" in wm_info:
+                            pg_id = str(wm_info["window"])
+                            transition_mgr.window_mgr.pygame_window_id = pg_id
+                            log.debug(f"Refreshed pygame window ID: {pg_id}")
+                    except Exception as wid_exc:
+                        log.debug(f"Could not refresh pygame window ID: {wid_exc}")
+                    
+                    # Perform seamless transition: mpv -> UI
+                    transition_success = transition_mgr.transition_to_ui()
+                    if not transition_success:
+                        log.warning("Transition to UI failed - trying fallback window operations")
+                        # Fallback: direct window operations
+                        try:
+                            pg_id = transition_mgr.window_mgr.pygame_window_id or pygame_window_id
+                            if pg_id:
+                                window_mgr.map_window(pg_id)
+                                window_mgr.remove_window_state(pg_id, "_NET_WM_STATE_HIDDEN")
+                                window_mgr.remove_window_state(pg_id, "_NET_WM_STATE_ICONIC")
+                                window_mgr.raise_window(pg_id)
+                                log.info("Fallback: Manually raised pygame window")
+                        except Exception as fallback_exc:
+                            log.warning(f"Fallback window operations failed: {fallback_exc}")
+                    
+                    # Stop mpv (it's already hidden by transition, so no visual interruption)
+                    try:
+                        mpv.set_fullscreen(False)  # Exit fullscreen
+                        mpv.stop()
+                        mpv.playlist_clear()
+                        log.info("Stopped mpv and cleared playlist")
+                    except Exception as stop_exc:
+                        log.warning(f"Could not stop mpv: {stop_exc}")
+                    
+                    # Clear playback state
+                    has_playback = False
+                    playing_playlist = None
+                    saved_position = None
+                    
+                    # Invalidate window cache since mpv window state changed
+                    transition_mgr.invalidate_cache()
+                    
+                    log.info("Seamless transition complete: UI visible, mpv hidden and stopped")
+                    
                 else:
-                    # UI is visible - user is selecting a playlist
+                    # UI is visible - user is selecting a playlist to start
                     if playlists and selected_index < len(playlists):
                         selected_playlist = playlists[selected_index]
+                        log.info(f"Starting playlist: {selected_playlist.title}")
                         
-                        # Check if this is the same playlist that's currently playing
-                        if has_playback and playing_playlist == selected_playlist:
-                            # Same playlist - restore video at saved position
-                            log.info("Returning to same playlist video")
+                        # Ensure HDMI audio device is set
+                        _apply_audio_device(timeout_seconds=2.0)
+                        
+                        # Step 1: Load playlist and file (but don't start playback yet)
+                        controller.load_playlist(selected_playlist)
+                        controller.load_current(start_playback=False)  # Load but keep paused
+                        playing_playlist = selected_playlist
+                        
+                        # Step 2: Set UI state for video playback (will be hidden by transition)
+                        has_playback = True
+                        ui_alpha = 0.0
+                        ui_hidden = True
+                        playback_start_time = time.time()
+                        
+                        # Step 3: Perform seamless transition: UI -> mpv
+                        # This hides UI, prepares mpv window while hidden, then shows mpv
+                        transition_success = transition_mgr.transition_to_video()
+                        if not transition_success:
+                            log.warning("Transition to video failed - trying fallback")
+                            # Fallback: ensure mpv is visible
                             try:
-                                # Re-enable video track
-                                mpv.set_property("video", "auto")
-                                
-                                # Seek to saved position if we have one
-                                if saved_position is not None:
-                                    mpv.seek_absolute(saved_position)
-                                    log.info(f"Restored playback position: {saved_position}s")
-                                
-                                mpv.set_fullscreen(True)
-                                
-                                # Raise mpv window to front
-                                import subprocess
-                                time.sleep(0.3)
-                                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                                              capture_output=True, timeout=2, check=False)
-                                log.info("Video restored at saved position")
-                            except Exception as vid_exc:
-                                log.warning(f"Could not restore video: {vid_exc}")
-                            
-                            # Start fade-out transition and hide UI
-                            start_fade(-1)
-                            ui_hidden = True
-                            
-                            # Minimize pygame window AFTER setting ui_hidden to ensure it stays minimized
-                            try:
-                                pygame.display.iconify()
-                                log.info("Pygame window minimized for video playback")
-                            except Exception:
-                                pass
-                            
-                        else:
-                            # Different playlist selected - load and start new playlist
-                            log.info(f"Switching to new playlist: {selected_playlist.title}")
-                            
-                            # Set volume to menu level (75%) before starting playback
-                            try:
-                                mpv.set_volume(volume_menu)
-                            except Exception:
-                                pass
-                            
-                            # Load and play new playlist
-                            controller.load_playlist(selected_playlist)
-                            controller.play_current()
-                            playing_playlist = selected_playlist  # Update currently playing playlist
-                            saved_position = None  # Clear saved position
-                            
-                            # Ensure HDMI audio is bound for playlist playback
-                            _apply_audio_device(timeout_seconds=2.0)
-                            
-                            # Ensure mpv is fullscreen and visible
-                            try:
-                                mpv.set_fullscreen(True)
-                                # Raise mpv window to front
-                                import subprocess
-                                time.sleep(0.3)
-                                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                                              capture_output=True, timeout=2, check=False)
-                                log.info("New playlist started, mpv raised")
-                            except Exception as vid_exc:
-                                log.warning(f"Could not start video playback: {vid_exc}")
-                            
-                            has_playback = True
-                            # Start fade-out transition and hide UI
-                            start_fade(-1)
-                            ui_hidden = True
-                            
-                            # Minimize pygame window AFTER setting ui_hidden to ensure it stays minimized
-                            try:
-                                pygame.display.iconify()
-                                log.info("Pygame window minimized for video playback")
-                            except Exception:
-                                pass
+                                window_mgr.ensure_mpv_visible(max_attempts=3)
+                            except Exception as fallback_exc:
+                                log.warning(f"Fallback mpv visibility failed: {fallback_exc}")
+                        
+                        # Step 4: Set mpv to fullscreen (window is already visible from transition)
+                        try:
+                            mpv.set_fullscreen(True)
+                            log.debug("Set mpv fullscreen after transition")
+                        except Exception as vid_exc:
+                            log.warning(f"Could not set mpv fullscreen: {vid_exc}")
+                        
+                        # Step 5: Resume playback (file was loaded paused, now start it)
+                        try:
+                            mpv.resume()
+                            controller.paused = False
+                            log.info("Resumed playback after transition")
+                        except Exception as resume_exc:
+                            log.warning(f"Could not resume playback: {resume_exc}")
+                        
+                        # Invalidate window cache since mpv window state changed
+                        transition_mgr.invalidate_cache()
                 
                 overlay_last_interaction_ts = time.time()
 
@@ -1397,9 +1469,10 @@ def run() -> None:
                         controller.play_current()
                         playing_playlist = playlists[next_playlist_idx]  # Update currently playing playlist
                         saved_position = None  # Clear saved position for new playlist
-                        # Ensure pygame window stays minimized for next video
+                        # Ensure pygame window stays behind mpv for next video
                         try:
-                            pygame.display.iconify()
+                            transition_mgr.transition_to_video()
+                            transition_mgr.invalidate_cache()
                         except Exception:
                             pass
                         log.info("Auto-advanced to next playlist: %s", playlists[next_playlist_idx].title)
@@ -1410,29 +1483,35 @@ def run() -> None:
                     sample_mode.clear_markers()  # Clear markers when auto-advancing tracks
                     log.info("Auto-advanced to next track")
 
-        # If UI became visible, ensure mpv overlay is off so pygame bezel shows
+        # If UI is visible, ensure mpv overlay is off and UI stays visible
+        # Only manage pygame window occasionally (not every frame) to avoid visual artifacts
         if not ui_hidden:
             _deactivate_mpv_bezel_overlay()
+            # Only ensure UI visibility occasionally (every 60 frames ~1 second) to avoid constant operations
+            if frame_count % 60 == 0:
+                try:
+                    transition_mgr.ensure_ui_visible()
+                except Exception:
+                    pass
 
-        # When UI is hidden and video is playing, skip all rendering completely
-        # This ensures pygame window stays minimized and doesn't interfere with video
+        # When UI is hidden and video is playing, skip UI rendering for performance
+        # mpv is fullscreen, so it covers everything - no window management needed
         if ui_hidden and has_playback:
-            # Ensure pygame window stays minimized
-            try:
-                import subprocess
-                subprocess.run(["xdotool", "search", "--name", "Magic Dingus Box", "windowminimize"], 
-                              capture_output=True, timeout=0.5, check=False)
-            except Exception:
-                pass
-            # Ensure mpv window stays on top
-            try:
-                import subprocess
-                subprocess.run(["xdotool", "search", "--class", "mpv", "windowmap", "windowraise"], 
-                              capture_output=True, timeout=0.5, check=False)
-            except Exception:
-                pass
             clock.tick(60)
             continue
+        
+        # Ensure cursor stays hidden (re-hide periodically)
+        if frame_count % 120 == 0:  # Every 2 seconds
+            pygame.mouse.set_visible(False)
+            if config.platform == "linux":
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["xsetroot", "-cursor_name", "none"],
+                        timeout=0.1, check=False
+                    )
+                except Exception:
+                    pass
         
         # Render
         show_overlay = (time.time() - overlay_last_interaction_ts) < config.overlay_fade_seconds
@@ -1450,6 +1529,7 @@ def run() -> None:
 
         pygame.display.flip()
         clock.tick(60)
+        frame_count += 1
 
     try:
         watcher.stop()
