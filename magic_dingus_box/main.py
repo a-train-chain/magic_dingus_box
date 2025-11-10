@@ -150,9 +150,22 @@ def run() -> None:
             if "window" in wm_info:
                 pygame_window_id = str(wm_info["window"])
                 log.info(f"Got pygame window ID: {pygame_window_id}")
-                # Remove window decorations immediately for seamless appearance
+                # Remove window decorations immediately and aggressively for seamless appearance
                 window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pygame_window_id)
-                window_mgr_temp.remove_window_decorations(pygame_window_id)
+                # Remove decorations multiple times to ensure it sticks
+                for _ in range(3):
+                    window_mgr_temp.remove_window_decorations(pygame_window_id)
+                    time.sleep(0.05)
+                # Also use xprop directly as immediate backup
+                import subprocess
+                import os
+                env = os.environ.copy()
+                env["DISPLAY"] = ":0"
+                subprocess.run(
+                    ["xprop", "-id", pygame_window_id, "-f", "_MOTIF_WM_HINTS", "32c", 
+                     "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
+                    timeout=0.5, check=False, env=env
+                )
                 # Hide cursor aggressively
                 window_mgr_temp.hide_cursor_aggressive()
         except Exception as wid_exc:
@@ -605,43 +618,22 @@ def run() -> None:
             try:
                 mpv.set_property("speed", 1.0)
                 mpv.set_property("video-sync", "desync")  # Force desync mode again after load
-                # Set fullscreen FIRST (before setting scaling properties)
-                mpv.set_fullscreen(True)
-                # Wait for fullscreen to activate and video to be ready
-                time.sleep(0.3)
-                # Force 4:3 aspect ratio for intro video
+                # Force 4:3 aspect ratio FIRST (before fullscreen)
                 mpv.set_property("video-aspect", "4/3")  # Force 4:3 aspect ratio
                 mpv.set_property("video-zoom", 0.0)  # Reset zoom
                 mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
-                # Calculate zoom to fill height while maintaining 4:3 aspect ratio
-                # For 4:3 aspect, if screen height is H, width should be (4/3)*H
-                # We want video to fill height, so zoom = screen_height / (video_height at 4:3)
-                try:
-                    # Wait a bit more for video params to be available
-                    time.sleep(0.2)
-                    video_w = mpv.get_property("video-params/w")
-                    video_h = mpv.get_property("video-params/h")
-                    if video_w and video_h and screen_height:
-                        # With 4:3 aspect forced, the effective video height when displayed will be
-                        # determined by mpv. We want to fill screen height, so calculate zoom needed.
-                        # If video is displayed at 4:3, its height will fill screen_height when zoomed correctly.
-                        # video-zoom: 0 = no zoom, positive = zoom in
-                        # To fill height with 4:3 aspect: calculate based on screen height
-                        # For 4:3 content filling height H, width = (4/3)*H
-                        # We need to zoom so the video height matches screen_height
-                        # Since aspect is forced to 4/3, we just need to scale to fill height
-                        video_height = float(video_h)
-                        # Calculate zoom factor to make video height fill screen height
-                        # video-zoom works as a multiplier: zoom = (target_height / source_height) - 1
-                        zoom_factor = (screen_height / video_height) - 1.0
-                        mpv.set_property("video-zoom", zoom_factor)
-                        log.debug(f"Set video-zoom to {zoom_factor} for 4:3 aspect filling height (video_h={video_height}, screen_h={screen_height})")
-                    else:
-                        log.debug(f"Video params not available yet: w={video_w}, h={video_h}, screen_h={screen_height}")
-                except Exception as scale_exc:
-                    log.debug(f"Could not calculate video zoom: {scale_exc}")
-            except Exception:
-                pass
+                # Set fullscreen
+                mpv.set_fullscreen(True)
+                # Wait for fullscreen to activate
+                time.sleep(0.5)
+                # Ensure window is actually fullscreen-sized using window-scale
+                # window-scale > 1.0 makes window larger than screen, which forces fullscreen
+                mpv.set_property("window-scale", 2.0)  # Force large scale to ensure fullscreen
+                time.sleep(0.2)
+                mpv.set_property("window-scale", 1.0)  # Reset to normal scale
+                log.debug("Set mpv to fullscreen with 4:3 aspect ratio")
+            except Exception as exc:
+                log.warning(f"Failed to set mpv fullscreen/scaling: {exc}")
             # Ensure any overlay is off; we'll draw bezel via pygame for consistent sizing
             _deactivate_mpv_bezel_overlay_vf()
             # mpv audio device already configured
@@ -684,21 +676,32 @@ def run() -> None:
             mpv.resume()
             
             # After playback starts, ensure video scaling is correct (retry in case video wasn't ready)
-            time.sleep(0.5)  # Wait for video to start playing
+            time.sleep(0.8)  # Wait for video to start playing and window to be ready
             try:
-                # Ensure 4:3 aspect is still set
+                # Ensure fullscreen and 4:3 aspect are still set
+                mpv.set_fullscreen(True)
                 mpv.set_property("video-aspect", "4/3")
-                video_w = mpv.get_property("video-params/w")
-                video_h = mpv.get_property("video-params/h")
-                if video_w and video_h and screen_height:
-                    video_height = float(video_h)
-                    # Calculate zoom to fill height with 4:3 aspect
-                    zoom_factor = (screen_height / video_height) - 1.0
-                    if zoom_factor > 0:
-                        mpv.set_property("video-zoom", zoom_factor)
-                        log.debug(f"Adjusted video-zoom to {zoom_factor} for 4:3 aspect filling height")
-            except Exception:
-                pass
+                # Ensure window is fullscreen-sized
+                mpv.set_property("window-scale", 1.0)
+                # Get mpv window and ensure it's sized correctly
+                mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
+                if mpv_id:
+                    import subprocess
+                    import os
+                    env = os.environ.copy()
+                    env["DISPLAY"] = ":0"
+                    # Force window to fullscreen size
+                    subprocess.run(
+                        ["xdotool", "windowsize", mpv_id, str(screen_width), str(screen_height)],
+                        timeout=0.5, check=False, env=env
+                    )
+                    subprocess.run(
+                        ["xdotool", "windowmove", mpv_id, "0", "0"],
+                        timeout=0.5, check=False, env=env
+                    )
+                    log.debug(f"Ensured mpv window is fullscreen-sized: {screen_width}x{screen_height}")
+            except Exception as exc:
+                log.debug(f"Could not ensure mpv window size: {exc}")
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
@@ -750,14 +753,27 @@ def run() -> None:
                 content_surface = display_mgr.get_render_surface()
                 renderer = UIRenderer(screen=content_surface, config=config)
                 renderer.bezel_mode = (display_mode == DisplayMode.MODERN_WITH_BEZEL)
-                # Remove window decorations and hide cursor
+                # Remove window decorations and hide cursor IMMEDIATELY
                 try:
                     wm_info = pygame.display.get_wm_info()
                     if "window" in wm_info:
                         pg_id = str(wm_info["window"])
                         window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pg_id)
-                        window_mgr_temp.remove_window_decorations(pg_id)
+                        # Remove decorations multiple times to ensure it sticks
+                        for _ in range(3):
+                            window_mgr_temp.remove_window_decorations(pg_id)
+                            time.sleep(0.05)
                         window_mgr_temp.hide_cursor_aggressive()
+                        # Also use xprop directly as immediate backup
+                        import subprocess
+                        import os
+                        env = os.environ.copy()
+                        env["DISPLAY"] = ":0"
+                        subprocess.run(
+                            ["xprop", "-id", pg_id, "-f", "_MOTIF_WM_HINTS", "32c", 
+                             "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
+                            timeout=0.5, check=False, env=env
+                        )
                 except Exception:
                     pass
                 log.info("Recreated pygame display surface for UI")
