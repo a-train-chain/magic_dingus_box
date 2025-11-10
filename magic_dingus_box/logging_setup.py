@@ -28,21 +28,21 @@ def setup_logging(config: AppConfig, verbose: bool = False) -> None:
 
     # Always attach a console handler for early visibility (if not already present)
     if not has_stream_handler:
-    stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-    stream_handler.setFormatter(formatter)
-    root_logger.addHandler(stream_handler)
+        stream_handler = logging.StreamHandler()
+        stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
 
     # Try to attach a rotating file handler if possible (if not already present)
     if not has_file_handler:
-    log_file: Path = config.logs_dir / "magic-ui.log"
-    try:
-        config.ensure_data_dirs()
-        file_handler = RotatingFileHandler(str(log_file), maxBytes=2_000_000, backupCount=3)
-        file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
-        logging.getLogger(__name__).debug("File logging enabled at %s", log_file)
-    except Exception as exc:
-        logging.getLogger(__name__).warning("File logging unavailable (%s); using console only", exc)
+        log_file: Path = config.logs_dir / "magic-ui.log"
+        try:
+            config.ensure_data_dirs()
+            file_handler = RotatingFileHandler(str(log_file), maxBytes=2_000_000, backupCount=3)
+            file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+            logging.getLogger(__name__).debug("File logging enabled at %s", log_file)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("File logging unavailable (%s); using console only", exc)
 
