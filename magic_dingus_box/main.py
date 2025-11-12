@@ -800,31 +800,27 @@ def run() -> None:
             log.info(f"DEBUG: Intro conditions met, about to play intro video: {intro_path}")
             log.info(f"Playing ONLY intro video: {intro_path}")
 
-            # CRITICAL: Use transition manager for clean intro startup
-            # This ensures mpv window is properly sized and positioned from the beginning
-            log.info("Using transition manager for clean intro video startup")
-            transition_success = transition_mgr.transition_to_video()
-            if not transition_success:
-                log.warning("Transition to video failed, falling back to manual window management")
-                # Fallback to original manual method if transition fails
-                try:
-                    pg_id = window_mgr.pygame_window_id or pygame_window_id
-                    if pg_id:
-                        import subprocess
-                        env = os.environ.copy()
-                        env["DISPLAY"] = ":0"
-                        # Unmap pygame window to ensure it's completely hidden during intro
-                        subprocess.run(
-                            ["xdotool", "windowunmap", pg_id],
-                            timeout=0.3, check=False, env=env
-                        )
-                        subprocess.run(
-                            ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
-                            timeout=0.3, check=False, env=env
-                        )
-                        log.debug("Hidden pygame window before loading intro video")
-                except Exception:
-                    pass
+            # CRITICAL: For intro video, we don't need transition manager since UI isn't showing yet
+            # Just ensure pygame window is hidden before mpv takes over
+            log.info("Preparing for intro video - hiding pygame window")
+            try:
+                pg_id = window_mgr.pygame_window_id or pygame_window_id
+                if pg_id:
+                    import subprocess
+                    env = os.environ.copy()
+                    env["DISPLAY"] = ":0"
+                    # Unmap pygame window to ensure it's completely hidden during intro
+                    subprocess.run(
+                        ["xdotool", "windowunmap", pg_id],
+                        timeout=0.3, check=False, env=env
+                    )
+                    subprocess.run(
+                        ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
+                        timeout=0.3, check=False, env=env
+                    )
+                    log.debug("Hidden pygame window before loading intro video")
+            except Exception as hide_exc:
+                log.debug(f"Could not hide pygame window: {hide_exc}")
             
             # CRITICAL: Stop any existing playback and clear playlist MULTIPLE times to ensure only intro plays
             for attempt in range(3):
