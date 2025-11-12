@@ -1274,8 +1274,9 @@ def run() -> None:
             video_complete = False
             last_position = None
             position_stable_count = 0  # Track if position stops updating (indicates end)
-            
-            while True:
+
+            try:
+                while True:
                 # Allow quit during intro - but be defensive since pygame window may be hidden/killed
                 try:
                     for event in pygame.event.get():
@@ -1477,7 +1478,11 @@ def run() -> None:
                         pass
                 
                 clock.tick(60)
-            
+            except Exception as wait_exc:
+                log.error(f"Exception during intro video waiting loop: {wait_exc}")
+                log.error("Intro video waiting failed - proceeding to UI transition")
+                video_complete = True
+
             # CRITICAL: Ensure video is actually stopped and won't restart
             log.info("Ensuring intro video is stopped before UI transition")
             try:
