@@ -1276,12 +1276,17 @@ def run() -> None:
             position_stable_count = 0  # Track if position stops updating (indicates end)
             
             while True:
-                # Allow quit during intro
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        pygame.quit()
-                        return
-                
+                # Allow quit during intro - but be defensive since pygame window may be hidden/killed
+                try:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            return
+                except Exception:
+                    # If pygame event handling fails (likely due to window being hidden/killed),
+                    # just continue without event handling during intro
+                    pass
+
                 # Don't render pygame during intro - mpv is handling the display
                 # Just check for end conditions
                 
