@@ -500,7 +500,6 @@ def run() -> None:
             subprocess.Popen(mpv_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             # Wait for MPV to start and create socket
-            import time
             for attempt in range(10):
                 time.sleep(0.5)
                 if mpv._connect():
