@@ -803,22 +803,60 @@ def run() -> None:
             log.info("Preparing for intro video - hiding pygame window")
             try:
                 pg_id = window_mgr.pygame_window_id or pygame_window_id
+                log.info(f"Pygame window ID to hide: {pg_id}")
                 if pg_id:
                     import subprocess
                     env = os.environ.copy()
                     env["DISPLAY"] = ":0"
-                    # Unmap pygame window to ensure it's completely hidden during intro
-                    subprocess.run(
-                        ["xdotool", "windowunmap", pg_id],
-                        timeout=0.3, check=False, env=env
-                    )
-                    subprocess.run(
-                        ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
-                        timeout=0.3, check=False, env=env
-                    )
-                    log.debug("Hidden pygame window before loading intro video")
+
+                    # First, try to minimize the window
+                    try:
+                        subprocess.run(
+                            ["xdotool", "windowminimize", pg_id],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Minimized pygame window {pg_id}")
+                    except Exception as min_exc:
+                        log.warning(f"Failed to minimize pygame window: {min_exc}")
+
+                    # Then unmap it
+                    try:
+                        subprocess.run(
+                            ["xdotool", "windowunmap", pg_id],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Unmapped pygame window {pg_id}")
+                    except Exception as unmap_exc:
+                        log.warning(f"Failed to unmap pygame window: {unmap_exc}")
+
+                    # Move it off-screen
+                    try:
+                        subprocess.run(
+                            ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Moved pygame window {pg_id} off-screen")
+                    except Exception as move_exc:
+                        log.warning(f"Failed to move pygame window: {move_exc}")
+
+                    # Verify the window is hidden
+                    try:
+                        result = subprocess.run(
+                            ["xwininfo", "-id", pg_id],
+                            capture_output=True, text=True, timeout=0.5, env=env
+                        )
+                        if result.returncode == 0 and "geometry" in result.stdout:
+                            log.info(f"Pygame window {pg_id} geometry after hiding: {result.stdout.split('geometry')[1].split()[0].strip()}")
+                        else:
+                            log.warning(f"Could not verify pygame window {pg_id} geometry")
+                    except Exception as verify_exc:
+                        log.warning(f"Failed to verify pygame window hiding: {verify_exc}")
+
+                    log.info(f"Completed pygame window hiding for {pg_id}")
+                else:
+                    log.error("CRITICAL: No pygame window ID found to hide - intro video may be covered!")
             except Exception as hide_exc:
-                log.debug(f"Could not hide pygame window: {hide_exc}")
+                log.error(f"CRITICAL: Exception during pygame window hiding: {hide_exc}")
             
             # CRITICAL: Stop any existing playback and clear playlist MULTIPLE times to ensure only intro plays
             for attempt in range(3):
