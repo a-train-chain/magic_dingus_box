@@ -864,13 +864,18 @@ def run() -> None:
             
             # CRITICAL: Set mpv properties BEFORE loading video to ensure correct display from start
             # Force 4:3 aspect ratio FIRST (before fullscreen)
+            log.info("DEBUG: Setting mpv video-aspect to 4/3")
             mpv.set_property("video-aspect", "4/3")  # Force 4:3 aspect ratio
+            log.info("DEBUG: Setting mpv video-zoom to 0.0")
             mpv.set_property("video-zoom", 0.0)  # Reset zoom
+            log.info("DEBUG: Setting mpv panscan to 0.0")
             mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
             # Set fullscreen BEFORE loading video
+            log.info("DEBUG: Setting mpv to fullscreen")
             mpv.set_fullscreen(True)
             # Wait for fullscreen to activate
             time.sleep(0.2)
+            log.info("DEBUG: MPV properties set, about to load video")
 
             # Load ONLY the 30fps intro video - verify it's the right file
             if "30fps" not in str(intro_path):
