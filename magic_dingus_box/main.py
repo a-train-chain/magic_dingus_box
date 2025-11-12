@@ -861,6 +861,15 @@ def run() -> None:
             
             # CRITICAL: Hide the pygame window using multiple methods since xdotool doesn't work in systemd
             log.info("Preparing for intro video - hiding pygame window using multiple methods")
+
+            # First, completely destroy the pygame display surface
+            try:
+                pygame.display.quit()
+                log.info("Destroyed pygame display surface completely")
+                time.sleep(0.2)  # Give time for the window to disappear
+            except Exception as quit_exc:
+                log.warning(f"Could not quit pygame display: {quit_exc}")
+
             try:
                 pg_id = window_mgr.pygame_window_id or pygame_window_id
                 log.info(f"Pygame window ID to hide: {pg_id}")
@@ -869,6 +878,17 @@ def run() -> None:
                     import subprocess
                     env = os.environ.copy()
                     env["DISPLAY"] = ":0"
+
+                    # Method 0: Kill the window completely first (most aggressive)
+                    try:
+                        subprocess.run(
+                            ["xdotool", "windowkill", pg_id],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Killed pygame window {pg_id} completely")
+                        time.sleep(0.1)  # Give time for the kill to take effect
+                    except Exception as kill_exc:
+                        log.warning(f"xdotool windowkill failed: {kill_exc}")
 
                     # Method 1: Use xprop to set window to HIDDEN state (most reliable in systemd)
                     try:
@@ -1060,7 +1080,7 @@ def run() -> None:
                     except Exception as activate_exc:
                         log.warning(f"windowactivate failed: {activate_exc}")
 
-                    # Final verification
+                    # Final verification and extra raise to ensure MPV is on top
                     try:
                         verify_result = subprocess.run(
                             ["xwininfo", "-id", mpv_window_id],
@@ -1076,6 +1096,17 @@ def run() -> None:
                     except Exception as verify_exc:
                         log.warning(f"Window verification failed: {verify_exc}")
 
+                    # EXTRA: Raise MPV window multiple times to ensure it's definitely on top
+                    for raise_attempt in range(3):
+                        try:
+                            subprocess.run(
+                                ["xdotool", "windowraise", mpv_window_id],
+                                timeout=0.2, check=False, env=env
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(0.05)
+                    log.info(f"MPV window raised to top multiple times for {mpv_window_id}")
                     log.info(f"MPV window positioning complete for {mpv_window_id}")
 
                 else:
