@@ -860,6 +860,16 @@ def run() -> None:
             except Exception:
                 pass
             
+            # CRITICAL: Set mpv properties BEFORE loading video to ensure correct display from start
+            # Force 4:3 aspect ratio FIRST (before fullscreen)
+            mpv.set_property("video-aspect", "4/3")  # Force 4:3 aspect ratio
+            mpv.set_property("video-zoom", 0.0)  # Reset zoom
+            mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
+            # Set fullscreen BEFORE loading video
+            mpv.set_fullscreen(True)
+            # Wait for fullscreen to activate
+            time.sleep(0.2)
+
             # Load ONLY the 30fps intro video - verify it's the right file
             if "30fps" not in str(intro_path):
                 log.error(f"ERROR: Wrong intro file selected: {intro_path} (should be intro.30fps.mp4)")
