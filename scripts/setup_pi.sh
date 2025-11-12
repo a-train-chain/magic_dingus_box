@@ -9,7 +9,7 @@ USER_UID="$(id -u "$USER_NAME" 2>/dev/null || echo 1000)"
 APP_DIR="/opt/magic_dingus_box"
 DATA_DIR="/data"
 
-echo "[1/6] Installing packages..."
+echo "[1/7] Installing packages..."
 sudo apt update
 sudo apt install -y \
   xserver-xorg lightdm lightdm-gtk-greeter openbox x11-xserver-utils \
@@ -20,7 +20,7 @@ sudo apt install -y \
 sudo systemctl set-default graphical.target
 sudo systemctl enable --now lightdm
 
-echo "[2/6] Enabling LightDM autologin for $USER_NAME..."
+echo "[2/7] Enabling LightDM autologin for $USER_NAME..."
 sudo mkdir -p /etc/lightdm/lightdm.conf.d
 sudo tee /etc/lightdm/lightdm.conf.d/12-autologin.conf >/dev/null <<EOF
 [Seat:*]
@@ -28,7 +28,7 @@ autologin-user=$USER_NAME
 autologin-session=openbox
 EOF
 
-echo "[3/6] Deploying app to $APP_DIR and creating venv..."
+echo "[3/7] Deploying app to $APP_DIR and creating venv..."
 sudo mkdir -p "$APP_DIR"
 sudo rsync -a --delete ./ "$APP_DIR"/
 sudo chown -R "$USER_NAME":"$USER_NAME" "$APP_DIR"
@@ -37,11 +37,39 @@ sudo -u "$USER_NAME" -H bash -lc "python3 -m venv '$APP_DIR/venv'"
 sudo -u "$USER_NAME" -H bash -lc "'$APP_DIR/venv/bin/pip' install -U pip wheel"
 sudo -u "$USER_NAME" -H bash -lc "'$APP_DIR/venv/bin/pip' install -r '$APP_DIR/requirements.txt'"
 
-echo "[4/6] Preparing data at $DATA_DIR ..."
+echo "[4/7] Installing RetroArch and RetroPie cores..."
+if [ -f "$APP_DIR/scripts/install_retropie_cores.sh" ]; then
+    sudo bash "$APP_DIR/scripts/install_retropie_cores.sh" || echo "RetroPie cores installation failed, continuing..."
+else
+    echo "RetroPie install script not found, installing manually..."
+    sudo apt install -y retroarch || echo "RetroArch installation failed, continuing..."
+    echo "Note: Install RetroPie cores manually with: sudo scripts/install_retropie_cores.sh"
+fi
+
+echo "[5/7] Configuring RetroArch for Pi 4B 2GB RAM..."
+if [ -f "$APP_DIR/scripts/configure_retroarch_pi.sh" ]; then
+    sudo -u "$USER_NAME" -H bash "$APP_DIR/scripts/configure_retroarch_pi.sh" || echo "RetroArch configuration failed, continuing..."
+fi
+
+echo "[6/7] Preparing data at $DATA_DIR ..."
 sudo mkdir -p "$DATA_DIR"
 sudo rsync -a "$APP_DIR/dev_data/" "$DATA_DIR/" || true
 
-echo "[5/6] Installing systemd services (rendered for user $USER_NAME)..."
+# Ensure wrapper script and RetroPie scripts are executable
+if [ -f "$APP_DIR/scripts/launch_retroarch.sh" ]; then
+    chmod +x "$APP_DIR/scripts/launch_retroarch.sh"
+    echo "Made wrapper script executable"
+fi
+if [ -f "$APP_DIR/scripts/install_retropie_cores.sh" ]; then
+    chmod +x "$APP_DIR/scripts/install_retropie_cores.sh"
+    echo "Made RetroPie install script executable"
+fi
+if [ -f "$APP_DIR/scripts/verify_retropie_setup.sh" ]; then
+    chmod +x "$APP_DIR/scripts/verify_retropie_setup.sh"
+    echo "Made RetroPie verification script executable"
+fi
+
+echo "[7/7] Installing systemd services (rendered for user $USER_NAME)..."
 # Render units with correct user, XAUTHORITY and runtime dir
 MPV_UNIT_DST="/etc/systemd/system/magic-mpv.service"
 UI_UNIT_DST="/etc/systemd/system/magic-ui.service"
@@ -63,7 +91,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable magic-mpv.service magic-ui.service
 sudo systemctl restart magic-mpv.service magic-ui.service
 
-echo "[6/6] Configuring HDMI and GPU memory in boot config..."
+echo "Configuring HDMI and GPU memory in boot config..."
 # Detect boot config path (Bookworm: /boot/firmware/config.txt, older: /boot/config.txt)
 BOOT_CFG="/boot/firmware/config.txt"
 if [ ! -f "$BOOT_CFG" ]; then

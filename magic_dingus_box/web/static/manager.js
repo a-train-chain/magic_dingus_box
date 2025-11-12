@@ -962,11 +962,11 @@ function addItemToPlaylist(draggedItem, type) {
         const rom = draggedItem.data;
         const system = draggedItem.system;
         
-        // Auto-detect emulator core
+        // Auto-detect emulator core (using 64-bit compatible cores)
         const coreMap = {
-            'nes': 'fceumm_libretro',
+            'nes': 'nestopia_libretro',
             'snes': 'snes9x_libretro',
-            'n64': 'parallel_n64_libretro',
+            'n64': 'mupen64plus-next_libretro',
             'ps1': 'pcsx_rearmed_libretro'
         };
         

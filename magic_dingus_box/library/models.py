@@ -16,7 +16,7 @@ class PlaylistItem:
     end: Optional[float] = None
     tags: List[str] = field(default_factory=list)
     # Emulator fields
-    emulator_core: Optional[str] = None  # e.g., "fceumm_libretro"
+    emulator_core: Optional[str] = None  # e.g., "nestopia_libretro", "mupen64plus-next_libretro"
     emulator_system: Optional[str] = None  # e.g., "NES", "N64", "PS1"
 
 

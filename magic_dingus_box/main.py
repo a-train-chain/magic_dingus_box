@@ -40,6 +40,126 @@ from .display.transition_manager import TransitionManager
 
 
 def run() -> None:
+    # CRITICAL: Prevent multiple instances from running simultaneously
+    # Create a lock file to ensure only one instance runs at a time
+    # Do this BEFORE logging setup since we need to exit early if duplicate
+    import fcntl
+    lock_file_path = "/tmp/magic_dingus_ui.lock"
+    try:
+        lock_file = open(lock_file_path, 'w')
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Write PID to lock file
+            lock_file.write(str(os.getpid()) + '\n')
+            lock_file.flush()
+        except (IOError, BlockingIOError, OSError):
+            # Another instance is already running
+            lock_file.close()
+            # Use print since logging isn't set up yet
+            print("Another instance of Magic Dingus UI is already running. Exiting.", file=sys.stderr)
+            sys.exit(1)
+    except Exception as lock_exc:
+        # Use print since logging isn't set up yet
+        print(f"Could not create lock file: {lock_exc}", file=sys.stderr)
+        # Continue anyway, but log the warning
+    
+    # CRITICAL: Check if RetroArch is running BEFORE any initialization
+    # Exit immediately if RetroArch is active to prevent UI/intro from interfering
+    # Note: os and sys are imported at module level, so they're available here
+    retroarch_lock_file = "/tmp/magic_retroarch_active.lock"
+    if os.path.exists(retroarch_lock_file):
+        try:
+            # Verify the PID in the lock file is actually RetroArch
+            with open(retroarch_lock_file, 'r') as f:
+                lock_pid = f.read().strip()
+            if lock_pid:
+                # Handle placeholder "starting" value (set before RetroArch launches)
+                if lock_pid == "starting":
+                    # Lock file exists but RetroArch hasn't started yet - wait briefly then check
+                    # Use module-level time import (already imported at top)
+                    time.sleep(1)
+                    # Re-read lock file in case PID was updated
+                    try:
+                        with open(retroarch_lock_file, 'r') as f2:
+                            lock_pid = f2.read().strip()
+                    except Exception:
+                        # If we can't re-read, assume stale and remove it
+                        try:
+                            os.remove(retroarch_lock_file)
+                        except Exception:
+                            pass
+                        lock_pid = ""
+                
+                if lock_pid and lock_pid != "starting":
+                    # Check if process is still running (use basic check, no logging yet)
+                    try:
+                    import subprocess
+                    result = subprocess.run(
+                        ["ps", "-p", lock_pid, "-o", "comm="],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0
+                    )
+                        if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
+                        # RetroArch is running - exit immediately without any initialization
+                        sys.exit(0)
+                    else:
+                        # Lock file exists but process is dead - remove stale lock
+                            try:
+                        os.remove(retroarch_lock_file)
+                            except Exception:
+                                pass
+                    except Exception:
+                        # If ps command fails, assume process is dead and remove stale lock
+                        try:
+                            os.remove(retroarch_lock_file)
+                        except Exception:
+                            pass
+                elif lock_pid == "starting":
+                    # Still "starting" after wait - likely stale, remove it
+                    try:
+                    os.remove(retroarch_lock_file)
+        except Exception:
+                        pass
+            else:
+                # Lock file exists but is empty - remove it
+                try:
+                    os.remove(retroarch_lock_file)
+                except Exception:
+                    pass
+        except (IOError, OSError, PermissionError) as e:
+            # File permission or I/O error - try to remove lock file if we can
+            # Don't exit on these errors - they're likely stale locks or permission issues
+            try:
+                os.remove(retroarch_lock_file)
+            except Exception:
+                pass
+            # Continue execution - don't exit on file errors
+        except Exception:
+            # Other unexpected errors - be defensive and remove lock file
+            # Don't exit on unknown errors - they might be transient issues
+            try:
+                os.remove(retroarch_lock_file)
+            except Exception:
+                pass
+            # Continue execution - we'll check RetroArch process directly below
+    
+    # Also check if RetroArch process is running directly (backup check)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["pgrep", "-f", "retroarch.*--menu"],
+            capture_output=True,
+            text=True,
+            timeout=1.0
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # RetroArch is running - exit immediately
+            sys.exit(0)
+    except Exception:
+        pass
+    
+    # Now safe to initialize
     config = AppConfig()
     setup_logging(config)
     log = logging.getLogger("magic.main")
@@ -87,10 +207,10 @@ def run() -> None:
         # Use current display size, or user's configured size if set
         modern_res_str = settings_store.get_modern_resolution()
         if modern_res_str == "auto":
-            # Auto-detect actual screen size but clamp to 1080p for performance
+            # Auto-detect actual screen size but clamp to 1280x720 for performance
             detected = (display_info.current_w, display_info.current_h)
-            if detected[0] > 1920 or detected[1] > 1080:
-                modern_resolution = (1920, 1080)
+            if detected[0] > 1280 or detected[1] > 720:
+                modern_resolution = (1280, 720)
                 log.info(f"Auto-detected {detected[0]}x{detected[1]} -> clamped to {modern_resolution[0]}x{modern_resolution[1]} for performance")
             else:
                 modern_resolution = detected
@@ -101,8 +221,9 @@ def run() -> None:
         modern_resolution = (config.screen_width, config.screen_height)
     
     pygame.display.set_caption("Magic Dingus Box")
-    # Use NOFRAME flag to create borderless window for seamless transitions
-    flags = pygame.FULLSCREEN if config.fullscreen else pygame.NOFRAME
+    # Always use FULLSCREEN to fill entire screen at 1280x720 resolution
+    # FULLSCREEN ensures the window fills the entire display
+    flags = pygame.FULLSCREEN
     
     # Create screen with appropriate resolution
     if display_mode == DisplayMode.CRT_NATIVE:
@@ -114,11 +235,65 @@ def run() -> None:
     
     pygame.mouse.set_visible(False)
     
+    # CRITICAL: Ensure window is fullscreen-sized and positioned immediately after creation
+    # This prevents the window from appearing in the upper-left corner on boot
+    # On boot, window manager may not be ready immediately, so we retry multiple times
+    if config.platform == "linux":
+        def ensure_fullscreen_window(pg_id, resolution, max_attempts=5):
+            """Ensure window is fullscreen with retries for boot-time reliability."""
+            import subprocess
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            for attempt in range(max_attempts):
+                try:
+                    # Force window to fullscreen size and position
+                    result1 = subprocess.run(
+                        ["xdotool", "windowsize", pg_id, str(resolution[0]), str(resolution[1])],
+                        timeout=1.0, check=False, env=env, capture_output=True
+                    )
+                    result2 = subprocess.run(
+                        ["xdotool", "windowmove", pg_id, "0", "0"],
+                        timeout=1.0, check=False, env=env, capture_output=True
+                    )
+                    # Set maximized state hints to ensure fullscreen
+                    subprocess.run(
+                        ["xprop", "-id", pg_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                        timeout=0.2, check=False, env=env
+                    )
+                    # Verify window size (on boot, xdotool might not work immediately)
+                    if result1.returncode == 0 and result2.returncode == 0:
+                        log.info(f"Set pygame window {pg_id} to fullscreen: {resolution[0]}x{resolution[1]} at (0,0) (attempt {attempt + 1})")
+                        return True
+                    elif attempt < max_attempts - 1:
+                        log.debug(f"Fullscreen positioning attempt {attempt + 1} failed, retrying...")
+                        time.sleep(0.3)  # Wait longer between attempts on boot
+                except Exception as exc:
+                    if attempt < max_attempts - 1:
+                        log.debug(f"Fullscreen positioning attempt {attempt + 1} failed: {exc}, retrying...")
+                        time.sleep(0.3)
+                    else:
+                        log.warning(f"Could not set initial fullscreen after {max_attempts} attempts: {exc}")
+            return False
+        
+        try:
+            # Get window ID
+            wm_info = pygame.display.get_wm_info()
+            if "window" in wm_info:
+                pg_id = str(wm_info["window"])
+                # Wait a moment for window to be fully created (longer on boot)
+                time.sleep(0.5)
+                # Retry fullscreen positioning (important on boot when window manager may not be ready)
+                ensure_fullscreen_window(pg_id, modern_resolution, max_attempts=5)
+        except Exception as fullscreen_exc:
+            log.warning(f"Could not set initial fullscreen: {fullscreen_exc}")
+    
+    # Window properties will be set after window_mgr is created (see below)
+    
     # Hide cursor at X11 level (more aggressive, persists during transitions)
     if config.platform == "linux":
         try:
             import subprocess
-            import os
+            # Note: os is already imported at module level
             env = os.environ.copy()
             env["DISPLAY"] = ":0"
             # Hide cursor using unclutter or xdotool
@@ -150,22 +325,9 @@ def run() -> None:
             if "window" in wm_info:
                 pygame_window_id = str(wm_info["window"])
                 log.info(f"Got pygame window ID: {pygame_window_id}")
-                # Remove window decorations immediately and aggressively for seamless appearance
+                # Set persistent window hints immediately after window creation
                 window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pygame_window_id)
-                # Remove decorations multiple times to ensure it sticks
-                for _ in range(3):
-                    window_mgr_temp.remove_window_decorations(pygame_window_id)
-                    time.sleep(0.05)
-                # Also use xprop directly as immediate backup
-                import subprocess
-                import os
-                env = os.environ.copy()
-                env["DISPLAY"] = ":0"
-                subprocess.run(
-                    ["xprop", "-id", pygame_window_id, "-f", "_MOTIF_WM_HINTS", "32c", 
-                     "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
-                    timeout=0.5, check=False, env=env
-                )
+                window_mgr_temp.set_window_undecorated_persistent(pygame_window_id)
                 # Hide cursor aggressively
                 window_mgr_temp.hide_cursor_aggressive()
         except Exception as wid_exc:
@@ -176,6 +338,51 @@ def run() -> None:
     
     # Initialize window manager for X11 stacking control
     window_mgr = WindowManager(debounce_ms=200.0, pygame_window_id=pygame_window_id)
+    
+    # Set window properties immediately after window_mgr is created
+    # This prevents any visible decorations during window creation
+    if config.platform == "linux" and pygame_window_id:
+        try:
+            # Remove decorations MULTIPLE times immediately after window creation
+            # Openbox can be stubborn, so we need to be aggressive
+            for _ in range(5):
+                window_mgr.remove_window_decorations(pygame_window_id)
+                time.sleep(0.02)  # Small delay between attempts
+            # Set window type to prevent decorations
+            import subprocess
+            # Note: os is already imported at module level
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            subprocess.run(
+                ["xprop", "-id", pygame_window_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_SPLASH"],
+                timeout=0.2, check=False, env=env
+            )
+            # Set maximized state to prevent resizing
+            subprocess.run(
+                ["xprop", "-id", pygame_window_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                timeout=0.2, check=False, env=env
+            )
+            # Remove decorations one more time after setting properties
+            window_mgr.remove_window_decorations(pygame_window_id)
+            # CRITICAL: Ensure window has focus for controller input
+            try:
+                import subprocess
+                env = os.environ.copy()
+                env["DISPLAY"] = ":0"
+                subprocess.run(
+                    ["xdotool", "windowactivate", pygame_window_id],
+                    timeout=0.5, check=False, env=env
+                )
+                subprocess.run(
+                    ["xdotool", "windowfocus", pygame_window_id],
+                    timeout=0.5, check=False, env=env
+                )
+                log.debug("Focused pygame window for controller input")
+            except Exception:
+                pass
+            log.debug(f"Set window properties immediately after creation: {pygame_window_id}")
+        except Exception as win_prop_exc:
+            log.debug(f"Could not set initial window properties: {win_prop_exc}")
     
     # Initialize transition manager for seamless mpv <-> UI transitions
     screen_width, screen_height = target_resolution
@@ -499,7 +706,74 @@ def run() -> None:
     
     # Optional intro video playback with CRT overlay (Linux embedded mpv)
     played_intro = False
+    # Declare controller variables here so they can be re-initialized after intro
+    js_provider = None
+    evdev_js_provider = None
     try:
+        log.info("Checking intro video conditions...")
+        # CRITICAL: Check RetroArch lock file again before playing intro
+        # This prevents intro from starting if RetroArch was launched after UI started
+        retroarch_running = False
+        if os.path.exists(retroarch_lock_file):
+            try:
+                with open(retroarch_lock_file, 'r') as f:
+                    lock_pid = f.read().strip()
+                if lock_pid and lock_pid != "starting":
+                    import subprocess
+                    try:
+                    result = subprocess.run(
+                        ["ps", "-p", lock_pid, "-o", "comm="],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0
+                    )
+                        if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
+                        log.info(f"RetroArch is running (PID: {lock_pid}) - skipping intro video")
+                            retroarch_running = True
+                        played_intro = False  # Don't play intro if RetroArch is running
+                    else:
+                            # Lock file exists but process is dead - remove stale lock
+                            log.info(f"Stale RetroArch lock file detected (PID: {lock_pid} not running) - removing")
+                            try:
+                                os.remove(retroarch_lock_file)
+                            except Exception:
+                                pass
+                    except Exception as ps_exc:
+                        # If ps command fails, assume process is dead and remove stale lock
+                        log.info(f"Could not check RetroArch process (PID: {lock_pid}): {ps_exc} - removing stale lock")
+                        try:
+                            os.remove(retroarch_lock_file)
+                        except Exception:
+                            pass
+                elif lock_pid == "starting":
+                    # Still "starting" - likely stale, remove it
+                    log.info("Stale RetroArch lock file detected (still 'starting') - removing")
+                    try:
+                        os.remove(retroarch_lock_file)
+                    except Exception:
+                        pass
+                else:
+                    # Empty lock file - remove it
+                    log.info("Empty RetroArch lock file detected - removing")
+                    try:
+                        os.remove(retroarch_lock_file)
+                    except Exception:
+                        pass
+            except (IOError, OSError, PermissionError) as e:
+                # File permission or I/O error - try to remove lock file if we can
+                log.warning(f"Error reading RetroArch lock file: {e} - attempting to remove")
+                try:
+                    os.remove(retroarch_lock_file)
+                except Exception:
+                    pass
+            except Exception as exc:
+                # Other errors - be defensive and remove lock file
+                log.warning(f"Unexpected error checking RetroArch lock file: {exc} - attempting to remove")
+                try:
+                        os.remove(retroarch_lock_file)
+            except Exception:
+                pass
+        
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
         # Use intro.30fps.mp4 (pre-transcoded version for consistent performance)
@@ -518,8 +792,38 @@ def run() -> None:
             else:
                 log.warning(f"Intro video not found: {intro_30fps}")
         
-        if intro_path is not None:
+        # Only play intro if RetroArch is NOT running
+        log.info(f"Intro video check: intro_path={intro_path}, retroarch_running={retroarch_running}, lock_file_exists={os.path.exists(retroarch_lock_file)}")
+        if intro_path is not None and not retroarch_running:
+            # Use module-level time import (already imported at top of file)
             log.info(f"Playing ONLY intro video: {intro_path}")
+            
+            # CRITICAL: Use transition manager for clean intro startup
+            # This ensures mpv window is properly sized and positioned from the beginning
+            log.info("Using transition manager for clean intro video startup")
+            transition_success = transition_mgr.transition_to_video()
+            if not transition_success:
+                log.warning("Transition to video failed, falling back to manual window management")
+                # Fallback to original manual method if transition fails
+                try:
+                    pg_id = window_mgr.pygame_window_id or pygame_window_id
+                    if pg_id:
+                        import subprocess
+                        env = os.environ.copy()
+                        env["DISPLAY"] = ":0"
+                        # Unmap pygame window to ensure it's completely hidden during intro
+                        subprocess.run(
+                            ["xdotool", "windowunmap", pg_id],
+                            timeout=0.3, check=False, env=env
+                        )
+                        subprocess.run(
+                            ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
+                            timeout=0.3, check=False, env=env
+                        )
+                        log.debug("Hidden pygame window before loading intro video")
+                except Exception:
+                    pass
+            
             # CRITICAL: Stop any existing playback and clear playlist MULTIPLE times to ensure only intro plays
             for attempt in range(3):
                 try:
@@ -562,8 +866,31 @@ def run() -> None:
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
             
-            # Wait for video to load and get dimensions
-            time.sleep(0.5)  # Give mpv time to load video metadata
+            # Wait for video to fully load and be ready before starting playback
+            # Check multiple times to ensure video is actually ready
+            video_ready = False
+            max_wait_attempts = 20  # Wait up to 4 seconds (20 * 0.2)
+            for attempt in range(max_wait_attempts):
+                try:
+                    # Check if video has dimensions (indicates it's loaded)
+                    width = mpv.get_property("width")
+                    height = mpv.get_property("height")
+                    # Check if video is actually loaded (not just metadata)
+                    eof = mpv.get_property("eof-reached")
+                    # Video is ready if we have dimensions and it's not at EOF (EOF means not loaded yet)
+                    if width and height and width > 0 and height > 0 and eof is not True:
+                        video_ready = True
+                        log.info(f"Video ready: {width}x{height}")
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.2)  # Wait 200ms between checks
+            
+            if not video_ready:
+                log.warning("Video may not be fully ready, but proceeding anyway")
+            else:
+                # Give mpv a bit more time to fully render the first frame
+                time.sleep(0.3)
             try:
                 import json
                 import socket
@@ -639,74 +966,52 @@ def run() -> None:
             # mpv audio device already configured
             _apply_audio_device(timeout_seconds=2.0)
             
-            # Ensure pygame window is hidden before starting intro playback
-            try:
-                pg_id = window_mgr.pygame_window_id or pygame_window_id
-                if pg_id:
-                    import subprocess
-                    import os
-                    env = os.environ.copy()
-                    env["DISPLAY"] = ":0"
-                    # Unmap pygame window to ensure it's completely hidden during intro
-                    subprocess.run(
-                        ["xdotool", "windowunmap", pg_id],
-                        timeout=0.3, check=False, env=env
-                    )
-                    subprocess.run(
-                        ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
-                        timeout=0.3, check=False, env=env
-                    )
-                    log.debug("Hidden pygame window before intro playback")
-            except Exception:
-                pass
-            
-            # Ensure mpv window is ready before starting playback (do this BEFORE playback starts)
-            try:
-                window_mgr.ensure_mpv_above(max_attempts=1)
-                # Remove decorations from mpv window for seamless display
-                mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
-                if mpv_id:
-                    window_mgr.remove_window_decorations(mpv_id)
-                    window_mgr.hide_cursor_aggressive()
-                log.debug("Ensured mpv window stacking before intro playback")
-            except Exception:
-                pass
+            # CRITICAL: Do minimal window operations BEFORE starting playback
+            # Avoid any operations that might disrupt mpv window state right before playback
+            # The pygame window is already hidden above, so we just need to ensure mpv is ready
+            # Wait a moment for mpv window to be fully created and configured
+            time.sleep(0.3)
             
             # Start playback - no window operations after this to avoid interruptions
             mpv.resume()
             
-            # After playback starts, ensure video scaling is correct (retry in case video wasn't ready)
-            time.sleep(0.8)  # Wait for video to start playing and window to be ready
-            try:
-                # Ensure fullscreen and 4:3 aspect are still set
-                mpv.set_fullscreen(True)
-                mpv.set_property("video-aspect", "4/3")
-                # Ensure window is fullscreen-sized
-                mpv.set_property("window-scale", 1.0)
-                # Get mpv window and ensure it's sized correctly
-                mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
-                if mpv_id:
-                    import subprocess
-                    import os
-                    env = os.environ.copy()
-                    env["DISPLAY"] = ":0"
-                    # Force window to fullscreen size
-                    subprocess.run(
-                        ["xdotool", "windowsize", mpv_id, str(screen_width), str(screen_height)],
-                        timeout=0.5, check=False, env=env
-                    )
-                    subprocess.run(
-                        ["xdotool", "windowmove", mpv_id, "0", "0"],
-                        timeout=0.5, check=False, env=env
-                    )
-                    log.debug(f"Ensured mpv window is fullscreen-sized: {screen_width}x{screen_height}")
-            except Exception as exc:
-                log.debug(f"Could not ensure mpv window size: {exc}")
+            # Wait for video to actually start playing (check playback state)
+            playback_started = False
+            for attempt in range(10):  # Wait up to 1 second
+                try:
+                    is_playing = not mpv.get_property("pause")
+                    if is_playing:
+                        playback_started = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.1)
+            
+            if playback_started:
+                log.info("Intro video playback confirmed started")
+            else:
+                log.warning("Could not confirm playback started, but continuing")
+            
+            # CRITICAL: No window operations after playback starts - let video play uninterrupted
+            # All window setup was done before loading the video
             
             intro_duration = float(settings_store.get("intro_duration", 10.0))
             # Optional: apply CRT effects during intro (default off for performance)
             intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
             intro_start = time.time()
+            
+            # Get actual video duration from mpv to ensure we wait for the full video
+            actual_video_duration = None
+            try:
+                actual_video_duration = mpv.get_property("duration")
+                if actual_video_duration:
+                    log.info(f"Intro video actual duration: {actual_video_duration:.3f}s (settings duration: {intro_duration}s)")
+            except Exception:
+                log.debug("Could not get video duration from mpv")
+            
+            # Use actual duration if available, otherwise use settings duration
+            target_duration = actual_video_duration if actual_video_duration else intro_duration
+            max_wait_time = target_duration + 2.0  # Allow 2 seconds buffer beyond actual duration
             
             # Verify video is actually playing
             try:
@@ -714,6 +1019,13 @@ def run() -> None:
                 log.info(f"Intro video playback started, paused={not is_playing}")
             except Exception:
                 pass
+            
+            # Wait for video to complete - ALWAYS wait for full video duration
+            # This ensures the intro video plays completely from start to finish
+            log.info(f"Waiting for intro video to complete (target duration: {target_duration:.3f}s, max wait: {max_wait_time:.1f}s)")
+            video_complete = False
+            last_position = None
+            position_stable_count = 0  # Track if position stops updating (indicates end)
             
             while True:
                 # Allow quit during intro
@@ -725,77 +1037,233 @@ def run() -> None:
                 # Don't render pygame during intro - mpv is handling the display
                 # Just check for end conditions
                 
-                # End conditions: duration elapsed or mpv signaled EOF
-                if (time.time() - intro_start) >= intro_duration:
+                elapsed = time.time() - intro_start
+                
+                # Primary check: wait for actual elapsed time to reach video duration
+                # This is the most reliable method - we know exactly how long the video should be
+                # Wait until we've actually played for the full duration
+                if actual_video_duration and elapsed >= actual_video_duration:
+                    # We've waited for the full video duration - STOP VIDEO IMMEDIATELY to prevent looping
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        eof_reached = mpv.get_property("eof-reached")
+                        time_pos = mpv.get_property("time-pos")
+                        if time_pos:
+                            log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - position: {time_pos:.3f}s, playing: {is_playing}, EOF: {eof_reached}")
+                        else:
+                            log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - playing: {is_playing}, EOF: {eof_reached}")
+                        # Stop video immediately to prevent looping
+                        mpv.pause()
+                        mpv.stop()  # Stop completely
+                        log.info("Stopped intro video after duration elapsed")
+                    except Exception:
+                        log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - video complete")
+                        try:
+                            mpv.pause()
+                            mpv.stop()
+                        except Exception:
+                            pass
+                    # Wait a moment for the last frame to be fully displayed
+                    video_complete = True
+                    time.sleep(0.5)  # Brief pause before transition
                     break
+                elif actual_video_duration and elapsed >= (actual_video_duration - 0.05):
+                    # Very close to end (within 50ms) - wait for exact duration
+                    # Don't transition yet, let the primary check above handle it
+                    time.sleep(0.01)  # Check very frequently when extremely close
+                
+                # Secondary check: playback position to determine how close we are to the end
+                # This provides early detection if position is available
                 try:
-                    if mpv.get_property("eof-reached") is True:
-                        break
-                except Exception:
-                    pass
+                    time_pos = mpv.get_property("time-pos")
+                    duration = mpv.get_property("duration") or actual_video_duration
+                    
+                    if duration is not None and time_pos is not None:
+                        remaining = duration - time_pos
+                        progress_pct = (time_pos / duration) * 100 if duration > 0 else 0
+                        
+                        # Track if position has stopped updating (indicates we're at the end)
+                        if last_position is not None and abs(time_pos - last_position) < 0.001:
+                            # Position hasn't changed much - we might be at the end
+                            position_stable_count += 1
+                        else:
+                            position_stable_count = 0
+                        last_position = time_pos
+                        
+                        # Log position when close to end for debugging
+                        if remaining <= 0.2:
+                            log.debug(f"Intro video position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s ({progress_pct:.1f}%)")
+                        
+                        # Wait until we're very close to the end
+                        # Use multiple conditions: remaining time, percentage, or position stability
+                        # Also check if video has stopped playing (paused) which indicates end
+                        is_playing = True
+                        try:
+                            is_playing = not mpv.get_property("pause")
+                        except Exception:
+                            pass
+                        
+                        # Secondary check: position-based detection (only used if no duration available)
+                        # Only use this if we don't have actual_video_duration, otherwise rely on elapsed time
+                        if not actual_video_duration:
+                            # No duration info - use position-based check as fallback
+                            if remaining <= 0.05 or progress_pct >= 99.5 or (remaining <= 0.1 and position_stable_count >= 5) or (remaining <= 0.15 and not is_playing):
+                                log.info(f"Intro video reached end after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s, {progress_pct:.1f}% complete, playing: {is_playing})")
+                                video_complete = True
+                                time.sleep(1.5)
+                                break
+                        elif remaining <= 0.2:
+                            # Very close to end - check more frequently
+                            time.sleep(0.01)  # Check very frequently when close to end
+                            # Also check EOF when close to end
+                            try:
+                                eof_reached = mpv.get_property("eof-reached")
+                                if eof_reached is True:
+                                    # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
+                                    log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s)")
+                                    try:
+                                        mpv.pause()
+                                        mpv.stop()  # Stop completely to prevent restart
+                                        log.info("Stopped intro video immediately on EOF")
+                                    except Exception:
+                                        pass
+                                    video_complete = True
+                                    time.sleep(0.2)
+                                    break
+                            except Exception:
+                                pass
+                        else:
+                            # Not close yet - normal check interval
+                            # Also check EOF as backup
+                            try:
+                                eof_reached = mpv.get_property("eof-reached")
+                                if eof_reached is True:
+                                    # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
+                                    log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s)")
+                                    try:
+                                        mpv.pause()
+                                        mpv.stop()  # Stop completely to prevent restart
+                                        log.info("Stopped intro video immediately on EOF")
+                                    except Exception:
+                                        pass
+                                    video_complete = True
+                                    time.sleep(0.2)
+                                    break
+                            except Exception:
+                                pass
+                    else:
+                        # No duration/position info - fall back to EOF check only
+                        try:
+                            eof_reached = mpv.get_property("eof-reached")
+                            if eof_reached is True:
+                                log.info(f"Intro video reached EOF after {elapsed:.2f}s (no position info) - video complete")
+                                video_complete = True
+                                # Stop the video immediately to prevent looping
+                                try:
+                                    mpv.pause()
+                                except Exception:
+                                    pass
+                                    time.sleep(0.5)
+                                break
+                        except Exception:
+                            pass
+                except Exception as pos_exc:
+                    # Position check failed - log and try EOF as fallback
+                    if elapsed > 10:  # Only log errors when we're close to expected end
+                        log.debug(f"Position check exception at {elapsed:.2f}s: {pos_exc}")
+                    try:
+                        eof_reached = mpv.get_property("eof-reached")
+                        if eof_reached is True:
+                            log.info(f"Intro video reached EOF after {elapsed:.2f}s (position check failed: {pos_exc}) - video complete")
+                            video_complete = True
+                            # Stop the video immediately to prevent looping
+                            try:
+                                mpv.pause()
+                            except Exception:
+                                pass
+                            time.sleep(0.5)
+                            break
+                    except Exception as eof_exc:
+                        if elapsed > 10:
+                            log.debug(f"EOF check also failed: {eof_exc}")
+                
+                # Safety timeout: if video hasn't ended after max_wait_time, proceed anyway
+                # This prevents infinite waiting if EOF detection fails
+                if elapsed >= max_wait_time:
+                    log.warning(f"Intro video max wait time ({max_wait_time}s) reached - proceeding to UI")
+                    # Stop the video immediately to prevent looping
+                    try:
+                        mpv.pause()
+                        mpv.stop()  # Stop completely
+                        # Clear playlist to prevent restart
+                        import json
+                        import socket
+                        sock = socket.socket(socket.AF_UNIX)
+                        sock.connect(config.mpv_socket)
+                        sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                        sock.close()
+                        log.info("Stopped and cleared intro video due to timeout")
+                    except Exception:
+                        pass
+                    # Double-check if video is still playing
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        if is_playing:
+                            log.warning("Video still playing but max wait time reached - forcing transition")
+                    except Exception:
+                        pass
+                    video_complete = True
+                    break
+                
+                # Log progress every 5 seconds for debugging
+                if int(elapsed) % 5 == 0 and elapsed > 0:
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        log.debug(f"Intro video playing: {is_playing}, elapsed: {elapsed:.1f}s")
+                    except Exception:
+                        pass
                 
                 clock.tick(60)
             
-            # Fade transition from intro video to UI
-            log.info("Starting fade transition from intro to UI")
-            
-            # Restore pygame window first (but keep it transparent initially)
+            # CRITICAL: Ensure video is actually stopped and won't restart
+            log.info("Ensuring intro video is stopped before UI transition")
             try:
-                # Use NOFRAME flag to create borderless window for seamless transitions
-                flags = pygame.FULLSCREEN if config.fullscreen else pygame.NOFRAME
-                if display_mode == DisplayMode.CRT_NATIVE:
-                    screen = pygame.display.set_mode((config.screen_width, config.screen_height), flags)
-                else:
-                    screen = pygame.display.set_mode(modern_resolution, flags)
-                pygame.mouse.set_visible(False)
-                # Update display manager with new screen
+                mpv.pause()
+                mpv.stop()  # Stop completely to prevent any restart
+                # Also clear the playlist to prevent MPV from restarting
+                import json
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                sock.connect(config.mpv_socket)
+                sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                sock.close()
+                log.info("Stopped intro video and cleared playlist")
+                time.sleep(0.3)  # Brief pause to ensure video stops
+            except Exception as stop_exc:
+                log.warning(f"Error stopping video: {stop_exc}")
+            
+            # Fade transition from intro video to UI using transition manager
+            log.info("Starting clean fade transition from intro to UI using transition manager")
+            transition_success = transition_mgr.transition_to_ui()
+            if transition_success:
+                log.info("Successfully transitioned to UI")
+            else:
+                log.warning("Transition to UI failed, UI may not be properly visible")
+
+            # Recreate display surfaces after transition (transition manager handles window sizing)
+            try:
+                # Update display manager with current screen
                 display_mgr = DisplayManager(display_mode, target_resolution)
                 content_surface = display_mgr.get_render_surface()
                 renderer = UIRenderer(screen=content_surface, config=config)
                 renderer.bezel_mode = (display_mode == DisplayMode.MODERN_WITH_BEZEL)
-                # Remove window decorations and hide cursor IMMEDIATELY
-                try:
-                    wm_info = pygame.display.get_wm_info()
-                    if "window" in wm_info:
-                        pg_id = str(wm_info["window"])
-                        window_mgr_temp = WindowManager(debounce_ms=0.0, pygame_window_id=pg_id)
-                        # Remove decorations multiple times to ensure it sticks
-                        for _ in range(3):
-                            window_mgr_temp.remove_window_decorations(pg_id)
-                            time.sleep(0.05)
-                        window_mgr_temp.hide_cursor_aggressive()
-                        # Also use xprop directly as immediate backup
-                        import subprocess
-                        import os
-                        env = os.environ.copy()
-                        env["DISPLAY"] = ":0"
-                        subprocess.run(
-                            ["xprop", "-id", pg_id, "-f", "_MOTIF_WM_HINTS", "32c", 
-                             "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
-                            timeout=0.5, check=False, env=env
-                        )
-                except Exception:
-                    pass
-                log.info("Recreated pygame display surface for UI")
+                log.info("Recreated display surfaces after transition")
             except Exception as recreate_exc:
-                log.warning(f"Could not recreate display: {recreate_exc}")
-            
-            # Raise pygame window so it's ready to fade in
-            try:
-                pg_id = window_mgr.pygame_window_id or pygame_window_id
-                if pg_id:
-                    window_mgr.map_window(pg_id)
-                    window_mgr.raise_window(pg_id)
-            except Exception:
-                pass
+                log.warning(f"Could not recreate display surfaces: {recreate_exc}")
             
             # Fade transition: fade out video, fade in UI
             fade_duration = 1.0  # 1 second fade
             fade_start = time.time()
-            
-            # Initialize empty playlists for fade (will be loaded after fade completes)
-            playlists_for_fade = []
-            selected_index_for_fade = 0
             
             while True:
                 elapsed = time.time() - fade_start
@@ -817,8 +1285,8 @@ def run() -> None:
                 except Exception:
                     pass
                 
-                # Render UI content with fade (use empty playlists during fade)
-                renderer.render(playlists=playlists_for_fade, selected_index=selected_index_for_fade, controller=controller, 
+                # Render UI content with fade (use actual playlists so UI is complete when fade ends)
+                renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, 
                               show_overlay=False, ui_alpha=ui_alpha_fade, ui_hidden=False, 
                               has_playback=False, sample_mode=None)
                 
@@ -854,6 +1322,8 @@ def run() -> None:
                         if pg_id:
                             window_mgr.map_window(pg_id)
                             window_mgr.raise_window(pg_id)
+                            # Ensure persistent undecorated state
+                            window_mgr.set_window_undecorated_persistent(pg_id)
                     except Exception:
                         pass
                     break
@@ -867,27 +1337,108 @@ def run() -> None:
             try:
                 pg_id = window_mgr.pygame_window_id or pygame_window_id
                 if pg_id:
+                    # CRITICAL: Ensure window is fullscreen-sized and positioned
+                    # Use retry logic for boot-time reliability
+                    if config.platform == "linux":
+                        def ensure_fullscreen_after_intro(pg_id, resolution, max_attempts=3):
+                            """Ensure window is fullscreen after intro with retries."""
+                            import subprocess
+                            env = os.environ.copy()
+                            env["DISPLAY"] = ":0"
+                            for attempt in range(max_attempts):
+                                try:
+                                    result1 = subprocess.run(
+                                        ["xdotool", "windowsize", pg_id, str(resolution[0]), str(resolution[1])],
+                                        timeout=1.0, check=False, env=env, capture_output=True
+                                    )
+                                    result2 = subprocess.run(
+                                        ["xdotool", "windowmove", pg_id, "0", "0"],
+                                        timeout=1.0, check=False, env=env, capture_output=True
+                                    )
+                                    subprocess.run(
+                                        ["xprop", "-id", pg_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                                        timeout=0.2, check=False, env=env
+                                    )
+                                    if result1.returncode == 0 and result2.returncode == 0:
+                                        log.info(f"Ensured pygame window {pg_id} is fullscreen: {resolution[0]}x{resolution[1]} at (0,0) (attempt {attempt + 1})")
+                                        return True
+                                    elif attempt < max_attempts - 1:
+                                        time.sleep(0.2)
+                                except Exception as exc:
+                                    if attempt < max_attempts - 1:
+                                        time.sleep(0.2)
+                                    else:
+                                        log.warning(f"Could not ensure fullscreen after intro: {exc}")
+                            return False
+                        
+                        try:
+                            ensure_fullscreen_after_intro(pg_id, modern_resolution, max_attempts=3)
+                        except Exception as fullscreen_exc:
+                            log.warning(f"Could not ensure fullscreen after intro: {fullscreen_exc}")
                     window_mgr.map_window(pg_id)
                     window_mgr.raise_window(pg_id)
-                    # Remove decorations and hide cursor after intro
-                    window_mgr.remove_window_decorations(pg_id)
+                    # CRITICAL: Ensure window has focus for controller input
+                    if config.platform == "linux":
+                        try:
+                            import subprocess
+                            env = os.environ.copy()
+                            env["DISPLAY"] = ":0"
+                            subprocess.run(
+                                ["xdotool", "windowactivate", pg_id],
+                                timeout=0.5, check=False, env=env
+                            )
+                            subprocess.run(
+                                ["xdotool", "windowfocus", pg_id],
+                                timeout=0.5, check=False, env=env
+                            )
+                            log.debug("Focused pygame window for controller input")
+                        except Exception:
+                            pass
+                    # Ensure persistent undecorated state after intro
+                    window_mgr.set_window_undecorated_persistent(pg_id)
                     window_mgr.hide_cursor_aggressive()
-                    log.debug("Raised pygame window after intro and removed decorations")
+                    log.debug("Raised pygame window after intro and set persistent undecorated state")
             except Exception:
                 pass
             
-            # Ensure UI is rendered once with actual playlists after intro fade
-            # This ensures the UI is visible before entering the main loop
+            # CRITICAL: Re-initialize controllers after intro video completes
+            # The pygame window was recreated, so controllers may need re-initialization
+            # This ensures controllers work after service restart (not just full boot)
+            log.info("Re-initializing controllers after intro video (pygame window was recreated)")
+            # Note: js_provider and evdev_js_provider are in outer scope, so assignment will work
             try:
-                renderer.render(playlists=playlists, selected_index=selected_index, controller=controller, 
-                              show_overlay=False, ui_alpha=1.0, ui_hidden=False, 
-                              has_playback=False, sample_mode=None)
-                crt_effects.apply_all(content_surface, time.time())
-                display_mgr.present(screen, bezel, preserve_video_area=False, skip_content_blit=False)
-                pygame.display.flip()
-                log.info("Rendered UI with playlists after intro")
-            except Exception as render_exc:
-                log.warning(f"Failed to render UI after intro: {render_exc}")
+                # Re-initialize pygame joystick (window was recreated)
+                pygame.joystick.quit()
+                time.sleep(0.2)
+                pygame.joystick.init()
+                if pygame.joystick.get_count() > 0:
+                    js = pygame.joystick.Joystick(0)
+                    js.init()
+                    js_provider = JoystickInputProvider(js)
+                    log.info(f"Re-initialized joystick: {js.get_name()}")
+                else:
+                    log.warning("No joysticks found after re-initialization")
+            except Exception as exc:
+                log.warning(f"Failed to re-initialize joystick after intro: {exc}")
+                import traceback
+                log.debug(f"Traceback: {traceback.format_exc()}")
+            
+            # Re-initialize evdev providers (devices may not have been ready earlier)
+            if config.platform == "linux" and EVDEV_AVAILABLE:
+                try:
+                    evdev_js_provider = EvdevJoystickInputProvider()
+                    log.info("Re-initialized evdev joystick input after intro video")
+                except Exception as exc:
+                    log.warning(f"Could not re-initialize evdev joystick after intro: {exc}")
+            
+            # Verify js_provider is set correctly
+            if js_provider is None:
+                log.error("js_provider is None after re-initialization - controller will not work!")
+            else:
+                log.info(f"js_provider successfully set after intro video re-initialization")
+            
+            # Note: UI rendering is handled by the main loop, no need to render here
+            # The fade transition already rendered the UI, and the main loop will continue rendering
     except Exception as exc:
         log.warning(f"Intro playback failed: {exc}")
     
@@ -902,32 +1453,102 @@ def run() -> None:
     startup_animation.start()
     showing_startup_animation = not played_intro
 
+    # CRITICAL: Periodic fullscreen check for boot-time reliability
+    # On boot, window manager may resize window after initial positioning
+    # Check and fix window size periodically during main loop
+    last_fullscreen_check = time.time()
+    fullscreen_check_interval = 2.0  # Check every 2 seconds
+
     # Input providers
+    # CRITICAL: Initialize controllers with retry logic to handle service restarts
+    # When service restarts (not full boot), input devices may not be ready immediately
     kb_provider = KeyboardInputProvider()
-    js_provider = None
-    try:
-        pygame.joystick.init()
-        if pygame.joystick.get_count() > 0:
-            js = pygame.joystick.Joystick(0)
-            js_provider = JoystickInputProvider(js)
-            log.info(f"Joystick connected: {js.get_name()} (buttons={js.get_numbuttons()}, hats={js.get_numhats()}, axes={js.get_numaxes()})")
-    except Exception as exc:
-        log.warning(f"Joystick init failed: {exc}")
+    # js_provider and evdev_js_provider are declared before intro video section
+    # so they can be re-initialized after intro completes
+    js_provider = None  # Initialize to None, will be set below
+    evdev_js_provider = None  # Initialize to None, will be set below
+    
+    # Check if we're restarting after RetroArch (controller may need re-initialization)
+    # Only re-initialize if we detect RetroArch was recently running
+    retroarch_just_exited = os.path.exists("/tmp/magic_retroarch_launch.log") and \
+                           (time.time() - os.path.getmtime("/tmp/magic_retroarch_launch.log")) < 10
+    
+    if retroarch_just_exited:
+        # RetroArch just exited - re-initialize controllers
+        log.info("Detected RetroArch just exited - re-initializing controllers")
+        try:
+            pygame.joystick.quit()
+        except Exception:
+            pass
+        time.sleep(0.5)  # Give devices time to be released
+    
+    # Wait a moment for input devices to be ready (important for service restarts)
+    # On full boot, devices are ready; on service restart, they may need a moment
+    if config.platform == "linux":
+        time.sleep(0.5)  # Give input devices time to be ready after service restart
+    
+    # Initialize pygame joystick with retry logic
+    js_init_attempts = 3
+    for attempt in range(js_init_attempts):
+        try:
+            pygame.joystick.init()
+            if pygame.joystick.get_count() > 0:
+                js = pygame.joystick.Joystick(0)
+                js.init()
+                js_provider = JoystickInputProvider(js)
+                log.info(f"Joystick connected: {js.get_name()} (buttons={js.get_numbuttons()}, hats={js.get_numhats()}, axes={js.get_numaxes()})")
+                break
+            elif attempt < js_init_attempts - 1:
+                log.debug(f"Joystick not found, retrying ({attempt + 1}/{js_init_attempts})...")
+                time.sleep(0.5)
+        except Exception as exc:
+            if attempt < js_init_attempts - 1:
+                log.debug(f"Joystick init failed, retrying ({attempt + 1}/{js_init_attempts}): {exc}")
+                time.sleep(0.5)
+            else:
+                log.warning(f"Joystick init failed after {js_init_attempts} attempts: {exc}")
     
     # Evdev providers (Linux only - work even when pygame doesn't have focus)
+    # Use retry logic for evdev initialization as well
+    # Note: evdev_js_provider may already be initialized after intro video, so check first
     evdev_kb_provider = None
-    evdev_js_provider = None
+    # Only initialize evdev_js_provider if it wasn't already initialized after intro video
     if config.platform == "linux" and EVDEV_AVAILABLE:
-        try:
-            evdev_kb_provider = EvdevKeyboardInputProvider()
-            log.info("Evdev keyboard input enabled")
-        except Exception as exc:
-            log.warning(f"Evdev keyboard unavailable: {exc}")
-        try:
-            evdev_js_provider = EvdevJoystickInputProvider()
-            log.info("Evdev joystick input enabled")
-        except Exception as exc:
-            log.warning(f"Evdev joystick unavailable: {exc}")
+        # Retry evdev keyboard initialization
+        for attempt in range(3):
+            try:
+                evdev_kb_provider = EvdevKeyboardInputProvider()
+                log.info("Evdev keyboard input enabled")
+                break
+            except Exception as exc:
+                if attempt < 2:
+                    log.debug(f"Evdev keyboard init failed, retrying ({attempt + 1}/3): {exc}")
+                    time.sleep(0.5)
+                else:
+                    log.warning(f"Evdev keyboard unavailable after 3 attempts: {exc}")
+        
+        # Retry evdev joystick initialization (only if not already initialized after intro)
+        if evdev_js_provider is None:
+            log.info("Initializing evdev joystick provider (not yet initialized)")
+            for attempt in range(3):
+                try:
+                    evdev_js_provider = EvdevJoystickInputProvider()
+                    log.info(f"Evdev joystick input enabled successfully (attempt {attempt + 1})")
+                    # Verify it was actually set
+                    if evdev_js_provider is None:
+                        raise RuntimeError("EvdevJoystickInputProvider returned None")
+                    break
+                except Exception as exc:
+                    import traceback
+                    if attempt < 2:
+                        log.warning(f"Evdev joystick init failed, retrying ({attempt + 1}/3): {exc}")
+                        log.debug(f"Traceback: {traceback.format_exc()}")
+                        time.sleep(0.5)
+                    else:
+                        log.error(f"Evdev joystick unavailable after 3 attempts: {exc}")
+                        log.error(f"Final traceback: {traceback.format_exc()}")
+        else:
+            log.info("Evdev joystick already initialized after intro video - skipping re-init")
     
     gpio_provider = None
     if config.platform == "linux" and os.getenv("MAGIC_USE_GPIO", "0") == "1":
@@ -1017,6 +1638,50 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _handle_sigterm)
     frame_count = 0  # Track frames for occasional window operations
     while running:
+        # Periodic fullscreen check (important on boot when window manager may interfere)
+        current_time = time.time()
+        if current_time - last_fullscreen_check >= fullscreen_check_interval:
+            if config.platform == "linux" and pygame_window_id:
+                try:
+                    import subprocess
+                    env = os.environ.copy()
+                    env["DISPLAY"] = ":0"
+                    # Quick check and fix if window is not fullscreen
+                    result = subprocess.run(
+                        ["xdotool", "getwindowgeometry", pygame_window_id],
+                        timeout=0.5, check=False, env=env, capture_output=True, text=True
+                    )
+                    if result.returncode == 0:
+                        # Parse geometry output (format: "Geometry: 1280x720+0+0")
+                        lines = result.stdout.split('\n')
+                        for line in lines:
+                            if 'Geometry:' in line:
+                                # Extract size and position
+                                import re
+                                match = re.search(r'(\d+)x(\d+)\+(\d+)\+(\d+)', line)
+                                if match:
+                                    width, height, x, y = map(int, match.groups())
+                                    expected_w, expected_h = modern_resolution
+                                    # If window is not fullscreen or not at (0,0), fix it
+                                    if width != expected_w or height != expected_h or x != 0 or y != 0:
+                                        log.debug(f"Window not fullscreen ({width}x{height}+{x}+{y}), fixing...")
+                                        subprocess.run(
+                                            ["xdotool", "windowsize", pygame_window_id, str(expected_w), str(expected_h)],
+                                            timeout=0.5, check=False, env=env
+                                        )
+                                        subprocess.run(
+                                            ["xdotool", "windowmove", pygame_window_id, "0", "0"],
+                                            timeout=0.5, check=False, env=env
+                                        )
+                                        subprocess.run(
+                                            ["xprop", "-id", pygame_window_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                                            timeout=0.2, check=False, env=env
+                                        )
+                                break
+                except Exception:
+                    pass  # Don't spam logs with periodic check failures
+            last_fullscreen_check = current_time
+        
         # Handle startup animation first
         if showing_startup_animation:
             for event in pygame.event.get():
@@ -1070,12 +1735,24 @@ def run() -> None:
                 events.append(ev)
         
         # Check evdev providers (Linux only - work even when pygame doesn't have focus)
+        # Always use evdev - it works even when window doesn't have focus (important during video playback)
+        # Evdev and pygame can coexist - evdev reads directly from device, pygame reads from SDL
         if evdev_kb_provider is not None:
             for ev in evdev_kb_provider.poll():
                 events.append(ev)
+        # Always use evdev joystick - it works during video playback when pygame window may not have focus
+        # This ensures controller works at all times, not just when UI has focus
         if evdev_js_provider is not None:
-            for ev in evdev_js_provider.poll():
-                events.append(ev)
+            try:
+                for ev in evdev_js_provider.poll():
+                    events.append(ev)
+            except Exception as exc:
+                # Log error but don't crash - controller might have disconnected
+                if frame_count % 300 == 0:  # Log every 5 seconds (60fps * 5)
+                    log.debug(f"Error polling evdev joystick: {exc}")
+        elif config.platform == "linux" and frame_count % 300 == 0:
+            # Log warning if evdev joystick provider is not initialized (every 5 seconds)
+            log.warning("evdev_js_provider is None - controller input may not work")
 
         for mapped in events:
             t = mapped.type
@@ -1083,10 +1760,25 @@ def run() -> None:
                 running = False
                 break
 
-            # Settings menu toggle (button 4 quick press when UI visible)
+            # Settings menu toggle (button 4/B button) - works even during video playback
             if t == mapped.Type.SETTINGS_MENU:
-                if not ui_hidden:  # Only open menu when UI is visible
-                    # Button 4 only toggles the entire settings menu open/close
+                if ui_hidden:
+                    # During video playback: show UI and open menu
+                    log.info("SETTINGS_MENU pressed during video - showing UI and opening menu")
+                    # Pause video
+                    try:
+                        mpv.pause()
+                        log.debug("Paused mpv before showing UI")
+                    except Exception as pause_exc:
+                        log.debug(f"Could not pause mpv: {pause_exc}")
+                    # Show UI
+                    ui_alpha = 1.0
+                    ui_hidden = False
+                    # Open settings menu
+                    settings_menu.open()
+                    overlay_last_interaction_ts = time.time()
+                else:
+                    # When UI is visible: toggle menu
                     settings_menu.toggle()
                     overlay_last_interaction_ts = time.time()
                 continue
@@ -1165,6 +1857,76 @@ def run() -> None:
                             settings_menu.enter_submenu(MenuSection.SYSTEM)
                         elif section == MenuSection.BROWSE_GAMES:
                             settings_menu.enter_game_browser()
+                        elif section == MenuSection.DOWNLOAD_CORES:
+                            # Open RetroArch Core Downloader
+                            log.info("Opening RetroArch Core Downloader")
+                            
+                            # Release controllers before launching RetroArch (on Linux)
+                            if sys.platform.startswith("linux"):
+                                log.info("Releasing controllers before RetroArch Core Downloader launch")
+                                try:
+                                    # Release pygame joystick
+                                    pygame.joystick.quit()
+                                    log.debug("Released pygame joystick")
+                                except Exception:
+                                    pass
+                                
+                                # Release evdev joystick if available
+                                if evdev_js_provider is not None:
+                                    try:
+                                        # Release evdev device grabs
+                                        for device in evdev_js_provider.devices:
+                                            try:
+                                                device.ungrab()
+                                                log.debug(f"Released evdev device: {device.name}")
+                                            except Exception:
+                                                pass
+                                    except Exception as evdev_exc:
+                                        log.debug(f"Could not release evdev devices: {evdev_exc}")
+                                
+                                # CRITICAL: Hide/kill UI windows IMMEDIATELY for visual feedback
+                                log.info("Hiding UI windows immediately for visual feedback")
+                                try:
+                                    pg_id = window_mgr.pygame_window_id or pygame_window_id
+                                    if pg_id:
+                                        # Hide pygame window immediately
+                                        import subprocess
+                                        # Note: os is already imported at module level
+                                        env = os.environ.copy()
+                                        env["DISPLAY"] = ":0"
+                                        subprocess.run(
+                                            ["xdotool", "windowunmap", pg_id],
+                                            timeout=0.3, check=False, env=env
+                                        )
+                                        subprocess.run(
+                                            ["xdotool", "windowkill", pg_id],
+                                            timeout=0.3, check=False, env=env
+                                        )
+                                        log.debug("Hidden pygame window immediately")
+                                except Exception as hide_exc:
+                                    log.debug(f"Could not hide UI window: {hide_exc}")
+                            
+                            if controller.retroarch.open_core_downloader():
+                                # On Pi, UI will exit when service stops
+                                # On macOS/dev, RetroArch launches in background
+                                if sys.platform.startswith("linux") and controller.retroarch.wrapper_script:
+                                    # UI will exit when wrapper stops the service
+                                    log.info("Core Downloader launched - UI will exit and restart after RetroArch closes")
+                                    # Close menu
+                                    settings_menu.close()
+                                    # The wrapper script will stop the service, causing this process to exit
+                                    # Give it a moment to stop the service
+                                    time.sleep(1)
+                                    # Process should exit when service stops, but if not, continue loop
+                                    # The wrapper script handles everything
+                                    overlay_last_interaction_ts = time.time()
+                                    continue
+                                else:
+                                    # On macOS/dev, just close the menu
+                                    settings_menu.close()
+                                    log.info("RetroArch Core Downloader launched. Navigate to: Online Updater -> Core Downloader")
+                            else:
+                                log.error("Failed to launch RetroArch Core Downloader")
                         elif section == MenuSection.TOGGLE_DISPLAY_MODE:
                             # Cycle through display modes
                             current_mode = settings_store.get_display_mode()
@@ -1383,16 +2145,60 @@ def run() -> None:
                         is_game = current_item and current_item.source_type == "emulated_game"
                         
                         if is_game:
-                            # For games: hide pygame window before launch, restore after
-                            try:
-                                pg_id = window_mgr.pygame_window_id or pygame_window_id
-                                if pg_id:
-                                    window_mgr.hide_cursor_aggressive()
-                                    # Hide pygame window so RetroArch can take over
-                                    window_mgr.unmap_window(pg_id)
-                                    log.debug("Hidden pygame window before game launch")
-                            except Exception:
-                                pass
+                            # For games: check if wrapper script is available (Pi deployment)
+                            wrapper_available = controller.retroarch.wrapper_script is not None
+                            
+                            if wrapper_available:
+                                # On Pi with wrapper script: process will exit when service stops
+                                # Release controllers before launching RetroArch
+                                log.info("Releasing controllers before RetroArch launch")
+                                try:
+                                    # Release pygame joystick
+                                    pygame.joystick.quit()
+                                    log.debug("Released pygame joystick")
+                                except Exception:
+                                    pass
+                                
+                                # Release evdev joystick if available
+                                if evdev_js_provider is not None:
+                                    try:
+                                        # Release evdev device grabs
+                                        for device in evdev_js_provider.devices:
+                                            try:
+                                                device.ungrab()
+                                                log.debug(f"Released evdev device: {device.name}")
+                                            except Exception:
+                                                pass
+                                    except Exception as evdev_exc:
+                                        log.debug(f"Could not release evdev devices: {evdev_exc}")
+                                
+                                # Ensure HDMI audio device is set before exit
+                                try:
+                                    _apply_audio_device(timeout_seconds=2.0)
+                                except Exception as audio_exc:
+                                    log.warning(f"Could not set audio device before game launch: {audio_exc}")
+                                
+                                # Load playlist and launch game
+                                # The wrapper script will stop UI service, run RetroArch, restart UI
+                                log.info("Launching game - UI will exit and restart after game")
+                                controller.load_playlist(selected_playlist)
+                                controller.load_current(start_playback=False)
+                                
+                                # Process will exit when wrapper script stops the service
+                                # The wrapper script handles restarting the UI
+                                overlay_last_interaction_ts = time.time()
+                                continue
+                            else:
+                                # On macOS/dev: hide pygame window before launch, restore after
+                                try:
+                                    pg_id = window_mgr.pygame_window_id or pygame_window_id
+                                    if pg_id:
+                                        window_mgr.hide_cursor_aggressive()
+                                        # Hide pygame window so RetroArch can take over
+                                        window_mgr.unmap_window(pg_id)
+                                        log.debug("Hidden pygame window before game launch")
+                                except Exception:
+                                    pass
                         
                         # Ensure HDMI audio device is set
                         _apply_audio_device(timeout_seconds=2.0)
@@ -1402,7 +2208,7 @@ def run() -> None:
                         controller.load_current(start_playback=False)  # Load but keep paused
                         playing_playlist = selected_playlist
                         
-                        # After game exits, restore pygame window
+                        # After game exits, restore pygame window (macOS/dev only)
                         if is_game:
                             try:
                                 pg_id = window_mgr.pygame_window_id or pygame_window_id
@@ -1410,7 +2216,7 @@ def run() -> None:
                                     # Restore pygame window after RetroArch exits
                                     window_mgr.map_window(pg_id)
                                     window_mgr.raise_window(pg_id)
-                                    window_mgr.remove_window_decorations(pg_id)
+                                    window_mgr.set_window_undecorated_persistent(pg_id)
                                     window_mgr.hide_cursor_aggressive()
                                     log.debug("Restored pygame window after game exit")
                             except Exception:
@@ -1440,11 +2246,11 @@ def run() -> None:
                         try:
                             mpv.set_fullscreen(True)
                             log.debug("Set mpv fullscreen after transition")
-                            # Ensure mpv window has no decorations after fullscreen
-                            time.sleep(0.1)  # Wait for fullscreen to apply
+                            # Ensure mpv window has persistent undecorated state after fullscreen
+                            time.sleep(0.05)  # Brief wait for fullscreen to apply
                             mpv_id = transition_mgr._get_mpv_id(max_attempts=3)
                             if mpv_id:
-                                window_mgr.remove_window_decorations(mpv_id)
+                                window_mgr.set_window_undecorated_persistent(mpv_id)
                                 window_mgr.hide_cursor_aggressive()
                         except Exception as vid_exc:
                             log.warning(f"Could not set mpv fullscreen: {vid_exc}")
@@ -1603,27 +2409,17 @@ def run() -> None:
                     log.info("Auto-advanced to next track")
 
         # If UI is visible, ensure mpv overlay is off and UI stays visible
-        # Only manage pygame window occasionally (not every frame) to avoid visual artifacts
+        # Check decorations periodically (every 60 frames ~1 second) to prevent WM from reapplying them
         if not ui_hidden:
             _deactivate_mpv_bezel_overlay()
-            # Ensure UI visibility and remove decorations frequently (every 30 frames ~0.5 seconds)
-            if frame_count % 30 == 0:
+            # Ensure UI visibility and check decorations periodically
+            if frame_count % 60 == 0:  # Every 60 frames (~1 second) for better performance
                 try:
                     transition_mgr.ensure_ui_visible()
-                    # Aggressively remove decorations (some WMs reapply them constantly)
+                    # Ensure persistent undecorated state (single call, cached)
                     pg_id = window_mgr.pygame_window_id or pygame_window_id
                     if pg_id:
-                        window_mgr.remove_window_decorations(pg_id)
-                        # Also try using xprop directly as a backup
-                        import subprocess
-                        import os
-                        env = os.environ.copy()
-                        env["DISPLAY"] = ":0"
-                        subprocess.run(
-                            ["xprop", "-id", pg_id, "-f", "_MOTIF_WM_HINTS", "32c", 
-                             "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
-                            timeout=0.5, check=False, env=env
-                        )
+                        window_mgr.set_window_undecorated_persistent(pg_id)
                 except Exception:
                     pass
 
@@ -1633,24 +2429,25 @@ def run() -> None:
             clock.tick(60)
             continue
         
-        # Ensure cursor stays hidden and windows have no decorations (re-check frequently)
-        if frame_count % 30 == 0:  # Every 0.5 seconds - more frequent to catch WM reapplication
+        # Ensure cursor stays hidden and windows have no decorations (check periodically)
+        # Check every 60 frames (~1 second) to prevent WM from reapplying decorations
+        if frame_count % 60 == 0:  # Reduced frequency for better performance
             pygame.mouse.set_visible(False)
             if config.platform == "linux":
-                # Aggressively hide cursor periodically
+                # Hide cursor periodically
                 window_mgr.hide_cursor_aggressive()
-                # Ensure pygame window has no decorations (some WMs reapply them frequently)
+                # Ensure pygame window has persistent undecorated state (single call, cached)
                 try:
                     pg_id = window_mgr.pygame_window_id or pygame_window_id
                     if pg_id:
-                        window_mgr.remove_window_decorations(pg_id)
+                        window_mgr.set_window_undecorated_persistent(pg_id)
                 except Exception:
                     pass
-                # Also ensure mpv window has no decorations
+                # Also ensure mpv window has persistent undecorated state
                 try:
                     mpv_id = transition_mgr._get_mpv_id(max_attempts=1)
                     if mpv_id:
-                        window_mgr.remove_window_decorations(mpv_id)
+                        window_mgr.set_window_undecorated_persistent(mpv_id)
                 except Exception:
                     pass
         
@@ -1683,4 +2480,5 @@ if __name__ == "__main__":
         run()
     except KeyboardInterrupt:
         sys.exit(0)
+
 

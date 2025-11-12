@@ -113,21 +113,21 @@ items:
   - title: Super Mario Bros. 3
     source_type: emulated_game
     path: roms/nes/Super Mario Bros 3.nes
-    emulator_core: fceumm_libretro
+    emulator_core: nestopia_libretro
     emulator_system: NES
     
   - title: Super Mario 64
     source_type: emulated_game
     path: roms/n64/Super Mario 64.z64
-    emulator_core: mupen64plus_next_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
 ```
 
-**Core Names:**
-- NES: `fceumm_libretro`
-- SNES: `snes9x_libretro`
-- N64: `mupen64plus_next_libretro`
-- PS1: `pcsx_rearmed_libretro`
+**Core Names (64-bit cores for aarch64):**
+- NES: `nestopia_libretro` (64-bit, works on Pi 4B)
+- SNES: `snes9x_libretro` (64-bit, works on Pi 4B)
+- N64: `mupen64plus-next_libretro` (needs 64-bit build)
+- PS1: `pcsx_rearmed_libretro` (needs 64-bit build)
 
 ### Mixed Playlists
 
@@ -144,7 +144,7 @@ items:
   - title: Super Mario 64
     source_type: emulated_game
     path: roms/n64/Super Mario 64.z64
-    emulator_core: mupen64plus_next_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
 ```
 
@@ -179,6 +179,20 @@ See **[GAME_CONTROLS.md](GAME_CONTROLS.md)** for:
 - Returning to Magic Dingus Box UI
 
 ### Raspberry Pi Deployment
+
+**Installing RetroPie Cores:**
+
+On Raspberry Pi, install RetroPie cores for better ARM support:
+
+```bash
+sudo scripts/install_retropie_cores.sh
+```
+
+This will:
+- Add RetroPie repository
+- Install RetroArch (if needed)
+- Install cores: lr-fceumm (NES), lr-snes9x (SNES), lr-mupen64plus-next (N64), lr-pcsx-rearmed (PS1)
+- Configure RetroArch to find cores in all locations
 
 See **[PI_GAME_DEPLOYMENT.md](PI_GAME_DEPLOYMENT.md)** for:
 - Complete Pi setup instructions

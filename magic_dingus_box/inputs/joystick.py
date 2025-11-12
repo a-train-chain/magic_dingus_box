@@ -42,6 +42,11 @@ class JoystickInputProvider(InputProvider):
             if btn == self.BTN_SELECT:
                 # Map to toggle loop for convenience
                 return InputEvent(InputEvent.Type.TOGGLE_LOOP)
+            # Map additional buttons if needed (X, Y buttons)
+            if btn == self.BTN_X:
+                return InputEvent(InputEvent.Type.SEEK_LEFT)  # Quick seek back
+            if btn == self.BTN_Y:
+                return InputEvent(InputEvent.Type.SEEK_RIGHT)  # Quick seek forward
             return None
 
         if et == pygame.JOYHATMOTION:

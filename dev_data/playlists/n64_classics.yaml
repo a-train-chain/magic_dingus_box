@@ -7,33 +7,33 @@ items:
     artist: ''
     source_type: emulated_game
     path: dev_data/roms/n64/Super Mario 64.n64
-    emulator_core: parallel_n64_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
     
   - title: The Legend of Zelda - Ocarina of Time
     artist: ''
     source_type: emulated_game
     path: dev_data/roms/n64/Legend of Zelda, The - Ocarina of Time.n64
-    emulator_core: parallel_n64_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
     
   - title: GoldenEye 007
     artist: ''
     source_type: emulated_game
     path: dev_data/roms/n64/007 - GoldenEye.n64
-    emulator_core: parallel_n64_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
     
   - title: Mario Kart 64
     artist: ''
     source_type: emulated_game
     path: dev_data/roms/n64/Mario Kart 64.n64
-    emulator_core: parallel_n64_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64
     
   - title: Super Smash Bros.
     artist: ''
     source_type: emulated_game
     path: dev_data/roms/n64/Super Smash Bros..n64
-    emulator_core: parallel_n64_libretro
+    emulator_core: mupen64plus-next_libretro
     emulator_system: N64

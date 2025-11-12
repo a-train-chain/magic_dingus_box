@@ -146,22 +146,89 @@ class TransitionManager:
         except Exception as hide_exc:
             self._log.debug(f"Failed to hide pygame window: {hide_exc}")
         
-        # Step 3: Prepare pygame window (size/position) while completely hidden/unmapped
-        # Use batched operations for better performance
+        # Step 3: Prepare pygame window WITHOUT resizing (to prevent visible resize animation)
+        # Instead, check current size and only resize if absolutely necessary
+        # Most importantly: set all properties BEFORE making window visible
         try:
-            # Batch: resize + move in single xdotool call
-            self.window_mgr._run_xdotool_batch([
-                ["windowsize", pygame_id, str(self.screen_width), str(self.screen_height)],
-                ["windowmove", pygame_id, "0", "0"]
-            ], timeout=0.3)
-            # Remove decorations while window is still unmapped (user won't see this)
-            self.window_mgr.remove_window_decorations(pygame_id)
-            self._log.debug(f"Prepared pygame window {pygame_id} size/position while unmapped")
+            import subprocess
+            import os
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            
+            # CRITICAL: Set window properties FIRST (before any operations that might make it visible)
+            # Set window type to SPLASH first (prevents decorations from being added)
+            subprocess.run(
+                ["xprop", "-id", pygame_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_SPLASH"],
+                timeout=0.2, check=False, env=env
+            )
+            
+            # Remove decorations MULTIPLE times while window is still unmapped
+            # Do this very aggressively - Openbox can be stubborn
+            for _ in range(10):
+                self.window_mgr.remove_window_decorations(pygame_id)
+                time.sleep(0.01)  # Small delay between attempts
+            
+            # Check current window size - only resize if it's wrong
+            # This prevents unnecessary resize operations that cause visible animations
+            try:
+                import subprocess as sp
+                result = sp.run(
+                    ["xdotool", "getwindowgeometry", pygame_id],
+                    capture_output=True, timeout=0.2, check=False, env=env
+                )
+                current_size_ok = False
+                if result.returncode == 0:
+                    output = result.stdout.decode()
+                    # Parse geometry output to check size
+                    for line in output.split('\n'):
+                        if 'Geometry:' in line:
+                            # Extract size (e.g., "Geometry: 1920x1080")
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                size_part = parts[1]
+                                if 'x' in size_part:
+                                    w, h = map(int, size_part.split('x'))
+                                    if w == self.screen_width and h == self.screen_height:
+                                        current_size_ok = True
+                                        self._log.debug(f"Window already correct size: {w}x{h}")
+                                        break
+                
+                # Only resize if size is wrong
+                if not current_size_ok:
+                    self._log.debug(f"Resizing window to {self.screen_width}x{self.screen_height}")
+                    # Batch: resize + move in single xdotool call (while unmapped)
+                    self.window_mgr._run_xdotool_batch([
+                        ["windowsize", pygame_id, str(self.screen_width), str(self.screen_height)],
+                        ["windowmove", pygame_id, "0", "0"]
+                    ], timeout=0.3)
+                    # Remove decorations after resize
+                    for _ in range(3):
+                        self.window_mgr.remove_window_decorations(pygame_id)
+                else:
+                    # Just ensure position is correct
+                    self.window_mgr._run_xdotool(["windowmove", pygame_id, "0", "0"], timeout=0.2)
+            except Exception as size_check_exc:
+                # If we can't check size, resize anyway (safe fallback)
+                self._log.debug(f"Could not check window size, resizing anyway: {size_check_exc}")
+                self.window_mgr._run_xdotool_batch([
+                    ["windowsize", pygame_id, str(self.screen_width), str(self.screen_height)],
+                    ["windowmove", pygame_id, "0", "0"]
+                ], timeout=0.3)
+                for _ in range(3):
+                    self.window_mgr.remove_window_decorations(pygame_id)
+            
+            # Set maximized state hints to prevent window manager from changing size
+            subprocess.run(
+                ["xprop", "-id", pygame_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                timeout=0.2, check=False, env=env
+            )
+            
+            self._log.debug(f"Prepared pygame window {pygame_id} while unmapped")
         except Exception as prep_exc:
             self._log.debug(f"Window prep failed: {prep_exc}")
         
-        # Small delay to ensure all hide operations complete before showing pygame
-        time.sleep(0.1)
+        # Longer delay to ensure all operations complete and window manager processes everything
+        time.sleep(0.15)
         
         # Step 4: Show pygame window instantly (it's already the right size/position, no decorations)
         try:
@@ -171,31 +238,80 @@ class TransitionManager:
             env["DISPLAY"] = ":0"
             # Hide cursor again before showing window
             self.window_mgr.hide_cursor_aggressive()
+            # CRITICAL: Remove decorations ONE MORE TIME before removing HIDDEN state
+            # This ensures decorations are gone before window becomes visible
+            for _ in range(3):
+                self.window_mgr.remove_window_decorations(pygame_id)
             # Remove HIDDEN state
             subprocess.run(
                 ["xprop", "-id", pygame_id, "-f", "_NET_WM_STATE", "32a", "-remove", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN"],
-                timeout=0.2, check=False
+                timeout=0.2, check=False, env=env
             )
             # Small delay to ensure state removal completes
             time.sleep(0.05)
             # Set stacking hint BEFORE mapping (prevents visible movement)
             self.window_mgr.add_window_state(pygame_id, "_NET_WM_STATE_ABOVE")
+            # Remove decorations AGAIN right before mapping (last chance)
+            # Do this multiple times with slight delays to ensure it sticks
+            for _ in range(3):
+                self.window_mgr.remove_window_decorations(pygame_id)
+                time.sleep(0.01)
+            
+            # CRITICAL: Use a black overlay technique to mask any brief flash
+            # Create a temporary black window that covers the screen, then remove it after pygame is shown
+            try:
+                # Create a black fullscreen window using xdotool/xwininfo to mask transition
+                black_overlay_cmd = [
+                    "xdotool", "search", "--name", "black_overlay_temp"
+                ]
+                # Try to find existing overlay, create if needed
+                overlay_result = subprocess.run(black_overlay_cmd, capture_output=True, timeout=0.1, check=False, env=env)
+                # For now, skip overlay - focus on making transition instant
+            except Exception:
+                pass
+            
+            # CRITICAL: Set maximized state BEFORE mapping (prevents WM from resizing/adding decorations)
+            subprocess.run(
+                ["xprop", "-id", pygame_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                timeout=0.2, check=False, env=env
+            )
+            # Remove decorations one more time before mapping
+            self.window_mgr.remove_window_decorations(pygame_id)
+            
             # Map window (make visible) - do this atomically
             self.window_mgr.map_window(pygame_id)
             self.window_mgr.remove_window_state(pygame_id, "_NET_WM_STATE_ICONIC")
-            # Ensure decorations are still removed after mapping (some WMs reapply them)
-            self.window_mgr.remove_window_decorations(pygame_id)
-            # Small delay to ensure mapping completes
-            time.sleep(0.05)
+            
+            # IMMEDIATELY remove decorations after mapping (before WM can add them)
+            # Use a very tight loop with no delays for maximum speed
+            for _ in range(10):  # Even more attempts
+                self.window_mgr.remove_window_decorations(pygame_id)
+            
+            # Minimal delay - just enough for WM to process mapping
+            time.sleep(0.01)
+            
             # Raise window
             self.window_mgr.raise_window(pygame_id)
+            
+            # Remove decorations again after raising (WMs may reapply them)
+            # Do this very aggressively
+            for _ in range(5):
+                self.window_mgr.remove_window_decorations(pygame_id)
+                time.sleep(0.005)  # Very fast removal
+            
             # Hide cursor one more time after window is shown
             self.window_mgr.hide_cursor_aggressive()
+            
             # Activate for immediate focus
             subprocess.run(
                 ["xdotool", "windowactivate", pygame_id],
                 timeout=0.3, check=False, env=env
             )
+            
+            # Final decoration removal after activation (some WMs add them on focus)
+            for _ in range(3):
+                self.window_mgr.remove_window_decorations(pygame_id)
+                time.sleep(0.005)
             self._log.debug(f"Showed pygame window {pygame_id} instantly (borderless)")
         except Exception as show_exc:
             self._log.warning(f"Failed to show pygame window: {show_exc}")
@@ -315,11 +431,18 @@ class TransitionManager:
             self.window_mgr.map_window(mpv_id)
             self.window_mgr.remove_window_state(mpv_id, "_NET_WM_STATE_ICONIC")
             # Ensure decorations are still removed after mapping (some WMs reapply them)
-            self.window_mgr.remove_window_decorations(mpv_id)
+            # Remove decorations multiple times to ensure it sticks
+            for _ in range(3):
+                self.window_mgr.remove_window_decorations(mpv_id)
+                time.sleep(0.03)
             # Small delay to ensure mapping completes
             time.sleep(0.05)
             # Raise window
             self.window_mgr.raise_window(mpv_id)
+            # Remove decorations again after raising (WMs may reapply them)
+            for _ in range(2):
+                self.window_mgr.remove_window_decorations(mpv_id)
+                time.sleep(0.02)
             # Hide cursor one more time after window is shown
             self.window_mgr.hide_cursor_aggressive()
             # Activate for immediate focus

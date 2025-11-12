@@ -10,6 +10,8 @@
   "phosphor_mask": 0.0,
   "interlacing": 0.0,
   "screen_flicker": 0.0,
-  "intro_video": "",
-  "intro_duration": 10.0
+  "intro_video": null,
+  "intro_duration": 10.0,
+  "playlist_video_sync": "desync",
+  "playlist_video_latency_hacks": false
 }

@@ -58,15 +58,23 @@ class EvdevJoystickInputProvider(InputProvider):
         # Button 7 = BTN_TL (Z Trigger) - need to verify code
         
         # Use evdev constants for button codes
-        self.BTN_START = ecodes.BTN_START if hasattr(ecodes, 'BTN_START') else 9      # SELECT
-        self.BTN_A = ecodes.BTN_SOUTH if hasattr(ecodes, 'BTN_SOUTH') else 304       # SELECT (A button)
-        self.BTN_B = ecodes.BTN_EAST if hasattr(ecodes, 'BTN_EAST') else 305        # SETTINGS_MENU (B button)
-        self.BTN_Z = ecodes.BTN_TL if hasattr(ecodes, 'BTN_TL') else 7              # PLAY_PAUSE (Z Trigger)
-        self.BTN_R = ecodes.BTN_TR2 if hasattr(ecodes, 'BTN_TR2') else 313          # NEXT (R Trigger)
-        self.BTN_L = ecodes.BTN_TL2 if hasattr(ecodes, 'BTN_TL2') else 312           # PREV (L Trigger)
+        # Based on actual N64 controller mapping (corrected):
+        # - A button = code 306 -> SELECT (user wants A to select)
+        # - B button = code 305 -> SETTINGS_MENU (user wants B to open menu)
+        # - Start button = code 316 (BTN_MODE) -> SELECT
+        # - Z button = code 310 -> PLAY_PAUSE
+        # - Left trigger = code 308 -> PREV
+        # - Right trigger = code 309 -> NEXT
+        self.BTN_START = ecodes.BTN_START if hasattr(ecodes, 'BTN_START') else 9      # Fallback for standard START
+        self.BTN_MODE = ecodes.BTN_MODE if hasattr(ecodes, 'BTN_MODE') else 316      # Start button (N64)
+        self.BTN_A = 306                                                              # A button (N64) -> SELECT
+        self.BTN_B = ecodes.BTN_EAST if hasattr(ecodes, 'BTN_EAST') else 305          # B button (N64) -> SETTINGS_MENU
+        self.BTN_Z = 310                                                              # Z button (N64) -> PLAY_PAUSE
+        self.BTN_R = 309                                                              # Right trigger (N64) -> NEXT
+        self.BTN_L = 308                                                              # Left trigger (N64) -> PREV
         self.BTN_MEMPAK = 6     # (unused for now)
         
-        self._log.info(f"N64 Controller button mappings: START={self.BTN_START}, A={self.BTN_A}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
+        self._log.info(f"N64 Controller button mappings: START={self.BTN_MODE}, A={self.BTN_A}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
         
         # Axis mappings
         self.AXIS_C_R = 3       # axis(3+) -> NEXT (key 3)
@@ -111,12 +119,15 @@ class EvdevJoystickInputProvider(InputProvider):
                 except Exception as exc:
                     self._log.warning(f"Could not set non-blocking mode for {device.name}: {exc}")
                 
+                # Try to grab device, but continue even if grab fails
+                # Grabbing gives us exclusive access, but we can still read events without it
                 try:
                     device.grab()
-                    self._log.info(f"Successfully grabbed device: {device.name}")
+                    self._log.info(f"Successfully grabbed evdev device: {device.name} (exclusive access)")
                 except Exception as exc:
-                    self._log.warning(f"Could not grab evdev device {device.name} (may need root, but will continue): {exc}")
+                    self._log.info(f"Could not grab evdev device {device.name} (non-exclusive, will still work): {exc}")
                     # Continue using device even if grab fails - we'll still get events
+                    # This allows pygame to also read events if it needs to
     
     def _find_joystick_devices(self) -> None:
         """Find all joystick/gamepad input devices."""
@@ -197,45 +208,47 @@ class EvdevJoystickInputProvider(InputProvider):
                                 button_name = '/'.join(button_name_raw)
                             else:
                                 button_name = str(button_name_raw)
-                            self._log.debug(f"Evdev joystick [{device.name}]: Button event - code={button_code} ({button_name}), value={event.value} (press={is_press}), BTN_A={self.BTN_A}, BTN_B={self.BTN_B}")
+                            # Log at INFO level so we can see button presses during video
+                            self._log.info(f"Evdev joystick [{device.name}]: Button event - code={button_code} ({button_name}), value={event.value} (press={is_press})")
                             
                             if is_press:
                                 self._button_states[button_code] = (True, time.time())
                                 
                                 # Map N64 controller buttons using actual evdev codes
-                                # Button 304 = BTN_SOUTH/BTN_A (A button) -> SELECT
-                                # Button 305 = BTN_EAST/BTN_B (B button) -> SETTINGS_MENU
-                                # Button 312 = BTN_TL2 (L Trigger) -> PREV
-                                # Button 313 = BTN_TR2 (R Trigger) -> NEXT
-                                # Button 315 = BTN_START (Start) -> SELECT
-                                # Button 310 = BTN_TL (Z Trigger) -> PLAY_PAUSE
-                                
-                                if button_code == self.BTN_START or button_code == self.BTN_A:
-                                    # Start or A button -> SELECT
+                                # Based on N64 controller mapping:
+                                # Button 305 = A button -> SELECT
+                                # Button 306 = B button -> SETTINGS_MENU
+                                # Button 316 = Start button -> SELECT
+                                # Button 310 = Z button -> PLAY_PAUSE
+                                # Button 309 = Right trigger -> NEXT
+                                # Button 308 = Left trigger -> PREV
+
+                                if button_code == self.BTN_A or button_code == self.BTN_MODE:
+                                    # A button (305) or Start button (316) -> SELECT
                                     events.append(InputEvent(InputEvent.Type.SELECT))
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Button {button_code} (Start/A) -> SELECT - MATCHED!")
+                                    self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (A/Start) -> SELECT")
                                 elif button_code == self.BTN_B:
-                                    # B button -> SETTINGS_MENU
+                                    # B button (306) -> SETTINGS_MENU
                                     events.append(InputEvent(InputEvent.Type.SETTINGS_MENU))
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Button {button_code} (B) -> SETTINGS_MENU - MATCHED!")
+                                    self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (B) -> SETTINGS_MENU")
                                 elif button_code == self.BTN_Z:
-                                    # Z Trigger -> PLAY_PAUSE
+                                    # Z button (310) -> PLAY_PAUSE
                                     events.append(InputEvent(InputEvent.Type.PLAY_PAUSE))
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Button {button_code} (Z) -> PLAY_PAUSE - MATCHED!")
+                                    self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (Z) -> PLAY_PAUSE")
                                 elif button_code == self.BTN_R:
-                                    # R Trigger -> NEXT (key 3)
+                                    # Right trigger (309) -> NEXT
                                     if self.c_right_down_time is None:
                                         self.c_right_down_time = time.time()
                                         self.c_right_seeking = False
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Button {button_code} (R) -> NEXT (key 3) - MATCHED!")
+                                    self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (R trigger) -> NEXT")
                                 elif button_code == self.BTN_L:
-                                    # L Trigger -> PREV (key 1)
+                                    # Left trigger (308) -> PREV
                                     if self.c_left_down_time is None:
                                         self.c_left_down_time = time.time()
                                         self.c_left_seeking = False
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Button {button_code} (L) -> PREV (key 1) - MATCHED!")
+                                    self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (L trigger) -> PREV")
                                 else:
-                                    self._log.debug(f"Evdev joystick [{device.name}]: Unmapped button {button_code} ({button_name}) - checking: START={self.BTN_START}, A={self.BTN_A}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
+                                    self._log.warning(f"Evdev joystick [{device.name}]: Unmapped button {button_code} ({button_name}) - START={self.BTN_START}, A={self.BTN_A}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
                             else:
                                 # Button released
                                 if button_code in self._button_states:
@@ -266,8 +279,9 @@ class EvdevJoystickInputProvider(InputProvider):
                             
                             # Log axis events for important axes
                             axis_name = ecodes.ABS.get(axis_code, f"ABS_{axis_code}")
-                            if axis_code in (self.AXIS_X, self.AXIS_C_R, self.AXIS_C_L, ecodes.ABS_HAT0X):
-                                self._log.debug(f"Evdev joystick [{device.name}]: Axis event - code={axis_code} ({axis_name}), value={axis_value}")
+                            # Log all axis events at INFO level to help identify D-pad and C buttons
+                            if abs(axis_value) > 500:  # Only log significant movements
+                                self._log.info(f"Evdev joystick [{device.name}]: Axis event - code={axis_code} ({axis_name}), value={axis_value}")
                             
                             self._axis_states[axis_code] = axis_value
                             
@@ -313,15 +327,19 @@ class EvdevJoystickInputProvider(InputProvider):
                                 else:
                                     self._rotate_dir = 0
                             
-                            # D-Pad (hat switch) - typically ABS_HAT0X and ABS_HAT0Y
-                            elif axis_code == ecodes.ABS_HAT0X:
-                                # D-Pad Left/Right
-                                if axis_value == -1:  # Left
+                            # D-Pad (hat switch) - only ABS_HAT0Y for up/down navigation
+                            # ABS_HAT0X (left/right) disabled - only using up/down for navigation
+                            # elif axis_code == ecodes.ABS_HAT0X:
+                            #     # D-Pad Left/Right disabled
+                            #     pass
+                            elif axis_code == ecodes.ABS_HAT0Y:
+                                # D-Pad Up/Down for playlist navigation
+                                if axis_value == -1:  # Up
                                     events.append(InputEvent(InputEvent.Type.ROTATE, delta=-1))
-                                    self._log.debug(f"Evdev joystick [{device.name}]: D-Pad Left -> ROTATE -1")
-                                elif axis_value == 1:  # Right
+                                    self._log.debug(f"Evdev joystick [{device.name}]: D-Pad Up -> ROTATE -1 (previous)")
+                                elif axis_value == 1:  # Down
                                     events.append(InputEvent(InputEvent.Type.ROTATE, delta=1))
-                                    self._log.debug(f"Evdev joystick [{device.name}]: D-Pad Right -> ROTATE +1")
+                                    self._log.debug(f"Evdev joystick [{device.name}]: D-Pad Down -> ROTATE +1 (next)")
                     
                         elif event.type == ecodes.EV_KEY:
                             # D-pad buttons (some controllers use buttons instead of hat)

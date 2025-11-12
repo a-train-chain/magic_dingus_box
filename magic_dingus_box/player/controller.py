@@ -42,30 +42,46 @@ class PlaybackController:
         
         # Handle emulated games (always start immediately, no transition needed)
         if item.source_type == "emulated_game":
-            if item.path and item.emulator_core:
-                resolved = self._resolve_local_path(item)
-                if resolved is None:
-                    self._log.warning("ROM not found: %s", item.path)
-                    return
-                
-                # Get current bezel overlay if in bezel mode
-                overlay_path = None
-                if self.settings_store and self.assets_dir:
-                    display_mode = self.settings_store.get_display_mode()
-                    if display_mode == "modern_bezel":
-                        bezel_style = self.settings_store.get("bezel_style", "retro_tv_1")
-                        bezel_file = f"{bezel_style}.png"
-                        bezel_path = self.assets_dir / "bezels" / bezel_file
-                        if bezel_path.exists():
-                            overlay_path = str(bezel_path)
-                            self._log.info(f"Will use bezel overlay in game: {bezel_style}")
-                
-                # Launch RetroArch - this blocks until game exits
-                self._log.info("Launching game: %s", item.title)
-                self.retroarch.launch_game(resolved, item.emulator_core, overlay_path)
-                self._log.info("Returned from game: %s", item.title)
-            else:
-                self._log.warning("Emulated game missing path or core: %s", item.title)
+            if not item.path:
+                self._log.warning("Emulated game missing path: %s", item.title)
+                return
+            
+            # Use emulator_core from playlist item, or fallback to RETROARCH_CORES
+            from .retroarch_launcher import RETROARCH_CORES
+            core = item.emulator_core
+            if not core and item.emulator_system:
+                # Fallback to default core for system if not specified
+                core = RETROARCH_CORES.get(item.emulator_system.upper())
+                if core:
+                    self._log.info("Using default core for %s: %s", item.emulator_system, core)
+            
+            if not core:
+                self._log.warning("Emulated game missing core: %s (system: %s)", item.title, item.emulator_system)
+                return
+            
+            resolved = self._resolve_local_path(item)
+            if resolved is None:
+                self._log.warning("ROM not found: %s", item.path)
+                return
+            
+            # Get current bezel overlay if in bezel mode
+            overlay_path = None
+            if self.settings_store and self.assets_dir:
+                display_mode = self.settings_store.get_display_mode()
+                if display_mode == "modern_bezel":
+                    bezel_style = self.settings_store.get("bezel_style", "retro_tv_1")
+                    bezel_file = f"{bezel_style}.png"
+                    bezel_path = self.assets_dir / "bezels" / bezel_file
+                    if bezel_path.exists():
+                        overlay_path = str(bezel_path)
+                        self._log.info(f"Will use bezel overlay in game: {bezel_style}")
+            
+            # Launch RetroArch - this blocks until game exits
+            self._log.info("Launching game: %s with core: %s", item.title, core)
+            self._log.info("DEBUG: item.emulator_core=%s, core variable=%s, item.emulator_system=%s", 
+                          item.emulator_core, core, item.emulator_system)
+            self.retroarch.launch_game(resolved, core, overlay_path)
+            self._log.info("Returned from game: %s", item.title)
             return
         
         # Handle video playback
@@ -240,6 +256,16 @@ class PlaybackController:
                     return fps_path
                 if candidate.exists():
                     return str(candidate)
+            
+            # On Pi: map dev_data/ paths to /data/ paths
+            if str(p).startswith("dev_data/"):
+                # Replace dev_data/ with /data/
+                data_path = Path("/data") / str(p)[len("dev_data/"):]
+                fps_path = check_30fps_version(data_path)
+                if fps_path:
+                    return fps_path
+                if data_path.exists():
+                    return str(data_path)
         except Exception:
             pass
         return None

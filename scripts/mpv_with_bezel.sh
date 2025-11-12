@@ -19,7 +19,7 @@ MPV_CMD=(
     --hwdec=rpi4
     --force-window=no
     --no-border
-    --audio-device="${AUDIO_DEVICE:-auto}"
+    --audio-device="${AUDIO_DEVICE:-alsa/plughw:CARD=vc4hdmi0,DEV=0}"
     --vd-lavc-threads=4
     --cache=yes
     --cache-secs=30

@@ -272,6 +272,7 @@ class WindowManager:
         """Remove window decorations (borders, title bar) using _MOTIF_WM_HINTS.
         
         This sets the window to be borderless/undecorated for seamless transitions.
+        Uses multiple methods to ensure decorations are removed.
         
         Args:
             window_id: X11 window ID
@@ -283,16 +284,58 @@ class WindowManager:
             return False
         
         try:
-            # _MOTIF_WM_HINTS format: [flags, functions, decorations, input_mode, status]
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            
+            # Method 1: _MOTIF_WM_HINTS format: [flags, functions, decorations, input_mode, status]
+            # flags=2 means decorations hint is set
             # decorations = 0 means no decorations
-            # Use xprop to set _MOTIF_WM_HINTS
-            result = subprocess.run(
+            # This is the standard way to remove decorations
+            result1 = subprocess.run(
                 ["xprop", "-id", window_id, "-f", "_MOTIF_WM_HINTS", "32c", "-set", "_MOTIF_WM_HINTS", "2", "0", "0", "0", "0"],
                 capture_output=True,
                 timeout=1.0,
-                check=False
+                check=False,
+                env=env
             )
-            if result.returncode == 0:
+            
+            # Method 2: Also try setting it with all zeros (some WMs prefer this)
+            result2 = subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_MOTIF_WM_HINTS", "32c", "-set", "_MOTIF_WM_HINTS", "0", "0", "0", "0", "0"],
+                capture_output=True,
+                timeout=1.0,
+                check=False,
+                env=env
+            )
+            
+            # Method 3: Set window type to SPLASH (some WMs don't decorate splash windows)
+            subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_SPLASH"],
+                capture_output=True,
+                timeout=1.0,
+                check=False,
+                env=env
+            )
+            
+            # Method 4: Also try setting to DOCK type (undecorated by default)
+            subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK"],
+                capture_output=True,
+                timeout=1.0,
+                check=False,
+                env=env
+            )
+            
+            # Method 5: Set back to NORMAL but with no decorations hint
+            subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_NORMAL"],
+                capture_output=True,
+                timeout=1.0,
+                check=False,
+                env=env
+            )
+            
+            if result1.returncode == 0 or result2.returncode == 0:
                 self._log.debug(f"Removed decorations from window {window_id}")
                 return True
         except Exception as exc:

@@ -26,6 +26,7 @@ class MenuSection(Enum):
     CYCLE_PHOSPHOR_MASK = auto()  # Cycle RGB phosphor mask intensity
     CYCLE_INTERLACING = auto()  # Cycle interlacing intensity
     CYCLE_FLICKER = auto()  # Cycle screen flicker intensity
+    DOWNLOAD_CORES = auto()  # Open RetroArch Core Downloader
 
 
 @dataclass
@@ -252,6 +253,7 @@ class SettingsMenuManager:
         """Build video games submenu."""
         return [
             MenuItem("Browse Games", MenuSection.BROWSE_GAMES, sublabel="Game libraries"),
+            MenuItem("Download Cores", MenuSection.DOWNLOAD_CORES, sublabel="RetroArch cores"),
             MenuItem("Emulators", sublabel="RetroArch"),
             MenuItem("Controllers", sublabel="Button map"),
             MenuItem("Back", MenuSection.BACK),
