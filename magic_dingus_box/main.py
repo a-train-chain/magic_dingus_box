@@ -874,9 +874,14 @@ def run() -> None:
                 log.error(f"CRITICAL: Exception during pygame window hiding: {hide_exc}")
             
             # CRITICAL: Stop any existing playback and clear playlist MULTIPLE times to ensure only intro plays
+            log.info("DEBUG: Checking MPV client connection...")
+            mpv_connected = mpv._connect()
+            log.info(f"DEBUG: MPV client connected: {mpv_connected}")
+
             for attempt in range(3):
                 try:
                     mpv.stop()
+                    log.info(f"DEBUG: Called mpv.stop() (attempt {attempt + 1})")
                     # Clear any playlist that might be queued
                     import json
                     import socket
@@ -885,8 +890,8 @@ def run() -> None:
                     sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
                     sock.close()
                     time.sleep(0.1)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"DEBUG: MPV stop/clear failed (attempt {attempt + 1}): {e}")
             log.info("Cleared mpv playlist multiple times to ensure only intro video plays")
             # Ensure we don't loop the intro
             mpv.set_loop_file(False)
@@ -1043,46 +1048,53 @@ def run() -> None:
             else:
                 # Give mpv a bit more time to fully render the first frame
                 time.sleep(0.3)
+            # Use MPV client instead of manual socket operations
             try:
-                import json
-                import socket
-                sock = socket.socket(socket.AF_UNIX)
-                sock.settimeout(0.5)
-                sock.connect(config.mpv_socket)
-                sock.sendall(json.dumps({"command": ["get_property", "playlist"]}).encode() + b"\n")
-                time.sleep(0.2)
-                resp = b""
-                try:
-                    while True:
-                        chunk = sock.recv(4096)
-                        if not chunk:
-                            break
-                        resp += chunk
-                        if b"\n" in resp:
-                            break
-                except socket.timeout:
-                    pass
-                sock.close()
-                if resp:
-                    # Parse only the first JSON object (mpv may send multiple)
-                    resp_str = resp.decode().split("\n")[0]
-                    playlist_data = json.loads(resp_str)
-                    if "data" in playlist_data:
-                        playlist = playlist_data["data"]
-                        if len(playlist) > 1:
-                            log.warning(f"WARNING: Playlist has {len(playlist)} files! Clearing again...")
-                            sock = socket.socket(socket.AF_UNIX)
-                            sock.connect(config.mpv_socket)
-                            sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
-                            sock.close()
-                            time.sleep(0.1)
-                            # Reload only the intro file
-                            mpv.load_file(str(intro_path))
-                            log.info(f"Reloaded ONLY intro video: {intro_path}")
-                        else:
-                            log.info(f"Playlist verified: {len(playlist)} file(s) - {intro_path.name}")
+                log.info("DEBUG: Checking playlist with MPV client...")
+                playlist = mpv.get_playlist()
+                log.info(f"DEBUG: MPV client returned playlist: {playlist}")
+                if len(playlist) > 1:
+                    log.warning(f"WARNING: Playlist has {len(playlist)} files! Clearing with MPV client...")
+                    mpv.playlist_clear()
+                    time.sleep(0.1)
+                    # Reload only the intro file
+                    mpv.load_file(str(intro_path))
+                    log.info(f"Reloaded ONLY intro video: {intro_path}")
+                    # Check playlist again
+                    playlist = mpv.get_playlist()
+                    log.info(f"DEBUG: Playlist after reload: {playlist}")
+                log.info(f"Playlist verified: {len(playlist)} file(s) - {intro_path.name}")
             except Exception as pl_exc:
-                log.warning(f"Could not verify playlist: {pl_exc}")
+                log.warning(f"Could not verify playlist with MPV client: {pl_exc}")
+                # Fallback to manual socket if MPV client fails
+                try:
+                    import json
+                    import socket
+                    sock = socket.socket(socket.AF_UNIX)
+                    sock.settimeout(0.5)
+                    sock.connect(config.mpv_socket)
+                    sock.sendall(json.dumps({"command": ["get_property", "playlist"]}).encode() + b"\n")
+                    time.sleep(0.2)
+                    resp = b""
+                    try:
+                        while True:
+                            chunk = sock.recv(4096)
+                            if not chunk:
+                                break
+                            resp += chunk
+                            if b"\n" in resp:
+                                break
+                    except socket.timeout:
+                        pass
+                    sock.close()
+                    if resp:
+                        resp_str = resp.decode().split("\n")[0]
+                        playlist_data = json.loads(resp_str)
+                        if "data" in playlist_data:
+                            playlist = playlist_data["data"]
+                            log.info(f"FALLBACK: Playlist verified: {len(playlist)} file(s)")
+                except Exception as fallback_exc:
+                    log.error(f"FALLBACK playlist check also failed: {fallback_exc}")
             
             # CRITICAL: Ensure mpv doesn't auto-advance to next file
             try:
