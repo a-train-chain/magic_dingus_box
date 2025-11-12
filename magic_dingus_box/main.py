@@ -798,63 +798,78 @@ def run() -> None:
             # Use module-level time import (already imported at top of file)
             log.info(f"Playing ONLY intro video: {intro_path}")
 
-            # CRITICAL: For intro video, we don't need transition manager since UI isn't showing yet
-            # Just ensure pygame window is hidden before mpv takes over
-            log.info("Preparing for intro video - hiding pygame window")
+            # CRITICAL: Hide the pygame window using multiple methods since xdotool doesn't work in systemd
+            log.info("Preparing for intro video - hiding pygame window using multiple methods")
             try:
                 pg_id = window_mgr.pygame_window_id or pygame_window_id
                 log.info(f"Pygame window ID to hide: {pg_id}")
+
                 if pg_id:
                     import subprocess
                     env = os.environ.copy()
                     env["DISPLAY"] = ":0"
 
-                    # First, try to minimize the window
+                    # Method 1: Use xprop to set window to HIDDEN state (most reliable in systemd)
                     try:
-                        subprocess.run(
-                            ["xdotool", "windowminimize", pg_id],
-                            timeout=0.5, check=False, env=env
-                        )
-                        log.info(f"Minimized pygame window {pg_id}")
-                    except Exception as min_exc:
-                        log.warning(f"Failed to minimize pygame window: {min_exc}")
+                        subprocess.run([
+                            "xprop", "-id", pg_id, "-f", "_NET_WM_STATE", "32a",
+                            "-set", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN"
+                        ], timeout=1.0, check=False, env=env)
+                        log.info(f"Set pygame window {pg_id} to HIDDEN state using xprop")
+                    except Exception as xprop_exc:
+                        log.warning(f"xprop HIDDEN failed: {xprop_exc}")
 
-                    # Then unmap it
+                    # Method 2: Try wmctrl (more reliable than xdotool in some contexts)
+                    try:
+                        # Check if wmctrl is available
+                        wmctrl_check = subprocess.run(["which", "wmctrl"], capture_output=True, timeout=0.5)
+                        if wmctrl_check.returncode == 0:
+                            subprocess.run([
+                                "wmctrl", "-i", "-r", str(pg_id), "-b", "add,hidden"
+                            ], timeout=1.0, check=False, env=env)
+                            log.info(f"Set pygame window {pg_id} to hidden using wmctrl")
+                    except Exception as wmctrl_exc:
+                        log.warning(f"wmctrl failed: {wmctrl_exc}")
+
+                    # Method 3: Try xdotool windowunmap (sometimes works when others don't)
                     try:
                         subprocess.run(
                             ["xdotool", "windowunmap", pg_id],
-                            timeout=0.5, check=False, env=env
+                            timeout=1.0, check=False, env=env
                         )
-                        log.info(f"Unmapped pygame window {pg_id}")
+                        log.info(f"Unmapped pygame window {pg_id} using xdotool")
                     except Exception as unmap_exc:
-                        log.warning(f"Failed to unmap pygame window: {unmap_exc}")
+                        log.warning(f"xdotool unmap failed: {unmap_exc}")
 
-                    # Move it off-screen
+                    # Method 4: Move off-screen as final fallback
                     try:
                         subprocess.run(
                             ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
-                            timeout=0.5, check=False, env=env
+                            timeout=1.0, check=False, env=env
                         )
-                        log.info(f"Moved pygame window {pg_id} off-screen")
+                        log.info(f"Moved pygame window {pg_id} off-screen as final fallback")
                     except Exception as move_exc:
-                        log.warning(f"Failed to move pygame window: {move_exc}")
+                        log.warning(f"xdotool move failed: {move_exc}")
 
-                    # Verify the window is hidden
+                    # Verify the window state
                     try:
                         result = subprocess.run(
                             ["xwininfo", "-id", pg_id],
                             capture_output=True, text=True, timeout=0.5, env=env
                         )
-                        if result.returncode == 0 and "geometry" in result.stdout:
-                            log.info(f"Pygame window {pg_id} geometry after hiding: {result.stdout.split('geometry')[1].split()[0].strip()}")
+                        if result.returncode == 0:
+                            for line in result.stdout.split('\n'):
+                                if 'geometry' in line.lower() or 'map' in line.lower():
+                                    log.info(f"Pygame window {pg_id} state: {line.strip()}")
                         else:
-                            log.warning(f"Could not verify pygame window {pg_id} geometry")
+                            log.info(f"Pygame window {pg_id} may be successfully hidden (xwininfo failed)")
                     except Exception as verify_exc:
-                        log.warning(f"Failed to verify pygame window hiding: {verify_exc}")
+                        log.info(f"Could not verify pygame window {pg_id} state: {verify_exc}")
 
-                    log.info(f"Completed pygame window hiding for {pg_id}")
+                    log.info(f"Completed all pygame window hiding attempts for {pg_id}")
                 else:
-                    log.error("CRITICAL: No pygame window ID found to hide - intro video may be covered!")
+                    log.error("CRITICAL: No pygame window ID found - cannot hide window!")
+
             except Exception as hide_exc:
                 log.error(f"CRITICAL: Exception during pygame window hiding: {hide_exc}")
             
