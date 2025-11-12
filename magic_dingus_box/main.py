@@ -878,6 +878,41 @@ def run() -> None:
                 log.error(f"ERROR: Wrong intro file selected: {intro_path} (should be intro.30fps.mp4)")
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
+
+            # Ensure MPV window is visible after loading video
+            # Give MPV a moment to create its window, then make it visible
+            time.sleep(0.5)
+            try:
+                import subprocess
+                env = os.environ.copy()
+                env["DISPLAY"] = ":0"
+                # Find and show the MPV window
+                result = subprocess.run(
+                    ["xdotool", "search", "--class", "mpv"],
+                    capture_output=True, text=True, timeout=2.0, env=env
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    mpv_window_id = result.stdout.strip().split('\n')[0]
+                    log.info(f"Found MPV window: {mpv_window_id}")
+                    # Move window to visible position and make it fullscreen
+                    subprocess.run(
+                        ["xdotool", "windowmove", mpv_window_id, "0", "0"],
+                        timeout=1.0, check=False, env=env
+                    )
+                    subprocess.run(
+                        ["xdotool", "windowsize", mpv_window_id, str(config.screen_width), str(config.screen_height)],
+                        timeout=1.0, check=False, env=env
+                    )
+                    # Ensure it's on top
+                    subprocess.run(
+                        ["xdotool", "windowactivate", mpv_window_id],
+                        timeout=1.0, check=False, env=env
+                    )
+                    log.info("Made MPV window visible and fullscreen")
+                else:
+                    log.warning("Could not find MPV window to make visible")
+            except Exception as win_exc:
+                log.warning(f"Could not make MPV window visible: {win_exc}")
             
             # Wait for video to fully load and be ready before starting playback
             # Check multiple times to ensure video is actually ready
