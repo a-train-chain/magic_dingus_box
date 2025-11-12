@@ -1247,6 +1247,10 @@ def run() -> None:
             # Optional: apply CRT effects during intro (default off for performance)
             intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
             intro_start = time.time()
+
+            # For debugging: reduce wait time to 3 seconds to avoid crashes
+            max_wait_time = min(max_wait_time, 3.0)
+            log.info(f"DEBUG: Reduced max wait time to {max_wait_time}s for testing")
             
             # Get actual video duration from mpv to ensure we wait for the full video
             actual_video_duration = None
