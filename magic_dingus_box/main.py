@@ -451,6 +451,68 @@ def run() -> None:
     # mpv + controller (hardware-accelerated playback with v4l2m2m)
     mpv_socket = config.mpv_socket
     mpv = MpvClient(mpv_socket)
+
+    # CRITICAL: Start MPV if not already running
+    # This ensures MPV is available for intro video playback
+    if not mpv._connect():
+        log.info("MPV not running, starting MPV service...")
+        try:
+            import subprocess
+            # Use the same arguments as the systemd service
+            mpv_cmd = [
+                "/usr/bin/mpv",
+                "--idle=yes",
+                "--no-osc",
+                "--no-osd-bar",
+                "--keep-open=yes",
+                "--no-config",
+                f"--input-ipc-server={mpv_socket}",
+                "--input-vo-keyboard=no",
+                "--input-default-bindings=no",
+                "--vo=x11",
+                "--hwdec=v4l2m2m",
+                "--video-sync=desync",
+                "--video-latency-hacks=no",
+                "--vd-lavc-threads=4",
+                "--vd-lavc-fast=yes",
+                "--vd-lavc-skiploopfilter=all",
+                "--vd-lavc-skipframe=nonref",
+                "--vd-lavc-dr=yes",
+                "--sws-fast=yes",
+                "--cache=yes",
+                "--cache-secs=30",
+                "--demuxer-max-bytes=500M",
+                "--demuxer-max-back-bytes=500M",
+                "--force-window=yes",
+                "--no-border",
+                "--loop-playlist=no",
+                "--loop-file=no",
+                "--loop=no",
+                f"--audio-device={config.audio_device}",
+            ]
+
+            # Set environment
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+
+            # Start MPV in background
+            log.info("Starting MPV with command: " + " ".join(mpv_cmd))
+            subprocess.Popen(mpv_cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            # Wait for MPV to start and create socket
+            import time
+            for attempt in range(10):
+                time.sleep(0.5)
+                if mpv._connect():
+                    log.info(f"MPV started successfully after {attempt + 1} attempts")
+                    break
+            else:
+                log.error("Failed to start MPV after 10 attempts")
+
+        except Exception as exc:
+            log.error(f"Failed to start MPV: {exc}")
+    else:
+        log.info("MPV already running, using existing instance")
     # Auto-select HDMI audio device on Linux if available
     if config.platform == "linux":
         try:
