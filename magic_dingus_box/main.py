@@ -709,7 +709,6 @@ def run() -> None:
     # Declare controller variables here so they can be re-initialized after intro
     js_provider = None
     evdev_js_provider = None
-    log.info("DEBUG: About to check intro video conditions...")
     try:
         log.info("Checking intro video conditions...")
         # CRITICAL: Check RetroArch lock file again before playing intro
@@ -797,7 +796,6 @@ def run() -> None:
         log.info(f"Intro video check: intro_path={intro_path}, retroarch_running={retroarch_running}, lock_file_exists={os.path.exists(retroarch_lock_file)}")
         if intro_path is not None and not retroarch_running:
             # Use module-level time import (already imported at top of file)
-            log.info(f"DEBUG: Intro conditions met, about to play intro video: {intro_path}")
             log.info(f"Playing ONLY intro video: {intro_path}")
 
             # CRITICAL: For intro video, we don't need transition manager since UI isn't showing yet
@@ -860,18 +858,13 @@ def run() -> None:
             
             # CRITICAL: Set mpv properties BEFORE loading video to ensure correct display from start
             # Force 4:3 aspect ratio FIRST (before fullscreen)
-            log.info("DEBUG: Setting mpv video-aspect to 4/3")
             mpv.set_property("video-aspect", "4/3")  # Force 4:3 aspect ratio
-            log.info("DEBUG: Setting mpv video-zoom to 0.0")
             mpv.set_property("video-zoom", 0.0)  # Reset zoom
-            log.info("DEBUG: Setting mpv panscan to 0.0")
             mpv.set_property("panscan", 0.0)  # No pan/scan - show full video with margins
             # Set fullscreen BEFORE loading video
-            log.info("DEBUG: Setting mpv to fullscreen")
             mpv.set_fullscreen(True)
             # Wait for fullscreen to activate
             time.sleep(0.2)
-            log.info("DEBUG: MPV properties set, about to load video")
 
             # Load ONLY the 30fps intro video - verify it's the right file
             if "30fps" not in str(intro_path):
@@ -1487,8 +1480,6 @@ def run() -> None:
             
             # Note: UI rendering is handled by the main loop, no need to render here
             # The fade transition already rendered the UI, and the main loop will continue rendering
-        else:
-            log.info(f"DEBUG: Intro video SKIPPED - intro_path={intro_path}, retroarch_running={retroarch_running}")
     except Exception as exc:
         log.warning(f"Intro playback failed: {exc}")
     
