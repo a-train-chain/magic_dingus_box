@@ -896,54 +896,68 @@ def run() -> None:
                     time.sleep(0.2)
 
                 if mpv_window_id:
-                    # Aggressive window positioning - multiple commands to ensure it works
-                    log.info("Positioning MPV window aggressively...")
+                    log.info(f"MPV window {mpv_window_id} found, positioning aggressively...")
 
-                    # Step 1: Move to visible position
-                    subprocess.run(
-                        ["xdotool", "windowmove", mpv_window_id, "0", "0"],
-                        timeout=1.0, check=False, env=env
-                    )
+                    # Use xprop to set window properties first (more reliable than xdotool during boot)
+                    try:
+                        # Set window to be always on top and fullscreen
+                        subprocess.run([
+                            "xprop", "-id", mpv_window_id, "-f", "_NET_WM_STATE", "32a",
+                            "-set", "_NET_WM_STATE",
+                            "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"
+                        ], timeout=1.0, check=False, env=env)
+                        log.info("Set MPV window properties: ABOVE, FULLSCREEN, MAXIMIZED")
+                    except Exception as xprop_exc:
+                        log.warning(f"xprop failed: {xprop_exc}")
 
-                    # Step 2: Resize to fullscreen
-                    subprocess.run(
-                        ["xdotool", "windowsize", mpv_window_id, str(config.screen_width), str(config.screen_height)],
-                        timeout=1.0, check=False, env=env
-                    )
+                    # Use xdotool for positioning (with simpler, more reliable commands)
+                    try:
+                        # Move to top-left corner
+                        subprocess.run(
+                            ["xdotool", "windowmove", mpv_window_id, "0", "0"],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info("Moved MPV window to (0,0)")
+                    except Exception as move_exc:
+                        log.warning(f"windowmove failed: {move_exc}")
 
-                    # Step 3: Activate and bring to front (multiple times for reliability)
-                    for _ in range(3):
+                    try:
+                        # Resize to fullscreen
+                        subprocess.run(
+                            ["xdotool", "windowsize", mpv_window_id, str(config.screen_width), str(config.screen_height)],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Resized MPV window to {config.screen_width}x{config.screen_height}")
+                    except Exception as size_exc:
+                        log.warning(f"windowsize failed: {size_exc}")
+
+                    # Simple activation (avoid --sync which times out)
+                    try:
                         subprocess.run(
                             ["xdotool", "windowactivate", mpv_window_id],
-                            timeout=1.0, check=False, env=env
+                            timeout=0.5, check=False, env=env
                         )
-                        subprocess.run(
-                            ["xdotool", "windowraise", mpv_window_id],
-                            timeout=1.0, check=False, env=env
+                        log.info("Activated MPV window")
+                    except Exception as activate_exc:
+                        log.warning(f"windowactivate failed: {activate_exc}")
+
+                    # Final verification
+                    try:
+                        verify_result = subprocess.run(
+                            ["xwininfo", "-id", mpv_window_id],
+                            capture_output=True, text=True, timeout=0.5, env=env
                         )
-                        time.sleep(0.1)
+                        if verify_result.returncode == 0:
+                            # Parse the geometry from xwininfo output
+                            for line in verify_result.stdout.split('\n'):
+                                if 'geometry' in line.lower() or 'position' in line.lower():
+                                    log.info(f"Window verification: {line.strip()}")
+                        else:
+                            log.warning("Could not verify window geometry")
+                    except Exception as verify_exc:
+                        log.warning(f"Window verification failed: {verify_exc}")
 
-                    # Step 4: Set window properties to ensure it's always on top
-                    subprocess.run(
-                        ["xprop", "-id", mpv_window_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_FULLSCREEN"],
-                        timeout=1.0, check=False, env=env
-                    )
-
-                    # Step 5: Final activation
-                    subprocess.run(
-                        ["xdotool", "windowactivate", "--sync", mpv_window_id],
-                        timeout=2.0, check=False, env=env
-                    )
-
-                    log.info(f"MPV window {mpv_window_id} positioned at (0,0) size {config.screen_width}x{config.screen_height} and brought to top")
-
-                    # Verify window position
-                    verify_result = subprocess.run(
-                        ["xdotool", "getwindowgeometry", mpv_window_id],
-                        capture_output=True, text=True, timeout=1.0, env=env
-                    )
-                    if verify_result.returncode == 0:
-                        log.info(f"Window geometry verification: {verify_result.stdout.strip()}")
+                    log.info(f"MPV window positioning complete for {mpv_window_id}")
 
                 else:
                     log.error("CRITICAL: Could not find MPV window after 5 attempts - intro video will not be visible!")
