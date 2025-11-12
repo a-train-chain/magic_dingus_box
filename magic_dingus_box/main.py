@@ -93,20 +93,20 @@ def run() -> None:
                 if lock_pid and lock_pid != "starting":
                     # Check if process is still running (use basic check, no logging yet)
                     try:
-                        import subprocess
-                        result = subprocess.run(
+                    import subprocess
+                    result = subprocess.run(
                         ["ps", "-p", lock_pid, "-o", "comm="],
                         capture_output=True,
                         text=True,
                         timeout=1.0
                     )
                         if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
-                            # RetroArch is running - exit immediately without any initialization
-                            sys.exit(0)
-                        else:
-                            # Lock file exists but process is dead - remove stale lock
+                        # RetroArch is running - exit immediately without any initialization
+                        sys.exit(0)
+                    else:
+                        # Lock file exists but process is dead - remove stale lock
                             try:
-                                os.remove(retroarch_lock_file)
+                        os.remove(retroarch_lock_file)
                             except Exception:
                                 pass
                     except Exception:
@@ -118,8 +118,8 @@ def run() -> None:
                 elif lock_pid == "starting":
                     # Still "starting" after wait - likely stale, remove it
                     try:
-                        os.remove(retroarch_lock_file)
-                    except Exception:
+                    os.remove(retroarch_lock_file)
+        except Exception:
                         pass
             else:
                 # Lock file exists but is empty - remove it
@@ -721,17 +721,17 @@ def run() -> None:
                 if lock_pid and lock_pid != "starting":
                     import subprocess
                     try:
-                        result = subprocess.run(
+                    result = subprocess.run(
                         ["ps", "-p", lock_pid, "-o", "comm="],
                         capture_output=True,
                         text=True,
                         timeout=1.0
                     )
                         if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
-                            log.info(f"RetroArch is running (PID: {lock_pid}) - skipping intro video")
+                        log.info(f"RetroArch is running (PID: {lock_pid}) - skipping intro video")
                             retroarch_running = True
-                            played_intro = False  # Don't play intro if RetroArch is running
-                        else:
+                        played_intro = False  # Don't play intro if RetroArch is running
+                    else:
                             # Lock file exists but process is dead - remove stale lock
                             log.info(f"Stale RetroArch lock file detected (PID: {lock_pid} not running) - removing")
                             try:
@@ -770,9 +770,9 @@ def run() -> None:
                 # Other errors - be defensive and remove lock file
                 log.warning(f"Unexpected error checking RetroArch lock file: {exc} - attempting to remove")
                 try:
-                    os.remove(retroarch_lock_file)
-                except Exception:
-                    pass
+                        os.remove(retroarch_lock_file)
+            except Exception:
+                pass
         
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
@@ -797,7 +797,7 @@ def run() -> None:
         if intro_path is not None and not retroarch_running:
             # Use module-level time import (already imported at top of file)
             log.info(f"Playing ONLY intro video: {intro_path}")
-
+            
             # CRITICAL: Hide the pygame window using multiple methods since xdotool doesn't work in systemd
             log.info("Preparing for intro video - hiding pygame window using multiple methods")
             try:
@@ -833,30 +833,30 @@ def run() -> None:
 
                     # Method 3: Try xdotool windowunmap (sometimes works when others don't)
                     try:
-                        subprocess.run(
-                            ["xdotool", "windowunmap", pg_id],
+                    subprocess.run(
+                        ["xdotool", "windowunmap", pg_id],
                             timeout=1.0, check=False, env=env
-                        )
+                    )
                         log.info(f"Unmapped pygame window {pg_id} using xdotool")
                     except Exception as unmap_exc:
                         log.warning(f"xdotool unmap failed: {unmap_exc}")
 
                     # Method 4: Move off-screen as final fallback
                     try:
-                        subprocess.run(
-                            ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
+                    subprocess.run(
+                        ["xdotool", "windowmove", pg_id, "-10000", "-10000"],
                             timeout=1.0, check=False, env=env
-                        )
+                    )
                         log.info(f"Moved pygame window {pg_id} off-screen as final fallback")
                     except Exception as move_exc:
                         log.warning(f"xdotool move failed: {move_exc}")
 
                     # Verify the window state
                     try:
-                        result = subprocess.run(
+                            result = subprocess.run(
                             ["xwininfo", "-id", pg_id],
                             capture_output=True, text=True, timeout=0.5, env=env
-                        )
+                            )
                         if result.returncode == 0:
                             for line in result.stdout.split('\n'):
                                 if 'geometry' in line.lower() or 'map' in line.lower():
@@ -923,7 +923,7 @@ def run() -> None:
             mpv.set_fullscreen(True)
             # Wait for fullscreen to activate
             time.sleep(0.2)
-
+            
             # Load ONLY the 30fps intro video - verify it's the right file
             if "30fps" not in str(intro_path):
                 log.error(f"ERROR: Wrong intro file selected: {intro_path} (should be intro.30fps.mp4)")
@@ -1067,31 +1067,31 @@ def run() -> None:
             except Exception as pl_exc:
                 log.warning(f"Could not verify playlist with MPV client: {pl_exc}")
                 # Fallback to manual socket if MPV client fails
+            try:
+                import json
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                sock.settimeout(0.5)
+                sock.connect(config.mpv_socket)
+                sock.sendall(json.dumps({"command": ["get_property", "playlist"]}).encode() + b"\n")
+                time.sleep(0.2)
+                resp = b""
                 try:
-                    import json
-                    import socket
-                    sock = socket.socket(socket.AF_UNIX)
-                    sock.settimeout(0.5)
-                    sock.connect(config.mpv_socket)
-                    sock.sendall(json.dumps({"command": ["get_property", "playlist"]}).encode() + b"\n")
-                    time.sleep(0.2)
-                    resp = b""
-                    try:
-                        while True:
-                            chunk = sock.recv(4096)
-                            if not chunk:
-                                break
-                            resp += chunk
-                            if b"\n" in resp:
-                                break
-                    except socket.timeout:
-                        pass
-                    sock.close()
-                    if resp:
-                        resp_str = resp.decode().split("\n")[0]
-                        playlist_data = json.loads(resp_str)
-                        if "data" in playlist_data:
-                            playlist = playlist_data["data"]
+                    while True:
+                        chunk = sock.recv(4096)
+                        if not chunk:
+                            break
+                        resp += chunk
+                        if b"\n" in resp:
+                            break
+                except socket.timeout:
+                    pass
+                sock.close()
+                if resp:
+                    resp_str = resp.decode().split("\n")[0]
+                    playlist_data = json.loads(resp_str)
+                    if "data" in playlist_data:
+                        playlist = playlist_data["data"]
                             log.info(f"FALLBACK: Playlist verified: {len(playlist)} file(s)")
                 except Exception as fallback_exc:
                     log.error(f"FALLBACK playlist check also failed: {fallback_exc}")
@@ -1411,7 +1411,7 @@ def run() -> None:
             transition_success = transition_mgr.transition_to_ui()
             if transition_success:
                 log.info("Successfully transitioned to UI")
-            else:
+                else:
                 log.warning("Transition to UI failed, UI may not be properly visible")
 
             # Recreate display surfaces after transition (transition manager handles window sizing)
