@@ -709,6 +709,7 @@ def run() -> None:
     # Declare controller variables here so they can be re-initialized after intro
     js_provider = None
     evdev_js_provider = None
+    log.info("DEBUG: About to check intro video conditions...")
     try:
         log.info("Checking intro video conditions...")
         # CRITICAL: Check RetroArch lock file again before playing intro
@@ -796,8 +797,9 @@ def run() -> None:
         log.info(f"Intro video check: intro_path={intro_path}, retroarch_running={retroarch_running}, lock_file_exists={os.path.exists(retroarch_lock_file)}")
         if intro_path is not None and not retroarch_running:
             # Use module-level time import (already imported at top of file)
+            log.info(f"DEBUG: Intro conditions met, about to play intro video: {intro_path}")
             log.info(f"Playing ONLY intro video: {intro_path}")
-            
+
             # CRITICAL: Use transition manager for clean intro startup
             # This ensures mpv window is properly sized and positioned from the beginning
             log.info("Using transition manager for clean intro video startup")
@@ -1449,6 +1451,8 @@ def run() -> None:
             
             # Note: UI rendering is handled by the main loop, no need to render here
             # The fade transition already rendered the UI, and the main loop will continue rendering
+        else:
+            log.info(f"DEBUG: Intro video SKIPPED - intro_path={intro_path}, retroarch_running={retroarch_running}")
     except Exception as exc:
         log.warning(f"Intro playback failed: {exc}")
     
