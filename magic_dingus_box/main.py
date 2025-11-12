@@ -1239,261 +1239,32 @@ def run() -> None:
                 log.info("Intro video playback confirmed started")
             else:
                 log.warning("Could not confirm playback started, but continuing")
-            
+
             # CRITICAL: No window operations after playback starts - let video play uninterrupted
             # All window setup was done before loading the video
-            
-            intro_duration = float(settings_store.get("intro_duration", 10.0))
-            # Optional: apply CRT effects during intro (default off for performance)
-            intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
-            intro_start = time.time()
 
-            # For debugging: reduce wait time to 3 seconds to avoid crashes
-            max_wait_time = min(max_wait_time, 3.0)
-            log.info(f"DEBUG: Reduced max wait time to {max_wait_time}s for testing")
-            
-            # Get actual video duration from mpv to ensure we wait for the full video
-            actual_video_duration = None
+            # FOR TESTING: Skip the waiting loop entirely and transition immediately
+            # This ensures the video is visible and we can test the window layering
+            log.info("TESTING: Skipping intro video wait - transitioning immediately to verify video visibility")
+
+            # Get video duration for logging
             try:
                 actual_video_duration = mpv.get_property("duration")
                 if actual_video_duration:
-                    log.info(f"Intro video actual duration: {actual_video_duration:.3f}s (settings duration: {intro_duration}s)")
+                    log.info(f"Intro video actual duration: {actual_video_duration:.3f}s")
             except Exception:
                 log.debug("Could not get video duration from mpv")
-            
-            # Use actual duration if available, otherwise use settings duration
-            target_duration = actual_video_duration if actual_video_duration else intro_duration
-            max_wait_time = target_duration + 2.0  # Allow 2 seconds buffer beyond actual duration
-            
+
             # Verify video is actually playing
             try:
                 is_playing = not mpv.get_property("pause")
                 log.info(f"Intro video playback started, paused={not is_playing}")
             except Exception:
                 pass
-            
-            # Wait for video to complete - ALWAYS wait for full video duration
-            # This ensures the intro video plays completely from start to finish
-            log.info(f"Waiting for intro video to complete (target duration: {target_duration:.3f}s, max wait: {max_wait_time:.1f}s)")
-            video_complete = False
-            last_position = None
-            position_stable_count = 0  # Track if position stops updating (indicates end)
 
-            while True:
-                # Allow quit during intro - but be defensive since pygame window may be hidden/killed
-                try:
-                    for event in pygame.event.get():
-                        if event.type == pygame.QUIT:
-                            pygame.quit()
-                            return
-                except Exception:
-                    # If pygame event handling fails (likely due to window being hidden/killed),
-                    # just continue without event handling during intro
-                    pass
-
-                # Don't render pygame during intro - mpv is handling the display
-                # Just check for end conditions
-
-                elapsed = time.time() - intro_start
-            
-            # Primary check: wait for actual elapsed time to reach video duration
-            # This is the most reliable method - we know exactly how long the video should be
-            # Wait until we've actually played for the full duration
-            if actual_video_duration and elapsed >= actual_video_duration:
-                # We've waited for the full video duration - STOP VIDEO IMMEDIATELY to prevent looping
-                try:
-                    is_playing = not mpv.get_property("pause")
-                    eof_reached = mpv.get_property("eof-reached")
-                    time_pos = mpv.get_property("time-pos")
-                    if time_pos:
-                        log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - position: {time_pos:.3f}s, playing: {is_playing}, EOF: {eof_reached}")
-                    else:
-                        log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - playing: {is_playing}, EOF: {eof_reached}")
-                    # Stop video immediately to prevent looping
-                    mpv.pause()
-                    mpv.stop()  # Stop completely
-                    log.info("Stopped intro video after duration elapsed")
-                except Exception:
-                    log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {actual_video_duration:.3f}s) - video complete")
-                    try:
-                        mpv.pause()
-                        mpv.stop()
-                    except Exception:
-                        pass
-                # Wait a moment for the last frame to be fully displayed
-                video_complete = True
-                time.sleep(0.5)  # Brief pause before transition
-                break
-            elif actual_video_duration and elapsed >= (actual_video_duration - 0.05):
-                # Very close to end (within 50ms) - wait for exact duration
-                # Don't transition yet, let the primary check above handle it
-                time.sleep(0.01)  # Check very frequently when extremely close
-            
-            # Secondary check: playback position to determine how close we are to the end
-            # This provides early detection if position is available
-            try:
-                time_pos = mpv.get_property("time-pos")
-                duration = mpv.get_property("duration") or actual_video_duration
-                
-                if duration is not None and time_pos is not None:
-                    remaining = duration - time_pos
-                    progress_pct = (time_pos / duration) * 100 if duration > 0 else 0
-                    
-                    # Track if position has stopped updating (indicates we're at the end)
-                    if last_position is not None and abs(time_pos - last_position) < 0.001:
-                        # Position hasn't changed much - we might be at the end
-                        position_stable_count += 1
-                    else:
-                        position_stable_count = 0
-                    last_position = time_pos
-                    
-                    # Log position when close to end for debugging
-                    if remaining <= 0.2:
-                        log.debug(f"Intro video position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s ({progress_pct:.1f}%)")
-                    
-                    # Wait until we're very close to the end
-                    # Use multiple conditions: remaining time, percentage, or position stability
-                    # Also check if video has stopped playing (paused) which indicates end
-                    is_playing = True
-                    try:
-                        is_playing = not mpv.get_property("pause")
-                    except Exception:
-                        pass
-                    
-                    # Secondary check: position-based detection (only used if no duration available)
-                    # Only use this if we don't have actual_video_duration, otherwise rely on elapsed time
-                    if not actual_video_duration:
-                        # No duration info - use position-based check as fallback
-                        if remaining <= 0.05 or progress_pct >= 99.5 or (remaining <= 0.1 and position_stable_count >= 5) or (remaining <= 0.15 and not is_playing):
-                            log.info(f"Intro video reached end after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s, {progress_pct:.1f}% complete, playing: {is_playing})")
-                            video_complete = True
-                            time.sleep(1.5)
-                            break
-                    elif remaining <= 0.2:
-                        # Very close to end - check more frequently
-                        time.sleep(0.01)  # Check very frequently when close to end
-                        # Also check EOF when close to end
-                        try:
-                            eof_reached = mpv.get_property("eof-reached")
-                            if eof_reached is True:
-                                # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
-                                log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s)")
-                                try:
-                                    mpv.pause()
-                                    mpv.stop()  # Stop completely to prevent restart
-                                    log.info("Stopped intro video immediately on EOF")
-                                except Exception:
-                                    pass
-                                video_complete = True
-                                time.sleep(0.2)
-                                break
-                        except Exception:
-                            pass
-                    else:
-                        # Not close yet - normal check interval
-                        # Also check EOF as backup
-                        try:
-                            eof_reached = mpv.get_property("eof-reached")
-                            if eof_reached is True:
-                                # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
-                                log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s)")
-                                try:
-                                    mpv.pause()
-                                    mpv.stop()  # Stop completely to prevent restart
-                                    log.info("Stopped intro video immediately on EOF")
-                                except Exception:
-                                    pass
-                                video_complete = True
-                                time.sleep(0.2)
-                                break
-                        except Exception:
-                            pass
-                else:
-                    # No duration/position info - fall back to EOF check only
-                    try:
-                        eof_reached = mpv.get_property("eof-reached")
-                        if eof_reached is True:
-                            log.info(f"Intro video reached EOF after {elapsed:.2f}s (no position info) - video complete")
-                            video_complete = True
-                            # Stop the video immediately to prevent looping
-                            try:
-                                mpv.pause()
-                            except Exception:
-                                pass
-                                time.sleep(0.5)
-                            break
-                    except Exception:
-                        pass
-            except Exception as pos_exc:
-                # Position check failed - log and try EOF as fallback
-                if elapsed > 10:  # Only log errors when we're close to expected end
-                    log.debug(f"Position check exception at {elapsed:.2f}s: {pos_exc}")
-                try:
-                    eof_reached = mpv.get_property("eof-reached")
-                    if eof_reached is True:
-                        log.info(f"Intro video reached EOF after {elapsed:.2f}s (position check failed: {pos_exc}) - video complete")
-                        video_complete = True
-                        # Stop the video immediately to prevent looping
-                        try:
-                            mpv.pause()
-                        except Exception:
-                            pass
-                        time.sleep(0.5)
-                        break
-                except Exception as eof_exc:
-                    if elapsed > 10:
-                        log.debug(f"EOF check also failed: {eof_exc}")
-            
-            # Safety timeout: if video hasn't ended after max_wait_time, proceed anyway
-            # This prevents infinite waiting if EOF detection fails
-            if elapsed >= max_wait_time:
-                log.warning(f"Intro video max wait time ({max_wait_time}s) reached - proceeding to UI")
-                # Stop the video immediately to prevent looping
-                try:
-                    mpv.pause()
-                    mpv.stop()  # Stop completely
-                    # Clear playlist to prevent restart
-                    import json
-                    import socket
-                    sock = socket.socket(socket.AF_UNIX)
-                    sock.connect(config.mpv_socket)
-                    sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
-                    sock.close()
-                    log.info("Stopped and cleared intro video due to timeout")
-                except Exception:
-                    pass
-                # Double-check if video is still playing
-                try:
-                    is_playing = not mpv.get_property("pause")
-                    if is_playing:
-                        log.warning("Video still playing but max wait time reached - forcing transition")
-                except Exception:
-                    pass
-                video_complete = True
-                break
-            
-            # Log progress every 5 seconds for debugging
-            if int(elapsed) % 5 == 0 and elapsed > 0:
-                try:
-                    is_playing = not mpv.get_property("pause")
-                    log.debug(f"Intro video playing: {is_playing}, elapsed: {elapsed:.1f}s")
-                except Exception:
-                    pass
-            
-            clock.tick(60)
-                mpv.stop()  # Stop completely to prevent any restart
-                # Also clear the playlist to prevent MPV from restarting
-                import json
-                import socket
-                sock = socket.socket(socket.AF_UNIX)
-                sock.connect(config.mpv_socket)
-                sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
-                sock.close()
-                log.info("Stopped intro video and cleared playlist")
-                time.sleep(0.3)  # Brief pause to ensure video stops
-            except Exception as stop_exc:
-                log.warning(f"Error stopping video: {stop_exc}")
-            
+            # Skip waiting - set complete immediately for testing
+            video_complete = True
+            log.info("TESTING: Intro video started successfully - proceeding to UI transition")
             # Fade transition from intro video to UI using transition manager
             log.info("Starting clean fade transition from intro to UI using transition manager")
             transition_success = transition_mgr.transition_to_ui()
