@@ -862,14 +862,6 @@ def run() -> None:
             # CRITICAL: Hide the pygame window using multiple methods since xdotool doesn't work in systemd
             log.info("Preparing for intro video - hiding pygame window using multiple methods")
 
-            # First, completely destroy the pygame display surface
-            try:
-                pygame.display.quit()
-                log.info("Destroyed pygame display surface completely")
-                time.sleep(0.2)  # Give time for the window to disappear
-            except Exception as quit_exc:
-                log.warning(f"Could not quit pygame display: {quit_exc}")
-
             try:
                 pg_id = window_mgr.pygame_window_id or pygame_window_id
                 log.info(f"Pygame window ID to hide: {pg_id}")
@@ -1505,18 +1497,6 @@ def run() -> None:
                 log.info("Successfully transitioned to UI")
             else:
                 log.warning("Transition to UI failed, UI may not be properly visible")
-
-            # CRITICAL: Reinitialize pygame display after destroying it for intro video
-            try:
-                pygame.init()
-                pygame.display.set_caption("Magic Dingus Box")
-                # Always use FULLSCREEN to fill entire screen at target resolution
-                flags = pygame.FULLSCREEN
-                screen = pygame.display.set_mode(target_resolution, flags)
-                log.info("Reinitialized pygame display after intro video")
-            except Exception as reinit_exc:
-                log.error(f"Failed to reinitialize pygame display: {reinit_exc}")
-                return  # Exit if we can't reinitialize display
 
             # Recreate display surfaces after transition (transition manager handles window sizing)
             try:
