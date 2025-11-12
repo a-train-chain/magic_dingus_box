@@ -1506,6 +1506,18 @@ def run() -> None:
             else:
                 log.warning("Transition to UI failed, UI may not be properly visible")
 
+            # CRITICAL: Reinitialize pygame display after destroying it for intro video
+            try:
+                pygame.init()
+                pygame.display.set_caption("Magic Dingus Box")
+                # Always use FULLSCREEN to fill entire screen at target resolution
+                flags = pygame.FULLSCREEN
+                screen = pygame.display.set_mode(target_resolution, flags)
+                log.info("Reinitialized pygame display after intro video")
+            except Exception as reinit_exc:
+                log.error(f"Failed to reinitialize pygame display: {reinit_exc}")
+                return  # Exit if we can't reinitialize display
+
             # Recreate display surfaces after transition (transition manager handles window sizing)
             try:
                 # Update display manager with current screen
