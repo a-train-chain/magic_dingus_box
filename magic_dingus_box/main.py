@@ -93,20 +93,20 @@ def run() -> None:
                 if lock_pid and lock_pid != "starting":
                     # Check if process is still running (use basic check, no logging yet)
                     try:
-                    import subprocess
-                    result = subprocess.run(
+                        import subprocess
+                        result = subprocess.run(
                         ["ps", "-p", lock_pid, "-o", "comm="],
                         capture_output=True,
                         text=True,
                         timeout=1.0
                     )
                         if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
-                        # RetroArch is running - exit immediately without any initialization
-                        sys.exit(0)
-                    else:
-                        # Lock file exists but process is dead - remove stale lock
+                            # RetroArch is running - exit immediately without any initialization
+                            sys.exit(0)
+                        else:
+                            # Lock file exists but process is dead - remove stale lock
                             try:
-                        os.remove(retroarch_lock_file)
+                                os.remove(retroarch_lock_file)
                             except Exception:
                                 pass
                     except Exception:
@@ -118,8 +118,8 @@ def run() -> None:
                 elif lock_pid == "starting":
                     # Still "starting" after wait - likely stale, remove it
                     try:
-                    os.remove(retroarch_lock_file)
-        except Exception:
+                        os.remove(retroarch_lock_file)
+                    except Exception:
                         pass
             else:
                 # Lock file exists but is empty - remove it
@@ -721,17 +721,17 @@ def run() -> None:
                 if lock_pid and lock_pid != "starting":
                     import subprocess
                     try:
-                    result = subprocess.run(
+                        result = subprocess.run(
                         ["ps", "-p", lock_pid, "-o", "comm="],
                         capture_output=True,
                         text=True,
                         timeout=1.0
                     )
                         if result.returncode == 0 and result.stdout and "retroarch" in result.stdout.lower():
-                        log.info(f"RetroArch is running (PID: {lock_pid}) - skipping intro video")
+                            log.info(f"RetroArch is running (PID: {lock_pid}) - skipping intro video")
                             retroarch_running = True
-                        played_intro = False  # Don't play intro if RetroArch is running
-                    else:
+                            played_intro = False  # Don't play intro if RetroArch is running
+                        else:
                             # Lock file exists but process is dead - remove stale lock
                             log.info(f"Stale RetroArch lock file detected (PID: {lock_pid} not running) - removing")
                             try:
@@ -770,9 +770,9 @@ def run() -> None:
                 # Other errors - be defensive and remove lock file
                 log.warning(f"Unexpected error checking RetroArch lock file: {exc} - attempting to remove")
                 try:
-                        os.remove(retroarch_lock_file)
-            except Exception:
-                pass
+                    os.remove(retroarch_lock_file)
+                except Exception:
+                    pass
         
         from pathlib import Path
         intro_setting = settings_store.get("intro_video", None)
