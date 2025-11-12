@@ -872,40 +872,84 @@ def run() -> None:
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
 
-            # Ensure MPV window is visible after loading video
-            # Give MPV a moment to create its window, then make it visible
-            time.sleep(0.5)
+            # CRITICAL: Ensure MPV window is visible and on TOP after loading video
+            # This is essential for the intro video to be seen during boot
+            log.info("Ensuring MPV window is visible and on top layer...")
+            time.sleep(0.5)  # Give MPV time to create window
+
             try:
                 import subprocess
                 env = os.environ.copy()
                 env["DISPLAY"] = ":0"
-                # Find and show the MPV window
-                result = subprocess.run(
-                    ["xdotool", "search", "--class", "mpv"],
-                    capture_output=True, text=True, timeout=2.0, env=env
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    mpv_window_id = result.stdout.strip().split('\n')[0]
-                    log.info(f"Found MPV window: {mpv_window_id}")
-                    # Move window to visible position and make it fullscreen
+
+                # Multiple attempts to find and position MPV window
+                mpv_window_id = None
+                for attempt in range(5):
+                    result = subprocess.run(
+                        ["xdotool", "search", "--class", "mpv"],
+                        capture_output=True, text=True, timeout=1.0, env=env
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        mpv_window_id = result.stdout.strip().split('\n')[0]
+                        log.info(f"Found MPV window: {mpv_window_id} (attempt {attempt + 1})")
+                        break
+                    time.sleep(0.2)
+
+                if mpv_window_id:
+                    # Aggressive window positioning - multiple commands to ensure it works
+                    log.info("Positioning MPV window aggressively...")
+
+                    # Step 1: Move to visible position
                     subprocess.run(
                         ["xdotool", "windowmove", mpv_window_id, "0", "0"],
                         timeout=1.0, check=False, env=env
                     )
+
+                    # Step 2: Resize to fullscreen
                     subprocess.run(
                         ["xdotool", "windowsize", mpv_window_id, str(config.screen_width), str(config.screen_height)],
                         timeout=1.0, check=False, env=env
                     )
-                    # Ensure it's on top
+
+                    # Step 3: Activate and bring to front (multiple times for reliability)
+                    for _ in range(3):
+                        subprocess.run(
+                            ["xdotool", "windowactivate", mpv_window_id],
+                            timeout=1.0, check=False, env=env
+                        )
+                        subprocess.run(
+                            ["xdotool", "windowraise", mpv_window_id],
+                            timeout=1.0, check=False, env=env
+                        )
+                        time.sleep(0.1)
+
+                    # Step 4: Set window properties to ensure it's always on top
                     subprocess.run(
-                        ["xdotool", "windowactivate", mpv_window_id],
+                        ["xprop", "-id", mpv_window_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_FULLSCREEN"],
                         timeout=1.0, check=False, env=env
                     )
-                    log.info("Made MPV window visible and fullscreen")
+
+                    # Step 5: Final activation
+                    subprocess.run(
+                        ["xdotool", "windowactivate", "--sync", mpv_window_id],
+                        timeout=2.0, check=False, env=env
+                    )
+
+                    log.info(f"MPV window {mpv_window_id} positioned at (0,0) size {config.screen_width}x{config.screen_height} and brought to top")
+
+                    # Verify window position
+                    verify_result = subprocess.run(
+                        ["xdotool", "getwindowgeometry", mpv_window_id],
+                        capture_output=True, text=True, timeout=1.0, env=env
+                    )
+                    if verify_result.returncode == 0:
+                        log.info(f"Window geometry verification: {verify_result.stdout.strip()}")
+
                 else:
-                    log.warning("Could not find MPV window to make visible")
+                    log.error("CRITICAL: Could not find MPV window after 5 attempts - intro video will not be visible!")
+
             except Exception as win_exc:
-                log.warning(f"Could not make MPV window visible: {win_exc}")
+                log.error(f"CRITICAL: Failed to position MPV window: {win_exc} - intro video may not be visible")
             
             # Wait for video to fully load and be ready before starting playback
             # Check multiple times to ensure video is actually ready
