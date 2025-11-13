@@ -342,6 +342,55 @@ class WindowManager:
             self._log.debug(f"Failed to remove decorations: {exc}")
         return False
     
+    def set_window_undecorated_persistent(self, window_id: str) -> bool:
+        """Persistently remove window decorations with multiple attempts.
+        
+        This method aggressively removes decorations and sets window properties
+        to prevent the window manager from reapplying them. Should be called
+        periodically to maintain undecorated state.
+        
+        Args:
+            window_id: X11 window ID
+            
+        Returns:
+            True if at least one operation succeeded
+        """
+        if self.platform != "linux":
+            return False
+        
+        success = False
+        try:
+            env = os.environ.copy()
+            env["DISPLAY"] = ":0"
+            
+            # Remove decorations multiple times to ensure it sticks
+            for attempt in range(3):
+                if self.remove_window_decorations(window_id):
+                    success = True
+            
+            # Also set window type to prevent decorations
+            subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_NET_WM_WINDOW_TYPE", "32a", "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_SPLASH"],
+                capture_output=True,
+                timeout=0.5,
+                check=False,
+                env=env
+            )
+            
+            # Set maximized hints to prevent resizing/decorations
+            subprocess.run(
+                ["xprop", "-id", window_id, "-f", "_NET_WM_STATE", "32a", "-set", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"],
+                capture_output=True,
+                timeout=0.5,
+                check=False,
+                env=env
+            )
+            
+        except Exception as exc:
+            self._log.debug(f"Failed to set persistent undecorated state: {exc}")
+        
+        return success
+    
     def hide_cursor_aggressive(self) -> bool:
         """Aggressively hide cursor using multiple methods.
         

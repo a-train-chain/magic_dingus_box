@@ -58,23 +58,29 @@ class EvdevJoystickInputProvider(InputProvider):
         # Button 7 = BTN_TL (Z Trigger) - need to verify code
         
         # Use evdev constants for button codes
-        # Based on actual N64 controller mapping (corrected):
+        # Based on actual N64 controller mapping (SWITCH CO.,LTD. Controller):
+        # Standard evdev codes: BTN_SOUTH=304 (A), BTN_EAST=305 (B)
+        # N64 controller actually uses: 306 (A button), 305 (B button)
+        # User wants: A button = SELECT, B button = SETTINGS_MENU
         # - A button = code 306 -> SELECT (user wants A to select)
-        # - B button = code 305 -> SETTINGS_MENU (user wants B to open menu)
+        # - B button = code 305 (BTN_EAST) -> SETTINGS_MENU (user wants B to open menu)
         # - Start button = code 316 (BTN_MODE) -> SELECT
         # - Z button = code 310 -> PLAY_PAUSE
         # - Left trigger = code 308 -> PREV
         # - Right trigger = code 309 -> NEXT
         self.BTN_START = ecodes.BTN_START if hasattr(ecodes, 'BTN_START') else 9      # Fallback for standard START
         self.BTN_MODE = ecodes.BTN_MODE if hasattr(ecodes, 'BTN_MODE') else 316      # Start button (N64)
+        # N64 controller uses 306 for A button (non-standard, but that's what it sends)
+        # Also check standard BTN_SOUTH (304) as fallback for other controllers
         self.BTN_A = 306                                                              # A button (N64) -> SELECT
+        self.BTN_A_STD = ecodes.BTN_SOUTH if hasattr(ecodes, 'BTN_SOUTH') else 304   # Standard A button (fallback)
         self.BTN_B = ecodes.BTN_EAST if hasattr(ecodes, 'BTN_EAST') else 305          # B button (N64) -> SETTINGS_MENU
         self.BTN_Z = 310                                                              # Z button (N64) -> PLAY_PAUSE
         self.BTN_R = 309                                                              # Right trigger (N64) -> NEXT
         self.BTN_L = 308                                                              # Left trigger (N64) -> PREV
         self.BTN_MEMPAK = 6     # (unused for now)
         
-        self._log.info(f"N64 Controller button mappings: START={self.BTN_MODE}, A={self.BTN_A}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
+        self._log.info(f"N64 Controller button mappings: START={self.BTN_MODE}, A={self.BTN_A}/{self.BTN_A_STD}, B={self.BTN_B}, Z={self.BTN_Z}, R={self.BTN_R}, L={self.BTN_L}")
         
         # Axis mappings
         self.AXIS_C_R = 3       # axis(3+) -> NEXT (key 3)
@@ -215,20 +221,16 @@ class EvdevJoystickInputProvider(InputProvider):
                                 self._button_states[button_code] = (True, time.time())
                                 
                                 # Map N64 controller buttons using actual evdev codes
-                                # Based on N64 controller mapping:
-                                # Button 305 = A button -> SELECT
-                                # Button 306 = B button -> SETTINGS_MENU
-                                # Button 316 = Start button -> SELECT
-                                # Button 310 = Z button -> PLAY_PAUSE
-                                # Button 309 = Right trigger -> NEXT
-                                # Button 308 = Left trigger -> PREV
-
-                                if button_code == self.BTN_A or button_code == self.BTN_MODE:
-                                    # A button (305) or Start button (316) -> SELECT
+                                # User wants: A button = SELECT, B button = SETTINGS_MENU
+                                # N64 controller: A=306, B=305 (BTN_EAST)
+                                # Also check standard codes (304 for A) as fallback
+                                
+                                if button_code == self.BTN_A or button_code == self.BTN_A_STD or button_code == self.BTN_MODE:
+                                    # A button (306 for N64, or 304 standard) or Start button (316) -> SELECT
                                     events.append(InputEvent(InputEvent.Type.SELECT))
                                     self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (A/Start) -> SELECT")
                                 elif button_code == self.BTN_B:
-                                    # B button (306) -> SETTINGS_MENU
+                                    # B button (305/BTN_EAST) -> SETTINGS_MENU
                                     events.append(InputEvent(InputEvent.Type.SETTINGS_MENU))
                                     self._log.info(f"Evdev joystick [{device.name}]: Button {button_code} (B) -> SETTINGS_MENU")
                                 elif button_code == self.BTN_Z:

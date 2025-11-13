@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
+import subprocess
 import threading
 import time
 import signal
@@ -53,11 +55,42 @@ def run() -> None:
             lock_file.write(str(os.getpid()) + '\n')
             lock_file.flush()
         except (IOError, BlockingIOError, OSError):
-            # Another instance is already running
+            # Another instance might be running - check if the PID in the lock file is still alive
             lock_file.close()
-            # Use print since logging isn't set up yet
-            print("Another instance of Magic Dingus UI is already running. Exiting.", file=sys.stderr)
-            sys.exit(1)
+            try:
+                # Read the PID from the existing lock file
+                with open(lock_file_path, 'r') as existing_lock:
+                    existing_pid = existing_lock.read().strip()
+                    if existing_pid and existing_pid.isdigit():
+                        existing_pid = int(existing_pid)
+                        # Check if this process is still running
+                        try:
+                            os.kill(existing_pid, 0)  # Signal 0 just checks if process exists
+                            # Process exists, so another instance is really running
+                            print("Another instance of Magic Dingus UI is already running. Exiting.", file=sys.stderr)
+                            sys.exit(1)
+                        except OSError:
+                            # Process doesn't exist, so lock file is stale - remove it
+                            print(f"Removing stale lock file (PID {existing_pid} not running)", file=sys.stderr)
+                            os.remove(lock_file_path)
+                            # Now try to create the lock again
+                            lock_file = open(lock_file_path, 'w')
+                            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            lock_file.write(str(os.getpid()) + '\n')
+                            lock_file.flush()
+                    else:
+                        # Lock file exists but has no valid PID - remove it
+                        print("Removing invalid lock file", file=sys.stderr)
+                        os.remove(lock_file_path)
+                        # Now try to create the lock again
+                        lock_file = open(lock_file_path, 'w')
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        lock_file.write(str(os.getpid()) + '\n')
+                        lock_file.flush()
+            except Exception as check_exc:
+                # If we can't check the existing lock file, assume another instance is running
+                print(f"Could not check existing lock file: {check_exc}. Assuming another instance is running.", file=sys.stderr)
+                sys.exit(1)
     except Exception as lock_exc:
         # Use print since logging isn't set up yet
         print(f"Could not create lock file: {lock_exc}", file=sys.stderr)
@@ -196,6 +229,85 @@ def run() -> None:
         display_mode = DisplayMode.MODERN_WITH_BEZEL
     else:
         display_mode = DisplayMode.CRT_NATIVE
+
+    # CRITICAL: Set X server resolution to 720x480 if in CRT mode
+    # This ensures X server matches display resolution for proper rendering
+    if display_mode == DisplayMode.CRT_NATIVE and config.platform == "linux":
+        log.info("CRT mode detected - setting X server resolution to 720x480")
+        try:
+            env = {**os.environ, "DISPLAY": ":0"}
+            # Find the connected HDMI output
+            result = subprocess.run(
+                ["xrandr"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                env=env
+            )
+            if result.returncode == 0:
+                hdmi_output = None
+                for line in result.stdout.split('\n'):
+                    if 'connected' in line.lower() and 'hdmi' in line.lower():
+                        hdmi_output = line.split()[0]
+                        break
+                if not hdmi_output:
+                    # Try any connected output
+                    for line in result.stdout.split('\n'):
+                        if 'connected' in line.lower() and 'disconnected' not in line.lower():
+                            hdmi_output = line.split()[0]
+                            break
+                
+                if hdmi_output:
+                    # Check current resolution
+                    current_mode = None
+                    for line in result.stdout.split('\n'):
+                        if line.startswith(hdmi_output) and '*' in line:
+                            # Extract resolution from line like "HDMI-1 connected primary 720x480+0+0"
+                            match = re.search(r'(\d+)x(\d+)', line)
+                            if match:
+                                current_mode = match.group(0)
+                    
+                    if current_mode != "720x480":
+                        log.info(f"Setting X server resolution to 720x480 on {hdmi_output} (current: {current_mode})")
+                        # Check if 720x480 mode exists
+                        mode_exists = "720x480" in result.stdout
+                        
+                        if mode_exists:
+                            # Mode exists, use it
+                            subprocess.run(
+                                ["xrandr", "--output", hdmi_output, "--mode", "720x480", "--rate", "60"],
+                                timeout=2.0,
+                                env=env,
+                                check=False
+                            )
+                            log.info("Set X server resolution to 720x480 using existing mode")
+                        else:
+                            # Create the mode
+                            subprocess.run(
+                                ["xrandr", "--newmode", "720x480_60.00", "27.00", "720", "736", "808", "896", "480", "481", "484", "497", "-hsync", "+vsync"],
+                                timeout=2.0,
+                                env=env,
+                                check=False
+                            )
+                            subprocess.run(
+                                ["xrandr", "--addmode", hdmi_output, "720x480_60.00"],
+                                timeout=2.0,
+                                env=env,
+                                check=False
+                            )
+                            subprocess.run(
+                                ["xrandr", "--output", hdmi_output, "--mode", "720x480_60.00"],
+                                timeout=2.0,
+                                env=env,
+                                check=False
+                            )
+                            log.info("Created and set X server resolution to 720x480")
+                    else:
+                        log.info("X server resolution already set to 720x480")
+                else:
+                    log.warning("Could not find HDMI output to set resolution")
+        except Exception as e:
+            log.warning(f"Failed to set X server resolution: {e}")
 
     # Init pygame (let SDL auto-detect best driver)
     # mpv uses X11 for video, pygame handles UI
@@ -871,17 +983,7 @@ def run() -> None:
                     env = os.environ.copy()
                     env["DISPLAY"] = ":0"
 
-                    # Method 0: Kill the window completely first (most aggressive)
-                    try:
-                        subprocess.run(
-                            ["xdotool", "windowkill", pg_id],
-                            timeout=0.5, check=False, env=env
-                        )
-                        log.info(f"Killed pygame window {pg_id} completely")
-                        time.sleep(0.1)  # Give time for the kill to take effect
-                    except Exception as kill_exc:
-                        log.warning(f"xdotool windowkill failed: {kill_exc}")
-
+                    # Skip windowkill as it's too aggressive and causes X11 disconnection
                     # Method 1: Use xprop to set window to HIDDEN state (most reliable in systemd)
                     try:
                         subprocess.run([
@@ -1003,15 +1105,86 @@ def run() -> None:
             mpv.load_file(str(intro_path))
             log.info(f"Loaded ONLY intro video: {intro_path}")
 
-            # CRITICAL: Ensure MPV window is visible and on TOP after loading video
+            # CRITICAL: Hide interfering windows and ensure MPV window is visible and on TOP after loading video
             # This is essential for the intro video to be seen during boot
-            log.info("Ensuring MPV window is visible and on top layer...")
+            log.info("Hiding interfering windows and ensuring MPV window is visible and on top layer...")
             time.sleep(0.5)  # Give MPV time to create window
 
             try:
                 import subprocess
                 env = os.environ.copy()
                 env["DISPLAY"] = ":0"
+
+                # FIRST: Move pygame window off-screen and set it BELOW so it doesn't block intro video
+                log.info("Moving pygame window off-screen and setting BELOW...")
+                try:
+                    pygame_window_id = window_mgr.pygame_window_id
+                    if pygame_window_id:
+                        # Move pygame window far off-screen
+                        subprocess.run(
+                            ["xdotool", "windowmove", str(pygame_window_id), "-10000", "-10000"],
+                            timeout=0.5, check=False, env=env
+                        )
+                        # Set pygame window BELOW so it doesn't block MPV
+                        subprocess.run(
+                            ["xprop", "-id", str(pygame_window_id), "-f", "_NET_WM_STATE", "32a",
+                             "-set", "_NET_WM_STATE", "_NET_WM_STATE_BELOW"],
+                            timeout=0.5, check=False, env=env
+                        )
+                        # Also unmap it to be extra sure
+                        subprocess.run(
+                            ["xdotool", "windowunmap", str(pygame_window_id)],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info(f"Moved pygame window {pygame_window_id} off-screen and set BELOW")
+                except Exception as pygame_hide_exc:
+                    log.warning(f"Could not hide pygame window: {pygame_hide_exc}")
+
+                # SECOND: Kill all existing MPV instances to prevent multiple windows
+                log.info("Killing all existing MPV instances...")
+                subprocess.run(["pkill", "-9", "mpv"], timeout=1.0, check=False, env=env)
+                time.sleep(0.3)  # Give MPV time to exit
+                # Also kill MPV windows explicitly
+                for mpv_win in subprocess.run(
+                    ["xdotool", "search", "--class", "mpv"],
+                    capture_output=True, text=True, timeout=1.0, env=env
+                ).stdout.strip().split('\n'):
+                    if mpv_win:
+                        subprocess.run(
+                            ["xdotool", "windowkill", mpv_win],
+                            timeout=0.5, check=False, env=env
+                        )
+                log.info("Killed all existing MPV instances")
+
+                # THIRD: Hide any other windows that might interfere (openbox, etc.)
+                log.info("Hiding other interfering windows...")
+                try:
+                    # Get all visible windows
+                    result = subprocess.run(
+                        ["xwininfo", "-root", "-children"],
+                        capture_output=True, text=True, timeout=2.0, env=env
+                    )
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if 'child' in line and 'children:' in line:
+                                continue
+                            # Look for windows that are positioned at (0,0) and might interfere
+                            parts = line.strip().split()
+                            if len(parts) >= 2 and parts[0].startswith('0x'):
+                                window_id = parts[0]
+                                # Skip the root window and MPV window
+                                if window_id not in ['0x20a'] and 'mpv' not in line.lower():
+                                    try:
+                                        # Hide this window
+                                        subprocess.run([
+                                            "xprop", "-id", window_id, "-f", "_NET_WM_STATE", "32a",
+                                            "-set", "_NET_WM_STATE", "_NET_WM_STATE_HIDDEN"
+                                        ], timeout=0.5, check=False, env=env)
+                                        log.info(f"Hidden interfering window: {window_id}")
+                                    except Exception as hide_exc:
+                                        log.debug(f"Could not hide window {window_id}: {hide_exc}")
+                except Exception as enum_exc:
+                    log.warning(f"Could not enumerate windows to hide: {enum_exc}")
 
                 # Multiple attempts to find and position MPV window
                 mpv_window_id = None
@@ -1031,15 +1204,28 @@ def run() -> None:
 
                     # Use xprop to set window properties first (more reliable than xdotool during boot)
                     try:
-                        # Set window to be always on top and fullscreen
+                        # Set window to be always on top and fullscreen with maximum layering
                         subprocess.run([
                             "xprop", "-id", mpv_window_id, "-f", "_NET_WM_STATE", "32a",
                             "-set", "_NET_WM_STATE",
-                            "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT", "_NET_WM_STATE_MAXIMIZED_HORZ"
+                            "_NET_WM_STATE_ABOVE", "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_MAXIMIZED_VERT",
+                            "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_STAYS_ON_TOP"
                         ], timeout=1.0, check=False, env=env)
-                        log.info("Set MPV window properties: ABOVE, FULLSCREEN, MAXIMIZED")
+                        log.info("Set MPV window properties: ABOVE, FULLSCREEN, MAXIMIZED, STAYS_ON_TOP")
                     except Exception as xprop_exc:
                         log.warning(f"xprop failed: {xprop_exc}")
+
+                    # Use wmctrl to force window to top of stack (more aggressive)
+                    try:
+                        # Check if wmctrl is available and use it to force stacking
+                        wmctrl_check = subprocess.run(["which", "wmctrl"], capture_output=True, timeout=0.5)
+                        if wmctrl_check.returncode == 0:
+                            subprocess.run([
+                                "wmctrl", "-i", "-r", str(mpv_window_id), "-b", "add,above,fullscreen,maximized_vert,maximized_horz"
+                            ], timeout=1.0, check=False, env=env)
+                            log.info("Used wmctrl to set MPV window stacking: ABOVE, FULLSCREEN, MAXIMIZED")
+                    except Exception as wmctrl_exc:
+                        log.warning(f"wmctrl stacking failed: {wmctrl_exc}")
 
                     # Use xdotool for positioning (with simpler, more reliable commands)
                     try:
@@ -1089,7 +1275,7 @@ def run() -> None:
                         log.warning(f"Window verification failed: {verify_exc}")
 
                     # EXTRA: Raise MPV window multiple times to ensure it's definitely on top
-                    for raise_attempt in range(3):
+                    for raise_attempt in range(5):
                         try:
                             subprocess.run(
                                 ["xdotool", "windowraise", mpv_window_id],
@@ -1098,8 +1284,39 @@ def run() -> None:
                         except Exception:
                             pass
                         time.sleep(0.05)
+
+                    # FINAL: Use xdotool to activate and focus the window (most aggressive)
+                    try:
+                        subprocess.run(
+                            ["xdotool", "windowactivate", mpv_window_id, "windowfocus", mpv_window_id],
+                            timeout=0.5, check=False, env=env
+                        )
+                        log.info("Activated and focused MPV window with xdotool")
+                    except Exception as focus_exc:
+                        log.warning(f"Final window focus failed: {focus_exc}")
+
                     log.info(f"MPV window raised to top multiple times for {mpv_window_id}")
                     log.info(f"MPV window positioning complete for {mpv_window_id}")
+
+                    # VERIFICATION: Check that MPV window is now at the top of the stack
+                    try:
+                        stack_result = subprocess.run(
+                            ["xwininfo", "-root", "-children"],
+                            capture_output=True, text=True, timeout=1.0, env=env
+                        )
+                        if stack_result.returncode == 0:
+                            lines = stack_result.stdout.split('\n')
+                            # The first window listed (after the root) should be MPV
+                            for line in lines:
+                                if 'mpv' in line.lower():
+                                    log.info("VERIFICATION: MPV window is visible in window stack")
+                                    break
+                            else:
+                                log.warning("VERIFICATION: MPV window not found in visible window stack")
+                        else:
+                            log.warning("Could not verify window stack")
+                    except Exception as verify_exc:
+                        log.warning(f"Window stack verification failed: {verify_exc}")
 
                 else:
                     log.error("CRITICAL: Could not find MPV window after 5 attempts - intro video will not be visible!")
@@ -1239,32 +1456,262 @@ def run() -> None:
                 log.info("Intro video playback confirmed started")
             else:
                 log.warning("Could not confirm playback started, but continuing")
-
+            
             # CRITICAL: No window operations after playback starts - let video play uninterrupted
             # All window setup was done before loading the video
-
-            # FOR TESTING: Skip the waiting loop entirely and transition immediately
-            # This ensures the video is visible and we can test the window layering
-            log.info("TESTING: Skipping intro video wait - transitioning immediately to verify video visibility")
-
-            # Get video duration for logging
+            
+            intro_duration = float(settings_store.get("intro_duration", 10.0))
+            # Optional: apply CRT effects during intro (default off for performance)
+            intro_effects_enabled = bool(settings_store.get("intro_crt_effects", False))
+            intro_start = time.time()
+            
+            # Get actual video duration from mpv to ensure we wait for the full video
+            actual_video_duration = None
             try:
                 actual_video_duration = mpv.get_property("duration")
                 if actual_video_duration:
-                    log.info(f"Intro video actual duration: {actual_video_duration:.3f}s")
+                    log.info(f"Intro video actual duration: {actual_video_duration:.3f}s (settings duration: {intro_duration}s)")
             except Exception:
                 log.debug("Could not get video duration from mpv")
-
+            
+            # Use actual duration if available, otherwise use settings duration
+            target_duration = actual_video_duration if actual_video_duration else intro_duration
+            max_wait_time = target_duration + 2.0  # Allow 2 seconds buffer beyond actual duration
+            
             # Verify video is actually playing
             try:
                 is_playing = not mpv.get_property("pause")
                 log.info(f"Intro video playback started, paused={not is_playing}")
             except Exception:
                 pass
+            
+            # Wait for video to complete - ALWAYS wait for full video duration
+            # This ensures the intro video plays completely from start to finish
+            log.info(f"Waiting for intro video to complete (target duration: {target_duration:.3f}s, max wait: {max_wait_time:.1f}s)")
+            video_complete = False
+            last_position = None
+            position_stable_count = 0  # Track if position stops updating (indicates end)
+            
+            while True:
+                # Allow quit during intro - but be defensive since pygame window may be hidden/killed
+                try:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            pygame.quit()
+                            return
+                except Exception:
+                    # If pygame event handling fails (likely due to window being hidden/killed),
+                    # just continue without event handling during intro
+                    pass
 
-            # Skip waiting - set complete immediately for testing
-            video_complete = True
-            log.info("TESTING: Intro video started successfully - proceeding to UI transition")
+                # Don't render pygame during intro - mpv is handling the display
+                # Just check for end conditions
+                
+                elapsed = time.time() - intro_start
+                
+                # Primary check: wait for actual elapsed time to reach video duration
+                # This is the most reliable method - we know exactly how long the video should be
+                # Wait until we've actually played for the full duration
+                if target_duration and elapsed >= target_duration:
+                    # We've waited for the full video duration - STOP VIDEO IMMEDIATELY to prevent looping
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        eof_reached = mpv.get_property("eof-reached")
+                        time_pos = mpv.get_property("time-pos")
+                        if time_pos:
+                            log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {target_duration:.3f}s) - position: {time_pos:.3f}s, playing: {is_playing}, EOF: {eof_reached}")
+                        else:
+                            log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {target_duration:.3f}s) - playing: {is_playing}, EOF: {eof_reached}")
+                        # Stop video immediately to prevent looping
+                        mpv.pause()
+                        mpv.stop()  # Stop completely
+                        log.info("Stopped intro video after duration elapsed")
+                    except Exception:
+                        log.info(f"Intro video duration elapsed ({elapsed:.2f}s >= {target_duration:.3f}s) - video complete")
+                        try:
+                            mpv.pause()
+                            mpv.stop()
+                        except Exception:
+                            pass
+                    # Wait a moment for the last frame to be fully displayed
+                    video_complete = True
+                    time.sleep(0.5)  # Brief pause before transition
+                    break
+                elif target_duration and elapsed >= (target_duration - 0.05):
+                    # Very close to end (within 50ms) - wait for exact duration
+                    # Don't transition yet, let the primary check above handle it
+                    time.sleep(0.01)  # Check very frequently when extremely close
+                
+                # Secondary check: playback position to determine how close we are to the end
+                # This provides early detection if position is available
+                try:
+                    time_pos = mpv.get_property("time-pos")
+                    duration = mpv.get_property("duration") or actual_video_duration
+                    
+                    if duration is not None and time_pos is not None:
+                        remaining = duration - time_pos
+                        progress_pct = (time_pos / duration) * 100 if duration > 0 else 0
+                        
+                        # Track if position has stopped updating (indicates we're at the end)
+                        if last_position is not None and abs(time_pos - last_position) < 0.001:
+                            # Position hasn't changed much - we might be at the end
+                            position_stable_count += 1
+                        else:
+                            position_stable_count = 0
+                        last_position = time_pos
+                        
+                        # Log position when close to end for debugging
+                        if remaining <= 0.2:
+                            log.debug(f"Intro video position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s ({progress_pct:.1f}%)")
+                        
+                        # Wait until we're very close to the end
+                        # Use multiple conditions: remaining time, percentage, or position stability
+                        # Also check if video has stopped playing (paused) which indicates end
+                        is_playing = True
+                        try:
+                            is_playing = not mpv.get_property("pause")
+                        except Exception:
+                            pass
+                        
+                        # Secondary check: position-based detection (only used if no duration available)
+                        # Only use this if we don't have actual_video_duration, otherwise rely on elapsed time
+                        if not actual_video_duration:
+                            # No duration info - use position-based check as fallback
+                            if remaining <= 0.05 or progress_pct >= 99.5 or (remaining <= 0.1 and position_stable_count >= 5) or (remaining <= 0.15 and not is_playing):
+                                log.info(f"Intro video reached end after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s, {progress_pct:.1f}% complete, playing: {is_playing})")
+                                video_complete = True
+                                time.sleep(1.5)
+                                break
+                        elif remaining <= 0.2:
+                            # Very close to end - check more frequently
+                            time.sleep(0.01)  # Check very frequently when close to end
+                            # Also check EOF when close to end
+                            try:
+                                eof_reached = mpv.get_property("eof-reached")
+                                if eof_reached is True:
+                                    # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
+                                    log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s, remaining: {remaining:.3f}s)")
+                                    try:
+                                        mpv.pause()
+                                        mpv.stop()  # Stop completely to prevent restart
+                                        log.info("Stopped intro video immediately on EOF")
+                                    except Exception:
+                                        pass
+                                    video_complete = True
+                                    time.sleep(0.2)
+                                    break
+                            except Exception:
+                                pass
+                        else:
+                            # Not close yet - normal check interval
+                            # Also check EOF as backup
+                            try:
+                                eof_reached = mpv.get_property("eof-reached")
+                                if eof_reached is True:
+                                    # EOF detected - STOP VIDEO IMMEDIATELY to prevent looping
+                                    log.info(f"Intro video reached EOF after {elapsed:.2f}s (position: {time_pos:.3f}s / {duration:.3f}s)")
+                                    try:
+                                        mpv.pause()
+                                        mpv.stop()  # Stop completely to prevent restart
+                                        log.info("Stopped intro video immediately on EOF")
+                                    except Exception:
+                                        pass
+                                    video_complete = True
+                                    time.sleep(0.2)
+                                    break
+                            except Exception:
+                                pass
+                    else:
+                        # No duration/position info - fall back to EOF check only
+                        try:
+                            eof_reached = mpv.get_property("eof-reached")
+                            if eof_reached is True:
+                                log.info(f"Intro video reached EOF after {elapsed:.2f}s (no position info) - video complete")
+                                video_complete = True
+                                # Stop the video immediately to prevent looping
+                                try:
+                                    mpv.pause()
+                                except Exception:
+                                    pass
+                                    time.sleep(0.5)
+                                break
+                        except Exception:
+                            pass
+                except Exception as pos_exc:
+                    # Position check failed - log and try EOF as fallback
+                    if elapsed > 10:  # Only log errors when we're close to expected end
+                        log.debug(f"Position check exception at {elapsed:.2f}s: {pos_exc}")
+                    try:
+                        eof_reached = mpv.get_property("eof-reached")
+                        if eof_reached is True:
+                            log.info(f"Intro video reached EOF after {elapsed:.2f}s (position check failed: {pos_exc}) - video complete")
+                            video_complete = True
+                            # Stop the video immediately to prevent looping
+                            try:
+                                mpv.pause()
+                            except Exception:
+                                pass
+                            time.sleep(0.5)
+                            break
+                    except Exception as eof_exc:
+                        if elapsed > 10:
+                            log.debug(f"EOF check also failed: {eof_exc}")
+                
+                # Safety timeout: if video hasn't ended after max_wait_time, proceed anyway
+                # This prevents infinite waiting if EOF detection fails
+                if elapsed >= max_wait_time:
+                    log.warning(f"Intro video max wait time ({max_wait_time}s) reached - proceeding to UI")
+                    # Stop the video immediately to prevent looping
+                    try:
+                        mpv.pause()
+                        mpv.stop()  # Stop completely
+                        # Clear playlist to prevent restart
+                        import json
+                        import socket
+                        sock = socket.socket(socket.AF_UNIX)
+                        sock.connect(config.mpv_socket)
+                        sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                        sock.close()
+                        log.info("Stopped and cleared intro video due to timeout")
+                    except Exception:
+                        pass
+                    # Double-check if video is still playing
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        if is_playing:
+                            log.warning("Video still playing but max wait time reached - forcing transition")
+                    except Exception:
+                        pass
+                    video_complete = True
+                    break
+                
+                # Log progress every 5 seconds for debugging
+                if int(elapsed) % 5 == 0 and elapsed > 0:
+                    try:
+                        is_playing = not mpv.get_property("pause")
+                        log.debug(f"Intro video playing: {is_playing}, elapsed: {elapsed:.1f}s")
+                    except Exception:
+                        pass
+                
+                clock.tick(60)
+            
+            # CRITICAL: Ensure video is actually stopped and won't restart
+            log.info("Ensuring intro video is stopped before UI transition")
+            try:
+                mpv.pause()
+                mpv.stop()  # Stop completely to prevent any restart
+                # Also clear the playlist to prevent MPV from restarting
+                import json
+                import socket
+                sock = socket.socket(socket.AF_UNIX)
+                sock.connect(config.mpv_socket)
+                sock.sendall(json.dumps({"command": ["playlist-clear"]}).encode() + b"\n")
+                sock.close()
+                log.info("Stopped intro video and cleared playlist")
+                time.sleep(0.3)  # Brief pause to ensure video stops
+            except Exception as stop_exc:
+                log.warning(f"Error stopping video: {stop_exc}")
+            
             # Fade transition from intro video to UI using transition manager
             log.info("Starting clean fade transition from intro to UI using transition manager")
             transition_success = transition_mgr.transition_to_ui()
@@ -1325,9 +1772,9 @@ def run() -> None:
                     # Stop mpv completely and ensure no video is playing
                     try:
                         # Stop playback and clear playlist
-                mpv.stop()
+                        mpv.stop()
                         # Clear playlist again to be absolutely sure
-                import json
+                        import json
                         import socket
                         sock = socket.socket(socket.AF_UNIX)
                         sock.connect(config.mpv_socket)
@@ -2141,7 +2588,7 @@ def run() -> None:
                     # Stop mpv (it's already hidden by transition, so no visual interruption)
                     try:
                         mpv.set_fullscreen(False)  # Exit fullscreen
-                mpv.stop()
+                        mpv.stop()
                         mpv.playlist_clear()
                         log.info("Stopped mpv and cleared playlist")
                     except Exception as stop_exc:

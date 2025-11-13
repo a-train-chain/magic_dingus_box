@@ -50,13 +50,19 @@ class JoystickInputProvider(InputProvider):
             return None
 
         if et == pygame.JOYHATMOTION:
-            # Use D-pad left/right for seek
+            # Use D-pad for navigation: up/down for playlist navigation, left/right for seek
             hat_x, hat_y = raw_event.value
             # Trigger only on edge transitions
             ev = None
-            if hat_x == -1 and self._hat_last[0] != -1:
+            # D-pad up/down for playlist navigation (user wants this for UI navigation)
+            if hat_y == -1 and self._hat_last[1] != -1:  # Up
+                ev = InputEvent(InputEvent.Type.ROTATE, delta=-1)
+            elif hat_y == 1 and self._hat_last[1] != 1:  # Down
+                ev = InputEvent(InputEvent.Type.ROTATE, delta=1)
+            # D-pad left/right for seek
+            elif hat_x == -1 and self._hat_last[0] != -1:  # Left
                 ev = InputEvent(InputEvent.Type.SEEK_LEFT)
-            elif hat_x == 1 and self._hat_last[0] != 1:
+            elif hat_x == 1 and self._hat_last[0] != 1:  # Right
                 ev = InputEvent(InputEvent.Type.SEEK_RIGHT)
             self._hat_last = (hat_x, hat_y)
             return ev

@@ -27,6 +27,79 @@ echo "  Overlay: $OVERLAY_PATH" >> "$LOG_FILE"
 echo "  Service: $SERVICE_NAME" >> "$LOG_FILE"
 echo "  Is Core Downloader: $IS_CORE_DOWNLOADER" >> "$LOG_FILE"
 
+# CRITICAL: Check if we're in CRT mode and set X server resolution to 720x480
+# This ensures the X server matches the display resolution for proper rendering
+echo "$(date): Checking display mode and setting X server resolution if needed" >> "$LOG_FILE"
+export DISPLAY=:0
+
+# Check display mode from environment variable or settings file
+DISPLAY_MODE="${MAGIC_DISPLAY_MODE:-}"
+if [ -z "$DISPLAY_MODE" ]; then
+    # Try to read from settings file
+    SETTINGS_FILE="/data/settings.json"
+    if [ ! -f "$SETTINGS_FILE" ]; then
+        SETTINGS_FILE="$HOME/.config/magic_dingus_box/settings.json"
+    fi
+    if [ -f "$SETTINGS_FILE" ]; then
+        DISPLAY_MODE=$(grep -o '"display_mode"[[:space:]]*:[[:space:]]*"[^"]*"' "$SETTINGS_FILE" 2>/dev/null | cut -d'"' -f4 || echo "")
+    fi
+fi
+# Default to crt_native if not set
+DISPLAY_MODE="${DISPLAY_MODE:-crt_native}"
+echo "$(date): Display mode: $DISPLAY_MODE" >> "$LOG_FILE"
+
+# If in CRT mode, set X server resolution to 720x480
+if [ "$DISPLAY_MODE" = "crt_native" ]; then
+    echo "$(date): CRT mode detected - setting X server resolution to 720x480" >> "$LOG_FILE"
+    
+    # Find the connected HDMI output
+    HDMI_OUTPUT=$(DISPLAY=:0 xrandr 2>/dev/null | grep -E "connected.*HDMI" | awk '{print $1}' | head -1)
+    if [ -z "$HDMI_OUTPUT" ]; then
+        # Try to find any connected output
+        HDMI_OUTPUT=$(DISPLAY=:0 xrandr 2>/dev/null | grep "connected" | awk '{print $1}' | head -1)
+    fi
+    
+    if [ -n "$HDMI_OUTPUT" ]; then
+        # Check current resolution
+        CURRENT_MODE=$(DISPLAY=:0 xrandr 2>/dev/null | grep -A1 "^$HDMI_OUTPUT" | grep -oE '[0-9]+x[0-9]+' | head -1)
+        echo "$(date): Current X server resolution: $CURRENT_MODE on $HDMI_OUTPUT" >> "$LOG_FILE"
+        
+        # If not already 720x480, set it
+        if [ "$CURRENT_MODE" != "720x480" ]; then
+            echo "$(date): Setting X server resolution to 720x480 on $HDMI_OUTPUT" >> "$LOG_FILE"
+            
+            # Check if 720x480 mode exists
+            if DISPLAY=:0 xrandr 2>/dev/null | grep -q "720x480"; then
+                # Mode exists, use it
+                DISPLAY=:0 xrandr --output "$HDMI_OUTPUT" --mode 720x480 --rate 60 2>>"$LOG_FILE"
+                echo "$(date): Set X server resolution to 720x480 using existing mode" >> "$LOG_FILE"
+            else
+                # Mode doesn't exist, create it
+                # Modeline for 720x480@60Hz (NTSC-like)
+                DISPLAY=:0 xrandr --newmode "720x480_60.00" 27.00 720 736 808 896 480 481 484 497 -hsync +vsync 2>>"$LOG_FILE"
+                DISPLAY=:0 xrandr --addmode "$HDMI_OUTPUT" "720x480_60.00" 2>>"$LOG_FILE"
+                DISPLAY=:0 xrandr --output "$HDMI_OUTPUT" --mode "720x480_60.00" 2>>"$LOG_FILE"
+                echo "$(date): Created and set X server resolution to 720x480" >> "$LOG_FILE"
+            fi
+            
+            # Verify the change
+            sleep 0.5
+            NEW_MODE=$(DISPLAY=:0 xrandr 2>/dev/null | grep -A1 "^$HDMI_OUTPUT" | grep -oE '[0-9]+x[0-9]+' | head -1)
+            if [ "$NEW_MODE" = "720x480" ]; then
+                echo "$(date): Successfully set X server resolution to 720x480" >> "$LOG_FILE"
+            else
+                echo "$(date): WARNING: Failed to set X server resolution to 720x480 (current: $NEW_MODE)" >> "$LOG_FILE"
+            fi
+        else
+            echo "$(date): X server resolution already set to 720x480" >> "$LOG_FILE"
+        fi
+    else
+        echo "$(date): WARNING: Could not find HDMI output to set resolution" >> "$LOG_FILE"
+    fi
+else
+    echo "$(date): Not in CRT mode ($DISPLAY_MODE) - leaving X server resolution unchanged" >> "$LOG_FILE"
+fi
+
 # Find RetroArch executable (prefer RetroPie)
 RETROARCH_BIN=""
 for path in "/opt/retropie/emulators/retroarch/bin/retroarch" "/usr/bin/retroarch"; do
@@ -59,9 +132,16 @@ echo "$(date): Hiding UI windows before stopping service" >> "$LOG_FILE"
 export DISPLAY=:0
 # Find and hide/kill pygame windows (Magic Dingus Box UI) - be very aggressive
 for pygame_window in $(DISPLAY=:0 xdotool search --class pygame 2>/dev/null); do
-    echo "$(date): Found pygame window: $pygame_window, killing it aggressively" >> "$LOG_FILE"
-    # Try multiple methods to ensure window is gone
+    echo "$(date): Found pygame window: $pygame_window, hiding it aggressively" >> "$LOG_FILE"
+    # Move window far off-screen first (more reliable than killing)
+    DISPLAY=:0 xdotool windowmove "$pygame_window" -10000 -10000 2>>"$LOG_FILE" || true
+    # Set HIDDEN state
+    DISPLAY=:0 xprop -id "$pygame_window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_HIDDEN 2>>"$LOG_FILE" || true
+    # Unmap window (make it invisible)
     DISPLAY=:0 xdotool windowunmap "$pygame_window" 2>>"$LOG_FILE" || true
+    # Set BELOW state to ensure it's behind everything
+    DISPLAY=:0 xprop -id "$pygame_window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_BELOW 2>>"$LOG_FILE" || true
+    # Finally, try to kill it
     DISPLAY=:0 xdotool windowkill "$pygame_window" 2>>"$LOG_FILE" || true
     # Also try xkill as fallback (if available)
     if command -v xkill >/dev/null 2>&1; then
@@ -70,6 +150,10 @@ for pygame_window in $(DISPLAY=:0 xdotool search --class pygame 2>/dev/null); do
 done
 # Also kill by name pattern
 for window in $(DISPLAY=:0 xdotool search --name "Magic Dingus Box" 2>/dev/null); do
+    # Move off-screen, set HIDDEN, unmap, then kill
+    DISPLAY=:0 xdotool windowmove "$window" -10000 -10000 2>>"$LOG_FILE" || true
+    DISPLAY=:0 xprop -id "$window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_HIDDEN 2>>"$LOG_FILE" || true
+    DISPLAY=:0 xdotool windowunmap "$window" 2>>"$LOG_FILE" || true
     DISPLAY=:0 xdotool windowkill "$window" 2>>"$LOG_FILE" || true
 done
 sleep 1  # Give windows time to fully disappear
@@ -179,17 +263,23 @@ echo "$(date): Ensuring all UI windows are removed" >> "$LOG_FILE"
 # Kill ALL pygame/mpv windows aggressively - multiple passes
 for pass in {1..3}; do
     echo "$(date): Window cleanup pass $pass" >> "$LOG_FILE"
-    # Kill pygame windows
+    # Kill pygame windows - move off-screen, set HIDDEN, unmap, then kill
     for window in $(DISPLAY=:0 xdotool search --class pygame 2>/dev/null); do
+        DISPLAY=:0 xdotool windowmove "$window" -10000 -10000 2>>"$LOG_FILE" || true
+        DISPLAY=:0 xprop -id "$window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_HIDDEN 2>>"$LOG_FILE" || true
         DISPLAY=:0 xdotool windowunmap "$window" 2>>"$LOG_FILE" || true
+        DISPLAY=:0 xprop -id "$window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_BELOW 2>>"$LOG_FILE" || true
         DISPLAY=:0 xdotool windowkill "$window" 2>>"$LOG_FILE" || true
     done
     # Kill mpv windows
     for window in $(DISPLAY=:0 xdotool search --class mpv 2>/dev/null); do
         DISPLAY=:0 xdotool windowkill "$window" 2>>"$LOG_FILE" || true
     done
-    # Kill by name pattern
+    # Kill by name pattern - move off-screen, set HIDDEN, unmap, then kill
     for window in $(DISPLAY=:0 xdotool search --name "Magic Dingus Box" 2>/dev/null); do
+        DISPLAY=:0 xdotool windowmove "$window" -10000 -10000 2>>"$LOG_FILE" || true
+        DISPLAY=:0 xprop -id "$window" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_HIDDEN 2>>"$LOG_FILE" || true
+        DISPLAY=:0 xdotool windowunmap "$window" 2>>"$LOG_FILE" || true
         DISPLAY=:0 xdotool windowkill "$window" 2>>"$LOG_FILE" || true
     done
     sleep 0.3
@@ -471,12 +561,12 @@ if [ -f "$CONFIG_FILE" ]; then
     echo "libretro_directory = \"$LIBRETRO_DIRS\"" >> "$CONFIG_FILE"
     echo "$(date): Configured libretro_directory: $LIBRETRO_DIRS" >> "$LOG_FILE"
     
-    # CRITICAL: Set video driver to "gl" (auto-selects best backend on Pi)
-    # On Pi with KMS, "gl" automatically uses the optimal OpenGL ES backend
-    # This is more reliable than forcing gles2/gles3
+    # CRITICAL: Use "gl" driver with environment variables to force hardware rendering
+    # "gl" auto-selects the best backend, and with MESA_LOADER_DRIVER_OVERRIDE=vc4 it uses V3D
+    # Explicitly setting gles2/gles3 can cause RetroArch to fail or use wrong backend
     sed -i '/^video_driver/d' "$CONFIG_FILE"
     echo "video_driver = \"gl\"" >> "$CONFIG_FILE"
-    echo "$(date): Configured video_driver: gl (auto-selects optimal backend)" >> "$LOG_FILE"
+    echo "$(date): Configured video_driver: gl (will use hardware with env vars)" >> "$LOG_FILE"
     
     # Disable threaded video - can cause performance issues on Pi
     # Single-threaded rendering is more reliable for lightweight cores like NES
@@ -561,11 +651,18 @@ if [ -f "$CONFIG_FILE" ]; then
             echo "$(date): Found sysdefault:CARD=ALSA device from aplay -L: $AUDIO_DEVICE" >> "$LOG_FILE"
         else
             # If ALSA card not found, try to find sysdefault for HDMI devices (common on Pi)
-            # Prefer HDMI devices over headphones
-            SYSHDMI_DEVICE=$(aplay -L 2>/dev/null | grep -iE "^sysdefault:CARD=vc4hdmi" | head -1 | sed 's/[[:space:]]*$//' | head -1)
+            # Prefer HDMI devices over headphones - check for vc4hdmi0 first (card 1)
+            SYSHDMI_DEVICE=$(aplay -L 2>/dev/null | grep -iE "^sysdefault:CARD=vc4hdmi0" | head -1 | sed 's/[[:space:]]*$//' | head -1)
             if [ -n "$SYSHDMI_DEVICE" ]; then
                 AUDIO_DEVICE="$SYSHDMI_DEVICE"
-                echo "$(date): Found sysdefault HDMI device from aplay -L: $AUDIO_DEVICE" >> "$LOG_FILE"
+                echo "$(date): Found sysdefault HDMI device (vc4hdmi0) from aplay -L: $AUDIO_DEVICE" >> "$LOG_FILE"
+            else
+                # Try vc4hdmi1 (card 2) as fallback
+                SYSHDMI_DEVICE=$(aplay -L 2>/dev/null | grep -iE "^sysdefault:CARD=vc4hdmi1" | head -1 | sed 's/[[:space:]]*$//' | head -1)
+                if [ -n "$SYSHDMI_DEVICE" ]; then
+                    AUDIO_DEVICE="$SYSHDMI_DEVICE"
+                    echo "$(date): Found sysdefault HDMI device (vc4hdmi1) from aplay -L: $AUDIO_DEVICE" >> "$LOG_FILE"
+                fi
             fi
         fi
     fi
@@ -846,52 +943,70 @@ if [ -f "$CONFIG_FILE" ]; then
     # Use custom viewport to render at reduced resolution
     # Force extremely low internal resolution for maximum performance (96x72)
     
-    # CRITICAL: Use TRUE fullscreen for no decorations
-    # Windowed fullscreen still shows decorations, true fullscreen eliminates them
+    # CRITICAL: Use windowed fullscreen instead of true fullscreen
+    # True fullscreen can cause blank screens when X server resolution doesn't match display
+    # Windowed fullscreen is more reliable and still fills the screen
     sed -i '/^video_fullscreen/d' "$CONFIG_FILE"
-    echo "video_fullscreen = \"true\"" >> "$CONFIG_FILE"  # Enable true fullscreen
+    echo "video_fullscreen = \"false\"" >> "$CONFIG_FILE"  # Use windowed fullscreen
 
-    # Disable windowed fullscreen since we're using true fullscreen
+    # Enable windowed fullscreen - more reliable on Pi/X11
     sed -i '/^video_windowed_fullscreen/d' "$CONFIG_FILE"
-    echo "video_windowed_fullscreen = \"false\"" >> "$CONFIG_FILE"
+    echo "video_windowed_fullscreen = \"true\"" >> "$CONFIG_FILE"
     
-    # CRITICAL: Remove ALL old viewport settings first (they conflict)
+    # Set fullscreen resolution to CRT native (720x480)
+    # This matches the Magic Dingus Box CRT native resolution
+    FULLSCREEN_X="720"
+    FULLSCREEN_Y="480"
+    sed -i '/^video_fullscreen_x/d' "$CONFIG_FILE"
+    echo "video_fullscreen_x = \"$FULLSCREEN_X\"" >> "$CONFIG_FILE"
+    sed -i '/^video_fullscreen_y/d' "$CONFIG_FILE"
+    echo "video_fullscreen_y = \"$FULLSCREEN_Y\"" >> "$CONFIG_FILE"
+    # CRITICAL: Also set windowed size to force 720x480
+    sed -i '/^video_windowed_width/d' "$CONFIG_FILE"
+    echo "video_windowed_width = \"$FULLSCREEN_X\"" >> "$CONFIG_FILE"
+    sed -i '/^video_windowed_height/d' "$CONFIG_FILE"
+    echo "video_windowed_height = \"$FULLSCREEN_Y\"" >> "$CONFIG_FILE"
+    echo "$(date): Set RetroArch fullscreen resolution to CRT native: ${FULLSCREEN_X}x${FULLSCREEN_Y}" >> "$LOG_FILE"
+    
+    # CRITICAL: Let games render at their NATIVE resolution (e.g., PS1 at 320x240)
+    # RetroArch will then scale/stretch the native resolution to fill the 720x480 window
+    # Disable custom viewport so games render at their actual native resolution
     sed -i '/^custom_viewport/d' "$CONFIG_FILE"
     sed -i '/^video_custom_viewport/d' "$CONFIG_FILE"
+    echo "video_custom_viewport_enable = \"false\"" >> "$CONFIG_FILE"
     
-    # CRITICAL: For PS1 games, disable custom viewport to allow proper aspect ratio
-    # PS1 games should use native resolution and aspect ratio settings
-    echo "video_custom_viewport_enable = \"false\"" >> "$CONFIG_FILE"  # Disable custom viewport for PS1
+    # CRITICAL: Disable any resolution overrides - let games use their native resolution
+    sed -i '/^video_refresh_rate/d' "$CONFIG_FILE"
+    sed -i '/^video_max_swapchain_images/d' "$CONFIG_FILE"
     
-    # CRITICAL: Also set viewport position to center it
-    sed -i '/^video_custom_viewport_x/d' "$CONFIG_FILE"
-    echo "video_custom_viewport_x = \"0\"" >> "$CONFIG_FILE"
-    sed -i '/^video_custom_viewport_y/d' "$CONFIG_FILE"
-    echo "video_custom_viewport_y = \"0\"" >> "$CONFIG_FILE"
-    
-    # CRITICAL: Force aspect ratio to match our viewport (prevents auto-scaling)
+    # Set aspect ratio for 4:3 content (1.333 = 4/3)
     sed -i '/^video_aspect_ratio/d' "$CONFIG_FILE"
-    echo "video_aspect_ratio = \"1.333\"" >> "$CONFIG_FILE"  # 96/72 = 1.333 (4:3)
+    echo "video_aspect_ratio = \"1.333\"" >> "$CONFIG_FILE"  # 4:3 aspect ratio
     
-    # CRITICAL: Disable auto aspect ratio detection
+    # Force aspect ratio to maintain 4:3 when scaling
     sed -i '/^video_force_aspect/d' "$CONFIG_FILE"
-    echo "video_force_aspect = \"false\"" >> "$CONFIG_FILE"  # Don't force aspect, use our viewport
+    echo "video_force_aspect = \"true\"" >> "$CONFIG_FILE"  # Force 4:3 aspect ratio
     
-    # Don't set fullscreen_x/y - let windowed fullscreen handle it
-    sed -i '/^video_fullscreen_x/d' "$CONFIG_FILE"
-    sed -i '/^video_fullscreen_y/d' "$CONFIG_FILE"
-    
-    # Use integer scaling to scale up from reduced resolution
+    # CRITICAL: Enable scaling so games scale from native resolution to fill 720x480
+    # Disable integer scaling to allow stretching (not pixel-perfect, but fills screen)
     sed -i '/^video_scale_integer/d' "$CONFIG_FILE"
-    echo "video_scale_integer = \"true\"" >> "$CONFIG_FILE"
+    echo "video_scale_integer = \"false\"" >> "$CONFIG_FILE"  # Allow non-integer scaling to fill screen
     
-    # Set explicit scale factor (scale from 128x120)
+    # Set scale to auto - RetroArch will scale from native resolution to fill 720x480
     sed -i '/^video_scale/d' "$CONFIG_FILE"
-    echo "video_scale = \"1.0\"" >> "$CONFIG_FILE"  # Don't scale - let viewport handle it
+    echo "video_scale = \"1.0\"" >> "$CONFIG_FILE"  # Auto-scale to fill fullscreen
     
-    # Use nearest neighbor scaling (fastest, pixel-perfect)
+    # Use nearest neighbor scaling (fastest, maintains pixel art look)
     sed -i '/^video_scale_filter/d' "$CONFIG_FILE"
     echo "video_scale_filter = \"0\"" >> "$CONFIG_FILE"  # Nearest neighbor (fastest)
+    
+    # CRITICAL: Disable threaded video to ensure proper rendering
+    sed -i '/^video_threaded/d' "$CONFIG_FILE"
+    echo "video_threaded = \"false\"" >> "$CONFIG_FILE"
+    
+    # Disable smooth scaling - we want pixel-perfect scaling from native resolution
+    sed -i '/^video_smooth/d' "$CONFIG_FILE"
+    echo "video_smooth = \"false\"" >> "$CONFIG_FILE"
     
     # Disable crop overscan (saves processing)
     sed -i '/^video_crop_overscan/d' "$CONFIG_FILE"
@@ -1125,21 +1240,23 @@ fi
 # Build RetroArch command
 # CRITICAL: Always use --verbose to see controller detection issues
 if [ "$IS_CORE_DOWNLOADER" = "true" ]; then
-    # Core Downloader: launch with --menu flag and fullscreen
+    # Core Downloader: launch with --menu flag
+    # Don't use --fullscreen flag - let config file handle windowed fullscreen
+    # Command-line --fullscreen forces true fullscreen which can cause blank screens
     CMD=(
         "$RETROARCH_BIN"
         "--menu"
-        "--fullscreen"
         "--verbose"
         "--config" "$CONFIG_FILE"
     )
 else
-    # Game launch: use core and ROM with true fullscreen
+    # Game launch: use core and ROM
+    # Don't use --fullscreen flag - let config file handle windowed fullscreen
+    # Command-line --fullscreen forces true fullscreen which can cause blank screens
     CMD=(
         "$RETROARCH_BIN"
         "-L" "$CORE_NAME"
         "$ROM_PATH"
-        "--fullscreen"
         "--verbose"
         "--config" "$CONFIG_FILE"
     )
@@ -1171,13 +1288,29 @@ input_overlay = "$OVERLAY_CFG"
 input_overlay_opacity = "1.0"
 input_overlay_scale = "1.0"
 
-# Video settings - TRUE fullscreen for no decorations
-video_fullscreen = "true"
-# Disable custom viewport for PS1 to allow proper aspect ratio
+# Video settings - Windowed fullscreen for better compatibility at CRT native (720x480)
+video_fullscreen = "false"
+video_windowed_fullscreen = "true"
+video_fullscreen_x = "720"
+video_fullscreen_y = "480"
+# CRITICAL: Force window size to match CRT native resolution
+video_windowed_width = "720"
+video_windowed_height = "480"
+# Disable custom viewport - let games render at their NATIVE resolution (e.g., 320x240 for PS1)
+# RetroArch will then scale/stretch the native resolution to fill 720x480
 video_custom_viewport_enable = "false"
+# Aspect ratio for 4:3 content
 aspect_ratio_index = "23"
 video_aspect_ratio = "1.333"
 video_force_aspect = "true"
+# Scaling settings - scale from native resolution to fill screen (stretch, not re-render)
+video_scale_integer = "false"
+video_scale = "1.0"
+video_scale_filter = "0"
+# Disable smooth scaling - maintain pixel art look
+video_smooth = "false"
+# Disable threaded video for proper rendering
+video_threaded = "false"
 
 # Controller support
 input_autodetect_enable = "true"
@@ -1239,8 +1372,16 @@ RETROARCH_EXIT=0
 # Ensure DISPLAY is set and run RetroArch
 export DISPLAY=:0
 
+# CRITICAL: Set environment variables to force hardware rendering
+# These ensure RetroArch uses GPU acceleration instead of software rendering (llvmpipe)
+# Only set MESA_LOADER_DRIVER_OVERRIDE to force VC4 driver - other vars can cause issues
+export LIBGL_ALWAYS_SOFTWARE=0
+export MESA_LOADER_DRIVER_OVERRIDE=vc4
+echo "$(date): Set hardware rendering environment variables (MESA_LOADER_DRIVER_OVERRIDE=vc4)" >> "$LOG_FILE"
+
 # Launch RetroArch in background and capture PID
 # CRITICAL: Use exec to ensure proper process tracking for wait command
+# Environment variables above ensure hardware rendering
 "${CMD[@]}" >> "$LOG_FILE" 2>&1 &
 RETROARCH_PID=$!
 echo "$(date): RetroArch launched with PID: $RETROARCH_PID" >> "$LOG_FILE"
@@ -1264,40 +1405,9 @@ echo "$(date): Creating RetroArch lock file: $RETROARCH_LOCK_FILE" >> "$LOG_FILE
 echo "$RETROARCH_PID" > "$RETROARCH_LOCK_FILE"
 echo "$(date): Lock file created with PID: $RETROARCH_PID" >> "$LOG_FILE"
 
-# CRITICAL: Resize window to 640x480 for performance, then scale to current desktop resolution
-# RetroArch ignores viewport/scale settings, so we resize programmatically
-echo "$(date): Waiting for RetroArch window to appear for resize" >> "$LOG_FILE"
-
-# Detect current desktop resolution (fallback to 1280x720)
-TARGET_W=1280
-TARGET_H=720
-DESKTOP_MODE=$(xrandr 2>/dev/null | awk '/\*/{print $1; exit}')
-if [ -n "$DESKTOP_MODE" ]; then
-    TARGET_W=$(echo "$DESKTOP_MODE" | cut -dx -f1)
-    TARGET_H=$(echo "$DESKTOP_MODE" | cut -dx -f2)
-fi
-echo "$(date): Detected desktop resolution for scaling: ${TARGET_W}x${TARGET_H}" >> "$LOG_FILE"
-
-WINDOW_FOUND=0
-for i in {1..30}; do
-    WINDOW_ID=$(DISPLAY=:0 xdotool search --name RetroArch 2>/dev/null | head -1)
-    if [ -n "$WINDOW_ID" ]; then
-        echo "$(date): Found RetroArch window: $WINDOW_ID" >> "$LOG_FILE"
-        sleep 1  # Give window time to fully initialize
-        # Resize to 640x480 for performance
-        DISPLAY=:0 xdotool windowsize "$WINDOW_ID" 640 480 2>>"$LOG_FILE"
-        sleep 0.5
-        # Scale to fill screen using detected desktop resolution
-        DISPLAY=:0 xdotool windowsize "$WINDOW_ID" "$TARGET_W" "$TARGET_H" 2>>"$LOG_FILE"
-        echo "$(date): Resized window to 640x480, then scaled to ${TARGET_W}x${TARGET_H}" >> "$LOG_FILE"
-        WINDOW_FOUND=1
-        break
-    fi
-    sleep 0.5
-done
-if [ "$WINDOW_FOUND" -eq 0 ]; then
-    echo "$(date): WARNING: Could not find RetroArch window for resize" >> "$LOG_FILE"
-fi
+# CRITICAL: Force RetroArch window to be fullscreen 720x480
+# RetroArch windowed fullscreen doesn't always work correctly, so we need to manually resize
+echo "$(date): Will force RetroArch window to 720x480 fullscreen after it appears" >> "$LOG_FILE"
 
 # Also start a lightweight background monitor as backup
 # This ensures the lock file is cleaned up even if RetroArch crashes
@@ -1320,9 +1430,9 @@ echo "$(date): Starting lightweight lock file monitor" >> "$LOG_FILE"
 MONITOR_PID=$!
 echo "$(date): Lock file monitor started (PID: $MONITOR_PID)" >> "$LOG_FILE"
 
-# Using TRUE fullscreen mode - no need to remove decorations
+# Using TRUE fullscreen mode - full window approach (as configured previously)
 # True fullscreen eliminates window decorations and cursor automatically
-echo "$(date): Using true fullscreen mode - decorations and cursor will be hidden automatically" >> "$LOG_FILE"
+echo "$(date): Using true fullscreen mode - full window approach" >> "$LOG_FILE"
 
 # Wait for RetroArch window to appear and raise it to top
 # RetroArch can take several seconds to fully initialize and create its window
@@ -1343,100 +1453,181 @@ for i in {1..75}; do  # 75 attempts * 0.2s = 15 seconds max wait
         echo "$(date): Window name: $WINDOW_NAME" >> "$LOG_FILE"
         echo "$(date): Window geometry: $WINDOW_GEOM" >> "$LOG_FILE"
         
-        # Raise window to top and ensure it's visible - try multiple times for reliability
-        echo "$(date): Raising and activating RetroArch window" >> "$LOG_FILE"
+        # CRITICAL: Ensure RetroArch window is visible and on top
+        # We need to raise it and give it focus so it's actually visible
+        echo "$(date): RetroArch window found - ensuring it's visible and on top" >> "$LOG_FILE"
         
-        # CRITICAL: Lower all other windows first to ensure RetroArch can come to top
-        # Note: windowlower may not be available in older xdotool versions, so we skip it
-        # Instead, we'll aggressively raise RetroArch window which should bring it to top
-        echo "$(date): Preparing to raise RetroArch window (skipping windowlower - not available)" >> "$LOG_FILE"
-        
-        # First, ensure window is mapped (visible)
+        # Ensure window is mapped (visible)
         DISPLAY=:0 xdotool windowmap "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
         sleep 0.2
         
-        # Remove any problematic window states (use xprop instead of windowstate - more compatible)
-        # xdotool windowstate doesn't exist in older versions, so use xprop
-        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -remove _NET_WM_STATE_ICONIC 2>>"$LOG_FILE" || true
-        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -remove _NET_WM_STATE_HIDDEN 2>>"$LOG_FILE" || true
-        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _NET_WM_STATE 32a -set _NET_WM_STATE _NET_WM_STATE_FULLSCREEN 2>>"$LOG_FILE" || true
-        sleep 0.2
-        
-        # Aggressive window raising - try many times with different methods
-        for attempt in {1..15}; do
-            # Method 1: Basic raise/activate/focus
-            DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-            DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-            DISPLAY=:0 xdotool windowfocus "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-            
-            # Method 2: Use key to force focus (Alt+Tab simulation)
-            if [ $attempt -eq 5 ] || [ $attempt -eq 10 ]; then
-                DISPLAY=:0 xdotool key --window "$RETROARCH_WINDOW" alt+Tab 2>>"$LOG_FILE" || true
-                sleep 0.1
-            fi
-            
-            # Method 3: Click on window to focus
-            if [ $attempt -eq 8 ] || [ $attempt -eq 12 ]; then
-                WINDOW_GEOM=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null | grep Geometry | awk '{print $2}' | cut -dx -f1,2)
-                if [ -n "$WINDOW_GEOM" ]; then
-                    CENTER_X=$(echo "$WINDOW_GEOM" | cut -dx -f1)
-                    CENTER_Y=$(echo "$WINDOW_GEOM" | cut -dx -f2)
-                    CENTER_X=$((CENTER_X / 2))
-                    CENTER_Y=$((CENTER_Y / 2))
-                    DISPLAY=:0 xdotool mousemove --window "$RETROARCH_WINDOW" "$CENTER_X" "$CENTER_Y" 2>>"$LOG_FILE" || true
-                    DISPLAY=:0 xdotool click --window "$RETROARCH_WINDOW" 1 2>>"$LOG_FILE" || true
-                fi
-            fi
-            
+        # CRITICAL: Force window to be 720x480 and positioned at 0,0
+        # RetroArch windowed fullscreen doesn't always work, so manually resize
+        echo "$(date): Forcing RetroArch window to 720x480 at position 0,0" >> "$LOG_FILE"
+        # Remove any window decorations that might offset position
+        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x2, 0x0, 0x0, 0x0, 0x0" 2>>"$LOG_FILE" || true
+        # Move and resize multiple times to ensure it sticks
+        for resize_attempt in {1..3}; do
+            DISPLAY=:0 xdotool windowmove "$RETROARCH_WINDOW" 0 0 2>>"$LOG_FILE" || true
+            sleep 0.1
+            DISPLAY=:0 xdotool windowsize "$RETROARCH_WINDOW" 720 480 2>>"$LOG_FILE" || true
             sleep 0.1
         done
+        sleep 0.2
+        # Verify the resize worked
+        NEW_GEOM=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null | grep Geometry | awk '{print $2}' || echo "")
+        NEW_POS=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null | grep Position | awk '{print $2}' || echo "")
+        echo "$(date): Window after resize - geometry: $NEW_GEOM, position: $NEW_POS" >> "$LOG_FILE"
         
-        # Final aggressive activation - kill ALL non-RetroArch windows that might be blocking
-        echo "$(date): Killing any remaining windows before final activation" >> "$LOG_FILE"
-        # Kill MPV windows
+        # CRITICAL: Remove window decorations and make it borderless
+        # This ensures the window fills the entire screen without any borders
+        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _MOTIF_WM_HINTS 32c -set _MOTIF_WM_HINTS "0x2, 0x0, 0x0, 0x0, 0x0" 2>>"$LOG_FILE" || true
+        # Also try removing decorations via _NET_WM_WINDOW_TYPE
+        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _NET_WM_WINDOW_TYPE 32a -set _NET_WM_WINDOW_TYPE "_NET_WM_WINDOW_TYPE_NORMAL" 2>>"$LOG_FILE" || true
+        
+        # Raise window to top of stacking order
+        DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        sleep 0.2
+        
+        # Activate/focus the window so it receives input and is on top
+        DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        sleep 0.2
+        
+        # CRITICAL: Ensure window is actually visible and not hidden
+        DISPLAY=:0 xdotool windowmap "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        # Remove any hidden/minimized states
+        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _NET_WM_STATE 32a -set _NET_WM_STATE "" 2>>"$LOG_FILE" || true
+        sleep 0.2
+        
+        # Also try using wmctrl if available (more reliable for some window managers)
+        if command -v wmctrl >/dev/null 2>&1; then
+            DISPLAY=:0 wmctrl -i -a "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+            sleep 0.2
+        fi
+        
+        # Give RetroArch time to initialize display after focusing
+        sleep 0.5
+        
+        # Clean up any interfering windows that might be on top
+        echo "$(date): Cleaning up interfering windows and ensuring RetroArch is on top" >> "$LOG_FILE"
+        # Kill MPV windows (already done earlier, but double-check)
         for mpv_win in $(DISPLAY=:0 xdotool search --class mpv 2>/dev/null); do
             DISPLAY=:0 xdotool windowkill "$mpv_win" 2>>"$LOG_FILE" || true
         done
-        # Kill pygame windows (UI)
+        # Kill pygame windows (UI) - but be careful not to kill RetroArch window
         for pygame_win in $(DISPLAY=:0 xdotool search --class pygame 2>/dev/null); do
             if [ "$pygame_win" != "$RETROARCH_WINDOW" ]; then
                 DISPLAY=:0 xdotool windowkill "$pygame_win" 2>>"$LOG_FILE" || true
             fi
         done
-        pkill -9 mpv 2>>"$LOG_FILE" || true
-        pkill -9 -f "python.*magic_dingus_box.main" 2>>"$LOG_FILE" || true
-        sleep 0.5
         
-        # Now aggressively raise RetroArch
-        DISPLAY=:0 xdotool windowmap "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-        DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-        DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-        DISPLAY=:0 xdotool windowfocus "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        # Kill any windows with "Magic Dingus Box" in the name (UI windows)
+        for window in $(DISPLAY=:0 xdotool search --name "Magic Dingus Box" 2>/dev/null); do
+            if [ "$window" != "$RETROARCH_WINDOW" ]; then
+                DISPLAY=:0 xdotool windowkill "$window" 2>>"$LOG_FILE" || true
+            fi
+        done
         
-        # Verify window is actually focused
-        ACTIVE_WIN=$(DISPLAY=:0 xdotool getactivewindow 2>/dev/null || echo "")
-        if [ "$ACTIVE_WIN" = "$RETROARCH_WINDOW" ]; then
-            echo "$(date): SUCCESS: RetroArch window is now active/focused" >> "$LOG_FILE"
-        else
-            echo "$(date): WARNING: RetroArch window may not be focused (active: $ACTIVE_WIN, RetroArch: $RETROARCH_WINDOW)" >> "$LOG_FILE"
-            # If MPV is still active, kill it again and retry
-            if [ -n "$ACTIVE_WIN" ]; then
-                ACTIVE_CLASS=$(DISPLAY=:0 xprop -id "$ACTIVE_WIN" WM_CLASS 2>/dev/null | grep -i mpv || echo "")
-                if [ -n "$ACTIVE_CLASS" ]; then
-                    echo "$(date): MPV window is still active, killing it and retrying" >> "$LOG_FILE"
-                    DISPLAY=:0 xdotool windowkill "$ACTIVE_WIN" 2>>"$LOG_FILE" || true
-                    pkill -9 mpv 2>>"$LOG_FILE" || true
-                    sleep 0.5
-                    DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-                    DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
-                    DISPLAY=:0 xdotool windowfocus "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        # CRITICAL: Lower or kill ALL other windows that might be covering RetroArch
+        # Check all windows and lower/kill any that overlap with RetroArch's position
+        echo "$(date): Checking for overlapping windows..." >> "$LOG_FILE"
+        for other_win in $(DISPLAY=:0 xdotool search --all --name '.*' 2>/dev/null); do
+            if [ "$other_win" != "$RETROARCH_WINDOW" ] && [ -n "$other_win" ]; then
+                # Get window geometry
+                OTHER_GEOM=$(DISPLAY=:0 xdotool getwindowgeometry "$other_win" 2>/dev/null | grep Geometry | awk '{print $2}' || echo "")
+                if [ -n "$OTHER_GEOM" ]; then
+                    # If window is 720x480 or similar size, it might be covering RetroArch
+                    if echo "$OTHER_GEOM" | grep -qE "720x480|720x405|720x"; then
+                        echo "$(date): Found potentially overlapping window $other_win (geometry: $OTHER_GEOM), lowering it" >> "$LOG_FILE"
+                        # Lower the window instead of killing (safer)
+                        DISPLAY=:0 xdotool windowlower "$other_win" 2>>"$LOG_FILE" || true
+                        # If it's a small window (1x1), it's probably a decoration - kill it
+                        if echo "$OTHER_GEOM" | grep -qE "1x1"; then
+                            DISPLAY=:0 xdotool windowkill "$other_win" 2>>"$LOG_FILE" || true
+                        fi
+                    fi
                 fi
             fi
+        done
+        
+        sleep 0.5  # Give windows time to close/lower
+        
+        # CRITICAL: Raise and focus RetroArch window again after cleanup
+        # This ensures it's definitely on top after killing other windows
+        echo "$(date): Raising RetroArch window to top after cleanup" >> "$LOG_FILE"
+        
+        # Force window to be above all others using xprop
+        DISPLAY=:0 xprop -id "$RETROARCH_WINDOW" -f _NET_WM_STATE 32a -set _NET_WM_STATE "_NET_WM_STATE_ABOVE _NET_WM_STATE_FULLSCREEN" 2>>"$LOG_FILE" || true
+        
+        # Use xdotool to raise and activate
+        DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        
+        # Also try setting it to always on top
+        DISPLAY=:0 xdotool set_window --overrideredirect 1 "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        sleep 0.1
+        DISPLAY=:0 xdotool set_window --overrideredirect 0 "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        
+        if command -v wmctrl >/dev/null 2>&1; then
+            DISPLAY=:0 wmctrl -i -a "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+            DISPLAY=:0 wmctrl -i -r "$RETROARCH_WINDOW" -b add,above 2>>"$LOG_FILE" || true
         fi
         
-# No persistent decoration removal needed - using true fullscreen
-
-        echo "$(date): Raised and activated RetroArch window to top (attempted 15 times with multiple methods)" >> "$LOG_FILE"
+        # Send a key event to ensure window gets focus (Alt+Tab to cycle focus)
+        DISPLAY=:0 xdotool key alt+Tab 2>>"$LOG_FILE" || true
+        sleep 0.2
+        DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>>"$LOG_FILE" || true
+        
+        # Verify RetroArch window is still there and visible
+        if DISPLAY=:0 xdotool search --class retroarch 2>/dev/null | grep -q "$RETROARCH_WINDOW"; then
+            # Check if window is actually visible
+            WINDOW_STATE=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null || echo "")
+            MAP_STATE=$(DISPLAY=:0 xdotool getwindowmapstate "$RETROARCH_WINDOW" 2>/dev/null || echo "unknown")
+            echo "$(date): RetroArch window verified and raised - window state: $WINDOW_STATE, map state: $MAP_STATE" >> "$LOG_FILE"
+            
+            # CRITICAL: Start a background process to continuously keep window on top and fullscreen
+            # This ensures the window stays visible and at correct size even if something tries to resize it
+            WINDOW_MONITOR_PID=""
+            (
+                while ps -p $RETROARCH_PID >/dev/null 2>&1; do
+                    # Every 2 seconds, ensure window is still on top and correct size
+                    if DISPLAY=:0 xdotool search --class retroarch 2>/dev/null | grep -q "$RETROARCH_WINDOW"; then
+                        # Check current window size and position
+                        CURRENT_GEOM=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null | grep Geometry | awk '{print $2}' || echo "")
+                        CURRENT_POS=$(DISPLAY=:0 xdotool getwindowgeometry "$RETROARCH_WINDOW" 2>/dev/null | grep Position | awk '{print $2}' || echo "")
+                        
+                        # Force window to be 720x480 at 0,0 if it's not already
+                        # Check if position is close to 0,0 (within 5 pixels) and size is correct
+                        POS_X=$(echo "$CURRENT_POS" | cut -d',' -f1)
+                        POS_Y=$(echo "$CURRENT_POS" | cut -d',' -f2)
+                        if [ "$CURRENT_GEOM" != "720x480" ] || [ "${POS_X:-999}" -gt 5 ] || [ "${POS_Y:-999}" -gt 5 ]; then
+                            DISPLAY=:0 xdotool windowmove "$RETROARCH_WINDOW" 0 0 2>/dev/null || true
+                            DISPLAY=:0 xdotool windowsize "$RETROARCH_WINDOW" 720 480 2>/dev/null || true
+                        fi
+                        
+                        # Aggressively keep window on top
+                        DISPLAY=:0 xdotool windowraise "$RETROARCH_WINDOW" 2>/dev/null || true
+                        DISPLAY=:0 xdotool windowactivate "$RETROARCH_WINDOW" 2>/dev/null || true
+                        
+                        # Lower any other windows that might have appeared and are covering RetroArch
+                        for other_win in $(DISPLAY=:0 xdotool search --all --name '.*' 2>/dev/null); do
+                            if [ "$other_win" != "$RETROARCH_WINDOW" ] && [ -n "$other_win" ]; then
+                                OTHER_GEOM=$(DISPLAY=:0 xdotool getwindowgeometry "$other_win" 2>/dev/null | grep Geometry | awk '{print $2}' || echo "")
+                                if [ -n "$OTHER_GEOM" ] && echo "$OTHER_GEOM" | grep -qE "720x480|720x405"; then
+                                    DISPLAY=:0 xdotool windowlower "$other_win" 2>/dev/null || true
+                                fi
+                            fi
+                        done
+                    fi
+                    sleep 2
+                done
+                echo "$(date): [WINDOW_MONITOR] Stopped monitoring window (RetroArch exited)" >> "$LOG_FILE"
+            ) &
+            WINDOW_MONITOR_PID=$!
+            echo "$(date): Started background window monitor (PID: $WINDOW_MONITOR_PID) to keep RetroArch on top and fullscreen" >> "$LOG_FILE"
+        else
+            echo "$(date): WARNING: RetroArch window disappeared" >> "$LOG_FILE"
+        fi
         break
     fi
     # Log progress every 5 seconds
@@ -1470,8 +1661,18 @@ while ps -p $RETROARCH_PID >/dev/null 2>&1; do
         if [ -n "$MONITOR_PID" ] && ! ps -p $MONITOR_PID >/dev/null 2>&1; then
             echo "$(date): WARNING: Background monitor (PID: $MONITOR_PID) stopped unexpectedly" >> "$LOG_FILE"
         fi
+        # Also check if window monitor is still running
+        if [ -n "$WINDOW_MONITOR_PID" ] && ! ps -p $WINDOW_MONITOR_PID >/dev/null 2>&1; then
+            echo "$(date): WARNING: Window monitor (PID: $WINDOW_MONITOR_PID) stopped unexpectedly" >> "$LOG_FILE"
+        fi
     fi
 done
+
+# Stop window monitor if it's still running
+if [ -n "${WINDOW_MONITOR_PID:-}" ] && [ "$WINDOW_MONITOR_PID" != "" ]; then
+    kill "$WINDOW_MONITOR_PID" 2>>"$LOG_FILE" || true
+    echo "$(date): Stopped window monitor" >> "$LOG_FILE"
+fi
 
 # Stop the background monitor (it should have stopped already, but ensure it's gone)
 if [ -n "$MONITOR_PID" ]; then

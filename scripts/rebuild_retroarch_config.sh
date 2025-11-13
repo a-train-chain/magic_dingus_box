@@ -42,10 +42,20 @@ cat > "$CONFIG_FILE" <<EOF
 # Rebuilt by rebuild_retroarch_config.sh on $(date)
 # DO NOT EDIT MANUALLY - settings are auto-configured
 
-# Video settings
+# Video settings - CRT native resolution (720x480)
 video_driver = "gl"
 video_fullscreen = "false"
 video_windowed_fullscreen = "true"
+video_fullscreen_x = "720"
+video_fullscreen_y = "480"
+video_windowed_width = "720"
+video_windowed_height = "480"
+video_custom_viewport_enable = "false"
+video_aspect_ratio = "1.333"
+video_force_aspect = "true"
+aspect_ratio_index = "23"
+video_scale_integer = "false"
+video_scale = "1.0"
 
 # Audio settings - HDMI configuration
 audio_driver = "alsa"

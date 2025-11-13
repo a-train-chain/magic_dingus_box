@@ -56,3 +56,5 @@ echo "2. If controller detected but no /dev/input/js*: Try replugging controller
 echo "3. Run the Python identification script: python3 identify_controller.py"
 echo ""
 echo "Share the output above with the developer for help!"
+
+
