@@ -1,0 +1,148 @@
+
+/* ===== VIDEO LIBRARY TABLE STYLES ===== */
+.video-library-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg-dark);
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.video-library-table thead {
+    background: var(--bg-mid);
+}
+
+.video-library-table th {
+    padding: 1rem;
+    text-align: left;
+    font-weight: bold;
+    color: var(--accent2);
+    border-bottom: 2px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.video-library-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--text-secondary);
+    color: var(--text-primary);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+.video-library-table tbody tr {
+    transition: all 0.2s;
+}
+
+.video-library-table tbody tr:hover {
+    background: var(--bg-mid);
+}
+
+.video-library-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.video-title {
+    font-weight: bold;
+    color: var(--accent2);
+}
+
+.video-artist {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.video-filename {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.video-size {
+    text-align: right;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.video-usage {
+    text-align: center;
+}
+
+.usage-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: bold;
+}
+
+.usage-badge.in-use {
+    background: var(--success);
+    color: var(--bg-dark);
+}
+
+.usage-badge.unused {
+    background: var(--error);
+    color: var(--bg-dark);
+}
+
+.video-actions {
+    text-align: center;
+    white-space: nowrap;
+}
+
+/* Responsive table - stack on mobile */
+@media (max-width: 768px) {
+    .video-library-table {
+        display: block;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .video-library-table thead {
+        display: none;
+    }
+    
+    .video-library-table tbody {
+        display: block;
+    }
+    
+    .video-library-table tr {
+        display: block;
+        margin-bottom: 1rem;
+        border: 2px solid var(--border-color);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .video-library-table td {
+        display: block;
+        text-align: left;
+        border-bottom: 1px solid var(--text-secondary);
+        position: relative;
+        padding-left: 50%;
+    }
+    
+    .video-library-table td:before {
+        content: attr(data-label);
+        position: absolute;
+        left: 0;
+        width: 50%;
+        padding-left: 1rem;
+        font-weight: bold;
+        color: var(--accent2);
+    }
+    
+    .video-library-table td:last-child {
+        border-bottom: none;
+    }
+    
+    .video-actions {
+        text-align: left;
+        padding-left: 1rem !important;
+    }
+    
+    .video-actions:before {
+        display: none;
+    }
+}

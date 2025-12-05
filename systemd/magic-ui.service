@@ -1,8 +1,8 @@
 [Unit]
 Description=Magic Dingus UI
-After=network-online.target magic-mpv.service graphical.target lightdm.service
-Wants=network-online.target magic-mpv.service lightdm.service
-# Note: mpv service is handled internally by the UI
+After=network-online.target graphical.target lightdm.service
+Wants=network-online.target lightdm.service
+# Note: mpv is started internally by the UI application
 # Wait for X11 socket and user session to be ready
 After=graphical-session.target
 
@@ -19,9 +19,7 @@ WorkingDirectory=/opt/magic_dingus_box
 ExecStartPre=/bin/bash -c 'LOCK_FILE="/tmp/magic_retroarch_active.lock"; if [ -f "$LOCK_FILE" ]; then LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null | tr -d "[:space:]"); if [ -n "$LOCK_PID" ] && [ "$LOCK_PID" != "starting" ]; then if ! ps -p "$LOCK_PID" >/dev/null 2>&1 || ! ps -p "$LOCK_PID" -o comm= 2>/dev/null | grep -qi retroarch; then rm -f "$LOCK_FILE" 2>/dev/null; fi; else rm -f "$LOCK_FILE" 2>/dev/null; fi; fi'
 # Wait for X11 socket and XAUTHORITY to be ready (max 30 seconds)
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do [ -S /tmp/.X11-unix/X0 ] && [ -f "$HOME/.Xauthority" ] && break || sleep 1; done; sleep 2'
-# Set X server resolution to 720x480 if in CRT mode
-ExecStartPre=/bin/bash -c 'DISPLAY=:0; export DISPLAY; DISPLAY_MODE="${MAGIC_DISPLAY_MODE:-}"; if [ -z "$DISPLAY_MODE" ]; then SETTINGS_FILE="/data/settings.json"; [ ! -f "$SETTINGS_FILE" ] && SETTINGS_FILE="$HOME/.config/magic_dingus_box/settings.json"; [ -f "$SETTINGS_FILE" ] && DISPLAY_MODE=$(grep -o '"'"'"display_mode"'"'"'[[:space:]]*:[[:space:]]*'"'"'"[^"]*"'"'"' "$SETTINGS_FILE" 2>/dev/null | cut -d'"'"'"'"'"' -f4 || echo ""); fi; DISPLAY_MODE="${DISPLAY_MODE:-crt_native}"; if [ "$DISPLAY_MODE" = "crt_native" ]; then HDMI_OUTPUT=$(xrandr 2>/dev/null | grep -E "connected.*HDMI" | awk '"'"'{print $1}'"'"' | head -1); [ -z "$HDMI_OUTPUT" ] && HDMI_OUTPUT=$(xrandr 2>/dev/null | grep "connected" | awk '"'"'{print $1}'"'"' | head -1); if [ -n "$HDMI_OUTPUT" ]; then CURRENT_MODE=$(xrandr 2>/dev/null | grep -A1 "^$HDMI_OUTPUT" | grep -oE '"'"'[0-9]+x[0-9]+'"'"' | head -1); if [ "$CURRENT_MODE" != "720x480" ]; then if xrandr 2>/dev/null | grep -q "720x480"; then xrandr --output "$HDMI_OUTPUT" --mode 720x480 --rate 60 2>/dev/null; else xrandr --newmode "720x480_60.00" 27.00 720 736 808 896 480 481 484 497 -hsync +vsync 2>/dev/null; xrandr --addmode "$HDMI_OUTPUT" "720x480_60.00" 2>/dev/null; xrandr --output "$HDMI_OUTPUT" --mode "720x480_60.00" 2>/dev/null; fi; fi; fi; fi'
-ExecStart=/opt/magic_dingus_box/venv/bin/python3 -m magic_dingus_box.main
+ExecStart=/usr/bin/python3 -m magic_dingus_box.main
 Restart=always
 RestartSec=5
 

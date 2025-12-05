@@ -27,7 +27,15 @@ dist/
 **/logs/
 *.log
 
-# Note: dev_data is intentionally NOT ignored; it will be tracked via Git LFS
+# Exclude dev data (videos, ROMs, playlists)
+# Keep intro video in data/intro/ and playlists in data/playlists/
+**/dev_data/
+magic_dingus_box_cpp/dev_data/
+
+# Exclude binary libretro cores
+magic_dingus_box_cpp/libretro_cores/
+**/*.so
+
 # Environments
 venv/
 .venv/
@@ -53,6 +61,8 @@ __pycache__/
 docs/
 *.md
 !README.md
+# Allow README files in subdirectories for documentation
+!magic_dingus_box_cpp/README.md
 
 # Exclude tests from runtime repo
 tests/

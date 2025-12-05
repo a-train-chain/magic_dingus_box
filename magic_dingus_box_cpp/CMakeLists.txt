@@ -1,0 +1,152 @@
+cmake_minimum_required(VERSION 3.16)
+project(magic_dingus_box_cpp)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Find required libraries using pkg-config
+find_package(PkgConfig REQUIRED)
+
+# DRM/KMS, GBM, EGL, OpenGL ES
+pkg_check_modules(DRM REQUIRED libdrm)
+pkg_check_modules(GBM REQUIRED gbm)
+pkg_check_modules(EGL REQUIRED egl)
+pkg_check_modules(GLES2 REQUIRED glesv2)
+
+# Input handling
+pkg_check_modules(EVDEV REQUIRED libevdev)
+
+# Data parsing
+pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
+pkg_check_modules(JSONCPP REQUIRED jsoncpp)
+
+# GStreamer
+pkg_check_modules(GST REQUIRED gstreamer-1.0)
+pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
+pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
+pkg_check_modules(GST_GL REQUIRED gstreamer-gl-1.0)
+
+# Filesystem (C++17 experimental or C++20)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
+    # Use experimental filesystem for older GCC
+    add_compile_definitions(USE_EXPERIMENTAL_FILESYSTEM)
+endif()
+
+# GStreamer is now the only video backend - MPV removed
+
+# Source files
+set(PLATFORM_SOURCES
+    src/platform/drm_display.cpp
+    src/platform/gbm_context.cpp
+    src/platform/egl_context.cpp
+    src/platform/input_manager.cpp
+)
+
+set(VIDEO_SOURCES
+    src/video/gst_player.cpp
+    src/video/gst_renderer.cpp
+)
+
+set(UI_SOURCES
+    src/ui/renderer.cpp
+    src/ui/theme.cpp
+    src/ui/font_manager.cpp
+    src/ui/settings_menu.cpp
+)
+
+set(APP_SOURCES
+    src/app/playlist_loader.cpp
+    src/app/controller.cpp
+    src/app/sample_mode.cpp
+    src/app/settings_persistence.cpp
+)
+
+set(UTILS_SOURCES
+    src/utils/path_resolver.cpp
+)
+
+set(RETROARCH_SOURCES
+    src/retroarch/retroarch_launcher.cpp
+)
+
+set(ALL_SOURCES
+    src/main.cpp
+    ${PLATFORM_SOURCES}
+    ${VIDEO_SOURCES}
+    ${UI_SOURCES}
+    ${APP_SOURCES}
+    ${UTILS_SOURCES}
+    ${RETROARCH_SOURCES}
+)
+
+# Executable
+add_executable(magic_dingus_box_cpp ${ALL_SOURCES})
+
+# Include directories
+target_include_directories(magic_dingus_box_cpp PRIVATE
+    ${DRM_INCLUDE_DIRS}
+    ${GBM_INCLUDE_DIRS}
+    ${EGL_INCLUDE_DIRS}
+    ${GLES2_INCLUDE_DIRS}
+    ${EVDEV_INCLUDE_DIRS}
+    ${YAMLCPP_INCLUDE_DIRS}
+    ${JSONCPP_INCLUDE_DIRS}
+    ${GST_INCLUDE_DIRS}
+    ${GST_APP_INCLUDE_DIRS}
+    ${GST_VIDEO_INCLUDE_DIRS}
+    ${GST_GL_INCLUDE_DIRS}
+    src/
+)
+
+# Link libraries
+target_link_libraries(magic_dingus_box_cpp
+    ${DRM_LIBRARIES}
+    ${GBM_LIBRARIES}
+    ${EGL_LIBRARIES}
+    ${GLES2_LIBRARIES}
+    ${EVDEV_LIBRARIES}
+    ${YAMLCPP_LIBRARIES}
+    ${JSONCPP_LIBRARIES}
+    ${GST_LIBRARIES}
+    ${GST_APP_LIBRARIES}
+    ${GST_VIDEO_LIBRARIES}
+    ${GST_GL_LIBRARIES}
+    pthread
+    m
+    dl
+)
+
+# Compiler flags
+target_compile_options(magic_dingus_box_cpp PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+# Link filesystem library (for std::experimental::filesystem)
+# GCC needs stdc++fs for experimental filesystem
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(magic_dingus_box_cpp stdc++fs)
+endif()
+
+# Debug flags
+target_compile_definitions(magic_dingus_box_cpp PRIVATE
+    $<$<CONFIG:Debug>:DEBUG=1>
+)
+
+# Install target (optional)
+install(TARGETS magic_dingus_box_cpp
+    RUNTIME DESTINATION bin
+)
+
+# Copy assets to build directory for development
+file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
+file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR})
+file(COPY ${CMAKE_SOURCE_DIR}/dev_data DESTINATION ${CMAKE_BINARY_DIR})
+

@@ -1,0 +1,16 @@
+[Unit]
+Description=Magic Dingus Box Web Manager
+After=network.target
+
+[Service]
+Type=simple
+User=alexanderchaney
+WorkingDirectory=/opt/magic_dingus_box
+Environment=PYTHONPATH=/opt/magic_dingus_box
+Environment=MAGIC_DATA_DIR=/opt/magic_dingus_box/magic_dingus_box_cpp/data
+ExecStart=/usr/bin/python3 -u -m magic_dingus_box.web.wsgi
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

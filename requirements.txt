@@ -1,8 +1,0 @@
-pygame>=2.5
-PyYAML>=6.0
-Flask>=3.0
-watchdog>=4.0
-requests>=2.31
-pytest>=8.0
-zeroconf>=0.132.0
-

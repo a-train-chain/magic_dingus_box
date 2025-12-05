@@ -1,0 +1,20 @@
+[Unit]
+Description=Magic Dingus Box C++ Kiosk Engine
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=alexanderchaney
+Group=alexanderchaney
+SupplementaryGroups=video audio input render
+WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
+ExecStartPre=/usr/bin/pactl set-sink-volume @DEFAULT_SINK@ 100%
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
+Restart=always
+RestartSec=5
+Environment=LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+
+[Install]
+WantedBy=multi-user.target

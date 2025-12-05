@@ -1,0 +1,33 @@
+title: NES Classics
+playlist_type: game
+curator: Alex Chaney
+description: ''
+loop: false
+items:
+  - title: Super Mario Bros. 3
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/nes/Super Mario Bros. 3.nes
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+    
+  - title: The Legend of Zelda
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/nes/The Legend of Zelda.nes
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+    
+  - title: Mega Man 2
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/nes/Mega Man 2.nes
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+    
+  - title: Mega Man
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/nes/Mega Man.nes
+    emulator_core: nestopia_libretro
+    emulator_system: NES

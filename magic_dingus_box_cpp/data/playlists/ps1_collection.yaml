@@ -1,0 +1,26 @@
+title: PlayStation Classics
+playlist_type: game
+curator: Alex Chaney
+description: ''
+loop: false
+items:
+  - title: Crash Bandicoot
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/ps1/Crash Bandicoot/Crash Bandicoot.cue
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Doom
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/ps1/Doom/Doom.cue
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Tony Hawk's Pro Skater 2
+    artist: ''
+    source_type: emulated_game
+    path: dev_data/roms/ps1/Tony Hawk S Pro Skater 2/Tony Hawk's Pro Skater 2.ccd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
