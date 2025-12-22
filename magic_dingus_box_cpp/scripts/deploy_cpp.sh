@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CPP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PI_HOST="${PI_HOST:-alexanderchaney@magicpi.local}"
+PI_HOST="${PI_HOST:-magic@magicpi.local}"
 PI_DIR="${PI_DIR:-/opt/magic_dingus_box}"
 BUILD=false
 TEST=false
@@ -69,10 +69,10 @@ if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${PI_HOST}" "echo 'Connection suc
     echo "✗ ERROR: Cannot connect to ${PI_HOST}"
     echo ""
     echo "Possible solutions:"
-    echo "  1. Use IP address instead: PI_HOST=alexanderchaney@192.168.1.XXX ./scripts/deploy_cpp.sh --build"
+    echo "  1. Use IP address instead: PI_HOST=magic@192.168.1.XXX ./scripts/deploy_cpp.sh --build"
     echo "  2. Ensure Pi is powered on and on the same network"
     echo "  3. Check if mDNS/Bonjour is working: ping magicpi.local"
-    echo "  4. Find Pi IP: ssh alexanderchaney@<known-ip> 'hostname -I'"
+    echo "  4. Find Pi IP: ssh magic@<known-ip> 'hostname -I'"
     echo ""
     exit 1
 fi
@@ -129,7 +129,7 @@ echo ""
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz \
-    "${CPP_DIR}/../systemd/magic-dingus-box-cpp.service" \
+    "${CPP_DIR}/systemd/magic-dingus-box-cpp.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
 ssh "${PI_HOST}" bash <<'EOF'
@@ -145,10 +145,10 @@ echo ""
 # Step 1.8: Install Local Cores
 echo "Step 1.8: Installing Local Cores..."
 # Ensure core directory exists
-ssh "${PI_HOST}" "mkdir -p /home/alexanderchaney/.config/retroarch/cores"
+ssh "${PI_HOST}" "mkdir -p /home/magic/.config/retroarch/cores"
 rsync -avz \
     "${CPP_DIR}/libretro_cores/" \
-    "${PI_HOST}:/home/alexanderchaney/.config/retroarch/cores/"
+    "${PI_HOST}:/home/magic/.config/retroarch/cores/"
 echo "  ✓ Local cores installed"
 echo ""
 
@@ -197,12 +197,13 @@ declare -A PKG_MAP=(
     ["egl"]="libegl1-mesa-dev"
     ["glesv2"]="libgles2-mesa-dev"
     ["libevdev"]="libevdev-dev"
+    ["libgpiod"]="libgpiod-dev"
     ["yaml-cpp"]="libyaml-cpp-dev"
     ["jsoncpp"]="libjsoncpp-dev"
 )
 
 # Check each dependency
-for pkg in libdrm gbm egl glesv2 libevdev yaml-cpp jsoncpp; do
+for pkg in libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp; do
     if ! pkg-config --exists "$pkg" 2>/dev/null; then
         MISSING_DEPS+=("${PKG_MAP[$pkg]}")
     fi

@@ -14,7 +14,7 @@ Type=simple
 Environment=PYTHONUNBUFFERED=1
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+Environment=XAUTHORITY=/home/magic/.Xauthority
 Environment=SDL_AUDIODRIVER=alsa
 Environment=MPV_SOCKET=/run/magic/mpv.sock
 WorkingDirectory=/opt/magic_dingus_box

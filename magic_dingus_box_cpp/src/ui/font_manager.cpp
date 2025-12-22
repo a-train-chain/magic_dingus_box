@@ -273,5 +273,27 @@ void FontManager::cleanup() {
     font_data_.clear();
 }
 
+void FontManager::reset_textures() {
+    // Clear GL textures but KEEP font_data_ so glyphs can be re-rasterized
+    // This is used when EGL context is restored after external app (RetroArch)
+    
+    // Free all glyph textures from base cache
+    for (auto& pair : glyph_cache_) {
+        if (pair.second.texture_id != 0) {
+            glDeleteTextures(1, &pair.second.texture_id);
+        }
+    }
+    glyph_cache_.clear();
+    
+    // Free all glyph textures from per-size cache
+    for (auto& pair : size_glyph_cache_) {
+        if (pair.second.texture_id != 0) {
+            glDeleteTextures(1, &pair.second.texture_id);
+        }
+    }
+    size_glyph_cache_.clear();
+    
+    // NOTE: font_data_ is NOT cleared - glyphs will be re-rasterized on demand
+}
 } // namespace ui
 

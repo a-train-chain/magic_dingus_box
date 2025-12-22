@@ -1,0 +1,17 @@
+[Unit]
+Description=LED Shutdown Animation
+# Run as early as possible when shutdown is triggered
+DefaultDependencies=no
+# Run before anything else shuts down
+Before=shutdown.target halt.target poweroff.target reboot.target umount.target
+# But after basic system is up
+After=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/led_shutdown_animation.sh
+TimeoutStartSec=15
+RemainAfterExit=no
+
+[Install]
+WantedBy=halt.target poweroff.target reboot.target

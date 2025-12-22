@@ -10,6 +10,7 @@ namespace ui {
 class Theme;
 class FontManager;
 class SettingsMenuManager;
+class VirtualKeyboard;
 }
 
 namespace app {
@@ -44,6 +45,10 @@ public:
 
     // Cleanup
     void cleanup();
+    
+    // Reset GL resources after external context takeover (e.g., RetroArch)
+    // This invalidates current GL resources and triggers re-creation on next render
+    void reset_gl();
 
 private:
     uint32_t width_;
@@ -78,6 +83,7 @@ private:
     void render_scanlines(); // Deprecated, replaced by render_crt_effects
     void render_settings_menu(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, bool video_active, bool ui_visible_when_playing);
     void render_game_browser(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha);
+    void render_virtual_keyboard(const VirtualKeyboard& keyboard);
     
     // Helper: format time as MM:SS
     std::string format_time(double seconds);

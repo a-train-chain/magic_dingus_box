@@ -114,6 +114,42 @@ bool GstRenderer::initialize(GstPlayer* player) {
     return true;
 }
 
+void GstRenderer::reset_gl() {
+    // After an external app (like RetroArch) takes over the EGL context,
+    // our GL resources are invalid. Delete them and mark for lazy re-init.
+    std::cout << "GstRenderer: Resetting GL resources after external context takeover" << std::endl;
+    
+    if (gl_initialized_) {
+        // These resources may be invalid but try to delete for cleanliness
+        if (vao_id_ != 0) {
+            glDeleteVertexArrays(1, &vao_id_);
+            vao_id_ = 0;
+        }
+        if (vbo_id_ != 0) {
+            glDeleteBuffers(1, &vbo_id_);
+            vbo_id_ = 0;
+        }
+        if (program_id_ != 0) {
+            glDeleteProgram(program_id_);
+            program_id_ = 0;
+        }
+        for (int i = 0; i < 3; i++) {
+            if (texture_ids_[i] != 0) {
+                glDeleteTextures(1, &texture_ids_[i]);
+                texture_ids_[i] = 0;
+            }
+        }
+    }
+    
+    // Reset state for lazy re-initialization
+    gl_initialized_ = false;
+    frame_format_ = -1;
+    frame_width_ = 0;
+    frame_height_ = 0;
+    
+    std::cout << "GstRenderer: GL resources reset complete, will re-init on next render" << std::endl;
+}
+
 void GstRenderer::set_viewport_size(uint32_t width, uint32_t height) {
     width_ = width;
     height_ = height;

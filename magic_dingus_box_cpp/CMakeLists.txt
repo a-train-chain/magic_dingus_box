@@ -22,6 +22,12 @@ pkg_check_modules(GLES2 REQUIRED glesv2)
 # Input handling
 pkg_check_modules(EVDEV REQUIRED libevdev)
 
+# GPIO (optional - only available on Raspberry Pi)
+pkg_check_modules(GPIOD libgpiod)
+if(GPIOD_FOUND)
+    add_compile_definitions(HAVE_GPIOD)
+endif()
+
 # Data parsing
 pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
@@ -46,6 +52,7 @@ set(PLATFORM_SOURCES
     src/platform/gbm_context.cpp
     src/platform/egl_context.cpp
     src/platform/input_manager.cpp
+    src/platform/gpio_manager.cpp
 )
 
 set(VIDEO_SOURCES
@@ -58,6 +65,7 @@ set(UI_SOURCES
     src/ui/theme.cpp
     src/ui/font_manager.cpp
     src/ui/settings_menu.cpp
+    src/ui/virtual_keyboard.cpp
 )
 
 set(APP_SOURCES
@@ -69,6 +77,7 @@ set(APP_SOURCES
 
 set(UTILS_SOURCES
     src/utils/path_resolver.cpp
+    src/utils/wifi_manager.cpp
 )
 
 set(RETROARCH_SOURCES
@@ -95,6 +104,7 @@ target_include_directories(magic_dingus_box_cpp PRIVATE
     ${EGL_INCLUDE_DIRS}
     ${GLES2_INCLUDE_DIRS}
     ${EVDEV_INCLUDE_DIRS}
+    ${GPIOD_INCLUDE_DIRS}
     ${YAMLCPP_INCLUDE_DIRS}
     ${JSONCPP_INCLUDE_DIRS}
     ${GST_INCLUDE_DIRS}
@@ -111,6 +121,7 @@ target_link_libraries(magic_dingus_box_cpp
     ${EGL_LIBRARIES}
     ${GLES2_LIBRARIES}
     ${EVDEV_LIBRARIES}
+    ${GPIOD_LIBRARIES}
     ${YAMLCPP_LIBRARIES}
     ${JSONCPP_LIBRARIES}
     ${GST_LIBRARIES}

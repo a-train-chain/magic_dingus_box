@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Set URI to a test file
-    std::string uri = "file:///home/alexanderchaney/magic_dingus_box/dev_data/media/intro.30fps.mp4";
+    std::string uri = "file:///home/magic/magic_dingus_box/dev_data/media/intro.30fps.mp4";
     g_object_set(G_OBJECT(playbin), "uri", uri.c_str(), nullptr);
 
     // Configure audio sink

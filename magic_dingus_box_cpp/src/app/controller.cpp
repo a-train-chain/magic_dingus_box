@@ -410,11 +410,14 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
         std::string overlay_path;
         // Could implement bezel lookup here based on emulator_system if needed
         
-        // Stop GStreamer before launching RetroArch
-        std::cout << "Stopping GStreamer before RetroArch launch..." << std::endl;
-        stop();
-        
-        // Wait for stop to complete
+        // Stop GStreamer completely before launching RetroArch
+        // This ensures all resources (EGL, DRM, threads) are released
+        if (player_) {
+            std::cout << "Cleaning up GStreamer pipeline before RetroArch launch..." << std::endl;
+            player_->cleanup();
+            // Wait a moment for cleanup to finish? cleanup() should be synchronous for pipeline destruction.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } // Wait for stop to complete
         wait_with_callback(300, progress_callback);
         
         // Verify player stopped with retry loop
@@ -542,20 +545,27 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
             // Signal main loop to reset display state (fix page flip failure)
             state.reset_display = true;
             
-            // If a video was playing before the game, it should resume
-            // The player state should already be maintained, but we ensure UI is visible
+            // CRITICAL: Do NOT try to resume video after game exit
+            // The GStreamer pipeline was killed via pkill during RetroArch launch
+            // The GstPlayer object still has stale state (duration > 0, position, etc.)
+            // Trying to play() on a dead pipeline corrupts EGL rendering state
+            // Instead, properly stop the player to clear its state
             if (player_) {
-                // Check if player has a valid file loaded
-                if (player_->get_duration() > 0) {
-                    std::cout << "Video file is loaded (duration: " << player_->get_duration() << "s), resuming playback" << std::endl;
-                    // Resume playback if it was playing before
-                    if (!player_->is_paused()) {
-                        player_->play();
-                    }
-                } else {
-                    std::cout << "No video loaded after game exit" << std::endl;
-                }
+                // Determine if we need to cleanup (if not already done)
+                // We called cleanup() before launch, but player_ object still exists
+                // Calling stop() here ensures pure-virtual state is clean
+                player_->stop();
+                std::cout << "Stopped video player after game exit" << std::endl;
             }
+
+            // CRITICAL: Reset playback state to prevent Renderer from thinking we are "transitioning"
+            // The Renderer's is_transitioning logic (current_item_index >= 0 && !video_active)
+            // causes it to skip rendering the UI (thinking it's a video transition gap).
+            // Since we just finished a game, we are NOT playing video, so we must clear this state
+            // to allow the UI to render.
+            state.current_item_index = -1;
+            state.current_playlist_index = -1;
+            state.video_active = false; // Ensure this is false too
             
             return true;
         } else {

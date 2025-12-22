@@ -32,6 +32,10 @@ public:
     static const uint64_t UPDATE_FRAME = 1;
 
     void cleanup();
+    
+    // Reset GL resources after external context takeover (e.g., RetroArch)
+    // This invalidates current GL resources and triggers lazy re-init on next render
+    void reset_gl();
 
 private:
     GstPlayer* player_;

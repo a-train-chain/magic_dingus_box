@@ -53,6 +53,9 @@ public:
     
     // Cleanup
     void cleanup();
+    
+    // Reset textures only (for GL context change) - keeps font data for re-rasterization
+    void reset_textures();
 
 private:
     std::string font_path_;

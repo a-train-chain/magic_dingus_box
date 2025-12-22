@@ -62,12 +62,17 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     }
     pipeline_ = playbin_; // pipeline acts as the playbin
 
-    // Configure audio sink to use autoaudiosink (works best with PulseAudio/PipeWire)
-    GstElement* audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");
+    // Configure audio sink to use pulsesink directly for reliable audio
+    GstElement* audio_sink = gst_element_factory_make("pulsesink", "audio-sink");
     if (audio_sink) {
         g_object_set(G_OBJECT(playbin_), "audio-sink", audio_sink, nullptr);
+        std::cout << "Successfully configured pulsesink for audio" << std::endl;
     } else {
-        std::cerr << "Failed to create autoaudiosink, audio might not work" << std::endl;
+        std::cerr << "Failed to create pulsesink, forcing autoaudiosink" << std::endl;
+        audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");
+        if (audio_sink) {
+             g_object_set(G_OBJECT(playbin_), "audio-sink", audio_sink, nullptr);
+        }
     }
 
     // Create a bin for our custom video sink
@@ -282,6 +287,9 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
 
     // Start playback
     play();
+
+    // Debug volume
+    std::cout << "GstPlayer::load_file - Current volume: " << get_volume() << "%" << std::endl;
 
     if (start > 0.0) {
         seek_absolute(start);

@@ -52,6 +52,7 @@ private:
     
     bool open_joystick_devices();
     bool open_keyboard_devices();
+    bool open_rotary_devices();
     InputAction map_button_to_action(uint16_t code, bool pressed);
     InputAction map_axis_to_action(uint8_t axis, int16_t value);
     InputAction map_key_to_action(uint16_t code);

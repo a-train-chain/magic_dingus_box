@@ -1,0 +1,17 @@
+[Unit]
+Description=LED Boot Sequence Animation
+# Run after power switch check, before main app
+DefaultDependencies=no
+After=power-switch-check.service local-fs.target
+Before=magic-dingus-box-cpp.service
+
+[Service]
+Type=simple
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/led_boot_sequence.sh
+# Gets stopped when main app starts
+RemainAfterExit=no
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=sysinit.target

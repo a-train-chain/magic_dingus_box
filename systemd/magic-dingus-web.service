@@ -4,7 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=alexanderchaney
+User=magic
+Group=magic
 WorkingDirectory=/opt/magic_dingus_box
 Environment=PYTHONPATH=/opt/magic_dingus_box
 Environment=MAGIC_DATA_DIR=/opt/magic_dingus_box/magic_dingus_box_cpp/data

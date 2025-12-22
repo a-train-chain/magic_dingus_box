@@ -6,14 +6,14 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-User=alexanderchaney
-Group=alexanderchaney
+User=magic
+Group=magic
 RuntimeDirectory=magic
 Environment=AUDIO_DEVICE=alsa/plughw:CARD=vc4hdmi0,DEV=0
 EnvironmentFile=-/etc/magic_dingus_box.env
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+Environment=XAUTHORITY=/home/magic/.Xauthority
 # Set CPU governor to performance mode for better video playback
 # Temporarily disabled - may cause UI rendering issues
 # ExecStartPre=/opt/magic_dingus_box/scripts/set_cpu_performance.sh

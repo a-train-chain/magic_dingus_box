@@ -8,7 +8,10 @@
 // Forward declaration
 namespace ui {
 class SettingsMenuManager;
+class VirtualKeyboard;
 }
+
+#include "../utils/wifi_manager.h"
 
 namespace app {
 
@@ -129,39 +132,52 @@ struct AppState {
         }
     } display_settings;
 
-    AppState()  
-        : selected_index(0)
-        , video_active(false)
-        , ui_visible_when_playing(false)
-        , original_volume(100.0)  // Default to 100%
-        , position(0.0)
-        , duration(0.0)
-        , paused(false)
-        , loop(false)
-        , playlist_loop(true) // Default to looping playlists
-        , shuffle(false) // Default to sequential playback
-        , master_shuffle_active(false)
-        , sample_mode_active(false)
-        , settings_menu(nullptr)
-        , fade_duration(300)  // 300ms fade duration
-        , fade_target_ui_visible(false)
-        , is_fading(false)
-        , current_playlist_index(-1)
-        , current_item_index(-1)
-        , last_advanced_item_index(-1)
-        , last_advanced_duration(0.0)
-        , is_switching_playlist(false)
-        , showing_intro_video(false)
-        , intro_ready(false)
-        , intro_complete(false)
-        , intro_fading_out(false)
-        , is_loading_game(false)
-        , playback_started(false)
+    AppState()
+        : selected_index(0),
+          video_active(false),
+          original_volume(100.0),
+          current_playlist_index(-1),
+          current_item_index(-1),
+          last_advanced_item_index(-1),
+          last_advanced_duration(0.0),
+          is_switching_playlist(false),
+          position(0.0),
+          duration(0.0),
+          paused(false),
+          loop(false),
+          playlist_loop(true),
+          shuffle(false),
+          master_shuffle_active(false),
+          sample_mode_active(false),
+          settings_menu(nullptr),
+          fade_duration(300),
+          fade_target_ui_visible(false),
+          is_fading(false),
+          showing_intro_video(false),
+          intro_ready(false),
+          intro_complete(false),
+          intro_fading_out(false),
+          is_loading_game(false),
+          playback_started(false)
     {
         // Initialize default display settings
-        // Match "Medium" scanlines from previous hardcoded value (24/255 ~= 0.1)
         display_settings.scanline_intensity = 0.1f; 
     }
+    
+    // Wi-Fi State
+    struct WifiState {
+        bool enabled = true;
+        bool scanning = false;
+        std::vector<utils::WifiNetwork> scan_results;
+        std::string status_message;
+    } wifi_state;
+    
+    // Virtual Keyboard
+    ui::VirtualKeyboard* keyboard = nullptr; // pointer to keyboard instance (owned by main/renderer or here?) 
+    // Better to let AppState own it or main. Let's make it a pointer managed by main, 
+    // or include the header and make it a member. Header inclusion is cleaner for usage.
+    // For now, pointer to avoid header dependency hell in this header 
+    // (forward declared above).
 };
 
 } // namespace app

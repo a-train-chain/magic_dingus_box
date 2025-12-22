@@ -27,7 +27,7 @@ make -j4
 
 # Copy to service location
 echo "5. Deploying binary..."
-cp /opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp /home/alexanderchaney/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
+cp /opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp /home/magic/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
 
 # Restart service
 echo "6. Restarting service..."

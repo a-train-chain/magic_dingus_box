@@ -1,7 +1,10 @@
 #include "settings_menu.h"
+#include "virtual_keyboard.h"
+#include "../utils/wifi_manager.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>  // For std::max
+#include <iostream>
 
 #include "../app/app_state.h"
 #include "../app/settings_persistence.h"
@@ -22,19 +25,48 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
     , viewing_games_in_playlist_(false)
     , current_game_playlist_index_(0)
     , selected_game_in_playlist_(0)
+    , was_scanning_(false)
+    , was_connecting_(false)
 {
     // Main menu items
     menu_items_ = {
         MenuItem("Video Games", MenuSection::VIDEO_GAMES, "Emulated games"),
         MenuItem("Display", MenuSection::DISPLAY, "Screen settings"),
         MenuItem("Audio", MenuSection::AUDIO, "Volume"),
+        MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
         MenuItem("Info", MenuSection::INFO, "Stats"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
 
-// ... (keep existing methods until build_display_submenu)
+void SettingsMenuManager::update() {
+    if (!active_ && !is_opening_ && !is_closing_) return;
+
+    // Check Wi-Fi scanning state if we are in the networks submenu
+    if (current_submenu_ == MenuSection::WIFI_NETWORKS) {
+        bool is_scanning = utils::WifiManager::instance().is_scanning();
+        
+        // If we were scanning and now we stopped, we need to refresh to show results
+        if (was_scanning_ && !is_scanning) {
+            std::cout << "SettingsMenuManager: Scan finished, rebuilding submenu..." << std::endl;
+            rebuild_current_submenu();
+        }
+        
+        was_scanning_ = is_scanning;
+    }
+
+    // Check for connection completion in both WIFI and WIFI_NETWORKS submenus
+    if (current_submenu_ == MenuSection::WIFI || current_submenu_ == MenuSection::WIFI_NETWORKS) {
+        bool is_connecting = utils::WifiManager::instance().is_connecting();
+        if (was_connecting_ && !is_connecting) {
+            std::cout << "SettingsMenuManager: Connection finished, refreshing menu..." << std::endl;
+            // Connection finished, refresh to show updated status
+            rebuild_current_submenu();
+        }
+        was_connecting_ = is_connecting;
+    }
+}
 
 std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
     if (!app_state_) {
@@ -170,7 +202,6 @@ void SettingsMenuManager::navigate(int delta, int game_playlists_count, int game
     if (game_browser_active_) {
         if (viewing_games_in_playlist_) {
             // Navigating games within a playlist
-            // Range is [0, games_in_current_playlist], where games_in_current_playlist is "Back"
             selected_game_in_playlist_ += delta;
             if (selected_game_in_playlist_ < 0) {
                 selected_game_in_playlist_ = 0;
@@ -179,7 +210,6 @@ void SettingsMenuManager::navigate(int delta, int game_playlists_count, int game
             }
         } else {
             // Navigating game playlists
-            // Range is [0, game_playlists_count], where game_playlists_count is "Back"
             game_browser_selected_ += delta;
             if (game_browser_selected_ < 0) {
                 game_browser_selected_ = 0;
@@ -194,7 +224,6 @@ void SettingsMenuManager::navigate(int delta, int game_playlists_count, int game
     const std::vector<MenuItem>& items = current_submenu_ == MenuSection::BACK ? menu_items_ : submenu_items_;
     int max_items = static_cast<int>(items.size());
     
-    // Safety check: ensure items vector is not empty
     if (max_items == 0) {
         return;
     }
@@ -252,6 +281,10 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
         submenu_items_ = build_audio_submenu();
     } else if (section == MenuSection::SYSTEM) {
         submenu_items_ = build_system_submenu();
+    } else if (section == MenuSection::WIFI) {
+        submenu_items_ = build_wifi_submenu();
+    } else if (section == MenuSection::WIFI_NETWORKS) {
+        submenu_items_ = build_wifi_networks_submenu();
     } else if (section == MenuSection::INFO) {
         submenu_items_ = build_info_submenu();
     }
@@ -307,8 +340,6 @@ std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {
         MenuItem("Back", MenuSection::BACK)
     };
 }
-
-
 
 std::vector<MenuItem> SettingsMenuManager::build_audio_submenu() {
     return {
@@ -372,28 +403,98 @@ std::string SettingsMenuManager::intensity_to_label(float intensity) {
 
 bool SettingsMenuManager::is_game_browser_back_selected() const {
     if (!game_browser_active_) return false;
-    
-    // This relies on the caller providing the correct count context, 
-    // but since we don't have the counts stored here, we can't strictly verify against max.
-    // However, the navigation logic ensures we don't go out of bounds.
-    // The "Back" button is always the last item.
-    // We'll need to rely on the renderer and input handler to know what the max index is.
-    // Actually, we can't easily implement this without storing the counts.
-    // Let's change the approach: we'll just check if the index matches the "Back" button index
-    // which is handled by the caller (renderer/main) knowing the count.
-    // But wait, we need to know if we are selecting "Back" for rendering.
-    
-    // Alternative: We don't strictly need this helper if we pass the counts to the renderer.
-    // But for consistency, let's implement it by checking if we are at the end.
-    // Since we don't store the counts, we can't implement this perfectly here without adding state.
-    // Let's skip implementing logic here and handle it in renderer/main where counts are known.
-    // OR, better: Update the class to store the counts when entering/navigating.
-    // For now, let's just return false and handle the check externally where counts are available.
-    // Actually, let's implement it properly by adding the counts to the class state if needed, 
-    // but for minimal impact, let's just return false and I'll handle the logic in renderer/main 
-    // by comparing index == count.
     return false; 
 }
 
-} // namespace ui
+std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
+    auto& wifi = utils::WifiManager::instance();
+    std::string status = wifi.is_connected() ? "Connected: " + wifi.get_current_ssid() : "Not Connected";
+    std::string ip = wifi.is_connected() ? wifi.get_ip_address() : "";
+    
+    return {
+        MenuItem("Status: " + status, MenuSection::BACK, ip),
+        MenuItem("Scan Networks", MenuSection::WIFI_NETWORKS, "Find Wi-Fi",
+                 [&]() {
+                     utils::WifiManager::instance().scan_networks_async();
+                 }),
+        MenuItem("Disconnect", MenuSection::WIFI, "Forget current",
+                 [this]() {
+                     utils::WifiManager::instance().forget_network(utils::WifiManager::instance().get_current_ssid());
+                     rebuild_current_submenu(); // Refresh to show updated status
+                 }),
+        MenuItem("Back", MenuSection::BACK)
+    };
+}
 
+std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
+    auto& wifi = utils::WifiManager::instance();
+    
+    if (wifi.is_connecting()) {
+         return {
+            MenuItem("Connecting...", MenuSection::BACK, "Verifying credentials..."),
+            MenuItem("Back", MenuSection::BACK) // Allow backing out (though cancellation isn't implemented)
+        };
+    }
+
+    // Check previous result
+    utils::ConnectionResult result = wifi.get_connection_result();
+    if (result == utils::ConnectionResult::FAILURE) {
+        wifi.reset_connection_state(); // Clear it so we don't show it forever
+        return {
+            MenuItem("Connection Failed", MenuSection::BACK, "Check password/signal"),
+            MenuItem("Back", MenuSection::BACK, "Return to list", 
+                []() { utils::WifiManager::instance().scan_networks_async(); }) 
+        };
+    }
+
+    if (wifi.is_scanning()) {
+        utils::WifiManager::instance().scan_networks_async(); // Ensure it's running
+        return {
+            MenuItem("Scanning...", MenuSection::BACK, "Please wait"),
+            MenuItem("Back", MenuSection::BACK)
+        };
+    }
+    
+    auto results = wifi.get_scan_results();
+    std::vector<MenuItem> items;
+    
+    for (const auto& net : results) {
+        std::string label = net.ssid;
+        if (net.in_use) label += " (Connected)";
+        else if (net.saved) label += " (Saved)";
+        
+        std::string sub = "Signal: " + std::to_string(net.signal_strength) + "% " + net.security;
+        
+        // Use WIFI to return to Wi-Fi menu after connection attempt
+        items.emplace_back(label, MenuSection::WIFI, sub, 
+            [this, net]() {
+                // Open Keyboard
+                if (app_state_ && app_state_->keyboard) {
+                    app_state_->keyboard->open("", "Enter Password for " + net.ssid, 
+                        [this, net](const std::string& password) {
+                            utils::WifiManager::instance().connect_async(net.ssid, password);
+                            // Connection result will be shown via update() -> rebuild_current_submenu()
+                        },
+                        [this]() { 
+                            // Cancel - stay in Wi-Fi menu
+                            enter_submenu(MenuSection::WIFI);
+                        }
+                    );
+                }
+            });
+    }
+    
+    if (items.empty()) {
+        items.emplace_back("No networks found", MenuSection::BACK);
+    }
+    
+    items.emplace_back("Rescan", MenuSection::WIFI, "", [&](){
+         utils::WifiManager::instance().scan_networks_async();
+         rebuild_current_submenu(); 
+    });
+    
+    items.emplace_back("Back", MenuSection::WIFI);
+    return items;
+}
+
+} // namespace ui

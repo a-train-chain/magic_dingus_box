@@ -1,7 +1,7 @@
 [Unit]
 Description=Magic Dingus Box C++ Kiosk Engine
-After=network-online.target systemd-user-sessions.service
-Wants=network-online.target
+After=network-online.target systemd-user-sessions.service sound.target
+Wants=network-online.target sound.target
 # Start early, before X11 (we use DRM/KMS directly)
 Before=graphical.target lightdm.service
 # Don't require X11 - we bypass it entirely
@@ -9,15 +9,16 @@ Conflicts=lightdm.service
 
 [Service]
 Type=simple
-# Run as root for DRM access (required for drmSetMaster)
-User=root
-Group=root
+# Run as magic user (member of video group)
+User=magic
+Group=magic
 # Working directory where executable and assets are located
 # Adjust this path to match your installation location
 WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
-# Path to executable (adjust if installed elsewhere)
-ExecStartPre=/bin/bash -c 'systemctl stop lightdm.service || true'
+# Wait for HDMI audio and start PulseAudio
+ExecStartPre=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh
 ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
+ExecStopPost=/usr/bin/pulseaudio --kill
 # Don't restart automatically - we handle restarts manually for RetroArch integration
 # Restart=on-failure
 # RestartSec=5
@@ -28,10 +29,9 @@ StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 # Environment (if needed)
-Environment=HOME=/root
+Environment=HOME=/home/magic
 Environment=DISPLAY=
-# ALSA audio - disable PulseAudio environment to prevent ALSA fallback
-Environment=PULSE_SERVER=
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM

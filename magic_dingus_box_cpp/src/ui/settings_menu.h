@@ -16,6 +16,8 @@ enum class MenuSection {
     DISPLAY,
     AUDIO,
     SYSTEM,
+    WIFI,
+    WIFI_NETWORKS,
     INFO,
     BACK,
     BROWSE_GAMES,
@@ -52,6 +54,7 @@ public:
     
     void set_app_state(app::AppState* state) { app_state_ = state; }
     
+    void update();
     void toggle();
     void open();
     void close();
@@ -99,6 +102,9 @@ private:
     bool is_opening_;
     bool is_closing_;
     int scroll_offset_;
+    // State for async operations
+    bool was_scanning_;
+    bool was_connecting_;
     
     MenuSection current_submenu_;
     std::vector<MenuItem> menu_items_;
@@ -115,6 +121,8 @@ private:
     std::vector<MenuItem> build_display_submenu();
     std::vector<MenuItem> build_audio_submenu();
     std::vector<MenuItem> build_system_submenu();
+    std::vector<MenuItem> build_wifi_submenu();
+    std::vector<MenuItem> build_wifi_networks_submenu();
     std::vector<MenuItem> build_info_submenu();
     std::string intensity_to_label(float intensity);
 };

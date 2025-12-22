@@ -2,6 +2,7 @@
 #include "platform/gbm_context.h"
 #include "platform/egl_context.h"
 #include "platform/input_manager.h"
+#include "platform/gpio_manager.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -12,6 +13,8 @@
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
 #include "utils/path_resolver.h"
+#include "utils/wifi_manager.h"
+#include "ui/virtual_keyboard.h"
 
 #include <iostream>
 #include <memory>
@@ -99,7 +102,7 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Get mode info for page flipping
     drmModeConnector* conn = drmModeGetConnector(display.get_fd(), display.get_connector_id());
-    drmModeModeInfo mode_info = {0};
+    drmModeModeInfo mode_info = {}; // Value initialization
     if (conn && conn->count_modes > 0) {
         // Find the mode matching our current resolution
         for (int i = 0; i < conn->count_modes; i++) {
@@ -153,6 +156,17 @@ int main(int /* argc */, char* /* argv */[]) {
         std::cerr << "Warning: Failed to initialize input" << std::endl;
     } else {
         std::cout << "Input initialized" << std::endl;
+    }
+    
+    // Initialize GPIO (for physical buttons, rotary encoder, LEDs, power switch)
+    std::cout << "Initializing GPIO..." << std::endl;
+    GpioManager gpio;
+    if (!gpio.initialize()) {
+        std::cout << "GPIO not available (this is normal if not on Raspberry Pi)" << std::endl;
+    } else {
+        std::cout << "GPIO initialized" << std::endl;
+        // Stop the boot LED chase sequence now that the app is starting
+        gpio.stop_boot_led_sequence();
     }
     
     // Initialize GStreamer player
@@ -298,6 +312,13 @@ int main(int /* argc */, char* /* argv */[]) {
     Controller controller(&player);
     controller.set_display(&display);  // Set display reference for DRM cleanup
     controller.set_input_manager(&input);  // Set input manager reference for controller release
+    
+    // Initialize Virtual Keyboard
+    VirtualKeyboard keyboard;
+    state.keyboard = &keyboard;
+    
+    // Initialize Wifi Manager
+    utils::WifiManager::instance().initialize(); // Check for nmcli
     controller.initialize_retroarch_launcher();  // Initialize RetroArch launcher
     
     // Apply initial system volume
@@ -437,6 +458,7 @@ int main(int /* argc */, char* /* argv */[]) {
     static uint32_t previous_bo_handle = 0;
     static uint32_t current_fb_id = 0;
     static bool first_frame = true;
+    static int force_setcrtc_frames = 0; // Force SetCrtc for multiple frames after reset
     static int consecutive_buffer_failures = 0;  // Track consecutive buffer lock failures
     static int page_flip_failures = 0;  // Track page flip failures
     static int successful_page_flips = 0;  // Track successful page flips for counter reset
@@ -568,17 +590,25 @@ int main(int /* argc */, char* /* argv */[]) {
         
         // Present the framebuffer
         if (fb_id != 0) {
-            if (first_frame) {
-                // First frame: use SetCrtc to initialize
+            if (first_frame || force_setcrtc_frames > 0) {
+                // Use SetCrtc for first frame and for several frames after reset
+                // This helps stabilize after RetroArch returns control
                 uint32_t connector_id = display.get_connector_id();
-                std::cout << "Setting initial CRTC: fb_id=" << fb_id << ", crtc_id=" << display.get_crtc_id() << std::endl;
+                if (first_frame) {
+                    std::cout << "Setting initial CRTC: fb_id=" << fb_id << ", crtc_id=" << display.get_crtc_id() << std::endl;
+                }
                 int ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
                                        &connector_id, 1, &mode_info);
                 if (ret == 0) {
-                    std::cout << "Initial CRTC set successfully!" << std::endl;
-                    first_frame = false;
+                    if (first_frame) {
+                        std::cout << "Initial CRTC set successfully!" << std::endl;
+                        first_frame = false;
+                    }
+                    if (force_setcrtc_frames > 0) {
+                        force_setcrtc_frames--;
+                    }
                 } else {
-                    std::cerr << "Failed to set initial CRTC (ret=" << ret << "): " << strerror(errno) << std::endl;
+                    std::cerr << "Failed to set CRTC (ret=" << ret << "): " << strerror(errno) << std::endl;
                 }
             } else {
                 // Subsequent frames: use page flip
@@ -590,9 +620,10 @@ int main(int /* argc */, char* /* argv */[]) {
                 if (ret != 0) {
                     // Page flip failed - increment counter and log periodically
                     page_flip_failures++;
-                    if (page_flip_failures % 10 == 0) {
-                        std::cerr << "Warning: Page flip failures: " << page_flip_failures 
-                                  << " (this may indicate buffer management issues)" << std::endl;
+                    int err = errno;
+                    if (page_flip_failures % 10 == 0 || page_flip_failures < 5) {
+                        std::cerr << "Warning: Page flip failed (ret=" << ret << ", errno=" << err << ": " << strerror(err) << ")" << std::endl;
+                        std::cerr << "  (Failures: " << page_flip_failures << ", Successes: " << successful_page_flips << ")" << std::endl;
                     }
                     
                     // If page flip fails, fall back to SetCrtc
@@ -676,6 +707,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             
             first_frame = true;
+            force_setcrtc_frames = 10; // Force SetCrtc for 10 frames after reset for stability
             page_flip_failures = 0;
             successful_page_flips = 0;
             // Clear framebuffer cache to force fresh buffers
@@ -691,11 +723,45 @@ int main(int /* argc */, char* /* argv */[]) {
             current_fb_id = 0;
             state.reset_display = false;
             
+            // CRITICAL: Re-make EGL context current after RetroArch released it
+            // RetroArch uses its own EGL/DRM context, so we need to restore ours
+            if (!egl.make_current()) {
+                std::cerr << "Warning: Failed to re-make EGL context current after RetroArch exit" << std::endl;
+            } else {
+                std::cout << "EGL context restored after RetroArch exit" << std::endl;
+            }
+            
+            // CRITICAL: Reset GstRenderer GL resources after context restore
+            // RetroArch invalidates our textures, shaders, VAOs etc. when it takes over EGL
+            // This triggers lazy re-initialization on the next video frame render
+            gst_renderer.reset_gl();
+
+            // CRITICAL CHECK: Has the player been cleaned up?
+            if (!player.is_initialized()) {
+                std::cout << "Re-initializing GStreamer player and linking renderer..." << std::endl;
+                // Use default initialization as done in main()
+                if (!player.initialize()) {
+                     std::cerr << "Failed to re-initialize GStreamer player!" << std::endl;
+                }
+                // Re-link renderer to the new pipeline/appsink
+                if (!gst_renderer.initialize(&player)) {
+                    std::cerr << "Failed to re-initialize GStreamer renderer!" << std::endl;
+                }
+            }
+            
+            // CRITICAL: Also reset UI Renderer GL resources
+            // The UI shaders, VAO, VBO, and logo texture also become invalid
+            ui_renderer.reset_gl();
+            
             // Force an immediate clear to black to ensure screen is in known state
             glViewport(0, 0, mode.width, mode.height);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
-            egl.swap_buffers();
+            if (!egl.swap_buffers()) {
+                 std::cerr << "Error: Initial swap buffers after reset failed!" << std::endl;
+            } else {
+                 std::cout << "Initial swap buffers after reset success." << std::endl;
+            }
         }
         
         static int frame_count = 0;
@@ -703,8 +769,17 @@ int main(int /* argc */, char* /* argv */[]) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
         
+        // Update menu state (Wi-Fi scanning, etc.)
+        settings_menu.update();
+
         // Poll input
         auto input_events = input.poll();
+        
+        // Poll GPIO (buttons, encoder) and merge with controller/keyboard events
+        if (gpio.is_available()) {
+            auto gpio_events = gpio.poll();
+            input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
+        }
         
         // Track Menu button state for volume control
         static bool menu_button_held = false;
@@ -785,8 +860,43 @@ int main(int /* argc */, char* /* argv */[]) {
                 continue; // Consume event
             }
             
-            // If settings menu is active or closing, route inputs to menu
-            if (settings_menu.is_active() || settings_menu.is_closing()) {
+            // New input handling structure
+            // Check for toggle settings menu (always available unless keyboard open)
+            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()) {
+                settings_menu.toggle();
+            }
+            
+            // Route input
+            if (keyboard.is_active()) {
+            // Handle navigation (axis/dpad) or button presses
+            bool is_navigation = (ev.action == InputAction::ROTATE || ev.action == InputAction::ROTATE_VERTICAL);
+            
+            if (ev.pressed || is_navigation) { 
+                switch (ev.action) {
+                    case InputAction::ROTATE_VERTICAL:
+                            if (ev.delta < 0) keyboard.navigate_up();
+                            else if (ev.delta > 0) keyboard.navigate_down();
+                            break;
+                        case InputAction::ROTATE:
+                            if (ev.delta < 0) keyboard.navigate_left();
+                            else if (ev.delta > 0) keyboard.navigate_right();
+                            break;
+                        case InputAction::SELECT: keyboard.select(); break;
+                        case InputAction::PREV: // Backspace shortcut
+                        case InputAction::SEEK_LEFT:
+                            keyboard.backspace(); 
+                            break;
+                        case InputAction::NEXT: // Space shortcut
+                        case InputAction::SEEK_RIGHT:
+                            keyboard.space(); 
+                            break;
+                        case InputAction::QUIT: keyboard.close(); break;
+                        default: break;
+                    }
+                }
+                continue; // Consume event if keyboard is active
+            } else if (settings_menu.is_active() || settings_menu.is_opening() || settings_menu.is_closing()) {
+                // Settings Menu Input
                 // Handle game browser navigation and selection
                 if (settings_menu.is_game_browser_active()) {
                     switch (ev.action) {
@@ -882,6 +992,8 @@ int main(int /* argc */, char* /* argv */[]) {
                             }
                             break;
                         }
+                        default:
+                            break;
                     }
                     continue; // Skip normal menu handling when in game browser
                 }
@@ -894,7 +1006,7 @@ int main(int /* argc */, char* /* argv */[]) {
                         break;
                         
                     case InputAction::SELECT: {
-                        if (!ev.pressed) break; // Only trigger on press, not release
+                        if (!ev.pressed) break; // Only trigger on press
                         
                         ui::MenuSection section = settings_menu.select_current();
                         if (section == ui::MenuSection::VIDEO_GAMES) {
@@ -905,6 +1017,12 @@ int main(int /* argc */, char* /* argv */[]) {
                             settings_menu.enter_submenu(ui::MenuSection::AUDIO);
                         } else if (section == ui::MenuSection::SYSTEM) {
                             settings_menu.enter_submenu(ui::MenuSection::SYSTEM);
+                        } else if (section == ui::MenuSection::WIFI) {
+                            settings_menu.enter_submenu(ui::MenuSection::WIFI);
+                        } else if (section == ui::MenuSection::WIFI_NETWORKS) {
+                            settings_menu.enter_submenu(ui::MenuSection::WIFI_NETWORKS);
+                        } else if (section == ui::MenuSection::INFO) {
+                            settings_menu.enter_submenu(ui::MenuSection::INFO);
                         } else if (section == ui::MenuSection::BROWSE_GAMES) {
                             // Enter game browser
                             settings_menu.enter_game_browser();
@@ -1113,7 +1231,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                 case InputAction::PLAY_PAUSE:
                     if (!ev.pressed) break; // Only trigger on press, not release
-                    controller.toggle_pause();
+                    // Only allow play/pause if intro is complete and we have an active video
+                    if (state.intro_complete && state.video_active) {
+                        controller.toggle_pause();
+                    }
                     break;
                     
                 case InputAction::NEXT:
@@ -1129,8 +1250,9 @@ int main(int /* argc */, char* /* argv */[]) {
                         } else {
                             controller.load_next_item(state, playlist_directory);
                         }
-                    } else if (!state.is_switching_playlist) {
-                    controller.seek(10.0);
+                    } else if (!state.is_switching_playlist && state.video_active) {
+                        // Only seek if we have an active video (not intro)
+                        controller.seek(10.0);
                     }
                     break;
                     
@@ -1147,8 +1269,9 @@ int main(int /* argc */, char* /* argv */[]) {
                         } else {
                             controller.load_previous_item(state, playlist_directory);
                         }
-                    } else if (!state.is_switching_playlist) {
-                    controller.seek(-10.0);
+                    } else if (!state.is_switching_playlist && state.video_active) {
+                        // Only seek if we have an active video (not intro)
+                        controller.seek(-10.0);
                     }
                     break;
                     
@@ -1203,6 +1326,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // Handle intro video completion
         // When intro video ends, fade it out first, then fade in the UI
         if (state.showing_intro_video && state.video_active && state.duration > 0.0) {
+            // Update LED dance animation during intro video
+            // Use video position as elapsed time (in milliseconds)
+            gpio.update_intro_animation(static_cast<uint64_t>(state.position * 1000));
             // Check if intro video has ended
             // Use multiple conditions to ensure reliable detection
             bool video_ended = false;
@@ -1255,6 +1381,9 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
 
                 std::cout << "Intro transition complete - video stopped, renderer cleaned, screen cleared, UI ready" << std::endl;
+                
+                // Stop LED intro animation
+                gpio.stop_animation();
 
                 // Verify that video actually stopped before proceeding
                 int retry_count = 0;

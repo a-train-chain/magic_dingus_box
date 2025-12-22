@@ -21,8 +21,9 @@ struct InputManager::Device {
     std::string name;
     bool is_joystick;
     bool is_keyboard;
+    bool is_rotary;
     
-    Device() : fd(-1), dev(nullptr), is_joystick(false), is_keyboard(false) {}
+    Device() : fd(-1), dev(nullptr), is_joystick(false), is_keyboard(false), is_rotary(false) {}
     
     ~Device() {
         if (dev) {
@@ -58,6 +59,9 @@ bool InputManager::initialize() {
     }
     if (!open_keyboard_devices()) {
         std::cerr << "Warning: No keyboard devices found" << std::endl;
+    }
+    if (!open_rotary_devices()) {
+        std::cout << "  No dedicated rotary encoder device found (will check later)" << std::endl;
     }
     
     // CRITICAL: Read from controller to wake it up after opening
@@ -210,6 +214,62 @@ bool InputManager::open_keyboard_devices() {
     return found;
 }
 
+bool InputManager::open_rotary_devices() {
+    const char* input_dir = "/dev/input";
+    DIR* dir = opendir(input_dir);
+    if (!dir) return false;
+    
+    bool found = false;
+    struct dirent* entry;
+    
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strncmp(entry->d_name, "event", 5) != 0) continue;
+        
+        std::string path = std::string(input_dir) + "/" + entry->d_name;
+        int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        
+        struct libevdev* dev = nullptr;
+        int rc = libevdev_new_from_fd(fd, &dev);
+        if (rc < 0 || !dev) {
+            if (dev) libevdev_free(dev);
+            close(fd);
+            continue;
+        }
+        
+        // Check if it's a rotary encoder (REL_X)
+        if (libevdev_has_event_type(dev, EV_REL) && libevdev_has_event_code(dev, EV_REL, REL_X)) {
+            const char* dev_name = libevdev_get_name(dev);
+            if (!dev_name) {
+                libevdev_free(dev);
+                close(fd);
+                continue;
+            }
+            
+            auto device = std::make_unique<Device>();
+            device->fd = fd;
+            device->dev = dev;
+            device->name = dev_name ? dev_name : "Unknown";
+            device->is_rotary = true;
+            
+            int grab_rc = libevdev_grab(dev, LIBEVDEV_GRAB);
+            if (grab_rc < 0) {
+                 std::cerr << "  Warning: Could not grab rotary device " << device->name << std::endl;
+            }
+            
+            std::string device_name = device->name;
+            devices_.push_back(std::move(device));
+            found = true;
+            std::cout << "  Found rotary encoder: " << device_name << " at " << path << std::endl;
+        } else {
+            libevdev_free(dev);
+            close(fd);
+        }
+    }
+    closedir(dir);
+    return found;
+}
+
 std::vector<InputEvent> InputManager::poll() {
     std::vector<InputEvent> events;
     
@@ -225,6 +285,7 @@ std::vector<InputEvent> InputManager::poll() {
             
             if (rc == LIBEVDEV_READ_STATUS_SYNC) {
                 // Handle sync events
+                std::cout << "InputManager: SYNC event received" << std::endl;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
             }
@@ -251,7 +312,22 @@ std::vector<InputEvent> InputManager::poll() {
                         input_ev.action = map_key_to_action(ev.code);
                     }
                 } else if (device->is_joystick) {
-                    input_ev.action = map_button_to_action(ev.code, input_ev.pressed);
+                    // Handle D-pad buttons (common on some controllers)
+                    if (ev.code == BTN_DPAD_UP && ev.value == 1) {
+                        input_ev.action = InputAction::ROTATE_VERTICAL;
+                        input_ev.delta = -1;
+                    } else if (ev.code == BTN_DPAD_DOWN && ev.value == 1) {
+                        input_ev.action = InputAction::ROTATE_VERTICAL;
+                        input_ev.delta = 1;
+                    } else if (ev.code == BTN_DPAD_LEFT && ev.value == 1) {
+                        input_ev.action = InputAction::ROTATE;
+                        input_ev.delta = -1;
+                    } else if (ev.code == BTN_DPAD_RIGHT && ev.value == 1) {
+                        input_ev.action = InputAction::ROTATE;
+                        input_ev.delta = 1;
+                    } else {
+                        input_ev.action = map_button_to_action(ev.code, input_ev.pressed);
+                    }
                 }
             } else if (ev.type == EV_ABS && device->is_joystick) {
                 // Handle DPad hat switches (ABS_HAT0X, ABS_HAT0Y)
@@ -264,12 +340,49 @@ std::vector<InputEvent> InputManager::poll() {
                         input_ev.action = InputAction::ROTATE_VERTICAL;
                         input_ev.delta = 1;
                     }
+                } else if (ev.code == ABS_HAT0X) {
+                    // DPad Left/Right for ROTATE
+                    if (ev.value == -1) {  // Left
+                        input_ev.action = InputAction::ROTATE;
+                        input_ev.delta = -1;
+                    } else if (ev.value == 1) {  // Right
+                        input_ev.action = InputAction::ROTATE;
+                        input_ev.delta = 1;
+                    }
+                } else if (ev.code == ABS_Y) {
+                    // Analog Stick Y for ROTATE_VERTICAL
+                    // Deadzone check (simple)
+                    if (ev.value < -16000) { // Up
+                         input_ev.action = InputAction::ROTATE_VERTICAL;
+                         input_ev.delta = -1;
+                    } else if (ev.value > 16000) { // Down
+                         input_ev.action = InputAction::ROTATE_VERTICAL;
+                         input_ev.delta = 1;
+                    }
                 } else {
                     // Regular axis movement
                     input_ev.action = map_axis_to_action(ev.code, ev.value);
                     // Set delta for ROTATE action
                     if (input_ev.action == InputAction::ROTATE) {
                         input_ev.delta = (ev.value > 0) ? 1 : (ev.value < 0) ? -1 : 0;
+                    }
+                }
+            } else if (ev.type == EV_REL) {
+                // Handle Rotary Encoder (REL_X)
+                if (ev.code == REL_X) {
+                    // Software Accumulator to fix sensitivity and "skipping"
+                    // Require accumulating 4 units (either magnitude 4 or 4 events of 1) to trigger 1 step
+                    static int accumulator = 0;
+                    const int THRESHOLD = 4; 
+                    
+                    accumulator += ev.value;
+                    
+                    if (std::abs(accumulator) >= THRESHOLD) {
+                        input_ev.action = InputAction::ROTATE;
+                        // INVERT direction: positive accumulator -> negative delta
+                        // (User requested inversion)
+                        input_ev.delta = (accumulator > 0) ? -1 : 1;
+                        accumulator = 0;
                     }
                 }
             }

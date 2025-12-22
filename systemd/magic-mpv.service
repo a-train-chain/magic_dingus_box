@@ -7,14 +7,14 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-User=alexanderchaney
-Group=alexanderchaney
+User=magic
+Group=magic
 RuntimeDirectory=magic
 Environment=AUDIO_DEVICE=alsa/plughw:CARD=vc4hdmi0,DEV=0
 EnvironmentFile=-/etc/magic_dingus_box.env
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XAUTHORITY=/home/alexanderchaney/.Xauthority
+Environment=XAUTHORITY=/home/magic/.Xauthority
 # Wait for X11 socket and XAUTHORITY to be ready (max 30 seconds)
 ExecStartPre=/bin/bash -c 'for i in {1..30}; do [ -S /tmp/.X11-unix/X0 ] && [ -f "$HOME/.Xauthority" ] && break || sleep 1; done; sleep 2'
 ExecStart=/usr/bin/mpv --idle=yes --no-osc --no-osd-bar --keep-open=yes \

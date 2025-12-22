@@ -1,0 +1,17 @@
+[Unit]
+Description=Power Switch Boot Check
+# Run very early in boot, before most other services
+DefaultDependencies=no
+Before=sysinit.target shutdown.target
+After=local-fs.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/check_power_switch.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

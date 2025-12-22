@@ -58,6 +58,43 @@ echo "Step 3: Stopping display manager (lightdm)..."
 systemctl stop lightdm.service 2>/dev/null || true
 echo "  ✓ Display manager stopped"
 
+# Step 3.5: Configure GPIO overlay for power switch
+echo ""
+echo "Step 3.5: Configuring GPIO3 power switch overlay..."
+BOOT_CONFIG="/boot/config.txt"
+# For newer Raspberry Pi OS, config may be in /boot/firmware/config.txt
+if [ ! -f "$BOOT_CONFIG" ] && [ -f "/boot/firmware/config.txt" ]; then
+    BOOT_CONFIG="/boot/firmware/config.txt"
+fi
+
+# Power switch wiring:
+#   Toggle COM -> GPIO3
+#   Toggle ON throw -> GND
+#   Toggle OFF throw -> unconnected
+# Behavior:
+#   Switch ON: GPIO3 = LOW (connected to GND) -> Pi runs normally
+#   Switch OFF: GPIO3 = HIGH (pull-up) -> triggers shutdown
+#   Switch OFF->ON: GPIO3 goes LOW -> wakes from halt (hardware feature)
+GPIO_OVERLAY="dtoverlay=gpio-shutdown,gpio_pin=3,active_low=0,gpio_pull=up"
+
+if [ -f "$BOOT_CONFIG" ]; then
+    if grep -q "dtoverlay=gpio-shutdown" "$BOOT_CONFIG"; then
+        echo "  Updating existing GPIO shutdown overlay..."
+        # Remove old overlay line and add new one
+        sed -i '/dtoverlay=gpio-shutdown/d' "$BOOT_CONFIG"
+        sed -i '/# GPIO3.*Magic Dingus Box/d' "$BOOT_CONFIG"
+    fi
+    echo "  Adding GPIO power switch overlay to $BOOT_CONFIG..."
+    echo "" >> "$BOOT_CONFIG"
+    echo "# GPIO3 power switch (Magic Dingus Box)" >> "$BOOT_CONFIG"
+    echo "# ON position = GPIO3 LOW (run), OFF position = GPIO3 HIGH (shutdown)" >> "$BOOT_CONFIG"
+    echo "$GPIO_OVERLAY" >> "$BOOT_CONFIG"
+    echo "  ✓ GPIO overlay configured (reboot required for this change to take effect)"
+else
+    echo "  ⚠ Warning: $BOOT_CONFIG not found - please manually add:"
+    echo "    $GPIO_OVERLAY"
+fi
+
 # Step 4: Create service file with correct paths
 echo ""
 echo "Step 4: Creating service file..."

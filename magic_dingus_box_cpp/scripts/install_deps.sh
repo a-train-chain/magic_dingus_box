@@ -16,9 +16,17 @@ sudo apt install -y \
   libegl1-mesa-dev \
   libgles2-mesa-dev \
   libevdev-dev \
+  libgpiod-dev \
   libyaml-cpp-dev \
   libjsoncpp-dev \
-  libmpv-dev
+  libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev \
+  libgstreamer-plugins-bad1.0-dev \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-gl
 
 echo "✓ All dependencies installed!"
 

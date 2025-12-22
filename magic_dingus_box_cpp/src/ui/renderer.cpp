@@ -6,8 +6,10 @@
 #include "theme.h"
 #include "font_manager.h"
 #include "settings_menu.h"
+#include "virtual_keyboard.h" // Added for virtual keyboard rendering
 #include "../app/app_state.h"
 #include "../app/playlist_loader.h"
+#include "../app/settings_persistence.h" // For getting config if needed
 
 #include <GLES3/gl3.h>
 #include <iostream>
@@ -16,6 +18,7 @@
 #include <chrono>
 #include <iomanip>
 #include <vector>
+#include <algorithm> // Added for std::min/max
 
 namespace ui {
 
@@ -208,6 +211,97 @@ Renderer::Renderer(uint32_t width, uint32_t height)
 
 Renderer::~Renderer() {
     cleanup();
+}
+
+void Renderer::reset_gl() {
+    // After an external app (like RetroArch) takes over the EGL context,
+    // our GL resources are invalid. We need to delete and re-create them.
+    std::cout << "UI Renderer: Resetting GL resources after external context takeover" << std::endl;
+    
+    // Delete old resources (they may be invalid but try anyway for cleanliness)
+    if (shader_program_ != 0) {
+        glDeleteProgram(shader_program_);
+        shader_program_ = 0;
+    }
+    if (crt_shader_program_ != 0) {
+        glDeleteProgram(crt_shader_program_);
+        crt_shader_program_ = 0;
+    }
+    if (vao_ != 0) {
+        glDeleteVertexArrays(1, &vao_);
+        vao_ = 0;
+    }
+    if (vbo_ != 0) {
+        glDeleteBuffers(1, &vbo_);
+        vbo_ = 0;
+    }
+    if (logo_texture_id_ != 0) {
+        glDeleteTextures(1, &logo_texture_id_);
+        logo_texture_id_ = 0;
+    }
+    
+    // Reset font manager GL resources (keep font data for re-rasterization)
+    if (title_font_manager_) {
+        title_font_manager_->reset_textures();
+    }
+    if (body_font_manager_) {
+        body_font_manager_->reset_textures();
+    }
+    
+    // Re-compile shaders
+    if (!compile_shaders()) {
+        std::cerr << "UI Renderer: Failed to re-compile shaders after reset" << std::endl;
+    } else {
+        std::cout << "UI Renderer: Shaders recompiled, program_id=" << shader_program_ << std::endl;
+    }
+    if (!compile_crt_shader()) {
+        std::cerr << "UI Renderer: Failed to re-compile CRT shader after reset" << std::endl;
+    } else {
+        std::cout << "UI Renderer: CRT shader recompiled, program_id=" << crt_shader_program_ << std::endl;
+    }
+    
+    // Re-create VAO/VBO
+    glGenVertexArrays(1, &vao_);
+    glGenBuffers(1, &vbo_);
+    
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    
+    glBindVertexArray(0);
+    
+    // Re-load logo texture
+    // (Simplified - just reload from most common path)
+    unsigned char* data = nullptr;
+    int channels;
+    const char* logo_path = "../assets/Logos/logo_resized.png";
+    data = stbi_load(logo_path, &logo_width_, &logo_height_, &channels, 4);
+    if (!data) {
+        logo_path = "/opt/magic_dingus_box/magic_dingus_box_cpp/assets/Logos/logo_resized.png";
+        data = stbi_load(logo_path, &logo_width_, &logo_height_, &channels, 4);
+    }
+    
+    if (data) {
+        glGenTextures(1, &logo_texture_id_);
+        glBindTexture(GL_TEXTURE_2D, logo_texture_id_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo_width_, logo_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        stbi_image_free(data);
+    }
+    
+    // CRITICAL: Re-enable blending - RetroArch may have disabled it
+    // Without this, all UI elements become invisible!
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
+    std::cout << "UI Renderer: GL resources reset complete (blending enabled)" << std::endl;
 }
 
 bool Renderer::initialize(const std::string& title_font_path, const std::string& body_font_path) {
@@ -455,8 +549,13 @@ void Renderer::render(const app::AppState& state) {
     render_volume_overlay(state);
             
     // Render settings menu if active (on top of everything, before scanlines)
-    if (state.settings_menu) {
+    if (state.settings_menu && state.settings_menu->is_active()) {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
+    }
+    
+    // Virtual Keyboard overlay
+    if (state.keyboard && state.keyboard->is_active()) {
+        render_virtual_keyboard(*state.keyboard);
     }
         
     // Apply CRT effects (scanlines, warmth, glow, etc.)
@@ -619,6 +718,78 @@ void Renderer::draw_line(float x1, float y1, float x2, float y2, float width, co
     glBindVertexArray(0);
 }
 
+void Renderer::render_virtual_keyboard(const VirtualKeyboard& keyboard) {
+    // Darken background
+    draw_quad(0, 0, width_, height_, theme_->bg, 0.8f);
+    
+    float kb_width = width_ * 0.8f;
+    float kb_height = height_ * 0.5f;
+    float start_x = (width_ - kb_width) / 2.0f;
+    float start_y = (height_ - kb_height) / 2.0f + 50.0f;
+    
+    // Background panel
+    draw_quad(start_x - 20, start_y - 80, kb_width + 40, kb_height + 100, theme_->bg, 1.0f);
+    draw_line(start_x - 20, start_y - 80, start_x + kb_width + 20, start_y - 80, 2.0f, theme_->accent2);
+    draw_line(start_x - 20, start_y + kb_height + 20, start_x + kb_width + 20, start_y + kb_height + 20, 2.0f, theme_->accent2);
+    
+    // Title
+    draw_text(keyboard.get_title(), start_x, start_y - 50, 24, theme_->fg, true);
+    
+    // Text buffer (Input box)
+    float input_box_height = 40.0f;
+    draw_quad(start_x, start_y - 20, kb_width, input_box_height, theme_->bg, 1.0f);
+    draw_line(start_x, start_y - 20 + input_box_height, start_x + kb_width, start_y - 20 + input_box_height, 2.0f, theme_->accent);
+    
+    // Text cursor blinking
+    std::string display_text = keyboard.get_text();
+    // Simple cursor visualization
+    if (static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 500) % 2 == 0) {
+        display_text += "_";
+    }
+    draw_text(display_text, start_x + 10, start_y - 12, 20, theme_->fg);
+    
+    // Keys
+    const auto& layout = keyboard.get_layout();
+    float key_margin = 5.0f;
+    float keys_area_height = kb_height - 20; // approximate
+    float row_height = keys_area_height / layout.size();
+    
+    for (int r = 0; r < (int)layout.size(); ++r) {
+        const auto& row = layout[r];
+        float row_width = kb_width;
+        float key_width = row_width / row.size();
+        
+        for (int c = 0; c < (int)row.size(); ++c) {
+            float kx = start_x + c * key_width;
+            float ky = start_y + 40 + r * row_height;
+            float kw = key_width - key_margin;
+            float kh = row_height - key_margin;
+            
+            bool selected = (r == keyboard.get_selected_row() && c == keyboard.get_selected_col());
+            
+            ui::Color bg_color = selected ? theme_->accent : theme_->action;
+            ui::Color text_color = selected ? theme_->bg : theme_->fg;
+            
+            draw_quad(kx, ky, kw, kh, bg_color);
+            
+            // Center text
+            std::string label = row[c];
+            // Adjust special labels if needed
+            int font_size = 20;
+            if (label.length() > 1) font_size = 16;
+            
+            // Simple centering (approximate)
+            float text_width = label.length() * (font_size * 0.6f); 
+            float tx = kx + (kw - text_width) / 2.0f + (font_size * 0.2f); // minor adjustment
+            // Center text vertically
+            // draw_text uses y as baseline. To center vertically, baseline should be lower.
+            // approx baseline = top + (height + font_size/2) / 2
+            float ty = ky + (kh + font_size * 0.6f) / 2.0f;
+            
+            draw_text(label, tx, ty, font_size, text_color);
+        }
+    }
+}
 
 
 // ... (existing includes)
@@ -1002,6 +1173,8 @@ void Renderer::render_footer(const app::AppState& state, float text_alpha, bool 
 
 
 void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, bool video_active, bool ui_visible_when_playing) {
+    (void)ui_visible_when_playing; // Suppress unused parameter warning
+    (void)video_active; // Suppress unused parameter warning
     if (!menu || (!menu->is_active() && !menu->is_closing())) {
         return;
     }
@@ -1059,6 +1232,10 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             header_text = "Audio";
         } else if (current_submenu == ui::MenuSection::SYSTEM) {
             header_text = "System info";
+        } else if (current_submenu == ui::MenuSection::WIFI) {
+            header_text = "Wi-Fi";
+        } else if (current_submenu == ui::MenuSection::WIFI_NETWORKS) {
+            header_text = "Wi-Fi Networks";
         }
     }
     

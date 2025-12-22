@@ -87,7 +87,7 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
         
         // Fallback: try old dev_data mapping for backward compatibility
         if (path_str.find("dev_data/") == 0) {
-            std::string old_data_path = "/home/alexanderchaney/magic_dingus_box/" + path_str;
+            std::string old_data_path = "/home/magic/magic_dingus_box/" + path_str;
             if (fs::exists(old_data_path)) {
                 std::cout << "Resolved path (old location): " << item_path << " -> " << old_data_path << std::endl;
                 return old_data_path;

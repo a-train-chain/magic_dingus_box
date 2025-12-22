@@ -4,7 +4,7 @@
 # All tests run at 640x480 Output + Native Internal Res.
 
 ROM="/data/roms/n64/Super Mario 64.n64"
-CORE_DIR="/home/alexanderchaney/.config/retroarch/cores"
+CORE_DIR="/home/magic/.config/retroarch/cores"
 CORE="${CORE_DIR}/mupen64plus-next_libretro.so"
 CONFIG="/tmp/test_n64_opt.cfg"
 LOG_BASE="/tmp/test_n64_opt"
@@ -36,7 +36,7 @@ input_autodetect_enable = "true"
 input_joypad_driver = "udev"
 input_player1_analog_dpad_mode = "1"
 libretro_directory = "$CORE_DIR"
-libretro_system_directory = "/home/alexanderchaney/.config/retroarch/system"
+libretro_system_directory = "/home/magic/.config/retroarch/system"
 
 # Audio
 audio_driver = "alsathread"

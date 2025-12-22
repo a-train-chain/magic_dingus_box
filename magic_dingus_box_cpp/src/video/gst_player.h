@@ -15,6 +15,8 @@ public:
     GstPlayer();
     ~GstPlayer() override;
 
+    bool is_initialized() const { return initialized_; }
+
     bool initialize(const std::string& hwdec = "no") override;
     bool load_file(const std::string& path, double start = 0.0, double end = 0.0, bool loop = false) override;
     

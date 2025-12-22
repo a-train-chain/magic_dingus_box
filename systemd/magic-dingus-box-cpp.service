@@ -4,8 +4,8 @@ After=network.target sound.target
 
 [Service]
 Type=simple
-User=alexanderchaney
-Group=alexanderchaney
+User=magic
+Group=magic
 SupplementaryGroups=video audio input render
 WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
 ExecStartPre=/usr/bin/pactl set-sink-volume @DEFAULT_SINK@ 100%
