@@ -61,6 +61,7 @@ __pycache__/
 docs/
 *.md
 !README.md
+!CLAUDE.md
 # Allow README files in subdirectories for documentation
 !magic_dingus_box_cpp/README.md
 
