@@ -1,20 +1,38 @@
 [Unit]
 Description=Magic Dingus Box C++ Kiosk Engine
-After=network.target sound.target
+After=systemd-user-sessions.service sound.target
+Wants=sound.target
+# Start early, before X11 (we use DRM/KMS directly)
+Before=graphical.target lightdm.service
+# Don't require X11 - we bypass it entirely
+Conflicts=lightdm.service
 
 [Service]
 Type=simple
+# Run as magic user (member of video group)
 User=magic
 Group=magic
-SupplementaryGroups=video audio input render
+# Working directory where executable and assets are located
 WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
-ExecStartPre=/usr/bin/pactl set-sink-volume @DEFAULT_SINK@ 100%
+# Wait for HDMI audio and start PulseAudio
+ExecStartPre=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh
 ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
-Restart=always
-RestartSec=5
-Environment=LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
+ExecStopPost=/usr/bin/pulseaudio --kill
+# Give service time to start properly on boot
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# Standard output/error logging
+StandardOutput=journal
+StandardError=journal
+# Environment (if needed)
+Environment=HOME=/home/magic
+Environment=DISPLAY=
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=PULSE_SERVER=unix:/run/user/1000/pulse/native
+# Kill all processes in the service's cgroup on stop
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
 
 [Install]
+# Start at multi-user target (before X11)
 WantedBy=multi-user.target
