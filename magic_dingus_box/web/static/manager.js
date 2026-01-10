@@ -473,6 +473,7 @@ async function discoverDevices() {
     statusText.textContent = 'Searching for devices...';
 
     discoveredDevices = [];
+    AppState.device._discovered = [];  // Keep AppState in sync
 
     // 1. Always check current origin first (relative path)
     try {
@@ -483,9 +484,11 @@ async function discoverDevices() {
         clearTimeout(timeout);
 
         if (response.ok) {
-            const info = await response.json();
+            const result = await response.json();
+            const info = result.data || result;  // Handle both wrapped and unwrapped responses
             info.url = window.location.origin;
             discoveredDevices.push(info);
+            AppState.device._discovered.push(info);  // Keep AppState in sync
 
             // Found it! Connect immediately and STOP scanning
             selectDevice(0);
@@ -540,12 +543,14 @@ async function checkDevice(host, port) {
         clearTimeout(timeout);
 
         if (response.ok) {
-            const info = await response.json();
+            const result = await response.json();
+            const info = result.data || result;  // Handle both wrapped and unwrapped responses
             info.url = `http://${host}:${port}`;
 
             // Avoid duplicates
             if (!discoveredDevices.find(d => d.device_id === info.device_id)) {
                 discoveredDevices.push(info);
+                AppState.device._discovered.push(info);  // Keep AppState in sync
             }
         }
     } catch (e) {
@@ -677,11 +682,13 @@ async function manualConnect() {
         const response = await fetch(`${url}/admin/device/info`);
 
         if (response.ok) {
-            const info = await response.json();
+            const result = await response.json();
+            const info = result.data || result;  // Handle both wrapped and unwrapped responses
             info.url = url;
 
             if (!discoveredDevices.find(d => d.device_id === info.device_id)) {
                 discoveredDevices.push(info);
+                AppState.device._discovered.push(info);  // Keep AppState in sync
             }
 
             selectDevice(discoveredDevices.length - 1);
@@ -970,8 +977,9 @@ async function loadVideos() {
 
     try {
         const response = await fetch(`${AppState.device.url}/admin/media`);
+        const result = await response.json();
         // Use AppState to store videos (triggers videosUpdated event)
-        AppState.media.videos = await response.json();
+        AppState.media.videos = result.data || result;
 
         console.log(`Loaded ${AppState.media.videos.length} videos from /admin/media`);
 
@@ -987,14 +995,16 @@ async function loadVideos() {
 
         // Load all playlists to check video usage
         const playlistsResponse = await fetch(`${currentDevice.url}/admin/playlists`);
-        const allPlaylists = await playlistsResponse.json();
+        const playlistsResult = await playlistsResponse.json();
+        const allPlaylists = playlistsResult.data || playlistsResult;
 
         // Build a map of video paths to playlists that use them
         const videoUsageMap = {};
         for (const playlist of allPlaylists) {
             try {
                 const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
-                const fullData = await detailResponse.json();
+                const detailResult = await detailResponse.json();
+                const fullData = detailResult.data || detailResult;
                 // Normalize path for comparison - handles various path formats:
                 // ../media/file.mp4, data/media/file.mp4, /data/media/file.mp4, media/file.mp4
                 const normalizePath = (p) => {
@@ -1383,8 +1393,9 @@ async function loadROMs() {
 
     try {
         const response = await fetch(`${AppState.device.url}/admin/roms`);
+        const result = await response.json();
         // Use AppState to store ROMs (triggers romsUpdated event)
-        AppState.media.roms = await response.json();
+        AppState.media.roms = result.data || result;
 
         // Calculate total ROM count
         const totalROMs = Object.values(AppState.media.roms).reduce((sum, roms) => sum + roms.length, 0);
@@ -1718,7 +1729,8 @@ async function loadExistingPlaylists() {
 
     try {
         const response = await fetch(`${currentDevice.url}/admin/playlists`);
-        const allPlaylists = await response.json();
+        const playlistsResult = await response.json();
+        const allPlaylists = playlistsResult.data || playlistsResult;
 
         // Separate playlists by type (read full data to determine type)
         const videoPlaylists = [];
@@ -1734,7 +1746,8 @@ async function loadExistingPlaylists() {
                 // Fallback: Fetch full playlist to check item types
                 try {
                     const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${pl.filename}`);
-                    const fullData = await detailResponse.json();
+                    const detailResult = await detailResponse.json();
+                    const fullData = detailResult.data || detailResult;
 
                     // Check if it's a game playlist (all items are games)
                     const items = fullData.items || [];
@@ -1811,7 +1824,8 @@ async function editPlaylist(filename, type) {
 
     try {
         const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}`);
-        const playlistData = await response.json();
+        const result = await response.json();
+        const playlistData = result.data || result;
 
         // Determine which form to use
         const prefix = type === 'game' ? 'game' : 'video';
@@ -2806,7 +2820,6 @@ function handlePlaylistTouchEnd(e, type) {
 
             // Re-render the playlist
             renderPlaylistItems(type);
-            }
         }
 
         // Remove clone
