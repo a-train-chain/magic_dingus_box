@@ -1,9 +1,10 @@
 #include "path_resolver.h"
+#include "config.h"
 
-#include <experimental/filesystem>
+#include <filesystem>
 #include <iostream>
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 namespace utils {
 
@@ -51,31 +52,31 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
     fs::path p(item_path);
     std::string path_str = item_path;
     
-    // Strategy 1: Check absolute path or relative to /opt/magic_dingus_box/
+    // Strategy 1: Check absolute path or relative to app path
     // Handle relative paths that start with dev_data/ or data/
     if (path_str.find("dev_data/") == 0 || path_str.find("data/") == 0) {
-        std::string absolute_path = "/opt/magic_dingus_box/magic_dingus_box_cpp/" + path_str;
+        std::string absolute_path = config::get_app_path() + "/" + path_str;
         if (fs::exists(absolute_path)) {
             std::cout << "Resolved path: " << item_path << " -> " << absolute_path << std::endl;
             return absolute_path;
         }
-        
+
         // Fuzzy match in the target directory
         fs::path abs_p(absolute_path);
         std::string fuzzy = find_fuzzy_match(abs_p.parent_path(), abs_p.filename().string());
         if (!fuzzy.empty()) return fuzzy;
-        
+
         // Fallback: If dev_data/, try data/
         if (path_str.find("dev_data/") == 0) {
             std::string data_path_str = path_str;
             data_path_str.replace(0, 8, "data"); // replace dev_data with data
-            std::string data_absolute_path = "/opt/magic_dingus_box/magic_dingus_box_cpp/" + data_path_str;
-            
+            std::string data_absolute_path = config::get_app_path() + "/" + data_path_str;
+
             if (fs::exists(data_absolute_path)) {
                 std::cout << "Resolved path (dev_data -> data): " << item_path << " -> " << data_absolute_path << std::endl;
                 return data_absolute_path;
             }
-            
+
             // Fuzzy match in data/ directory
             fs::path data_p(data_absolute_path);
             fuzzy = find_fuzzy_match(data_p.parent_path(), data_p.filename().string());
@@ -84,10 +85,10 @@ std::string resolve_video_path(const std::string& item_path, const std::string& 
                 return fuzzy;
             }
         }
-        
+
         // Fallback: try old dev_data mapping for backward compatibility
         if (path_str.find("dev_data/") == 0) {
-            std::string old_data_path = "/home/magic/magic_dingus_box/" + path_str;
+            std::string old_data_path = config::get_home_path() + "/magic_dingus_box/" + path_str;
             if (fs::exists(old_data_path)) {
                 std::cout << "Resolved path (old location): " << item_path << " -> " << old_data_path << std::endl;
                 return old_data_path;

@@ -19,6 +19,7 @@ PI_DIR="${PI_DIR:-/opt/magic_dingus_box}"
 BUILD=false
 TEST=false
 INSTALL_CORES=false
+SETUP_USB_GADGET=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             INSTALL_CORES=true
             shift
             ;;
+        --usb-gadget|-u)
+            SETUP_USB_GADGET=true
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Usage: $(basename "$0") [options]
@@ -44,6 +49,7 @@ Options:
   --build, -b     Sync code and build on Pi
   --test, -t      Sync, build, and test on Pi
   --cores, -c     Sync, build, install RetroArch cores
+  --usb-gadget, -u  Setup USB Ethernet Gadget mode for fast uploads
   --help, -h      Show this help
 
 Environment overrides:
@@ -287,8 +293,106 @@ EOF
     echo ""
 fi
 
+# Step 5: Setup USB Gadget (if requested)
+if [ "$SETUP_USB_GADGET" = true ]; then
+    echo "Step 5: Setting up USB Ethernet Gadget mode..."
+    echo ""
+    echo "  This enables direct laptop-to-Pi USB connections for faster uploads."
+    echo "  The Pi will need to reboot after setup."
+    echo ""
+    
+    # Run the setup script on the Pi
+    ssh "${PI_HOST}" bash <<'EOF'
+cd /opt/magic_dingus_box/magic_dingus_box_cpp/scripts
+chmod +x setup_usb_gadget.sh
+
+# Run non-interactively (don't prompt for reboot)
+sudo bash -c '
+set -e
+
+echo "=== Setting up USB Ethernet Gadget Mode ==="
+
+# Detect config.txt location
+if [ -f /boot/firmware/config.txt ]; then
+    CONFIG_TXT="/boot/firmware/config.txt"
+elif [ -f /boot/config.txt ]; then
+    CONFIG_TXT="/boot/config.txt"
+else
+    echo "ERROR: Cannot find config.txt"
+    exit 1
+fi
+
+# Enable dwc2 overlay
+if ! grep -q "^dtoverlay=dwc2" "$CONFIG_TXT"; then
+    if grep -q "^\[all\]" "$CONFIG_TXT"; then
+        sed -i "/^\[all\]/a dtoverlay=dwc2" "$CONFIG_TXT"
+    else
+        echo "dtoverlay=dwc2" >> "$CONFIG_TXT"
+    fi
+    echo "  ✓ Enabled dwc2 overlay"
+else
+    echo "  ✓ dwc2 overlay already enabled"
+fi
+
+# Add kernel modules
+if ! grep -q "^dwc2" /etc/modules; then
+    echo "dwc2" >> /etc/modules
+    echo "  ✓ Added dwc2 module"
+fi
+
+if ! grep -q "^g_ether" /etc/modules; then
+    echo "g_ether" >> /etc/modules
+    echo "  ✓ Added g_ether module"
+fi
+
+# Configure static IP for usb0
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/10-usb-gadget.network << NETEOF
+[Match]
+Name=usb0
+
+[Network]
+Address=192.168.7.1/24
+DHCPServer=yes
+
+[DHCPServer]
+PoolOffset=100
+PoolSize=20
+EmitDNS=no
+NETEOF
+
+echo "  ✓ Configured static IP 192.168.7.1"
+
+# Enable systemd-networkd
+systemctl enable systemd-networkd 2>/dev/null || true
+
+echo ""
+echo "=== USB Gadget Setup Complete ==="
+'
+EOF
+    
+    echo ""
+    echo "  ✓ USB Ethernet Gadget mode configured"
+    echo ""
+    echo "  ⚠️  REBOOT REQUIRED: Run 'ssh ${PI_HOST} sudo reboot' to activate USB mode"
+    echo ""
+fi
+
 echo "=== Deployment Complete ==="
 echo ""
+
+if [ "$SETUP_USB_GADGET" = true ]; then
+    echo "🔌 USB Ethernet Gadget mode configured!"
+    echo ""
+    echo "   After rebooting the Pi:"
+    echo "   1. Connect USB-C cable from laptop to Pi"
+    echo "   2. Wait 5-10 seconds"
+    echo "   3. Open browser to: http://192.168.7.1:5000"
+    echo ""
+    echo "   WiFi access continues to work at: http://magicpi.local:5000"
+    echo ""
+fi
+
 if [ "$INSTALL_CORES" = true ]; then
     echo "🎮 RetroArch cores pre-installed! Your games will launch immediately."
     echo ""

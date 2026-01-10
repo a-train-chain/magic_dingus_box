@@ -4,6 +4,27 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <atomic>
+#include <mutex>
+#include <shared_mutex>
+
+namespace app {
+
+// Display mode enumeration
+enum class DisplayMode {
+    CRT_NATIVE,   // Fullscreen with CRT effects
+    MODERN_TV     // 4:3 centered with bezel overlay
+};
+
+// Bezel info structure
+struct BezelInfo {
+    std::string id;
+    std::string name;
+    std::string file;  // filename (empty for procedural)
+    std::string description;
+};
+
+} // namespace app
 
 // Forward declaration
 namespace ui {
@@ -57,20 +78,63 @@ struct AppState {
     std::vector<Playlist> playlists;  // Video playlists (shown on main screen)
     std::vector<Playlist> game_playlists;  // Game playlists (for menu)
     int selected_index;
+
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active
-    bool reset_display = false; // Signal to reset display state (e.g. after VT switch)
-    bool video_active; // This was moved from above, but the instruction snippet removed it. I'll keep it for now as the instruction was ambiguous.
+
+    // Thread-safe flags (accessed from GStreamer callbacks and main thread)
+    std::atomic<bool> reset_display{false};       // Signal to reset display state (e.g. after VT switch)
+    std::atomic<bool> video_active{false};        // True when video is actively playing
+    std::atomic<bool> paused{false};              // True when playback is paused
+    std::atomic<bool> is_switching_playlist{false}; // Flag to prevent overlapping playlist switches
+    std::atomic<bool> playback_started_{false};   // True when current video has actually started playing
+
     double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
     int current_item_index;  // Index of item currently playing (-1 if none)
     int last_advanced_item_index;  // Last item index we advanced from (to prevent multiple advances)
     double last_advanced_duration;  // Duration of the video we last advanced from (to detect when new video loads)
-    bool is_switching_playlist;  // Flag to prevent overlapping playlist switches
-    double position;
-    double duration;
-    bool paused;
+
+    // Thread-safe position/duration (written by GStreamer, read by UI)
+private:
+    mutable std::shared_mutex playback_mutex_;
+    double position_ = 0.0;
+    double duration_ = 0.0;
+
+public:
+    // Thread-safe accessors for position/duration
+    void set_position(double pos) {
+        std::unique_lock lock(playback_mutex_);
+        position_ = pos;
+    }
+
+    double get_position() const {
+        std::shared_lock lock(playback_mutex_);
+        return position_;
+    }
+
+    void set_duration(double dur) {
+        std::unique_lock lock(playback_mutex_);
+        duration_ = dur;
+    }
+
+    double get_duration() const {
+        std::shared_lock lock(playback_mutex_);
+        return duration_;
+    }
+
+    // Bulk update for efficiency (single lock)
+    void update_playback_state(double pos, double dur) {
+        std::unique_lock lock(playback_mutex_);
+        position_ = pos;
+        duration_ = dur;
+    }
+
+    // Legacy accessors for backwards compatibility (direct access still available for single-threaded use)
+    double position = 0.0;  // Deprecated: use get_position()/set_position()
+    double duration = 0.0;  // Deprecated: use get_duration()/set_duration()
+
     bool loop;
     bool playlist_loop;  // Whether to loop back to start of playlist when finished
     bool shuffle;        // Whether to play videos in random order
@@ -109,11 +173,14 @@ struct AppState {
     std::chrono::steady_clock::time_point intro_fade_out_start_time;  // When intro fade-out started
     
     // Loading state
-    bool is_loading_game; // True when a game is being launched
-    bool playback_started; // True when current video has actually started playing (position < duration)
+    std::atomic<bool> is_loading_game{false}; // True when a game is being launched
+    // Note: playback_started is now playback_started_ (atomic) - use playback_started_.load()/store()
     
-    // Display settings for CRT effects
+    // Display settings for CRT effects and display mode
     struct DisplaySettings {
+        DisplayMode mode = DisplayMode::CRT_NATIVE;
+        int bezel_index = 0;  // Index into bezels array (0 = procedural/none)
+        
         float scanline_intensity = 0.0f;      // 0.0 - 1.0
         float warmth_intensity = 0.0f;        // 0.0 - 1.0
         float glow_intensity = 0.0f;          // 0.0 - 1.0
@@ -130,20 +197,32 @@ struct AppState {
             else if (setting <= 0.4f) setting = 0.50f;
             else setting = 0.0f;
         }
+        
+        // Cycle display mode: CRT_NATIVE <-> MODERN_TV
+        void cycle_mode() {
+            mode = (mode == DisplayMode::CRT_NATIVE) 
+                   ? DisplayMode::MODERN_TV 
+                   : DisplayMode::CRT_NATIVE;
+        }
+        
+        // Get mode name for display
+        std::string get_mode_name() const {
+            return (mode == DisplayMode::CRT_NATIVE) ? "CRT Native" : "Modern TV";
+        }
     } display_settings;
+    
+    // Available bezels (loaded from bezels.json)
+    std::vector<BezelInfo> available_bezels;
 
     AppState()
         : selected_index(0),
-          video_active(false),
           original_volume(100.0),
           current_playlist_index(-1),
           current_item_index(-1),
           last_advanced_item_index(-1),
           last_advanced_duration(0.0),
-          is_switching_playlist(false),
           position(0.0),
           duration(0.0),
-          paused(false),
           loop(false),
           playlist_loop(true),
           shuffle(false),
@@ -156,12 +235,11 @@ struct AppState {
           showing_intro_video(false),
           intro_ready(false),
           intro_complete(false),
-          intro_fading_out(false),
-          is_loading_game(false),
-          playback_started(false)
+          intro_fading_out(false)
     {
+        // Atomic members are already initialized inline
         // Initialize default display settings
-        display_settings.scanline_intensity = 0.1f; 
+        display_settings.scanline_intensity = 0.1f;
     }
     
     // Wi-Fi State
@@ -171,6 +249,9 @@ struct AppState {
         std::vector<utils::WifiNetwork> scan_results;
         std::string status_message;
     } wifi_state;
+    
+    // Content Manager URL for QR code display
+    std::string content_manager_url;
     
     // Virtual Keyboard
     ui::VirtualKeyboard* keyboard = nullptr; // pointer to keyboard instance (owned by main/renderer or here?) 

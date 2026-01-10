@@ -7,9 +7,11 @@
 #include "font_manager.h"
 #include "settings_menu.h"
 #include "virtual_keyboard.h" // Added for virtual keyboard rendering
+#include "qrcodegen.hpp" // QR code generation
 #include "../app/app_state.h"
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
+#include "../utils/config.h"
 
 #include <GLES3/gl3.h>
 #include <iostream>
@@ -195,6 +197,8 @@ void main() {
 Renderer::Renderer(uint32_t width, uint32_t height)
     : width_(width)
     , height_(height)
+    , original_width_(width)
+    , original_height_(height)
     , ui_alpha_(1.0f)
     , shader_program_(0)
     , crt_shader_program_(0)
@@ -274,15 +278,13 @@ void Renderer::reset_gl() {
     
     glBindVertexArray(0);
     
-    // Re-load logo texture
-    // (Simplified - just reload from most common path)
+    // Re-load logo texture using config paths
     unsigned char* data = nullptr;
     int channels;
-    const char* logo_path = "../assets/Logos/logo_resized.png";
-    data = stbi_load(logo_path, &logo_width_, &logo_height_, &channels, 4);
-    if (!data) {
-        logo_path = "/opt/magic_dingus_box/magic_dingus_box_cpp/assets/Logos/logo_resized.png";
-        data = stbi_load(logo_path, &logo_width_, &logo_height_, &channels, 4);
+    std::vector<std::string> logo_paths = config::get_logo_search_paths();
+    for (const auto& logo_path : logo_paths) {
+        data = stbi_load(logo_path.c_str(), &logo_width_, &logo_height_, &channels, 4);
+        if (data) break;
     }
     
     if (data) {
@@ -302,6 +304,134 @@ void Renderer::reset_gl() {
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
     std::cout << "UI Renderer: GL resources reset complete (blending enabled)" << std::endl;
+}
+
+bool Renderer::load_bezel(const std::string& path) {
+    // Don't reload if already loaded
+    if (path == current_bezel_path_ && bezel_texture_id_ != 0) {
+        return true;
+    }
+    
+    // Delete old texture if exists
+    if (bezel_texture_id_ != 0) {
+        glDeleteTextures(1, &bezel_texture_id_);
+        bezel_texture_id_ = 0;
+    }
+    
+    current_bezel_path_ = path;
+    
+    if (path.empty()) {
+        // No bezel requested
+        return true;
+    }
+    
+    // Try multiple paths using config
+    std::vector<std::string> bezel_paths = {
+        "../assets/bezels/" + path,
+        "assets/bezels/" + path,
+        config::get_bezels_dir() + "/" + path
+    };
+    
+    unsigned char* data = nullptr;
+    int channels;
+    
+    for (const auto& bezel_path : bezel_paths) {
+        data = stbi_load(bezel_path.c_str(), &bezel_width_, &bezel_height_, &channels, 4);
+        if (data) {
+            std::cout << "Loaded bezel from: " << bezel_path << " (" << bezel_width_ << "x" << bezel_height_ << ")" << std::endl;
+            break;
+        }
+    }
+    
+    if (!data) {
+        std::cerr << "Failed to load bezel: " << path << std::endl;
+        return false;
+    }
+    
+    glGenTextures(1, &bezel_texture_id_);
+    glBindTexture(GL_TEXTURE_2D, bezel_texture_id_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bezel_width_, bezel_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    
+    stbi_image_free(data);
+    return true;
+}
+
+void Renderer::render_bezel() {
+    if (bezel_texture_id_ == 0) return;
+    
+    // Bind our shader program and set up projection
+    glUseProgram(shader_program_);
+    
+    // Use ORIGINAL screen dimensions for bezel (fullscreen overlay)
+    // Not width_/height_ which may be reduced for 4:3 content viewport
+    float bezel_w = static_cast<float>(original_width_);
+    float bezel_h = static_cast<float>(original_height_);
+    
+    // Set screenSize uniform for the shader (uses screen coords divider)
+    glUniform2f(glGetUniformLocation(shader_program_, "screenSize"), bezel_w, bezel_h);
+    
+    // Render bezel as fullscreen textured quad
+    float x = 0.0f;
+    float y = 0.0f;
+    
+    float vertices[] = {
+        x, y,             0.0f, 0.0f,
+        x + bezel_w, y,   1.0f, 0.0f,
+        x, y + bezel_h,   0.0f, 1.0f,
+        x + bezel_w, y + bezel_h, 1.0f, 1.0f
+    };
+    
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    
+    // Use white color with full alpha to render texture as-is
+    glUniform4f(glGetUniformLocation(shader_program_, "color"), 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+    
+    // Ensure we are using Texture Unit 0 and tell the shader
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
+    
+    // Enable blending for transparent areas of the bezel
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
+    glBindTexture(GL_TEXTURE_2D, bezel_texture_id_);
+    
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Renderer::set_content_viewport(int width, int height) {
+    // Temporarily override width and height for 4:3 rendering
+    // This affects the projection matrix used by all render methods
+    static bool logged = false;
+    if (!logged) {
+        std::cout << "UI Renderer: set_content_viewport(" << width << ", " << height << ") - was " << width_ << "x" << height_ << std::endl;
+        logged = true;
+    }
+    width_ = static_cast<uint32_t>(width);
+    height_ = static_cast<uint32_t>(height);
+}
+
+void Renderer::reset_content_viewport() {
+    // Restore original screen dimensions
+    width_ = original_width_;
+    height_ = original_height_;
+}
+
+
+void Renderer::resize_screen(uint32_t width, uint32_t height) {
+    original_width_ = width;
+    original_height_ = height;
+    reset_content_viewport();
 }
 
 bool Renderer::initialize(const std::string& title_font_path, const std::string& body_font_path) {
@@ -355,13 +485,8 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
     // Ensure smooth text rendering - disable dithering which can cause blockiness
     glDisable(GL_DITHER);
     
-    // Load Logo
-    // Load Logo
-    std::vector<std::string> logo_paths = {
-        "../assets/Logos/logo_resized.png",  // From build/ directory
-        "assets/Logos/logo_resized.png",     // If run from project root
-        "/opt/magic_dingus_box/magic_dingus_box_cpp/assets/Logos/logo_resized.png"  // Absolute path
-    };
+    // Load Logo using config paths
+    std::vector<std::string> logo_paths = config::get_logo_search_paths();
 
     unsigned char* data = nullptr;
     int channels;
@@ -407,8 +532,8 @@ void Renderer::render(const app::AppState& state) {
         return;  // Don't render UI during intro video playback (unless fading out)
     }
     
-    // Set viewport first (needed for all rendering)
-    glViewport(0, 0, width_, height_);
+    // NOTE: glViewport is set by the caller (main.cpp) for proper 4:3 centering in Modern TV mode
+    // Do NOT set glViewport here as it would override the centered position
     
     // Conditional clearing based on video state
     // NOTE: When video is active, mpv has already rendered to the framebuffer,
@@ -490,6 +615,11 @@ void Renderer::render(const app::AppState& state) {
     if (screenSizeLoc < 0) {
         std::cerr << "Warning: screenSize uniform not found" << std::endl;
     } else {
+        static bool logged_screensize = false;
+        if (!logged_screensize) {
+            std::cout << "UI Renderer: render() screenSize=" << width_ << "x" << height_ << std::endl;
+            logged_screensize = true;
+        }
         glUniform2f(screenSizeLoc, static_cast<float>(width_), static_cast<float>(height_));
     }
     
@@ -551,6 +681,35 @@ void Renderer::render(const app::AppState& state) {
     // Render settings menu if active (on top of everything, before scanlines)
     if (state.settings_menu && state.settings_menu->is_active()) {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
+        
+        // Render QR code when Info submenu is active
+        if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO && 
+            !state.content_manager_url.empty()) {
+            // Position QR code centered in the menu panel, below the menu items
+            uint32_t menu_width = width_ / 2;
+            float menu_x = static_cast<float>(width_) - menu_width;
+            float qr_size = 140.0f;  // Larger QR code for easier scanning
+            
+            // Calculate Y position: menu items take ~280px (header ~70px + 4 items * ~50px + spacing)
+            // Place QR code in the middle of remaining space
+            float menu_items_end = 320.0f;  // Approximate end of menu items
+            float footer_start = static_cast<float>(height_) - 70.0f;  // Footer hint area (increased margin)
+            float available_space = footer_start - menu_items_end;
+            
+            // Center QR code + hint text in available space
+            float qr_with_hint_height = qr_size + 35.0f;  // QR + padding + hint text
+            float qr_y = menu_items_end + (available_space - qr_with_hint_height) / 2.0f;
+            float qr_x = menu_x + (static_cast<float>(menu_width) - qr_size) / 2.0f;
+            
+            render_qr_code(state.content_manager_url, qr_x, qr_y, qr_size, 1.0f);
+            
+            // Draw helper text below QR code
+            std::string qr_hint = "Scan with phone camera";
+            int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
+            float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
+            float hint_y = qr_y + qr_size + 15.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+            draw_text(qr_hint, hint_x, hint_y, theme_->font_small_size, theme_->fg, false, 1.0f);
+        }
     }
     
     // Virtual Keyboard overlay
@@ -1236,6 +1395,8 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             header_text = "Wi-Fi";
         } else if (current_submenu == ui::MenuSection::WIFI_NETWORKS) {
             header_text = "Wi-Fi Networks";
+        } else if (current_submenu == ui::MenuSection::INFO) {
+            header_text = "Content Manager";
         }
     }
     
@@ -1785,6 +1946,43 @@ void Renderer::cleanup() {
     }
     if (body_font_manager_) {
         body_font_manager_->cleanup();
+    }
+}
+
+void Renderer::render_qr_code(const std::string& url, float x, float y, float size, float alpha_multiplier) {
+    if (url.empty()) return;
+    
+    try {
+        // Generate QR code from URL
+        qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+        int qr_size = qr.getSize();
+        if (qr_size <= 0) return;
+        
+        // Calculate module (cell) size
+        float module_size = size / static_cast<float>(qr_size);
+        
+        // Add quiet zone (border) around QR code - standard is 4 modules
+        int quiet_zone = 2;  // Use 2 for compact display
+        float total_size = size + (quiet_zone * 2 * module_size);
+        
+        // Draw white background for QR code (including quiet zone)
+        ui::Color white(255, 255, 255, 255);
+        ui::Color black(0, 0, 0, 255);
+        draw_quad(x - quiet_zone * module_size, y - quiet_zone * module_size, 
+                  total_size, total_size, white, alpha_multiplier);
+        
+        // Draw black modules
+        for (int row = 0; row < qr_size; row++) {
+            for (int col = 0; col < qr_size; col++) {
+                if (qr.getModule(col, row)) {  // True = black module
+                    float px = x + col * module_size;
+                    float py = y + row * module_size;
+                    draw_quad(px, py, module_size, module_size, black, alpha_multiplier);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to generate QR code: " << e.what() << std::endl;
     }
 }
 

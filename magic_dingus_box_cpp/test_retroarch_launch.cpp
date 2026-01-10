@@ -1,10 +1,10 @@
 #include <iostream>
 #include <string>
-#include <experimental/filesystem>
+#include <filesystem>
 #include "../src/retroarch/retroarch_launcher.h"
 #include "../src/utils/path_resolver.h"
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 int main() {
     std::cout << "=== Testing RetroArch Launch ===" << std::endl;

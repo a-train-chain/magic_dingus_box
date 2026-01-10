@@ -1,10 +1,358 @@
-// ===== GLOBAL STATE =====
+// ===== UNIFIED STATE MANAGEMENT =====
+
+/**
+ * Centralized application state with event-based notifications.
+ * Provides organized access to all application state with change events.
+ */
+const AppState = {
+    // === Device State ===
+    device: {
+        _current: null,
+        _discovered: [],
+
+        get current() { return this._current; },
+        set current(device) {
+            this._current = device;
+            AppState.emit('deviceChanged', device);
+        },
+
+        get discovered() { return this._discovered; },
+        set discovered(devices) {
+            this._discovered = devices;
+            AppState.emit('devicesUpdated', devices);
+        },
+
+        get url() { return this._current?.url || null; },
+
+        addDiscovered(device) {
+            if (!this._discovered.find(d => d.url === device.url)) {
+                this._discovered.push(device);
+                AppState.emit('devicesUpdated', this._discovered);
+            }
+        }
+    },
+
+    // === Media State ===
+    media: {
+        _videos: [],
+        _roms: {},
+
+        get videos() { return this._videos; },
+        set videos(videos) {
+            this._videos = videos;
+            AppState.emit('videosUpdated', videos);
+        },
+
+        get roms() { return this._roms; },
+        set roms(roms) {
+            this._roms = roms;
+            AppState.emit('romsUpdated', roms);
+        }
+    },
+
+    // === Playlist State ===
+    playlists: {
+        _videoItems: [],
+        _gameItems: [],
+        _editing: { video: null, game: null },
+        _dirty: { video: false, game: false },
+
+        getItems(type) {
+            return type === 'video' ? this._videoItems : this._gameItems;
+        },
+
+        setItems(type, items) {
+            if (type === 'video') {
+                this._videoItems = items;
+            } else {
+                this._gameItems = items;
+            }
+            this._dirty[type] = true;
+            AppState.emit('playlistChanged', { type, items });
+        },
+
+        getEditing(type) {
+            return this._editing[type];
+        },
+
+        setEditing(type, filename) {
+            this._editing[type] = filename;
+        },
+
+        isDirty(type) {
+            return this._dirty[type];
+        },
+
+        markClean(type) {
+            this._dirty[type] = false;
+        }
+    },
+
+    // === UI/Drag State ===
+    ui: {
+        drag: {
+            item: null,
+            playlistIndex: null,
+            playlistType: null
+        },
+        touch: {
+            element: null,
+            clone: null,
+            startX: 0,
+            startY: 0,
+            isDragging: false,
+            timer: null,
+            reorderStartIndex: null,
+            reorderCurrentIndex: null,
+            reorderType: null
+        }
+    },
+
+    // === CSRF Token ===
+    _csrfToken: null,
+    get csrfToken() { return this._csrfToken; },
+    set csrfToken(token) { this._csrfToken = token; },
+
+    // === Event System ===
+    _listeners: {},
+
+    on(event, callback) {
+        if (!this._listeners[event]) {
+            this._listeners[event] = [];
+        }
+        this._listeners[event].push(callback);
+        return () => this.off(event, callback); // Return unsubscribe function
+    },
+
+    off(event, callback) {
+        if (this._listeners[event]) {
+            this._listeners[event] = this._listeners[event].filter(cb => cb !== callback);
+        }
+    },
+
+    emit(event, data) {
+        if (this._listeners[event]) {
+            this._listeners[event].forEach(cb => {
+                try {
+                    cb(data);
+                } catch (e) {
+                    console.error(`Error in ${event} listener:`, e);
+                }
+            });
+        }
+    },
+
+    // === State Reset ===
+    reset() {
+        this.device._current = null;
+        this.device._discovered = [];
+        this.media._videos = [];
+        this.media._roms = {};
+        this.playlists._videoItems = [];
+        this.playlists._gameItems = [];
+        this.playlists._editing = { video: null, game: null };
+        this.playlists._dirty = { video: false, game: false };
+        this._csrfToken = null;
+        this.emit('stateReset');
+    }
+};
+
+// ===== LEGACY GLOBAL STATE (for backwards compatibility) =====
+// These will be progressively migrated to use AppState directly
 
 let currentDevice = null;
 let discoveredDevices = [];
 let availableVideos = [];
 let availableROMs = {};
 let draggedItem = null;
+let csrfToken = null;  // CSRF token for state-changing requests
+
+// Sync legacy globals with AppState for backwards compatibility
+AppState.on('deviceChanged', (device) => { currentDevice = device; });
+AppState.on('devicesUpdated', (devices) => { discoveredDevices = devices; });
+AppState.on('videosUpdated', (videos) => { availableVideos = videos; });
+AppState.on('romsUpdated', (roms) => { availableROMs = roms; });
+AppState.on('playlistChanged', ({ type, items }) => {
+    if (type === 'video') { videoPlaylistItems = items; }
+    else { gamePlaylistItems = items; }
+});
+
+// ===== CSRF TOKEN MANAGEMENT =====
+
+async function fetchCsrfToken() {
+    if (!currentDevice) return;
+
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/csrf-token`);
+        csrfToken = data.token;
+        console.log('CSRF token obtained');
+    } catch (e) {
+        console.warn('Failed to fetch CSRF token:', e.message || e);
+        csrfToken = null;
+    }
+}
+
+function getCsrfHeaders(includeContentType = true) {
+    const headers = {};
+    if (includeContentType) {
+        headers['Content-Type'] = 'application/json';
+    }
+    if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+    }
+    return headers;
+}
+
+// ===== API RESPONSE HANDLING =====
+
+/**
+ * Make an API request with standardized error handling.
+ * Handles the new response format: { ok: true/false, data: ..., error: { code, message } }
+ *
+ * @param {string} url - The API endpoint URL
+ * @param {object} options - Fetch options (method, headers, body, etc.)
+ * @returns {Promise<any>} - The response data on success
+ * @throws {Error} - Error with message and code properties on failure
+ */
+async function apiRequest(url, options = {}) {
+    const response = await fetch(url, options);
+    const result = await response.json();
+
+    // Handle standardized response format
+    if (result.ok === false) {
+        const error = new Error(result.error?.message || 'Unknown error');
+        error.code = result.error?.code || 'UNKNOWN_ERROR';
+        error.details = result.error?.details;
+        throw error;
+    }
+
+    // Return the data payload (for new format) or the whole result (for backward compatibility)
+    return result.data !== undefined ? result.data : result;
+}
+
+/**
+ * Make a GET API request.
+ * @param {string} url - The API endpoint URL
+ * @returns {Promise<any>} - The response data
+ */
+async function apiGet(url) {
+    return apiRequest(url);
+}
+
+/**
+ * Make a POST API request with JSON body.
+ * @param {string} url - The API endpoint URL
+ * @param {object} body - The request body
+ * @returns {Promise<any>} - The response data
+ */
+async function apiPost(url, body) {
+    return apiRequest(url, {
+        method: 'POST',
+        headers: getCsrfHeaders(),
+        body: JSON.stringify(body)
+    });
+}
+
+/**
+ * Make a DELETE API request.
+ * @param {string} url - The API endpoint URL
+ * @returns {Promise<any>} - The response data
+ */
+async function apiDelete(url) {
+    return apiRequest(url, {
+        method: 'DELETE',
+        headers: getCsrfHeaders()
+    });
+}
+
+// ===== UPLOAD CONFIGURATION =====
+const UPLOAD_CONFIG = {
+    CONCURRENCY_LIMIT: 3,      // Max parallel uploads
+    MAX_RETRIES: 2,            // Number of retry attempts per file
+    RETRY_DELAY_MS: 2000,      // Delay between retries
+    TIMEOUT_MS: 900000,        // 15 minutes per file (supports 1GB+ over WiFi)
+};
+
+// ===== MEDIA TYPE CONFIGURATION =====
+// Unified configuration for video and game media types
+const MEDIA_CONFIG = {
+    video: {
+        // Element IDs
+        containerScope: null,  // No scope restriction for videos
+        viewPrefix: 'video',
+        playlistItemsId: 'videoPlaylistItems',
+        playlistAvailableId: 'videoPlaylistAvailable',
+        playlistEmptyId: 'videoPlaylistEmpty',
+        editorTitleId: 'editorTitle',
+        titleInputId: 'videoPlaylistTitle',
+        curatorInputId: 'videoPlaylistCurator',
+        descInputId: 'videoPlaylistDesc',
+        loopCheckboxId: 'videoPlaylistLoop',
+        saveBtnId: 'saveVideoPlaylist',
+        searchInputId: 'videoSearch',
+        listContainerId: 'videoList',
+        countBadgeId: 'videoCount',
+        sourceTabPrefix: 'source',
+        // Data (using AppState for centralized management)
+        getItems: () => AppState.playlists.getItems('video'),
+        setItems: (items) => AppState.playlists.setItems('video', items),
+        getAvailable: () => AppState.media.videos,
+        // API
+        endpoint: '/admin/media',
+        uploadEndpoint: '/admin/upload',
+        // Display
+        icon: '📹',
+        sourceType: 'local',
+        emptyMessage: 'No videos available',
+        allAddedMessage: 'All videos have been added to the playlist',
+        libraryTabText: 'All Videos',
+        libraryViewId: 'videoLibraryView'
+    },
+    game: {
+        // Element IDs
+        containerScope: '#roms',  // Scope to roms tab
+        viewPrefix: 'game',
+        playlistItemsId: 'gamePlaylistItems',
+        playlistAvailableId: 'gamePlaylistAvailable',
+        playlistEmptyId: 'gamePlaylistEmpty',
+        editorTitleId: 'gameEditorTitle',
+        titleInputId: 'gamePlaylistTitle',
+        curatorInputId: 'gamePlaylistCurator',
+        descInputId: 'gamePlaylistDesc',
+        loopCheckboxId: 'gamePlaylistLoop',
+        saveBtnId: 'saveGamePlaylist',
+        searchInputId: 'gameSearch',
+        listContainerId: 'romsList',
+        countBadgeId: 'romCount',
+        sourceTabPrefix: 'sourceGame',
+        // Data (using AppState for centralized management)
+        getItems: () => AppState.playlists.getItems('game'),
+        setItems: (items) => AppState.playlists.setItems('game', items),
+        getAvailable: () => AppState.media.roms,
+        // API
+        endpoint: '/admin/roms',
+        uploadEndpoint: (system) => `/admin/upload/rom/${system}`,
+        // Display
+        icon: '🎮',
+        sourceType: 'emulated_game',
+        emptyMessage: 'No ROMs available',
+        allAddedMessage: 'All ROMs have been added to the playlist',
+        libraryTabText: 'ROM Library',
+        libraryViewId: 'romLibraryView'
+    }
+};
+
+// Emulator core mapping for ROMs
+const CORE_MAP = {
+    nes: 'fceumm',
+    snes: 'snes9x',
+    gb: 'gambatte',
+    gbc: 'gambatte',
+    gba: 'mgba',
+    genesis: 'genesis_plus_gx',
+    n64: 'mupen64plus_next',
+    psx: 'pcsx_rearmed'
+};
 
 // Separate playlist builders for videos and games
 let videoPlaylistItems = [];
@@ -226,9 +574,9 @@ function displayDevices() {
         <div class="device-card ${currentDevice && currentDevice.device_id === device.device_id ? 'selected' : ''}" 
              onclick="selectDevice(${index})">
             <div class="device-info">
-                <h4>📺 ${device.device_name}</h4>
+                <h4>📺 ${escapeHtml(device.device_name)}</h4>
                 <div class="meta">
-                    ${device.local_ip} • ${device.hostname}
+                    ${escapeHtml(device.local_ip)} • ${escapeHtml(device.hostname)}
                 </div>
             </div>
             <div class="device-stats">
@@ -241,23 +589,27 @@ function displayDevices() {
 }
 
 function selectDevice(index) {
-    const newDevice = discoveredDevices[index];
-    const isSameDevice = currentDevice && currentDevice.device_id === newDevice.device_id;
+    const newDevice = AppState.device.discovered[index];
+    const isSameDevice = AppState.device.current && AppState.device.current.device_id === newDevice.device_id;
 
-    currentDevice = newDevice;
+    // Use AppState to set current device (triggers deviceChanged event)
+    AppState.device.current = newDevice;
 
     document.getElementById('deviceStatus').classList.add('connected');
     document.getElementById('statusText').textContent =
-        `Connected to ${currentDevice.device_name}`;
+        `Connected to ${AppState.device.current.device_name}`;
 
     // Update connection status in header
     const statusElement = document.getElementById('deviceConnectionStatus');
     if (statusElement) {
-        statusElement.textContent = currentDevice.device_name;
+        statusElement.textContent = AppState.device.current.device_name;
         statusElement.classList.add('connected');
     }
 
     displayDevices(); // Refresh to show selected state
+
+    // Show settings section when connected
+    showSettingsSection();
 
     // Only load content if it's a new connection
     if (!isSameDevice) {
@@ -271,11 +623,57 @@ function selectDevice(index) {
 }
 
 async function manualConnect() {
-    const ip = prompt('Enter device IP address and port (e.g., 192.168.1.100:8080):');
-    if (!ip) return;
+    const input = prompt('Enter device IP or hostname (e.g., 192.168.1.100 or magicpi.local):');
+    if (!input) return;
+
+    // Validate input format
+    const trimmed = input.trim();
+
+    // Block dangerous patterns (XSS/injection attempts)
+    if (trimmed.includes('<') || trimmed.includes('>') ||
+        trimmed.toLowerCase().includes('javascript:') ||
+        trimmed.toLowerCase().includes('data:') ||
+        trimmed.includes('\\')) {
+        alert('Invalid input format');
+        return;
+    }
+
+    // Extract host and optional port
+    // Remove http:// or https:// prefix if provided
+    let hostPart = trimmed.replace(/^https?:\/\//i, '');
+
+    // Split host and port
+    const portMatch = hostPart.match(/:(\d+)$/);
+    let port = 5000; // Default port
+    if (portMatch) {
+        port = parseInt(portMatch[1], 10);
+        hostPart = hostPart.replace(/:(\d+)$/, '');
+        if (port < 1 || port > 65535) {
+            alert('Invalid port number (must be 1-65535)');
+            return;
+        }
+    }
+
+    // Validate host as IP address or hostname
+    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const hostnamePattern = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/;
+
+    if (!ipPattern.test(hostPart) && !hostnamePattern.test(hostPart)) {
+        alert('Please enter a valid IP address (e.g., 192.168.1.100) or hostname (e.g., magicpi.local)');
+        return;
+    }
+
+    // Additional IP validation - check octet ranges
+    if (ipPattern.test(hostPart)) {
+        const octets = hostPart.split('.').map(Number);
+        if (octets.some(o => o > 255)) {
+            alert('Invalid IP address (octets must be 0-255)');
+            return;
+        }
+    }
 
     try {
-        const url = ip.startsWith('http') ? ip : `http://${ip}`;
+        const url = `http://${hostPart}:${port}`;
         const response = await fetch(`${url}/admin/device/info`);
 
         if (response.ok) {
@@ -299,40 +697,256 @@ async function manualConnect() {
 async function loadAllContentFromDevice() {
     if (!currentDevice) return;
 
+    // Fetch CSRF token before making any state-changing requests
+    await fetchCsrfToken();
+
     await loadVideos();
     await loadROMs();
     await loadExistingPlaylists();
     renderVideoPlaylistAvailable();
     renderGamePlaylistAvailable();
+
+    // Load health info (non-blocking)
+    refreshHealthInfo();
 }
 
-// ===== UI NAVIGATION =====
+// ===== UNIFIED MEDIA FUNCTIONS =====
+// These functions handle both video and game media types using MEDIA_CONFIG
 
-function switchVideoView(viewName) {
+/**
+ * Switch between views (playlists, editor, library) for a media type
+ * @param {string} type - 'video' or 'game'
+ * @param {string} viewName - 'playlists', 'editor', or 'library'
+ */
+function switchContentView(type, viewName) {
+    const config = MEDIA_CONFIG[type];
+    const scope = config.containerScope;
+
     // Update sub-tabs
-    document.querySelectorAll('.sub-tab').forEach(tab => {
+    const tabSelector = scope ? `${scope} .sub-tab` : '.sub-tab';
+    document.querySelectorAll(tabSelector).forEach(tab => {
+        // Only process tabs in the correct scope
+        if (scope && !tab.closest(scope)) return;
+
         tab.classList.remove('active');
-        if (tab.textContent.toLowerCase().includes(viewName.replace('video', ''))) {
+        const tabText = tab.textContent.toLowerCase();
+
+        // Handle specific mapping
+        if (viewName === 'playlists' && tab.textContent.includes('My Playlists')) {
+            tab.classList.add('active');
+        } else if (viewName === 'editor' && tab.textContent.includes('Editor')) {
+            tab.classList.add('active');
+        } else if (viewName === 'library' && tab.textContent.includes(config.libraryTabText)) {
+            tab.classList.add('active');
+        } else if (tabText.includes(viewName.replace(type, ''))) {
             tab.classList.add('active');
         }
-        // Handle specific mapping
-        if (viewName === 'playlists' && tab.textContent.includes('My Playlists')) tab.classList.add('active');
-        if (viewName === 'editor' && tab.textContent.includes('Editor')) tab.classList.add('active');
-        if (viewName === 'library' && tab.textContent.includes('All Videos')) tab.classList.add('active');
     });
 
     // Update views
-    document.querySelectorAll('.sub-view').forEach(view => {
+    const viewSelector = scope ? `${scope} .sub-view` : '.sub-view';
+    document.querySelectorAll(viewSelector).forEach(view => {
         view.style.display = 'none';
         view.classList.remove('active');
     });
 
-    const viewId = `video${viewName.charAt(0).toUpperCase() + viewName.slice(1)}View`;
+    // Determine view ID
+    let viewId = `${config.viewPrefix}${viewName.charAt(0).toUpperCase() + viewName.slice(1)}View`;
+
+    // Handle library special case for games
+    if (type === 'game' && viewName === 'library') {
+        viewId = config.libraryViewId;
+    }
+
     const view = document.getElementById(viewId);
     if (view) {
         view.style.display = 'block';
         view.classList.add('active');
     }
+}
+
+/**
+ * Create a new playlist for a media type
+ * @param {string} type - 'video' or 'game'
+ */
+function createNewPlaylist(type) {
+    const config = MEDIA_CONFIG[type];
+
+    // Clear form
+    document.getElementById(config.titleInputId).value = '';
+    document.getElementById(config.curatorInputId).value = '';
+    document.getElementById(config.descInputId).value = '';
+    document.getElementById(config.loopCheckboxId).checked = false;
+    document.getElementById(config.editorTitleId).textContent = 'New Playlist';
+
+    // Clear items
+    config.setItems([]);
+    renderPlaylistItems(type);
+
+    // Remove editing file reference
+    const saveBtn = document.getElementById(config.saveBtnId);
+    if (saveBtn) delete saveBtn.dataset.editingFile;
+
+    // Switch to editor
+    switchContentView(type, 'editor');
+}
+
+/**
+ * Filter available items in the library
+ * @param {string} type - 'video' or 'game'
+ */
+function filterLibrary(type) {
+    const config = MEDIA_CONFIG[type];
+    const query = document.getElementById(config.searchInputId).value.toLowerCase();
+    const items = document.querySelectorAll(`#${config.playlistAvailableId} .draggable-item, #${config.playlistAvailableId} .content-item`);
+
+    items.forEach(item => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(query) ? 'flex' : 'none';
+    });
+}
+
+/**
+ * Render playlist items in the editor
+ * @param {string} type - 'video' or 'game'
+ */
+function renderPlaylistItems(type) {
+    const config = MEDIA_CONFIG[type];
+    const container = document.getElementById(config.playlistItemsId);
+    const emptyState = document.getElementById(config.playlistEmptyId);
+    const items = config.getItems();
+
+    if (items.length === 0) {
+        container.innerHTML = '';
+        emptyState.style.display = 'block';
+        return;
+    }
+
+    emptyState.style.display = 'none';
+
+    container.innerHTML = items.map((item, index) => {
+        const icon = item.source_type === 'emulated_game' ? '🎮' : '📹';
+        const name = item.title || item.path?.split('/').pop() || 'Unknown';
+        const artist = item.artist || '';
+        const artistDisplay = artist ? ` - ${escapeHtml(artist)}` : ' - <em>No artist</em>';
+
+        return `
+            <div class="playlist-item" draggable="true" data-index="${index}" data-playlist-type="${type}"
+                ondragstart="handlePlaylistDragStart(event, '${type}')"
+                ondragover="handlePlaylistDragOver(event)"
+                ondrop="handlePlaylistDrop(event, '${type}')"
+                ondragend="handleDragEnd(event)">
+                <div class="playlist-item-content">
+                    <div class="playlist-item-info">
+                        <span class="item-icon">${icon}</span>
+                        <span class="item-title">${escapeHtml(name)}</span>
+                        <span class="item-artist">${artistDisplay}</span>
+                    </div>
+                    <div class="playlist-item-actions">
+                        <button class="btn-edit" onclick="editPlaylistItem(${index}, '${type}')">Edit</button>
+                        <button class="btn-remove" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Add touch event handlers for mobile reordering
+    if (hasTouch) {
+        setupPlaylistTouchHandlers(type);
+    }
+}
+
+/**
+ * Render available items that can be added to a playlist
+ * @param {string} type - 'video' or 'game'
+ */
+function renderPlaylistAvailable(type) {
+    const config = MEDIA_CONFIG[type];
+    const container = document.getElementById(config.playlistAvailableId);
+    const items = config.getItems();
+    const addedPaths = new Set(items.map(item => item.path));
+
+    if (type === 'video') {
+        // Video rendering
+        const available = config.getAvailable();
+        if (available.length === 0) {
+            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.emptyMessage}</p>`;
+            return;
+        }
+
+        const filteredVideos = available.filter(video => {
+            const videoPath = video.path || `media/${video.filename}`;
+            return !addedPaths.has(videoPath);
+        });
+
+        if (filteredVideos.length === 0) {
+            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.allAddedMessage}</p>`;
+            return;
+        }
+
+        container.innerHTML = filteredVideos.map((video, index) => {
+            const originalIndex = available.indexOf(video);
+            return `
+                <div class="content-item" draggable="true"
+                    data-type="video" data-index="${originalIndex}" data-target="video"
+                    ondragstart="handleDragStart(event, 'video')" ondragend="handleDragEnd(event)">
+                    ${config.icon} ${escapeHtml(video.filename)}
+                </div>
+            `;
+        }).join('');
+    } else {
+        // Game/ROM rendering - organized by system
+        const availableROMs = config.getAvailable();
+        const systems = Object.keys(availableROMs);
+
+        if (systems.length === 0) {
+            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.emptyMessage}</p>`;
+            return;
+        }
+
+        let html = '';
+        let totalAvailable = 0;
+
+        systems.forEach(system => {
+            const roms = availableROMs[system];
+            const filteredRoms = roms.filter(rom => !addedPaths.has(rom.path));
+
+            if (filteredRoms.length > 0) {
+                html += `<div style="margin-bottom: 1rem;"><strong style="color: var(--accent2);">${escapeHtml(system.toUpperCase())}</strong></div>`;
+                filteredRoms.forEach((rom) => {
+                    const originalIndex = roms.indexOf(rom);
+                    totalAvailable++;
+                    html += `
+                        <div class="content-item" draggable="true"
+                            data-type="rom" data-system="${escapeHtml(system)}" data-index="${originalIndex}" data-target="game"
+                            ondragstart="handleDragStart(event, 'game')" ondragend="handleDragEnd(event)">
+                            ${config.icon} ${escapeHtml(rom.filename)}
+                        </div>
+                    `;
+                });
+            }
+        });
+
+        if (totalAvailable === 0) {
+            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.allAddedMessage}</p>`;
+            return;
+        }
+
+        container.innerHTML = html;
+    }
+
+    // Add touch event handlers for mobile
+    if (hasTouch) {
+        setupTouchHandlers(type);
+    }
+}
+
+// ===== UI NAVIGATION =====
+// Legacy wrapper functions for backward compatibility
+
+function switchVideoView(viewName) {
+    switchContentView('video', viewName);
 }
 
 function switchSourceTab(tabName) {
@@ -346,39 +960,24 @@ function switchSourceTab(tabName) {
 }
 
 function createNewVideoPlaylist() {
-    // Clear form
-    document.getElementById('videoPlaylistTitle').value = '';
-    document.getElementById('videoPlaylistCurator').value = '';
-    document.getElementById('videoPlaylistDesc').value = '';
-    document.getElementById('videoPlaylistLoop').checked = false;
-    document.getElementById('editorTitle').textContent = 'New Playlist';
-
-    // Clear items
-    videoPlaylistItems = [];
-    renderVideoPlaylistItems();
-
-    // Remove editing file reference
-    const saveBtn = document.getElementById('saveVideoPlaylist');
-    if (saveBtn) delete saveBtn.dataset.editingFile;
-
-    // Switch to editor
-    switchVideoView('editor');
+    createNewPlaylist('video');
 }
 
 // ===== VIDEO MANAGEMENT =====
 
 async function loadVideos() {
-    if (!currentDevice) return;
+    if (!AppState.device.current) return;
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/media`);
-        availableVideos = await response.json();
+        const response = await fetch(`${AppState.device.url}/admin/media`);
+        // Use AppState to store videos (triggers videosUpdated event)
+        AppState.media.videos = await response.json();
 
-        console.log(`Loaded ${availableVideos.length} videos from /admin/media`);
+        console.log(`Loaded ${AppState.media.videos.length} videos from /admin/media`);
 
         // Update count badges
         const countBadges = document.querySelectorAll('#videoCount');
-        countBadges.forEach(badge => badge.textContent = availableVideos.length);
+        countBadges.forEach(badge => badge.textContent = AppState.media.videos.length);
 
         const container = document.getElementById('videoList');
         if (availableVideos.length === 0) {
@@ -396,13 +995,18 @@ async function loadVideos() {
             try {
                 const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
                 const fullData = await detailResponse.json();
-                // Normalize path for comparison
+                // Normalize path for comparison - handles various path formats:
+                // ../media/file.mp4, data/media/file.mp4, /data/media/file.mp4, media/file.mp4
                 const normalizePath = (p) => {
                     if (!p) return '';
+                    let clean = p;
                     // Remove leading slash
-                    let clean = p.replace(/^\//, '');
-                    // Remove data/ or dev_data/ prefix to match base filename/path
+                    clean = clean.replace(/^\//, '');
+                    // Remove ../ prefixes (used in playlist relative paths)
+                    clean = clean.replace(/^\.\.\/+/, '');
+                    // Remove data/ or dev_data/ prefix
                     clean = clean.replace(/^(dev_)?data\//, '');
+                    // At this point we should have: media/filename.mp4 or just filename.mp4
                     return clean;
                 };
 
@@ -454,7 +1058,9 @@ async function loadVideos() {
             // Normalize the video path same as we did for playlist items
             const normalizePath = (p) => {
                 if (!p) return '';
-                let clean = p.replace(/^\//, '');
+                let clean = p;
+                clean = clean.replace(/^\//, '');
+                clean = clean.replace(/^\.\.\/+/, '');
                 clean = clean.replace(/^(dev_)?data\//, '');
                 return clean;
             };
@@ -526,40 +1132,130 @@ async function uploadVideos(fileList = null, autoAddToPlaylist = false) {
     if (!progressElement) progressElement = document.getElementById('uploadProgress');
     progressElement.innerHTML = '';
 
-    // Create progress bars for all files first
+    // Create batch progress header
+    const batchHeader = document.createElement('div');
+    batchHeader.className = 'batch-progress-header';
+    batchHeader.innerHTML = `
+        <div class="batch-progress-text">
+            <span class="batch-status">Uploading...</span>
+            <span class="batch-counts">0 of ${files.length} complete</span>
+        </div>
+        <div class="batch-progress-bar">
+            <div class="batch-progress-fill" style="width: 0%"></div>
+        </div>
+    `;
+    progressElement.appendChild(batchHeader);
+
+    // Batch tracking state
+    const batchState = {
+        total: files.length,
+        completed: 0,
+        failed: 0,
+        failedFiles: [],
+        updateHeader: function () {
+            const statusEl = batchHeader.querySelector('.batch-status');
+            const countsEl = batchHeader.querySelector('.batch-counts');
+            const fillEl = batchHeader.querySelector('.batch-progress-fill');
+
+            const done = this.completed + this.failed;
+            const percent = Math.round((done / this.total) * 100);
+
+            countsEl.textContent = `${this.completed} of ${this.total} complete` +
+                (this.failed > 0 ? ` (${this.failed} failed)` : '');
+            fillEl.style.width = `${percent}%`;
+
+            if (done === this.total) {
+                if (this.failed === 0) {
+                    statusEl.textContent = 'All uploads complete! ✓';
+                    batchHeader.classList.add('complete');
+                } else {
+                    statusEl.textContent = `Done with ${this.failed} error(s)`;
+                    batchHeader.classList.add('has-errors');
+                }
+            }
+        }
+    };
+
+    // Create progress bars for all files first (marked as queued)
     const queue = [];
     for (const file of files) {
         const progressBar = createProgressBar(file.name);
         progressElement.appendChild(progressBar.element);
-        queue.push({ file, progressBar });
+        queue.push({ file, progressBar, status: 'queued' });
     }
 
     // Process queue with concurrency limit
-    const CONCURRENCY_LIMIT = 3;
+    const { CONCURRENCY_LIMIT } = UPLOAD_CONFIG;
     let activeUploads = 0;
     let currentIndex = 0;
 
-    const processQueue = () => {
-        while (activeUploads < CONCURRENCY_LIMIT && currentIndex < queue.length) {
-            const item = queue[currentIndex++];
-            activeUploads++;
-            uploadSingleFile(item.file, item.progressBar, autoAddToPlaylist).finally(() => {
-                activeUploads--;
-                processQueue();
-            });
-        }
-    };
+    return new Promise((resolveAll) => {
+        const processQueue = () => {
+            while (activeUploads < CONCURRENCY_LIMIT && currentIndex < queue.length) {
+                const item = queue[currentIndex++];
+                activeUploads++;
 
-    processQueue();
+                uploadSingleFile(item.file, item.progressBar, autoAddToPlaylist)
+                    .then((result) => {
+                        if (result.success) {
+                            batchState.completed++;
+                        } else {
+                            batchState.failed++;
+                            batchState.failedFiles.push({
+                                file: item.file,
+                                error: result.error
+                            });
+                        }
+                        batchState.updateHeader();
+                    })
+                    .finally(() => {
+                        activeUploads--;
+                        processQueue();
+
+                        // Check if all done
+                        if (activeUploads === 0 && currentIndex >= queue.length) {
+                            // Show retry button if there were failures
+                            if (batchState.failedFiles.length > 0) {
+                                const retryBtn = document.createElement('button');
+                                retryBtn.className = 'btn-primary small';
+                                retryBtn.textContent = `Retry ${batchState.failedFiles.length} Failed Upload(s)`;
+                                retryBtn.style.marginTop = '1rem';
+                                retryBtn.onclick = () => {
+                                    const failedFileList = batchState.failedFiles.map(f => f.file);
+                                    // Create a fake FileList-like object
+                                    uploadVideos(failedFileList, autoAddToPlaylist);
+                                };
+                                progressElement.appendChild(retryBtn);
+                            }
+
+                            // Refresh video list once at the end
+                            setTimeout(() => loadVideos(), 500);
+                            resolveAll();
+                        }
+                    });
+            }
+        };
+
+        processQueue();
+    });
 }
 
 function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
-    return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('file', file);
+    return new Promise((resolve) => {
+        const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
+        let attempts = 0;
 
-        try {
+        const attemptUpload = () => {
+            attempts++;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
             const xhr = new XMLHttpRequest();
+            let timeoutId = null;
+
+            // Set up timeout
+            xhr.timeout = TIMEOUT_MS;
 
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
@@ -569,6 +1265,8 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
             });
 
             xhr.addEventListener('load', () => {
+                clearTimeout(timeoutId);
+
                 if (xhr.status === 200) {
                     progressBar.complete();
 
@@ -581,14 +1279,15 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                                 title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
                                 artist: '',
                                 source_type: 'local',
-                                path: response.path || `data/media/${file.name}` // Use server path if available
+                                path: response.path || `data/media/${file.name}`
                             };
 
-                            // Add directly to playlist items array
-                            videoPlaylistItems.push(videoItem);
-                            renderVideoPlaylistItems();
+                            const config = MEDIA_CONFIG['video'];
+                            const items = config.getItems();
+                            items.push(videoItem);
+                            config.setItems(items);
+                            renderPlaylistItems('video');
 
-                            // Switch back to library tab to show it's available
                             setTimeout(() => {
                                 switchSourceTab('library');
                             }, 1000);
@@ -597,40 +1296,49 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                         console.error('Error parsing upload response:', e);
                     }
 
-                    // Trigger reload but don't wait for it
-                    setTimeout(() => loadVideos(), 500);
-
-                    resolve();
+                    resolve({ success: true });
                 } else {
-                    progressBar.error();
-                    resolve(); // Resolve anyway to continue queue
+                    handleError(`Server error (${xhr.status})`);
                 }
             });
 
             xhr.addEventListener('error', () => {
-                progressBar.error();
-                resolve();
+                clearTimeout(timeoutId);
+                handleError('Network error');
             });
 
-            xhr.open('POST', `${currentDevice.url}/admin/upload`);
-            xhr.send(formData);
+            xhr.addEventListener('timeout', () => {
+                handleError('Upload timed out');
+            });
 
-        } catch (error) {
-            console.error('Upload error:', error);
-            progressBar.error();
-            resolve();
-        }
+            const handleError = (errorMessage) => {
+                if (attempts < MAX_RETRIES) {
+                    progressBar.setRetrying(attempts, MAX_RETRIES);
+                    setTimeout(attemptUpload, RETRY_DELAY_MS * attempts); // Exponential backoff
+                } else {
+                    progressBar.error(errorMessage);
+                    resolve({ success: false, error: errorMessage });
+                }
+            };
+
+            try {
+                xhr.open('POST', `${currentDevice.url}/admin/upload`);
+                if (csrfToken) {
+                    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+                }
+                xhr.send(formData);
+            } catch (error) {
+                console.error('Upload error:', error);
+                handleError('Upload failed');
+            }
+        };
+
+        attemptUpload();
     });
 }
 
 function filterVideoLibrary() {
-    const query = document.getElementById('videoSearch').value.toLowerCase();
-    const items = document.querySelectorAll('#videoPlaylistAvailable .draggable-item');
-
-    items.forEach(item => {
-        const text = item.textContent.toLowerCase();
-        item.style.display = text.includes(query) ? 'flex' : 'none';
-    });
+    filterLibrary('video');
 }
 
 function filterMainLibrary(input) {
@@ -644,38 +1352,10 @@ function filterMainLibrary(input) {
 }
 
 // ===== GAME UI NAVIGATION =====
+// Legacy wrapper functions for backward compatibility
 
 function switchGameView(viewName) {
-    // Update sub-tabs
-    document.querySelectorAll('.sub-tab').forEach(tab => {
-        if (tab.textContent.toLowerCase().includes(viewName.replace('game', ''))) {
-            // Only activate if it's inside the games tab
-            if (tab.closest('#roms')) tab.classList.add('active');
-        } else {
-            if (tab.closest('#roms')) tab.classList.remove('active');
-        }
-
-        // Handle specific mapping
-        if (viewName === 'playlists' && tab.textContent.includes('My Playlists') && tab.closest('#roms')) tab.classList.add('active');
-        if (viewName === 'editor' && tab.textContent.includes('Editor') && tab.closest('#roms')) tab.classList.add('active');
-        if (viewName === 'library' && tab.textContent.includes('ROM Library') && tab.closest('#roms')) tab.classList.add('active');
-    });
-
-    // Update views
-    document.querySelectorAll('#roms .sub-view').forEach(view => {
-        view.style.display = 'none';
-        view.classList.remove('active');
-    });
-
-    const viewId = `game${viewName.charAt(0).toUpperCase() + viewName.slice(1)}View`;
-    // Handle library special case
-    const targetId = viewName === 'library' ? 'romLibraryView' : viewId;
-
-    const view = document.getElementById(targetId);
-    if (view) {
-        view.style.display = 'block';
-        view.classList.add('active');
-    }
+    switchContentView('game', viewName);
 }
 
 function switchGameSourceTab(tabName) {
@@ -689,46 +1369,25 @@ function switchGameSourceTab(tabName) {
 }
 
 function createNewGamePlaylist() {
-    // Clear form
-    document.getElementById('gamePlaylistTitle').value = '';
-    document.getElementById('gamePlaylistCurator').value = '';
-    document.getElementById('gamePlaylistDesc').value = '';
-    document.getElementById('gamePlaylistLoop').checked = false;
-    document.getElementById('gameEditorTitle').textContent = 'New Playlist';
-
-    // Clear items
-    gamePlaylistItems = [];
-    renderGamePlaylistItems();
-
-    // Remove editing file reference
-    const saveBtn = document.getElementById('saveGamePlaylist');
-    if (saveBtn) delete saveBtn.dataset.editingFile;
-
-    // Switch to editor
-    switchGameView('editor');
+    createNewPlaylist('game');
 }
 
 function filterGameLibrary() {
-    const query = document.getElementById('gameSearch').value.toLowerCase();
-    const items = document.querySelectorAll('#gamePlaylistAvailable .draggable-item');
-
-    items.forEach(item => {
-        const text = item.textContent.toLowerCase();
-        item.style.display = text.includes(query) ? 'flex' : 'none';
-    });
+    filterLibrary('game');
 }
 
 // ===== ROM MANAGEMENT =====
 
 async function loadROMs() {
-    if (!currentDevice) return;
+    if (!AppState.device.current) return;
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/roms`);
-        availableROMs = await response.json();
+        const response = await fetch(`${AppState.device.url}/admin/roms`);
+        // Use AppState to store ROMs (triggers romsUpdated event)
+        AppState.media.roms = await response.json();
 
         // Calculate total ROM count
-        const totalROMs = Object.values(availableROMs).reduce((sum, roms) => sum + roms.length, 0);
+        const totalROMs = Object.values(AppState.media.roms).reduce((sum, roms) => sum + roms.length, 0);
 
         // Update count badge
         const countBadge = document.getElementById('romCount');
@@ -837,40 +1496,129 @@ async function uploadROMs(fileList = null, autoAddToPlaylist = false) {
     if (!progressElement) progressElement = document.getElementById('romUploadProgress');
     progressElement.innerHTML = '';
 
-    // Create progress bars for all files first
+    // Create batch progress header
+    const batchHeader = document.createElement('div');
+    batchHeader.className = 'batch-progress-header';
+    batchHeader.innerHTML = `
+        <div class="batch-progress-text">
+            <span class="batch-status">Uploading ROMs...</span>
+            <span class="batch-counts">0 of ${files.length} complete</span>
+        </div>
+        <div class="batch-progress-bar">
+            <div class="batch-progress-fill" style="width: 0%"></div>
+        </div>
+    `;
+    progressElement.appendChild(batchHeader);
+
+    // Batch tracking state
+    const batchState = {
+        total: files.length,
+        completed: 0,
+        failed: 0,
+        failedFiles: [],
+        updateHeader: function () {
+            const statusEl = batchHeader.querySelector('.batch-status');
+            const countsEl = batchHeader.querySelector('.batch-counts');
+            const fillEl = batchHeader.querySelector('.batch-progress-fill');
+
+            const done = this.completed + this.failed;
+            const percent = Math.round((done / this.total) * 100);
+
+            countsEl.textContent = `${this.completed} of ${this.total} complete` +
+                (this.failed > 0 ? ` (${this.failed} failed)` : '');
+            fillEl.style.width = `${percent}%`;
+
+            if (done === this.total) {
+                if (this.failed === 0) {
+                    statusEl.textContent = 'All uploads complete! ✓';
+                    batchHeader.classList.add('complete');
+                } else {
+                    statusEl.textContent = `Done with ${this.failed} error(s)`;
+                    batchHeader.classList.add('has-errors');
+                }
+            }
+        }
+    };
+
+    // Create progress bars for all files first (marked as queued)
     const queue = [];
     for (const file of files) {
         const progressBar = createProgressBar(file.name);
         progressElement.appendChild(progressBar.element);
-        queue.push({ file, progressBar });
+        queue.push({ file, progressBar, status: 'queued' });
     }
 
     // Process queue with concurrency limit
-    const CONCURRENCY_LIMIT = 3;
+    const { CONCURRENCY_LIMIT } = UPLOAD_CONFIG;
     let activeUploads = 0;
     let currentIndex = 0;
 
-    const processQueue = () => {
-        while (activeUploads < CONCURRENCY_LIMIT && currentIndex < queue.length) {
-            const item = queue[currentIndex++];
-            activeUploads++;
-            uploadSingleROM(item.file, system, item.progressBar, autoAddToPlaylist).finally(() => {
-                activeUploads--;
-                processQueue();
-            });
-        }
-    };
+    return new Promise((resolveAll) => {
+        const processQueue = () => {
+            while (activeUploads < CONCURRENCY_LIMIT && currentIndex < queue.length) {
+                const item = queue[currentIndex++];
+                activeUploads++;
 
-    processQueue();
+                uploadSingleROM(item.file, system, item.progressBar, autoAddToPlaylist)
+                    .then((result) => {
+                        if (result.success) {
+                            batchState.completed++;
+                        } else {
+                            batchState.failed++;
+                            batchState.failedFiles.push({
+                                file: item.file,
+                                error: result.error
+                            });
+                        }
+                        batchState.updateHeader();
+                    })
+                    .finally(() => {
+                        activeUploads--;
+                        processQueue();
+
+                        // Check if all done
+                        if (activeUploads === 0 && currentIndex >= queue.length) {
+                            // Show retry button if there were failures
+                            if (batchState.failedFiles.length > 0) {
+                                const retryBtn = document.createElement('button');
+                                retryBtn.className = 'btn-primary small';
+                                retryBtn.textContent = `Retry ${batchState.failedFiles.length} Failed Upload(s)`;
+                                retryBtn.style.marginTop = '1rem';
+                                retryBtn.onclick = () => {
+                                    const failedFileList = batchState.failedFiles.map(f => f.file);
+                                    uploadROMs(failedFileList, autoAddToPlaylist);
+                                };
+                                progressElement.appendChild(retryBtn);
+                            }
+
+                            // Refresh ROM list once at the end
+                            setTimeout(() => loadROMs(), 500);
+                            resolveAll();
+                        }
+                    });
+            }
+        };
+
+        processQueue();
+    });
 }
 
 function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
-    return new Promise((resolve, reject) => {
-        const formData = new FormData();
-        formData.append('file', file);
+    return new Promise((resolve) => {
+        const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
+        let attempts = 0;
 
-        try {
+        const attemptUpload = () => {
+            attempts++;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
             const xhr = new XMLHttpRequest();
+            let timeoutId = null;
+
+            // Set up timeout
+            xhr.timeout = TIMEOUT_MS;
 
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
@@ -879,7 +1627,9 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
                 }
             });
 
-            xhr.addEventListener('load', async () => {
+            xhr.addEventListener('load', () => {
+                clearTimeout(timeoutId);
+
                 if (xhr.status === 200) {
                     progressBar.complete();
 
@@ -898,20 +1648,20 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
                                 'arcade': 'fbneo_libretro'
                             };
 
-                            // We need to construct the item correctly for the playlist
                             const playlistItem = {
-                                title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
+                                title: file.name.replace(/\.[^/.]+$/, ""),
                                 source_type: 'emulated_game',
                                 path: result.path || `data/roms/${system}/${file.name}`,
                                 emulator_system: system,
                                 emulator_core: coreMap[system] || 'auto'
                             };
 
-                            // Add to playlist items
-                            gamePlaylistItems.push(playlistItem);
-                            renderGamePlaylistItems();
+                            const config = MEDIA_CONFIG['game'];
+                            const items = config.getItems();
+                            items.push(playlistItem);
+                            config.setItems(items);
+                            renderPlaylistItems('game');
 
-                            // Switch back to library tab
                             setTimeout(() => {
                                 switchGameSourceTab('library');
                             }, 1000);
@@ -920,28 +1670,44 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
                         console.error('Error parsing upload response:', e);
                     }
 
-                    // Refresh ROM list
-                    await loadROMs();
-                    resolve();
+                    resolve({ success: true });
                 } else {
-                    progressBar.error();
-                    resolve(); // Resolve anyway to continue queue
+                    handleError(`Server error (${xhr.status})`);
                 }
             });
 
             xhr.addEventListener('error', () => {
-                progressBar.error();
-                resolve();
+                clearTimeout(timeoutId);
+                handleError('Network error');
             });
 
-            xhr.open('POST', `${currentDevice.url}/admin/upload/rom/${system}`);
-            xhr.send(formData);
+            xhr.addEventListener('timeout', () => {
+                handleError('Upload timed out');
+            });
 
-        } catch (error) {
-            console.error('ROM upload error:', error);
-            progressBar.error();
-            resolve();
-        }
+            const handleError = (errorMessage) => {
+                if (attempts < MAX_RETRIES) {
+                    progressBar.setRetrying(attempts, MAX_RETRIES);
+                    setTimeout(attemptUpload, RETRY_DELAY_MS * attempts);
+                } else {
+                    progressBar.error(errorMessage);
+                    resolve({ success: false, error: errorMessage });
+                }
+            };
+
+            try {
+                xhr.open('POST', `${currentDevice.url}/admin/upload/rom/${system}`);
+                if (csrfToken) {
+                    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+                }
+                xhr.send(formData);
+            } catch (error) {
+                console.error('ROM upload error:', error);
+                handleError('Upload failed');
+            }
+        };
+
+        attemptUpload();
     });
 }
 
@@ -1000,15 +1766,15 @@ async function loadExistingPlaylists() {
             videoContainer.innerHTML = videoPlaylists.map(pl => `
                 <div class="playlist-card">
                     <div class="playlist-header">
-                        <h4>${pl.title}</h4>
+                        <h4>${escapeHtml(pl.title)}</h4>
                         <div class="playlist-actions">
-                            <button onclick="editPlaylist('${pl.filename}', 'video')">Edit</button>
-                            <button onclick="deletePlaylist('${pl.filename}', 'video')">Delete</button>
+                            <button onclick="editPlaylist('${escapeJs(pl.filename)}', 'video')">Edit</button>
+                            <button onclick="deletePlaylist('${escapeJs(pl.filename)}', 'video')">Delete</button>
                         </div>
                     </div>
                     <div class="playlist-meta">
-                        By ${pl.curator} • ${pl.item_count} items
-                        ${pl.description ? `<br><em>${pl.description}</em>` : ''}
+                        By ${escapeHtml(pl.curator)} • ${pl.item_count} items
+                        ${pl.description ? `<br><em>${escapeHtml(pl.description)}</em>` : ''}
                     </div>
                 </div>
             `).join('');
@@ -1022,15 +1788,15 @@ async function loadExistingPlaylists() {
             gameContainer.innerHTML = gamePlaylists.map(pl => `
                 <div class="playlist-card">
                     <div class="playlist-header">
-                        <h4>${pl.title}</h4>
+                        <h4>${escapeHtml(pl.title)}</h4>
                         <div class="playlist-actions">
-                            <button onclick="editPlaylist('${pl.filename}', 'game')">Edit</button>
-                            <button onclick="deletePlaylist('${pl.filename}', 'game')">Delete</button>
+                            <button onclick="editPlaylist('${escapeJs(pl.filename)}', 'game')">Edit</button>
+                            <button onclick="deletePlaylist('${escapeJs(pl.filename)}', 'game')">Delete</button>
                         </div>
                     </div>
                     <div class="playlist-meta">
-                        By ${pl.curator} • ${pl.item_count} items
-                        ${pl.description ? `<br><em>${pl.description}</em>` : ''}
+                        By ${escapeHtml(pl.curator)} • ${pl.item_count} items
+                        ${pl.description ? `<br><em>${escapeHtml(pl.description)}</em>` : ''}
                     </div>
                 </div>
             `).join('');
@@ -1070,17 +1836,11 @@ async function editPlaylist(filename, type) {
         // Load items - ensure they're clean
         const items = cleanPlaylistItems(playlistData.items || []);
 
-        if (type === 'game') {
-            gamePlaylistItems = items;
-            renderGamePlaylistItems();
-            // Switch to game editor view
-            switchGameView('editor');
-        } else {
-            videoPlaylistItems = items;
-            renderVideoPlaylistItems();
-            // Switch to editor view
-            switchVideoView('editor');
-        }
+        // Use unified config to set items and switch view
+        const config = MEDIA_CONFIG[type];
+        config.setItems(items);
+        renderPlaylistItems(type);
+        switchContentView(type, 'editor');
 
         // Store filename
         if (saveBtn) saveBtn.dataset.editingFile = filename;
@@ -1119,7 +1879,7 @@ async function performSavePlaylist(type) {
         return;
     }
 
-    const items = type === 'game' ? gamePlaylistItems : videoPlaylistItems;
+    const items = MEDIA_CONFIG[type].getItems();
 
     if (items.length === 0) {
         alert('Please add at least one item to the playlist');
@@ -1147,7 +1907,7 @@ async function performSavePlaylist(type) {
     try {
         const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getCsrfHeaders(),
             body: JSON.stringify(playlistData)
         });
 
@@ -1226,14 +1986,10 @@ function cancelEdit(type) {
         const loopInput = document.getElementById(`${prefix}PlaylistLoop`);
         if (loopInput) loopInput.checked = false;
 
-        // Clear items
-        if (type === 'game') {
-            gamePlaylistItems = [];
-            renderGamePlaylistItems();
-        } else {
-            videoPlaylistItems = [];
-            renderVideoPlaylistItems();
-        }
+        // Clear items using unified config
+        const config = MEDIA_CONFIG[type];
+        config.setItems([]);
+        renderPlaylistItems(type);
 
         // Hide cancel button
         const cancelBtn = document.getElementById(`cancel${prefix.charAt(0).toUpperCase() + prefix.slice(1)}PlaylistEdit`);
@@ -1244,11 +2000,7 @@ function cancelEdit(type) {
         if (saveBtn) delete saveBtn.dataset.editingFile;
 
         // Switch back to playlists view
-        if (type === 'game') {
-            switchGameView('playlists');
-        } else {
-            switchVideoView('playlists');
-        }
+        switchContentView(type, 'playlists');
     } catch (e) {
         console.error('Error in cancelEdit:', e);
     }
@@ -1257,91 +2009,11 @@ function cancelEdit(type) {
 // ===== PLAYLIST BUILDER =====
 
 function renderVideoPlaylistAvailable() {
-    const container = document.getElementById('videoPlaylistAvailable');
-
-    if (availableVideos.length === 0) {
-        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">No videos available</p>';
-        return;
-    }
-
-    // Filter out videos already in the playlist
-    const addedPaths = new Set(videoPlaylistItems.map(item => item.path));
-    const filteredVideos = availableVideos.filter(video => {
-        const videoPath = video.path || `media / ${video.filename}`;
-        return !addedPaths.has(videoPath);
-    });
-
-    if (filteredVideos.length === 0) {
-        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">All videos have been added to the playlist</p>';
-        return;
-    }
-
-    container.innerHTML = filteredVideos.map((video, index) => {
-        // Find original index for drag handling
-        const originalIndex = availableVideos.indexOf(video);
-        return `
-        <div class="content-item" draggable="true" 
-                 data-type="video" data-index="${originalIndex}" data-target="video"
-                 ondragstart="handleDragStart(event, 'video')" ondragend="handleDragEnd(event)">
-                📹 ${video.filename}
-            </div>
-            `;
-    }).join('');
-
-    // Add touch event handlers for mobile
-    if (hasTouch) {
-        setupTouchHandlers('video');
-    }
+    renderPlaylistAvailable('video');
 }
 
 function renderGamePlaylistAvailable() {
-    const container = document.getElementById('gamePlaylistAvailable');
-
-    const systems = Object.keys(availableROMs);
-    if (systems.length === 0) {
-        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">No ROMs available</p>';
-        return;
-    }
-
-    // Filter out ROMs already in the playlist
-    const addedPaths = new Set(gamePlaylistItems.map(item => item.path));
-
-    let html = '';
-    let totalAvailable = 0;
-    systems.forEach(system => {
-        const roms = availableROMs[system];
-        const filteredRoms = roms.filter(rom => {
-            const romPath = rom.path;
-            return !addedPaths.has(romPath);
-        });
-
-        if (filteredRoms.length > 0) {
-            html += `<div style="margin-bottom: 1rem;"><strong style="color: var(--accent2);">${system.toUpperCase()}</strong></div>`;
-            filteredRoms.forEach((rom) => {
-                const originalIndex = roms.indexOf(rom);
-                totalAvailable++;
-                html += `
-            <div class="content-item" draggable="true"
-        data-type="rom" data-system="${system}" data-index="${originalIndex}" data-target="game"
-        ondragstart="handleDragStart(event, 'game')" ondragend="handleDragEnd(event)">
-                        🎮 ${rom.filename}
-                    </div>
-            `;
-            });
-        }
-    });
-
-    if (totalAvailable === 0) {
-        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">All ROMs have been added to the playlist</p>';
-        return;
-    }
-
-    container.innerHTML = html;
-
-    // Add touch event handlers for mobile
-    if (hasTouch) {
-        setupTouchHandlers('game');
-    }
+    renderPlaylistAvailable('game');
 }
 
 function handleDragStart(event, playlistType) {
@@ -1373,114 +2045,30 @@ function handleDragEnd(event) {
 }
 
 function renderVideoPlaylistItems() {
-    const container = document.getElementById('videoPlaylistItems');
-    const emptyState = document.getElementById('videoPlaylistEmpty');
-
-    if (videoPlaylistItems.length === 0) {
-        container.innerHTML = '';
-        emptyState.style.display = 'block';
-        return;
-    }
-
-    emptyState.style.display = 'none';
-
-    container.innerHTML = videoPlaylistItems.map((item, index) => {
-        const icon = item.source_type === 'emulated_game' ? '🎮' : '📹';
-        const name = item.title || item.path?.split('/').pop() || 'Unknown';
-        const artist = item.artist || '';
-        const artistDisplay = artist ? ` - ${artist} ` : ' - <em>No artist</em>';
-
-        return `
-            <div class="playlist-item" draggable="true" data-index="${index}" data-playlist-type="video"
-        ondragstart="handlePlaylistDragStart(event, 'video')"
-        ondragover="handlePlaylistDragOver(event)"
-        ondrop="handlePlaylistDrop(event, 'video')"
-        ondragend="handleDragEnd(event)">
-            <div class="playlist-item-content">
-                <div class="playlist-item-info">
-                    <span class="item-icon">${icon}</span>
-                    <span class="item-title">${name}</span>
-                    <span class="item-artist">${artistDisplay}</span>
-                </div>
-                <div class="playlist-item-actions">
-                    <button class="btn-edit" onclick="editPlaylistItem(${index}, 'video')">Edit</button>
-                    <button class="btn-remove" onclick="removePlaylistItem(${index}, 'video')">✕</button>
-                </div>
-            </div>
-            </div>
-            `;
-    }).join('');
-
-    // Add touch event handlers for mobile reordering
-    if (hasTouch) {
-        setupPlaylistTouchHandlers('video');
-    }
+    renderPlaylistItems('video');
 }
 
 function renderGamePlaylistItems() {
-    const container = document.getElementById('gamePlaylistItems');
-    const emptyState = document.getElementById('gamePlaylistEmpty');
-
-    if (gamePlaylistItems.length === 0) {
-        container.innerHTML = '';
-        emptyState.style.display = 'block';
-        return;
-    }
-
-    emptyState.style.display = 'none';
-
-    container.innerHTML = gamePlaylistItems.map((item, index) => {
-        const icon = item.source_type === 'emulated_game' ? '🎮' : '📹';
-        const name = item.title || item.path?.split('/').pop() || 'Unknown';
-        const artist = item.artist || '';
-        const artistDisplay = artist ? ` - ${artist} ` : ' - <em>No artist</em>';
-
-        return `
-            <div class="playlist-item" draggable="true" data-index="${index}" data-playlist-type="game"
-        ondragstart="handlePlaylistDragStart(event, 'game')"
-        ondragover="handlePlaylistDragOver(event)"
-        ondrop="handlePlaylistDrop(event, 'game')"
-        ondragend="handleDragEnd(event)">
-            <div class="playlist-item-content">
-                <div class="playlist-item-info">
-                    <span class="item-icon">${icon}</span>
-                    <span class="item-title">${name}</span>
-                    <span class="item-artist">${artistDisplay}</span>
-                </div>
-                <div class="playlist-item-actions">
-                    <button class="btn-edit" onclick="editPlaylistItem(${index}, 'game')">Edit</button>
-                    <button class="btn-remove" onclick="removePlaylistItem(${index}, 'game')">✕</button>
-                </div>
-            </div>
-            </div>
-            `;
-    }).join('');
-
-    // Add touch event handlers for mobile reordering
-    if (hasTouch) {
-        setupPlaylistTouchHandlers('game');
-    }
+    renderPlaylistItems('game');
 }
 
 function removePlaylistItem(index, type) {
-    if (type === 'game') {
-        gamePlaylistItems.splice(index, 1);
-        renderGamePlaylistItems();
-        renderGamePlaylistAvailable(); // Update available list
-    } else {
-        videoPlaylistItems.splice(index, 1);
-        renderVideoPlaylistItems();
-        renderVideoPlaylistAvailable(); // Update available list
-    }
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
+    items.splice(index, 1);
+    config.setItems(items);
+    renderPlaylistItems(type);
+    renderPlaylistAvailable(type);
 }
 
 function editPlaylistItem(index, type) {
-    const items = type === 'game' ? gamePlaylistItems : videoPlaylistItems;
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
     const item = items[index];
 
     // Instead of prompt, make the fields inline-editable
     // Find the playlist item element
-    const container = type === 'game' ? document.getElementById('gamePlaylistItems') : document.getElementById('videoPlaylistItems');
+    const container = document.getElementById(config.playlistItemsId);
     const playlistItems = container.querySelectorAll('.playlist-item');
     const itemElement = playlistItems[index];
 
@@ -1581,7 +2169,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function setupPlaylistDropZone(type) {
-    const panelId = type === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+    const panelId = MEDIA_CONFIG[type].playlistItemsId;
     const panel = document.getElementById(panelId);
 
     if (panel) {
@@ -1644,16 +2232,13 @@ function addItemToPlaylist(draggedItem, type) {
         };
     }
 
-    // Add to appropriate playlist
-    if (type === 'game') {
-        gamePlaylistItems.push(item);
-        renderGamePlaylistItems();
-        renderGamePlaylistAvailable(); // Update available ROMs to hide added item
-    } else {
-        videoPlaylistItems.push(item);
-        renderVideoPlaylistItems();
-        renderVideoPlaylistAvailable(); // Update available videos to hide added item
-    }
+    // Add to appropriate playlist using unified config
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
+    items.push(item);
+    config.setItems(items);
+    renderPlaylistItems(type);
+    renderPlaylistAvailable(type);
 }
 
 // Playlist item reordering
@@ -1675,16 +2260,13 @@ function handlePlaylistDrop(event, type) {
     const dropIndex = parseInt(event.target.closest('.playlist-item').dataset.index);
 
     if (draggedPlaylistIndex !== null && draggedPlaylistIndex !== dropIndex && draggedPlaylistType === type) {
-        const items = type === 'game' ? gamePlaylistItems : videoPlaylistItems;
+        const config = MEDIA_CONFIG[type];
+        const items = config.getItems();
         const item = items[draggedPlaylistIndex];
         items.splice(draggedPlaylistIndex, 1);
         items.splice(dropIndex, 0, item);
-
-        if (type === 'game') {
-            renderGamePlaylistItems();
-        } else {
-            renderVideoPlaylistItems();
-        }
+        config.setItems(items);
+        renderPlaylistItems(type);
     }
 
     draggedPlaylistIndex = null;
@@ -1731,27 +2313,39 @@ function createProgressBar(filename) {
     container.className = 'progress-bar';
 
     const fill = document.createElement('div');
-    fill.className = 'progress-fill';
-    fill.style.width = '0%';
-    fill.textContent = `${filename} - 0 % `;
+    fill.className = 'progress-fill queued';
+    fill.style.width = '100%';
+    fill.textContent = `${filename} - Queued`;
 
     container.appendChild(fill);
 
     return {
         element: container,
+        filename: filename,
+        setQueued: () => {
+            fill.className = 'progress-fill queued';
+            fill.style.width = '100%';
+            fill.textContent = `${filename} - Queued`;
+        },
         update: (percent) => {
-            fill.style.width = `${percent}% `;
-            fill.textContent = `${filename} - ${percent}% `;
+            fill.className = 'progress-fill';
+            fill.style.width = `${percent}%`;
+            fill.textContent = `${filename} - ${percent}%`;
+        },
+        setRetrying: (attempt, maxRetries) => {
+            fill.className = 'progress-fill retrying';
+            fill.style.width = '100%';
+            fill.textContent = `${filename} - Retrying (${attempt}/${maxRetries})...`;
         },
         complete: () => {
             fill.style.width = '100%';
             fill.textContent = `${filename} - Complete! ✓`;
-            fill.classList.add('complete');
+            fill.className = 'progress-fill complete';
         },
-        error: () => {
+        error: (message = 'Upload failed') => {
             fill.style.width = '100%';
-            fill.textContent = `${filename} - Error ✗`;
-            fill.classList.add('error');
+            fill.textContent = `${filename} - ${message} ✗`;
+            fill.className = 'progress-fill error';
         }
     };
 }
@@ -1824,17 +2418,46 @@ function showConfirmModal(title, message, onConfirm) {
     modal.classList.add('active');
 }
 
+async function deleteVideo(path, filename) {
+    showConfirmModal(
+        'Delete Video',
+        `Are you sure you want to delete "${escapeHtml(filename)}"?`,
+        async () => {
+            try {
+                // Encode the path components to handle special characters in URL
+                const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+
+                const response = await fetch(`${currentDevice.url}/admin/media/${encodedPath}`, {
+                    method: 'DELETE',
+                    headers: getCsrfHeaders(false)
+                });
+
+                if (response.ok) {
+                    loadVideos(); // Refresh list
+                } else {
+                    const err = await response.json();
+                    alert(`Failed to delete: ${err.error || 'Unknown error'}`);
+                }
+            } catch (e) {
+                console.error('Delete failed:', e);
+                alert('Delete failed: ' + e.message);
+            }
+        }
+    );
+}
+
 async function deleteROM(path, filename) {
     showConfirmModal(
         'Delete ROM',
-        `Are you sure you want to delete "${filename}" ? `,
+        `Are you sure you want to delete "${escapeHtml(filename)}"?`,
         async () => {
             try {
                 // Encode the path components to handle special characters in URL
                 const encodedPath = path.split('/').map(encodeURIComponent).join('/');
 
                 const response = await fetch(`${currentDevice.url}/admin/roms/${encodedPath}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: getCsrfHeaders(false)
                 });
 
                 if (response.ok) {
@@ -1860,7 +2483,8 @@ async function deletePlaylist(filename, type) {
 
             try {
                 await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    headers: getCsrfHeaders(false)
                 });
                 await loadExistingPlaylists();
             } catch (e) {
@@ -1972,7 +2596,7 @@ function handleContentTouchMove(e, playlistType) {
         touchDragClone.style.top = (touch.pageY - 20) + 'px';
 
         // Check if over the correct playlist panel
-        const panelId = playlistType === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+        const panelId = MEDIA_CONFIG[playlistType].playlistItemsId;
         const playlistPanel = document.getElementById(panelId);
         if (!playlistPanel) return;
 
@@ -2004,7 +2628,7 @@ function handleContentTouchEnd(e, playlistType) {
 
         // Check if dropped on correct playlist panel
         const touch = e.changedTouches[0];
-        const panelId = playlistType === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+        const panelId = MEDIA_CONFIG[playlistType].playlistItemsId;
         const playlistPanel = document.getElementById(panelId);
 
         if (playlistPanel) {
@@ -2043,7 +2667,7 @@ function handleContentTouchEnd(e, playlistType) {
 
 function setupPlaylistTouchHandlers(type) {
     // Add touch handlers for reordering playlist items in the specific panel
-    const panelId = type === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+    const panelId = MEDIA_CONFIG[type].playlistItemsId;
     const panel = document.getElementById(panelId);
     if (!panel) return;
 
@@ -2128,7 +2752,7 @@ function handlePlaylistTouchMove(e, type) {
         touchDragClone.style.top = (touch.pageY - touchDragClone.offsetHeight / 2) + 'px';
 
         // Find which playlist item we're over (in the correct panel)
-        const panelId = type === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+        const panelId = MEDIA_CONFIG[type].playlistItemsId;
         const panel = document.getElementById(panelId);
         if (!panel) return;
 
@@ -2168,21 +2792,20 @@ function handlePlaylistTouchEnd(e, type) {
         if (touchReorderStartIndex !== null && touchReorderCurrentIndex !== null &&
             touchReorderStartIndex !== touchReorderCurrentIndex && touchReorderType === type) {
 
-            const items = type === 'game' ? gamePlaylistItems : videoPlaylistItems;
+            const config = MEDIA_CONFIG[type];
+            const items = config.getItems();
             const item = items[touchReorderStartIndex];
             items.splice(touchReorderStartIndex, 1);
             items.splice(touchReorderCurrentIndex, 0, item);
+            config.setItems(items);
 
             // Haptic feedback
             if (navigator.vibrate) {
                 navigator.vibrate([50, 50, 50]);
             }
 
-            // Re-render the correct playlist
-            if (type === 'game') {
-                renderGamePlaylistItems();
-            } else {
-                renderVideoPlaylistItems();
+            // Re-render the playlist
+            renderPlaylistItems(type);
             }
         }
 
@@ -2200,7 +2823,7 @@ function handlePlaylistTouchEnd(e, type) {
         touchReorderType = null;
 
         // Clear any border highlights (in the correct panel)
-        const panelId = type === 'game' ? 'gamePlaylistItems' : 'videoPlaylistItems';
+        const panelId = MEDIA_CONFIG[type].playlistItemsId;
         const panel = document.getElementById(panelId);
         if (panel) {
             panel.querySelectorAll('.playlist-item').forEach(item => {
@@ -2209,6 +2832,242 @@ function handlePlaylistTouchEnd(e, type) {
                 item.classList.remove('dragging');
             });
         }
+    }
+}
+
+// ===== BACKUP & RESTORE FUNCTIONS =====
+
+/**
+ * Download a backup of all device data (playlists, settings, device info)
+ */
+function downloadBackup() {
+    if (!currentDevice) {
+        alert('No device connected');
+        return;
+    }
+
+    // Create a temporary link to download the backup
+    const backupUrl = `${currentDevice.url}/admin/backup`;
+    const link = document.createElement('a');
+    link.href = backupUrl;
+    link.download = ''; // Let the server set the filename
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+/**
+ * Handle restore file upload
+ * @param {HTMLInputElement} input - The file input element
+ */
+async function handleRestoreUpload(input) {
+    if (!currentDevice) {
+        alert('No device connected');
+        input.value = '';
+        return;
+    }
+
+    const file = input.files[0];
+    if (!file) return;
+
+    // Validate file extension
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+        showRestoreStatus('error', 'Please select a valid backup file (.zip)');
+        input.value = '';
+        return;
+    }
+
+    // Confirm restore action
+    const confirmed = confirm(
+        `Are you sure you want to restore from "${escapeHtml(file.name)}"?\n\n` +
+        'This will overwrite existing playlists, settings, and device info.'
+    );
+    if (!confirmed) {
+        input.value = '';
+        return;
+    }
+
+    showRestoreStatus('loading', 'Restoring backup...');
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`${currentDevice.url}/admin/restore`, {
+            method: 'POST',
+            headers: {
+                'X-CSRF-Token': csrfToken
+            },
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (result.ok) {
+            let message = result.message || 'Backup restored successfully';
+            if (result.data?.warnings && result.data.warnings.length > 0) {
+                message += `\n\nWarnings:\n${result.data.warnings.join('\n')}`;
+            }
+            showRestoreStatus('success', message);
+
+            // Reload content to reflect restored data
+            await loadAllContentFromDevice();
+        } else {
+            showRestoreStatus('error', result.error?.message || 'Failed to restore backup');
+        }
+    } catch (e) {
+        console.error('Restore failed:', e);
+        showRestoreStatus('error', `Restore failed: ${e.message}`);
+    } finally {
+        input.value = '';
+    }
+}
+
+/**
+ * Show restore status message
+ * @param {string} type - 'success', 'error', or 'loading'
+ * @param {string} message - The message to display
+ */
+function showRestoreStatus(type, message) {
+    const statusEl = document.getElementById('restoreStatus');
+    if (!statusEl) return;
+
+    statusEl.textContent = message;
+    statusEl.className = 'restore-status visible ' + type;
+
+    // Auto-hide success/error messages after 5 seconds
+    if (type !== 'loading') {
+        setTimeout(() => {
+            statusEl.classList.remove('visible');
+        }, 5000);
+    }
+}
+
+// ===== HEALTH MONITORING FUNCTIONS =====
+
+/**
+ * Refresh and display system health information
+ */
+async function refreshHealthInfo() {
+    if (!currentDevice) return;
+
+    const healthEl = document.getElementById('healthInfo');
+    if (!healthEl) return;
+
+    healthEl.innerHTML = '<span class="loading">Loading...</span>';
+
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/health/detailed`);
+        displayHealthInfo(data);
+    } catch (e) {
+        console.error('Health check failed:', e);
+        healthEl.innerHTML = `<span class="loading">Failed to load health info</span>`;
+    }
+}
+
+/**
+ * Display system health information
+ * @param {object} data - Health data from the API
+ */
+function displayHealthInfo(data) {
+    const healthEl = document.getElementById('healthInfo');
+    if (!healthEl) return;
+
+    let html = '';
+
+    // Status row
+    const statusClass = data.status === 'healthy' ? 'good' :
+                        data.status === 'warning' ? 'warning' : 'error';
+    html += `<div class="health-row">
+        <span class="health-label">Status</span>
+        <span class="health-value ${statusClass}">${escapeHtml(data.status || 'Unknown')}</span>
+    </div>`;
+
+    // CPU Temperature
+    if (data.cpu_temperature_c !== undefined) {
+        const tempClass = data.cpu_temperature_c > 75 ? 'warning' :
+                          data.cpu_temperature_c > 80 ? 'error' : 'good';
+        html += `<div class="health-row">
+            <span class="health-label">CPU Temp</span>
+            <span class="health-value ${tempClass}">${data.cpu_temperature_c.toFixed(1)}°C</span>
+        </div>`;
+    }
+
+    // CPU Usage
+    if (data.cpu_percent !== undefined) {
+        const cpuClass = data.cpu_percent > 90 ? 'error' :
+                         data.cpu_percent > 70 ? 'warning' : 'good';
+        html += `<div class="health-row">
+            <span class="health-label">CPU Usage</span>
+            <span class="health-value ${cpuClass}">${data.cpu_percent.toFixed(1)}%</span>
+        </div>`;
+    }
+
+    // Memory
+    if (data.memory) {
+        const memClass = data.memory.percent > 90 ? 'error' :
+                         data.memory.percent > 80 ? 'warning' : 'good';
+        html += `<div class="health-row">
+            <span class="health-label">Memory</span>
+            <span class="health-value ${memClass}">${data.memory.percent.toFixed(1)}% (${data.memory.used_mb.toFixed(0)} / ${data.memory.total_mb.toFixed(0)} MB)</span>
+        </div>`;
+    }
+
+    // Disk
+    if (data.disk) {
+        const diskClass = data.disk.percent > 90 ? 'error' :
+                          data.disk.percent > 80 ? 'warning' : 'good';
+        html += `<div class="health-row">
+            <span class="health-label">Disk</span>
+            <span class="health-value ${diskClass}">${data.disk.percent.toFixed(1)}% (${data.disk.free_gb.toFixed(1)} GB free)</span>
+        </div>`;
+    }
+
+    // Uptime
+    if (data.uptime_human) {
+        html += `<div class="health-row">
+            <span class="health-label">Uptime</span>
+            <span class="health-value">${escapeHtml(data.uptime_human)}</span>
+        </div>`;
+    }
+
+    // App Service Status
+    if (data.app_service) {
+        const serviceClass = data.app_service === 'active' ? 'good' : 'error';
+        html += `<div class="health-row">
+            <span class="health-label">App Service</span>
+            <span class="health-value ${serviceClass}">${escapeHtml(data.app_service)}</span>
+        </div>`;
+    }
+
+    // Content stats
+    if (data.content) {
+        html += `<div class="health-row">
+            <span class="health-label">Content</span>
+            <span class="health-value">${data.content.playlists} playlists, ${data.content.videos} videos, ${data.content.roms} ROMs</span>
+        </div>`;
+    }
+
+    healthEl.innerHTML = html;
+}
+
+/**
+ * Show the settings section (called when device connects)
+ */
+function showSettingsSection() {
+    const section = document.getElementById('settingsSectionWrapper');
+    if (section) {
+        section.style.display = 'block';
+    }
+}
+
+/**
+ * Hide the settings section (called when device disconnects)
+ */
+function hideSettingsSection() {
+    const section = document.getElementById('settingsSectionWrapper');
+    if (section) {
+        section.style.display = 'none';
     }
 }
 

@@ -10,6 +10,17 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Fetch spdlog for structured logging
+include(FetchContent)
+FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog.git
+    GIT_TAG v1.12.0
+)
+# Use header-only mode for simplicity
+set(SPDLOG_HEADER_ONLY ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(spdlog)
+
 # Find required libraries using pkg-config
 find_package(PkgConfig REQUIRED)
 
@@ -38,11 +49,7 @@ pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
 pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
 pkg_check_modules(GST_GL REQUIRED gstreamer-gl-1.0)
 
-# Filesystem (C++17 experimental or C++20)
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
-    # Use experimental filesystem for older GCC
-    add_compile_definitions(USE_EXPERIMENTAL_FILESYSTEM)
-endif()
+# Filesystem (C++17 std::filesystem)
 
 # GStreamer is now the only video backend - MPV removed
 
@@ -66,6 +73,7 @@ set(UI_SOURCES
     src/ui/font_manager.cpp
     src/ui/settings_menu.cpp
     src/ui/virtual_keyboard.cpp
+    src/ui/qrcodegen.cpp
 )
 
 set(APP_SOURCES
@@ -76,6 +84,7 @@ set(APP_SOURCES
 )
 
 set(UTILS_SOURCES
+    src/utils/config.cpp
     src/utils/path_resolver.cpp
     src/utils/wifi_manager.cpp
 )
@@ -128,6 +137,7 @@ target_link_libraries(magic_dingus_box_cpp
     ${GST_APP_LIBRARIES}
     ${GST_VIDEO_LIBRARIES}
     ${GST_GL_LIBRARIES}
+    spdlog::spdlog_header_only
     pthread
     m
     dl
@@ -140,9 +150,8 @@ target_compile_options(magic_dingus_box_cpp PRIVATE
     -Wpedantic
 )
 
-# Link filesystem library (for std::experimental::filesystem)
-# GCC needs stdc++fs for experimental filesystem
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+# Link filesystem library for GCC < 9 (std::filesystem is built-in for GCC 9+)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
     target_link_libraries(magic_dingus_box_cpp stdc++fs)
 endif()
 

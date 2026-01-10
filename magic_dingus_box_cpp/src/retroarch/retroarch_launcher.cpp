@@ -1,4 +1,5 @@
 #include "retroarch_launcher.h"
+#include "../utils/config.h"
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
@@ -6,7 +7,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <thread>
 #include <chrono>
 #include <chrono>
@@ -18,7 +19,7 @@
 #include <regex>
 #include <cmath>
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 namespace retroarch {
 
@@ -446,7 +447,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
 
     // Detect core location
     std::string libretro_dir = "/usr/lib/aarch64-linux-gnu/libretro";
-    std::string user_core_dir = "/home/magic/.config/retroarch/cores";
+    std::string user_core_dir = config::retroarch::get_cores_dir();
     
     // Check if core exists in system dir
     std::string system_core_path = libretro_dir + "/" + core_name + ".so";
@@ -493,7 +494,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::string alsa_device = detect_alsa_device();
 
     // Create a simple launcher script (persistent for debugging)
-    std::string launcher_script = "/home/magic/retroarch_launcher.sh";
+    std::string launcher_script = config::retroarch::get_launcher_script();
     {
         std::ofstream script_file(launcher_script);
         if (script_file.is_open()) {
@@ -580,7 +581,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Write the FULL config to our ISOLATED config location
             script_file << "cat > \"$UI_CONFIG\" << 'EOF'\n";
             script_file << "# DRM/KMS RetroArch config for Magic Dingus Box (Isolated)\n";
-            script_file << "libretro_system_directory = \"/home/magic/.config/retroarch/system\"\n";
+            script_file << "libretro_system_directory = \"" << config::retroarch::get_system_dir() << "\"\n";
             
             // Dynamic Video Driver Selection
             // Dynamic Video Driver Selection
@@ -847,7 +848,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "fi\n";
             script_file << "# Set essential environment for RetroArch\n";
             script_file << "export XDG_RUNTIME_DIR=/run/user/1000\n";
-            script_file << "export HOME=/home/magic\n";
+            script_file << "export HOME=" << config::get_home_path() << "\n";
             script_file << "# CRITICAL: Ensure we have access to input devices\n";
             script_file << "export DISPLAY=:0\n";
             script_file << "# CRITICAL: Check who is holding the input device\n";
@@ -893,7 +894,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true\n";
             script_file << "udevadm settle --timeout=1 2>/dev/null || true\n";
             script_file << "# CRITICAL: Redirect stdout/stderr to log file\n";
-            script_file << "exec 1>>/home/magic/retroarch_launcher.log 2>&1\n";
+            script_file << "exec 1>>" << config::retroarch::get_launcher_log() << " 2>&1\n";
             script_file << "echo 'Launcher: Launching RetroArch directly...' >> /tmp/retroarch_launcher.log\n";
             script_file << "# CRITICAL: Run RetroArch in foreground (not exec) so cleanup can run\n";
             script_file << "# Background keepalive processes keep controller awake while RetroArch runs\n";
@@ -934,7 +935,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
 
         // Set environment variables for the RetroArch process
         setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
-        setenv("HOME", "/home/magic", 1);
+        setenv("HOME", config::get_home_path().c_str(), 1);
         setenv("DISPLAY", ":0", 1);
         
         // CRITICAL: Verify controller device is accessible before forking
@@ -969,7 +970,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         if (launch_pid == 0) {
             // Child process - execute the launch command
             // Redirect output to log file
-            int log_fd = open("/home/magic/retroarch_launcher.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+            int log_fd = open(config::retroarch::get_launcher_log().c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (log_fd != -1) {
                 dup2(log_fd, STDOUT_FILENO);
                 dup2(log_fd, STDERR_FILENO);

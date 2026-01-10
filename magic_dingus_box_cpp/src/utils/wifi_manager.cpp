@@ -119,6 +119,13 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
         // nmcli output contains "successfully activated" on success
         if (output.find("successfully activated") != std::string::npos) {
             std::cout << "WifiManager: Connection SUCCESS detected" << std::endl;
+            
+            // Explicitly ensure autoconnect is enabled for persistence
+            // Usually default, but we enforce it per user request
+            std::string auto_cmd = "sudo nmcli connection modify id \"" + ssid + "\" connection.autoconnect yes 2>/dev/null";
+            exec_command(auto_cmd.c_str());
+            std::cout << "WifiManager: Enforced autoconnect=yes for '" << ssid << "'" << std::endl;
+            
             connection_result_ = ConnectionResult::SUCCESS;
         } else {
             std::cerr << "WifiManager: Connection FAILURE detected from output" << std::endl;

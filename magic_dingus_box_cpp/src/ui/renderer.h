@@ -49,10 +49,22 @@ public:
     // Reset GL resources after external context takeover (e.g., RetroArch)
     // This invalidates current GL resources and triggers re-creation on next render
     void reset_gl();
+    
+    // Bezel management for Modern TV mode
+    bool load_bezel(const std::string& path);  // Load bezel texture from file
+    void render_bezel();  // Render bezel overlay (fullscreen)
+    
+    // Set content viewport dimensions for Modern TV mode (4:3 pillarboxing)
+    // This affects the projection matrix used for rendering
+    void set_content_viewport(int width, int height);
+    void reset_content_viewport();  // Reset to full screen dimensions
+    void resize_screen(uint32_t width, uint32_t height);
 
 private:
     uint32_t width_;
     uint32_t height_;
+    uint32_t original_width_;   // Store original screen dimensions for reset
+    uint32_t original_height_;
     float ui_alpha_;
     
     std::unique_ptr<Theme> theme_;
@@ -70,6 +82,12 @@ private:
     int logo_width_;
     int logo_height_;
     
+    // Bezel overlay
+    uint32_t bezel_texture_id_ = 0;
+    int bezel_width_ = 0;
+    int bezel_height_ = 0;
+    std::string current_bezel_path_;
+    
     // Helper methods
     void draw_quad(float x, float y, float w, float h, const ui::Color& color, float alpha_multiplier = 1.0f);
     void draw_text(const std::string& text, float x, float y, int font_size, const ui::Color& color, bool use_title_font = false, float alpha_multiplier = 1.0f);
@@ -84,6 +102,7 @@ private:
     void render_settings_menu(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, bool video_active, bool ui_visible_when_playing);
     void render_game_browser(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha);
     void render_virtual_keyboard(const VirtualKeyboard& keyboard);
+    void render_qr_code(const std::string& url, float x, float y, float size, float alpha_multiplier = 1.0f);
     
     // Helper: format time as MM:SS
     std::string format_time(double seconds);

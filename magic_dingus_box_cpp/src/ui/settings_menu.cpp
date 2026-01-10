@@ -35,7 +35,7 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("Audio", MenuSection::AUDIO, "Volume"),
         MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
-        MenuItem("Info", MenuSection::INFO, "Stats"),
+        MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
@@ -77,10 +77,40 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
     }
 
     auto& settings = app_state_->display_settings;
+    
+    // Get current bezel name
+    std::string bezel_name = "None";
+    if (!app_state_->available_bezels.empty() && 
+        settings.bezel_index >= 0 && 
+        settings.bezel_index < static_cast<int>(app_state_->available_bezels.size())) {
+        bezel_name = app_state_->available_bezels[settings.bezel_index].name;
+    }
 
-    return {
-        MenuItem("Mode: CRT Native", MenuSection::TOGGLE_DISPLAY_MODE, "Cycle modes"),
-        
+    std::vector<MenuItem> items = {
+        MenuItem("Mode: " + settings.get_mode_name(), MenuSection::TOGGLE_DISPLAY_MODE, "Cycle modes",
+                 [&]() { 
+                     settings.cycle_mode(); 
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_); 
+                 }),
+    };
+    
+    // Show bezel option only in Modern TV mode
+    if (settings.mode == app::DisplayMode::MODERN_TV) {
+        items.emplace_back("Bezel: " + bezel_name, MenuSection::CYCLE_BEZEL, "Overlay frame",
+                 [&]() {
+                     // Cycle to next bezel
+                     if (!app_state_->available_bezels.empty()) {
+                         settings.bezel_index = (settings.bezel_index + 1) % 
+                                                static_cast<int>(app_state_->available_bezels.size());
+                     }
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_); 
+                 });
+    }
+    
+    // CRT effect settings (show for both modes, but mostly useful for CRT Native)
+    items.insert(items.end(), {
         MenuItem("Scanlines: " + intensity_to_label(settings.scanline_intensity), 
                  MenuSection::CYCLE_SCANLINES, "CRT lines", 
                  [&]() { 
@@ -138,7 +168,9 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                  }),
                  
         MenuItem("Back", MenuSection::BACK)
-    };
+    });
+    
+    return items;
 }
 
 void SettingsMenuManager::toggle() {
@@ -381,10 +413,29 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
+    auto& wifi = utils::WifiManager::instance();
+    
+    // Build Content Manager URLs
+    std::string wifi_url = "Not connected";
+    std::string usb_url = "http://192.168.7.1:5000";
+    
+    if (wifi.is_connected()) {
+        std::string ip = wifi.get_ip_address();
+        if (!ip.empty()) {
+            wifi_url = "http://" + ip + ":5000";
+        }
+    }
+    
+    // Store the URL for QR code rendering (use WiFi URL if connected, else USB)
+    if (app_state_) {
+        app_state_->content_manager_url = wifi.is_connected() ? wifi_url : usb_url;
+    }
+    
+    // Keep menu items minimal to leave room for QR code display
     return {
-        MenuItem("Version: 1.0.0", MenuSection::BACK, "Magic Dingus Box"),
-        MenuItem("Platform: Pi", MenuSection::BACK, "Hardware"),
-        MenuItem("Uptime: 2h 34m", MenuSection::BACK, "Runtime"),
+        MenuItem("Content Manager", MenuSection::BACK, "Scan QR code below"),
+        MenuItem("WiFi: " + wifi_url, MenuSection::BACK, ""),
+        MenuItem("USB:  " + usb_url, MenuSection::BACK, ""),
         MenuItem("Back", MenuSection::BACK)
     };
 }

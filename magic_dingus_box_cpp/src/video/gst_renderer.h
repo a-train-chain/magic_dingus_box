@@ -36,6 +36,15 @@ public:
     // Reset GL resources after external context takeover (e.g., RetroArch)
     // This invalidates current GL resources and triggers lazy re-init on next render
     void reset_gl();
+    
+    // Set letterbox mode for 4:3 content in 16:9 frame
+    // When enabled, video renders to a centered 4:3 viewport
+    void set_letterbox_mode(bool enabled);
+    void set_screen_size(uint32_t width, uint32_t height) { width_ = width; height_ = height; }
+    void set_swap_uv(bool enabled) { swap_uv_ = enabled; }
+    
+    // Check if texture is ready
+    bool is_ready() const { return gl_initialized_; }
 
 private:
     GstPlayer* player_;
@@ -56,6 +65,8 @@ private:
     int frame_format_; // 0=RGBA, 1=I420, 2=NV12
     
     bool gl_initialized_;
+    bool letterbox_mode_ = false;  // When true, render 4:3 centered
+    bool swap_uv_ = false; // Swap U/V planes (fix for red video)
     
     void init_gl_resources();
     void upload_frame(GstSample* sample);

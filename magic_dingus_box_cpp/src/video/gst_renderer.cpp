@@ -1,6 +1,6 @@
 #include "gst_renderer.h"
 #include "gst_player.h"
-#include <iostream>
+#include "../utils/logger.h"
 #include <vector>
 #include <cstring>
 
@@ -105,7 +105,7 @@ bool GstRenderer::initialize(GstPlayer* player) {
     appsink_ = player->get_appsink();
     
     if (!appsink_) {
-        std::cerr << "GstRenderer: appsink is null" << std::endl;
+        LOG_ERROR("GstRenderer: appsink is null");
         return false;
     }
     
@@ -117,7 +117,7 @@ bool GstRenderer::initialize(GstPlayer* player) {
 void GstRenderer::reset_gl() {
     // After an external app (like RetroArch) takes over the EGL context,
     // our GL resources are invalid. Delete them and mark for lazy re-init.
-    std::cout << "GstRenderer: Resetting GL resources after external context takeover" << std::endl;
+    LOG_DEBUG("GstRenderer: Resetting GL resources after external context takeover");
     
     if (gl_initialized_) {
         // These resources may be invalid but try to delete for cleanliness
@@ -146,13 +146,17 @@ void GstRenderer::reset_gl() {
     frame_format_ = -1;
     frame_width_ = 0;
     frame_height_ = 0;
-    
-    std::cout << "GstRenderer: GL resources reset complete, will re-init on next render" << std::endl;
+
+    LOG_DEBUG("GstRenderer: GL resources reset complete, will re-init on next render");
 }
 
 void GstRenderer::set_viewport_size(uint32_t width, uint32_t height) {
     width_ = width;
     height_ = height;
+}
+
+void GstRenderer::set_letterbox_mode(bool enabled) {
+    letterbox_mode_ = enabled;
 }
 
 void GstRenderer::init_gl_resources() {
@@ -214,19 +218,19 @@ void GstRenderer::update_shader(int format) {
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(vs, 512, nullptr, infoLog);
-        std::cerr << "VS Compile Error: " << infoLog << std::endl;
+        LOG_ERROR("VS Compile Error: {}", infoLog);
     }
 
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fs, 1, &fs_source, nullptr);
     glCompileShader(fs);
-    
+
     // Check FS compile errors
     glGetShaderiv(fs, GL_COMPILE_STATUS, &success);
     if (!success) {
         char infoLog[512];
         glGetShaderInfoLog(fs, 512, nullptr, infoLog);
-        std::cerr << "FS Compile Error (fmt=" << format << "): " << infoLog << std::endl;
+        LOG_ERROR("FS Compile Error (fmt={}): {}", format, infoLog);
     }
 
     program_id_ = glCreateProgram();
@@ -286,7 +290,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
     GstStructure* s = gst_caps_get_structure(caps, 0);
     const gchar* format_str = gst_structure_get_string(s, "format");
 
-    std::cout << "GstRenderer: Processing frame format=" << format_str << std::endl;
+    LOG_DEBUG("GstRenderer: Processing frame format={}", format_str);
 
     int w, h;
     gst_structure_get_int(s, "width", &w);
@@ -319,11 +323,11 @@ void GstRenderer::upload_frame(GstSample* sample) {
     else if (strcmp(format_str, "YUY2") == 0) format = 3;
     else if (strcmp(format_str, "UYVY") == 0) format = 4;
 
-    std::cout << "GstRenderer: Detected format " << format << " (" << format_str << ") for " << w << "x" << h
-              << ", strides: y=" << y_stride << ", uv=" << uv_stride << std::endl;
+    LOG_DEBUG("GstRenderer: Detected format {} ({}) for {}x{}, strides: y={}, uv={}",
+              format, format_str, w, h, y_stride, uv_stride);
 
     if (format == -1) {
-        std::cerr << "Unsupported format: " << format_str << " - will attempt RGBA conversion" << std::endl;
+        LOG_WARN("Unsupported format: {} - will attempt RGBA conversion", format_str);
         // For unsupported formats, try to force RGBA conversion
         // This is a fallback that may not work perfectly
         format = 0; // Treat as RGBA for now
@@ -364,21 +368,21 @@ void GstRenderer::upload_frame(GstSample* sample) {
             glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            std::cout << "GstRenderer: Uploaded Y plane " << w << "x" << h << " from offset 0" << std::endl;
+            LOG_TRACE("GstRenderer: Uploaded Y plane {}x{} from offset 0", w, h);
 
-            // Upload U plane
+            // Upload U/V planes (handle optional swap)
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[1]);
+            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 2 : 1]); // If swap, put U data into V texture
             glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
-            std::cout << "GstRenderer: Uploaded U plane " << actual_uv_stride << "x" << ((h + 1) / 2) << " from offset " << y_plane_size << std::endl;
+            LOG_TRACE("GstRenderer: Uploaded U plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size);
 
             // Upload V plane
             glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[2]);
+            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 1 : 2]); // If swap, put V data into U texture
             glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
-            std::cout << "GstRenderer: Uploaded V plane " << actual_uv_stride << "x" << ((h + 1) / 2) << " from offset " << (y_plane_size + u_plane_size) << std::endl;
+            LOG_TRACE("GstRenderer: Uploaded V plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size + u_plane_size);
 
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);  // Reset to default
@@ -409,7 +413,31 @@ void GstRenderer::upload_frame(GstSample* sample) {
 void GstRenderer::render_quad() {
     if (program_id_ == 0) return;
 
-    glViewport(0, 0, width_, height_);
+    // Calculate viewport based on letterbox mode
+    int vp_x = 0;
+    int vp_y = 0;
+    int vp_w = width_;
+    int vp_h = height_;
+    
+    if (letterbox_mode_) {
+        // Calculate 4:3 content area centered in 16:9 frame
+        // Height stays the same, width is adjusted
+        vp_h = height_;
+        vp_w = height_ * 4 / 3;  // 4:3 aspect ratio
+        vp_x = (width_ - vp_w) / 2;  // Center horizontally
+        vp_y = 0;
+        
+        // If the calculated width is larger than screen (e.g., 4:3 content on 4:3 screen)
+        // then pillarbox based on width instead
+        if (vp_w > static_cast<int>(width_)) {
+            vp_w = width_;
+            vp_h = width_ * 3 / 4;
+            vp_x = 0;
+            vp_y = (height_ - vp_h) / 2;
+        }
+    }
+    
+    glViewport(vp_x, vp_y, vp_w, vp_h);
     
     // Ensure we are drawing to the default framebuffer
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

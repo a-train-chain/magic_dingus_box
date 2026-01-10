@@ -798,6 +798,85 @@ header h1 {
     background: var(--error);
 }
 
+.progress-fill.queued {
+    background: var(--text-secondary);
+    opacity: 0.7;
+}
+
+.progress-fill.retrying {
+    background: var(--accent2);
+    animation: pulse-retry 1s ease-in-out infinite;
+}
+
+@keyframes pulse-retry {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* Batch Progress Header */
+.batch-progress-header {
+    background: var(--bg-card);
+    border: 2px solid var(--accent2);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.batch-progress-header.complete {
+    border-color: var(--success);
+}
+
+.batch-progress-header.has-errors {
+    border-color: var(--error);
+}
+
+.batch-progress-text {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.batch-status {
+    font-weight: bold;
+    color: var(--accent2);
+}
+
+.batch-progress-header.complete .batch-status {
+    color: var(--success);
+}
+
+.batch-progress-header.has-errors .batch-status {
+    color: var(--error);
+}
+
+.batch-counts {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.batch-progress-bar {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    height: 8px;
+    overflow: hidden;
+}
+
+.batch-progress-fill {
+    background: var(--accent2);
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.batch-progress-header.complete .batch-progress-fill {
+    background: var(--success);
+}
+
+.batch-progress-header.has-errors .batch-progress-fill {
+    background: var(--error);
+}
+
 /* Playlist Cards */
 .playlist-card {
     background: var(--bg-card);
@@ -1505,4 +1584,136 @@ header h1 {
 
 .modal-actions button {
     min-width: 100px;
+}
+
+/* ===== SETTINGS & BACKUP SECTION ===== */
+.settings-section {
+    /* Settings section specific styles */
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+}
+
+.settings-card {
+    background: var(--bg-dark);
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+    transition: all 0.2s;
+}
+
+.settings-card:hover {
+    border-color: var(--accent);
+}
+
+.settings-card h4 {
+    color: var(--accent2);
+    margin-bottom: 0.75rem;
+    font-size: 1.125rem;
+}
+
+.settings-description {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+    line-height: 1.5;
+}
+
+.settings-card .btn-primary,
+.settings-card .btn-secondary {
+    width: auto;
+    min-width: 150px;
+}
+
+/* Restore status messages */
+.restore-status {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    border-radius: 4px;
+    font-size: 0.875rem;
+    display: none;
+}
+
+.restore-status.visible {
+    display: block;
+}
+
+.restore-status.success {
+    background: rgba(102, 221, 122, 0.15);
+    border: 1px solid var(--success);
+    color: var(--success);
+}
+
+.restore-status.error {
+    background: rgba(234, 58, 39, 0.15);
+    border: 1px solid var(--error);
+    color: var(--error);
+}
+
+.restore-status.loading {
+    background: rgba(88, 132, 177, 0.15);
+    border: 1px solid var(--accent2);
+    color: var(--accent2);
+}
+
+/* Health info display */
+.health-info {
+    background: var(--bg-card);
+    border-radius: 4px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+.health-info .loading {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.health-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.375rem 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.health-row:last-child {
+    border-bottom: none;
+}
+
+.health-label {
+    color: var(--text-secondary);
+}
+
+.health-value {
+    color: var(--text-primary);
+    font-weight: bold;
+}
+
+.health-value.good {
+    color: var(--success);
+}
+
+.health-value.warning {
+    color: var(--accent);
+}
+
+.health-value.error {
+    color: var(--error);
+}
+
+/* Small button variant */
+.btn-secondary.small {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    min-height: 36px;
+}
+
+.btn-primary.small {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    min-height: 36px;
 }

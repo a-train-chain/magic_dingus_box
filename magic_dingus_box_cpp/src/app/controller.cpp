@@ -9,14 +9,14 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <chrono>
 #include <thread>
 #include <random>
 
 #include "../platform/input_manager.h"
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 namespace app {
 
@@ -60,30 +60,32 @@ void Controller::set_system_volume(int percent) {
     }
 }
 
-bool Controller::load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start, double end, bool loop) {
+utils::Result<> Controller::load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start, double end, bool loop) {
     if (!player_) {
-        return false;
+        return utils::Result<>::fail("Player not initialized");
     }
-    
+
     std::string resolved_path = utils::resolve_video_path(path, playlist_dir);
-    
+
     // Check if file exists before trying to load
     fs::path file_path(resolved_path);
     if (!fs::exists(file_path)) {
-        std::cerr << "ERROR: Video file does not exist: " << resolved_path << std::endl;
-        return false;
+        std::string error = "Video file does not exist: " + resolved_path;
+        std::cerr << "ERROR: " << error << std::endl;
+        return utils::Result<>::fail(error);
     }
-    
+
     bool success = player_->load_file(resolved_path, start, end, loop);
     if (!success) {
-        std::cerr << "ERROR: Failed to load video file: " << resolved_path << std::endl;
-        return false;
+        std::string error = "Failed to load video file: " + resolved_path;
+        std::cerr << "ERROR: " << error << std::endl;
+        return utils::Result<>::fail(error);
     }
-    
+
     // Re-apply current volume to player
     player_->set_volume(current_system_volume_);
-    
-    return true;
+
+    return utils::Result<>::ok();
 }
 
 void Controller::play() {
@@ -223,8 +225,8 @@ void Controller::update_state(AppState& state) {
             // Video is playing normally and not near the end
             // Mark playback as started - this confirms we are playing the NEW video
             // and not seeing stale state from the previous video
-            if (!state.playback_started) {
-                state.playback_started = true;
+            if (!state.playback_started_) {
+                state.playback_started_ = true;
                 std::cout << "Playback confirmed: item " << state.current_item_index 
                           << ", position " << state.position << "/" << state.duration << std::endl;
             }
@@ -299,18 +301,19 @@ void wait_with_callback(int milliseconds, std::function<void()> callback) {
     }
 }
 
-bool Controller::load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback) {
+utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback) {
     if (item_index < 0 || item_index >= static_cast<int>(playlist.items.size())) {
-        std::cerr << "Error: Invalid item index " << item_index << " for playlist " << playlist.title << std::endl;
-        return false;
+        std::string error = "Invalid item index " + std::to_string(item_index) + " for playlist " + playlist.title;
+        std::cerr << "Error: " << error << std::endl;
+        return utils::Result<>::fail(error);
     }
 
     const auto& item = playlist.items[item_index];
-    
+
     // Check for Master Shuffle (index 0 in playlist 0)
     if (playlist.title == "[S] Master Shuffle") {
         std::cout << "Master Shuffle selected! Starting global shuffle..." << std::endl;
-        return true; 
+        return utils::Result<>::ok();
     }
 
     if (item.source_type == "local") {
@@ -325,8 +328,8 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
 
         // Load the new file
         std::cout << "Loading file: " << item.path << std::endl;
-        bool loaded = load_file_with_resolution(item.path, playlist_directory, 0.0, 0.0, false);
-        if (loaded) {
+        auto load_result = load_file_with_resolution(item.path, playlist_directory, 0.0, 0.0, false);
+        if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
 
             play();
@@ -347,17 +350,16 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
             // Debug: Check audio-related properties after video starts
             try {
                 double vol = player_->get_volume();
-                // std::string audio_device = player_->get_property("audio-device");
-                // std::cout << "DEBUG: After playlist transition - volume=" << vol << ", audio-device='" << audio_device << "'" << std::endl;
                 std::cout << "DEBUG: After playlist transition - volume=" << vol << std::endl;
             } catch (const std::exception& e) {
                 std::cerr << "DEBUG: Error checking audio properties: " << e.what() << std::endl;
             }
 
-            return true;
+            return utils::Result<>::ok();
         } else {
-            std::cerr << "Error: Failed to load playlist item: " << item.path << std::endl;
-            return false;
+            std::string error = "Failed to load playlist item: " + item.path + " (" + load_result.error() + ")";
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
         }
     } else if (item.source_type == "emulated_game") {
         // Handle RetroArch game launch
@@ -369,8 +371,9 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
         // Get core name from playlist item
         std::string core_name = item.emulator_core;
         if (core_name.empty()) {
-            std::cerr << "Error: No emulator_core specified for game: " << item.title << std::endl;
-            return false;
+            std::string error = "No emulator_core specified for game: " + item.title;
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
         }
         
         // Resolve "auto" core based on system
@@ -391,8 +394,9 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
             } else if (system == "arcade") {
                 core_name = "fbneo";
             } else {
-                std::cerr << "Error: Could not resolve auto core for system: " << system << std::endl;
-                return false;
+                std::string error = "Could not resolve auto core for system: " + system;
+                std::cerr << "Error: " << error << std::endl;
+                return utils::Result<>::fail(error);
             }
             std::cout << "Resolved auto core for " << system << " -> " << core_name << std::endl;
         }
@@ -402,8 +406,9 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
         
         // Check if ROM exists
         if (!fs::exists(resolved_rom_path)) {
-            std::cerr << "Error: ROM file does not exist: " << resolved_rom_path << std::endl;
-            return false;
+            std::string error = "ROM file does not exist: " + resolved_rom_path;
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
         }
         
         // Look for overlay/bezel (optional)
@@ -566,15 +571,17 @@ bool Controller::load_playlist_item(AppState& state, const app::Playlist& playli
             state.current_item_index = -1;
             state.current_playlist_index = -1;
             state.video_active = false; // Ensure this is false too
-            
-            return true;
+
+            return utils::Result<>::ok();
         } else {
-            std::cerr << "Error: Failed to launch game: " << item.title << std::endl;
-            return false;
+            std::string error = "Failed to launch game: " + item.title;
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
         }
     } else {
-        std::cerr << "Error: Unsupported source type: " << item.source_type << std::endl;
-        return false;
+        std::string error = "Unsupported source type: " + item.source_type;
+        std::cerr << "Error: " << error << std::endl;
+        return utils::Result<>::fail(error);
     }
 }
 
@@ -645,12 +652,12 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
     state.last_advanced_item_index = old_index;
     
     // Load the next item
-    bool load_success = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
-    
-    if (!load_success) {
+    auto load_result = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
+
+    if (!load_result) {
         // If load failed, revert to previous index and try next item (skip broken file)
         std::cerr << "Warning: Failed to load item " << (state.current_item_index + 1)
-                  << ", skipping..." << std::endl;
+                  << ": " << load_result.error() << ", skipping..." << std::endl;
         state.current_item_index = old_index;  // Revert index
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
         // Try next item if there are more
@@ -663,15 +670,15 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
             }
         }
     }
-    
+
     // Restore UI visibility state - keep it hidden when advancing
     state.ui_visible_when_playing = was_ui_visible;
-    
-    if (load_success) {
+
+    if (load_result) {
         // Reset playback started flag - we need to wait for update_state to confirm
         // that the new video has actually started playing (position < duration)
         std::cout << "Resetting playback_started flag for item " << state.current_item_index << std::endl;
-        state.playback_started = false;
+        state.playback_started_ = false;
         
         std::cout << "Advanced to next item in playlist: " << playlist.title 
                   << " (item " << (old_index + 1) << " -> " << (state.current_item_index + 1) 
@@ -705,12 +712,12 @@ void Controller::load_previous_item(AppState& state, const std::string& playlist
     state.last_advanced_item_index = old_index;
     
     // Load the previous item
-    bool load_success = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
-    
-    if (!load_success) {
+    auto load_result = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
+
+    if (!load_result) {
         // If load failed, revert to previous index and try previous item (skip broken file)
-        std::cerr << "Warning: Failed to load item " << (state.current_item_index + 1) 
-                  << ", skipping..." << std::endl;
+        std::cerr << "Warning: Failed to load item " << (state.current_item_index + 1)
+                  << ": " << load_result.error() << ", skipping..." << std::endl;
         state.current_item_index = old_index;  // Revert index
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
         // Try previous item if there are more
@@ -721,13 +728,13 @@ void Controller::load_previous_item(AppState& state, const std::string& playlist
             }
         }
     }
-    
+
     // Restore UI visibility state - keep it hidden when advancing
     state.ui_visible_when_playing = was_ui_visible;
-    
-    if (load_success) {
+
+    if (load_result) {
         // Reset playback started flag
-        state.playback_started = false;
+        state.playback_started_ = false;
         
         std::cout << "Advanced to previous item in playlist: " << playlist.title 
                   << " (item " << (old_index + 1) << " -> " << (state.current_item_index + 1) 
@@ -737,10 +744,11 @@ void Controller::load_previous_item(AppState& state, const std::string& playlist
 
 
 
-void Controller::initialize_retroarch_launcher() {
+utils::Result<> Controller::initialize_retroarch_launcher() {
     if (!retroarch_launcher_.initialize()) {
-        std::cerr << "Warning: Failed to initialize RetroArch launcher" << std::endl;
+        return utils::Result<>::fail("Failed to initialize RetroArch launcher");
     }
+    return utils::Result<>::ok();
 }
 
 void Controller::play_random_global_video(AppState& state, const std::string& playlist_directory) {
@@ -780,18 +788,18 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
     // Reset advance tracking flags so next auto‑advance triggers a new shuffle
     state.last_advanced_item_index = -1;
     state.last_advanced_duration = 0.0;
-    state.playback_started = false; // will be set when playback actually starts
+    state.playback_started_ = false; // will be set when playback actually starts
     // However, AppState has master_shuffle_active flag.
     // We can use that to keep the UI focus on Master Shuffle if needed, 
     // or just let it show the playing video.
     
-    // Let's NOT update current_playlist_index to the random one, 
+    // Let's NOT update current_playlist_index to the random one,
     // but we MUST pass the correct playlist to load_playlist_item.
-    
-    bool success = load_playlist_item(state, playlist, item_index, playlist_directory, nullptr);
-    
-    if (!success) {
-        // Retry
+
+    auto result = load_playlist_item(state, playlist, item_index, playlist_directory, nullptr);
+
+    if (!result) {
+        // Retry (error already logged by load_playlist_item)
         play_random_global_video(state, playlist_directory);
     }
 }

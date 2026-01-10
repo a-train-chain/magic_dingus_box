@@ -1,4 +1,6 @@
 #include "gst_player.h"
+#include "gst_helpers.h"
+#include "../utils/logger.h"
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
@@ -27,24 +29,26 @@ GstPlayer::~GstPlayer() {
 bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     if (initialized_) return true;
 
-    std::cout << "Initializing GStreamer..." << std::endl;
-    
-    GError* error = nullptr;
-    if (!gst_init_check(nullptr, nullptr, &error)) {
-        std::cerr << "Failed to initialize GStreamer: " << (error ? error->message : "unknown error") << std::endl;
-        if (error) g_error_free(error);
+    LOG_DEBUG("Initializing GStreamer...");
+
+    // Initialize GStreamer with RAII error handling
+    GError* init_error = nullptr;
+    if (!gst_init_check(nullptr, nullptr, &init_error)) {
+        GErrorPtr error(init_error);  // RAII cleanup
+        LOG_ERROR("Failed to initialize GStreamer: {}", error ? error->message : "unknown error");
         return false;
     }
 
+    // Helper to promote hardware decoders
     auto promote_decoder = [](const char* name, const char* friendly) {
         GstRegistry* registry = gst_registry_get();
         GstPluginFeature* feature = gst_registry_lookup_feature(registry, name);
         if (feature) {
             gst_plugin_feature_set_rank(feature, GST_RANK_PRIMARY + 100);
-            std::cout << "Promoted decoder: " << friendly << " (" << name << ")" << std::endl;
+            LOG_DEBUG("Promoted decoder: {} ({})", friendly, name);
             gst_object_unref(feature);
         } else {
-            std::cout << "Decoder not found (will fall back if necessary): " << friendly << " (" << name << ")" << std::endl;
+            LOG_DEBUG("Decoder not found: {} ({})", friendly, name);
         }
     };
 
@@ -54,68 +58,71 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     promote_decoder("v4l2vp8dec", "V4L2 VP8");
     promote_decoder("v4l2vp9dec", "V4L2 VP9");
 
-    // Create playbin
-    playbin_ = gst_element_factory_make("playbin", "playbin");
-    if (!playbin_) {
-        std::cerr << "Failed to create playbin element" << std::endl;
+    // Create playbin with RAII wrapper
+    auto playbin = make_element("playbin", "playbin");
+    if (!playbin) {
+        LOG_ERROR("Failed to create playbin element");
         return false;
     }
-    pipeline_ = playbin_; // pipeline acts as the playbin
 
-    // Configure audio sink to use pulsesink directly for reliable audio
-    GstElement* audio_sink = gst_element_factory_make("pulsesink", "audio-sink");
+    // Configure audio sink (playbin takes ownership)
+    auto audio_sink = make_element("pulsesink", "audio-sink");
     if (audio_sink) {
-        g_object_set(G_OBJECT(playbin_), "audio-sink", audio_sink, nullptr);
-        std::cout << "Successfully configured pulsesink for audio" << std::endl;
+        g_object_set(G_OBJECT(playbin.get()), "audio-sink", audio_sink.release(), nullptr);
+        LOG_DEBUG("Configured pulsesink for audio");
     } else {
-        std::cerr << "Failed to create pulsesink, forcing autoaudiosink" << std::endl;
-        audio_sink = gst_element_factory_make("autoaudiosink", "audio-sink");
+        LOG_WARN("Failed to create pulsesink, trying autoaudiosink");
+        audio_sink = make_element("autoaudiosink", "audio-sink");
         if (audio_sink) {
-             g_object_set(G_OBJECT(playbin_), "audio-sink", audio_sink, nullptr);
+            g_object_set(G_OBJECT(playbin.get()), "audio-sink", audio_sink.release(), nullptr);
         }
     }
 
-    // Create a bin for our custom video sink
-    GstElement* video_sink_bin = gst_bin_new("video-sink-bin");
+    // Create video sink bin with RAII wrapper
+    auto video_sink_bin = make_bin("video-sink-bin");
+    if (!video_sink_bin) {
+        LOG_ERROR("Failed to create video sink bin");
+        return false;
+    }
 
-    // Add videoconvert to ensure we get compatible formats
-    GstElement* videoconvert = gst_element_factory_make("videoconvert", "videoconvert");
+    // Create videoconvert element
+    auto videoconvert = make_element("videoconvert", "videoconvert");
     if (!videoconvert) {
-        std::cerr << "Failed to create videoconvert" << std::endl;
-        gst_object_unref(video_sink_bin);
-        gst_object_unref(pipeline_);
+        LOG_ERROR("Failed to create videoconvert");
         return false;
     }
 
-    // Force videoconvert to output RGBA
-    g_object_set(G_OBJECT(videoconvert), "format", "RGBA", nullptr);
-
-    // Configure video sink to be appsink so we can render frames ourselves
-    appsink_ = gst_element_factory_make("appsink", "video-sink");
-    if (!appsink_) {
-        std::cerr << "Failed to create appsink" << std::endl;
-        gst_object_unref(videoconvert);
-        gst_object_unref(video_sink_bin);
-        gst_object_unref(pipeline_);
+    // Create appsink element
+    auto appsink = make_element("appsink", "video-sink");
+    if (!appsink) {
+        LOG_ERROR("Failed to create appsink");
         return false;
     }
 
-    // Add elements to the sink bin
-    gst_bin_add_many(GST_BIN(video_sink_bin), videoconvert, appsink_, nullptr);
-    if (!gst_element_link(videoconvert, appsink_)) {
-        std::cerr << "Failed to link videoconvert to appsink" << std::endl;
-        gst_object_unref(video_sink_bin);
-        gst_object_unref(pipeline_);
-        return false;
+    // Store raw pointers before transferring ownership to bin
+    GstElement* videoconvert_raw = videoconvert.get();
+    GstElement* appsink_raw = appsink.get();
+
+    // Add elements to the sink bin (bin takes ownership)
+    gst_bin_add_many(GST_BIN(video_sink_bin.get()),
+                     videoconvert.release(),
+                     appsink.release(),
+                     nullptr);
+
+    // Link videoconvert to appsink
+    if (!gst_element_link(videoconvert_raw, appsink_raw)) {
+        LOG_ERROR("Failed to link videoconvert to appsink");
+        return false;  // video_sink_bin will clean up its children
     }
 
     // Create ghost pad for the sink bin
-    GstPad* sink_pad = gst_element_get_static_pad(videoconvert, "sink");
-    gst_element_add_pad(video_sink_bin, gst_ghost_pad_new("sink", sink_pad));
-    gst_object_unref(sink_pad);
-
-    // Set the sink bin as playbin's video-sink
-    g_object_set(G_OBJECT(playbin_), "video-sink", video_sink_bin, nullptr);
+    auto sink_pad = get_static_pad(videoconvert_raw, "sink");
+    if (!sink_pad) {
+        LOG_ERROR("Failed to get sink pad from videoconvert");
+        return false;
+    }
+    gst_element_add_pad(video_sink_bin.get(), gst_ghost_pad_new("sink", sink_pad.get()));
+    // sink_pad is auto-released by RAII
 
     // Configure appsink caps - prefer YUV for performance, fallback to RGBA
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
@@ -128,67 +135,76 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
         "format", G_TYPE_STRING, "RGBA",
         nullptr));
 
-    g_object_set(G_OBJECT(appsink_), "caps", caps, nullptr);
+    g_object_set(G_OBJECT(appsink_raw), "caps", caps, nullptr);
     gst_caps_unref(caps);
-    
+
     // Set appsink properties
-    g_object_set(G_OBJECT(appsink_), 
-        "emit-signals", TRUE, 
-        "sync", TRUE, 
-        "max-buffers", 1, 
-        "drop", TRUE, 
+    g_object_set(G_OBJECT(appsink_raw),
+        "emit-signals", TRUE,
+        "sync", TRUE,
+        "max-buffers", 1,
+        "drop", TRUE,
         nullptr);
 
-    g_object_set(G_OBJECT(playbin_), "video-sink", appsink_, nullptr);
+    // Set the sink bin as playbin's video-sink (playbin takes ownership)
+    g_object_set(G_OBJECT(playbin.get()), "video-sink", video_sink_bin.release(), nullptr);
 
     // Add bus watch
-    GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline_));
-    bus_watch_id_ = gst_bus_add_watch(bus, bus_call, this);
-    gst_object_unref(bus);
+    auto bus = get_bus(playbin.get());
+    if (bus) {
+        bus_watch_id_ = gst_bus_add_watch(bus.get(), bus_call, this);
+        // bus is auto-released by RAII
+    }
+
+    // Transfer ownership to class members
+    playbin_ = playbin.release();
+    pipeline_ = playbin_;  // pipeline acts as the playbin
+    appsink_ = appsink_raw;
 
     initialized_ = true;
+    LOG_DEBUG("GStreamer initialization complete");
     return true;
 }
 
 gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
     GstPlayer* player = static_cast<GstPlayer*>(data);
-    
+
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_EOS:
-            std::cout << "End of stream" << std::endl;
+            LOG_DEBUG("End of stream");
             // Handle EOS (e.g. auto loop or stop)
             player->is_playing_ = false;
             player->is_paused_ = false;
             break;
 
         case GST_MESSAGE_ERROR: {
-            gchar* debug;
-            GError* error;
+            gchar* debug = nullptr;
+            GError* error = nullptr;
             gst_message_parse_error(msg, &error, &debug);
-            std::cerr << "GStreamer Error: " << error->message << std::endl;
+            GErrorPtr error_ptr(error);  // RAII cleanup
+            LOG_ERROR("GStreamer Error: {}", error ? error->message : "unknown");
             if (debug) {
-                std::cerr << "Debug info: " << debug << std::endl;
+                LOG_DEBUG("GStreamer debug: {}", debug);
                 g_free(debug);
             }
-            g_error_free(error);
             player->is_playing_ = false;
             break;
         }
-        
+
         case GST_MESSAGE_STATE_CHANGED: {
             GstState old_state, new_state, pending_state;
             gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
             if (GST_MESSAGE_SRC(msg) == GST_OBJECT(player->pipeline_)) {
-                std::cout << "GST_MESSAGE_STATE_CHANGED: " << gst_element_state_get_name(old_state)
-                          << " -> " << gst_element_state_get_name(new_state) << std::endl;
+                LOG_DEBUG("Pipeline state: {} -> {}",
+                          gst_element_state_get_name(old_state),
+                          gst_element_state_get_name(new_state));
 
                 if (new_state == GST_STATE_PLAYING) {
-                    std::cout << "Pipeline entering PLAYING state!" << std::endl;
+                    LOG_DEBUG("Pipeline entering PLAYING state");
                     player->is_playing_ = true;
                     player->is_paused_ = false;
 
                     // Inspect pipeline to see what decoder is used
-                    std::cout << "Pipeline playing. Inspecting elements..." << std::endl;
                     GstIterator* it = gst_bin_iterate_recurse(GST_BIN(player->pipeline_));
                     GValue item = G_VALUE_INIT;
                     bool done = false;
@@ -198,15 +214,15 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                                 GstElement* element = GST_ELEMENT(g_value_get_object(&item));
                                 gchar* name = gst_element_get_name(element);
                                 GstElementFactory* factory = gst_element_get_factory(element);
-                                
+
                                 // Check if it looks like a decoder
                                 if (factory) {
                                     const gchar* factory_name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
                                     if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec"))) {
-                                        std::cout << "  Found element: " << name << " (Factory: " << factory_name << ")" << std::endl;
+                                        LOG_DEBUG("  Decoder: {} ({})", name, factory_name);
                                     }
                                 }
-                                
+
                                 g_free(name);
                                 g_value_reset(&item);
                                 break;
@@ -221,7 +237,7 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                         }
                     }
                     gst_iterator_free(it);
-                    
+
                 } else if (new_state == GST_STATE_PAUSED) {
                     player->is_paused_ = true;
                 } else if (new_state == GST_STATE_READY || new_state == GST_STATE_NULL) {
@@ -247,13 +263,12 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             GstFormat format;
             guint64 processed, dropped;
             (void)processed; // Unused
-            // gint64 timestamp; // Unused but needed for clarity if we were to use it, or removed
-            
+
             gst_message_parse_qos_stats(msg, &format, &processed, &dropped);
             gst_message_parse_qos_values(msg, &jitter, &proportion, &quality);
-            
+
             if (dropped > 0) {
-                std::cerr << "QoS: Dropped frames: " << dropped << ", Jitter: " << jitter << std::endl;
+                LOG_WARN("QoS: Dropped frames: {}, Jitter: {}", dropped, jitter);
             }
             break;
         }
@@ -282,14 +297,13 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
         }
     }
 
-    std::cout << "GstPlayer::load_file() - setting URI: " << uri << std::endl;
+    LOG_DEBUG("GstPlayer::load_file() - setting URI: {}", uri);
     g_object_set(G_OBJECT(playbin_), "uri", uri.c_str(), nullptr);
 
     // Start playback
     play();
 
-    // Debug volume
-    std::cout << "GstPlayer::load_file - Current volume: " << get_volume() << "%" << std::endl;
+    LOG_DEBUG("GstPlayer::load_file - Current volume: {}%", get_volume());
 
     if (start > 0.0) {
         seek_absolute(start);
@@ -301,16 +315,17 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
 void GstPlayer::play() {
     if (!initialized_) return;
 
-    std::cout << "GstPlayer::play() called - setting state to PLAYING" << std::endl;
+    LOG_DEBUG("GstPlayer::play() called - setting state to PLAYING");
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
-    std::cout << "GstPlayer::play() state change return: " << ret << std::endl;
+    LOG_DEBUG("GstPlayer::play() state change return: {}", static_cast<int>(ret));
 
     // Check current state after a short delay
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     GstState current, pending;
     gst_element_get_state(pipeline_, &current, &pending, GST_CLOCK_TIME_NONE);
-    std::cout << "GstPlayer::play() current state: " << gst_element_state_get_name(current)
-              << ", pending: " << gst_element_state_get_name(pending) << std::endl;
+    LOG_DEBUG("GstPlayer::play() current state: {}, pending: {}",
+              gst_element_state_get_name(current),
+              gst_element_state_get_name(pending));
 }
 
 void GstPlayer::pause() {
@@ -353,7 +368,7 @@ void GstPlayer::stop() {
     // Force state change to NULL
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_NULL);
     if (ret == GST_STATE_CHANGE_FAILURE) {
-        std::cerr << "Failed to set pipeline to NULL state in stop()" << std::endl;
+        LOG_ERROR("Failed to set pipeline to NULL state in stop()");
     }
 
     // Wait for state change with timeout
@@ -424,7 +439,7 @@ void GstPlayer::update_state() {
 
         // If we just started playing, inspect the pipeline for decoders
         if (!was_playing && now_playing) {
-            std::cout << "Pipeline now playing! Inspecting elements..." << std::endl;
+            LOG_DEBUG("Pipeline now playing! Inspecting elements...");
 
             // Give pipeline a moment to fully initialize decoders
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -445,7 +460,7 @@ void GstPlayer::update_state() {
                             if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec") ||
                                                strstr(factory_name, "v4l2") || strstr(factory_name, "omx") ||
                                                strstr(factory_name, "mmal"))) {
-                                std::cout << "  Found decoder element: " << name << " (Factory: " << factory_name << ")" << std::endl;
+                                LOG_DEBUG("  Found decoder element: {} (Factory: {})", name, factory_name);
                             }
                         }
 

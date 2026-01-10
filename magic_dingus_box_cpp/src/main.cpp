@@ -12,10 +12,13 @@
 #include "app/controller.h"
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
+#include "utils/config.h"
 #include "utils/path_resolver.h"
 #include "utils/wifi_manager.h"
+#include "utils/logger.h"
 #include "ui/virtual_keyboard.h"
 
+#include <json/json.h>
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -25,7 +28,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <gbm.h>
@@ -41,7 +44,7 @@ using namespace video;
 using namespace ui;
 using namespace app;
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 struct PageFlipContext {
     bool waiting_for_flip;
@@ -57,48 +60,60 @@ static void page_flip_handler(int /*fd*/, unsigned int /*frame*/,
 }
 
 int main(int /* argc */, char* /* argv */[]) {
-    std::cout << "Magic Dingus Box C++ Kiosk Engine (Async PageFlip)" << std::endl;
-    
+    // Initialize logging system
+    // Log to file in config directory if available, otherwise console only
+    std::string log_path = config::get_log_file();
+    logging::init(log_path);
+
+    LOG_INFO("Magic Dingus Box C++ Kiosk Engine (Async PageFlip)");
+    LOG_DEBUG("Log file: {}", log_path.empty() ? "console only" : log_path);
+
     // Initialize random number generator for Master Shuffle
     std::srand(static_cast<unsigned int>(std::time(nullptr)));
-    
+
     // Check if X11 is running (it will block DRM access)
     if (getenv("DISPLAY") != nullptr) {
-        std::cerr << "WARNING: DISPLAY environment variable is set. X11 may be using the display." << std::endl;
-        std::cerr << "For DRM/KMS mode, you should stop X11 first:" << std::endl;
-        std::cerr << "  sudo systemctl stop lightdm.service" << std::endl;
+        LOG_WARN("DISPLAY environment variable is set. X11 may be using the display.");
+        LOG_WARN("For DRM/KMS mode, stop X11 first: sudo systemctl stop lightdm.service");
     }
-    
+
     // Initialize DRM/KMS display (use "auto" to find the right device)
     DrmDisplay display;
     if (!display.initialize("auto")) {
-        std::cerr << "Failed to initialize DRM display" << std::endl;
-        std::cerr << "Common causes:" << std::endl;
-        std::cerr << "  1. X11/lightdm is running (stop with: sudo systemctl stop lightdm)" << std::endl;
-        std::cerr << "  2. Another process is using the display" << std::endl;
-        std::cerr << "  3. No display connected" << std::endl;
+        LOG_ERROR("Failed to initialize DRM display");
+        LOG_ERROR("Common causes:");
+        LOG_ERROR("  1. X11/lightdm is running (stop with: sudo systemctl stop lightdm)");
+        LOG_ERROR("  2. Another process is using the display");
+        LOG_ERROR("  3. No display connected");
+        logging::shutdown();
         return 1;
     }
     
     // Set display mode (auto-detect preferred mode)
-    // Set CRT native resolution (640x480 for classic CRT mode)
-    // Try 640x480 first, fall back to 1024x768, then 800x600, then auto-detect
-    if (!display.set_mode(640, 480)) {
-        std::cout << "640x480 not available, trying 1024x768..." << std::endl;
-        if (!display.set_mode(1024, 768)) {
-            std::cout << "1024x768 not available, trying 800x600..." << std::endl;
-            if (!display.set_mode(800, 600)) {
-                std::cout << "800x600 not available, using auto-detect..." << std::endl;
+    // For Modern TV mode with bezels, we need a 16:9 resolution
+    // Try preferred resolution first, then fallbacks, then auto-detect
+    if (!display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
+        LOG_INFO("{}x{} not available, trying {}x{}...",
+                 config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT,
+                 config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1);
+        if (!display.set_mode(config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1)) {
+            LOG_INFO("{}x{} not available, trying {}x{} (CRT native)...",
+                     config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1,
+                     config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2);
+            if (!display.set_mode(config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2)) {
+                LOG_INFO("{}x{} not available, using auto-detect...",
+                         config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2);
                 if (!display.set_mode(0, 0)) {
-                    std::cerr << "Failed to set display mode" << std::endl;
+                    LOG_ERROR("Failed to set display mode");
+                    logging::shutdown();
                     return 1;
                 }
             }
         }
     }
-    
+
     auto mode = display.get_current_mode();
-    std::cout << "Display mode: " << mode.width << "x" << mode.height << "@" << mode.refresh << "Hz" << std::endl;
+    LOG_INFO("Display mode: {}x{}@{}Hz", mode.width, mode.height, mode.refresh);
     
     // Get mode info for page flipping
     drmModeConnector* conn = drmModeGetConnector(display.get_fd(), display.get_connector_id());
@@ -121,85 +136,86 @@ int main(int /* argc */, char* /* argv */[]) {
     // Initialize GBM
     GbmContext gbm;
     if (!gbm.initialize(display.get_fd(), mode.width, mode.height)) {
-        std::cerr << "Failed to initialize GBM" << std::endl;
+        LOG_ERROR("Failed to initialize GBM");
+        logging::shutdown();
         return 1;
     }
-    
+
     // Initialize EGL
     EglContext egl;
     if (!egl.initialize(gbm.get_device(), gbm.get_surface())) {
-        std::cerr << "Failed to initialize EGL" << std::endl;
+        LOG_ERROR("Failed to initialize EGL");
+        logging::shutdown();
         return 1;
     }
-    
-    std::cout << "EGL initialized: OpenGL ES " << egl.get_major_version() << "." << egl.get_minor_version() << std::endl;
-    
+
+    LOG_INFO("EGL initialized: OpenGL ES {}.{}", egl.get_major_version(), egl.get_minor_version());
+
     // Make EGL context current
     if (!egl.make_current()) {
-        std::cerr << "Failed to make EGL context current" << std::endl;
+        LOG_ERROR("Failed to make EGL context current");
+        logging::shutdown();
         return 1;
     }
-    std::cout << "EGL context made current" << std::endl;
-    
+    LOG_DEBUG("EGL context made current");
+
     // Initialize display to black immediately - professional boot experience
     // This ensures the first thing user sees is black, not random screen content
     glViewport(0, 0, mode.width, mode.height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     egl.swap_buffers();
-    std::cout << "Display initialized to black" << std::endl;
-    
+    LOG_DEBUG("Display initialized to black");
+
     // Initialize input
-    std::cout << "Initializing input..." << std::endl;
+    LOG_DEBUG("Initializing input...");
     InputManager input;
     if (!input.initialize()) {
-        std::cerr << "Warning: Failed to initialize input" << std::endl;
+        LOG_WARN("Failed to initialize input");
     } else {
-        std::cout << "Input initialized" << std::endl;
+        LOG_DEBUG("Input initialized");
     }
     
     // Initialize GPIO (for physical buttons, rotary encoder, LEDs, power switch)
-    std::cout << "Initializing GPIO..." << std::endl;
+    LOG_DEBUG("Initializing GPIO...");
     GpioManager gpio;
     if (!gpio.initialize()) {
-        std::cout << "GPIO not available (this is normal if not on Raspberry Pi)" << std::endl;
+        LOG_DEBUG("GPIO not available (normal if not on Raspberry Pi)");
     } else {
-        std::cout << "GPIO initialized" << std::endl;
+        LOG_DEBUG("GPIO initialized");
         // Stop the boot LED chase sequence now that the app is starting
         gpio.stop_boot_led_sequence();
     }
-    
+
     // Initialize GStreamer player
-    std::cout << "Initializing GStreamer player..." << std::endl;
+    LOG_DEBUG("Initializing GStreamer player...");
     GstPlayer player;
     if (!player.initialize()) {
-        std::cerr << "Failed to initialize GStreamer player" << std::endl;
+        LOG_ERROR("Failed to initialize GStreamer player");
+        logging::shutdown();
         return 1;
     }
-    std::cout << "GStreamer player initialized" << std::endl;
-    
+    LOG_INFO("GStreamer player initialized");
+
     // Initialize GStreamer renderer
-    std::cout << "Initializing GStreamer renderer..." << std::endl;
+    LOG_DEBUG("Initializing GStreamer renderer...");
     GstRenderer gst_renderer;
     // We don't need to pass EGL display explicitly as we handle GL context in GstRenderer with current context
     if (!gst_renderer.initialize(&player)) {
-        std::cerr << "Failed to initialize GStreamer renderer" << std::endl;
+        LOG_ERROR("Failed to initialize GStreamer renderer");
+        logging::shutdown();
         return 1;
     }
     gst_renderer.set_viewport_size(mode.width, mode.height);
-    std::cout << "GStreamer renderer initialized" << std::endl;
-    
+    LOG_INFO("GStreamer renderer initialized");
+
     // Initialize UI renderer
-    std::cout << "Initializing UI renderer..." << std::endl;
+    LOG_DEBUG("Initializing UI renderer...");
     Renderer ui_renderer(mode.width, mode.height);
     
     // Try multiple font paths for title font (Zen Dots)
-    std::vector<std::string> title_font_paths = {
-        "../assets/fonts/ZenDots-Regular.ttf",  // From build/ directory
-        "assets/fonts/ZenDots-Regular.ttf",     // If run from project root
-        "/opt/magic_dingus_box/magic_dingus_box_cpp/assets/fonts/ZenDots-Regular.ttf",  // Absolute path
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"  // Fallback
-    };
+    std::vector<std::string> title_font_paths = config::get_font_search_paths();
+    title_font_paths.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");  // Fallback
     
     // Try multiple font paths for body font (mono)
     std::vector<std::string> body_font_paths = {
@@ -230,35 +246,30 @@ int main(int /* argc */, char* /* argv */[]) {
     }
     
     if (title_font_path.empty() || body_font_path.empty()) {
-        std::cerr << "ERROR: Failed to find required fonts" << std::endl;
-        std::cerr << "Title font paths tried:" << std::endl;
+        LOG_ERROR("Failed to find required fonts");
         for (const auto& path : title_font_paths) {
-            std::cerr << "  - " << path << std::endl;
+            LOG_ERROR("  Title font tried: {}", path);
         }
-        std::cerr << "Body font paths tried:" << std::endl;
         for (const auto& path : body_font_paths) {
-            std::cerr << "  - " << path << std::endl;
+            LOG_ERROR("  Body font tried: {}", path);
         }
+        logging::shutdown();
         return 1;
     }
-    
+
     if (!ui_renderer.initialize(title_font_path, body_font_path)) {
-        std::cerr << "ERROR: Failed to initialize UI renderer" << std::endl;
+        LOG_ERROR("Failed to initialize UI renderer");
+        logging::shutdown();
         return 1;
     }
-    
-    std::cout << "Title font loaded from: " << title_font_path << std::endl;
-    std::cout << "Body font loaded from: " << body_font_path << std::endl;
-    
-    std::cout << "UI renderer initialized" << std::endl;
+
+    LOG_DEBUG("Title font: {}", title_font_path);
+    LOG_DEBUG("Body font: {}", body_font_path);
+    LOG_INFO("UI renderer initialized");
     
     // Load playlists
     // Try multiple paths: relative to executable, relative to build dir, and absolute
-    std::vector<std::string> playlist_paths = {
-        "../data/playlists",  // From build/ directory
-        "data/playlists",     // If run from project root
-        "/opt/magic_dingus_box/magic_dingus_box_cpp/data/playlists"  // Absolute path on Pi
-    };
+    std::vector<std::string> playlist_paths = config::get_playlist_search_paths();
     
     std::vector<Playlist> all_playlists;
     std::string playlist_dir;
@@ -273,10 +284,9 @@ int main(int /* argc */, char* /* argv */[]) {
     }
     
     if (all_playlists.empty()) {
-        std::cerr << "Warning: No playlists loaded" << std::endl;
+        LOG_WARN("No playlists loaded");
     } else {
-        std::cout << "Loaded playlists from: " << playlist_dir << std::endl;
-        std::cout << "Loaded " << all_playlists.size() << " playlists" << std::endl;
+        LOG_INFO("Loaded {} playlists from: {}", all_playlists.size(), playlist_dir);
     }
     
     // Separate video and game playlists (matching Python version)
@@ -308,6 +318,59 @@ int main(int /* argc */, char* /* argv */[]) {
     // Load saved settings (CRT effects, loop, shuffle, etc.)
     SettingsPersistence::load_settings(state);
     
+    // Load available bezels from bezels.json using JsonCpp
+    std::vector<std::string> bezel_json_paths = config::get_bezel_search_paths();
+
+    for (const auto& bezel_path : bezel_json_paths) {
+        std::ifstream bezel_file(bezel_path);
+        if (bezel_file.good()) {
+            Json::Value root;
+            Json::CharReaderBuilder builder;
+            std::string errors;
+
+            if (!Json::parseFromStream(builder, bezel_file, &root, &errors)) {
+                std::cerr << "Failed to parse bezels.json: " << errors << std::endl;
+                bezel_file.close();
+                continue;
+            }
+            bezel_file.close();
+
+            // Parse bezels array
+            if (root.isMember("bezels") && root["bezels"].isArray()) {
+                const Json::Value& bezels = root["bezels"];
+                for (const auto& bezel_json : bezels) {
+                    app::BezelInfo bezel;
+                    bezel.id = bezel_json.get("id", "").asString();
+                    bezel.name = bezel_json.get("name", "").asString();
+
+                    // Handle null file (procedural bezel)
+                    if (bezel_json.isMember("file") && !bezel_json["file"].isNull()) {
+                        bezel.file = bezel_json["file"].asString();
+                    } else {
+                        bezel.file = "";  // Procedural bezel
+                    }
+
+                    bezel.description = bezel_json.get("description", "").asString();
+
+                    if (!bezel.name.empty()) {
+                        state.available_bezels.push_back(bezel);
+                    }
+                }
+            }
+
+            std::cout << "Loaded " << state.available_bezels.size() << " bezels from " << bezel_path << std::endl;
+            break;
+        }
+    }
+    
+    // Ensure bezel_index is valid
+    if (!state.available_bezels.empty()) {
+        if (state.display_settings.bezel_index < 0 || 
+            state.display_settings.bezel_index >= static_cast<int>(state.available_bezels.size())) {
+            state.display_settings.bezel_index = 0;
+        }
+    }
+    
     // Initialize controller and sample mode
     Controller controller(&player);
     controller.set_display(&display);  // Set display reference for DRM cleanup
@@ -319,7 +382,10 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Initialize Wifi Manager
     utils::WifiManager::instance().initialize(); // Check for nmcli
-    controller.initialize_retroarch_launcher();  // Initialize RetroArch launcher
+    auto retroarch_result = controller.initialize_retroarch_launcher();
+    if (!retroarch_result) {
+        std::cerr << "Warning: " << retroarch_result.error() << std::endl;
+    }
     
     // Apply initial system volume
     controller.set_system_volume(state.master_volume);
@@ -335,29 +401,7 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Try to load intro video at startup
     // Look for intro video in common locations (prefer .30fps version)
-    // Since playlists are loaded from ../data/playlists, check ../data/intro/ first
-    std::vector<std::string> intro_paths = {
-        "../data/intro/intro.30fps.mov",  // Prioritize .mov as requested
-        "../data/intro/intro.mov",
-        "../data/intro/intro.30fps.mp4",
-        "../data/intro/intro.mp4",
-        "data/intro/intro.30fps.mov",
-        "data/intro/intro.mov",
-        "data/intro/intro.30fps.mp4",
-        "data/intro/intro.mp4",
-        "../dev_data/intro/intro.30fps.mov",
-        "../dev_data/intro/intro.mov",
-        "../dev_data/intro/intro.30fps.mp4",
-        "../dev_data/intro/intro.mp4",
-        "dev_data/intro/intro.30fps.mov",
-        "dev_data/intro/intro.mov",
-        "dev_data/intro/intro.30fps.mp4",
-        "dev_data/intro/intro.mp4",
-        "/data/intro/intro.30fps.mov",
-        "/data/intro/intro.mov",
-        "/data/intro/intro.30fps.mp4",
-        "/data/intro/intro.mp4"
-    };
+    std::vector<std::string> intro_paths = config::get_intro_search_paths();
     
     std::string intro_video_path;
     std::cout << "Checking for intro video in " << intro_paths.size() << " locations..." << std::endl;
@@ -391,8 +435,8 @@ int main(int /* argc */, char* /* argv */[]) {
         state.ui_visible_when_playing = false;  // UI transparent during intro
         state.video_active = false;  // Will be set to true when video actually starts
         
-        bool intro_loaded = controller.load_file_with_resolution(intro_video_path, playlist_directory, 0.0, 0.0, false);
-        if (intro_loaded) {
+        auto intro_result = controller.load_file_with_resolution(intro_video_path, playlist_directory, 0.0, 0.0, false);
+        if (intro_result) {
             controller.play();
             std::cout << "Intro video loaded, waiting for playback to start..." << std::endl;
             
@@ -447,21 +491,48 @@ int main(int /* argc */, char* /* argv */[]) {
     // Main loop
     bool running = true;
     auto last_frame = std::chrono::steady_clock::now();
-    
+
     std::cout << "Entering main loop..." << std::endl;
-    
-    // Frame presentation lambda
-    // Encapsulates GBM/DRM logic to be shared between main loop and loading callback
-    // Frame presentation state (moved to main scope for reset capability)
-    static std::unordered_map<uint32_t, uint32_t> fb_cache;  // bo_handle -> fb_id
-    static struct gbm_bo* previous_bo = nullptr;  // Buffer from previous frame
-    static uint32_t previous_bo_handle = 0;
-    static uint32_t current_fb_id = 0;
-    static bool first_frame = true;
-    static int force_setcrtc_frames = 0; // Force SetCrtc for multiple frames after reset
-    static int consecutive_buffer_failures = 0;  // Track consecutive buffer lock failures
-    static int page_flip_failures = 0;  // Track page flip failures
-    static int successful_page_flips = 0;  // Track successful page flips for counter reset
+
+    // Frame presentation context - encapsulates all GBM/DRM state
+    // Using a struct instead of static variables allows proper cleanup and reset
+    struct FrameContext {
+        std::unordered_map<uint32_t, uint32_t> fb_cache;  // bo_handle -> fb_id
+        struct gbm_bo* previous_bo = nullptr;             // Buffer from previous frame
+        uint32_t previous_bo_handle = 0;
+        uint32_t current_fb_id = 0;
+        bool first_frame = true;
+        int force_setcrtc_frames = 0;      // Force SetCrtc for multiple frames after reset
+        int consecutive_buffer_failures = 0;  // Track consecutive buffer lock failures
+        int page_flip_failures = 0;           // Track page flip failures
+        int successful_page_flips = 0;        // Track successful page flips for counter reset
+
+        // Reset all state for display recovery
+        void reset(int drm_fd, struct gbm_surface* gbm_surface) {
+            // Clean up framebuffers
+            for (auto& pair : fb_cache) {
+                drmModeRmFB(drm_fd, pair.second);
+            }
+            fb_cache.clear();
+
+            // Release GBM buffer
+            if (previous_bo && gbm_surface) {
+                gbm_surface_release_buffer(gbm_surface, previous_bo);
+            }
+            previous_bo = nullptr;
+            previous_bo_handle = 0;
+            current_fb_id = 0;
+
+            // Reset flags
+            first_frame = true;
+            force_setcrtc_frames = 10;  // Force SetCrtc for stability after reset
+            consecutive_buffer_failures = 0;
+            page_flip_failures = 0;
+            successful_page_flips = 0;
+        }
+    };
+
+    FrameContext frame_ctx;
 
     // Frame presentation lambda
     // Encapsulates GBM/DRM logic to be shared between main loop and loading callback
@@ -469,83 +540,82 @@ int main(int /* argc */, char* /* argv */[]) {
         // Double buffering strategy (GBM pools typically have only 2-3 buffers):
         // - previous_bo: previous frame (release after we've presented next frame)
         // - current bo: being presented now
-        
+
         // Release the previous buffer BEFORE locking a new one
         // This ensures GBM pool has an available buffer
         // We release after 1 frame delay (previous frame is safe after we present next)
-        if (previous_bo != nullptr) {
+        if (frame_ctx.previous_bo != nullptr) {
             // CRITICAL: DO NOT remove framebuffer from cache when releasing GBM buffer
             // The framebuffer should stay in cache so we can reuse it if the buffer cycles back
             // Only remove framebuffers that are definitely no longer needed (old entries in cache)
-            
+
             // CRITICAL: Release the GBM buffer BEFORE locking a new one
             // This prevents GBM from trying to allocate new buffers
             // Validate that previous_bo is actually different from what we're about to lock
-            gbm_surface_release_buffer(egl.get_gbm_surface(), previous_bo);
-            previous_bo = nullptr;
-            previous_bo_handle = 0;
+            gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
+            frame_ctx.previous_bo = nullptr;
+            frame_ctx.previous_bo_handle = 0;
         }
-        
+
         // Clean up old framebuffers that are no longer in use
         // Keep only framebuffers for buffers we might reuse (limit cache to 4 for better stability)
-        static const size_t MAX_FB_CACHE = 4;
-        while (fb_cache.size() > MAX_FB_CACHE) {
+        constexpr size_t MAX_FB_CACHE = 4;
+        while (frame_ctx.fb_cache.size() > MAX_FB_CACHE) {
             // Remove oldest entry if it's not the current framebuffer
-            auto oldest = fb_cache.begin();
+            auto oldest = frame_ctx.fb_cache.begin();
             uint32_t old_fb_id = oldest->second;
-            if (old_fb_id != current_fb_id) {
+            if (old_fb_id != frame_ctx.current_fb_id) {
                 drmModeRmFB(display.get_fd(), old_fb_id);
             }
-            fb_cache.erase(oldest);
+            frame_ctx.fb_cache.erase(oldest);
         }
-        
+
         // Now lock the front buffer (should succeed since we just released one)
         struct gbm_bo* bo = gbm_surface_lock_front_buffer(egl.get_gbm_surface());
         if (!bo) {
-            consecutive_buffer_failures++;
+            frame_ctx.consecutive_buffer_failures++;
             std::cerr << "Failed to lock front buffer! GPU memory may be exhausted." << std::endl;
-            // std::cerr << "  Frame: " << frame_count << std::endl; // frame_count not captured here easily, skipping log
-            std::cerr << "  Consecutive failures: " << consecutive_buffer_failures << std::endl;
+            std::cerr << "  Consecutive failures: " << frame_ctx.consecutive_buffer_failures << std::endl;
             std::cerr << "  This usually means GBM buffer pool is exhausted." << std::endl;
-            
+
             // If we've had too many consecutive failures, force recovery
-            if (consecutive_buffer_failures > 5) {
+            if (frame_ctx.consecutive_buffer_failures > 5) {
                 std::cerr << "CRITICAL: Too many consecutive buffer failures - attempting recovery" << std::endl;
                 // Force cleanup of all cached framebuffers
-                for (auto& pair : fb_cache) {
-                    if (pair.second != current_fb_id) {
+                for (auto& pair : frame_ctx.fb_cache) {
+                    if (pair.second != frame_ctx.current_fb_id) {
                         drmModeRmFB(display.get_fd(), pair.second);
                     }
                 }
-                fb_cache.clear();
+                frame_ctx.fb_cache.clear();
                 // Re-add current framebuffer if we have one
-                if (current_fb_id != 0) {
+                if (frame_ctx.current_fb_id != 0) {
                     // We can't recover the handle, so we'll lose this framebuffer
                     // But it's better than freezing
                 }
-                if (previous_bo != nullptr) {
-                    gbm_surface_release_buffer(egl.get_gbm_surface(), previous_bo);
-                    previous_bo = nullptr;
-                    previous_bo_handle = 0;
+                if (frame_ctx.previous_bo != nullptr) {
+                    gbm_surface_release_buffer(egl.get_gbm_surface(), frame_ctx.previous_bo);
+                    frame_ctx.previous_bo = nullptr;
+                    frame_ctx.previous_bo_handle = 0;
                 }
-                consecutive_buffer_failures = 0;  // Reset counter after recovery
+                frame_ctx.consecutive_buffer_failures = 0;  // Reset counter after recovery
                 std::cerr << "Recovery complete - cleared framebuffer cache" << std::endl;
             }
-            
+
             // Sleep a bit and try again next frame
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
             return;
         }
-        
+
         // Successfully locked buffer - reset failure counter
-        consecutive_buffer_failures = 0;
-        
+        frame_ctx.consecutive_buffer_failures = 0;
+
         uint32_t bo_handle = gbm_bo_get_handle(bo).u32;
         uint32_t fb_id = 0;
-        
+
         // Check if we already have a framebuffer for this buffer handle
-        auto it = fb_cache.find(bo_handle);
-        if (it != fb_cache.end()) {
+        auto it = frame_ctx.fb_cache.find(bo_handle);
+        if (it != frame_ctx.fb_cache.end()) {
             // Reuse existing framebuffer
             fb_id = it->second;
         } else {
@@ -553,14 +623,14 @@ int main(int /* argc */, char* /* argv */[]) {
             uint32_t handles[4] = {0};
             uint32_t strides[4] = {0};
             uint32_t offsets[4] = {0};
-            
+
             handles[0] = bo_handle;
             strides[0] = gbm_bo_get_stride(bo);
             offsets[0] = 0;
-            
+
             // Use the format we set when creating the GBM surface (GBM_FORMAT_XRGB8888)
             uint32_t format = GBM_FORMAT_XRGB8888;
-            
+
             // Try AddFB2 first (modern API)
             int ret = drmModeAddFB2(display.get_fd(), mode.width, mode.height, format,
                                     handles, strides, offsets, &fb_id, 0);
@@ -568,44 +638,44 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Fallback to AddFB (legacy API)
                 ret = drmModeAddFB(display.get_fd(), mode.width, mode.height, 24, 32,
                                   strides[0], handles[0], &fb_id);
-                if (ret != 0 && first_frame) {
+                if (ret != 0 && frame_ctx.first_frame) {
                     std::cerr << "AddFB2 failed (ret=" << ret << "), AddFB also failed (ret=" << ret << ")" << std::endl;
                 }
             }
-            
+
             if (ret == 0 && fb_id != 0) {
                 // Cache the framebuffer (cache is cleaned up above, so just add it)
-                fb_cache[bo_handle] = fb_id;
+                frame_ctx.fb_cache[bo_handle] = fb_id;
             } else {
                 std::cerr << "ERROR: Failed to create DRM framebuffer (ret=" << ret << "): " << strerror(errno) << std::endl;
                 std::cerr << "  width=" << mode.width << ", height=" << mode.height << std::endl;
                 std::cerr << "  stride=" << strides[0] << ", handle=" << handles[0] << std::endl;
-                std::cerr << "  fb_cache size=" << fb_cache.size() << std::endl;
+                std::cerr << "  fb_cache size=" << frame_ctx.fb_cache.size() << std::endl;
                 gbm_surface_release_buffer(egl.get_gbm_surface(), bo);
                 return;  // Skip this frame if framebuffer creation failed
             }
         }
-        
-        current_fb_id = fb_id;
+
+        frame_ctx.current_fb_id = fb_id;
         
         // Present the framebuffer
         if (fb_id != 0) {
-            if (first_frame || force_setcrtc_frames > 0) {
+            if (frame_ctx.first_frame || frame_ctx.force_setcrtc_frames > 0) {
                 // Use SetCrtc for first frame and for several frames after reset
                 // This helps stabilize after RetroArch returns control
                 uint32_t connector_id = display.get_connector_id();
-                if (first_frame) {
+                if (frame_ctx.first_frame) {
                     std::cout << "Setting initial CRTC: fb_id=" << fb_id << ", crtc_id=" << display.get_crtc_id() << std::endl;
                 }
                 int ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
                                        &connector_id, 1, &mode_info);
                 if (ret == 0) {
-                    if (first_frame) {
+                    if (frame_ctx.first_frame) {
                         std::cout << "Initial CRTC set successfully!" << std::endl;
-                        first_frame = false;
+                        frame_ctx.first_frame = false;
                     }
-                    if (force_setcrtc_frames > 0) {
-                        force_setcrtc_frames--;
+                    if (frame_ctx.force_setcrtc_frames > 0) {
+                        frame_ctx.force_setcrtc_frames--;
                     }
                 } else {
                     std::cerr << "Failed to set CRTC (ret=" << ret << "): " << strerror(errno) << std::endl;
@@ -614,18 +684,18 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Subsequent frames: use page flip
                 static PageFlipContext flip_ctx;
                 flip_ctx.waiting_for_flip = true;
-                
+
                 int ret = drmModePageFlip(display.get_fd(), display.get_crtc_id(), fb_id,
                                          DRM_MODE_PAGE_FLIP_EVENT, &flip_ctx);
                 if (ret != 0) {
                     // Page flip failed - increment counter and log periodically
-                    page_flip_failures++;
+                    frame_ctx.page_flip_failures++;
                     int err = errno;
-                    if (page_flip_failures % 10 == 0 || page_flip_failures < 5) {
+                    if (frame_ctx.page_flip_failures % 10 == 0 || frame_ctx.page_flip_failures < 5) {
                         std::cerr << "Warning: Page flip failed (ret=" << ret << ", errno=" << err << ": " << strerror(err) << ")" << std::endl;
-                        std::cerr << "  (Failures: " << page_flip_failures << ", Successes: " << successful_page_flips << ")" << std::endl;
+                        std::cerr << "  (Failures: " << frame_ctx.page_flip_failures << ", Successes: " << frame_ctx.successful_page_flips << ")" << std::endl;
                     }
-                    
+
                     // If page flip fails, fall back to SetCrtc
                     uint32_t connector_id = display.get_connector_id();
                     ret = drmModeSetCrtc(display.get_fd(), display.get_crtc_id(), fb_id, 0, 0,
@@ -638,16 +708,16 @@ int main(int /* argc */, char* /* argv */[]) {
                     drmEventContext evctx = {};
                     evctx.version = 2;
                     evctx.page_flip_handler = page_flip_handler;
-                    
+
                     fd_set fds;
                     FD_ZERO(&fds);
                     FD_SET(display.get_fd(), &fds);
-                    
+
                     // Wait with timeout (e.g. 100ms) to avoid hanging if event is lost
                     struct timeval timeout;
                     timeout.tv_sec = 0;
                     timeout.tv_usec = 100000; // 100ms
-                    
+
                     while (flip_ctx.waiting_for_flip) {
                         int sret = select(display.get_fd() + 1, &fds, NULL, NULL, &timeout);
                         if (sret > 0) {
@@ -660,27 +730,100 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
 
                     // Reset failure counter periodically
-                    successful_page_flips++;
-                    if (successful_page_flips >= 100) {
+                    frame_ctx.successful_page_flips++;
+                    if (frame_ctx.successful_page_flips >= 100) {
                         // Reset page flip failure counter every 100 successful flips
-                        if (page_flip_failures > 0) {
-                            std::cout << "Page flip recovery: " << page_flip_failures 
-                                      << " failures in last " << successful_page_flips << " frames" << std::endl;
+                        if (frame_ctx.page_flip_failures > 0) {
+                            std::cout << "Page flip recovery: " << frame_ctx.page_flip_failures
+                                      << " failures in last " << frame_ctx.successful_page_flips << " frames" << std::endl;
                         }
-                        page_flip_failures = 0;
-                        successful_page_flips = 0;
+                        frame_ctx.page_flip_failures = 0;
+                        frame_ctx.successful_page_flips = 0;
                     }
                 }
             }
         }
-        
+
         // Save this buffer to be released on the next frame
         // After we present the next frame, this one will be safe to release
         // We only keep 2 buffers: current (being scanned) and previous (just finished)
-        previous_bo = bo;
-        previous_bo_handle = bo_handle;
+        frame_ctx.previous_bo = bo;
+        frame_ctx.previous_bo_handle = bo_handle;
     };
     
+    // Initialize resolution rendering state
+    bool mode_applied = false;
+    
+    // Probe hardware resolution but RESPECT saved user settings.
+    // Adapters often report High Res (720p) even for CRTs, so we shouldn't auto-switch based on resolution alone.
+    // Instead, we rely on our Fallback Logic and Logical Scaling to handle whatever the user chose.
+    if (display.set_mode(0, 0)) {
+        auto probe = display.get_current_mode();
+        std::cout << "Hardware Probe: " << probe.width << "x" << probe.height << std::endl;
+    } else {
+        std::cerr << "Hardware Probe failed. Defaulting to safe CRT_NATIVE resolution logic." << std::endl;
+    }
+    
+    // Apply Mode-Specific Resolution logic using SAVED state
+    if (state.display_settings.mode == app::DisplayMode::CRT_NATIVE) {
+        // CRT Native: Use Auto/Preferred resolution
+        if (display.set_mode(0, 0)) {
+             // SAFETY CHECK: If Auto mode picked a very high resolution (e.g. 4K),
+             // it might exceed Pi 5 bandwidth/plane limits with our overlay setup.
+             // Clamp to safe resolution to ensure image is visible.
+             auto current = display.get_current_mode();
+             if (current.height > config::display::CRT_MAX_HEIGHT) {
+                 std::cout << "Native resolution " << current.height << "p too high for CRT Native mode safely. Clamping to "
+                           << config::display::PREFERRED_HEIGHT << "p." << std::endl;
+                 if (display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
+                     std::cout << "Clamped to " << config::display::PREFERRED_WIDTH << "x"
+                               << config::display::PREFERRED_HEIGHT << "." << std::endl;
+                 } else {
+                     std::cerr << "Clamp to " << config::display::PREFERRED_HEIGHT << "p failed. Reverting to Auto." << std::endl;
+                     display.set_mode(0, 0);
+                 }
+             }
+             mode_applied = true;
+        } else {
+             std::cerr << "CRT Auto-Mode failed!" << std::endl;
+        }
+    } else {
+         // Modern TV: Force preferred resolution for best performance/scaling integration
+         if (display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
+             std::cout << "Forcing Modern TV resolution: " << config::display::PREFERRED_WIDTH << "x"
+                       << config::display::PREFERRED_HEIGHT << std::endl;
+             mode_applied = true;
+         } else {
+             std::cerr << "Failed to set Modern TV " << config::display::PREFERRED_WIDTH << "x"
+                       << config::display::PREFERRED_HEIGHT << "!" << std::endl;
+         }
+    }
+    
+    // Fallback if requested mode failed
+    if (!mode_applied) {
+        std::cout << "Resolution set failed. Attempting fallback to 640x480..." << std::endl;
+        if (!display.set_mode(640, 480)) {
+            std::cout << "Fallback failed. Attempting Auto/Preferred mode..." << std::endl;
+            display.set_mode(0, 0);
+        }
+    }
+
+    // Update renderers with actual mode obtained
+    mode = display.get_current_mode();
+    std::cout << "Final Display Mode: " << mode.width << "x" << mode.height << " @ " << (mode.refresh/1000.0) << "Hz" << std::endl;
+    gst_renderer.set_screen_size(mode.width, mode.height);
+    
+    // For CRT Native, force logical 640x480 layout regardless of physical resolution
+    // This ensures large text and correct aspect ratio (assuming anamorphic squeeze)
+    if (state.display_settings.mode == app::DisplayMode::CRT_NATIVE) {
+        ui_renderer.resize_screen(640, 480);
+    } else {
+        ui_renderer.resize_screen(mode.width, mode.height);
+    }
+    
+    // Track current mode to detect changes at runtime
+    app::DisplayMode current_display_mode = state.display_settings.mode;
+
     while (running) {
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -693,34 +836,21 @@ int main(int /* argc */, char* /* argv */[]) {
         // Check for display reset signal (e.g. after returning from RetroArch)
         if (state.reset_display) {
             std::cout << "Resetting display state after external application..." << std::endl;
-            
+
             // Re-acquire DRM master (in case it was dropped or stolen)
             if (!display.acquire_master()) {
                 std::cerr << "Warning: Failed to re-acquire DRM master" << std::endl;
             }
-            
+
             // Force mode restoration (RetroArch might have changed resolution)
             if (!display.set_mode(mode.width, mode.height)) {
                 std::cerr << "Warning: Failed to restore display mode: " << mode.width << "x" << mode.height << std::endl;
             } else {
                 std::cout << "Restored display mode: " << mode.width << "x" << mode.height << std::endl;
             }
-            
-            first_frame = true;
-            force_setcrtc_frames = 10; // Force SetCrtc for 10 frames after reset for stability
-            page_flip_failures = 0;
-            successful_page_flips = 0;
-            // Clear framebuffer cache to force fresh buffers
-            for (auto& pair : fb_cache) {
-                drmModeRmFB(display.get_fd(), pair.second);
-            }
-            fb_cache.clear();
-            if (previous_bo) {
-                gbm_surface_release_buffer(egl.get_gbm_surface(), previous_bo);
-                previous_bo = nullptr;
-                previous_bo_handle = 0;
-            }
-            current_fb_id = 0;
+
+            // Reset all frame presentation state (framebuffers, GBM buffers, counters)
+            frame_ctx.reset(display.get_fd(), egl.get_gbm_surface());
             state.reset_display = false;
             
             // CRITICAL: Re-make EGL context current after RetroArch released it
@@ -761,6 +891,49 @@ int main(int /* argc */, char* /* argv */[]) {
                  std::cerr << "Error: Initial swap buffers after reset failed!" << std::endl;
             } else {
                  std::cout << "Initial swap buffers after reset success." << std::endl;
+            }
+        }
+        
+        // Check for display mode changes from Settings Menu
+        if (state.display_settings.mode != current_display_mode) {
+            std::cout << "Display Mode changed! Switching resolution..." << std::endl;
+            current_display_mode = state.display_settings.mode;
+            
+            bool ok = false;
+            if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
+                // Switch to Auto/Preferred (Native)
+                ok = display.set_mode(0, 0);
+                if (ok) {
+                     auto current = display.get_current_mode();
+                     if (current.height > config::display::CRT_MAX_HEIGHT) {
+                         std::cout << "Native resolution too high. Clamping to "
+                                   << config::display::PREFERRED_HEIGHT << "p." << std::endl;
+                         display.set_mode(config::display::PREFERRED_WIDTH,
+                                          config::display::PREFERRED_HEIGHT); // Best effort clamp
+                     }
+                }
+            } else {
+                // Switch to preferred resolution for Modern TV
+                ok = display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT);
+                if (!ok) ok = display.set_mode(config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1);
+            }
+            
+            if (ok) {
+                // Update mode info and notify renderers
+                mode = display.get_current_mode();
+                std::cout << "Switched to: " << mode.name << " (" << mode.width << "x" << mode.height << ")" << std::endl;
+                
+                gst_renderer.set_screen_size(mode.width, mode.height);
+                
+                if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
+                    ui_renderer.resize_screen(640, 480);
+                } else {
+                    ui_renderer.resize_screen(mode.width, mode.height);
+                }
+                
+                // Ensure viewport is reset
+                glViewport(0, 0, mode.width, mode.height);
+                glClear(GL_COLOR_BUFFER_BIT);
             }
         }
         
@@ -960,18 +1133,18 @@ int main(int /* argc */, char* /* argv */[]) {
                                         };
                                         
                                         // Launch the game
-                                        bool launched = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
-                                        
+                                        auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+
                                         // Reset loading state
                                         state.is_loading_game = false;
-                                        
-                                        if (launched) {
+
+                                        if (launch_result) {
                                             std::cout << "Game launched successfully" << std::endl;
                                             // Exit settings menu after successful launch
                                             // The wrapper script will stop the UI service, so we don't need to do anything else
                                             settings_menu.close();
                                         } else {
-                                            std::cout << "Game launch failed" << std::endl;
+                                            std::cout << "Game launch failed: " << launch_result.error() << std::endl;
                                         }
                                     } else {
                                         std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
@@ -1167,14 +1340,18 @@ int main(int /* argc */, char* /* argv */[]) {
                         const auto& pl = state.playlists[state.selected_index];
                         if (!pl.items.empty() && pl.is_video_playlist()) {
                             // Load first item of new playlist
-                            load_success = controller.load_playlist_item(state, pl, 0, playlist_directory);
+                            auto load_result = controller.load_playlist_item(state, pl, 0, playlist_directory);
+                            load_success = static_cast<bool>(load_result);
+                            if (!load_result) {
+                                std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
+                            }
                             // Track which playlist and item is playing (already set above)
                             // When starting video, hide UI completely so video shows through fully
                             state.ui_visible_when_playing = false;
                             // Original volume will be captured in update_state when video becomes active
                         }
                     }
-                    
+
                     // If load failed, clear the flag immediately to allow retry
                     if (!load_success) {
                         state.is_switching_playlist = false;
@@ -1210,10 +1387,10 @@ int main(int /* argc */, char* /* argv */[]) {
                         if (!pl.items.empty() && pl.is_video_playlist()) {
                             state.is_switching_playlist = true;  // Set flag
                             state.playlist_switch_start_time = std::chrono::steady_clock::now();
-                            
+
                             // Load first item of playlist
-                            bool load_success = controller.load_playlist_item(state, pl, 0, playlist_directory);
-                            if (load_success) {
+                            auto load_result = controller.load_playlist_item(state, pl, 0, playlist_directory);
+                            if (load_result) {
                                 // Track which playlist and item is playing
                                 state.current_playlist_index = state.selected_index;
                                 state.current_item_index = 0;
@@ -1222,6 +1399,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                 // Original volume will be captured in update_state when video becomes active
                             } else {
                                 // Load failed - clear flag immediately
+                                std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
                                 state.is_switching_playlist = false;
                             }
                         }
@@ -1452,12 +1630,12 @@ int main(int /* argc */, char* /* argv */[]) {
                 // In Master Shuffle we always advance to a new random video
                 // BUT we must ensure the new video has actually started playing
                 // to avoid double-triggering on stale state from the previous video
-                can_advance = state.playback_started;
+                can_advance = state.playback_started_;
             } else {
                 // Normal playlist advance logic
                 can_advance = (!state.ui_visible_when_playing &&
                                state.current_item_index != state.last_advanced_item_index &&
-                               state.playback_started);
+                               state.playback_started_);
             }
                 
                 if (can_advance) {
@@ -1477,7 +1655,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     std::cout << "NOT auto-advancing: item=" << state.current_item_index
                               << ", ui_visible=" << state.ui_visible_when_playing
                               << ", last_advanced=" << state.last_advanced_item_index
-                              << ", playback_started=" << state.playback_started << std::endl;
+                              << ", playback_started=" << state.playback_started_ << std::endl;
                 }
                 }
             } else {
@@ -1572,16 +1750,72 @@ int main(int /* argc */, char* /* argv */[]) {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         
+        // Calculate 4:3 viewport for Modern TV mode
+        // This is used for both video and UI rendering
+        bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
+        int content_x = 0, content_y = 0, content_w = mode.width, content_h = mode.height;
+        
+        if (use_letterbox) {
+            // Calculate 4:3 content area centered in screen
+            // Height stays the same, width is adjusted for 4:3 aspect ratio
+            content_h = mode.height;
+            content_w = mode.height * 4 / 3;  // 4:3 aspect ratio
+            content_x = (mode.width - content_w) / 2;  // Center horizontally
+            content_y = 0;
+            
+            // If calculated width is larger than screen, pillarbox based on width
+            if (content_w > static_cast<int>(mode.width)) {
+                content_w = mode.width;
+                content_h = mode.width * 3 / 4;
+                content_x = 0;
+                content_y = (mode.height - content_h) / 2;
+            }
+        }
+        
         // Render video - gst will fill the entire framebuffer, so no need to clear if video is ready
         // This handles both intro video and regular video playback
         if (should_render_video) {
+            // Set letterbox mode based on display settings
+            gst_renderer.set_letterbox_mode(use_letterbox);
+            
+            // In Modern TV mode, set viewport to 4:3 content area for video
+            if (use_letterbox) {
+                glViewport(content_x, content_y, content_w, content_h);
+            }
+            
             gst_renderer.render();
         }
         
         // Render UI overlay (will skip if intro video is showing - handled in renderer.cpp)
         // Only render UI if intro is not showing, or if intro is fading out
+        // Note: ui_renderer.render() includes CRT effects at the end
         if (!state.showing_intro_video || state.intro_fading_out) {
+            // Set viewport to 4:3 content area for UI in Modern TV mode
+            // Also update UI renderer's internal dimensions for proper projection matrix
+            glViewport(content_x, content_y, content_w, content_h);
+            if (use_letterbox) {
+                ui_renderer.set_content_viewport(content_w, content_h);
+            }
             ui_renderer.render(state);
+            
+            // Reset viewport after UI render
+            if (use_letterbox) {
+                ui_renderer.reset_content_viewport();
+            }
+        }
+        
+        // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
+        // The bezel PNG is stretched fullscreen - content is visible through the transparent center
+        if (use_letterbox && !state.available_bezels.empty() && 
+            state.display_settings.bezel_index >= 0 && 
+            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
+            const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
+            if (!bezel.file.empty()) {
+                ui_renderer.load_bezel(bezel.file);
+                // Reset viewport to fullscreen for bezel overlay
+                glViewport(0, 0, mode.width, mode.height);
+                ui_renderer.render_bezel();
+            }
         }
         
         // Swap EGL buffers
@@ -1607,9 +1841,8 @@ int main(int /* argc */, char* /* argv */[]) {
         }
     }
     
-    std::cout << "Shutting down..." << std::endl;
-    
     // Cleanup
+    LOG_INFO("Shutting down...");
     ui_renderer.cleanup();
     gst_renderer.cleanup();
     player.cleanup();
@@ -1617,7 +1850,10 @@ int main(int /* argc */, char* /* argv */[]) {
     egl.cleanup();
     gbm.cleanup();
     display.cleanup();
-    
+
+    LOG_INFO("Shutdown complete");
+    logging::shutdown();
+
     return 0;
 }
 

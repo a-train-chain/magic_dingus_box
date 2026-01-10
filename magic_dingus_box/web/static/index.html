@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Magic Dingus Box - Content Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=6">
+    <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 
 <body>
@@ -31,6 +31,46 @@
                 </div>
                 <div id="deviceList" class="device-list"></div>
                 <button id="manualConnect" class="btn-secondary">Connect to IP Address</button>
+            </div>
+        </section>
+
+        <!-- Device Settings & Backup Section -->
+        <section class="collapsible-section settings-section" id="settingsSectionWrapper" style="display: none;">
+            <div class="section-header" onclick="toggleSection('settingsContent')">
+                <h2>
+                    <span class="collapse-icon" id="settingsContentIcon">▶</span>
+                    Settings & Backup
+                </h2>
+            </div>
+            <div class="section-content collapsed" id="settingsContent">
+                <div class="settings-grid">
+                    <!-- Backup Section -->
+                    <div class="settings-card">
+                        <h4>Backup</h4>
+                        <p class="settings-description">Download a backup of all playlists, settings, and device configuration.</p>
+                        <button id="downloadBackup" class="btn-primary" onclick="downloadBackup()">Download Backup</button>
+                    </div>
+
+                    <!-- Restore Section -->
+                    <div class="settings-card">
+                        <h4>Restore</h4>
+                        <p class="settings-description">Restore from a previously downloaded backup file.</p>
+                        <div class="restore-upload">
+                            <input type="file" id="restoreFile" accept=".zip" style="display: none;" onchange="handleRestoreUpload(this)">
+                            <button id="restoreButton" class="btn-secondary" onclick="document.getElementById('restoreFile').click()">Select Backup File</button>
+                        </div>
+                        <div id="restoreStatus" class="restore-status"></div>
+                    </div>
+
+                    <!-- System Health Section -->
+                    <div class="settings-card">
+                        <h4>System Health</h4>
+                        <div id="healthInfo" class="health-info">
+                            <span class="loading">Loading...</span>
+                        </div>
+                        <button class="btn-secondary small" onclick="refreshHealthInfo()">Refresh</button>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -282,7 +322,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=16"></script>
+    <script src="/static/manager.js?v=17"></script>
 </body>
 
 </html>

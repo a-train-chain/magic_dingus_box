@@ -3,6 +3,7 @@
 #include "app_state.h"
 #include "../video/video_player.h"
 #include "../retroarch/retroarch_launcher.h"
+#include "../utils/result.h"
 #include <string>
 #include <functional>
 
@@ -25,7 +26,7 @@ public:
     
     // Playback control
     void load_file(const std::string& path, double start = 0.0, double end = 0.0, bool loop = false);
-    bool load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start = 0.0, double end = 0.0, bool loop = false);
+    utils::Result<> load_file_with_resolution(const std::string& path, const std::string& playlist_dir, double start = 0.0, double end = 0.0, bool loop = false);
     void play();
     void pause();
     void toggle_pause();
@@ -51,9 +52,8 @@ public:
     
     // Load a playlist item (video or game)
     // progress_callback: Optional callback to run while waiting (e.g. for loading animation)
-    // Load a playlist item (video or game)
-    // progress_callback: Optional callback to run while waiting (e.g. for loading animation)
-    bool load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr);
+    // Returns Result with error message on failure
+    utils::Result<> load_playlist_item(AppState& state, const app::Playlist& playlist, int item_index, const std::string& playlist_directory, std::function<void()> progress_callback = nullptr);
     
     // Navigation
     void load_next_item(AppState& state, const std::string& playlist_directory);
@@ -69,7 +69,7 @@ public:
     void set_system_volume(int percent);
     
     // Initialize RetroArch launcher
-    void initialize_retroarch_launcher();
+    utils::Result<> initialize_retroarch_launcher();
     
     // Get RetroArch launcher (for core downloader)
     retroarch::RetroArchLauncher& get_retroarch_launcher() { return retroarch_launcher_; }

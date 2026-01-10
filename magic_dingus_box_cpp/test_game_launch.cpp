@@ -1,13 +1,13 @@
 #include <iostream>
 #include <string>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <cstdlib>
 #include <unistd.h>
 #include <sys/wait.h>
 #include "../src/retroarch/retroarch_launcher.h"
 #include "../src/utils/path_resolver.h"
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 int main() {
     std::cout << "=== Testing Super Mario Bros. 3 Launch ===" << std::endl;
