@@ -683,32 +683,53 @@ void Renderer::render(const app::AppState& state) {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
         
         // Render QR code when Info submenu is active
-        if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO && 
-            !state.content_manager_url.empty()) {
-            // Position QR code centered in the menu panel, below the menu items
-            uint32_t menu_width = width_ / 2;
-            float menu_x = static_cast<float>(width_) - menu_width;
-            float qr_size = 140.0f;  // Larger QR code for easier scanning
+        if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO) {
+            // Use the prioritized URL from app state
+            std::string qr_url = state.content_manager_url;
+            std::string qr_label;
             
-            // Calculate Y position: menu items take ~280px (header ~70px + 4 items * ~50px + spacing)
-            // Place QR code in the middle of remaining space
-            float menu_items_end = 320.0f;  // Approximate end of menu items
-            float footer_start = static_cast<float>(height_) - 70.0f;  // Footer hint area (increased margin)
-            float available_space = footer_start - menu_items_end;
+            if (!qr_url.empty()) {
+                // Determine label based on IP
+                if (qr_url.find("192.168.7.1") != std::string::npos) {
+                    qr_label = "USB Connection (Preferred)";
+                } else {
+                    qr_label = "Wi-Fi Connection";
+                }
+            }
             
-            // Center QR code + hint text in available space
-            float qr_with_hint_height = qr_size + 35.0f;  // QR + padding + hint text
-            float qr_y = menu_items_end + (available_space - qr_with_hint_height) / 2.0f;
-            float qr_x = menu_x + (static_cast<float>(menu_width) - qr_size) / 2.0f;
-            
-            render_qr_code(state.content_manager_url, qr_x, qr_y, qr_size, 1.0f);
-            
-            // Draw helper text below QR code
-            std::string qr_hint = "Scan with phone camera";
-            int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
-            float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
-            float hint_y = qr_y + qr_size + 15.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
-            draw_text(qr_hint, hint_x, hint_y, theme_->font_small_size, theme_->fg, false, 1.0f);
+            if (!qr_url.empty()) {
+                // Position QR code centered in the menu panel
+                uint32_t menu_width = width_ / 2;
+                float menu_x = static_cast<float>(width_) - menu_width;
+
+                // Calculate Y position: simplified menu (Header + Status + Back) takes space
+                // Start below the menu items
+                float menu_items_end = 280.0f;  // Safe distance below menu items
+                float footer_start = static_cast<float>(height_) - 70.0f;
+                float available_space = footer_start - menu_items_end;
+                
+                // Center QR code + hint text in available space
+                float qr_size = 130.0f;  // Slightly optimized size
+                float qr_with_hint_height = qr_size + 50.0f;  // QR + padding + label + hint text
+                
+                float qr_y = menu_items_end + (available_space - qr_with_hint_height) / 2.0f;
+                float qr_x = menu_x + (static_cast<float>(menu_width) - qr_size) / 2.0f;
+                
+                render_qr_code(qr_url, qr_x, qr_y, qr_size, 1.0f);
+                
+                // Draw connection type label above hint
+                int label_width = body_font_manager_->get_text_width(qr_label, theme_->font_small_size);
+                float label_x = menu_x + (static_cast<float>(menu_width) - label_width) / 2.0f;
+                float label_y = qr_y + qr_size + 10.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+                draw_text(qr_label, label_x, label_y, theme_->font_small_size, theme_->accent, false, 1.0f);
+                
+                // Draw helper text below label
+                std::string qr_hint = "Scan with phone camera";
+                int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
+                float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
+                float hint_y = label_y + 20.0f;
+                draw_text(qr_hint, hint_x, hint_y, theme_->font_small_size, theme_->fg, false, 1.0f);
+            }
         }
     }
     

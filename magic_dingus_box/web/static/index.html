@@ -5,14 +5,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Magic Dingus Box - Content Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=7">
+    <link rel="stylesheet" href="/static/style.css?v=31">
 </head>
 
 <body>
     <div class="container">
         <header>
-            <h1>Magic Dingus Box</h1>
+            <img src="/static/images/logo.png" alt="Magic Dingus Box" class="header-logo">
             <p class="subtitle">Content Manager</p>
+            <div id="connectionBadge" class="connection-badge disconnected">
+                <span class="badge-icon">⚡</span>
+                <span id="connectionBadgeText">Not Connected</span>
+            </div>
         </header>
 
         <!-- Collapsible Device Selector -->
@@ -47,8 +51,10 @@
                     <!-- Backup Section -->
                     <div class="settings-card">
                         <h4>Backup</h4>
-                        <p class="settings-description">Download a backup of all playlists, settings, and device configuration.</p>
-                        <button id="downloadBackup" class="btn-primary" onclick="downloadBackup()">Download Backup</button>
+                        <p class="settings-description">Download a backup of all playlists, settings, and device
+                            configuration.</p>
+                        <button id="downloadBackup" class="btn-primary" onclick="downloadBackup()">Download
+                            Backup</button>
                     </div>
 
                     <!-- Restore Section -->
@@ -56,8 +62,10 @@
                         <h4>Restore</h4>
                         <p class="settings-description">Restore from a previously downloaded backup file.</p>
                         <div class="restore-upload">
-                            <input type="file" id="restoreFile" accept=".zip" style="display: none;" onchange="handleRestoreUpload(this)">
-                            <button id="restoreButton" class="btn-secondary" onclick="document.getElementById('restoreFile').click()">Select Backup File</button>
+                            <input type="file" id="restoreFile" accept=".zip" style="display: none;"
+                                onchange="handleRestoreUpload(this)">
+                            <button id="restoreButton" class="btn-secondary"
+                                onclick="document.getElementById('restoreFile').click()">Select Backup File</button>
                         </div>
                         <div id="restoreStatus" class="restore-status"></div>
                     </div>
@@ -75,9 +83,10 @@
         </section>
 
         <!-- Tab Navigation -->
-        <nav class="tabs">
+        <nav class="tabs" id="topTabs">
             <button class="tab active" data-tab="videos">📹 Videos & Playlists</button>
             <button class="tab" data-tab="roms">🎮 ROMs & Games</button>
+            <button class="tab" data-tab="settings">⚙️ Settings</button>
         </nav>
 
         <!-- Videos Tab -->
@@ -100,78 +109,108 @@
 
             <!-- View: Playlist Editor -->
             <div id="videoEditorView" class="sub-view" style="display: none;">
-                <div class="editor-layout">
-                    <!-- Left Column: Playlist Details & Items -->
-                    <div class="editor-main">
-                        <div class="view-header">
-                            <h3 id="editorTitle">New Playlist</h3>
-                            <div class="editor-actions">
+                <div class="playlist-editor-container">
+                    <!-- Left: Playlist Panel (Focal Point) -->
+                    <div class="playlist-panel-main">
+                        <div class="playlist-header">
+                            <div class="playlist-title-section">
+                                <input type="text" id="videoPlaylistTitle" class="playlist-title-input"
+                                    placeholder="Playlist Title">
+                                <input type="text" id="videoPlaylistCurator" class="playlist-curator-input"
+                                    placeholder="Curator">
+                            </div>
+                            <div class="playlist-actions">
                                 <button type="button" class="btn-secondary small"
                                     id="cancelVideoPlaylistEdit">Cancel</button>
-                                <button type="button" class="btn-primary small" id="saveVideoPlaylist">Save
-                                    Playlist</button>
+                                <button type="button" class="btn-primary small" id="saveVideoPlaylist">Save</button>
                             </div>
                         </div>
 
-                        <form id="videoPlaylistForm" class="form compact-form" autocomplete="off" novalidate>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Title</label>
-                                    <input type="text" id="videoPlaylistTitle" placeholder="Playlist Title">
-                                </div>
-                                <div class="form-group">
-                                    <label>Curator</label>
-                                    <input type="text" id="videoPlaylistCurator" placeholder="Curator Name">
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label>Description</label>
-                                <input type="text" id="videoPlaylistDesc" placeholder="Description">
-                            </div>
-                            <div class="form-group checkbox-group">
-                                <label>
-                                    <input type="checkbox" id="videoPlaylistLoop"> Loop playlist
-                                </label>
-                            </div>
-                        </form>
+                        <div class="playlist-options-row">
+                            <input type="text" id="videoPlaylistDesc" class="playlist-desc-input"
+                                placeholder="Description (optional)">
+                            <label class="playlist-loop-label">
+                                <input type="checkbox" id="videoPlaylistLoop"> Loop
+                            </label>
+                        </div>
 
-                        <div class="playlist-panel">
-                            <h4>Playlist Items <span id="playlistItemCount" class="count-badge">0</span></h4>
-                            <div id="videoPlaylistItems" class="playlist-items-list"></div>
-                            <div class="empty-state" id="videoPlaylistEmpty">
-                                Drag videos here from the right panel<br>or upload new videos directly
+                        <div class="playlist-table-container">
+                            <table class="playlist-table" id="playlistTable">
+                                <thead>
+                                    <tr>
+                                        <th class="col-num">#</th>
+                                        <th class="col-title">Title</th>
+                                        <th class="col-artist">Artist</th>
+                                        <th class="col-actions">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="playlistTableBody">
+                                    <!-- Playlist items rendered here -->
+                                </tbody>
+                            </table>
+                            <div class="playlist-empty-state" id="playlistEmptyState">
+                                <p>Drag videos here from the library</p>
+                                <p class="hint">or click "Add Empty Slot" below</p>
                             </div>
+                        </div>
+
+                        <div class="playlist-footer">
+                            <button type="button" class="btn-add-slot" id="addEmptySlot">+ Add Empty Slot</button>
+                            <span class="playlist-count" id="playlistItemCount">0 items</span>
                         </div>
                     </div>
 
-                    <!-- Right Column: Sources -->
-                    <div class="editor-sidebar">
-                        <div class="sidebar-tabs">
-                            <button class="sidebar-tab active" onclick="switchSourceTab('library')">From
-                                Library</button>
-                            <button class="sidebar-tab" onclick="switchSourceTab('upload')">Upload New</button>
+                    <!-- Right: Library Panel -->
+                    <div class="library-panel">
+                        <div class="library-header">
+                            <h4>📁 Video Library</h4>
+                            <span class="library-count" id="libraryCount">0</span>
                         </div>
 
-                        <!-- Source: Library -->
-                        <div id="sourceLibrary" class="source-content active">
-                            <div class="search-bar">
-                                <input type="text" id="videoSearch" placeholder="Search videos..."
-                                    onkeyup="filterVideoLibrary()">
-                            </div>
-                            <div id="videoPlaylistAvailable" class="content-pool"></div>
+                        <div class="library-filters">
+                            <input type="text" id="librarySearch" class="library-search"
+                                placeholder="🔍 Search videos...">
+                            <label class="library-filter-checkbox">
+                                <input type="checkbox" id="hideUsedVideos"> Hide videos in playlists
+                            </label>
                         </div>
 
-                        <!-- Source: Upload -->
-                        <div id="sourceUpload" class="source-content" style="display: none;">
-                            <div class="upload-zone">
-                                <input type="file" id="videoUpload" accept="video/*" multiple
-                                    onchange="handleDirectUpload(this)">
-                                <label for="videoUpload" class="upload-label">
-                                    <span class="icon">☁️</span>
-                                    <span class="text">Click to Upload<br><small>Auto-adds to playlist</small></span>
-                                </label>
+                        <div class="library-list" id="libraryList">
+                            <!-- Library items rendered here -->
+                        </div>
+
+                        <div class="library-upload-section">
+                            <div class="upload-header" onclick="toggleLibraryUpload()">
+                                <span>⬆️ Upload New Videos</span>
+                                <span class="toggle-icon" id="uploadToggleIcon">▼</span>
                             </div>
-                            <div id="uploadProgress"></div>
+                            <div class="upload-content" id="libraryUploadContent" style="display: none;">
+                                <div class="resolution-row">
+                                    <label>Format:</label>
+                                    <select id="targetResolution" class="resolution-select-compact">
+                                        <option value="crt" selected>📺 CRT 640×480</option>
+                                        <option value="modern">🖥️ Modern 1280×720</option>
+                                    </select>
+                                </div>
+                                <div class="upload-zone-compact">
+                                    <input type="file" id="videoUpload" accept="video/*" multiple
+                                        onchange="handleDirectUpload(this)">
+                                    <label for="videoUpload" class="upload-label-compact">
+                                        Click to Upload Videos
+                                    </label>
+                                </div>
+                                <!-- Transcoding Status -->
+                                <div id="transcodeStatus" class="transcode-status" style="display: none;">
+                                    <div class="transcode-header">
+                                        <span class="transcode-icon">⚙️</span>
+                                        <span class="transcode-label">Processing...</span>
+                                    </div>
+                                    <div class="transcode-progress-bar">
+                                        <div class="transcode-progress-fill" style="width: 0%"></div>
+                                    </div>
+                                    <div class="transcode-details"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -209,92 +248,102 @@
 
             <!-- View: Playlist Editor -->
             <div id="gameEditorView" class="sub-view" style="display: none;">
-                <div class="editor-layout">
-                    <!-- Left Column: Playlist Details & Items -->
-                    <div class="editor-main">
-                        <div class="view-header">
-                            <h3 id="gameEditorTitle">New Playlist</h3>
-                            <div class="editor-actions">
+                <div class="playlist-editor-container">
+                    <!-- Left: Playlist Panel (Focal Point) -->
+                    <div class="playlist-panel-main">
+                        <div class="playlist-header">
+                            <div class="playlist-title-section">
+                                <input type="text" id="gamePlaylistTitle" class="playlist-title-input"
+                                    placeholder="Playlist Title">
+                                <input type="text" id="gamePlaylistCurator" class="playlist-curator-input"
+                                    placeholder="Curator">
+                            </div>
+                            <div class="playlist-actions">
                                 <button type="button" class="btn-secondary small"
                                     id="cancelGamePlaylistEdit">Cancel</button>
-                                <button type="button" class="btn-primary small" id="saveGamePlaylist">Save
-                                    Playlist</button>
+                                <button type="button" class="btn-primary small" id="saveGamePlaylist">Save</button>
                             </div>
                         </div>
 
-                        <form id="gamePlaylistForm" class="form compact-form" autocomplete="off" novalidate>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Title</label>
-                                    <input type="text" id="gamePlaylistTitle" placeholder="Playlist Title">
-                                </div>
-                                <div class="form-group">
-                                    <label>Curator</label>
-                                    <input type="text" id="gamePlaylistCurator" placeholder="Curator Name">
-                                </div>
-                            </div>
-                            <div class="form-group">
-                                <label>Description</label>
-                                <input type="text" id="gamePlaylistDesc" placeholder="Description">
-                            </div>
-                            <div class="form-group checkbox-group">
-                                <label>
-                                    <input type="checkbox" id="gamePlaylistLoop"> Loop playlist
-                                </label>
-                            </div>
-                        </form>
+                        <div class="playlist-options-row">
+                            <input type="text" id="gamePlaylistDesc" class="playlist-desc-input"
+                                placeholder="Description (optional)">
+                            <label class="playlist-loop-label">
+                                <input type="checkbox" id="gamePlaylistLoop"> Loop
+                            </label>
+                        </div>
 
-                        <div class="playlist-panel">
-                            <h4>Playlist Items <span id="gamePlaylistItemCount" class="count-badge">0</span></h4>
-                            <div id="gamePlaylistItems" class="playlist-items-list"></div>
-                            <div class="empty-state" id="gamePlaylistEmpty">
-                                Drag games here from the right panel<br>or upload new ROMs directly
+                        <div class="playlist-table-container">
+                            <table class="playlist-table" id="gamePlaylistTable">
+                                <thead>
+                                    <tr>
+                                        <th class="col-num">#</th>
+                                        <th class="col-title">Title</th>
+                                        <th class="col-artist">System</th>
+                                        <th class="col-actions">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="gamePlaylistTableBody">
+                                    <!-- Playlist items rendered here -->
+                                </tbody>
+                            </table>
+                            <div class="playlist-empty-state" id="gamePlaylistEmptyState">
+                                <p>Drag games here from the library</p>
+                                <p class="hint">or click "Add Empty Slot" below</p>
                             </div>
+                        </div>
+
+                        <div class="playlist-footer">
+                            <button type="button" class="btn-add-slot" id="addGameEmptySlot">+ Add Empty Slot</button>
+                            <span class="playlist-count" id="gamePlaylistItemCount">0 items</span>
                         </div>
                     </div>
 
-                    <!-- Right Column: Sources -->
-                    <div class="editor-sidebar">
-                        <div class="sidebar-tabs">
-                            <button class="sidebar-tab active" onclick="switchGameSourceTab('library')">From
-                                Library</button>
-                            <button class="sidebar-tab" onclick="switchGameSourceTab('upload')">Upload New</button>
+                    <!-- Right: ROM Library Panel -->
+                    <div class="library-panel">
+                        <div class="library-header">
+                            <h4>🎮 ROM Library</h4>
+                            <span class="library-count" id="romLibraryCount">0</span>
                         </div>
 
-                        <!-- Source: Library -->
-                        <div id="sourceGameLibrary" class="source-content active">
-                            <div class="search-bar">
-                                <input type="text" id="gameSearch" placeholder="Search ROMs..."
-                                    onkeyup="filterGameLibrary()">
+                        <div class="library-filters">
+                            <input type="text" id="romLibrarySearch" class="library-search"
+                                placeholder="🔍 Search ROMs...">
+                            <label class="library-filter-checkbox">
+                                <input type="checkbox" id="hideUsedROMs"> Hide ROMs in playlists
+                            </label>
+                        </div>
+
+                        <div class="library-list" id="romLibraryList">
+                            <!-- ROM library items rendered here -->
+                        </div>
+
+                        <div class="library-upload-section">
+                            <div class="upload-header" onclick="toggleROMLibraryUpload()">
+                                <span>⬆️ Upload New ROMs</span>
+                                <span class="toggle-icon" id="romUploadToggleIcon">▼</span>
                             </div>
-                            <div id="gamePlaylistAvailable" class="content-pool"></div>
-                        </div>
-
-                        <!-- Source: Upload -->
-                        <div id="sourceGameUpload" class="source-content" style="display: none;">
-                            <div class="upload-zone-container">
-                                <div class="system-selector" style="margin-bottom: 1rem;">
-                                    <label for="systemSelect">System:</label>
-                                    <select id="systemSelect" style="width: 100%; padding: 0.5rem;">
+                            <div class="upload-content" id="romLibraryUploadContent" style="display: none;">
+                                <div class="resolution-row">
+                                    <label>System:</label>
+                                    <select id="systemSelect" class="resolution-select-compact">
                                         <option value="nes">NES</option>
                                         <option value="snes">SNES</option>
                                         <option value="genesis">Sega Genesis</option>
-                                        <option value="ps1">PlayStation</option>
+                                        <option value="ps1">PlayStation 1</option>
                                         <option value="atari7800">Atari 7800</option>
                                         <option value="pcengine">PC Engine</option>
                                         <option value="arcade">Arcade</option>
                                     </select>
                                 </div>
-                                <div class="upload-zone">
+                                <div class="upload-zone-compact">
                                     <input type="file" id="romUpload" multiple onchange="handleDirectROMUpload(this)">
-                                    <label for="romUpload" class="upload-label">
-                                        <span class="icon">🎮</span>
-                                        <span class="text">Click to Upload<br><small>Auto-adds to
-                                                playlist</small></span>
+                                    <label for="romUpload" class="upload-label-compact">
+                                        Click to Upload ROMs
                                     </label>
                                 </div>
+                                <div id="romUploadProgress"></div>
                             </div>
-                            <div id="romUploadProgress"></div>
                         </div>
                     </div>
                 </div>
@@ -308,7 +357,64 @@
                 <div id="romsList" class="accordion"></div>
             </div>
         </section>
+
+        <!-- Settings Tab -->
+        <section id="settings" class="tab-content">
+            <div class="settings-section-mobile">
+                <div class="section-title">📡 Device Connection</div>
+                <div class="section-body">
+                    <div id="mobileDeviceStatus" class="device-status">
+                        <span class="icon">🔍</span>
+                        <span id="mobileStatusText">Checking connection...</span>
+                    </div>
+                    <div id="mobileDeviceList" class="device-list"></div>
+                    <button id="mobileManualConnect" class="btn-secondary">Connect to IP Address</button>
+                </div>
+            </div>
+
+            <div class="settings-section-mobile">
+                <div class="section-title">💾 Backup & Restore</div>
+                <div class="section-body">
+                    <p class="settings-description">Download a backup of all playlists
+                        and settings.</p>
+                    <button class="btn-primary" onclick="downloadBackup()">Download Backup</button>
+                    <div style="margin-top: 1rem;">
+                        <p class="settings-description">Restore from a backup file.</p>
+                        <input type="file" id="mobileRestoreFile" accept=".zip" style="display: none;"
+                            onchange="handleRestoreUpload(this)">
+                        <button class="btn-secondary"
+                            onclick="document.getElementById('mobileRestoreFile').click()">Select Backup File</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="settings-section-mobile">
+                <div class="section-title">💻 System Health</div>
+                <div class="section-body">
+                    <div id="mobileHealthInfo" class="health-info">
+                        <span class="loading">Loading...</span>
+                    </div>
+                    <button class="btn-secondary small" onclick="refreshHealthInfo()">Refresh</button>
+                </div>
+            </div>
+        </section>
     </div>
+
+    <!-- Bottom Navigation for Mobile -->
+    <nav class="bottom-nav" id="bottomNav">
+        <button class="bottom-nav-item active" data-tab="videos">
+            <span class="nav-icon">📹</span>
+            <span>Videos</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="roms">
+            <span class="nav-icon">🎮</span>
+            <span>Games</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="settings">
+            <span class="nav-icon">⚙️</span>
+            <span>Settings</span>
+        </button>
+    </nav>
 
     <!-- Confirmation Modal -->
     <div id="confirmModal" class="modal">
@@ -322,7 +428,8 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=17"></script>
+    <script src="/static/manager.js?v=41"></script>
+
 </body>
 
 </html>

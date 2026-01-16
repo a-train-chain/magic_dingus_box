@@ -74,6 +74,12 @@ namespace retroarch {
 
     // Launcher log path ($HOME/retroarch_launcher.log)
     std::string get_launcher_log();
+
+    // Saves directory ($DATA/saves) - SRAM saves
+    std::string get_saves_dir();
+
+    // Savestates directory ($DATA/states) - emulator snapshots
+    std::string get_states_dir();
 }
 
 // =============================================================================

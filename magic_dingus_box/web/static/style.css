@@ -8,7 +8,8 @@
     --bg-mid: #261F26;
     --bg-card: #2B232B;
     --text-primary: #F2E4D9;
-    --text-secondary: #968C87;
+    --text-secondary: #B0A8A3;
+    /* Brightened for better readability */
 
     /* Highlights and action */
     --accent: #F5BF42;
@@ -21,6 +22,11 @@
     /* highlight 2 */
 
     --border-color: var(--accent2);
+
+    /* Glow effects for polish */
+    --glow-gold: 0 0 15px rgba(245, 191, 66, 0.4);
+    --glow-blue: 0 0 12px rgba(88, 132, 177, 0.3);
+    --glow-subtle: 0 0 8px rgba(245, 191, 66, 0.2);
 }
 
 * {
@@ -50,41 +56,102 @@ body {
 /* Header - scales based on screen size */
 header {
     text-align: center;
-    padding: 1.5rem 0;
-    border-bottom: 2px solid var(--border-color);
-    margin-bottom: 1rem;
+    padding: 1.5rem 0 1rem;
+    border-bottom: 1px solid rgba(88, 132, 177, 0.3);
+    margin-bottom: 1.25rem;
     position: relative;
+    background: transparent;
 }
 
 header::before,
 header::after {
     content: '';
     position: absolute;
-    width: 40px;
+    width: 60px;
     height: 2px;
-    background: var(--accent2);
-    bottom: -2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    bottom: -1px;
 }
 
 header::before {
-    left: 10%;
+    left: 15%;
 }
 
 header::after {
-    right: 10%;
+    right: 15%;
 }
 
-header h1 {
-    font-size: clamp(1.5rem, 5vw, 2.5rem);
-    margin-bottom: 0.25rem;
-    color: var(--accent);
-    text-shadow: 0 0 10px rgba(245, 191, 66, 0.35);
-    font-family: 'Zen Dots', 'Orbitron', 'Audiowide', sans-serif;
+/* Header logo image */
+.header-logo {
+    max-width: clamp(250px, 55vw, 500px);
+    height: auto;
+    margin-bottom: 0.5rem;
+    filter: drop-shadow(0 0 20px rgba(245, 191, 66, 0.35));
 }
 
 .subtitle {
-    font-size: clamp(0.875rem, 2vw, 1rem);
-    color: var(--text-secondary);
+    font-size: clamp(0.8rem, 2vw, 0.95rem);
+    color: var(--accent2);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    font-weight: 500;
+}
+
+/* Connection Status Badge */
+.connection-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.connection-badge.disconnected {
+    background: rgba(234, 58, 39, 0.15);
+    border: 1px solid rgba(234, 58, 39, 0.4);
+    color: var(--error);
+}
+
+.connection-badge.connected {
+    background: rgba(102, 221, 122, 0.15);
+    border: 1px solid rgba(102, 221, 122, 0.4);
+    color: var(--success);
+}
+
+.connection-badge.connected.wifi {
+    background: rgba(88, 132, 177, 0.15);
+    border: 1px solid rgba(88, 132, 177, 0.5);
+    color: var(--accent2);
+}
+
+.connection-badge.connected.usb {
+    background: rgba(245, 191, 66, 0.15);
+    border: 1px solid rgba(245, 191, 66, 0.4);
+    color: var(--accent);
+}
+
+.connection-badge .badge-icon {
+    font-size: 1rem;
+}
+
+.connection-badge.connected .badge-icon {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
 }
 
 /* Collapsible Sections */
@@ -189,9 +256,10 @@ header h1 {
     font-weight: bold;
 }
 
-/* Device Selector Specific */
-.device-selector-wrapper {
-    /* Special styling for device selector if needed */
+/* Device Selector and Settings sections - hidden since Settings tab contains this info */
+.device-selector-wrapper,
+.settings-section {
+    display: none;
 }
 
 .device-status {
@@ -415,7 +483,11 @@ header h1 {
     gap: 1rem;
     margin-top: 1rem;
     width: 100%;
-    overflow: hidden;
+    /* Allow overflow for hover effects */
+    overflow: visible;
+    padding: 0.5rem;
+    /* Add breathing room for hover transform */
+    box-sizing: border-box;
 }
 
 /* Card for videos/items */
@@ -724,7 +796,7 @@ header h1 {
 
 /* Buttons */
 .btn-primary {
-    background: var(--accent);
+    background: var(--success);
     color: var(--bg-dark);
     border: none;
     padding: 1rem 2rem;
@@ -736,13 +808,13 @@ header h1 {
     transition: all 0.2s;
     width: 100%;
     min-height: 44px;
-    box-shadow: 0 0 15px rgba(255, 64, 160, 0.3);
+    box-shadow: 0 0 12px rgba(102, 221, 122, 0.3);
 }
 
 .btn-primary:hover {
-    background: var(--accent2);
+    background: #7AE88E;
     transform: scale(1.02);
-    box-shadow: 0 0 25px rgba(64, 255, 200, 0.5);
+    box-shadow: 0 0 20px rgba(102, 221, 122, 0.5);
 }
 
 .btn-secondary {
@@ -760,7 +832,46 @@ header h1 {
 
 .btn-secondary:hover {
     border-color: var(--accent2);
-    box-shadow: 0 0 10px rgba(64, 255, 200, 0.2);
+    box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
+}
+
+/* Edit button - Yellow */
+.btn-edit {
+    background: var(--accent);
+    color: var(--bg-dark);
+    border: none;
+    padding: 0.5rem 1rem;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s;
+    font-size: 0.85rem;
+}
+
+.btn-edit:hover {
+    background: #FFD05A;
+    box-shadow: 0 0 12px rgba(245, 191, 66, 0.5);
+}
+
+/* Delete/Danger button - Red */
+.btn-danger {
+    background: transparent;
+    color: var(--error);
+    border: 1px solid var(--error);
+    padding: 0.5rem 1rem;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s;
+    font-size: 0.85rem;
+}
+
+.btn-danger:hover {
+    background: var(--error);
+    color: var(--bg-dark);
+    box-shadow: 0 0 12px rgba(234, 58, 39, 0.5);
 }
 
 /* Progress bar */
@@ -809,8 +920,15 @@ header h1 {
 }
 
 @keyframes pulse-retry {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.6; }
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.6;
+    }
 }
 
 /* Batch Progress Header */
@@ -877,81 +995,132 @@ header h1 {
     background: var(--error);
 }
 
-/* Playlist Cards */
+/* Playlist Cards - Sleek Design */
 .playlist-card {
-    background: var(--bg-card);
-    border: 2px solid var(--text-secondary);
-    padding: 1rem;
-    margin-bottom: 1rem;
-    border-radius: 8px;
-    transition: all 0.2s;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
+    background: rgba(43, 35, 43, 0.6);
+    border: 1px solid rgba(88, 132, 177, 0.3);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+    border-radius: 6px;
+    transition: all 0.25s ease;
+    position: relative;
+    overflow: hidden;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+}
+
+.playlist-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, rgba(245, 191, 66, 0.05) 0%, transparent 50%);
+    opacity: 0;
+    transition: opacity 0.25s ease;
 }
 
 .playlist-card:hover {
     border-color: var(--accent);
-    box-shadow: 0 0 15px rgba(255, 64, 160, 0.2);
+    transform: translateX(4px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
 
-.playlist-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
+.playlist-card:hover::before {
+    opacity: 1;
+}
+
+/* Title takes full width at top */
+.playlist-card .playlist-header {
+    display: block;
     margin-bottom: 0.5rem;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    position: static;
+    /* Allow buttons to position relative to .playlist-card */
 }
 
-.playlist-header h4 {
-    color: var(--accent2);
-    font-size: 1.125rem;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    white-space: normal;
-    line-height: 1.4;
-    flex: 1;
-    min-width: 0;
-}
-
-.playlist-actions {
-    display: flex;
-    gap: 0.5rem;
-}
-
-.playlist-actions button {
-    background: var(--bg-dark);
+.playlist-card .playlist-header h4 {
     color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 0.5rem 1rem;
+    font-family: 'Zen Dots', 'Orbitron', 'Audiowide', sans-serif;
+    font-size: 1rem;
+    font-weight: 400;
+    margin: 0;
+    line-height: 1.3;
+    text-shadow: 0 0 15px rgba(242, 228, 217, 0.15);
+    word-wrap: break-word;
+}
+
+/* Buttons positioned in bottom-right corner */
+.playlist-card .playlist-actions {
+    position: absolute;
+    bottom: 0.75rem;
+    right: 0.75rem;
+    display: flex;
+    gap: 0.375rem;
+    z-index: 2;
+}
+
+.playlist-card .playlist-actions button {
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 0.35rem 0.7rem;
     cursor: pointer;
     font-family: inherit;
-    font-size: 0.875rem;
+    font-size: 0.75rem;
+    font-weight: 600;
     border-radius: 4px;
     transition: all 0.2s;
 }
 
-.playlist-actions button:hover {
+/* Edit button - Yellow */
+.playlist-card .playlist-actions button.btn-edit,
+.playlist-card .playlist-actions button:first-child {
+    color: var(--accent);
     border-color: var(--accent);
-    box-shadow: 0 0 10px rgba(255, 64, 160, 0.2);
+}
+
+.playlist-card .playlist-actions button.btn-edit:hover,
+.playlist-card .playlist-actions button:first-child:hover {
+    background: var(--accent);
+    color: var(--bg-dark);
+    box-shadow: 0 0 10px rgba(245, 191, 66, 0.4);
+}
+
+/* Delete button - Red */
+.playlist-card .playlist-actions button.btn-danger,
+.playlist-card .playlist-actions button:last-child {
+    color: var(--error);
+    border-color: var(--error);
+}
+
+.playlist-card .playlist-actions button.btn-danger:hover,
+.playlist-card .playlist-actions button:last-child:hover {
+    background: var(--error);
+    color: var(--bg-dark);
+    box-shadow: 0 0 10px rgba(234, 58, 39, 0.4);
 }
 
 .playlist-meta {
-    font-size: 0.875rem;
+    font-size: 0.8rem;
     color: var(--text-secondary);
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    white-space: normal;
     line-height: 1.4;
+    position: relative;
+    z-index: 1;
+    padding-bottom: 1.5rem;
+    /* Space for absolute buttons */
+}
+
+.playlist-meta span {
+    margin-right: 0.75rem;
 }
 
 .playlist-meta em {
     display: block;
-    margin-top: 0.25rem;
+    margin-top: 0.375rem;
     color: var(--text-primary);
-    word-wrap: break-word;
-    overflow-wrap: break-word;
-    white-space: normal;
+    font-style: normal;
+    opacity: 0.85;
 }
 
 /* Accordion for ROMs */
@@ -1331,30 +1500,37 @@ header h1 {
 /* Sub Navigation */
 .sub-tabs {
     display: flex;
-    gap: 1rem;
+    gap: 0.5rem;
     margin-bottom: 1.5rem;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.5rem;
+    padding: 0.25rem;
+    background: var(--bg-mid);
+    border-radius: 10px;
+    border: 1px solid rgba(88, 132, 177, 0.2);
 }
 
 .sub-tab {
     background: transparent;
     border: none;
     color: var(--text-secondary);
-    padding: 0.5rem 1rem;
+    padding: 0.6rem 1.25rem;
     cursor: pointer;
-    font-size: 0.95rem;
-    border-bottom: 2px solid transparent;
-    transition: all 0.2s;
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 500;
+    border-radius: 8px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    white-space: nowrap;
 }
 
 .sub-tab:hover {
     color: var(--text-primary);
+    background: rgba(245, 191, 66, 0.08);
 }
 
 .sub-tab.active {
-    color: var(--accent);
-    border-bottom-color: var(--accent);
+    color: var(--bg-dark);
+    background: var(--accent);
+    box-shadow: 0 2px 8px rgba(245, 191, 66, 0.3);
 }
 
 /* View Layouts */
@@ -1716,4 +1892,1278 @@ header h1 {
     padding: 0.5rem 1rem;
     font-size: 0.875rem;
     min-height: 36px;
+}
+
+/* ===== VIDEO TRANSCODING UI ===== */
+
+.transcode-settings {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: var(--bg-mid);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.transcode-settings label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.resolution-select {
+    width: 100%;
+    padding: 0.625rem 0.75rem;
+    border: 2px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-dark);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.resolution-select:hover {
+    border-color: var(--accent2);
+}
+
+.resolution-select:focus {
+    outline: none;
+    border-color: var(--accent2);
+    box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
+}
+
+.transcode-settings .help-text {
+    display: block;
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.transcode-status {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: linear-gradient(135deg, rgba(88, 132, 177, 0.15) 0%, var(--bg-mid) 100%);
+    border: 2px solid var(--accent2);
+    border-radius: 8px;
+    animation: transcode-glow 2s ease-in-out infinite alternate;
+}
+
+@keyframes transcode-glow {
+    from {
+        box-shadow: 0 0 5px rgba(88, 132, 177, 0.2);
+    }
+
+    to {
+        box-shadow: 0 0 15px rgba(88, 132, 177, 0.4);
+    }
+}
+
+.transcode-header {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-bottom: 0.75rem;
+}
+
+.transcode-icon {
+    font-size: 1.25rem;
+    animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.transcode-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.transcode-progress-bar {
+    height: 10px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.transcode-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent2) 0%, var(--accent) 50%, var(--success) 100%);
+    background-size: 200% 100%;
+    animation: progress-shimmer 2s ease-in-out infinite;
+    transition: width 0.3s ease-out;
+    border-radius: 5px;
+}
+
+@keyframes progress-shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+.transcode-details {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+/* Transcode status states */
+.transcode-status.loading .transcode-icon {
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.6;
+        transform: scale(0.95);
+    }
+}
+
+.transcode-status.complete {
+    border-color: var(--success);
+    background: linear-gradient(135deg, rgba(102, 221, 122, 0.15) 0%, var(--bg-mid) 100%);
+}
+
+.transcode-status.complete .transcode-icon {
+    animation: none;
+}
+
+.transcode-status.complete .transcode-progress-fill {
+    background: var(--success);
+    animation: none;
+}
+
+.transcode-status.error {
+    border-color: var(--error);
+    background: linear-gradient(135deg, rgba(234, 58, 39, 0.15) 0%, var(--bg-mid) 100%);
+}
+
+.transcode-status.error .transcode-icon {
+    animation: none;
+}
+
+.transcode-status.error .transcode-progress-fill {
+    background: var(--error);
+    animation: none;
+}
+
+/* Updated upload label for transcoding support */
+#sourceUpload .upload-label small {
+    opacity: 0.8;
+}
+
+/* File queue styling during transcoding */
+.transcode-queue {
+    margin-top: 0.75rem;
+}
+
+.transcode-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-bottom: 0.375rem;
+    font-size: 0.8rem;
+}
+
+.transcode-queue-item .filename {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+}
+
+.transcode-queue-item .status {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.transcode-queue-item .status.active {
+    color: var(--accent2);
+}
+
+.transcode-queue-item .status.complete {
+    color: var(--success);
+}
+
+.transcode-queue-item .status.error {
+    color: var(--error);
+}
+
+/* ===== NEW PLAYLIST EDITOR ===== */
+
+.playlist-editor-container {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 1rem;
+    height: calc(100vh - 220px);
+    min-height: 500px;
+}
+
+/* Playlist Panel (Left - Focal) */
+.playlist-panel-main {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border-radius: 8px;
+    border: 1px solid var(--accent2);
+    overflow: hidden;
+}
+
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: linear-gradient(135deg, var(--bg-mid) 0%, var(--bg-card) 100%);
+    border-bottom: 2px solid var(--accent2);
+    color: var(--text-primary);
+}
+
+.playlist-title-section {
+    display: flex;
+    gap: 0.75rem;
+    flex: 1;
+}
+
+.playlist-title-input {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: var(--accent);
+    font-size: 1.1rem;
+    font-weight: bold;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    width: 200px;
+}
+
+.playlist-title-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.playlist-curator-input {
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    width: 140px;
+}
+
+.playlist-curator-input::placeholder {
+    color: var(--text-secondary);
+}
+
+.playlist-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.playlist-options-row {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-mid);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.playlist-desc-input {
+    flex: 1;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.playlist-loop-label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+/* Playlist Table */
+.playlist-table-container {
+    flex: 1;
+    overflow-y: auto;
+    position: relative;
+}
+
+.playlist-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.playlist-table th {
+    background: var(--bg-mid);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    padding: 0.5rem;
+    text-align: left;
+    position: sticky;
+    top: 0;
+}
+
+.playlist-table .col-num {
+    width: 40px;
+    text-align: center;
+}
+
+.playlist-table .col-title {
+    width: 45%;
+}
+
+.playlist-table .col-artist {
+    width: 35%;
+}
+
+.playlist-table .col-actions {
+    width: 100px;
+    text-align: center;
+}
+
+.playlist-table tbody tr {
+    border-bottom: 1px solid var(--border-color);
+    transition: background 0.15s;
+}
+
+.playlist-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.playlist-table tbody tr.dragging {
+    opacity: 0.5;
+    background: var(--accent2);
+}
+
+.playlist-table tbody tr.drag-over {
+    border-top: 2px solid var(--accent);
+}
+
+.playlist-table td {
+    padding: 0.5rem;
+    vertical-align: middle;
+}
+
+.playlist-table td.col-num {
+    color: var(--text-secondary);
+    font-weight: bold;
+    text-align: center;
+}
+
+/* Empty slot styling */
+.playlist-table tr.empty-slot {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.playlist-table tr.empty-slot td {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+.playlist-table tr.empty-slot .empty-label {
+    opacity: 0.5;
+}
+
+/* Inline editable inputs */
+.playlist-table .inline-input {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-primary);
+    padding: 0.25rem 0.375rem;
+    width: 100%;
+    font-size: 0.9rem;
+    border-radius: 3px;
+}
+
+.playlist-table .inline-input:focus {
+    background: var(--bg-dark);
+    border-color: var(--accent);
+    outline: none;
+}
+
+.playlist-table .inline-input::placeholder {
+    color: var(--text-secondary);
+}
+
+/* Row action buttons */
+.row-actions {
+    display: flex;
+    gap: 0.25rem;
+    justify-content: center;
+}
+
+.row-actions button {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0.25rem;
+    font-size: 0.9rem;
+    border-radius: 3px;
+    transition: all 0.15s;
+}
+
+.row-actions button:hover {
+    background: var(--bg-mid);
+    color: var(--text-primary);
+}
+
+.row-actions button.btn-delete:hover {
+    color: var(--error);
+}
+
+/* Empty state */
+.playlist-empty-state {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: var(--text-secondary);
+    padding: 2rem;
+}
+
+.playlist-empty-state p {
+    margin-bottom: 0.5rem;
+}
+
+.playlist-empty-state .hint {
+    font-size: 0.85rem;
+    opacity: 0.7;
+}
+
+/* Playlist Footer */
+.playlist-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-mid);
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-add-slot {
+    background: transparent;
+    border: 1px dashed var(--border-color);
+    color: var(--text-secondary);
+    padding: 0.375rem 0.75rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+}
+
+.btn-add-slot:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.playlist-count {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+/* Library Panel (Right) */
+.library-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+
+.library-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-mid);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.library-header h4 {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.library-count {
+    background: var(--accent2);
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 10px;
+}
+
+.library-filters {
+    padding: 0.75rem;
+    background: var(--bg-dark);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.library-search {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+
+.library-filter-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.library-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0.5rem;
+}
+
+/* Library item styling */
+.library-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin-bottom: 0.25rem;
+    cursor: grab;
+    background: var(--bg-mid);
+    border: 1px solid transparent;
+    transition: all 0.15s;
+}
+
+.library-item:hover {
+    border-color: var(--accent);
+    background: var(--bg-card);
+}
+
+.library-item.in-playlist {
+    opacity: 0.5;
+}
+
+.library-item.hidden {
+    display: none;
+}
+
+.library-item .video-icon {
+    margin-right: 0.5rem;
+    color: var(--accent2);
+}
+
+.library-item .video-name {
+    flex: 1;
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.library-item .add-btn {
+    background: transparent;
+    border: none;
+    color: var(--success);
+    cursor: pointer;
+    padding: 0.25rem;
+    font-size: 1rem;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.library-item:hover .add-btn {
+    opacity: 1;
+}
+
+/* Library Upload Section */
+.library-upload-section {
+    border-top: 1px solid var(--border-color);
+}
+
+.library-upload-section .upload-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-mid);
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.library-upload-section .upload-header:hover {
+    color: var(--text-primary);
+}
+
+.library-upload-section .toggle-icon {
+    transition: transform 0.2s;
+}
+
+.library-upload-section .upload-content {
+    padding: 0.75rem;
+    background: var(--bg-dark);
+}
+
+.resolution-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.resolution-select-compact {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.upload-zone-compact {
+    border: 1px dashed var(--border-color);
+    border-radius: 4px;
+    position: relative;
+    text-align: center;
+    padding: 0.75rem;
+}
+
+.upload-zone-compact input[type="file"] {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.upload-label-compact {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.upload-zone-compact:hover {
+    border-color: var(--accent);
+}
+
+.upload-zone-compact:hover .upload-label-compact {
+    color: var(--accent);
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .playlist-editor-container {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+
+    .library-panel {
+        max-height: 400px;
+    }
+}
+
+/* ===== ENHANCED MOBILE STYLES ===== */
+
+/* Mobile: Single column cards, bottom nav, improved spacing */
+@media (max-width: 600px) {
+
+    /* Single column card grid */
+    .grid-list {
+        grid-template-columns: 1fr !important;
+        gap: 0.75rem;
+    }
+
+    /* Wider container margins */
+    .container {
+        padding: 0.75rem;
+    }
+
+    /* Compact header */
+    header {
+        padding: 1rem 0;
+        margin-bottom: 0.75rem;
+    }
+
+    header h1 {
+        font-size: 1.5rem;
+    }
+
+    .subtitle {
+        font-size: 0.875rem;
+    }
+
+    /* Collapsible sections: more compact */
+    .section-header {
+        padding: 0.75rem 1rem;
+    }
+
+    .section-content {
+        padding: 1rem;
+    }
+
+    .section-header h2 {
+        font-size: 1rem;
+    }
+
+    /* Main tabs: HIDDEN on mobile (bottom nav is primary) */
+    .tabs {
+        display: none;
+    }
+
+    /* Sub-tabs: horizontal scroll */
+    .sub-tabs {
+        display: flex;
+        overflow-x: auto;
+        gap: 0.25rem;
+        padding-bottom: 0.5rem;
+        margin-bottom: 1rem;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    /* Sticky Action Bar for Mobile Editor */
+    .playlist-editor-container .playlist-header .playlist-actions {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background: var(--bg-card);
+        padding: 0.75rem 1rem;
+        box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+        z-index: 2000;
+        display: flex;
+        gap: 0.75rem;
+        flex-direction: row;
+        border-top: 1px solid var(--border-color);
+        box-sizing: border-box;
+    }
+
+    /* Adjust button sizes in sticky bar */
+    .playlist-editor-container .playlist-header .playlist-actions button {
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+    }
+
+    /* Save button prominent */
+    .playlist-editor-container .playlist-header .playlist-actions button.btn-primary {
+        flex: 2;
+    }
+
+    /* Cancel button secondary */
+    .playlist-editor-container .playlist-header .playlist-actions button.btn-secondary {
+        flex: 1;
+    }
+
+    /* Add padding to bottom of editor so content isn't hidden by bar */
+    .playlist-panel-main {
+        padding-bottom: 80px;
+    }
+
+    /* Hide bottom nav when editor is active to avoid clutter and overlap */
+    body.editor-active .bottom-nav {
+        display: none !important;
+    }
+
+    /* ===== MOBILE LIBRARY CARD LAYOUT ===== */
+    /* Transform tables into cards for better readability */
+    .video-library-table tr {
+        display: flex !important;
+        flex-direction: column;
+        background: var(--bg-card) !important;
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 12px;
+        position: relative;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    /* Reset cells */
+    .video-library-table td {
+        display: block !important;
+        padding: 0 0 0.5rem 0 !important;
+        border: none !important;
+        text-align: left !important;
+        min-height: auto;
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+    }
+
+    /* Hide the old data-label pseudo-elements */
+    .video-library-table td:before {
+        display: none !important;
+    }
+
+    /* 1. Title Column (Make it big and top) */
+    /* Note: In manager.js, columns are often text. We need to target based on content or child type if possible, or nth-child */
+    /* Assuming Title is usually the 1st text cell or 2nd cell overall (if checkbox exists) */
+
+    /* Specific targeting for Title (usually has strong text or main content) */
+    .video-library-table td:not(:last-child):not(:first-child) {
+        /* Metadata cells */
+        display: inline-block !important;
+        width: auto !important;
+        margin-right: 1rem;
+    }
+
+    /* The Title Cell (usually index 0 or 1) - Let's target strictly */
+    /* Video Table: Checkbox, Thumbnail, Title, Duration, Size, Date, Actions */
+    /* ROM Table: Checkbox, Title, System, Size, Actions */
+
+    /* Make Title (3rd col in Video, 2nd in ROM) stand out */
+
+    /* The Title Cell - Target by class for robustness */
+    .video-library-table td.video-title {
+        font-family: 'Zen Dots', sans-serif;
+        font-size: 1.1rem;
+        color: var(--text-primary);
+        order: -2;
+        /* Force to top */
+        width: 100% !important;
+        margin-bottom: 0.5rem;
+        white-space: normal !important;
+        line-height: 1.4;
+    }
+
+    /* Adjust for ROM table where Title might be 2nd child */
+    /* We might need a specific class for ROM table, but let's try generic first */
+
+    /* Video Thumbnail (2nd child) - Make it large/banner */
+    .video-library-table td:nth-child(2):has(img),
+    .video-library-table td:nth-child(2) img {
+        order: -3;
+        /* Topmost */
+        width: 100%;
+        height: auto;
+        max-height: 150px;
+        object-fit: cover;
+        border-radius: 6px;
+        margin-bottom: 1rem;
+        display: block !important;
+    }
+
+    /* Checkbox (1st child) - We previously thought this was a checkbox, but it's often the Title.
+       So we do NOT want absolute positioning here. Reset to flow naturally. */
+    .video-library-table td:first-child {
+        position: relative !important;
+        top: auto !important;
+        right: auto !important;
+        width: 100% !important;
+        padding: 0 0 0.5rem 0 !important;
+        margin: 0 !important;
+    }
+
+    /* Action Buttons (Last child) - Full width bottom */
+    .video-library-table td:last-child {
+        order: 10;
+        margin-top: 0.75rem;
+        padding-top: 0.75rem !important;
+        border-top: 1px solid var(--border-color) !important;
+        display: flex !important;
+        gap: 0.5rem;
+        width: 100% !important;
+    }
+
+    .video-library-table .btn-icon {
+        flex: 1;
+        justify-content: center;
+        background: var(--bg-mid);
+    }
+
+    .sub-tab {
+        padding: 0.6rem 0.75rem;
+        font-size: 0.8rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+    }
+
+    /* View headers: stack on mobile */
+    .view-header {
+        flex-direction: column;
+        gap: 0.75rem;
+        align-items: stretch !important;
+    }
+
+    .view-header h3 {
+        font-size: 1.1rem;
+    }
+
+    .view-header .btn-primary {
+        width: 100%;
+    }
+
+    /* Search bar full width */
+    .search-bar {
+        width: 100%;
+    }
+
+    .search-bar input {
+        width: 100%;
+    }
+
+    /* Playlist cards: full width with better spacing */
+    .playlist-card {
+        padding: 1rem;
+    }
+
+    .playlist-card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .playlist-card-title {
+        font-size: 1rem;
+    }
+
+    .playlist-card-actions {
+        width: 100%;
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .playlist-card-actions button {
+        flex: 1;
+        padding: 0.6rem;
+        min-height: 44px;
+    }
+
+    /* Media cards */
+    .media-card {
+        padding: 1rem;
+    }
+
+    .media-card h4 {
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+    }
+
+    /* Button improvements */
+    .btn-primary,
+    .btn-secondary {
+        width: 100%;
+        min-height: 48px;
+        font-size: 1rem;
+    }
+
+    .btn-primary.small,
+    .btn-secondary.small {
+        padding: 0.6rem 1rem;
+        min-height: 44px;
+    }
+
+    /* Settings grid: single column */
+    .settings-grid {
+        grid-template-columns: 1fr !important;
+        gap: 1rem;
+    }
+
+    .settings-card {
+        padding: 1rem;
+    }
+
+    /* Playlist editor on mobile */
+    .playlist-header {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .playlist-title-section {
+        width: 100%;
+    }
+
+    .playlist-title-input,
+    .playlist-curator-input,
+    .playlist-desc-input {
+        width: 100%;
+        font-size: 1rem;
+        padding: 0.75rem;
+    }
+
+    /* Removed playlist-actions overrides to keep desktop layout (bottom-right buttons) */
+
+    /* Library panel on mobile */
+    .library-panel {
+        max-height: none;
+    }
+
+    .library-header h4 {
+        font-size: 1rem;
+    }
+
+    .library-search {
+        width: 100%;
+        padding: 0.75rem;
+        font-size: 1rem;
+    }
+
+    .library-filter-checkbox {
+        padding: 0.5rem 0;
+    }
+
+    .library-list {
+        max-height: 300px;
+    }
+
+    /* Upload section */
+    .upload-header {
+        padding: 0.75rem;
+    }
+
+    .upload-zone-compact {
+        padding: 1rem;
+    }
+
+    /* Modal adjustments */
+    .modal-content {
+        width: 95%;
+        padding: 1.25rem;
+        margin: 1rem;
+    }
+
+    .modal-actions {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .modal-actions button {
+        width: 100%;
+    }
+
+    /* Table adjustments */
+    .playlist-table th,
+    .playlist-table td {
+        padding: 0.5rem;
+        font-size: 0.85rem;
+    }
+
+    .playlist-table .col-artist {
+        display: none;
+    }
+
+    /* Device card improvements */
+    .device-card {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    .device-stats {
+        text-align: left;
+    }
+}
+
+/* Extra small mobile (< 400px) */
+@media (max-width: 400px) {
+    header h1 {
+        font-size: 1.25rem;
+    }
+
+    .tab {
+        padding: 0.6rem 0.75rem;
+        font-size: 0.85rem;
+    }
+
+    .section-header h2 {
+        font-size: 0.9rem;
+    }
+
+    .count-badge {
+        padding: 0.2rem 0.5rem;
+        font-size: 0.75rem;
+    }
+}
+
+/* ===== BOTTOM NAVIGATION FOR MOBILE ===== */
+
+.bottom-nav {
+    display: none;
+}
+
+@media (max-width: 600px) {
+
+    /* Show bottom nav on mobile with glassmorphism effect */
+    .bottom-nav {
+        display: flex;
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(43, 35, 43, 0.92);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(88, 132, 177, 0.4);
+        box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.4), 0 -1px 0 rgba(245, 191, 66, 0.15);
+        z-index: 100;
+        padding: 0.5rem 0.75rem;
+        gap: 0.5rem;
+    }
+
+    .bottom-nav-item {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 0.5rem 0.25rem;
+        background: transparent;
+        border: none;
+        color: var(--text-secondary);
+        font-family: inherit;
+        font-size: 0.75rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        min-height: 56px;
+        border-radius: 12px;
+    }
+
+    .bottom-nav-item:hover,
+    .bottom-nav-item.active {
+        color: var(--accent);
+        background: rgba(38, 31, 38, 0.8);
+        box-shadow: inset 0 0 0 1px rgba(245, 191, 66, 0.2);
+    }
+
+    .bottom-nav-item.active {
+        background: rgba(245, 191, 66, 0.1);
+        box-shadow: inset 0 0 0 1px rgba(245, 191, 66, 0.3), 0 0 12px rgba(245, 191, 66, 0.15);
+    }
+
+    .bottom-nav-item .nav-icon {
+        font-size: 1.4rem;
+        margin-bottom: 0.3rem;
+        transition: transform 0.2s ease;
+    }
+
+    .bottom-nav-item.active .nav-icon {
+        transform: scale(1.1);
+    }
+
+    /* Hide top tabs when bottom nav is active */
+    .tabs.hide-mobile {
+        display: none;
+    }
+
+    /* Add padding at bottom for fixed nav */
+    body {
+        padding-bottom: 70px;
+    }
+
+    .container {
+        padding-bottom: 80px;
+    }
+}
+
+/* ===== SETTINGS TAB STYLES ===== */
+
+.settings-tab-content {
+    display: none;
+}
+
+.settings-tab-content.active {
+    display: block;
+}
+
+.settings-section-mobile {
+    background: var(--bg-card);
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+}
+
+.settings-section-mobile .section-title {
+    padding: 1rem;
+    background: var(--bg-mid);
+    color: var(--accent2);
+    font-weight: bold;
+    font-size: 1rem;
+}
+
+.settings-section-mobile .section-body {
+    padding: 1rem;
+}
+
+/* Hide original settings section on mobile when using bottom nav */
+@media (max-width: 600px) {
+    .settings-section.hide-mobile {
+        display: none;
+    }
+}
+
+/* Touch-friendly improvements */
+@media (pointer: coarse) and (max-width: 600px) {
+
+    /* Larger touch targets */
+    .sub-tab {
+        min-height: 44px;
+        padding: 0.75rem 1rem;
+    }
+
+    .library-item {
+        padding: 1rem;
+        min-height: 48px;
+    }
+
+    .playlist-table-row {
+        min-height: 48px;
+    }
+
+    /* Better spacing for checkboxes */
+    input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+    }
+
+    .library-filter-checkbox {
+        padding: 0.75rem 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
 }

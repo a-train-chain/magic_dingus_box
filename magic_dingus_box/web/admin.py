@@ -4,10 +4,13 @@ import io
 import json
 import socket
 import os
+import re
 import subprocess
 import sys
 import secrets
+import threading
 import time
+import uuid
 import zipfile
 from datetime import datetime
 from functools import wraps
@@ -359,6 +362,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
         app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
     except Exception:
         app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
+    
+    # Use a temp directory on the SD card instead of /tmp (which is limited tmpfs)
+    # This prevents "No space left on device" errors for large file uploads
+    upload_temp_dir = data_dir / "upload_temp"
+    upload_temp_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["TMPDIR"] = str(upload_temp_dir)
+    import tempfile
+    tempfile.tempdir = str(upload_temp_dir)
+
     
     # Optional simple token auth for admin APIs (disabled by default)
     _admin_token = os.getenv("MAGIC_ADMIN_TOKEN")
@@ -901,6 +913,341 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return success_response(message="File deleted")
         return error_response("NOT_FOUND", "File not found", status=404)
 
+    # ===== VIDEO TRANSCODING =====
+
+    # Resolution presets for transcoding
+    TRANSCODE_RESOLUTIONS = {
+        'crt': {'width': 640, 'height': 480},
+        'modern': {'width': 1280, 'height': 720},
+    }
+
+    # Store for tracking transcoding jobs (in-memory, cleared on restart)
+    transcode_jobs: dict = {}
+
+    def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str):
+        """Background thread function to run FFmpeg transcoding."""
+        job = transcode_jobs[job_id]
+        res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS['crt'])
+        width, height = res['width'], res['height']
+
+        # Build FFmpeg command with center crop (no black bars, no distortion)
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',
+            '-i', str(input_path),
+            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '28',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ar', '48000',
+            '-movflags', '+faststart',
+            '-progress', 'pipe:1',
+            '-nostats',
+            str(output_path)
+        ]
+
+        try:
+            job['status'] = 'transcoding'
+            job['message'] = 'Starting FFmpeg...'
+
+            # Get video duration for progress calculation
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                        '-of', 'default=noprint_wrappers=1:nokey=1', str(input_path)]
+            try:
+                duration_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+                duration = float(duration_result.stdout.strip())
+            except Exception:
+                duration = 0
+
+            # Run FFmpeg
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+
+            # Parse progress from stdout
+            current_time = 0
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                # Parse out_time_ms from progress output
+                if line.startswith('out_time_ms='):
+                    try:
+                        time_ms = int(line.split('=')[1].strip())
+                        current_time = time_ms / 1000000  # Convert to seconds
+                        if duration > 0:
+                            job['progress'] = min(99, int((current_time / duration) * 100))
+                            job['message'] = f'Transcoding: {job["progress"]}%'
+                    except (ValueError, IndexError):
+                        pass
+
+            # Check result
+            if process.returncode == 0:
+                job['status'] = 'complete'
+                job['progress'] = 100
+                job['message'] = 'Transcoding complete!'
+                job['output_path'] = str(output_path.relative_to(data_dir.parent))
+
+                # Clean up input temp file
+                try:
+                    input_path.unlink()
+                except Exception:
+                    pass
+            else:
+                stderr_output = process.stderr.read()
+                job['status'] = 'error'
+                job['message'] = f'FFmpeg failed: {stderr_output[:200]}'
+
+                # Clean up on error
+                try:
+                    input_path.unlink()
+                except Exception:
+                    pass
+                try:
+                    output_path.unlink()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            job['status'] = 'error'
+            job['message'] = str(e)
+
+    @app.post("/admin/upload-and-transcode")
+    @require_csrf
+    def upload_and_transcode():  # type: ignore[no-redef]
+        """Upload video file and transcode it on the Pi."""
+        if "file" not in request.files:
+            return error_response("VALIDATION_ERROR", "File field required")
+
+        f = request.files["file"]
+        resolution = request.form.get("resolution", "crt")
+
+        if resolution not in TRANSCODE_RESOLUTIONS:
+            return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
+
+        # Create unique job ID
+        job_id = str(uuid.uuid4())
+
+        # Sanitize filename
+        try:
+            original_name = _sanitize_filename(f.filename)
+        except ValueError as e:
+            return error_response("VALIDATION_ERROR", str(e))
+
+        # Save to temp location
+        temp_input = upload_temp_dir / f"transcode_input_{job_id}_{original_name}"
+        output_name = Path(original_name).stem + ".mp4"
+        output_path = media_dir / output_name
+
+        # Ensure unique output filename
+        counter = 1
+        while output_path.exists():
+            output_name = f"{Path(original_name).stem}_{counter}.mp4"
+            output_path = media_dir / output_name
+            counter += 1
+
+        # Save uploaded file
+        f.save(str(temp_input))
+
+        # Initialize job
+        transcode_jobs[job_id] = {
+            'status': 'pending',
+            'progress': 0,
+            'message': 'Upload complete, starting transcode...',
+            'output_path': None,
+            'output_filename': output_name,
+        }
+
+        # Start transcoding in background thread
+        thread = threading.Thread(
+            target=run_transcode_job,
+            args=(job_id, temp_input, output_path, resolution)
+        )
+        thread.daemon = True
+        thread.start()
+
+        return success_response(data={'job_id': job_id}, message="Transcoding started")
+
+    @app.get("/admin/transcode-status/<job_id>")
+    def transcode_status(job_id):  # type: ignore[no-redef]
+        """Get status of a transcoding job."""
+        if job_id not in transcode_jobs:
+            return error_response("NOT_FOUND", "Job not found", status=404)
+
+        job = transcode_jobs[job_id]
+        return success_response(data={
+            'status': job['status'],
+            'progress': job['progress'],
+            'message': job['message'],
+            'output_path': job.get('output_path'),
+            'output_filename': job.get('output_filename'),
+        })
+
+    def probe_video(file_path: Path, target_resolution: str) -> dict:
+        """Probe video file to check if it needs transcoding."""
+        target = TRANSCODE_RESOLUTIONS.get(target_resolution, TRANSCODE_RESOLUTIONS['crt'])
+        target_w, target_h = target['width'], target['height']
+
+        try:
+            # Run ffprobe to get video info
+            probe_cmd = [
+                'ffprobe', '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height,codec_name',
+                '-show_entries', 'format=format_name',
+                '-of', 'json',
+                str(file_path)
+            ]
+            result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                return {'needs_transcode': True, 'reason': 'Could not probe video'}
+
+            import json as json_module
+            data = json_module.loads(result.stdout)
+
+            # Extract video stream info
+            streams = data.get('streams', [])
+            if not streams:
+                return {'needs_transcode': True, 'reason': 'No video stream found'}
+
+            stream = streams[0]
+            width = stream.get('width', 0)
+            height = stream.get('height', 0)
+            codec = stream.get('codec_name', '')
+
+            # Extract container format
+            format_name = data.get('format', {}).get('format_name', '')
+            is_mp4 = 'mp4' in format_name or 'mov' in format_name
+
+            # Check if video is already compatible
+            is_correct_resolution = (width == target_w and height == target_h)
+            is_h264 = codec in ('h264', 'libx264')
+
+            if is_correct_resolution and is_h264 and is_mp4:
+                return {
+                    'needs_transcode': False,
+                    'width': width,
+                    'height': height,
+                    'codec': codec,
+                    'reason': 'Already compatible'
+                }
+            else:
+                reasons = []
+                if not is_correct_resolution:
+                    reasons.append(f'Resolution {width}x{height} != {target_w}x{target_h}')
+                if not is_h264:
+                    reasons.append(f'Codec {codec} is not H.264')
+                if not is_mp4:
+                    reasons.append('Not MP4 container')
+
+                return {
+                    'needs_transcode': True,
+                    'width': width,
+                    'height': height,
+                    'codec': codec,
+                    'reason': '; '.join(reasons)
+                }
+
+        except Exception as e:
+            return {'needs_transcode': True, 'reason': f'Probe error: {str(e)}'}
+
+    @app.post("/admin/smart-upload")
+    @require_csrf
+    def smart_upload():  # type: ignore[no-redef]
+        """Smart upload: probe video and decide whether to transcode or direct upload."""
+        if "file" not in request.files:
+            return error_response("VALIDATION_ERROR", "File field required")
+
+        f = request.files["file"]
+        resolution = request.form.get("resolution", "crt")
+
+        if resolution not in TRANSCODE_RESOLUTIONS:
+            return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
+
+        # Sanitize filename
+        try:
+            original_name = _sanitize_filename(f.filename)
+        except ValueError as e:
+            return error_response("VALIDATION_ERROR", str(e))
+
+        # Save to temp location for probing
+        job_id = str(uuid.uuid4())
+        temp_input = upload_temp_dir / f"probe_{job_id}_{original_name}"
+        f.save(str(temp_input))
+
+        # Probe the video
+        probe_result = probe_video(temp_input, resolution)
+
+        if not probe_result['needs_transcode']:
+            # Already compatible - move directly to media folder
+            output_name = Path(original_name).stem + ".mp4"
+            # If original is already .mp4, keep it
+            if original_name.lower().endswith('.mp4'):
+                output_name = original_name
+            output_path = media_dir / output_name
+
+            # Ensure unique filename
+            counter = 1
+            base_name = Path(output_name).stem
+            while output_path.exists():
+                output_name = f"{base_name}_{counter}.mp4"
+                output_path = media_dir / output_name
+                counter += 1
+
+            # Move file to media folder
+            import shutil
+            shutil.move(str(temp_input), str(output_path))
+
+            return success_response(data={
+                'action': 'direct',
+                'needs_transcode': False,
+                'output_path': str(output_path.relative_to(data_dir.parent)),
+                'output_filename': output_name,
+                'probe': probe_result
+            }, message="File uploaded directly (already compatible)")
+
+        else:
+            # Needs transcoding - start transcode job
+            output_name = Path(original_name).stem + ".mp4"
+            output_path = media_dir / output_name
+
+            # Ensure unique output filename
+            counter = 1
+            while output_path.exists():
+                output_name = f"{Path(original_name).stem}_{counter}.mp4"
+                output_path = media_dir / output_name
+                counter += 1
+
+            # Initialize job
+            transcode_jobs[job_id] = {
+                'status': 'pending',
+                'progress': 0,
+                'message': 'Starting transcode...',
+                'output_path': None,
+                'output_filename': output_name,
+            }
+
+            # Start transcoding in background thread
+            thread = threading.Thread(
+                target=run_transcode_job,
+                args=(job_id, temp_input, output_path, resolution)
+            )
+            thread.daemon = True
+            thread.start()
+
+            return success_response(data={
+                'action': 'transcode',
+                'needs_transcode': True,
+                'job_id': job_id,
+                'probe': probe_result
+            }, message="Transcoding started")
+
     # ===== ROM MANAGEMENT =====
 
     @app.get("/admin/roms")
@@ -937,6 +1284,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         return success_response(data=roms)
 
+    # Lock for serializing M3U generation
+    m3u_lock = threading.Lock()
+
     @app.post("/admin/upload/rom/<system>")
     @require_csrf
     def upload_rom(system):  # type: ignore[no-redef]
@@ -961,6 +1311,28 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         out.parent.mkdir(parents=True, exist_ok=True)
         f.save(str(out))
+        
+        # Auto-generate M3U playlists for PS1 multi-disc games
+        if safe_system.lower() == 'ps1':
+            def run_m3u_generator():
+                # Acquire lock to ensure only one script instance runs at a time
+                with m3u_lock:
+                    try:
+                        script_path = data_dir.parent / "magic_dingus_box_cpp" / "scripts" / "generate_m3u_playlists.sh"
+                        if script_path.exists():
+                            subprocess.run(
+                                [str(script_path)],
+                                capture_output=True,
+                                timeout=30
+                            )
+                    except Exception as e:
+                        print(f"M3U generator error: {e}", file=sys.stderr)
+            
+            # Run in background thread to not block response
+            thread = threading.Thread(target=run_m3u_generator)
+            thread.daemon = True
+            thread.start()
+        
         return success_response(data={"path": str(out.relative_to(data_dir.parent))}, message="ROM uploaded")
 
     @app.delete("/admin/roms/<path:filepath>")

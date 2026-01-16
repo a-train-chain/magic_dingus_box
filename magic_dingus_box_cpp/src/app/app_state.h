@@ -250,8 +250,10 @@ public:
         std::string status_message;
     } wifi_state;
     
-    // Content Manager URL for QR code display
-    std::string content_manager_url;
+    // Content Manager URLs for QR code display
+    std::string wifi_url;           // WiFi URL (e.g., http://10.0.0.151:5000)
+    std::string usb_url;            // USB URL (always http://192.168.7.1:5000)
+    std::string content_manager_url; // Currently displayed URL (changes based on menu selection)
     
     // Virtual Keyboard
     ui::VirtualKeyboard* keyboard = nullptr; // pointer to keyboard instance (owned by main/renderer or here?) 

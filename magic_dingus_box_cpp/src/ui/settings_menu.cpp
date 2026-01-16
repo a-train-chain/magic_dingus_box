@@ -5,6 +5,10 @@
 #include <cmath>
 #include <cstdlib>  // For std::max
 #include <iostream>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 
 #include "../app/app_state.h"
 #include "../app/settings_persistence.h"
@@ -412,32 +416,71 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     };
 }
 
+// Helper to check interface status
+static bool is_interface_active(const char* iface_name) {
+    struct ifaddrs *ifap, *ifa;
+    if (getifaddrs(&ifap) == -1) return false;
+
+    bool active = false;
+    for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family == AF_INET) { // IPv4
+            if (std::string(ifa->ifa_name) == iface_name) {
+                active = true;
+                break;
+            }
+        }
+    }
+    freeifaddrs(ifap);
+    return active;
+}
+
 std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     auto& wifi = utils::WifiManager::instance();
     
-    // Build Content Manager URLs
-    std::string wifi_url = "Not connected";
-    std::string usb_url = "http://192.168.7.1:5000";
+    bool usb_active = is_interface_active("usb0");
+    bool wifi_active = wifi.is_connected();
+
+    // Determine primary connection (USB priority)
+    std::string primary_url = "";
+    std::string connection_label = "Not Connected";
+    std::string sub_label = "Connect via USB or Wi-Fi";
     
-    if (wifi.is_connected()) {
+    if (usb_active) {
+        primary_url = "http://192.168.7.1:5000";
+        connection_label = "USB Connection (Active)";
+        sub_label = "Fastest / Recommended";
+    } else if (wifi_active) {
         std::string ip = wifi.get_ip_address();
         if (!ip.empty()) {
-            wifi_url = "http://" + ip + ":5000";
+            primary_url = "http://" + ip + ":5000";
+            connection_label = "Wi-Fi Connection";
+            sub_label = wifi.get_current_ssid();
         }
     }
     
-    // Store the URL for QR code rendering (use WiFi URL if connected, else USB)
+    // Update app state
     if (app_state_) {
-        app_state_->content_manager_url = wifi.is_connected() ? wifi_url : usb_url;
+        app_state_->usb_url = "http://192.168.7.1:5000"; // Always static
+        app_state_->wifi_url = wifi_active ? ("http://" + wifi.get_ip_address() + ":5000") : "";
+        app_state_->content_manager_url = primary_url;
     }
     
-    // Keep menu items minimal to leave room for QR code display
-    return {
-        MenuItem("Content Manager", MenuSection::BACK, "Scan QR code below"),
-        MenuItem("WiFi: " + wifi_url, MenuSection::BACK, ""),
-        MenuItem("USB:  " + usb_url, MenuSection::BACK, ""),
-        MenuItem("Back", MenuSection::BACK)
-    };
+    // Simplified Menu
+    std::vector<MenuItem> items;
+    items.emplace_back("Content Manager", MenuSection::BACK, "Upload & Manage");
+    
+    if (!primary_url.empty()) {
+        items.emplace_back(connection_label, MenuSection::INFO, sub_label, 
+            [this, primary_url]() {
+                if (app_state_) app_state_->content_manager_url = primary_url;
+            });
+    } else {
+         items.emplace_back("No Connection", MenuSection::BACK, "Plug in USB or setup Wi-Fi");
+    }
+
+    items.emplace_back("Back", MenuSection::BACK);
+    return items;
 }
 
 std::string SettingsMenuManager::intensity_to_label(float intensity) {

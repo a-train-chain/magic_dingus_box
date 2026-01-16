@@ -62,9 +62,13 @@ docs/
 *.md
 !README.md
 !CLAUDE.md
+!CHANGELOG.md
 # Allow README files in subdirectories for documentation
 !magic_dingus_box_cpp/README.md
 
 # Exclude tests from runtime repo
 tests/
+
+# Test files (large binaries)
+magic_dingus_box/web/test_files/
 

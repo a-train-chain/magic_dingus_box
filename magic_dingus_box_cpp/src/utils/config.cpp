@@ -122,6 +122,14 @@ std::string get_launcher_log() {
     return get_home_path() + "/retroarch_launcher.log";
 }
 
+std::string get_saves_dir() {
+    return get_data_path() + "/saves";
+}
+
+std::string get_states_dir() {
+    return get_data_path() + "/states";
+}
+
 } // namespace retroarch
 
 // =============================================================================

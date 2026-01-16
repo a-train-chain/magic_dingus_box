@@ -166,6 +166,7 @@ let availableVideos = [];
 let availableROMs = {};
 let draggedItem = null;
 let csrfToken = null;  // CSRF token for state-changing requests
+let globalVideoUsageMap = {};  // Track which videos are in which playlists
 
 // Sync legacy globals with AppState for backwards compatibility
 AppState.on('deviceChanged', (device) => { currentDevice = device; });
@@ -271,7 +272,14 @@ const UPLOAD_CONFIG = {
     MAX_RETRIES: 2,            // Number of retry attempts per file
     RETRY_DELAY_MS: 2000,      // Delay between retries
     TIMEOUT_MS: 900000,        // 15 minutes per file (supports 1GB+ over WiFi)
+
+    // Server-side transcoding settings (Pi handles conversion via FFmpeg)
+    TRANSCODE: {
+        ENABLED: true,                    // Enable Pi-side transcoding
+        DEFAULT_RESOLUTION: 'crt',        // Default target resolution
+    }
 };
+
 
 // ===== MEDIA TYPE CONFIGURATION =====
 // Unified configuration for video and game media types
@@ -280,16 +288,16 @@ const MEDIA_CONFIG = {
         // Element IDs
         containerScope: null,  // No scope restriction for videos
         viewPrefix: 'video',
-        playlistItemsId: 'videoPlaylistItems',
-        playlistAvailableId: 'videoPlaylistAvailable',
-        playlistEmptyId: 'videoPlaylistEmpty',
-        editorTitleId: 'editorTitle',
+        playlistItemsId: 'playlistTableBody',  // New table body
+        playlistAvailableId: 'libraryList',    // New library list
+        playlistEmptyId: 'playlistEmptyState', // New empty state
+        editorTitleId: 'videoPlaylistTitle',   // Title is now an input
         titleInputId: 'videoPlaylistTitle',
         curatorInputId: 'videoPlaylistCurator',
         descInputId: 'videoPlaylistDesc',
         loopCheckboxId: 'videoPlaylistLoop',
         saveBtnId: 'saveVideoPlaylist',
-        searchInputId: 'videoSearch',
+        searchInputId: 'librarySearch',        // New search input
         listContainerId: 'videoList',
         countBadgeId: 'videoCount',
         sourceTabPrefix: 'source',
@@ -312,16 +320,16 @@ const MEDIA_CONFIG = {
         // Element IDs
         containerScope: '#roms',  // Scope to roms tab
         viewPrefix: 'game',
-        playlistItemsId: 'gamePlaylistItems',
-        playlistAvailableId: 'gamePlaylistAvailable',
-        playlistEmptyId: 'gamePlaylistEmpty',
-        editorTitleId: 'gameEditorTitle',
+        playlistItemsId: 'gamePlaylistTableBody',  // New table body
+        playlistAvailableId: 'romLibraryList',     // New library list
+        playlistEmptyId: 'gamePlaylistEmptyState', // New empty state
+        editorTitleId: 'gamePlaylistTitle',        // Title is now an input
         titleInputId: 'gamePlaylistTitle',
         curatorInputId: 'gamePlaylistCurator',
         descInputId: 'gamePlaylistDesc',
         loopCheckboxId: 'gamePlaylistLoop',
         saveBtnId: 'saveGamePlaylist',
-        searchInputId: 'gameSearch',
+        searchInputId: 'romLibrarySearch',         // New search input
         listContainerId: 'romsList',
         countBadgeId: 'romCount',
         sourceTabPrefix: 'sourceGame',
@@ -421,31 +429,49 @@ function initializeCollapsibleSections() {
 }
 
 function initializeEventListeners() {
-    // Tab switching
+    // Tab switching - shared function for top and bottom nav
+    function switchTab(tabId) {
+        // Update all tab buttons (both top and bottom nav)
+        document.querySelectorAll('.tab, .bottom-nav-item').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll(`.tab[data-tab="${tabId}"], .bottom-nav-item[data-tab="${tabId}"]`).forEach(t => t.classList.add('active'));
+
+        // Update tab content
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        const tabContent = document.getElementById(tabId);
+        if (tabContent) tabContent.classList.add('active');
+
+        // Explicitly initialize the view when switching tabs
+        if (tabId === 'roms') {
+            switchGameView('playlists');
+        } else if (tabId === 'videos') {
+            switchVideoView('playlists');
+        } else if (tabId === 'settings') {
+            // Update mobile settings view with current device info
+            updateMobileSettingsView();
+        }
+    }
+
+    // Top tab navigation
     document.querySelectorAll('.tab').forEach(tab => {
         tab.addEventListener('click', () => {
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            tab.classList.add('active');
             const tabId = tab.dataset.tab;
-            document.getElementById(tabId).classList.add('active');
+            switchTab(tabId);
+        });
+    });
 
-            // Explicitly initialize the view when switching tabs
-            if (tabId === 'roms') {
-                switchGameView('playlists');
-            } else if (tabId === 'videos') {
-                switchVideoView('playlists');
-            }
+    // Bottom navigation for mobile
+    document.querySelectorAll('.bottom-nav-item').forEach(navItem => {
+        navItem.addEventListener('click', () => {
+            const tabId = navItem.dataset.tab;
+            switchTab(tabId);
         });
     });
 
     // Manual connection
     document.getElementById('manualConnect').addEventListener('click', manualConnect);
 
-    // File uploads
-    document.getElementById('videoUpload').addEventListener('change', (e) => {
-        if (e.target.files.length > 0) uploadVideos();
-    });
+    // File uploads - video upload is handled by inline onchange="handleDirectUpload(this)"
+    // (which routes through server-side transcoding)
 
     document.getElementById('romUpload').addEventListener('change', (e) => {
         if (e.target.files.length > 0) uploadROMs();
@@ -463,6 +489,67 @@ function initializeEventListeners() {
     if (!isMobile) {
         setupDragAndDrop('videoUpload');
         setupDragAndDrop('romUpload');
+    }
+
+    // Mobile manual connect button
+    const mobileManualConnect = document.getElementById('mobileManualConnect');
+    if (mobileManualConnect) {
+        mobileManualConnect.addEventListener('click', manualConnect);
+    }
+}
+
+// ===== MOBILE SETTINGS VIEW =====
+
+/**
+ * Update the mobile Settings tab with current device status and health info
+ */
+function updateMobileSettingsView() {
+    const mobileStatusText = document.getElementById('mobileStatusText');
+    const mobileDeviceStatus = document.getElementById('mobileDeviceStatus');
+    const mobileDeviceList = document.getElementById('mobileDeviceList');
+    const mobileHealthInfo = document.getElementById('mobileHealthInfo');
+
+    if (!mobileStatusText || !mobileDeviceStatus) return;
+
+    if (currentDevice) {
+        mobileStatusText.textContent = `Connected to ${currentDevice.device_name}`;
+        mobileDeviceStatus.classList.add('connected');
+
+        // Show device info in device list
+        if (mobileDeviceList) {
+            mobileDeviceList.innerHTML = `
+                <div class="device-card selected">
+                    <div class="device-info">
+                        <h4>📺 ${escapeHtml(currentDevice.device_name)}</h4>
+                        <div class="meta">${escapeHtml(currentDevice.local_ip)} • ${escapeHtml(currentDevice.hostname)}</div>
+                    </div>
+                    <div class="device-stats">
+                        <div>${currentDevice.stats?.playlists || 0} playlists</div>
+                        <div>${currentDevice.stats?.videos || 0} videos</div>
+                        <div>${currentDevice.stats?.roms || 0} ROMs</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Copy health info from main section if available
+        const mainHealthInfo = document.getElementById('healthInfo');
+        if (mobileHealthInfo && mainHealthInfo) {
+            mobileHealthInfo.innerHTML = mainHealthInfo.innerHTML;
+        } else if (mobileHealthInfo) {
+            refreshHealthInfo();
+        }
+    } else {
+        mobileStatusText.textContent = 'Not connected';
+        mobileDeviceStatus.classList.remove('connected');
+
+        if (mobileDeviceList) {
+            mobileDeviceList.innerHTML = `
+                <p style="color: var(--text-secondary); padding: 0.5rem 0;">
+                    No device connected. Use the button below to connect.
+                </p>
+            `;
+        }
     }
 }
 
@@ -604,17 +691,17 @@ function selectDevice(index) {
     document.getElementById('statusText').textContent =
         `Connected to ${AppState.device.current.device_name}`;
 
-    // Update connection status in header
+    // Update connection status in header (old element, keep for compatibility)
     const statusElement = document.getElementById('deviceConnectionStatus');
     if (statusElement) {
         statusElement.textContent = AppState.device.current.device_name;
         statusElement.classList.add('connected');
     }
 
-    displayDevices(); // Refresh to show selected state
+    // Update the new connection badge
+    updateConnectionBadge();
 
-    // Show settings section when connected
-    showSettingsSection();
+    displayDevices(); // Refresh to show selected state
 
     // Only load content if it's a new connection
     if (!isSameDevice) {
@@ -624,6 +711,40 @@ function selectDevice(index) {
         setTimeout(() => {
             toggleSection('deviceSelector');
         }, 1000);
+    }
+}
+
+/**
+ * Update the connection badge in the header with device name and connection type
+ */
+function updateConnectionBadge() {
+    const badge = document.getElementById('connectionBadge');
+    const badgeText = document.getElementById('connectionBadgeText');
+
+    if (!badge || !badgeText) return;
+
+    if (currentDevice) {
+        // Determine connection type based on IP address
+        const deviceUrl = currentDevice.url || '';
+        const isUSB = deviceUrl.includes('192.168.7.1');
+        const connectionType = isUSB ? 'USB' : 'WiFi';
+        const icon = isUSB ? '🔌' : '📶';
+
+        // Update badge classes
+        badge.classList.remove('disconnected');
+        badge.classList.add('connected');
+        badge.classList.remove('wifi', 'usb');
+        badge.classList.add(isUSB ? 'usb' : 'wifi');
+
+        // Update badge content
+        badge.querySelector('.badge-icon').textContent = icon;
+        badgeText.textContent = `${currentDevice.device_name} • ${connectionType}`;
+    } else {
+        // Not connected
+        badge.classList.add('disconnected');
+        badge.classList.remove('connected', 'wifi', 'usb');
+        badge.querySelector('.badge-icon').textContent = '⚡';
+        badgeText.textContent = 'Not Connected';
     }
 }
 
@@ -712,6 +833,7 @@ async function loadAllContentFromDevice() {
     await loadExistingPlaylists();
     renderVideoPlaylistAvailable();
     renderGamePlaylistAvailable();
+    renderLibraryPanel();  // Render new library panel
 
     // Load health info (non-blocking)
     refreshHealthInfo();
@@ -749,6 +871,13 @@ function switchContentView(type, viewName) {
             tab.classList.add('active');
         }
     });
+
+    // Toggle body class for mobile styling hooks (e.g. hiding bottom nav in editor)
+    if (viewName === 'editor') {
+        document.body.classList.add('editor-active');
+    } else {
+        document.body.classList.remove('editor-active');
+    }
 
     // Update views
     const viewSelector = scope ? `${scope} .sub-view` : '.sub-view';
@@ -821,47 +950,75 @@ function renderPlaylistItems(type) {
     const config = MEDIA_CONFIG[type];
     const container = document.getElementById(config.playlistItemsId);
     const emptyState = document.getElementById(config.playlistEmptyId);
+    const countEl = document.getElementById('playlistItemCount');
     const items = config.getItems();
+
+    // Update count
+    const actualItems = items.filter(item => !item.isEmpty);
+    if (countEl) countEl.textContent = `${actualItems.length} item${actualItems.length !== 1 ? 's' : ''}`;
 
     if (items.length === 0) {
         container.innerHTML = '';
-        emptyState.style.display = 'block';
+        if (emptyState) emptyState.style.display = 'block';
         return;
     }
 
-    emptyState.style.display = 'none';
+    if (emptyState) emptyState.style.display = 'none';
 
+    // Render as table rows
     container.innerHTML = items.map((item, index) => {
-        const icon = item.source_type === 'emulated_game' ? '🎮' : '📹';
-        const name = item.title || item.path?.split('/').pop() || 'Unknown';
+        const isEmptySlot = item.isEmpty || false;
+        const rowClass = isEmptySlot ? 'empty-slot' : '';
+
+        if (isEmptySlot) {
+            return `
+                <tr class="${rowClass}" draggable="true" data-index="${index}" data-playlist-type="${type}"
+                    ondragstart="handlePlaylistDragStart(event, '${type}')"
+                    ondragover="handlePlaylistDragOver(event)"
+                    ondrop="handlePlaylistDrop(event, '${type}')"
+                    ondragend="handleDragEnd(event)">
+                    <td class="col-num">${index + 1}</td>
+                    <td class="col-title"><span class="empty-label">(empty slot)</span></td>
+                    <td class="col-artist"></td>
+                    <td class="col-actions">
+                        <div class="row-actions">
+                            <button onclick="movePlaylistItem(${index}, -1, '${type}')" ${index === 0 ? 'disabled' : ''}>▲</button>
+                            <button onclick="movePlaylistItem(${index}, 1, '${type}')" ${index === items.length - 1 ? 'disabled' : ''}>▼</button>
+                            <button class="btn-delete" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        const title = item.title || item.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Untitled';
         const artist = item.artist || '';
-        const artistDisplay = artist ? ` - ${escapeHtml(artist)}` : ' - <em>No artist</em>';
 
         return `
-            <div class="playlist-item" draggable="true" data-index="${index}" data-playlist-type="${type}"
+            <tr class="${rowClass}" draggable="true" data-index="${index}" data-playlist-type="${type}"
                 ondragstart="handlePlaylistDragStart(event, '${type}')"
                 ondragover="handlePlaylistDragOver(event)"
                 ondrop="handlePlaylistDrop(event, '${type}')"
                 ondragend="handleDragEnd(event)">
-                <div class="playlist-item-content">
-                    <div class="playlist-item-info">
-                        <span class="item-icon">${icon}</span>
-                        <span class="item-title">${escapeHtml(name)}</span>
-                        <span class="item-artist">${artistDisplay}</span>
+                <td class="col-num">${index + 1}</td>
+                <td class="col-title">
+                    <input type="text" class="inline-input" value="${escapeHtml(title)}" 
+                           placeholder="Title" onchange="updatePlaylistItem(${index}, 'title', this.value, '${type}')">
+                </td>
+                <td class="col-artist">
+                    <input type="text" class="inline-input" value="${escapeHtml(artist)}" 
+                           placeholder="Artist" onchange="updatePlaylistItem(${index}, 'artist', this.value, '${type}')">
+                </td>
+                <td class="col-actions">
+                    <div class="row-actions">
+                        <button onclick="movePlaylistItem(${index}, -1, '${type}')" ${index === 0 ? 'disabled' : ''}>▲</button>
+                        <button onclick="movePlaylistItem(${index}, 1, '${type}')" ${index === items.length - 1 ? 'disabled' : ''}>▼</button>
+                        <button class="btn-delete" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
                     </div>
-                    <div class="playlist-item-actions">
-                        <button class="btn-edit" onclick="editPlaylistItem(${index}, '${type}')">Edit</button>
-                        <button class="btn-remove" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
-                    </div>
-                </div>
-            </div>
+                </td>
+            </tr>
         `;
     }).join('');
-
-    // Add touch event handlers for mobile reordering
-    if (hasTouch) {
-        setupPlaylistTouchHandlers(type);
-    }
 }
 
 /**
@@ -1048,6 +1205,9 @@ async function loadVideos() {
             }
         }
 
+        // Store globally for library panel filtering
+        globalVideoUsageMap = videoUsageMap;
+
         // Create table view function (reusable)
         const createTable = (videos) => `
             <div style="overflow-x: auto; width: 100%;">
@@ -1113,10 +1273,397 @@ async function loadVideos() {
 }
 
 async function handleDirectUpload(input) {
-    if (input.files.length > 0) {
-        await uploadVideos(input.files, true); // true = autoAddToPlaylist
+    if (input.files.length === 0) return;
+
+    const files = Array.from(input.files);
+    const targetResolution = document.getElementById('targetResolution')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION;
+
+    // Auto-expand the upload section if it's collapsed
+    const uploadContent = document.getElementById('libraryUploadContent');
+    const uploadIcon = document.getElementById('uploadToggleIcon');
+    if (uploadContent && uploadContent.style.display === 'none') {
+        uploadContent.style.display = 'block';
+        if (uploadIcon) uploadIcon.textContent = '▲';
+    }
+
+    // Get the status container
+    const statusEl = document.getElementById('transcodeStatus');
+    const labelEl = statusEl?.querySelector('.transcode-label');
+    const progressEl = statusEl?.querySelector('.transcode-progress-fill');
+    const detailsEl = statusEl?.querySelector('.transcode-details');
+    const iconEl = statusEl?.querySelector('.transcode-icon');
+
+    // Show batch status immediately with uploading state
+    if (statusEl) statusEl.style.display = 'block';
+    if (iconEl) iconEl.textContent = '⬆️';  // Upload icon
+    if (labelEl) labelEl.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}`;
+    if (progressEl) progressEl.style.width = '0%';
+    if (detailsEl) detailsEl.textContent = 'Preparing upload...';
+    statusEl?.classList.add('loading');
+
+    let completed = 0;
+    let skipped = 0;  // Files that were already compatible
+    let errors = 0;
+
+    // Process files - track transcoding jobs
+    const pendingJobs = [];
+
+    for (const file of files) {
+        const truncatedName = file.name.length > 25 ? file.name.substring(0, 22) + '...' : file.name;
+
+        try {
+            // Update status for this file
+            if (detailsEl) detailsEl.textContent = `Uploading: ${truncatedName}`;
+            console.log(`[SmartUpload] Processing: ${file.name}`);
+
+            // Upload to smart-upload endpoint
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('resolution', targetResolution);
+
+            const uploadResponse = await new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `${currentDevice.url}/admin/smart-upload`);
+
+                if (csrfToken) {
+                    xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+                }
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const mb = (e.loaded / 1024 / 1024).toFixed(1);
+                        if (detailsEl) detailsEl.textContent = `Uploading ${truncatedName}: ${mb}MB`;
+                    }
+                };
+
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            resolve(JSON.parse(xhr.responseText));
+                        } catch (e) {
+                            reject(new Error('Invalid server response'));
+                        }
+                    } else {
+                        reject(new Error(`Upload failed: ${xhr.status}`));
+                    }
+                };
+
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.send(formData);
+            });
+
+            if (uploadResponse.data?.action === 'direct') {
+                // File was compatible - already saved directly
+                console.log(`[SmartUpload] ${file.name}: Direct upload (compatible)`);
+                completed++;
+                skipped++;
+            } else if (uploadResponse.data?.action === 'transcode') {
+                // File needs transcoding - track the job
+                console.log(`[SmartUpload] ${file.name}: Transcoding started (job: ${uploadResponse.data.job_id})`);
+                pendingJobs.push({
+                    jobId: uploadResponse.data.job_id,
+                    fileName: file.name,
+                    truncatedName
+                });
+            }
+
+        } catch (error) {
+            console.error(`[SmartUpload] Error processing ${file.name}:`, error);
+            errors++;
+        }
+
+        // Update overall progress
+        const overallProgress = Math.round(((completed + pendingJobs.length + errors) / files.length) * 50);
+        if (progressEl) progressEl.style.width = `${overallProgress}%`;
+    }
+
+    // Now poll for pending transcoding jobs
+    if (pendingJobs.length > 0) {
+        // Change icon and label for transcoding phase
+        if (iconEl) iconEl.textContent = '⚙️';  // Transcoding icon
+        if (labelEl) labelEl.textContent = `Transcoding ${pendingJobs.length} file${pendingJobs.length > 1 ? 's' : ''}`;
+
+        while (pendingJobs.length > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
+
+            for (let i = pendingJobs.length - 1; i >= 0; i--) {
+                const job = pendingJobs[i];
+
+                try {
+                    const statusResponse = await fetch(`${currentDevice.url}/admin/transcode-status/${job.jobId}`);
+                    const statusData = await statusResponse.json();
+
+                    if (statusData.data?.status === 'complete') {
+                        console.log(`[SmartUpload] ${job.fileName}: Transcode complete`);
+                        completed++;
+                        pendingJobs.splice(i, 1);
+                    } else if (statusData.data?.status === 'error') {
+                        console.error(`[SmartUpload] ${job.fileName}: Transcode failed`);
+                        errors++;
+                        pendingJobs.splice(i, 1);
+                    } else {
+                        // Still running - update status
+                        if (detailsEl && pendingJobs.length === 1) {
+                            detailsEl.textContent = statusData.data?.message || `Transcoding: ${job.truncatedName}`;
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[SmartUpload] Error polling job ${job.jobId}:`, e);
+                }
+            }
+
+            // Update progress based on completed/pending
+            const overallProgress = 50 + Math.round((completed / files.length) * 50);
+            if (progressEl) progressEl.style.width = `${overallProgress}%`;
+
+            if (detailsEl && pendingJobs.length > 1) {
+                detailsEl.textContent = `${pendingJobs.length} files still transcoding...`;
+            }
+        }
+    }
+
+    // All done!
+    if (progressEl) progressEl.style.width = '100%';
+    statusEl?.classList.remove('loading');
+    statusEl?.classList.add('complete');
+
+    // Build completion message
+    const parts = [];
+    if (skipped > 0) parts.push(`${skipped} already compatible`);
+    if (completed - skipped > 0) parts.push(`${completed - skipped} transcoded`);
+    if (errors > 0) parts.push(`${errors} failed`);
+
+    if (labelEl) labelEl.textContent = `Complete!`;
+    if (detailsEl) detailsEl.textContent = parts.join(', ') || `${completed} files processed`;
+
+    // Wait a moment then hide
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    if (statusEl) statusEl.style.display = 'none';
+    statusEl?.classList.remove('complete', 'loading', 'error');
+
+    // Refresh media list
+    try {
+        await loadAllContentFromDevice();
+
+        // Auto-add uploaded files to the current playlist
+        const successfulFiles = files.filter((f, i) => {
+            // Exclude files that had errors
+            return true; // We tracked completed count above
+        }).map(f => f.name);
+
+        // Check if we're in the playlist editor (videoEditorView is visible)
+        const editorView = document.getElementById('videoEditorView');
+        if (editorView && editorView.style.display !== 'none') {
+            const config = MEDIA_CONFIG['video'];
+            const currentItems = config.getItems();
+            const currentPaths = new Set(currentItems.map(item => item.path));
+
+            // Find matching videos in the refreshed media list
+            let addedCount = 0;
+            for (const fileName of successfulFiles) {
+                // Video might have been transcoded to .mp4
+                const baseName = fileName.replace(/\.[^.]+$/, '');
+                const matchingVideo = availableVideos.find(v => {
+                    const videoBaseName = v.filename.replace(/\.[^.]+$/, '');
+                    return videoBaseName === baseName || v.filename === fileName;
+                });
+
+                if (matchingVideo) {
+                    const videoPath = matchingVideo.path || `media/${matchingVideo.filename}`;
+
+                    // Only add if not already in playlist
+                    if (!currentPaths.has(videoPath)) {
+                        // Find first empty slot or add to end
+                        const emptySlotIndex = currentItems.findIndex(item => item.isEmpty);
+
+                        const newItem = {
+                            source_type: 'local',
+                            path: videoPath,
+                            title: matchingVideo.filename.replace(/\.[^.]+$/, ''),
+                            artist: ''
+                        };
+
+                        if (emptySlotIndex >= 0) {
+                            currentItems[emptySlotIndex] = newItem;
+                        } else {
+                            currentItems.push(newItem);
+                        }
+                        currentPaths.add(videoPath);
+                        addedCount++;
+                    }
+                }
+            }
+
+            if (addedCount > 0) {
+                config.setItems(currentItems);
+                renderPlaylistItems('video');
+                renderLibraryPanel();
+                console.log(`[SmartUpload] Auto-added ${addedCount} videos to playlist`);
+            }
+        }
+    } catch (e) {
+        console.warn('[SmartUpload] Media refresh failed:', e);
+    }
+
+    // Clear the input
+    input.value = '';
+}
+
+/**
+ * Process a video file: upload to Pi and transcode server-side
+ * @param {File} file - The video file
+ * @param {string} resolution - Target resolution key ('crt' or 'modern')
+ * @param {boolean} autoAddToPlaylist - Whether to add to current playlist
+ */
+async function processVideoFile(file, resolution, autoAddToPlaylist) {
+    const statusEl = document.getElementById('transcodeStatus');
+    const labelEl = statusEl?.querySelector('.transcode-label');
+    const progressEl = statusEl?.querySelector('.transcode-progress-fill');
+    const detailsEl = statusEl?.querySelector('.transcode-details');
+    const iconEl = statusEl?.querySelector('.transcode-icon');
+
+    // Helper to update status UI
+    const updateStatus = (label, details, progress = null, state = '') => {
+        if (statusEl) statusEl.style.display = 'block';
+        if (labelEl) labelEl.textContent = label;
+        if (detailsEl) detailsEl.textContent = details;
+        if (progress !== null && progressEl) progressEl.style.width = `${progress}%`;
+        if (statusEl) {
+            statusEl.classList.remove('loading', 'complete', 'error');
+            if (state) statusEl.classList.add(state);
+        }
+        if (iconEl) {
+            iconEl.textContent = state === 'error' ? '❌' : state === 'complete' ? '✓' : '⚙️';
+        }
+    };
+
+    // Helper to hide status
+    const hideStatus = () => {
+        if (statusEl) statusEl.style.display = 'none';
+    };
+
+    try {
+        const truncatedName = file.name.length > 30 ? file.name.substring(0, 27) + '...' : file.name;
+
+        // Step 1: Upload file to Pi for transcoding
+        updateStatus(`Sending to Pi`, truncatedName, 0, 'loading');
+        console.log(`[Transcode] Uploading ${file.name} for server-side transcoding`);
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('resolution', resolution);
+
+        // Upload with progress tracking
+        const uploadResponse = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${currentDevice.url}/admin/upload-and-transcode`);
+
+            // Add CSRF token (use global csrfToken variable)
+            if (csrfToken) {
+                xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+            }
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 50); // Upload is 0-50%
+                    if (progressEl) progressEl.style.width = `${pct}%`;
+                    if (detailsEl) {
+                        const mbLoaded = (e.loaded / 1024 / 1024).toFixed(1);
+                        const mbTotal = (e.total / 1024 / 1024).toFixed(1);
+                        detailsEl.textContent = `Uploading ${mbLoaded}/${mbTotal} MB`;
+                    }
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        resolve(JSON.parse(xhr.responseText));
+                    } catch (e) {
+                        reject(new Error('Invalid server response'));
+                    }
+                } else {
+                    reject(new Error(`Upload failed: ${xhr.status}`));
+                }
+            };
+
+            xhr.onerror = () => reject(new Error('Network error'));
+            xhr.send(formData);
+        });
+
+        if (!uploadResponse.data?.job_id) {
+            throw new Error('No job ID returned from server');
+        }
+
+        const jobId = uploadResponse.data.job_id;
+        console.log(`[Transcode] Job started: ${jobId}`);
+
+        // Step 2: Poll for transcoding progress
+        updateStatus('Converting on Pi', truncatedName, 50);
+
+        let complete = false;
+        let lastProgress = 0;
+        while (!complete) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
+
+            const statusResponse = await fetch(`${currentDevice.url}/admin/transcode-status/${jobId}`);
+            const statusData = await statusResponse.json();
+
+            if (!statusData.data) {
+                console.warn('[Transcode] No status data received');
+                continue;
+            }
+
+            const { status, progress, message } = statusData.data;
+
+            // Map transcoding progress to 50-100% range (upload was 0-50%)
+            const displayProgress = 50 + Math.round(progress / 2);
+            if (progressEl) progressEl.style.width = `${displayProgress}%`;
+            if (detailsEl) detailsEl.textContent = message;
+            lastProgress = displayProgress;
+
+            if (status === 'complete') {
+                complete = true;
+                console.log(`[Transcode] Complete! Output: ${statusData.data.output_filename}`);
+            } else if (status === 'error') {
+                throw new Error(message || 'Transcoding failed');
+            }
+        }
+
+        // Success!
+        updateStatus('Complete!', 'Video is ready', 100, 'complete');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        hideStatus();
+    } catch (error) {
+        console.error('[Transcode] Error:', error);
+
+        // Show error state
+        updateStatus('Conversion failed', error.message, 0, 'error');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        hideStatus();
+
+        // Ask user if they want to upload original without transcoding
+        const uploadOriginal = confirm(
+            `Video conversion failed: ${error.message}\n\n` +
+            `Would you like to upload the original file without conversion?\n` +
+            `Note: It may not play correctly on the Magic Dingus Box.`
+        );
+
+        if (uploadOriginal) {
+            await uploadVideos([file], autoAddToPlaylist);
+        }
+        return; // Exit early on error
+    }
+
+    // Refresh media list AFTER successful transcoding (in separate try/catch)
+    try {
+        await loadAllContentFromDevice();
+    } catch (refreshError) {
+        console.warn('[Transcode] Media refresh failed:', refreshError);
+        // Don't trigger fallback for refresh errors
     }
 }
+
 
 async function uploadVideos(fileList = null, autoAddToPlaylist = false) {
     if (!currentDevice) {
@@ -1493,7 +2040,7 @@ async function uploadROMs(fileList = null, autoAddToPlaylist = false) {
     if (fileList) {
         files = Array.from(fileList);
         // Get system from the selector in the upload tab
-        const selector = document.querySelector('#sourceGameUpload #systemSelect');
+        const selector = document.getElementById('systemSelect');
         if (selector) system = selector.value;
         progressElement = document.getElementById('romUploadProgress');
     } else {
@@ -2023,7 +2570,7 @@ function cancelEdit(type) {
 // ===== PLAYLIST BUILDER =====
 
 function renderVideoPlaylistAvailable() {
-    renderPlaylistAvailable('video');
+    renderLibraryPanel();  // Use new library panel styling
 }
 
 function renderGamePlaylistAvailable() {
@@ -2072,7 +2619,12 @@ function removePlaylistItem(index, type) {
     items.splice(index, 1);
     config.setItems(items);
     renderPlaylistItems(type);
-    renderPlaylistAvailable(type);
+    // Use new library panel for videos
+    if (type === 'video') {
+        renderLibraryPanel();
+    } else {
+        renderPlaylistAvailable(type);
+    }
 }
 
 function editPlaylistItem(index, type) {
@@ -2990,7 +3542,7 @@ function displayHealthInfo(data) {
 
     // Status row
     const statusClass = data.status === 'healthy' ? 'good' :
-                        data.status === 'warning' ? 'warning' : 'error';
+        data.status === 'warning' ? 'warning' : 'error';
     html += `<div class="health-row">
         <span class="health-label">Status</span>
         <span class="health-value ${statusClass}">${escapeHtml(data.status || 'Unknown')}</span>
@@ -2999,7 +3551,7 @@ function displayHealthInfo(data) {
     // CPU Temperature
     if (data.cpu_temperature_c !== undefined) {
         const tempClass = data.cpu_temperature_c > 75 ? 'warning' :
-                          data.cpu_temperature_c > 80 ? 'error' : 'good';
+            data.cpu_temperature_c > 80 ? 'error' : 'good';
         html += `<div class="health-row">
             <span class="health-label">CPU Temp</span>
             <span class="health-value ${tempClass}">${data.cpu_temperature_c.toFixed(1)}°C</span>
@@ -3009,7 +3561,7 @@ function displayHealthInfo(data) {
     // CPU Usage
     if (data.cpu_percent !== undefined) {
         const cpuClass = data.cpu_percent > 90 ? 'error' :
-                         data.cpu_percent > 70 ? 'warning' : 'good';
+            data.cpu_percent > 70 ? 'warning' : 'good';
         html += `<div class="health-row">
             <span class="health-label">CPU Usage</span>
             <span class="health-value ${cpuClass}">${data.cpu_percent.toFixed(1)}%</span>
@@ -3019,7 +3571,7 @@ function displayHealthInfo(data) {
     // Memory
     if (data.memory) {
         const memClass = data.memory.percent > 90 ? 'error' :
-                         data.memory.percent > 80 ? 'warning' : 'good';
+            data.memory.percent > 80 ? 'warning' : 'good';
         html += `<div class="health-row">
             <span class="health-label">Memory</span>
             <span class="health-value ${memClass}">${data.memory.percent.toFixed(1)}% (${data.memory.used_mb.toFixed(0)} / ${data.memory.total_mb.toFixed(0)} MB)</span>
@@ -3029,7 +3581,7 @@ function displayHealthInfo(data) {
     // Disk
     if (data.disk) {
         const diskClass = data.disk.percent > 90 ? 'error' :
-                          data.disk.percent > 80 ? 'warning' : 'good';
+            data.disk.percent > 80 ? 'warning' : 'good';
         html += `<div class="health-row">
             <span class="health-label">Disk</span>
             <span class="health-value ${diskClass}">${data.disk.percent.toFixed(1)}% (${data.disk.free_gb.toFixed(1)} GB free)</span>
@@ -3084,3 +3636,408 @@ function hideSettingsSection() {
     }
 }
 
+// ===== NEW PLAYLIST EDITOR FUNCTIONS =====
+
+/**
+ * Update a playlist item's property (inline editing)
+ */
+function updatePlaylistItem(index, property, value, type) {
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
+    if (items[index]) {
+        items[index][property] = value;
+        config.setItems(items);
+    }
+}
+
+/**
+ * Move a playlist item up or down
+ */
+function movePlaylistItem(index, direction, type) {
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
+    const newIndex = index + direction;
+
+    if (newIndex < 0 || newIndex >= items.length) return;
+
+    // Swap items
+    [items[index], items[newIndex]] = [items[newIndex], items[index]];
+    config.setItems(items);
+    renderPlaylistItems(type);
+}
+
+/**
+ * Add an empty slot to the playlist
+ */
+function addEmptySlot(type = 'video') {
+    const config = MEDIA_CONFIG[type];
+    const items = config.getItems();
+    items.push({ isEmpty: true });
+    config.setItems(items);
+    renderPlaylistItems(type);
+}
+
+/**
+ * Render the library panel with draggable video items
+ */
+function renderLibraryPanel() {
+    const container = document.getElementById('libraryList');
+    const countEl = document.getElementById('libraryCount');
+    const hideUsedCheckbox = document.getElementById('hideUsedVideos');
+    const searchInput = document.getElementById('librarySearch');
+
+    if (!container) return;
+
+    const videos = availableVideos || [];
+    const currentPlaylistItems = AppState.playlists.getItems('video');
+    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => item.path));
+
+    // Normalize path for comparison with globalVideoUsageMap
+    const normalizePath = (p) => {
+        if (!p) return '';
+        let clean = p;
+        clean = clean.replace(/^\//, '');
+        clean = clean.replace(/^\.\.\/+/, '');
+        clean = clean.replace(/^(dev_)?data\//, '');
+        return clean;
+    };
+
+    // Update count
+    if (countEl) countEl.textContent = videos.length;
+
+    if (videos.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">No videos in library</p>';
+        return;
+    }
+
+    const searchQuery = (searchInput?.value || '').toLowerCase();
+    const hideUsed = hideUsedCheckbox?.checked || false;
+
+    container.innerHTML = videos.map((video, index) => {
+        const path = video.path || `media/${video.filename}`;
+        const normalizedPath = normalizePath(path);
+
+        // Check current playlist
+        const inCurrentPlaylist = currentPlaylistPaths.has(path);
+
+        // Check ALL playlists via globalVideoUsageMap
+        const inAnyPlaylist = !!globalVideoUsageMap[normalizedPath];
+
+        // Combine both checks - in current playlist OR in any saved playlist
+        const isUsed = inCurrentPlaylist || inAnyPlaylist;
+
+        const name = video.filename;
+
+        // Apply filters - use combined check for hide-used filter
+        const matchesSearch = !searchQuery || name.toLowerCase().includes(searchQuery);
+        const shouldShow = matchesSearch && (!hideUsed || !isUsed);
+
+        if (!shouldShow) return '';
+
+        return `
+            <div class="library-item ${isUsed ? 'in-playlist' : ''}" 
+                 draggable="true" 
+                 data-index="${index}"
+                 data-type="video"
+                 data-path="${escapeHtml(path)}"
+                 ondragstart="handleLibraryDragStart(event)"
+                 ondragend="handleDragEnd(event)">
+                <span class="video-icon">📹</span>
+                <span class="video-name">${escapeHtml(name)}</span>
+                <button class="add-btn" onclick="addVideoToPlaylist(${index})" title="Add to playlist">+</button>
+            </div>
+        `;
+    }).join('');
+}
+
+/**
+ * Handle drag start from library
+ */
+function handleLibraryDragStart(event) {
+    const index = parseInt(event.target.dataset.index);
+    const path = event.target.dataset.path;
+
+    draggedItem = {
+        type: 'local',
+        data: availableVideos[index],
+        path: path,
+        source: 'library'
+    };
+
+    event.target.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'copy';
+}
+
+/**
+ * Add a video from library to playlist
+ */
+function addVideoToPlaylist(index) {
+    const video = availableVideos[index];
+    if (!video) return;
+
+    const config = MEDIA_CONFIG['video'];
+    const items = config.getItems();
+
+    // Find first empty slot or add to end
+    const emptySlotIndex = items.findIndex(item => item.isEmpty);
+
+    const newItem = {
+        source_type: 'local',
+        path: video.path || `media/${video.filename}`,
+        title: video.filename.replace(/\.[^.]+$/, ''),
+        artist: ''
+    };
+
+    if (emptySlotIndex >= 0) {
+        // Fill empty slot
+        items[emptySlotIndex] = newItem;
+    } else {
+        // Add to end
+        items.push(newItem);
+    }
+
+    config.setItems(items);
+    renderPlaylistItems('video');
+    renderLibraryPanel();
+}
+
+/**
+ * Filter library based on search and checkbox
+ */
+function filterLibrary() {
+    renderLibraryPanel();
+}
+
+/**
+ * Toggle the upload section in library panel
+ */
+function toggleLibraryUpload() {
+    const content = document.getElementById('libraryUploadContent');
+    const icon = document.getElementById('uploadToggleIcon');
+
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        if (icon) icon.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        if (icon) icon.textContent = '▼';
+    }
+}
+
+/**
+ * Toggle ROM upload section in library panel
+ */
+function toggleROMLibraryUpload() {
+    const content = document.getElementById('romLibraryUploadContent');
+    const icon = document.getElementById('romUploadToggleIcon');
+
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        if (icon) icon.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        if (icon) icon.textContent = '▼';
+    }
+}
+
+/**
+ * Render the ROM library panel with draggable ROM items
+ */
+function renderROMLibraryPanel() {
+    const container = document.getElementById('romLibraryList');
+    const countEl = document.getElementById('romLibraryCount');
+    const hideUsedCheckbox = document.getElementById('hideUsedROMs');
+    const searchInput = document.getElementById('romLibrarySearch');
+
+    if (!container) return;
+
+    const allROMs = availableROMs || {};
+    const currentPlaylistItems = AppState.playlists.getItems('game');
+
+    // Normalize path for comparison - strips data/ and dev_data/ prefixes
+    const normalizePath = (p) => {
+        if (!p) return '';
+        let clean = p;
+        clean = clean.replace(/^\//, '');
+        clean = clean.replace(/^\.\.\/+/, '');
+        clean = clean.replace(/^(dev_)?data\//, '');
+        return clean;
+    };
+
+    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizePath(item.path)));
+
+    // Flatten ROMs from all systems
+    let flatROMs = [];
+    for (const [system, roms] of Object.entries(allROMs)) {
+        roms.forEach((rom, index) => {
+            flatROMs.push({
+                ...rom,
+                system,
+                originalIndex: index
+                // Use rom.path from server directly - don't override it
+            });
+        });
+    }
+
+    // Update count
+    if (countEl) countEl.textContent = flatROMs.length;
+
+    if (flatROMs.length === 0) {
+        container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">No ROMs in library</p>';
+        return;
+    }
+
+    const searchQuery = (searchInput?.value || '').toLowerCase();
+    const hideUsed = hideUsedCheckbox?.checked || false;
+
+    const html = flatROMs.map((rom, index) => {
+        const normalizedRomPath = normalizePath(rom.path);
+        const inPlaylist = currentPlaylistPaths.has(normalizedRomPath);
+        const name = rom.filename;
+
+        // Apply filters
+        const matchesSearch = !searchQuery || name.toLowerCase().includes(searchQuery);
+        const shouldShow = matchesSearch && (!hideUsed || !inPlaylist);
+
+        if (!shouldShow) return '';
+
+        const systemLabel = rom.system.toUpperCase();
+
+        return `
+            <div class="library-item ${inPlaylist ? 'in-playlist' : ''}" 
+                 draggable="true" 
+                 data-index="${rom.originalIndex}"
+                 data-system="${rom.system}"
+                 data-type="rom"
+                 data-path="${escapeHtml(rom.path)}"
+                 ondragstart="handleROMLibraryDragStart(event)"
+                 ondragend="handleDragEnd(event)">
+                <span class="video-icon">🎮</span>
+                <span class="video-name">${escapeHtml(name)}</span>
+                <span style="font-size: 0.7rem; color: var(--text-secondary); margin-left: 0.5rem;">${systemLabel}</span>
+                <button class="add-btn" onclick="addROMToPlaylist('${rom.system}', ${rom.originalIndex})" title="Add to playlist">+</button>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = html || '<p style="color: var(--text-secondary); padding: 1rem;">No ROMs match your filters</p>';
+}
+
+/**
+ * Handle drag start from ROM library
+ */
+function handleROMLibraryDragStart(event) {
+    const index = parseInt(event.target.dataset.index);
+    const system = event.target.dataset.system;
+    const path = event.target.dataset.path;
+
+    const rom = availableROMs[system]?.[index];
+    if (!rom) return;
+
+    draggedItem = {
+        type: 'emulated_game',
+        data: rom,
+        system: system,
+        path: path,
+        source: 'library'
+    };
+
+    event.target.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'copy';
+}
+
+/**
+ * Add a ROM from library to playlist
+ */
+function addROMToPlaylist(system, index) {
+    const rom = availableROMs[system]?.[index];
+    if (!rom) return;
+
+    const config = MEDIA_CONFIG['game'];
+    const items = config.getItems();
+
+    // Find first empty slot or add to end
+    const emptySlotIndex = items.findIndex(item => item.isEmpty);
+
+    // Auto-detect emulator core (using 64-bit compatible cores)
+    const coreMap = {
+        'nes': 'nestopia_libretro',
+        'snes': 'snes9x2010_libretro',
+        'genesis': 'genesis_plus_gx_libretro',
+        'ps1': 'pcsx_rearmed_libretro',
+        'atari7800': 'prosystem_libretro',
+        'pcengine': 'mednafen_pce_fast_libretro',
+        'arcade': 'fbneo_libretro'
+    };
+
+    const newItem = {
+        source_type: 'emulated_game',
+        path: rom.path,  // Use actual path from server
+        title: rom.filename.replace(/\.[^.]+$/, ''),
+        emulator_system: system,
+        emulator_core: coreMap[system] || 'auto'
+    };
+
+    if (emptySlotIndex >= 0) {
+        items[emptySlotIndex] = newItem;
+    } else {
+        items.push(newItem);
+    }
+
+    config.setItems(items);
+    renderPlaylistItems('game');
+    renderROMLibraryPanel();
+}
+
+/**
+ * Filter ROM library based on search and checkbox
+ */
+function filterROMLibrary() {
+    renderROMLibraryPanel();
+}
+
+/**
+ * Update renderGamePlaylistAvailable to use new ROM library panel
+ */
+function renderGamePlaylistAvailable() {
+    renderROMLibraryPanel();  // Use new ROM library panel styling
+}
+
+// Add event listeners for "Add Empty Slot" buttons and filters
+document.addEventListener('DOMContentLoaded', () => {
+    // Video empty slot button
+    const addSlotBtn = document.getElementById('addEmptySlot');
+    if (addSlotBtn) {
+        addSlotBtn.addEventListener('click', () => addEmptySlot('video'));
+    }
+
+    // Game empty slot button
+    const addGameSlotBtn = document.getElementById('addGameEmptySlot');
+    if (addGameSlotBtn) {
+        addGameSlotBtn.addEventListener('click', () => addEmptySlot('game'));
+    }
+
+    // Library search filter (videos)
+    const searchInput = document.getElementById('librarySearch');
+    if (searchInput) {
+        searchInput.addEventListener('input', filterLibrary);
+    }
+
+    // Hide used checkbox (videos)
+    const hideUsedCheckbox = document.getElementById('hideUsedVideos');
+    if (hideUsedCheckbox) {
+        hideUsedCheckbox.addEventListener('change', filterLibrary);
+    }
+
+    // ROM library search filter
+    const romSearchInput = document.getElementById('romLibrarySearch');
+    if (romSearchInput) {
+        romSearchInput.addEventListener('input', filterROMLibrary);
+    }
+
+    // Hide used checkbox (ROMs)
+    const hideUsedROMsCheckbox = document.getElementById('hideUsedROMs');
+    if (hideUsedROMsCheckbox) {
+        hideUsedROMsCheckbox.addEventListener('change', filterROMLibrary);
+    }
+});

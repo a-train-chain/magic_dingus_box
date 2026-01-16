@@ -510,6 +510,11 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "mkdir -p \"$HOME/.config/retroarch\"\n";
             script_file << "mkdir -p \"/tmp/empty_autoconfig\"\n";
             
+            // Create save directories
+            script_file << "# Create save directories for game progress persistence\n";
+            script_file << "mkdir -p \"" << config::retroarch::get_saves_dir() << "\"\n";
+            script_file << "mkdir -p \"" << config::retroarch::get_states_dir() << "\"\n";
+            
             // Backup existing config
             script_file << "if [ -f \"$UI_CONFIG\" ]; then\n";
             script_file << "    cp \"$UI_CONFIG\" \"$UI_CONFIG.backup.$(date +%s)\"\n";
@@ -582,6 +587,14 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "cat > \"$UI_CONFIG\" << 'EOF'\n";
             script_file << "# DRM/KMS RetroArch config for Magic Dingus Box (Isolated)\n";
             script_file << "libretro_system_directory = \"" << config::retroarch::get_system_dir() << "\"\n";
+            
+            // Save/State directories for game progress persistence
+            script_file << "savefile_directory = \"" << config::retroarch::get_saves_dir() << "\"\n";
+            script_file << "savestate_directory = \"" << config::retroarch::get_states_dir() << "\"\n";
+            script_file << "sort_savefiles_by_content_enable = \"true\"\n";
+            script_file << "sort_savestates_by_content_enable = \"true\"\n";
+            script_file << "savestate_auto_save = \"false\"\n";
+            script_file << "savestate_auto_load = \"false\"\n";
             
             // Dynamic Video Driver Selection
             // Dynamic Video Driver Selection
