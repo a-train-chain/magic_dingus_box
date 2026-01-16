@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Update VERSION file
+        run: echo "${{ steps.version.outputs.VERSION }}" > VERSION
+
+      - name: Create release archive
+        run: |
+          # Create tarball excluding development files and user data
+          tar -czvf magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='*.o' \
+            --exclude='*.a' \
+            --exclude='CMakeCache.txt' \
+            --exclude='CMakeFiles' \
+            --exclude='__pycache__' \
+            --exclude='.venv' \
+            --exclude='venv' \
+            --exclude='.DS_Store' \
+            --exclude='*.pyc' \
+            --exclude='data/media/*' \
+            --exclude='data/roms/*' \
+            --exclude='dev_data' \
+            --exclude='test_files' \
+            --exclude='*.service.bak' \
+            --exclude='.mypy_cache' \
+            --exclude='.pytest_cache' \
+            --exclude='*.log' \
+            .
+
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz > checksum.sha256
+          cat checksum.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
+            checksum.sha256
+          generate_release_notes: true
+          body: |
+            ## Magic Dingus Box v${{ steps.version.outputs.VERSION }}
+
+            ### Update Instructions
+
+            **From the Web Admin Interface:**
+            1. Open the web admin in your browser
+            2. Navigate to the **Settings** tab
+            3. Click **Check for Updates**
+            4. Click **Install Update** when prompted
+
+            **Manual Update (SSH):**
+            ```bash
+            ssh magic@<your-device-ip>
+            cd /opt/magic_dingus_box
+            ./magic_dingus_box_cpp/scripts/update.sh check
+            ./magic_dingus_box_cpp/scripts/update.sh install ${{ steps.version.outputs.VERSION }} <download_url>
+            ```
+
+            ### Checksum
+            See `checksum.sha256` for file verification.
+
+            ---
+            *Release created automatically by GitHub Actions*

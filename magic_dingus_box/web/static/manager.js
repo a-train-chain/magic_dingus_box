@@ -837,6 +837,9 @@ async function loadAllContentFromDevice() {
 
     // Load health info (non-blocking)
     refreshHealthInfo();
+
+    // Load version info (non-blocking)
+    loadVersionInfo();
 }
 
 // ===== UNIFIED MEDIA FUNCTIONS =====
@@ -4001,6 +4004,319 @@ function filterROMLibrary() {
  */
 function renderGamePlaylistAvailable() {
     renderROMLibraryPanel();  // Use new ROM library panel styling
+}
+
+// ===== OTA UPDATE FUNCTIONS =====
+
+let updateData = null;  // Store update info between check and install
+
+/**
+ * Load current version on page load
+ */
+async function loadVersionInfo() {
+    if (!currentDevice) return;
+
+    const versionEl = document.getElementById('currentVersion');
+    if (!versionEl) return;
+
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/update/version`);
+        versionEl.textContent = `v${data.version}`;
+    } catch (e) {
+        console.error('Failed to load version:', e);
+        versionEl.textContent = 'Unknown';
+    }
+}
+
+/**
+ * Check for available updates
+ */
+async function checkForUpdates() {
+    if (!currentDevice) {
+        alert('Not connected to a device');
+        return;
+    }
+
+    const statusEl = document.getElementById('updateStatus');
+    const availableEl = document.getElementById('updateAvailable');
+    const checkBtn = document.getElementById('checkUpdateBtn');
+    const installBtn = document.getElementById('installUpdateBtn');
+    const rollbackBtn = document.getElementById('rollbackBtn');
+
+    // Reset UI state
+    statusEl.classList.remove('complete', 'error');
+    if (statusEl) statusEl.style.display = 'block';
+    if (availableEl) availableEl.style.display = 'none';
+    if (installBtn) installBtn.style.display = 'none';
+    if (checkBtn) checkBtn.disabled = true;
+
+    const labelEl = statusEl?.querySelector('.update-label');
+    const progressEl = statusEl?.querySelector('.update-progress-fill');
+    const detailsEl = statusEl?.querySelector('.update-details');
+    const iconEl = statusEl?.querySelector('.update-icon');
+
+    if (labelEl) labelEl.textContent = 'Checking for updates...';
+    if (progressEl) progressEl.style.width = '50%';
+    if (iconEl) iconEl.textContent = '🔍';
+    if (detailsEl) detailsEl.textContent = '';
+
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/update/check`);
+        const result = await response.json();
+
+        if (!result.ok) {
+            throw new Error(result.error?.message || 'Check failed');
+        }
+
+        const data = result.data;
+        updateData = data;  // Store for install
+
+        // Update current version display
+        const versionEl = document.getElementById('currentVersion');
+        if (versionEl) versionEl.textContent = `v${data.current_version}`;
+
+        if (data.update_available) {
+            // Show update available
+            if (statusEl) statusEl.style.display = 'none';
+            if (availableEl) availableEl.style.display = 'block';
+            if (installBtn) installBtn.style.display = 'block';
+
+            const newVersionLabel = document.getElementById('newVersionLabel');
+            const releaseNotes = document.getElementById('releaseNotes');
+
+            if (newVersionLabel) newVersionLabel.textContent = `v${data.latest_version}`;
+            if (releaseNotes) releaseNotes.textContent = data.release_notes || 'No release notes available.';
+
+            // Show rollback if backup exists
+            if (rollbackBtn && data.has_backup) rollbackBtn.style.display = 'block';
+
+        } else {
+            // Already up to date
+            if (labelEl) labelEl.textContent = 'Up to date!';
+            if (progressEl) progressEl.style.width = '100%';
+            if (detailsEl) detailsEl.textContent = `Current version: v${data.current_version}`;
+            if (iconEl) iconEl.textContent = '✓';
+            statusEl?.classList.add('complete');
+
+            // Show rollback option if backup exists
+            if (rollbackBtn && data.has_backup) rollbackBtn.style.display = 'block';
+
+            // Hide after delay
+            setTimeout(() => {
+                if (statusEl) statusEl.style.display = 'none';
+                statusEl?.classList.remove('complete');
+            }, 3000);
+        }
+
+    } catch (e) {
+        console.error('Update check failed:', e);
+        if (labelEl) labelEl.textContent = 'Check failed';
+        if (detailsEl) detailsEl.textContent = e.message;
+        if (iconEl) iconEl.textContent = '✗';
+        statusEl?.classList.add('error');
+
+        setTimeout(() => {
+            if (statusEl) statusEl.style.display = 'none';
+            statusEl?.classList.remove('error');
+        }, 5000);
+    }
+
+    if (checkBtn) checkBtn.disabled = false;
+}
+
+/**
+ * Install an available update
+ */
+async function installUpdate() {
+    if (!currentDevice || !updateData?.download_url) {
+        alert('No update available to install');
+        return;
+    }
+
+    if (!confirm(`Install update v${updateData.latest_version}?\n\nThis will restart the device services and may take several minutes.`)) {
+        return;
+    }
+
+    const statusEl = document.getElementById('updateStatus');
+    const availableEl = document.getElementById('updateAvailable');
+    const checkBtn = document.getElementById('checkUpdateBtn');
+    const installBtn = document.getElementById('installUpdateBtn');
+    const rollbackBtn = document.getElementById('rollbackBtn');
+
+    // Reset and show progress
+    statusEl?.classList.remove('complete', 'error');
+    if (statusEl) statusEl.style.display = 'block';
+    if (availableEl) availableEl.style.display = 'none';
+    if (checkBtn) checkBtn.disabled = true;
+    if (installBtn) installBtn.disabled = true;
+    if (rollbackBtn) rollbackBtn.style.display = 'none';
+
+    const labelEl = statusEl?.querySelector('.update-label');
+    const progressEl = statusEl?.querySelector('.update-progress-fill');
+    const detailsEl = statusEl?.querySelector('.update-details');
+    const iconEl = statusEl?.querySelector('.update-icon');
+
+    if (labelEl) labelEl.textContent = 'Starting update...';
+    if (progressEl) progressEl.style.width = '0%';
+    if (iconEl) iconEl.textContent = '⬇️';
+
+    try {
+        // Start update
+        const startResponse = await apiPost(`${currentDevice.url}/admin/update/install`, {
+            version: updateData.latest_version,
+            download_url: updateData.download_url
+        });
+
+        const jobId = startResponse.job_id;
+
+        // Poll for progress
+        const stageLabels = {
+            'preparing': 'Preparing...',
+            'downloading': 'Downloading update...',
+            'extracting': 'Extracting files...',
+            'backing_up': 'Creating backup...',
+            'stopping_services': 'Stopping services...',
+            'installing': 'Installing files...',
+            'building': 'Building application...',
+            'restarting_services': 'Restarting services...',
+            'complete': 'Update complete!'
+        };
+
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+
+            try {
+                const statusResponse = await fetch(`${currentDevice.url}/admin/update/status/${jobId}`);
+                const statusData = await statusResponse.json();
+
+                if (!statusData.ok) continue;
+
+                const job = statusData.data;
+
+                // Update UI
+                if (labelEl) labelEl.textContent = stageLabels[job.stage] || job.stage;
+                if (progressEl) progressEl.style.width = `${job.progress}%`;
+                if (detailsEl && job.message) detailsEl.textContent = job.message;
+
+                if (job.status === 'complete') {
+                    if (iconEl) iconEl.textContent = '✓';
+                    statusEl?.classList.add('complete');
+
+                    // Update version display
+                    const versionEl = document.getElementById('currentVersion');
+                    if (versionEl && job.new_version) {
+                        versionEl.textContent = `v${job.new_version}`;
+                    }
+
+                    // Show rollback button
+                    if (rollbackBtn) rollbackBtn.style.display = 'block';
+
+                    setTimeout(() => {
+                        alert('Update complete! The device is now running the latest version.');
+                    }, 1000);
+
+                    break;
+                }
+
+                if (job.status === 'error') {
+                    throw new Error(job.message || 'Update failed');
+                }
+
+            } catch (pollError) {
+                // Connection error during update - might be service restart
+                if (detailsEl) detailsEl.textContent = 'Reconnecting to device...';
+                console.log('Polling error (may be normal during restart):', pollError);
+            }
+        }
+
+    } catch (e) {
+        console.error('Update failed:', e);
+        if (labelEl) labelEl.textContent = 'Update failed';
+        if (detailsEl) detailsEl.textContent = e.message;
+        if (iconEl) iconEl.textContent = '✗';
+        statusEl?.classList.add('error');
+
+        if (rollbackBtn) rollbackBtn.style.display = 'block';
+    }
+
+    if (checkBtn) checkBtn.disabled = false;
+    if (installBtn) installBtn.disabled = false;
+}
+
+/**
+ * Rollback to previous version
+ */
+async function rollbackUpdate() {
+    if (!currentDevice) {
+        alert('Not connected to a device');
+        return;
+    }
+
+    if (!confirm('Rollback to the previous version?\n\nThis will restart the device services.')) {
+        return;
+    }
+
+    const statusEl = document.getElementById('updateStatus');
+    const availableEl = document.getElementById('updateAvailable');
+    const checkBtn = document.getElementById('checkUpdateBtn');
+    const installBtn = document.getElementById('installUpdateBtn');
+    const rollbackBtn = document.getElementById('rollbackBtn');
+
+    // Reset and show progress
+    statusEl?.classList.remove('complete', 'error');
+    if (statusEl) statusEl.style.display = 'block';
+    if (availableEl) availableEl.style.display = 'none';
+    if (checkBtn) checkBtn.disabled = true;
+    if (installBtn) installBtn.style.display = 'none';
+    if (rollbackBtn) rollbackBtn.disabled = true;
+
+    const labelEl = statusEl?.querySelector('.update-label');
+    const progressEl = statusEl?.querySelector('.update-progress-fill');
+    const detailsEl = statusEl?.querySelector('.update-details');
+    const iconEl = statusEl?.querySelector('.update-icon');
+
+    if (labelEl) labelEl.textContent = 'Rolling back...';
+    if (progressEl) progressEl.style.width = '50%';
+    if (iconEl) iconEl.textContent = '↩️';
+    if (detailsEl) detailsEl.textContent = '';
+
+    try {
+        const response = await apiPost(`${currentDevice.url}/admin/update/rollback`, {});
+
+        if (response.stage === 'complete' || response.ok) {
+            if (labelEl) labelEl.textContent = 'Rollback complete!';
+            if (progressEl) progressEl.style.width = '100%';
+            if (iconEl) iconEl.textContent = '✓';
+            statusEl?.classList.add('complete');
+
+            // Update version display
+            const versionEl = document.getElementById('currentVersion');
+            if (versionEl && response.version) {
+                versionEl.textContent = `v${response.version}`;
+            }
+
+            setTimeout(() => {
+                if (statusEl) statusEl.style.display = 'none';
+                statusEl?.classList.remove('complete');
+                alert('Rollback complete! The device is now running the previous version.');
+            }, 2000);
+        }
+
+    } catch (e) {
+        console.error('Rollback failed:', e);
+        if (labelEl) labelEl.textContent = 'Rollback failed';
+        if (detailsEl) detailsEl.textContent = e.message;
+        if (iconEl) iconEl.textContent = '✗';
+        statusEl?.classList.add('error');
+
+        setTimeout(() => {
+            if (statusEl) statusEl.style.display = 'none';
+            statusEl?.classList.remove('error');
+        }, 5000);
+    }
+
+    if (checkBtn) checkBtn.disabled = false;
+    if (rollbackBtn) rollbackBtn.disabled = false;
 }
 
 // Add event listeners for "Add Empty Slot" buttons and filters

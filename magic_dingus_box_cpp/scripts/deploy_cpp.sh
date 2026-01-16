@@ -117,6 +117,16 @@ rsync -avz \
     
 echo "  ✓ Web UI synced"
 
+# Step 1.55: Sync VERSION file and update script
+echo "Step 1.55: Syncing VERSION file and update script..."
+rsync -avz \
+    "${CPP_DIR}/../VERSION" \
+    "${PI_HOST}:${PI_DIR}/"
+
+# Make update.sh executable on Pi
+ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh" 2>/dev/null || true
+echo "  ✓ VERSION file and update script synced"
+
 # Step 1.6: Install Web UI Service
 echo "Step 1.6: Installing Web UI Service..."
 rsync -avz \

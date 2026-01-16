@@ -397,6 +397,51 @@
                     <button class="btn-secondary small" onclick="refreshHealthInfo()">Refresh</button>
                 </div>
             </div>
+
+            <div class="settings-section-mobile">
+                <div class="section-title">🔄 Software Updates</div>
+                <div class="section-body">
+                    <div id="updateInfo" class="update-info">
+                        <div class="health-row">
+                            <span class="health-label">Current Version</span>
+                            <span class="health-value" id="currentVersion">Loading...</span>
+                        </div>
+                    </div>
+
+                    <div id="updateStatus" class="update-status" style="display: none;">
+                        <div class="update-header">
+                            <span class="update-icon">🔄</span>
+                            <span class="update-label">Checking...</span>
+                        </div>
+                        <div class="update-progress-bar">
+                            <div class="update-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="update-details"></div>
+                    </div>
+
+                    <div id="updateAvailable" class="update-available" style="display: none;">
+                        <div class="update-badge">Update Available!</div>
+                        <div class="update-version">
+                            <span id="newVersionLabel">v0.0.0</span>
+                        </div>
+                        <div class="update-notes" id="releaseNotes"></div>
+                    </div>
+
+                    <div class="update-actions">
+                        <button class="btn-primary" id="checkUpdateBtn" onclick="checkForUpdates()">
+                            Check for Updates
+                        </button>
+                        <button class="btn-secondary" id="installUpdateBtn" onclick="installUpdate()"
+                                style="display: none;">
+                            Install Update
+                        </button>
+                        <button class="btn-secondary" id="rollbackBtn" onclick="rollbackUpdate()"
+                                style="display: none;">
+                            Rollback
+                        </button>
+                    </div>
+                </div>
+            </div>
         </section>
     </div>
 
@@ -428,7 +473,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=41"></script>
+    <script src="/static/manager.js?v=42"></script>
 
 </body>
 

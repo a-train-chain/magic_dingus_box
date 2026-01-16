@@ -548,6 +548,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # ===== BACKUP & RESTORE =====
 
+    def get_app_version() -> str:
+        """Get the current installed app version from VERSION file."""
+        version_file = data_dir.parent / "VERSION"
+        if version_file.exists():
+            return version_file.read_text().strip()
+        return "0.0.0"  # Fallback for pre-versioning installations
+
     @app.get("/admin/backup")
     def create_backup():  # type: ignore[no-redef]
         """Create a backup of all playlists, settings, and device info.
@@ -563,7 +570,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             # Track what we're backing up
             manifest = {
-                "version": "1.0",
+                "version": get_app_version(),
                 "created_at": datetime.now().isoformat(),
                 "device_name": get_device_info().get("device_name", "Unknown"),
                 "contents": {
@@ -1363,8 +1370,201 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return success_response(message="ROM deleted")
         return error_response("NOT_FOUND", "ROM not found", status=404)
 
+    # ===== OTA UPDATE MANAGEMENT =====
+
+    # Path to update script
+    UPDATE_SCRIPT = data_dir.parent / "magic_dingus_box_cpp" / "scripts" / "update.sh"
+
+    # Store for tracking update jobs (in-memory, cleared on restart)
+    update_jobs: dict = {}
+
+    @app.get("/admin/update/version")
+    def get_version():  # type: ignore[no-redef]
+        """Get current installed version."""
+        return success_response(data={
+            "version": get_app_version(),
+            "device_name": get_device_info().get("device_name", "Unknown")
+        })
+
+    @app.get("/admin/update/check")
+    def check_for_update():  # type: ignore[no-redef]
+        """Check if an update is available from GitHub."""
+        if not UPDATE_SCRIPT.exists():
+            return error_response(
+                "UPDATE_NOT_AVAILABLE",
+                "Update script not found. Run deploy with --build first.",
+                status=500
+            )
+
+        try:
+            result = subprocess.run(
+                [str(UPDATE_SCRIPT), "check"],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode == 0:
+                # Parse JSON output from update script
+                response_data = json.loads(result.stdout)
+                return jsonify(response_data), 200
+            else:
+                error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+                return error_response("UPDATE_CHECK_FAILED", error_msg, status=500)
+
+        except subprocess.TimeoutExpired:
+            return error_response("TIMEOUT", "Update check timed out", status=504)
+        except json.JSONDecodeError as e:
+            return error_response("PARSE_ERROR", f"Failed to parse update info: {e}", status=500)
+        except Exception as e:
+            return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    def run_update_job(job_id: str, version: str, download_url: str):
+        """Background thread function to run the update installation."""
+        job = update_jobs[job_id]
+
+        try:
+            # Run update script with install command
+            process = subprocess.Popen(
+                [str(UPDATE_SCRIPT), "install", version, download_url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1  # Line buffered
+            )
+
+            # Read progress output line by line
+            for line in process.stdout:
+                line = line.strip()
+                if line:
+                    try:
+                        progress_data = json.loads(line)
+                        job['stage'] = progress_data.get('stage', job['stage'])
+                        job['progress'] = progress_data.get('progress', job['progress'])
+                        job['message'] = progress_data.get('message', job['message'])
+
+                        if progress_data.get('stage') == 'complete':
+                            job['status'] = 'complete'
+                            job['new_version'] = progress_data.get('new_version', version)
+                        elif not progress_data.get('ok', True):
+                            job['status'] = 'error'
+                            job['message'] = progress_data.get('error', {}).get('message', 'Unknown error')
+                    except json.JSONDecodeError:
+                        # Non-JSON output, ignore
+                        pass
+
+            process.wait()
+
+            if process.returncode != 0 and job['status'] != 'complete':
+                stderr = process.stderr.read()
+                job['status'] = 'error'
+                job['message'] = stderr[:500] if stderr else 'Update failed'
+
+        except Exception as e:
+            job['status'] = 'error'
+            job['message'] = str(e)
+
+    @app.post("/admin/update/install")
+    @require_csrf
+    def install_update():  # type: ignore[no-redef]
+        """Start an update installation."""
+        if not UPDATE_SCRIPT.exists():
+            return error_response(
+                "UPDATE_NOT_AVAILABLE",
+                "Update script not found",
+                status=500
+            )
+
+        data = request.get_json()
+        if not data:
+            return error_response("VALIDATION_ERROR", "JSON body required")
+
+        version = data.get('version')
+        download_url = data.get('download_url')
+
+        if not version or not download_url:
+            return error_response("VALIDATION_ERROR", "version and download_url required")
+
+        # Validate download URL (must be from GitHub)
+        if not download_url.startswith("https://github.com/") and not download_url.startswith("https://api.github.com/"):
+            return error_response("VALIDATION_ERROR", "Invalid download URL (must be from GitHub)")
+
+        # Create job
+        job_id = str(uuid.uuid4())
+        update_jobs[job_id] = {
+            'status': 'running',
+            'stage': 'preparing',
+            'progress': 0,
+            'message': 'Starting update...',
+            'version': version,
+            'new_version': None
+        }
+
+        # Start update in background thread
+        thread = threading.Thread(
+            target=run_update_job,
+            args=(job_id, version, download_url)
+        )
+        thread.daemon = True
+        thread.start()
+
+        return success_response(data={'job_id': job_id}, message="Update started")
+
+    @app.get("/admin/update/status/<job_id>")
+    def update_status(job_id):  # type: ignore[no-redef]
+        """Get status of an update job."""
+        if job_id not in update_jobs:
+            return error_response("NOT_FOUND", "Job not found", status=404)
+
+        job = update_jobs[job_id]
+        return success_response(data={
+            'status': job['status'],
+            'stage': job['stage'],
+            'progress': job['progress'],
+            'message': job['message'],
+            'new_version': job.get('new_version')
+        })
+
+    @app.post("/admin/update/rollback")
+    @require_csrf
+    def rollback_update():  # type: ignore[no-redef]
+        """Rollback to the previous version."""
+        if not UPDATE_SCRIPT.exists():
+            return error_response(
+                "UPDATE_NOT_AVAILABLE",
+                "Update script not found",
+                status=500
+            )
+
+        try:
+            result = subprocess.run(
+                [str(UPDATE_SCRIPT), "rollback"],
+                capture_output=True,
+                text=True,
+                timeout=180  # 3 minute timeout for rollback
+            )
+
+            if result.returncode == 0:
+                # Parse the last JSON line of output (completion message)
+                lines = [l for l in result.stdout.strip().split('\n') if l.strip()]
+                if lines:
+                    try:
+                        response_data = json.loads(lines[-1])
+                        return jsonify(response_data), 200
+                    except json.JSONDecodeError:
+                        pass
+                return success_response(message="Rollback completed")
+            else:
+                error_msg = result.stderr.strip() or "Rollback failed"
+                return error_response("ROLLBACK_FAILED", error_msg, status=500)
+
+        except subprocess.TimeoutExpired:
+            return error_response("TIMEOUT", "Rollback timed out", status=504)
+        except Exception as e:
+            return error_response("INTERNAL_ERROR", str(e), status=500)
+
     # ===== SERVE WEB INTERFACE =====
-    
+
     @app.get("/")
     @app.get("/admin")
     def admin_interface():  # type: ignore[no-redef]

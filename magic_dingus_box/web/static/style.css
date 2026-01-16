@@ -2118,6 +2118,159 @@ header::after {
     color: var(--error);
 }
 
+/* ===== OTA UPDATE STYLES ===== */
+
+.update-info {
+    background: var(--bg-card);
+    border-radius: 4px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.update-status {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: linear-gradient(135deg, rgba(88, 132, 177, 0.15) 0%, var(--bg-mid) 100%);
+    border: 2px solid var(--accent2);
+    border-radius: 8px;
+    animation: update-glow 2s ease-in-out infinite alternate;
+}
+
+@keyframes update-glow {
+    from { box-shadow: 0 0 5px rgba(88, 132, 177, 0.2); }
+    to { box-shadow: 0 0 15px rgba(88, 132, 177, 0.4); }
+}
+
+.update-header {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
+    margin-bottom: 0.75rem;
+}
+
+.update-icon {
+    font-size: 1.25rem;
+    animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.update-label {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.update-progress-bar {
+    height: 10px;
+    background: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.update-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent2) 0%, var(--accent) 50%, var(--success) 100%);
+    background-size: 200% 100%;
+    animation: progress-shimmer 2s ease-in-out infinite;
+    transition: width 0.3s ease-out;
+    border-radius: 5px;
+}
+
+@keyframes progress-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+.update-details {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.update-available {
+    background: rgba(102, 221, 122, 0.1);
+    border: 2px solid var(--success);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.update-badge {
+    display: inline-block;
+    background: var(--success);
+    color: var(--bg-dark);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+}
+
+.update-version {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+}
+
+.update-notes {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    max-height: 100px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.update-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.update-actions button {
+    flex: 1;
+    min-width: 120px;
+}
+
+/* Update status states */
+.update-status.complete {
+    border-color: var(--success);
+    background: linear-gradient(135deg, rgba(102, 221, 122, 0.15) 0%, var(--bg-mid) 100%);
+    animation: none;
+}
+
+.update-status.complete .update-icon {
+    animation: none;
+}
+
+.update-status.complete .update-progress-fill {
+    background: var(--success);
+    animation: none;
+}
+
+.update-status.error {
+    border-color: var(--error);
+    background: linear-gradient(135deg, rgba(234, 58, 39, 0.15) 0%, var(--bg-mid) 100%);
+    animation: none;
+}
+
+.update-status.error .update-icon {
+    animation: none;
+}
+
+.update-status.error .update-progress-fill {
+    background: var(--error);
+    animation: none;
+}
+
 /* ===== NEW PLAYLIST EDITOR ===== */
 
 .playlist-editor-container {
