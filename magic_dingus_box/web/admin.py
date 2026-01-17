@@ -550,9 +550,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     def get_app_version() -> str:
         """Get the current installed app version from VERSION file."""
-        version_file = data_dir.parent / "VERSION"
+        # VERSION file is at /opt/magic_dingus_box/VERSION (two levels up from data dir)
+        version_file = data_dir.parent.parent / "VERSION"
         if version_file.exists():
             return version_file.read_text().strip()
+        # Fallback: check one level up (old location)
+        alt_version_file = data_dir.parent / "VERSION"
+        if alt_version_file.exists():
+            return alt_version_file.read_text().strip()
         return "0.0.0"  # Fallback for pre-versioning installations
 
     @app.get("/admin/backup")
@@ -1373,7 +1378,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # ===== OTA UPDATE MANAGEMENT =====
 
     # Path to update script
-    UPDATE_SCRIPT = data_dir.parent / "magic_dingus_box_cpp" / "scripts" / "update.sh"
+    # data_dir is /opt/magic_dingus_box/magic_dingus_box_cpp/data
+    # update.sh is at /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/update.sh
+    UPDATE_SCRIPT = data_dir.parent / "scripts" / "update.sh"
 
     # Store for tracking update jobs (in-memory, cleared on restart)
     update_jobs: dict = {}
