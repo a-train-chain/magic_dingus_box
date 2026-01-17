@@ -24,8 +24,8 @@ jobs:
 
       - name: Create release archive
         run: |
-          # Create tarball excluding development files and user data
-          tar -czvf magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz \
+          # Create tarball in /tmp first to avoid "file changed as we read it" error
+          tar -czvf /tmp/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='build' \
@@ -46,7 +46,10 @@ jobs:
             --exclude='.mypy_cache' \
             --exclude='.pytest_cache' \
             --exclude='*.log' \
+            --exclude='*.tar.gz' \
             .
+          # Move back to workspace
+          mv /tmp/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz .
 
       - name: Generate SHA256 checksum
         run: |
