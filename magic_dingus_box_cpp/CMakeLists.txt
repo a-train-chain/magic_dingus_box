@@ -167,6 +167,30 @@ install(TARGETS magic_dingus_box_cpp
 
 # Copy assets to build directory for development
 file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
-file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR})
-file(COPY ${CMAKE_SOURCE_DIR}/dev_data DESTINATION ${CMAKE_BINARY_DIR})
+
+# Copy data directory structure but EXCLUDE large user data (roms, media)
+# These are user files that shouldn't be copied during build
+file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
+    PATTERN "roms" EXCLUDE
+    PATTERN "media" EXCLUDE
+    PATTERN "*.chd" EXCLUDE
+    PATTERN "*.iso" EXCLUDE
+    PATTERN "*.bin" EXCLUDE
+    PATTERN "*.cue" EXCLUDE
+    PATTERN "*.mp4" EXCLUDE
+    PATTERN "*.mkv" EXCLUDE
+    PATTERN "*.avi" EXCLUDE
+)
+
+# dev_data only needed for local development, skip in production builds
+if(EXISTS ${CMAKE_SOURCE_DIR}/dev_data)
+    file(COPY ${CMAKE_SOURCE_DIR}/dev_data DESTINATION ${CMAKE_BINARY_DIR}
+        PATTERN "roms" EXCLUDE
+        PATTERN "media" EXCLUDE
+        PATTERN "*.chd" EXCLUDE
+        PATTERN "*.iso" EXCLUDE
+        PATTERN "*.mp4" EXCLUDE
+        PATTERN "*.mkv" EXCLUDE
+    )
+endif()
 
