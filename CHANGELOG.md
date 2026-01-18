@@ -5,6 +5,13 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-01-18
+
+### Fixed
+- OTA update rsync permission errors (added --no-group --no-owner flags)
+- OTA update content directory detection for release tarballs
+- Handle rsync exit codes 23/24 gracefully
+
 ## [1.0.2] - 2026-01-18
 
 ### Fixed
