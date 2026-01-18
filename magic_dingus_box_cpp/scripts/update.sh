@@ -245,12 +245,23 @@ install_update() {
         return 1
     fi
 
-    # Find the actual content directory (GitHub tarballs have a top-level folder)
+    # Find the actual content directory
+    # Our release tarballs extract directly (files at root), but GitHub source
+    # tarballs have a wrapper directory (repo-name-version/).
+    # Check for VERSION file to determine correct root.
     local content_dir
-    content_dir=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
-    if [ -z "$content_dir" ]; then
+    if [ -f "$TEMP_DIR/extracted/VERSION" ]; then
+        # Our release tarball - content is at extraction root
         content_dir="$TEMP_DIR/extracted"
+    else
+        # GitHub source tarball - look for wrapper directory
+        content_dir=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
+        if [ -z "$content_dir" ]; then
+            content_dir="$TEMP_DIR/extracted"
+        fi
     fi
+
+    log "Using content directory: $content_dir"
 
     json_progress "backing_up" 45 "Creating backup of current installation..."
 
@@ -260,7 +271,8 @@ install_update() {
 
     # Create backup (exclude large user data to save space)
     mkdir -p "$BACKUP_DIR"
-    rsync -a --delete \
+    # Use --no-group --no-owner to avoid permission errors on group/owner changes
+    rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/build' \
@@ -281,19 +293,25 @@ install_update() {
     json_progress "installing" 60 "Installing new files..."
 
     # Install new files (preserve user data)
+    # Use --no-group --no-owner to avoid permission errors
+    # Exit code 23 means "some files could not transfer attributes" which is OK
     log "Installing new files..."
-    rsync -av --delete \
+    local rsync_exit=0
+    rsync -av --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
-        "$content_dir/" "$INSTALL_DIR/" 2>&2 || {
-        log_error "Failed to install files, attempting rollback..."
+        "$content_dir/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
+
+    # Exit code 23 = some files couldn't transfer attrs (OK), 24 = vanished files (OK)
+    if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
+        log_error "Failed to install files (rsync exit code: $rsync_exit), attempting rollback..."
         rollback_internal
         return 1
-    }
+    fi
 
     # Update VERSION file
     echo "$target_version" > "$INSTALL_DIR/VERSION"
