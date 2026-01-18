@@ -23,19 +23,18 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      # Note: libgpiod-dev omitted because Debian has 1.x but code needs 2.x API
-      # GPIO support (power button, LEDs) disabled in CI builds - only needed on real Pi
+      # Use Debian Trixie for libgpiod 2.x (Bookworm only has 1.6.x)
       - name: Build ARM64 binary
         run: |
           docker run --rm --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            arm64v8/debian:bookworm \
+            arm64v8/debian:trixie \
             bash -c '
               apt-get update && apt-get install -y \
                 build-essential cmake pkg-config git file \
                 libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
-                libevdev-dev \
+                libevdev-dev libgpiod-dev \
                 libyaml-cpp-dev libjsoncpp-dev \
                 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
                 gstreamer1.0-plugins-base gstreamer1.0-gl
