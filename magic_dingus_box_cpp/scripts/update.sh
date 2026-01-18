@@ -380,22 +380,20 @@ rollback_internal() {
 
     log "Rolling back to previous version..."
 
-    # Stop services
+    # Only stop C++ service - don't stop web service during rollback
     sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
-    sudo systemctl stop magic-dingus-web.service 2>/dev/null || true
 
     # Restore backup
-    rsync -a --delete \
+    rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
-        "$BACKUP_DIR/" "$INSTALL_DIR/"
+        "$BACKUP_DIR/" "$INSTALL_DIR/" || true
 
-    # Restart services
+    # Restart C++ service (web service will be restarted at end of main function)
     sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-web.service 2>/dev/null || true
     sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
 
     local restored_version
@@ -417,36 +415,36 @@ rollback() {
         backup_version="unknown"
     fi
 
-    json_progress "stopping_services" 10 "Stopping services..."
+    json_progress "stopping_services" 10 "Stopping C++ service..."
 
-    # Stop services
-    log "Stopping services..."
+    # Only stop C++ service - don't stop web service during rollback
+    log "Stopping C++ service..."
     sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
-    sudo systemctl stop magic-dingus-web.service 2>/dev/null || true
-    sleep 2
+    sleep 1
 
     json_progress "restoring" 30 "Restoring previous version..."
 
     # Restore backup (preserve user data)
     log "Restoring from backup..."
-    rsync -av --delete \
+    local rsync_exit=0
+    rsync -av --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
-        "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || {
+        "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
+
+    if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
         json_response "false" "Failed to restore backup"
         return 1
-    }
+    fi
 
     json_progress "restarting_services" 80 "Restarting services..."
 
-    # Restart services
-    log "Restarting services..."
+    # Restart C++ service
+    log "Restarting C++ service..."
     sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-web.service 2>/dev/null || true
-    sleep 1
     sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
 
     local restored_version
@@ -464,6 +462,9 @@ rollback() {
     "version": "$restored_version"
 }
 EOF
+
+    # Restart web service AFTER outputting final JSON
+    sudo systemctl restart magic-dingus-web.service 2>/dev/null || true
 }
 
 # Print usage
