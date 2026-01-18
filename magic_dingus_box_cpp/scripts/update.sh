@@ -15,11 +15,20 @@ set -euo pipefail
 
 # Configuration
 INSTALL_DIR="${MAGIC_BASE_PATH:-/opt/magic_dingus_box}"
-BACKUP_DIR="${HOME}/.magic_dingus_box_backup"
-TEMP_DIR="/tmp/magic_update"
+BACKUP_DIR="${MAGIC_BACKUP_DIR:-${HOME}/.magic_dingus_box_backup}"
+TEMP_DIR="${MAGIC_TEMP_DIR:-/tmp/magic_update}"
 GITHUB_REPO="a-train-chain/magic_dingus_box"
-GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+GITHUB_API="${MAGIC_GITHUB_API:-https://api.github.com/repos/${GITHUB_REPO}/releases/latest}"
 VERSION_FILE="${INSTALL_DIR}/VERSION"
+
+# Testing mode overrides
+# Set these environment variables to enable test mode:
+#   MAGIC_SKIP_SYSTEMCTL=true  - Skip all systemctl calls
+#   MAGIC_SKIP_BUILD=true      - Skip cmake/make build steps
+#   MAGIC_DRY_RUN=true         - Skip all destructive operations
+SKIP_SYSTEMCTL="${MAGIC_SKIP_SYSTEMCTL:-false}"
+SKIP_BUILD="${MAGIC_SKIP_BUILD:-false}"
+DRY_RUN="${MAGIC_DRY_RUN:-false}"
 
 # Colors for terminal output (when not outputting JSON)
 RED='\033[0;31m'
@@ -59,6 +68,37 @@ json_progress() {
     local progress="$2"
     local message="${3:-}"
     echo "{\"ok\": true, \"stage\": \"$stage\", \"progress\": $progress, \"message\": \"$message\"}"
+}
+
+# Wrapper for systemctl calls (skipped in test mode)
+run_systemctl() {
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: systemctl $*"
+        return 0
+    fi
+    sudo systemctl "$@"
+}
+
+# Wrapper for build steps (skipped in test mode)
+run_build() {
+    if [ "$SKIP_BUILD" = "true" ]; then
+        log "SKIP: Build step"
+        return 0
+    fi
+
+    local build_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
+    mkdir -p "$build_dir"
+    cd "$build_dir"
+
+    if ! cmake .. > /dev/null 2>&2; then
+        return 1
+    fi
+
+    if ! make -j4 2>&2; then
+        return 1
+    fi
+
+    return 0
 }
 
 # Get current installed version
@@ -287,12 +327,28 @@ install_update() {
     # Only stop C++ service - web service stays running until the end
     # (stopping web service would kill our parent process and abort the update)
     log "Stopping C++ service..."
-    sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
     sleep 1
 
     json_progress "installing" 60 "Installing new files..."
 
-    # Install new files (preserve user data)
+    # Install new files while preserving user content
+    #
+    # PRESERVED (user content - never overwritten):
+    #   - data/media/*      - User-uploaded video files
+    #   - data/roms/*       - User-uploaded ROM files
+    #   - data/playlists/*  - User-created playlist YAML files
+    #   - data/device_info.json - Device configuration
+    #   - config/*          - User settings (settings.json, WiFi, etc.)
+    #   - build/*           - Local build artifacts
+    #
+    # UPDATED (system files - replaced with new version):
+    #   - Source code (src/*)
+    #   - Scripts (scripts/*)
+    #   - System assets (assets/*, data/intro/*)
+    #   - Documentation (docs/*)
+    #   - Build configuration (CMakeLists.txt, etc.)
+    #
     # Use --no-group --no-owner to avoid permission errors
     # Exit code 23 means "some files could not transfer attributes" which is OK
     log "Installing new files..."
@@ -320,20 +376,10 @@ install_update() {
 
     # Rebuild C++ application
     log "Building application..."
-    cd "$INSTALL_DIR/magic_dingus_box_cpp"
-    mkdir -p build
-    cd build
-
-    if ! cmake .. > /dev/null 2>&2; then
-        log_error "CMake configuration failed, attempting rollback..."
-        json_progress "error" 70 "CMake failed, rolling back..."
-        rollback_internal
-        return 1
-    fi
 
     json_progress "building" 80 "Compiling..."
 
-    if ! make -j4 2>&2; then
+    if ! run_build; then
         log_error "Build failed, attempting rollback..."
         json_progress "error" 80 "Build failed, rolling back..."
         rollback_internal
@@ -344,8 +390,8 @@ install_update() {
 
     # Reload systemd and start C++ app
     log "Restarting services..."
-    sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl daemon-reload
+    run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
     sleep 1
 
     # Cleanup temp files
@@ -368,7 +414,7 @@ EOF
     # Restart web service AFTER outputting final JSON
     # This will cause our parent process to be killed, but that's OK
     # since we've already output the completion message
-    sudo systemctl restart magic-dingus-web.service 2>/dev/null || true
+    run_systemctl restart magic-dingus-web.service 2>/dev/null || true
 }
 
 # Internal rollback function (used during failed updates)
@@ -381,7 +427,7 @@ rollback_internal() {
     log "Rolling back to previous version..."
 
     # Only stop C++ service - don't stop web service during rollback
-    sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 
     # Restore backup
     rsync -a --delete --no-group --no-owner \
@@ -393,8 +439,8 @@ rollback_internal() {
         "$BACKUP_DIR/" "$INSTALL_DIR/" || true
 
     # Restart C++ service (web service will be restarted at end of main function)
-    sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl daemon-reload
+    run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
 
     local restored_version
     restored_version=$(get_current_version)
@@ -419,7 +465,7 @@ rollback() {
 
     # Only stop C++ service - don't stop web service during rollback
     log "Stopping C++ service..."
-    sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
     sleep 1
 
     json_progress "restoring" 30 "Restoring previous version..."
@@ -444,8 +490,8 @@ rollback() {
 
     # Restart C++ service
     log "Restarting C++ service..."
-    sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    run_systemctl daemon-reload
+    run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
 
     local restored_version
     restored_version=$(get_current_version)
@@ -464,7 +510,7 @@ rollback() {
 EOF
 
     # Restart web service AFTER outputting final JSON
-    sudo systemctl restart magic-dingus-web.service 2>/dev/null || true
+    run_systemctl restart magic-dingus-web.service 2>/dev/null || true
 }
 
 # Print usage

@@ -1,0 +1,152 @@
+name: OTA Update Tests
+
+on:
+  push:
+    paths:
+      - 'magic_dingus_box_cpp/scripts/update.sh'
+      - 'magic_dingus_box/web/admin.py'
+      - 'magic_dingus_box/web/tests/**'
+      - 'magic_dingus_box_cpp/scripts/tests/**'
+      - '.github/workflows/test-ota.yml'
+  pull_request:
+    paths:
+      - 'magic_dingus_box_cpp/scripts/update.sh'
+      - 'magic_dingus_box/web/admin.py'
+      - 'magic_dingus_box/web/tests/**'
+      - 'magic_dingus_box_cpp/scripts/tests/**'
+      - '.github/workflows/test-ota.yml'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  shell-tests:
+    name: Shell Script Tests (BATS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install BATS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+
+      - name: Run BATS tests
+        run: |
+          cd magic_dingus_box_cpp/scripts/tests
+          bats test_update.bats --tap
+        env:
+          MAGIC_SKIP_SYSTEMCTL: "true"
+          MAGIC_SKIP_BUILD: "true"
+
+  python-tests:
+    name: Python API Tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask pyyaml pytest pytest-cov
+
+      - name: Run OTA unit tests
+        run: |
+          cd magic_dingus_box/web
+          python -m pytest tests/test_ota.py -v --tb=short
+        env:
+          MAGIC_SKIP_SYSTEMCTL: "true"
+          MAGIC_SKIP_BUILD: "true"
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [shell-tests, python-tests]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask pyyaml pytest pytest-cov
+
+      - name: Run integration tests
+        run: |
+          cd magic_dingus_box/web
+          python -m pytest tests/test_ota_integration.py -v --tb=short
+        env:
+          MAGIC_SKIP_SYSTEMCTL: "true"
+          MAGIC_SKIP_BUILD: "true"
+
+  script-syntax:
+    name: Shell Script Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck on update.sh
+        run: |
+          shellcheck magic_dingus_box_cpp/scripts/update.sh || true
+        continue-on-error: true  # Warn but don't fail on style issues
+
+      - name: Verify script is executable
+        run: |
+          if [ ! -x magic_dingus_box_cpp/scripts/update.sh ]; then
+            echo "Warning: update.sh is not executable"
+          fi
+
+      - name: Test script syntax
+        run: |
+          bash -n magic_dingus_box_cpp/scripts/update.sh
+
+  all-tests-passed:
+    name: All OTA Tests Passed
+    runs-on: ubuntu-latest
+    needs: [shell-tests, python-tests, integration-tests, script-syntax]
+    if: always()
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          if [ "${{ needs.shell-tests.result }}" != "success" ]; then
+            echo "Shell tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.python-tests.result }}" != "success" ]; then
+            echo "Python tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.integration-tests.result }}" != "success" ]; then
+            echo "Integration tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.script-syntax.result }}" != "success" ]; then
+            echo "Script syntax check failed"
+            exit 1
+          fi
+          echo "All OTA tests passed!"

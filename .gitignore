@@ -66,8 +66,10 @@ docs/
 # Allow README files in subdirectories for documentation
 !magic_dingus_box_cpp/README.md
 
-# Exclude tests from runtime repo
+# Exclude tests from runtime repo (but allow OTA tests)
 tests/
+!magic_dingus_box/web/tests/
+!magic_dingus_box_cpp/scripts/tests/
 
 # Test files (large binaries)
 magic_dingus_box/web/test_files/
