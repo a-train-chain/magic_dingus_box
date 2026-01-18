@@ -282,13 +282,13 @@ install_update() {
         return 1
     }
 
-    json_progress "stopping_services" 55 "Stopping services..."
+    json_progress "stopping_services" 55 "Stopping C++ service..."
 
-    # Stop services
-    log "Stopping services..."
+    # Only stop C++ service - web service stays running until the end
+    # (stopping web service would kill our parent process and abort the update)
+    log "Stopping C++ service..."
     sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
-    sudo systemctl stop magic-dingus-web.service 2>/dev/null || true
-    sleep 2  # Give services time to stop
+    sleep 1
 
     json_progress "installing" 60 "Installing new files..."
 
@@ -342,12 +342,11 @@ install_update() {
 
     json_progress "restarting_services" 90 "Restarting services..."
 
-    # Reload systemd and restart services
+    # Reload systemd and start C++ app
     log "Restarting services..."
     sudo systemctl daemon-reload
-    sudo systemctl start magic-dingus-web.service 2>/dev/null || true
-    sleep 1
     sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    sleep 1
 
     # Cleanup temp files
     rm -rf "$TEMP_DIR"
@@ -355,7 +354,7 @@ install_update() {
     json_progress "complete" 100 "Update complete!"
     log "Update to version $target_version complete!"
 
-    # Final success response
+    # Final success response - output BEFORE restarting web service
     cat << EOF
 {
     "ok": true,
@@ -365,6 +364,11 @@ install_update() {
     "new_version": "$target_version"
 }
 EOF
+
+    # Restart web service AFTER outputting final JSON
+    # This will cause our parent process to be killed, but that's OK
+    # since we've already output the completion message
+    sudo systemctl restart magic-dingus-web.service 2>/dev/null || true
 }
 
 # Internal rollback function (used during failed updates)
