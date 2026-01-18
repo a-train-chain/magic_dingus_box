@@ -15,7 +15,7 @@ set -euo pipefail
 
 # Configuration
 INSTALL_DIR="${MAGIC_BASE_PATH:-/opt/magic_dingus_box}"
-BACKUP_DIR="/opt/magic_dingus_box_backup"
+BACKUP_DIR="${HOME}/.magic_dingus_box_backup"
 TEMP_DIR="/tmp/magic_update"
 GITHUB_REPO="a-train-chain/magic_dingus_box"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
