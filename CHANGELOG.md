@@ -5,6 +5,19 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-01-18
+
+### Added
+- Audio output selection (HDMI, Headphone Jack, Auto) via PulseAudio
+- Game volume offset control for RetroArch (-3dB, -6dB, -12dB options)
+- Audio submenu in Settings for easy audio configuration
+- Audio settings persistence (saved to config file)
+
+### Improved
+- Video transcoding now normalizes audio to -23 LUFS (EBU R128 broadcast standard)
+- Consistent volume levels across all transcoded videos
+- System volume control via ALSA Master/PCM mixers
+
 ## [1.0.0] - 2026-01-16
 
 ### Added
