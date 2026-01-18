@@ -13,6 +13,7 @@
 #include <chrono>
 #include <thread>
 #include <random>
+#include <algorithm>
 
 #include "../platform/input_manager.h"
 
@@ -480,7 +481,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         };
         
         
-        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_);
+        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db);
         
         // Game has exited. Restore system.
         
@@ -609,24 +610,35 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
     
     // Move to next item
     int next_index;
+    int playlist_size = static_cast<int>(playlist.items.size());
     
     if (state.shuffle) {
-        // Shuffle mode: Pick a random index
-        if (playlist.items.size() <= 1) {
+        // Shuffle mode: Use queue-based selection (Fisher-Yates)
+        // Ensures all videos play once before reshuffling
+        if (playlist_size <= 1) {
             next_index = 0;
         } else {
-            // Ensure we pick a different item than the current one
-            // (unless there's only 1 item, handled above)
-            do {
-                next_index = std::rand() % playlist.items.size();
-            } while (next_index == state.current_item_index);
+            // Check if playlist changed (need to regenerate queue)
+            if (state.shuffle_queue_playlist_id != state.current_playlist_index) {
+                state.shuffle_queue.clear();  // Force regeneration
+                state.shuffle_queue_playlist_id = state.current_playlist_index;
+            }
+            
+            // Get next shuffled index (will generate queue if needed)
+            next_index = get_next_shuffled_index(state, playlist_size);
+            
+            // If we got the same video we're currently on (shouldn't happen often),
+            // get another one
+            if (next_index == state.current_item_index && state.shuffle_queue_position < playlist_size) {
+                next_index = get_next_shuffled_index(state, playlist_size);
+            }
         }
     } else {
         // Sequential mode
         next_index = state.current_item_index + 1;
         
         // Check if we've reached the end of the playlist
-        if (next_index >= static_cast<int>(playlist.items.size())) {
+        if (next_index >= playlist_size) {
             if (state.playlist_loop) {
                 // Loop back to start
                 next_index = 0;
@@ -757,52 +769,129 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
         return;
     }
 
-    // Use C++11 random for better distribution
-    // Seed with high-resolution clock for uniqueness on each call
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
+    // Get next item from master shuffle queue (will generate if needed)
+    auto [playlist_index, item_index] = get_next_master_shuffled_item(state);
     
-    // Pick a random playlist (skip index 0 which is Master Shuffle)
-    std::uniform_int_distribution<> playlist_dist(1, state.playlists.size() - 1);
-    int playlist_index = playlist_dist(gen);
+    // Validate the selection
+    if (playlist_index < 0 || playlist_index >= static_cast<int>(state.playlists.size())) {
+        std::cerr << "Error: Invalid playlist index from master shuffle queue" << std::endl;
+        // Regenerate and retry
+        state.master_shuffle_queue.clear();
+        play_random_global_video(state, playlist_directory);
+        return;
+    }
+    
     const auto& playlist = state.playlists[playlist_index];
-
-    if (playlist.items.empty()) {
-        // Retry with another playlist
+    
+    if (item_index < 0 || item_index >= static_cast<int>(playlist.items.size())) {
+        std::cerr << "Error: Invalid item index from master shuffle queue" << std::endl;
+        // Regenerate and retry
+        state.master_shuffle_queue.clear();
         play_random_global_video(state, playlist_directory);
         return;
     }
 
-    // Pick a random item
-    std::uniform_int_distribution<> item_dist(0, playlist.items.size() - 1);
-    int item_index = item_dist(gen);
-
-    std::cout << "Master Shuffle: Total playlists=" << state.playlists.size() 
-              << ", Selected playlist_index=" << playlist_index 
-              << " (" << playlist.title << "), item=" << item_index 
-              << " of " << playlist.items.size() << std::endl;
+    std::cout << "Master Shuffle: playlist " << playlist_index 
+              << " (" << playlist.title << "), item " << item_index 
+              << "/" << playlist.items.size() 
+              << " [queue pos " << state.master_shuffle_queue_position 
+              << "/" << state.master_shuffle_queue.size() << "]" << std::endl;
+              
     // Activate Master Shuffle mode and update state for UI tracking
     state.master_shuffle_active = true;
     state.current_playlist_index = playlist_index;
     state.current_item_index = item_index;
-    // Reset advance tracking flags so next auto‑advance triggers a new shuffle
+    // Reset advance tracking flags so next auto-advance triggers next in queue
     state.last_advanced_item_index = -1;
     state.last_advanced_duration = 0.0;
     state.playback_started_ = false; // will be set when playback actually starts
-    // However, AppState has master_shuffle_active flag.
-    // We can use that to keep the UI focus on Master Shuffle if needed, 
-    // or just let it show the playing video.
-    
-    // Let's NOT update current_playlist_index to the random one,
-    // but we MUST pass the correct playlist to load_playlist_item.
 
     auto result = load_playlist_item(state, playlist, item_index, playlist_directory, nullptr);
 
     if (!result) {
-        // Retry (error already logged by load_playlist_item)
+        // Skip this item and try next (error already logged by load_playlist_item)
         play_random_global_video(state, playlist_directory);
     }
 }
 
+// Generate a shuffled queue of indices for the current playlist
+// Uses Fisher-Yates shuffle to randomize order
+void Controller::generate_shuffle_queue(AppState& state, int playlist_size) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    
+    // Create sequential indices
+    state.shuffle_queue.clear();
+    state.shuffle_queue.reserve(playlist_size);
+    for (int i = 0; i < playlist_size; ++i) {
+        state.shuffle_queue.push_back(i);
+    }
+    
+    // Fisher-Yates shuffle
+    std::shuffle(state.shuffle_queue.begin(), state.shuffle_queue.end(), gen);
+    
+    // Reset position to start
+    state.shuffle_queue_position = 0;
+    
+    std::cout << "Generated new shuffle queue with " << playlist_size << " items" << std::endl;
+}
+
+// Get the next index from the shuffle queue, regenerating if exhausted
+int Controller::get_next_shuffled_index(AppState& state, int playlist_size) {
+    // Check if queue is empty or exhausted
+    if (state.shuffle_queue.empty() || 
+        state.shuffle_queue_position >= static_cast<int>(state.shuffle_queue.size()) ||
+        static_cast<int>(state.shuffle_queue.size()) != playlist_size) {
+        // Generate new queue
+        generate_shuffle_queue(state, playlist_size);
+    }
+    
+    // Get next index and advance position
+    int index = state.shuffle_queue[state.shuffle_queue_position];
+    state.shuffle_queue_position++;
+    
+    return index;
+}
+
+// Generate a shuffled queue for Master Shuffle (all items from all playlists)
+void Controller::generate_master_shuffle_queue(AppState& state) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    
+    state.master_shuffle_queue.clear();
+    
+    // Collect all items from all playlists (skip playlist 0 which is Master Shuffle itself)
+    for (size_t playlist_idx = 1; playlist_idx < state.playlists.size(); ++playlist_idx) {
+        const auto& playlist = state.playlists[playlist_idx];
+        for (size_t item_idx = 0; item_idx < playlist.items.size(); ++item_idx) {
+            state.master_shuffle_queue.emplace_back(static_cast<int>(playlist_idx), static_cast<int>(item_idx));
+        }
+    }
+    
+    // Fisher-Yates shuffle
+    std::shuffle(state.master_shuffle_queue.begin(), state.master_shuffle_queue.end(), gen);
+    
+    // Reset position to start
+    state.master_shuffle_queue_position = 0;
+    
+    std::cout << "Generated new master shuffle queue with " << state.master_shuffle_queue.size() 
+              << " items from " << (state.playlists.size() - 1) << " playlists" << std::endl;
+}
+
+// Get the next item from the master shuffle queue, regenerating if exhausted
+std::pair<int, int> Controller::get_next_master_shuffled_item(AppState& state) {
+    // Check if queue is empty or exhausted
+    if (state.master_shuffle_queue.empty() || 
+        state.master_shuffle_queue_position >= static_cast<int>(state.master_shuffle_queue.size())) {
+        // Generate new queue
+        generate_master_shuffle_queue(state);
+    }
+    
+    // Get next item and advance position
+    auto item = state.master_shuffle_queue[state.master_shuffle_queue_position];
+    state.master_shuffle_queue_position++;
+    
+    return item;
+}
 
 } // namespace app

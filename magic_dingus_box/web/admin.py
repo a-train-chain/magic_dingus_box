@@ -943,10 +943,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         width, height = res['width'], res['height']
 
         # Build FFmpeg command with center crop (no black bars, no distortion)
+        # Audio is normalized to -23 LUFS (broadcast standard) for consistent volume
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', str(input_path),
             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
+            '-af', 'loudnorm=I=-23:LRA=7:tp=-2',  # Audio normalization (EBU R128)
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-crf', '28',

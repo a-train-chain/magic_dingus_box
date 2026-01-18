@@ -20,7 +20,7 @@ public:
     bool initialize();
     
     // Launch a game with RetroArch
-    bool launch_game(const GameLaunchInfo& game_info, int system_volume_percent = 100);
+    bool launch_game(const GameLaunchInfo& game_info, int system_volume_percent = 100, float volume_offset_db = 0.0f);
     
     // Launch RetroArch Core Downloader
     bool open_core_downloader(int system_volume_percent = 100);
@@ -33,7 +33,7 @@ private:
     std::optional<std::string> find_retroarch();
     
     // Launch RetroArch in DRM/KMS mode
-    bool launch_drm(const GameLaunchInfo& game_info, int system_volume_percent);
+    bool launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db);
     
     // Core downloader direct launch
     bool open_core_downloader_direct(int system_volume_percent);

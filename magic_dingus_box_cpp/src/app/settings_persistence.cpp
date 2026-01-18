@@ -52,6 +52,15 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     playback["master_volume"] = state.master_volume;
     root["playback"] = playback;
 
+    // Audio settings
+    Json::Value audio;
+    std::string output_str = "auto";
+    if (state.audio_settings.output == AudioOutput::HDMI) output_str = "hdmi";
+    else if (state.audio_settings.output == AudioOutput::HEADPHONE) output_str = "headphone";
+    audio["output"] = output_str;
+    audio["retroarch_volume_offset_db"] = state.audio_settings.retroarch_volume_offset_db;
+    root["audio"] = audio;
+
     // Write to file with styled formatting
     std::ofstream file(path);
     if (!file.is_open()) {
@@ -122,6 +131,21 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         int volume = playback.get("master_volume", config::audio::DEFAULT_VOLUME).asInt();
         // Clamp volume to valid range
         state.master_volume = std::max(config::audio::MIN_VOLUME, std::min(config::audio::MAX_VOLUME, volume));
+    }
+
+    // Load audio settings with safe defaults
+    if (root.isMember("audio")) {
+        const Json::Value& audio = root["audio"];
+        
+        std::string output_str = audio.get("output", "auto").asString();
+        if (output_str == "hdmi") state.audio_settings.output = AudioOutput::HDMI;
+        else if (output_str == "headphone") state.audio_settings.output = AudioOutput::HEADPHONE;
+        else state.audio_settings.output = AudioOutput::AUTO;
+        
+        state.audio_settings.retroarch_volume_offset_db = audio.get("retroarch_volume_offset_db", 0.0f).asFloat();
+        
+        // Apply audio output setting on load
+        state.audio_settings.apply_output();
     }
 
     LOG_DEBUG("Settings loaded from {}", path);

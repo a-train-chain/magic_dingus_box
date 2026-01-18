@@ -370,18 +370,35 @@ void SettingsMenuManager::exit_game_list() {
 std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {
     return {
         MenuItem("Browse Games", MenuSection::BROWSE_GAMES, "Game libraries"),
-        MenuItem("Download Cores", MenuSection::DOWNLOAD_CORES, "RetroArch cores"),
-        MenuItem("Emulators", MenuSection::BACK, "RetroArch"),
         MenuItem("Controllers", MenuSection::BACK, "Button map"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_audio_submenu() {
+    if (!app_state_) {
+        return {
+            MenuItem("Error: No AppState", MenuSection::BACK),
+            MenuItem("Back", MenuSection::BACK)
+        };
+    }
+    
+    std::string output_label = "Audio Output: " + app_state_->audio_settings.get_output_name();
+    std::string volume_label = "Game Volume: " + app_state_->audio_settings.get_volume_offset_label();
+    
     return {
-        MenuItem("Menu Vol: 75%", MenuSection::BACK, "Browsing"),
-        MenuItem("Video Vol: 100%", MenuSection::BACK, "Playback"),
-        MenuItem("Fade: 1.0s", MenuSection::BACK, "Transitions"),
+        MenuItem(output_label, MenuSection::TOGGLE_PLAYLIST_LOOP, "HDMI / Headphone",
+            [&]() {
+                app_state_->audio_settings.cycle_output();
+                rebuild_current_submenu();
+                app::SettingsPersistence::save_settings(*app_state_);
+            }),
+        MenuItem(volume_label, MenuSection::TOGGLE_SHUFFLE, "RetroArch games",
+            [&]() {
+                app_state_->audio_settings.cycle_volume_offset();
+                rebuild_current_submenu();
+                app::SettingsPersistence::save_settings(*app_state_);
+            }),
         MenuItem("Back", MenuSection::BACK)
     };
 }
@@ -466,9 +483,8 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
         app_state_->content_manager_url = primary_url;
     }
     
-    // Simplified Menu
+    // Simplified Menu - just show the connection status
     std::vector<MenuItem> items;
-    items.emplace_back("Content Manager", MenuSection::BACK, "Upload & Manage");
     
     if (!primary_url.empty()) {
         items.emplace_back(connection_label, MenuSection::INFO, sub_label, 

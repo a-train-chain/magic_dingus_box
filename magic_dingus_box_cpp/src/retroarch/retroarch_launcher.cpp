@@ -407,7 +407,7 @@ std::optional<std::string> RetroArchLauncher::find_retroarch() {
     return std::nullopt;
 }
 
-bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent) {
+bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db) {
     if (!retroarch_available_) {
         std::cerr << "RetroArch not available" << std::endl;
         return false;
@@ -423,11 +423,11 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
     
     // Always use DRM/KMS launch (matches app architecture)
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
-    return launch_drm(game_info, system_volume_percent);
+    return launch_drm(game_info, system_volume_percent, volume_offset_db);
 }
 
 
-bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent) {
+bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db) {
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
@@ -683,7 +683,10 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Clamp to valid range
             if (volume_db > 0.0f) volume_db = 0.0f;
             if (volume_db < -60.0f) volume_db = -60.0f;
-            script_file << "audio_volume = \"" << volume_db << "\"\n";
+            // Apply user's game volume offset (e.g., -3dB, -6dB, -12dB)
+            float final_volume_db = volume_db + volume_offset_db;
+            if (final_volume_db < -60.0f) final_volume_db = -60.0f;
+            script_file << "audio_volume = \"" << final_volume_db << "\"\n";
             script_file << "audio_mixer_volume = \"1.0\"\n";
             script_file << "audio_mixer_mute_enable = \"false\"\n";
             script_file << "# Simplified audio settings (matches Pi game version)\n";

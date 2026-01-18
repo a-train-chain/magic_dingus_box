@@ -80,6 +80,12 @@ private:
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;
+    
+    // Shuffle queue helpers
+    void generate_shuffle_queue(AppState& state, int playlist_size);
+    void generate_master_shuffle_queue(AppState& state);
+    int get_next_shuffled_index(AppState& state, int playlist_size);
+    std::pair<int, int> get_next_master_shuffled_item(AppState& state);
 };
 
 } // namespace app

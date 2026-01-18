@@ -1183,7 +1183,8 @@ int main(int /* argc */, char* /* argv */[]) {
                         
                         ui::MenuSection section = settings_menu.select_current();
                         if (section == ui::MenuSection::VIDEO_GAMES) {
-                            settings_menu.enter_submenu(ui::MenuSection::VIDEO_GAMES);
+                            // Go directly to game browser (skip submenu)
+                            settings_menu.enter_game_browser();
                         } else if (section == ui::MenuSection::DISPLAY) {
                             settings_menu.enter_submenu(ui::MenuSection::DISPLAY);
                         } else if (section == ui::MenuSection::AUDIO) {
@@ -1199,11 +1200,6 @@ int main(int /* argc */, char* /* argv */[]) {
                         } else if (section == ui::MenuSection::BROWSE_GAMES) {
                             // Enter game browser
                             settings_menu.enter_game_browser();
-                        } else if (section == ui::MenuSection::DOWNLOAD_CORES) {
-                            // Launch RetroArch Core Downloader
-                            if (controller.get_retroarch_launcher().open_core_downloader()) {
-                                settings_menu.close();  // Close menu after launching
-                            }
                         } else if (section == ui::MenuSection::BACK) {
                             if (settings_menu.get_current_submenu() != ui::MenuSection::BACK) {
                                 settings_menu.exit_submenu();
@@ -1621,8 +1617,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // Only advance once per item (check that we haven't already advanced from this item)
             if (state.duration > 0.0 && state.position >= state.duration - 0.5) {
                 // Video has ended - advance to next item
-                // Only advance if UI is hidden (video is playing, not paused in menu)
-                // And we haven't already advanced from this item
+                // Only advance if we haven't already advanced from this item
                 // Check that we haven't already advanced from this specific item index
                 // AND that playback has actually started (prevents double-trigger from stale state)
                 bool can_advance = false;
@@ -1633,8 +1628,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 can_advance = state.playback_started_;
             } else {
                 // Normal playlist advance logic
-                can_advance = (!state.ui_visible_when_playing &&
-                               state.current_item_index != state.last_advanced_item_index &&
+                // Advance when video ends, even if menu overlay is visible
+                can_advance = (state.current_item_index != state.last_advanced_item_index &&
                                state.playback_started_);
             }
                 
@@ -1653,7 +1648,6 @@ int main(int /* argc */, char* /* argv */[]) {
                 } else if (state.position >= state.duration - 0.5) {
                     if (!state.master_shuffle_active) {
                     std::cout << "NOT auto-advancing: item=" << state.current_item_index
-                              << ", ui_visible=" << state.ui_visible_when_playing
                               << ", last_advanced=" << state.last_advanced_item_index
                               << ", playback_started=" << state.playback_started_ << std::endl;
                 }
@@ -1670,38 +1664,16 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
-        // Update fade animation (synchronized UI and audio)
+        // Update fade animation (UI only - no audio changes)
         if (state.is_fading && state.video_active) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.fade_start_time);
             
             if (elapsed >= state.fade_duration) {
-                // Fade complete - set final values
+                // Fade complete
                 state.is_fading = false;
-                if (state.fade_target_ui_visible) {
-                    // Fade in complete: UI visible, volume at 75%
-                    controller.set_volume(state.original_volume * 0.75);
-                } else {
-                    // Fade out complete: UI hidden, volume at 100%
-                    controller.set_volume(state.original_volume);
-                }
-            } else {
-                // Fade in progress - interpolate values
-                float fade_progress = static_cast<float>(elapsed.count()) / static_cast<float>(state.fade_duration.count());
-                fade_progress = std::min(1.0f, std::max(0.0f, fade_progress));  // Clamp to [0, 1]
-                
-                if (state.fade_target_ui_visible) {
-                    // Fading in: volume from 100% to 75%, UI alpha from 0 to 1
-                    double target_volume = state.original_volume * 0.75;
-                    double current_volume = state.original_volume - (state.original_volume - target_volume) * fade_progress;
-                    controller.set_volume(current_volume);
-                } else {
-                    // Fading out: volume from 75% to 100%, UI alpha from 1 to 0
-                    double start_volume = state.original_volume * 0.75;
-                    double current_volume = start_volume + (state.original_volume - start_volume) * fade_progress;
-                    controller.set_volume(current_volume);
-                }
             }
+            // Note: Volume stays constant during menu overlay (no dimming)
         }
         
         // Render video (if playing or loading)

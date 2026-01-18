@@ -16,6 +16,13 @@ enum class DisplayMode {
     MODERN_TV     // 4:3 centered with bezel overlay
 };
 
+// Audio output enumeration (Pi 4B supports HDMI and 3.5mm headphone jack)
+enum class AudioOutput {
+    AUTO,       // Let system decide (amixer numid=3 value 0)
+    HDMI,       // HDMI audio output (amixer numid=3 value 2)
+    HEADPHONE   // 3.5mm headphone jack (amixer numid=3 value 1)
+};
+
 // Bezel info structure
 struct BezelInfo {
     std::string id;
@@ -140,6 +147,16 @@ public:
     bool shuffle;        // Whether to play videos in random order
     bool master_shuffle_active; // True if Master Shuffle is playing (picks random video from ANY playlist)
     
+    // Shuffle queue - ensures all videos play once before reshuffling
+    // For regular shuffle: indices within current playlist
+    std::vector<int> shuffle_queue;
+    int shuffle_queue_position = 0;
+    int shuffle_queue_playlist_id = -1;  // Track which playlist the queue is for
+    
+    // Master shuffle queue - pairs of (playlist_index, item_index) for global shuffle
+    std::vector<std::pair<int, int>> master_shuffle_queue;
+    int master_shuffle_queue_position = 0;
+    
     // Master Volume Control
     int master_volume = 100; // 0-100%
     bool show_volume_slider = false;
@@ -210,6 +227,72 @@ public:
             return (mode == DisplayMode::CRT_NATIVE) ? "CRT Native" : "Modern TV";
         }
     } display_settings;
+    
+    // Audio settings for output selection and game volume
+    struct AudioSettings {
+        AudioOutput output = AudioOutput::AUTO;  // Default to auto
+        float retroarch_volume_offset_db = 0.0f; // -12 to 0, applied to game volume
+        
+        // Get output name for display
+        std::string get_output_name() const {
+            switch (output) {
+                case AudioOutput::AUTO: return "Auto";
+                case AudioOutput::HDMI: return "HDMI";
+                case AudioOutput::HEADPHONE: return "Headphone";
+                default: return "Auto";
+            }
+        }
+        
+        // Apply the audio output setting via PulseAudio
+        // Pi 4B uses PulseAudio, not the old ALSA numid=3 method
+        // Sink 0 = Headphone (platform-fe00b840.mailbox)
+        // Sink 1 = HDMI (platform-fef00700.hdmi)
+        void apply_output() const {
+            std::string sink_name;
+            
+            if (output == AudioOutput::HEADPHONE) {
+                sink_name = "alsa_output.platform-fe00b840.mailbox.stereo-fallback";
+            } else {
+                // HDMI for both AUTO and HDMI modes
+                sink_name = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
+            }
+            
+            // Set the default sink for new streams
+            std::string set_default = "pactl set-default-sink " + sink_name + " >/dev/null 2>&1";
+            system(set_default.c_str());
+            
+            // Move all currently playing streams to the new sink
+            // This ensures the currently playing video switches immediately
+            std::string move_streams = "for i in $(pactl list short sink-inputs 2>/dev/null | cut -f1); do pactl move-sink-input $i " + sink_name + " 2>/dev/null; done";
+            system(move_streams.c_str());
+        }
+        
+        // Get volume offset label for display
+        std::string get_volume_offset_label() const {
+            if (retroarch_volume_offset_db >= 0.0f) return "Normal";
+            else if (retroarch_volume_offset_db >= -4.0f) return "Quiet (-3dB)";
+            else if (retroarch_volume_offset_db >= -7.0f) return "Quieter (-6dB)";
+            else return "Much Quieter (-12dB)";
+        }
+        
+        // Cycle through volume offset options
+        void cycle_volume_offset() {
+            if (retroarch_volume_offset_db >= 0.0f) retroarch_volume_offset_db = -3.0f;
+            else if (retroarch_volume_offset_db >= -4.0f) retroarch_volume_offset_db = -6.0f;
+            else if (retroarch_volume_offset_db >= -7.0f) retroarch_volume_offset_db = -12.0f;
+            else retroarch_volume_offset_db = 0.0f;
+        }
+        
+        // Cycle through audio output options
+        void cycle_output() {
+            switch (output) {
+                case AudioOutput::AUTO: output = AudioOutput::HDMI; break;
+                case AudioOutput::HDMI: output = AudioOutput::HEADPHONE; break;
+                case AudioOutput::HEADPHONE: output = AudioOutput::AUTO; break;
+            }
+            apply_output();
+        }
+    } audio_settings;
     
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;

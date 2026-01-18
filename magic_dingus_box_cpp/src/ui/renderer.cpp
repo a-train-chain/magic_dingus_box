@@ -720,7 +720,7 @@ void Renderer::render(const app::AppState& state) {
                 // Draw connection type label above hint
                 int label_width = body_font_manager_->get_text_width(qr_label, theme_->font_small_size);
                 float label_x = menu_x + (static_cast<float>(menu_width) - label_width) / 2.0f;
-                float label_y = qr_y + qr_size + 10.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+                float label_y = qr_y + qr_size + 25.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
                 draw_text(qr_label, label_x, label_y, theme_->font_small_size, theme_->accent, false, 1.0f);
                 
                 // Draw helper text below label
@@ -1515,32 +1515,7 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             draw_text(item.sublabel, text_x, sublabel_baseline, theme_->font_small_size, theme_->dim, false, text_alpha);
         }
     }
-    
-    // Footer hint - ensure it fits within the menu panel
-    // Use a simple separator that renders reliably
-    std::string hint = "SELECT to choose | Button 4 to close";
-    int hint_width = body_font_manager_->get_text_width(hint, theme_->font_small_size);
-    
-    // Check if text fits within menu width (with padding)
-    float menu_padding = 20.0f;  // Padding on each side
-    float available_width = static_cast<float>(menu_width) - (menu_padding * 2.0f);
-    
-    // If text is too wide, use a shorter version or split it
-    if (hint_width > available_width) {
-        // Use shorter text that fits
-        hint = "SELECT | Button 4 to close";
-        hint_width = body_font_manager_->get_text_width(hint, theme_->font_small_size);
-    }
-    
-    // Center the hint within the menu panel (not the entire screen)
-    float hint_x = menu_x + menu_padding + (available_width - hint_width) / 2.0f;
-    // Ensure it doesn't go past the menu edge
-    if (hint_x + hint_width > menu_x + static_cast<float>(menu_width) - menu_padding) {
-        hint_x = menu_x + menu_padding;  // Left-align if it still doesn't fit
-    }
-    
-    float hint_baseline = static_cast<float>(height_ - 30) + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
-    draw_text(hint, hint_x, hint_baseline, theme_->font_small_size, theme_->dim, false, text_alpha);
+    // Footer hint removed - interface is self-explanatory
 }
 
 void Renderer::render_volume_overlay(const app::AppState& state) {
