@@ -31,7 +31,7 @@ jobs:
             arm64v8/debian:bookworm \
             bash -c '
               apt-get update && apt-get install -y \
-                build-essential cmake pkg-config git \
+                build-essential cmake pkg-config git file \
                 libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
                 libevdev-dev libgpiod-dev \
                 libyaml-cpp-dev libjsoncpp-dev \
