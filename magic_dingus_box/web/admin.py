@@ -1434,12 +1434,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         try:
             # Run update script with install command
+            # Use start_new_session=True so the process survives when web service stops
             process = subprocess.Popen(
                 [str(UPDATE_SCRIPT), "install", version, download_url],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1  # Line buffered
+                bufsize=1,  # Line buffered
+                start_new_session=True  # Detach from parent process group
             )
 
             # Read progress output line by line
