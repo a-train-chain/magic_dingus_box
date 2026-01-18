@@ -94,11 +94,37 @@ run_build() {
         return 1
     fi
 
-    if ! make -j4 2>&2; then
+    if ! make -j2 2>&2; then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
         return 1
     fi
 
     return 0
+}
+
+# Get device architecture for binary matching
+get_device_arch() {
+    local arch=$(uname -m)
+    case "$arch" in
+        aarch64) echo "arm64" ;;
+        armv7l) echo "arm32" ;;
+        x86_64) echo "x64" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Check if pre-compiled binary exists for this release
+get_binary_url() {
+    local version="$1"
+    local arch=$(get_device_arch)
+
+    local response
+    response=$(curl -s "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${version}" 2>/dev/null)
+
+    [ -z "$response" ] && echo "" && return
+
+    # Find binary asset URL for this architecture
+    echo "$response" | grep -o "\"browser_download_url\": *\"[^\"]*-${arch}[^\"]*\.tar\.gz\"" | \
+        head -1 | sed 's/.*"\(http[^"]*\)".*/\1/'
 }
 
 # Get current installed version
@@ -372,18 +398,62 @@ install_update() {
     # Update VERSION file
     echo "$target_version" > "$INSTALL_DIR/VERSION"
 
-    json_progress "building" 70 "Building application (this may take a few minutes)..."
+    # Check for pre-compiled binary (faster than compiling)
+    local device_arch=$(get_device_arch)
+    local binary_url=""
+    local use_binary=false
 
-    # Rebuild C++ application
-    log "Building application..."
+    if [ "$device_arch" = "arm64" ]; then
+        json_progress "checking_binary" 35 "Checking for pre-compiled binary..."
+        binary_url=$(get_binary_url "$target_version")
 
-    json_progress "building" 80 "Compiling..."
+        if [ -n "$binary_url" ]; then
+            json_progress "downloading_binary" 40 "Downloading pre-compiled binary..."
+            log "Found pre-compiled ARM64 binary: $binary_url"
 
-    if ! run_build; then
-        log_error "Build failed, attempting rollback..."
-        json_progress "error" 80 "Build failed, rolling back..."
-        rollback_internal
-        return 1
+            if curl -L -o "$TEMP_DIR/binary.tar.gz" --connect-timeout 30 --max-time 300 "$binary_url" 2>&2; then
+                if gzip -t "$TEMP_DIR/binary.tar.gz" 2>/dev/null; then
+                    json_progress "installing_binary" 50 "Installing pre-compiled binary..."
+
+                    mkdir -p "$TEMP_DIR/binary_extracted"
+                    tar -xzf "$TEMP_DIR/binary.tar.gz" -C "$TEMP_DIR/binary_extracted"
+
+                    # Verify binary architecture
+                    if file "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>/dev/null | grep -q "aarch64"; then
+                        mkdir -p "$INSTALL_DIR/magic_dingus_box_cpp/build"
+                        cp "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" "$INSTALL_DIR/magic_dingus_box_cpp/build/"
+                        chmod +x "$INSTALL_DIR/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
+                        use_binary=true
+                        log "Using pre-compiled ARM64 binary"
+                    else
+                        log_warn "Binary architecture mismatch, will compile from source"
+                    fi
+                else
+                    log_warn "Binary download corrupt, will compile from source"
+                fi
+            else
+                log_warn "Binary download failed, will compile from source"
+            fi
+        else
+            log "No pre-compiled binary found for this version"
+        fi
+    fi
+
+    # Only build from source if no binary available
+    if [ "$use_binary" = false ]; then
+        json_progress "building" 60 "Compiling from source (this may take 8-10 minutes)..."
+
+        # Rebuild C++ application
+        log "Building application from source..."
+
+        json_progress "building" 70 "Compiling..."
+
+        if ! run_build; then
+            log_error "Build failed, attempting rollback..."
+            json_progress "error" 70 "Build failed, rolling back..."
+            rollback_internal
+            return 1
+        fi
     fi
 
     json_progress "restarting_services" 90 "Restarting services..."

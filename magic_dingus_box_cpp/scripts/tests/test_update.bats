@@ -411,3 +411,51 @@ test_version_lt() {
     [[ "$output" == *'"ok"'* ]]
     [[ "$output" == *'"stage"'* ]] || [[ "$output" == *'"progress"'* ]]
 }
+
+# =============================================================================
+# PRE-COMPILED BINARY TESTS
+# =============================================================================
+
+@test "run_build uses -j2 for memory safety" {
+    grep -q 'make -j2' "$UPDATE_SCRIPT"
+}
+
+@test "get_device_arch function exists" {
+    grep -q 'get_device_arch()' "$UPDATE_SCRIPT"
+}
+
+@test "get_binary_url function exists" {
+    grep -q 'get_binary_url()' "$UPDATE_SCRIPT"
+}
+
+@test "update checks for pre-compiled binary" {
+    grep -q 'pre-compiled\|binary_url' "$UPDATE_SCRIPT"
+}
+
+@test "get_device_arch maps aarch64 to arm64" {
+    # Source just the function we need
+    eval "$(grep -A 10 'get_device_arch()' "$UPDATE_SCRIPT")"
+
+    # Mock uname to return aarch64
+    uname() { echo "aarch64"; }
+    export -f uname
+
+    result=$(get_device_arch)
+    [ "$result" = "arm64" ]
+}
+
+@test "get_device_arch maps x86_64 to x64" {
+    eval "$(grep -A 10 'get_device_arch()' "$UPDATE_SCRIPT")"
+
+    uname() { echo "x86_64"; }
+    export -f uname
+
+    result=$(get_device_arch)
+    [ "$result" = "x64" ]
+}
+
+@test "binary download falls back to source on failure" {
+    # Verify the script has fallback logic
+    grep -q 'use_binary.*false' "$UPDATE_SCRIPT"
+    grep -q 'compile from source' "$UPDATE_SCRIPT"
+}

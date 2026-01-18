@@ -6,23 +6,73 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  # Job 1: Build ARM64 binary using QEMU emulation
+  build-arm64:
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Extract version from tag
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build ARM64 binary
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm64v8/debian:bookworm \
+            bash -c '
+              apt-get update && apt-get install -y \
+                build-essential cmake pkg-config git \
+                libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
+                libevdev-dev libgpiod-dev \
+                libyaml-cpp-dev libjsoncpp-dev \
+                libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+                gstreamer1.0-plugins-base gstreamer1.0-gl
+
+              cd /workspace/magic_dingus_box_cpp
+              mkdir -p build && cd build
+              cmake -DCMAKE_BUILD_TYPE=Release ..
+              make -j$(nproc)
+
+              file magic_dingus_box_cpp
+            '
+
+      - name: Package binary
+        run: |
+          cp magic_dingus_box_cpp/build/magic_dingus_box_cpp .
+          tar -czvf magic_dingus_box_cpp-arm64-${{ steps.version.outputs.VERSION }}.tar.gz magic_dingus_box_cpp
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-binary
+          path: magic_dingus_box_cpp-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
+
+  # Job 2: Create source tarball
+  build-source:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Update VERSION file
         run: echo "${{ steps.version.outputs.VERSION }}" > VERSION
 
-      - name: Create release archive
+      - name: Create source archive
         run: |
           # Create tarball in /tmp first to avoid "file changed as we read it" error
           tar -czvf /tmp/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz \
@@ -56,15 +106,44 @@ jobs:
           sha256sum magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz > checksum.sha256
           cat checksum.sha256
 
-      - name: Create GitHub Release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-tarball
+          path: |
+            magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
+            checksum.sha256
+
+  # Job 3: Create GitHub Release
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-arm64, build-source]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
-            checksum.sha256
-          generate_release_notes: true
+            source-tarball/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
+            source-tarball/checksum.sha256
+            arm64-binary/magic_dingus_box_cpp-arm64-${{ steps.version.outputs.VERSION }}.tar.gz
           body: |
             ## Magic Dingus Box v${{ steps.version.outputs.VERSION }}
+
+            ### Download Options
+            | File | Description |
+            |------|-------------|
+            | `magic_dingus_box_cpp-arm64-*.tar.gz` | **Pre-compiled ARM64** (fast install) |
+            | `magic-dingus-box-*.tar.gz` | Source code (requires compilation) |
 
             ### Update Instructions
 
@@ -73,6 +152,8 @@ jobs:
             2. Navigate to the **Settings** tab
             3. Click **Check for Updates**
             4. Click **Install Update** when prompted
+
+            The update will automatically use the pre-compiled binary for faster installation.
 
             **Manual Update (SSH):**
             ```bash
@@ -83,7 +164,7 @@ jobs:
             ```
 
             ### Checksum
-            See `checksum.sha256` for file verification.
+            See `checksum.sha256` for source file verification.
 
             ---
             *Release created automatically by GitHub Actions*
