@@ -49,8 +49,8 @@ jobs:
 
       - name: Package binary
         run: |
-          cp magic_dingus_box_cpp/build/magic_dingus_box_cpp .
-          tar -czvf magic_dingus_box_cpp-arm64-${{ steps.version.outputs.VERSION }}.tar.gz magic_dingus_box_cpp
+          cd magic_dingus_box_cpp/build
+          tar -czvf ../../magic_dingus_box_cpp-arm64-${{ steps.version.outputs.VERSION }}.tar.gz magic_dingus_box_cpp
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
