@@ -335,13 +335,13 @@ install_update() {
     log "Creating backup at $BACKUP_DIR"
     rm -rf "$BACKUP_DIR"
 
-    # Create backup (exclude large user data to save space)
+    # Create backup (exclude large user data to save space, but keep build for rollback)
     mkdir -p "$BACKUP_DIR"
     # Use --no-group --no-owner to avoid permission errors on group/owner changes
+    # NOTE: We include build/ so rollback has a working binary
     rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
-        --exclude 'magic_dingus_box_cpp/build' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || {
         json_response "false" "Failed to create backup"
         rm -rf "$TEMP_DIR"
