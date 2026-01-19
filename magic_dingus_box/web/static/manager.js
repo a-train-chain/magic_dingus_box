@@ -4324,6 +4324,16 @@ async function rollbackUpdate() {
     if (iconEl) iconEl.textContent = '↩️';
     if (detailsEl) detailsEl.textContent = '';
 
+    // Get current version before rollback to detect change
+    let previousVersion = null;
+    try {
+        const checkResponse = await fetch(`${currentDevice.url}/admin/update/check`);
+        const checkData = await checkResponse.json();
+        if (checkData.ok) previousVersion = checkData.data?.current_version;
+    } catch (e) {
+        console.log('Could not get current version before rollback');
+    }
+
     try {
         const response = await apiPost(`${currentDevice.url}/admin/update/rollback`, {});
 
@@ -4347,7 +4357,46 @@ async function rollbackUpdate() {
         }
 
     } catch (e) {
-        console.error('Rollback failed:', e);
+        console.error('Rollback error:', e);
+
+        // Service might have restarted during rollback - check if version changed
+        if (detailsEl) detailsEl.textContent = 'Verifying rollback...';
+
+        // Wait for service to come back
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        // Retry with fresh CSRF token
+        try {
+            await fetchCsrfToken();
+
+            const checkResponse = await fetch(`${currentDevice.url}/admin/update/check`);
+            const checkData = await checkResponse.json();
+
+            if (checkData.ok && previousVersion && checkData.data?.current_version !== previousVersion) {
+                // Version changed - rollback succeeded
+                if (labelEl) labelEl.textContent = 'Rollback complete!';
+                if (progressEl) progressEl.style.width = '100%';
+                if (iconEl) iconEl.textContent = '✓';
+                statusEl?.classList.add('complete');
+
+                const versionEl = document.getElementById('currentVersion');
+                if (versionEl) versionEl.textContent = `v${checkData.data.current_version}`;
+
+                setTimeout(() => {
+                    if (statusEl) statusEl.style.display = 'none';
+                    statusEl?.classList.remove('complete');
+                    alert('Rollback complete! The device is now running the previous version.');
+                }, 2000);
+
+                if (checkBtn) checkBtn.disabled = false;
+                if (rollbackBtn) rollbackBtn.disabled = false;
+                return;
+            }
+        } catch (verifyError) {
+            console.log('Verify error:', verifyError);
+        }
+
+        // If we get here, rollback failed
         if (labelEl) labelEl.textContent = 'Rollback failed';
         if (detailsEl) detailsEl.textContent = e.message;
         if (iconEl) iconEl.textContent = '✗';
