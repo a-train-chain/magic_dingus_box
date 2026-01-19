@@ -4226,6 +4226,35 @@ async function installUpdate() {
                 // Connection error during update - might be service restart
                 if (detailsEl) detailsEl.textContent = 'Reconnecting to device...';
                 console.log('Polling error (may be normal during restart):', pollError);
+
+                // After service restart, the job ID is lost. Check if update completed
+                // by verifying the current version matches the target version.
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                try {
+                    const versionCheck = await fetch(`${currentDevice.url}/admin/update/check`);
+                    const versionData = await versionCheck.json();
+                    if (versionData.ok && versionData.data?.current_version === updateData.latest_version) {
+                        // Update completed successfully!
+                        if (labelEl) labelEl.textContent = 'Update complete!';
+                        if (progressEl) progressEl.style.width = '100%';
+                        if (detailsEl) detailsEl.textContent = `Now running v${updateData.latest_version}`;
+                        if (iconEl) iconEl.textContent = '✓';
+                        statusEl?.classList.add('complete');
+
+                        const versionEl = document.getElementById('currentVersion');
+                        if (versionEl) versionEl.textContent = `v${updateData.latest_version}`;
+
+                        if (rollbackBtn) rollbackBtn.style.display = 'block';
+
+                        setTimeout(() => {
+                            alert('Update complete! The device is now running the latest version.');
+                        }, 1000);
+
+                        break;
+                    }
+                } catch (verifyError) {
+                    console.log('Version verify failed, will retry:', verifyError);
+                }
             }
         }
 
