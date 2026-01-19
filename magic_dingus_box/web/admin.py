@@ -936,19 +936,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
 
-    def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str):
+    def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False):
         """Background thread function to run FFmpeg transcoding."""
         job = transcode_jobs[job_id]
         res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS['crt'])
         width, height = res['width'], res['height']
 
         # Build FFmpeg command with center crop (no black bars, no distortion)
-        # Audio is normalized to -23 LUFS (broadcast standard) for consistent volume
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', str(input_path),
             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
-            '-af', 'loudnorm=I=-23:LRA=7:tp=-2',  # Audio normalization (EBU R128)
+        ]
+        
+        # Only apply audio normalization if requested (default: OFF)
+        # This allows pre-normalized videos to skip the loudnorm filter
+        if normalize_audio:
+            ffmpeg_cmd.extend(['-af', 'loudnorm=I=-23:LRA=7:tp=-2'])  # EBU R128 normalization
+        
+        ffmpeg_cmd.extend([
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-crf', '28',
@@ -959,7 +965,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             '-progress', 'pipe:1',
             '-nostats',
             str(output_path)
-        ]
+        ])
 
         try:
             job['status'] = 'transcoding'

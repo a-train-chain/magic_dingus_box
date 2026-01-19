@@ -101,6 +101,50 @@ run_build() {
     return 0
 }
 
+# Retry download with exponential backoff
+# Args: $1=output_file, $2=url, $3=max_time, $4=description
+retry_download() {
+    local output_file="$1"
+    local url="$2"
+    local max_time="${3:-600}"
+    local description="${4:-file}"
+
+    local max_attempts=3
+    local wait_times=(5 15 45)
+
+    for attempt in $(seq 1 $max_attempts); do
+        log "Download attempt $attempt/$max_attempts for $description"
+
+        local curl_exit=0
+        curl -L -o "$output_file" \
+            --connect-timeout 30 \
+            --max-time "$max_time" \
+            --progress-bar \
+            "$url" 2>&2 || curl_exit=$?
+
+        if [ "$curl_exit" -eq 0 ]; then
+            return 0
+        fi
+
+        # Permanent errors (don't retry): malformed URL, protocol errors
+        local permanent_errors="3 4 5 23 27"
+        if echo " $permanent_errors " | grep -q " $curl_exit "; then
+            log_error "Permanent download error (curl exit: $curl_exit)"
+            return 1
+        fi
+
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            local wait_time="${wait_times[$((attempt-1))]}"
+            log_warn "Download failed (curl exit: $curl_exit), retrying in ${wait_time}s..."
+            json_progress "downloading" 15 "Retry in ${wait_time}s..."
+            sleep "$wait_time"
+        fi
+    done
+
+    log_error "Download failed after $max_attempts attempts"
+    return 1
+}
+
 # Get device architecture for binary matching
 get_device_arch() {
     local arch=$(uname -m)
@@ -273,12 +317,8 @@ install_update() {
     json_progress "downloading" 10 "Downloading update package..."
     log "Downloading from: $download_url"
 
-    if ! curl -L -o "$TEMP_DIR/update.tar.gz" \
-        --connect-timeout 30 \
-        --max-time 600 \
-        --progress-bar \
-        "$download_url" 2>&2; then
-        json_response "false" "Download failed"
+    if ! retry_download "$TEMP_DIR/update.tar.gz" "$download_url" 600 "update package"; then
+        json_response "false" "Download failed after multiple attempts"
         rm -rf "$TEMP_DIR"
         return 1
     fi
@@ -395,8 +435,8 @@ install_update() {
         return 1
     fi
 
-    # Update VERSION file
-    echo "$target_version" > "$INSTALL_DIR/VERSION"
+    # NOTE: VERSION file is written AFTER successful service start (see below)
+    # This ensures version consistency if build fails
 
     # Check for pre-compiled binary (faster than compiling)
     local device_arch=$(get_device_arch)
@@ -411,7 +451,7 @@ install_update() {
             json_progress "downloading_binary" 40 "Downloading pre-compiled binary..."
             log "Found pre-compiled ARM64 binary: $binary_url"
 
-            if curl -L -o "$TEMP_DIR/binary.tar.gz" --connect-timeout 30 --max-time 300 "$binary_url" 2>&2; then
+            if retry_download "$TEMP_DIR/binary.tar.gz" "$binary_url" 300 "pre-compiled binary"; then
                 if gzip -t "$TEMP_DIR/binary.tar.gz" 2>/dev/null; then
                     json_progress "installing_binary" 50 "Installing pre-compiled binary..."
 
@@ -461,8 +501,24 @@ install_update() {
     # Reload systemd and start C++ app
     log "Restarting services..."
     run_systemctl daemon-reload
-    run_systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
-    sleep 1
+    if ! run_systemctl start magic-dingus-box-cpp.service 2>/dev/null; then
+        log_warn "Service start command failed, checking if active..."
+    fi
+    sleep 2
+
+    # Verify service actually started
+    if [ "$SKIP_SYSTEMCTL" != "true" ]; then
+        if ! run_systemctl is-active magic-dingus-box-cpp.service >/dev/null 2>&1; then
+            log_error "Service failed to start, rolling back..."
+            json_progress "error" 90 "Service failed to start, rolling back..."
+            rollback_internal
+            return 1
+        fi
+    fi
+
+    # Only commit VERSION after successful service start
+    echo "$target_version" > "$INSTALL_DIR/VERSION"
+    log "VERSION updated to $target_version"
 
     # Cleanup temp files
     rm -rf "$TEMP_DIR"
@@ -507,6 +563,12 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" || true
+
+    # Explicitly restore VERSION file from backup
+    if [ -f "$BACKUP_DIR/VERSION" ]; then
+        cp "$BACKUP_DIR/VERSION" "$INSTALL_DIR/VERSION"
+        log "VERSION restored from backup"
+    fi
 
     # Restart C++ service (web service will be restarted at end of main function)
     run_systemctl daemon-reload
@@ -554,6 +616,12 @@ rollback() {
     if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
         json_response "false" "Failed to restore backup"
         return 1
+    fi
+
+    # Explicitly restore VERSION file from backup
+    if [ -f "$BACKUP_DIR/VERSION" ]; then
+        cp "$BACKUP_DIR/VERSION" "$INSTALL_DIR/VERSION"
+        log "VERSION restored from backup"
     fi
 
     json_progress "restarting_services" 80 "Restarting services..."

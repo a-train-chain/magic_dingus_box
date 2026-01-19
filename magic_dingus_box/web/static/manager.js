@@ -927,6 +927,11 @@ function createNewPlaylist(type) {
     if (saveBtn) delete saveBtn.dataset.editingFile;
 
     // Switch to editor
+    if (type === 'video') {
+        renderVideoPlaylistAvailable();
+    } else if (type === 'game') {
+        renderGamePlaylistAvailable();
+    }
     switchContentView(type, 'editor');
 }
 
@@ -1176,7 +1181,9 @@ async function loadVideos() {
                     clean = clean.replace(/^\.\.\/+/, '');
                     // Remove data/ or dev_data/ prefix
                     clean = clean.replace(/^(dev_)?data\//, '');
-                    // At this point we should have: media/filename.mp4 or just filename.mp4
+                    // Remove media/ prefix
+                    clean = clean.replace(/^media\//, '');
+                    // At this point we should have: filename.mp4
                     return clean;
                 };
 
@@ -1232,9 +1239,10 @@ async function loadVideos() {
             const normalizePath = (p) => {
                 if (!p) return '';
                 let clean = p;
-                clean = clean.replace(/^\//, '');
-                clean = clean.replace(/^\.\.\/+/, '');
-                clean = clean.replace(/^(dev_)?data\//, '');
+                clean = clean.replace(/^\//, ''); // Remove leading slash
+                clean = clean.replace(/^\.\.\/+/, ''); // Remove ../ prefixes
+                clean = clean.replace(/^(dev_)?data\//, ''); // Remove data/ prefix
+                clean = clean.replace(/^media\//, ''); // Remove media/ prefix
                 return clean;
             };
 
@@ -1280,6 +1288,7 @@ async function handleDirectUpload(input) {
 
     const files = Array.from(input.files);
     const targetResolution = document.getElementById('targetResolution')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION;
+    const normalizeAudio = document.getElementById('normalizeAudio')?.checked || false;
 
     // Auto-expand the upload section if it's collapsed
     const uploadContent = document.getElementById('libraryUploadContent');
@@ -1323,6 +1332,7 @@ async function handleDirectUpload(input) {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('resolution', targetResolution);
+            formData.append('normalize_audio', normalizeAudio ? 'true' : 'false');
 
             const uploadResponse = await new Promise((resolve, reject) => {
                 const xhr = new XMLHttpRequest();
@@ -2404,6 +2414,14 @@ async function editPlaylist(filename, type) {
         const config = MEDIA_CONFIG[type];
         config.setItems(items);
         renderPlaylistItems(type);
+
+        // Refresh library availability view to reflect current playlist items
+        if (type === 'video') {
+            renderVideoPlaylistAvailable();
+        } else if (type === 'game') {
+            renderGamePlaylistAvailable();
+        }
+
         switchContentView(type, 'editor');
 
         // Store filename
@@ -2807,7 +2825,13 @@ function addItemToPlaylist(draggedItem, type) {
     items.push(item);
     config.setItems(items);
     renderPlaylistItems(type);
-    renderPlaylistAvailable(type);
+
+    // Refresh available items using correct renderer
+    if (type === 'video') {
+        renderVideoPlaylistAvailable();
+    } else {
+        renderPlaylistAvailable(type);
+    }
 }
 
 // Playlist item reordering
@@ -3692,18 +3716,19 @@ function renderLibraryPanel() {
     if (!container) return;
 
     const videos = availableVideos || [];
-    const currentPlaylistItems = AppState.playlists.getItems('video');
-    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => item.path));
-
-    // Normalize path for comparison with globalVideoUsageMap
+    // Normalize path for comparison
     const normalizePath = (p) => {
         if (!p) return '';
         let clean = p;
-        clean = clean.replace(/^\//, '');
-        clean = clean.replace(/^\.\.\/+/, '');
-        clean = clean.replace(/^(dev_)?data\//, '');
+        clean = clean.replace(/^\//, ''); // Remove leading slash
+        clean = clean.replace(/^\.\.\/+/, ''); // Remove ../ prefixes
+        clean = clean.replace(/^(dev_)?data\//, ''); // Remove data/ prefix
+        clean = clean.replace(/^media\//, ''); // Remove media/ prefix
         return clean;
     };
+
+    const currentPlaylistItems = AppState.playlists.getItems('video');
+    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizePath(item.path)));
 
     // Update count
     if (countEl) countEl.textContent = videos.length;
@@ -3721,13 +3746,13 @@ function renderLibraryPanel() {
         const normalizedPath = normalizePath(path);
 
         // Check current playlist
-        const inCurrentPlaylist = currentPlaylistPaths.has(path);
+        const inCurrentPlaylist = currentPlaylistPaths.has(normalizedPath);
 
         // Check ALL playlists via globalVideoUsageMap
         const inAnyPlaylist = !!globalVideoUsageMap[normalizedPath];
 
         // Combine both checks - in current playlist OR in any saved playlist
-        const isUsed = inCurrentPlaylist || inAnyPlaylist;
+        const isUsed = inCurrentPlaylist;
 
         const name = video.filename;
 
@@ -3864,6 +3889,7 @@ function renderROMLibraryPanel() {
         clean = clean.replace(/^\//, '');
         clean = clean.replace(/^\.\.\/+/, '');
         clean = clean.replace(/^(dev_)?data\//, '');
+        clean = clean.replace(/^media\//, '');
         return clean;
     };
 
@@ -4160,6 +4186,10 @@ async function installUpdate() {
     if (progressEl) progressEl.style.width = '0%';
     if (iconEl) iconEl.textContent = '⬇️';
 
+    // Polling timeout constants
+    const MAX_POLL_TIME_MS = 45 * 60 * 1000;  // 45 minutes
+    const pollStartTime = Date.now();
+
     try {
         // Start update
         const startResponse = await apiPost(`${currentDevice.url}/admin/update/install`, {
@@ -4185,6 +4215,12 @@ async function installUpdate() {
         let notFoundCount = 0;  // Track consecutive 404s
 
         while (true) {
+            // Check for overall timeout
+            const elapsedTime = Date.now() - pollStartTime;
+            if (elapsedTime > MAX_POLL_TIME_MS) {
+                throw new Error('Update timed out after 45 minutes. Check device status manually.');
+            }
+
             await new Promise(resolve => setTimeout(resolve, 1500));
 
             try {
@@ -4197,37 +4233,55 @@ async function installUpdate() {
                     console.log(`Status poll failed (attempt ${notFoundCount}):`, statusData);
 
                     // After a few 404s, check if update actually completed
-                    if (notFoundCount >= 2) {
-                        if (detailsEl) detailsEl.textContent = 'Verifying update...';
+                    if (notFoundCount >= 3) {
+                        if (detailsEl) detailsEl.textContent = 'Service restarting, verifying...';
 
-                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        const verifyStartTime = Date.now();
+                        const MAX_VERIFY_TIME_MS = 2 * 60 * 1000;  // 2 minute cap
+                        const backoffDelays = [2000, 4000, 8000, 16000, 16000, 16000];
+                        let verifyAttempt = 0;
 
-                        try {
-                            const versionCheck = await fetch(`${currentDevice.url}/admin/update/check`);
-                            const versionData = await versionCheck.json();
+                        while (Date.now() - verifyStartTime < MAX_VERIFY_TIME_MS) {
+                            verifyAttempt++;
+                            const delay = backoffDelays[Math.min(verifyAttempt - 1, backoffDelays.length - 1)];
 
-                            if (versionData.ok && versionData.data?.current_version === updateData.latest_version) {
-                                // Update completed successfully!
-                                if (labelEl) labelEl.textContent = 'Update complete!';
-                                if (progressEl) progressEl.style.width = '100%';
-                                if (detailsEl) detailsEl.textContent = `Now running v${updateData.latest_version}`;
-                                if (iconEl) iconEl.textContent = '✓';
-                                statusEl?.classList.add('complete');
-
-                                const versionEl = document.getElementById('currentVersion');
-                                if (versionEl) versionEl.textContent = `v${updateData.latest_version}`;
-
-                                if (rollbackBtn) rollbackBtn.style.display = 'block';
-
-                                setTimeout(() => {
-                                    alert('Update complete! The device is now running the latest version.');
-                                }, 1000);
-
-                                break;
+                            if (detailsEl) {
+                                const elapsed = Math.round((Date.now() - verifyStartTime) / 1000);
+                                detailsEl.textContent = `Verifying update... (${elapsed}s)`;
                             }
-                        } catch (verifyError) {
-                            console.log('Version verify failed, will retry:', verifyError);
+
+                            await new Promise(resolve => setTimeout(resolve, delay));
+
+                            try {
+                                await fetchCsrfToken();
+                                const versionCheck = await fetch(`${currentDevice.url}/admin/update/check`);
+                                const versionData = await versionCheck.json();
+
+                                console.log(`Verify attempt ${verifyAttempt}:`, versionData);
+
+                                if (versionData.ok && versionData.data?.current_version === updateData.latest_version) {
+                                    // Success!
+                                    if (labelEl) labelEl.textContent = 'Update complete!';
+                                    if (progressEl) progressEl.style.width = '100%';
+                                    if (detailsEl) detailsEl.textContent = `Now running v${updateData.latest_version}`;
+                                    if (iconEl) iconEl.textContent = '✓';
+                                    statusEl?.classList.add('complete');
+
+                                    const versionEl = document.getElementById('currentVersion');
+                                    if (versionEl) versionEl.textContent = `v${updateData.latest_version}`;
+                                    if (rollbackBtn) rollbackBtn.style.display = 'block';
+
+                                    setTimeout(() => {
+                                        alert('Update complete! Now running the latest version.');
+                                    }, 1000);
+                                    return;
+                                }
+                            } catch (verifyError) {
+                                console.log(`Verify attempt ${verifyAttempt} failed:`, verifyError);
+                            }
                         }
+
+                        throw new Error('Could not verify update. Check device version manually.');
                     }
                     continue;
                 }
@@ -4240,6 +4294,14 @@ async function installUpdate() {
                 if (labelEl) labelEl.textContent = stageLabels[job.stage] || job.stage;
                 if (progressEl) progressEl.style.width = `${job.progress}%`;
                 if (detailsEl && job.message) detailsEl.textContent = job.message;
+
+                // Show elapsed time during build stage
+                if (job.stage === 'building') {
+                    const elapsedMinutes = Math.floor((Date.now() - pollStartTime) / 60000);
+                    if (elapsedMinutes > 0 && detailsEl) {
+                        detailsEl.textContent = `${job.message || 'Compiling...'} (${elapsedMinutes}m elapsed)`;
+                    }
+                }
 
                 if (job.status === 'complete') {
                     if (iconEl) iconEl.textContent = '✓';

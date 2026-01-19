@@ -459,3 +459,62 @@ test_version_lt() {
     grep -q 'use_binary.*false' "$UPDATE_SCRIPT"
     grep -q 'compile from source' "$UPDATE_SCRIPT"
 }
+
+# =============================================================================
+# RETRY DOWNLOAD TESTS
+# =============================================================================
+
+@test "retry_download function exists" {
+    grep -q 'retry_download()' "$UPDATE_SCRIPT"
+}
+
+@test "retry_download has exponential backoff" {
+    grep -q 'wait_times.*(5 15 45)' "$UPDATE_SCRIPT"
+}
+
+@test "retry_download has 3 max attempts" {
+    grep -q 'max_attempts=3' "$UPDATE_SCRIPT"
+}
+
+@test "main download uses retry_download" {
+    grep -q 'retry_download.*update package' "$UPDATE_SCRIPT"
+}
+
+@test "binary download uses retry_download" {
+    grep -q 'retry_download.*pre-compiled binary' "$UPDATE_SCRIPT"
+}
+
+@test "retry_download has permanent error handling" {
+    grep -q 'permanent_errors' "$UPDATE_SCRIPT"
+}
+
+# =============================================================================
+# VERSION ATOMICITY TESTS
+# =============================================================================
+
+@test "VERSION written after service start" {
+    # Find the line numbers for VERSION write and service start
+    version_line=$(grep -n 'echo.*target_version.*VERSION' "$UPDATE_SCRIPT" | grep -v '#' | grep -v 'NOTE' | head -1 | cut -d: -f1)
+    service_line=$(grep -n 'run_systemctl start magic-dingus-box-cpp' "$UPDATE_SCRIPT" | head -1 | cut -d: -f1)
+    [ -n "$version_line" ]
+    [ -n "$service_line" ]
+    [ "$version_line" -gt "$service_line" ]
+}
+
+@test "rollback_internal restores VERSION file" {
+    grep -q 'cp.*BACKUP_DIR/VERSION.*INSTALL_DIR/VERSION' "$UPDATE_SCRIPT"
+}
+
+@test "rollback restores VERSION file" {
+    # Both rollback functions should restore VERSION
+    count=$(grep -c 'cp.*BACKUP_DIR/VERSION.*INSTALL_DIR/VERSION' "$UPDATE_SCRIPT")
+    [ "$count" -ge 2 ]
+}
+
+@test "service failure triggers rollback" {
+    grep -q 'is-active.*cpp\.service' "$UPDATE_SCRIPT"
+}
+
+@test "service verification exists before VERSION write" {
+    grep -q 'Service failed to start, rolling back' "$UPDATE_SCRIPT"
+}

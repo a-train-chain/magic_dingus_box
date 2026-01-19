@@ -192,6 +192,15 @@
                                         <option value="modern">🖥️ Modern 1280×720</option>
                                     </select>
                                 </div>
+                                <div class="normalize-row" style="margin-bottom: 0.5rem;">
+                                    <label
+                                        style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: 0.9rem;">
+                                        <input type="checkbox" id="normalizeAudio">
+                                        <span>🔊 Normalize audio volume</span>
+                                        <span style="color: var(--text-secondary); font-size: 0.8rem;">(recommended for
+                                            inconsistent sources)</span>
+                                    </label>
+                                </div>
                                 <div class="upload-zone-compact">
                                     <input type="file" id="videoUpload" accept="video/*" multiple
                                         onchange="handleDirectUpload(this)">
@@ -432,11 +441,11 @@
                             Check for Updates
                         </button>
                         <button class="btn-secondary" id="installUpdateBtn" onclick="installUpdate()"
-                                style="display: none;">
+                            style="display: none;">
                             Install Update
                         </button>
                         <button class="btn-secondary" id="rollbackBtn" onclick="rollbackUpdate()"
-                                style="display: none;">
+                            style="display: none;">
                             Rollback
                         </button>
                     </div>
@@ -473,7 +482,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=47"></script>
+    <script src="/static/manager.js?v=48"></script>
 
 </body>
 
