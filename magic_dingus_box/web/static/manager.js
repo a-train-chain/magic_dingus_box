@@ -4359,47 +4359,52 @@ async function rollbackUpdate() {
     } catch (e) {
         console.error('Rollback error:', e);
 
-        // Service might have restarted during rollback - check if version changed
-        if (detailsEl) detailsEl.textContent = 'Verifying rollback...';
+        // Service restarts during rollback - wait and verify it worked
+        if (detailsEl) detailsEl.textContent = 'Service restarting...';
 
-        // Wait for service to come back
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Retry loop - service can take 10-15 seconds to restart
+        let rollbackVerified = false;
+        for (let attempt = 0; attempt < 6; attempt++) {
+            if (detailsEl) detailsEl.textContent = `Waiting for service... (${attempt + 1}/6)`;
+            await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Retry with fresh CSRF token
-        try {
-            await fetchCsrfToken();
+            try {
+                await fetchCsrfToken();
+                const checkResponse = await fetch(`${currentDevice.url}/admin/update/check`);
+                const checkData = await checkResponse.json();
 
-            const checkResponse = await fetch(`${currentDevice.url}/admin/update/check`);
-            const checkData = await checkResponse.json();
+                console.log(`Verify attempt ${attempt + 1}:`, checkData);
 
-            if (checkData.ok && previousVersion && checkData.data?.current_version !== previousVersion) {
-                // Version changed - rollback succeeded
-                if (labelEl) labelEl.textContent = 'Rollback complete!';
-                if (progressEl) progressEl.style.width = '100%';
-                if (iconEl) iconEl.textContent = '✓';
-                statusEl?.classList.add('complete');
+                if (checkData.ok && previousVersion && checkData.data?.current_version !== previousVersion) {
+                    // Version changed - rollback succeeded
+                    if (labelEl) labelEl.textContent = 'Rollback complete!';
+                    if (progressEl) progressEl.style.width = '100%';
+                    if (iconEl) iconEl.textContent = '✓';
+                    statusEl?.classList.add('complete');
 
-                const versionEl = document.getElementById('currentVersion');
-                if (versionEl) versionEl.textContent = `v${checkData.data.current_version}`;
+                    const versionEl = document.getElementById('currentVersion');
+                    if (versionEl) versionEl.textContent = `v${checkData.data.current_version}`;
 
-                setTimeout(() => {
-                    if (statusEl) statusEl.style.display = 'none';
-                    statusEl?.classList.remove('complete');
-                    alert('Rollback complete! The device is now running the previous version.');
-                }, 2000);
+                    setTimeout(() => {
+                        if (statusEl) statusEl.style.display = 'none';
+                        statusEl?.classList.remove('complete');
+                        alert('Rollback complete! The device is now running the previous version.');
+                    }, 2000);
 
-                if (checkBtn) checkBtn.disabled = false;
-                if (rollbackBtn) rollbackBtn.disabled = false;
-                return;
+                    if (checkBtn) checkBtn.disabled = false;
+                    if (rollbackBtn) rollbackBtn.disabled = false;
+                    rollbackVerified = true;
+                    return;
+                }
+            } catch (verifyError) {
+                console.log(`Verify attempt ${attempt + 1} failed:`, verifyError);
             }
-        } catch (verifyError) {
-            console.log('Verify error:', verifyError);
         }
 
-        // If we get here, rollback failed
-        if (labelEl) labelEl.textContent = 'Rollback failed';
-        if (detailsEl) detailsEl.textContent = e.message;
-        if (iconEl) iconEl.textContent = '✗';
+        // If we get here, rollback couldn't be verified
+        if (labelEl) labelEl.textContent = 'Rollback status unknown';
+        if (detailsEl) detailsEl.textContent = 'Refresh page to check current version';
+        if (iconEl) iconEl.textContent = '?';
         statusEl?.classList.add('error');
 
         setTimeout(() => {
