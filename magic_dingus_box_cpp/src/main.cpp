@@ -824,11 +824,6 @@ int main(int /* argc */, char* /* argv */[]) {
     // Track current mode to detect changes at runtime
     app::DisplayMode current_display_mode = state.display_settings.mode;
 
-    // Re-apply audio output after PulseAudio sinks are fully available
-    // The initial apply_output() in load_settings may run before sinks register
-    bool audio_reapply_pending = (state.audio_settings.output != AudioOutput::AUTO);
-    auto audio_reapply_time = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-
     while (running) {
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -947,12 +942,6 @@ int main(int /* argc */, char* /* argv */[]) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
         
-        // Deferred audio output reapply (PulseAudio sinks may not be ready at boot)
-        if (audio_reapply_pending && now >= audio_reapply_time) {
-            state.audio_settings.apply_output();
-            audio_reapply_pending = false;
-        }
-
         // Update seek bar timer (countdown to auto-hide)
         if (state.seek_bar_timer > 0.0) {
             state.seek_bar_timer -= delta / 1000.0;  // delta is in ms
