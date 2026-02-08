@@ -178,6 +178,116 @@ AppState.on('playlistChanged', ({ type, items }) => {
     else { gamePlaylistItems = items; }
 });
 
+// ===== NOTIFICATION SYSTEM =====
+
+/**
+ * Show a toast notification to the user.
+ * @param {string} message - The message to display
+ * @param {string} type - 'success', 'error', 'warning', or 'info'
+ * @param {number} duration - How long to show the notification (ms)
+ */
+function showNotification(message, type = 'info', duration = 4000) {
+    // Create notification container if it doesn't exist
+    let container = document.getElementById('notification-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'notification-container';
+        container.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: none;
+        `;
+        document.body.appendChild(container);
+    }
+
+    // Create notification element
+    const notification = document.createElement('div');
+    notification.className = `notification notification-${type}`;
+
+    // Color scheme based on type
+    const colors = {
+        success: { bg: '#d4edda', border: '#28a745', text: '#155724' },
+        error: { bg: '#f8d7da', border: '#dc3545', text: '#721c24' },
+        warning: { bg: '#fff3cd', border: '#ffc107', text: '#856404' },
+        info: { bg: '#d1ecf1', border: '#17a2b8', text: '#0c5460' }
+    };
+    const color = colors[type] || colors.info;
+
+    notification.style.cssText = `
+        background: ${color.bg};
+        border: 1px solid ${color.border};
+        border-left: 4px solid ${color.border};
+        color: ${color.text};
+        padding: 12px 16px;
+        border-radius: 4px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        font-size: 14px;
+        max-width: 350px;
+        pointer-events: auto;
+        animation: slideIn 0.3s ease-out;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    `;
+
+    // Add icon based on type
+    const icons = {
+        success: '✓',
+        error: '✕',
+        warning: '⚠',
+        info: 'ℹ'
+    };
+
+    notification.innerHTML = `
+        <span style="font-size: 18px; font-weight: bold;">${icons[type] || icons.info}</span>
+        <span>${escapeHtml(message)}</span>
+    `;
+
+    // Add animation styles if not present
+    if (!document.getElementById('notification-styles')) {
+        const style = document.createElement('style');
+        style.id = 'notification-styles';
+        style.textContent = `
+            @keyframes slideIn {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+            @keyframes slideOut {
+                from { transform: translateX(0); opacity: 1; }
+                to { transform: translateX(100%); opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    container.appendChild(notification);
+
+    // Auto-remove after duration
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease-in';
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 300);
+    }, duration);
+
+    // Click to dismiss
+    notification.addEventListener('click', () => {
+        notification.style.animation = 'slideOut 0.3s ease-in';
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, 300);
+    });
+}
+
 // ===== CSRF TOKEN MANAGEMENT =====
 
 async function fetchCsrfToken() {
@@ -1153,12 +1263,16 @@ async function loadVideos() {
         countBadges.forEach(badge => badge.textContent = AppState.media.videos.length);
 
         const container = document.getElementById('videoList');
-        if (availableVideos.length === 0) {
+        // Use AppState directly to ensure we check the latest data
+        if (AppState.media.videos.length === 0) {
             container.innerHTML = '<p style="color: var(--text-secondary); padding: 1rem;">No videos uploaded yet</p>';
             return;
         }
 
         // Load all playlists to check video usage
+        // Validate currentDevice exists before fetch
+        if (!currentDevice || !currentDevice.url) return;
+
         const playlistsResponse = await fetch(`${currentDevice.url}/admin/playlists`);
         const playlistsResult = await playlistsResponse.json();
         const allPlaylists = playlistsResult.data || playlistsResult;
@@ -1170,27 +1284,11 @@ async function loadVideos() {
                 const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
                 const detailResult = await detailResponse.json();
                 const fullData = detailResult.data || detailResult;
-                // Normalize path for comparison - handles various path formats:
-                // ../media/file.mp4, data/media/file.mp4, /data/media/file.mp4, media/file.mp4
-                const normalizePath = (p) => {
-                    if (!p) return '';
-                    let clean = p;
-                    // Remove leading slash
-                    clean = clean.replace(/^\//, '');
-                    // Remove ../ prefixes (used in playlist relative paths)
-                    clean = clean.replace(/^\.\.\/+/, '');
-                    // Remove data/ or dev_data/ prefix
-                    clean = clean.replace(/^(dev_)?data\//, '');
-                    // Remove media/ prefix
-                    clean = clean.replace(/^media\//, '');
-                    // At this point we should have: filename.mp4
-                    return clean;
-                };
-
-                const items = fullData.items || [];
+                const items = Array.isArray(fullData.items) ? fullData.items : [];
                 items.forEach(item => {
-                    if (item.source_type === 'local' || item.source_type === 'emulated_game') {
-                        const normalizedPath = normalizePath(item.path);
+                    if (item && (item.source_type === 'local' || item.source_type === 'emulated_game')) {
+                        const normalizedPath = normalizeVideoPath(item.path);
+                        if (!normalizedPath) return; // Skip invalid paths
 
                         if (!videoUsageMap[normalizedPath]) {
                             videoUsageMap[normalizedPath] = {
@@ -1212,6 +1310,7 @@ async function loadVideos() {
                 });
             } catch (e) {
                 // Skip problematic playlist
+                console.warn(`Skipping playlist ${playlist.filename}:`, e);
             }
         }
 
@@ -1234,19 +1333,8 @@ async function loadVideos() {
                     </thead>
                     <tbody>
                         ${videos.map(video => {
-            const videoPath = video.path || `media/${video.filename}`;
-            // Normalize the video path same as we did for playlist items
-            const normalizePath = (p) => {
-                if (!p) return '';
-                let clean = p;
-                clean = clean.replace(/^\//, ''); // Remove leading slash
-                clean = clean.replace(/^\.\.\/+/, ''); // Remove ../ prefixes
-                clean = clean.replace(/^(dev_)?data\//, ''); // Remove data/ prefix
-                clean = clean.replace(/^media\//, ''); // Remove media/ prefix
-                return clean;
-            };
-
-            const normalizedVideoPath = normalizePath(videoPath);
+            const videoPath = video.path || `media/${video.filename || ''}`;
+            const normalizedVideoPath = normalizeVideoPath(videoPath);
             const usage = videoUsageMap[normalizedVideoPath];
             const inPlaylists = usage && usage.playlists.length > 0;
             const title = usage?.title || video.filename;
@@ -1274,12 +1362,16 @@ async function loadVideos() {
             </div>
         `;
 
-        container.innerHTML = createTable(availableVideos);
+        container.innerHTML = createTable(AppState.media.videos);
 
         // CRITICAL: Update playlist builder's available videos after loading
         renderVideoPlaylistAvailable();
     } catch (e) {
         console.error('Failed to load videos:', e);
+        // Only alert if it's not a simple fetch abort/offline issue
+        if (e.name !== 'AbortError') {
+            console.error('Video load error stack:', e.stack);
+        }
     }
 }
 
@@ -2429,7 +2521,7 @@ async function editPlaylist(filename, type) {
 
     } catch (e) {
         console.error('Failed to edit playlist:', e);
-        alert('Failed to load playlist');
+        alert(`Failed to load playlist: ${e.message}\n\n${e.stack}`);
     }
 }
 
@@ -2526,8 +2618,10 @@ function savePlaylist(type) {
 }
 
 function cleanPlaylistItems(items) {
+    if (!Array.isArray(items)) return [];
+
     // Remove any null/undefined/empty fields from items to match YAML format
-    return items.map(item => {
+    return items.filter(item => item && typeof item === 'object').map(item => {
         const cleaned = {};
 
         // Always include these core fields
@@ -2587,6 +2681,387 @@ function cancelEdit(type) {
         console.error('Error in cancelEdit:', e);
     }
 }
+
+// ===== PLAYLIST IMPORT =====
+
+function importPlaylist(type) {
+    // Create a hidden file input
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.yaml,.yml';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    input.onchange = async () => {
+        if (input.files.length > 0) {
+            await uploadPlaylist(input.files[0], type);
+        }
+        document.body.removeChild(input);
+    };
+
+    input.click();
+}
+
+async function uploadPlaylist(file, type) {
+    if (!currentDevice) {
+        alert('Please select a device first');
+        return;
+    }
+
+    // Show loading state
+    const overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div style="margin-top: 1rem; color: white;">Importing playlist...</div>
+    `;
+    document.body.appendChild(overlay);
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${currentDevice.url}/admin/playlists/import?overwrite=false`);
+
+        // Add CSRF token
+        if (csrfToken) {
+            xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+        } else {
+            // Try to get token if missing
+            await fetchCsrfToken();
+            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+        }
+
+        xhr.onload = async () => {
+            document.body.removeChild(overlay);
+
+            if (xhr.status === 200) {
+                const response = JSON.parse(xhr.responseText);
+                // Success
+                // Show notification
+                showNotification(`Imported "${response.data.title}" successfully`, 'success');
+
+                // Refresh playlists
+                await loadExistingPlaylists();
+            } else if (xhr.status === 409) {
+                // Already exists - ask to overwrite
+                if (confirm(`Playlist ${file.name} already exists. Overwrite it?`)) {
+                    // Retry with overwrite=true
+                    await uploadPlaylistOverwriting(file);
+                }
+            } else {
+                try {
+                    const err = JSON.parse(xhr.responseText);
+                    alert(`Import failed: ${err.error?.message || xhr.statusText}`);
+                } catch {
+                    alert(`Import failed: ${xhr.statusText}`);
+                }
+            }
+        };
+
+        xhr.onerror = () => {
+            document.body.removeChild(overlay);
+            alert('Network error handling import');
+        };
+
+        xhr.send(formData);
+
+    } catch (e) {
+        document.body.removeChild(overlay);
+        console.error('Import error:', e);
+        alert('Failed to start import');
+    }
+}
+
+async function uploadPlaylistOverwriting(file) {
+    // Show loading state
+    const overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div style="margin-top: 1rem; color: white;">Overwriting playlist...</div>
+    `;
+    document.body.appendChild(overlay);
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${currentDevice.url}/admin/playlists/import?overwrite=true`);
+
+            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+
+            xhr.onload = async () => {
+                document.body.removeChild(overlay);
+                if (xhr.status === 200) {
+                    const response = JSON.parse(xhr.responseText);
+                    showNotification(`Imported "${response.data.title}" successfully`, 'success');
+                    await loadExistingPlaylists();
+                    resolve();
+                } else {
+                    alert(`Overwrite failed: ${xhr.statusText}`);
+                    reject();
+                }
+            };
+
+            xhr.onerror = () => {
+                document.body.removeChild(overlay);
+                alert('Network error');
+                reject();
+            };
+
+            xhr.send(formData);
+        });
+
+    } catch (e) {
+        if (document.body.contains(overlay)) document.body.removeChild(overlay);
+        console.error('Overwrite error:', e);
+    }
+}
+
+// ===== PACKAGE IMPORT (ZIP with videos + playlist) =====
+
+function importPackage(type) {
+    // Create a hidden file input for ZIP files
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    input.onchange = async () => {
+        if (input.files.length > 0) {
+            await uploadPackage(input.files[0], type);
+        }
+        document.body.removeChild(input);
+    };
+
+    input.click();
+}
+
+async function uploadPackage(file, type) {
+    if (!currentDevice) {
+        alert('Please select a device first');
+        return;
+    }
+
+    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
+
+    // Show loading state with improved progress UI
+    const overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div class="loading-content">
+            <div class="loading-title">Importing Package</div>
+            <div class="loading-status" id="package-status">Preparing upload...</div>
+            <div class="loading-details" id="package-filename">${escapeHtml(file.name)}</div>
+            <div class="upload-progress-container">
+                <div class="upload-progress-bar">
+                    <div class="upload-progress-fill" id="package-progress-fill"></div>
+                </div>
+                <div class="upload-progress-text">
+                    <span id="package-uploaded">0 MB</span>
+                    <span class="upload-progress-percent" id="package-percent">0%</span>
+                    <span id="package-total">${fileSizeMB} MB</span>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${currentDevice.url}/admin/playlists/import-package?overwrite=false`);
+
+        // Add CSRF token
+        if (csrfToken) {
+            xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+        } else {
+            await fetchCsrfToken();
+            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+        }
+
+        // Upload progress with detailed display
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                const uploadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
+
+                const progressFill = document.getElementById('package-progress-fill');
+                const percentEl = document.getElementById('package-percent');
+                const uploadedEl = document.getElementById('package-uploaded');
+                const statusEl = document.getElementById('package-status');
+                const detailsEl = document.getElementById('package-filename');
+
+                if (progressFill) progressFill.style.width = `${percent}%`;
+                if (percentEl) percentEl.textContent = `${percent}%`;
+                if (uploadedEl) uploadedEl.textContent = `${uploadedMB} MB`;
+
+                if (statusEl) {
+                    if (percent < 100) {
+                        statusEl.textContent = 'Uploading...';
+                    } else {
+                        // At 100%, show processing estimate
+                        // Assume ~10MB/s processing speed on Pi 4
+                        const totalMB = e.total / (1024 * 1024);
+                        const estSeconds = Math.max(10, Math.ceil(totalMB / 10)); // Min 10s
+                        let timeStr = "";
+
+                        if (estSeconds > 60) {
+                            timeStr = `~${Math.ceil(estSeconds / 60)} mins`;
+                        } else {
+                            timeStr = `~${estSeconds} seconds`;
+                        }
+
+                        statusEl.textContent = `Processing on device... (Est. time: ${timeStr})`;
+                        if (progressFill) progressFill.classList.add('indeterminate');
+                        if (detailsEl) detailsEl.textContent = "Extracting and organizing files... do not close.";
+                    }
+                }
+            }
+        };
+
+        xhr.onload = async () => {
+            document.body.removeChild(overlay);
+
+            if (xhr.status === 200) {
+                const response = JSON.parse(xhr.responseText);
+                const data = response.data;
+                showNotification(
+                    `Imported "${data.playlist_title}": ${data.item_count} items, ${data.videos_imported} videos uploaded`,
+                    'success'
+                );
+                // Refresh both playlists and media lists
+                await loadExistingPlaylists();
+                await loadVideos();  // Refresh All Videos list after import
+                if (typeof loadMediaList === 'function') {
+                    await loadMediaList();
+                }
+            } else if (xhr.status === 409) {
+                // Already exists - ask to overwrite
+                const err = JSON.parse(xhr.responseText);
+                if (confirm(`Playlist already exists. Overwrite it?\n\n(${err.error?.details?.videos_imported || 0} videos were already imported)`)) {
+                    await uploadPackageOverwriting(file);
+                }
+            } else {
+                try {
+                    const err = JSON.parse(xhr.responseText);
+                    alert(`Import failed: ${err.error?.message || xhr.statusText}`);
+                } catch {
+                    alert(`Import failed: ${xhr.statusText}`);
+                }
+            }
+        };
+
+        xhr.onerror = () => {
+            document.body.removeChild(overlay);
+            alert('Network error uploading package');
+        };
+
+        xhr.send(formData);
+
+    } catch (e) {
+        document.body.removeChild(overlay);
+        console.error('Package import error:', e);
+        alert('Failed to start package import');
+    }
+}
+
+async function uploadPackageOverwriting(file) {
+    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'loading-overlay';
+    overlay.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div class="loading-content">
+            <div class="loading-title">Overwriting Package</div>
+            <div class="loading-status" id="package-status">Preparing upload...</div>
+            <div class="loading-details" id="package-filename">${escapeHtml(file.name)}</div>
+            <div class="upload-progress-container">
+                <div class="upload-progress-bar">
+                    <div class="upload-progress-fill" id="package-progress-fill"></div>
+                </div>
+                <div class="upload-progress-text">
+                    <span id="package-uploaded">0 MB</span>
+                    <span class="upload-progress-percent" id="package-percent">0%</span>
+                    <span id="package-total">${fileSizeMB} MB</span>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `${currentDevice.url}/admin/playlists/import-package?overwrite=true`);
+
+            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    const uploadedMB = (e.loaded / (1024 * 1024)).toFixed(1);
+
+                    const progressFill = document.getElementById('package-progress-fill');
+                    const percentEl = document.getElementById('package-percent');
+                    const uploadedEl = document.getElementById('package-uploaded');
+                    const statusEl = document.getElementById('package-status');
+
+                    if (progressFill) progressFill.style.width = `${percent}%`;
+                    if (percentEl) percentEl.textContent = `${percent}%`;
+                    if (uploadedEl) uploadedEl.textContent = `${uploadedMB} MB`;
+                    if (statusEl) statusEl.textContent = percent < 100 ? 'Uploading...' : 'Processing on device...';
+                }
+            };
+
+            xhr.onload = async () => {
+                document.body.removeChild(overlay);
+                if (xhr.status === 200) {
+                    const response = JSON.parse(xhr.responseText);
+                    const data = response.data;
+                    showNotification(
+                        `Imported "${data.playlist_title}": ${data.item_count} items, ${data.videos_imported} videos`,
+                        'success'
+                    );
+                    await loadExistingPlaylists();
+                    await loadVideos();  // Refresh All Videos list after import
+                    if (typeof loadMediaList === 'function') {
+                        await loadMediaList();
+                    }
+                    resolve();
+                } else {
+                    alert(`Overwrite failed: ${xhr.statusText}`);
+                    reject();
+                }
+            };
+
+            xhr.onerror = () => {
+                document.body.removeChild(overlay);
+                alert('Network error');
+                reject();
+            };
+
+            xhr.send(formData);
+        });
+
+    } catch (e) {
+        if (document.body.contains(overlay)) document.body.removeChild(overlay);
+        console.error('Package overwrite error:', e);
+    }
+}
+
 
 // ===== PLAYLIST BUILDER =====
 
@@ -2950,9 +3425,41 @@ function formatFileSize(bytes) {
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
 }
 
+/**
+ * Normalize video/media paths for comparison.
+ * Handles various path formats from different sources:
+ * - ../media/file.mp4 (playlist relative paths)
+ * - data/media/file.mp4 (API response)
+ * - /data/media/file.mp4 (absolute)
+ * - media/file.mp4 (simple)
+ * - magic_dingus_box_cpp/data/media/file.mp4 (full relative)
+ *
+ * Returns just the filename for reliable comparison.
+ */
+function normalizeVideoPath(p) {
+    if (!p) return '';
+    if (typeof p !== 'string') return '';
+    let clean = p;
+    // Remove leading slash
+    clean = clean.replace(/^\//, '');
+    // Remove ../ prefixes (used in playlist relative paths)
+    clean = clean.replace(/^(\.\.\/)+/, '');
+    // Remove magic_dingus_box_cpp/ prefix
+    clean = clean.replace(/^magic_dingus_box_cpp\//, '');
+    // Remove data/ or dev_data/ prefix
+    clean = clean.replace(/^(dev_)?data\//, '');
+    // Remove media/ prefix
+    clean = clean.replace(/^media\//, '');
+    // At this point we should have just: filename.mp4
+    return clean;
+}
+
 // Helper to safely escape strings for HTML attributes
 function escapeHtml(str) {
-    if (!str) return '';
+    if (str === null || str === undefined) return '';
+    // Force to string if it's not
+    if (typeof str !== 'string') str = String(str);
+
     return str
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -2963,7 +3470,8 @@ function escapeHtml(str) {
 
 // Helper to escape strings for JavaScript string literals in onclick handlers
 function escapeJs(str) {
-    if (!str) return '';
+    if (str === null || str === undefined) return '';
+    if (typeof str !== 'string') str = String(str);
     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
@@ -2994,6 +3502,51 @@ function showConfirmModal(title, message, onConfirm) {
     confirmBtn.onclick = (e) => {
         if (e) e.preventDefault();
         console.log('Confirm button clicked');
+        onConfirm();
+        closeModal();
+    };
+
+    cancelBtn.onclick = (e) => {
+        if (e) e.preventDefault();
+        closeModal();
+    };
+
+    // Close on click outside
+    modal.onclick = (e) => {
+        if (e.target === modal) closeModal();
+    };
+
+    modal.classList.add('active');
+}
+
+/**
+ * Show a confirmation modal with HTML content.
+ * Unlike showConfirmModal, this sets innerHTML instead of textContent.
+ */
+function showConfirmModalHtml(title, htmlContent, onConfirm) {
+    const modal = document.getElementById('confirmModal');
+    const titleEl = document.getElementById('modalTitle');
+    const messageEl = document.getElementById('modalMessage');
+    const confirmBtn = document.getElementById('modalConfirm');
+    const cancelBtn = document.getElementById('modalCancel');
+
+    if (!modal) {
+        // Fallback if modal not found
+        if (confirm(htmlContent.replace(/<[^>]*>/g, ''))) onConfirm();
+        return;
+    }
+
+    titleEl.textContent = title;
+    messageEl.innerHTML = htmlContent;
+
+    const closeModal = () => {
+        modal.classList.remove('active');
+        confirmBtn.onclick = null;
+        cancelBtn.onclick = null;
+    };
+
+    confirmBtn.onclick = (e) => {
+        if (e) e.preventDefault();
         onConfirm();
         closeModal();
     };
@@ -3068,24 +3621,147 @@ async function deleteROM(path, filename) {
 }
 
 async function deletePlaylist(filename, type) {
-    showConfirmModal(
-        'Delete Playlist',
-        `Delete playlist "${filename}"?`,
-        async () => {
-            if (!currentDevice) return;
+    if (!currentDevice) return;
 
+    // Show loading overlay while fetching playlist details
+    const loadingOverlay = document.createElement('div');
+    loadingOverlay.className = 'loading-overlay';
+    loadingOverlay.innerHTML = `
+        <div class="loading-spinner"></div>
+        <div class="loading-content">
+            <div class="loading-title">Loading Playlist</div>
+            <div class="loading-status">Checking video usage...</div>
+            <div class="loading-details">${escapeHtml(filename)}</div>
+        </div>
+    `;
+    document.body.appendChild(loadingOverlay);
+
+    try {
+        // Fetch playlist details to get video list
+        const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${filename}`);
+        const detailResult = await detailResponse.json();
+        const playlistData = detailResult.data || detailResult;
+
+        // Get local video paths from this playlist
+        const playlistVideos = (playlistData.items || [])
+            .filter(item => item.source_type === 'local' && item.path)
+            .map(item => ({
+                path: item.path,
+                title: item.title || normalizeVideoPath(item.path),
+                normalized: normalizeVideoPath(item.path)
+            }));
+
+        // Fetch all other playlists to check video usage
+        const playlistsResponse = await fetch(`${currentDevice.url}/admin/playlists`);
+        const playlistsResult = await playlistsResponse.json();
+        const allPlaylists = (playlistsResult.data || playlistsResult)
+            .filter(p => p.filename !== filename);
+
+        // Build a set of video paths used in OTHER playlists
+        const videosUsedElsewhere = new Set();
+        for (const playlist of allPlaylists) {
             try {
-                await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
-                    method: 'DELETE',
-                    headers: getCsrfHeaders(false)
+                const otherResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
+                const otherResult = await otherResponse.json();
+                const otherData = otherResult.data || otherResult;
+                (otherData.items || []).forEach(item => {
+                    if (item.source_type === 'local' && item.path) {
+                        videosUsedElsewhere.add(normalizeVideoPath(item.path));
+                    }
                 });
-                await loadExistingPlaylists();
             } catch (e) {
-                console.error('Failed to delete playlist:', e);
-                alert('Failed to delete playlist');
+                // Skip problematic playlists
             }
         }
-    );
+
+        // Determine orphaned videos (only used in this playlist)
+        const orphanedVideos = playlistVideos.filter(v => !videosUsedElsewhere.has(v.normalized));
+        const sharedVideos = playlistVideos.filter(v => videosUsedElsewhere.has(v.normalized));
+
+        // Build modal content
+        let modalContent = `<p>Delete playlist "<strong>${escapeHtml(filename)}</strong>"?</p>`;
+
+        if (orphanedVideos.length > 0) {
+            modalContent += `
+                <div style="margin-top: 1rem; padding: 0.75rem; background: var(--surface); border-radius: 4px;">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="deleteVideosCheckbox" style="margin-right: 0.5rem;">
+                        <span>Also delete ${orphanedVideos.length} video(s) only used in this playlist</span>
+                    </label>
+                    <div style="margin-top: 0.5rem; max-height: 100px; overflow-y: auto; font-size: 0.85rem; color: var(--text-secondary);">
+                        ${orphanedVideos.map(v => `<div>• ${escapeHtml(v.title)}</div>`).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        if (sharedVideos.length > 0) {
+            modalContent += `
+                <div style="margin-top: 0.75rem; font-size: 0.85rem; color: var(--text-secondary);">
+                    <em>${sharedVideos.length} video(s) are used in other playlists and will NOT be deleted.</em>
+                </div>
+            `;
+        }
+
+        // Remove loading overlay before showing modal
+        document.body.removeChild(loadingOverlay);
+
+        showConfirmModalHtml(
+            'Delete Playlist',
+            modalContent,
+            async () => {
+                try {
+                    const deleteVideos = document.getElementById('deleteVideosCheckbox')?.checked || false;
+                    const url = `${currentDevice.url}/admin/playlists/${filename}${deleteVideos ? '?delete_videos=true' : ''}`;
+
+                    const response = await fetch(url, {
+                        method: 'DELETE',
+                        headers: getCsrfHeaders(false)
+                    });
+
+                    const result = await response.json();
+                    if (result.ok) {
+                        const videosDeleted = result.data?.videos_deleted || 0;
+                        if (videosDeleted > 0) {
+                            showNotification(`Playlist deleted along with ${videosDeleted} video(s)`, 'success');
+                        } else {
+                            showNotification('Playlist deleted', 'success');
+                        }
+                    }
+
+                    await loadExistingPlaylists();
+                    await loadVideos();  // Refresh All Videos list after deletion
+                } catch (e) {
+                    console.error('Failed to delete playlist:', e);
+                    alert('Failed to delete playlist');
+                }
+            }
+        );
+    } catch (e) {
+        console.error('Failed to load playlist details:', e);
+        // Remove loading overlay on error
+        if (loadingOverlay.parentNode) {
+            document.body.removeChild(loadingOverlay);
+        }
+        // Fallback to simple delete
+        showConfirmModal(
+            'Delete Playlist',
+            `Delete playlist "${filename}"?`,
+            async () => {
+                try {
+                    await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
+                        method: 'DELETE',
+                        headers: getCsrfHeaders(false)
+                    });
+                    await loadExistingPlaylists();
+                    await loadVideos();
+                } catch (e) {
+                    console.error('Failed to delete playlist:', e);
+                    alert('Failed to delete playlist');
+                }
+            }
+        );
+    }
 }
 
 // ===== TOUCH DRAG-AND-DROP SUPPORT =====
@@ -3716,19 +4392,8 @@ function renderLibraryPanel() {
     if (!container) return;
 
     const videos = availableVideos || [];
-    // Normalize path for comparison
-    const normalizePath = (p) => {
-        if (!p) return '';
-        let clean = p;
-        clean = clean.replace(/^\//, ''); // Remove leading slash
-        clean = clean.replace(/^\.\.\/+/, ''); // Remove ../ prefixes
-        clean = clean.replace(/^(dev_)?data\//, ''); // Remove data/ prefix
-        clean = clean.replace(/^media\//, ''); // Remove media/ prefix
-        return clean;
-    };
-
     const currentPlaylistItems = AppState.playlists.getItems('video');
-    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizePath(item.path)));
+    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizeVideoPath(item.path)));
 
     // Update count
     if (countEl) countEl.textContent = videos.length;
@@ -3743,7 +4408,7 @@ function renderLibraryPanel() {
 
     container.innerHTML = videos.map((video, index) => {
         const path = video.path || `media/${video.filename}`;
-        const normalizedPath = normalizePath(path);
+        const normalizedPath = normalizeVideoPath(path);
 
         // Check current playlist
         const inCurrentPlaylist = currentPlaylistPaths.has(normalizedPath);
@@ -3754,7 +4419,8 @@ function renderLibraryPanel() {
         // Combine both checks - in current playlist OR in any saved playlist
         const isUsed = inCurrentPlaylist;
 
-        const name = video.filename;
+        // Use clean title if available from backend, otherwise filename
+        const name = video.title || video.filename;
 
         // Apply filters - use combined check for hide-used filter
         const matchesSearch = !searchQuery || name.toLowerCase().includes(searchQuery);
@@ -3812,7 +4478,7 @@ function addVideoToPlaylist(index) {
     const newItem = {
         source_type: 'local',
         path: video.path || `media/${video.filename}`,
-        title: video.filename.replace(/\.[^.]+$/, ''),
+        title: video.title || video.filename.replace(/\.[^.]+$/, ''),
         artist: ''
     };
 
@@ -3881,19 +4547,7 @@ function renderROMLibraryPanel() {
 
     const allROMs = availableROMs || {};
     const currentPlaylistItems = AppState.playlists.getItems('game');
-
-    // Normalize path for comparison - strips data/ and dev_data/ prefixes
-    const normalizePath = (p) => {
-        if (!p) return '';
-        let clean = p;
-        clean = clean.replace(/^\//, '');
-        clean = clean.replace(/^\.\.\/+/, '');
-        clean = clean.replace(/^(dev_)?data\//, '');
-        clean = clean.replace(/^media\//, '');
-        return clean;
-    };
-
-    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizePath(item.path)));
+    const currentPlaylistPaths = new Set(currentPlaylistItems.map(item => normalizeVideoPath(item.path)));
 
     // Flatten ROMs from all systems
     let flatROMs = [];
@@ -3920,7 +4574,7 @@ function renderROMLibraryPanel() {
     const hideUsed = hideUsedCheckbox?.checked || false;
 
     const html = flatROMs.map((rom, index) => {
-        const normalizedRomPath = normalizePath(rom.path);
+        const normalizedRomPath = normalizeVideoPath(rom.path);
         const inPlaylist = currentPlaylistPaths.has(normalizedRomPath);
         const name = rom.filename;
 

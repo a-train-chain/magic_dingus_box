@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Magic Dingus Box - Content Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=31">
+    <link rel="stylesheet" href="/static/style.css?v=32">
 </head>
 
 <body>
@@ -103,6 +103,8 @@
                 <div class="view-header">
                     <h3>My Video Playlists <span class="count-badge" id="videoPlaylistCount">0</span></h3>
                     <button class="btn-primary small" onclick="createNewVideoPlaylist()">+ New Playlist</button>
+                    <button class="btn-secondary small" onclick="importPackage('video')" style="margin-left: 0.5rem;"
+                        title="Import ZIP Package (videos + playlist)">📦 Import</button>
                 </div>
                 <div id="videoPlaylistsList" class="grid-list"></div>
             </div>
@@ -251,6 +253,8 @@
                 <div class="view-header">
                     <h3>My Game Playlists <span class="count-badge" id="gamePlaylistCount">0</span></h3>
                     <button class="btn-primary small" onclick="createNewGamePlaylist()">+ New Playlist</button>
+                    <button class="btn-secondary small" onclick="importPackage('game')" style="margin-left: 0.5rem;"
+                        title="Import ZIP Package (games + playlist)">📦 Import</button>
                 </div>
                 <div id="gamePlaylistsList" class="grid-list"></div>
             </div>

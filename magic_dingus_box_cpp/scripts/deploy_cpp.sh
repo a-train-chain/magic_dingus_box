@@ -133,8 +133,8 @@ rsync -avz \
     "${CPP_DIR}/../systemd/magic-dingus-web.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
-ssh "${PI_HOST}" bash <<'EOF'
-sudo cp /opt/magic_dingus_box/systemd/magic-dingus-web.service /etc/systemd/system/
+ssh "${PI_HOST}" bash <<EOF
+sudo cp ${PI_DIR}/systemd/magic-dingus-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable magic-dingus-web.service
 sudo systemctl restart magic-dingus-web.service
@@ -148,8 +148,8 @@ rsync -avz \
     "${CPP_DIR}/systemd/magic-dingus-box-cpp.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
-ssh "${PI_HOST}" bash <<'EOF'
-sudo cp /opt/magic_dingus_box/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
+ssh "${PI_HOST}" bash <<EOF
+sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable magic-dingus-box-cpp.service
 # Restart if it's already running (or start if not)
@@ -170,8 +170,8 @@ echo ""
 
 # Step 2: Download stb_truetype.h (always update to ensure it's the real file)
 echo "Step 2: Ensuring stb_truetype.h is present..."
-ssh "${PI_HOST}" bash <<'EOF'
-cd /opt/magic_dingus_box/magic_dingus_box_cpp/src/ui
+ssh "${PI_HOST}" bash <<EOF
+cd ${PI_DIR}/magic_dingus_box_cpp/src/ui
 
 # Check if file is just a placeholder (contains "Placeholder")
 if [ -f stb_truetype.h ] && grep -q "Placeholder" stb_truetype.h 2>/dev/null; then
@@ -183,7 +183,7 @@ fi
 if [ ! -f stb_truetype.h ] || [ ! -s stb_truetype.h ]; then
     echo "  Downloading stb_truetype.h..."
     wget -q https://raw.githubusercontent.com/nothings/stb/master/stb_truetype.h -O stb_truetype.h
-    if [ $? -eq 0 ] && [ -s stb_truetype.h ]; then
+    if [ \$? -eq 0 ] && [ -s stb_truetype.h ]; then
         echo "  ✓ stb_truetype.h downloaded"
     else
         echo "  ✗ Failed to download stb_truetype.h"
@@ -198,9 +198,9 @@ echo ""
 # Step 3: Build (if requested)
 if [ "$BUILD" = true ]; then
     echo "Step 3: Building on Pi..."
-    ssh "${PI_HOST}" bash <<'EOF'
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'BUILDEOF'
 set -e
-cd /opt/magic_dingus_box/magic_dingus_box_cpp
+cd "${PI_DIR}/magic_dingus_box_cpp"
 
 # Check and install dependencies
 echo "  Checking dependencies..."
@@ -252,7 +252,7 @@ if ! make -j4; then
 fi
 
 echo "  ✓ Build complete"
-EOF
+BUILDEOF
     echo ""
 fi
 
@@ -261,9 +261,9 @@ if [ "$INSTALL_CORES" = true ]; then
     echo "Step 3.5: Installing RetroArch cores on Pi..."
 
     # Run the core installation using the script inside the C++ project
-    ssh "${PI_HOST}" bash <<'EOF'
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'CORESEOF'
 set -e
-cd /opt/magic_dingus_box/magic_dingus_box_cpp
+cd "${PI_DIR}/magic_dingus_box_cpp"
 
 echo "  Installing RetroArch and cores..."
 # Install RetroArch first
@@ -281,7 +281,7 @@ else
 fi
 
 echo "  ✓ Core installation complete"
-EOF
+CORESEOF
     echo ""
 fi
 
@@ -290,8 +290,8 @@ if [ "$TEST" = true ]; then
     echo "Step 4: Testing on Pi..."
     echo "  Note: This will start the app. Press Ctrl+C in the SSH session to stop."
     echo ""
-    ssh -t "${PI_HOST}" bash <<'EOF'
-cd /opt/magic_dingus_box/magic_dingus_box_cpp/build
+    ssh -t "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'TESTEOF'
+cd "${PI_DIR}/magic_dingus_box_cpp/build"
 if [ ! -f magic_dingus_box_cpp ]; then
     echo "ERROR: Executable not found. Build may have failed."
     exit 1
@@ -299,7 +299,7 @@ fi
 
 echo "Starting app (run as root for DRM access)..."
 sudo ./magic_dingus_box_cpp
-EOF
+TESTEOF
     echo ""
 fi
 
@@ -310,10 +310,10 @@ if [ "$SETUP_USB_GADGET" = true ]; then
     echo "  This enables direct laptop-to-Pi USB connections for faster uploads."
     echo "  The Pi will need to reboot after setup."
     echo ""
-    
+
     # Run the setup script on the Pi
-    ssh "${PI_HOST}" bash <<'EOF'
-cd /opt/magic_dingus_box/magic_dingus_box_cpp/scripts
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'USBEOF'
+cd "${PI_DIR}/magic_dingus_box_cpp/scripts"
 chmod +x setup_usb_gadget.sh
 
 # Run non-interactively (don't prompt for reboot)
@@ -379,8 +379,8 @@ systemctl enable systemd-networkd 2>/dev/null || true
 echo ""
 echo "=== USB Gadget Setup Complete ==="
 '
-EOF
-    
+USBEOF
+
     echo ""
     echo "  ✓ USB Ethernet Gadget mode configured"
     echo ""

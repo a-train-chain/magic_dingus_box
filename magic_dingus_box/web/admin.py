@@ -12,6 +12,8 @@ import threading
 import time
 import uuid
 import zipfile
+import shutil
+import tempfile
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
@@ -273,8 +275,17 @@ def format_playlist_yaml(data: dict) -> str:
     with consistent structure and blank fields where no data exists.
     """
     
-    def yaml_quote(value: str) -> str:
+    def yaml_quote(value) -> str:
         """Quote a YAML value if it contains special characters that would break parsing."""
+        # Handle non-string values
+        if value is None:
+            return "''"
+        if isinstance(value, bool):
+            return 'true' if value else 'false'
+        if isinstance(value, (int, float)):
+            return str(value)
+        # Convert to string if not already
+        value = str(value)
         if not value:
             return "''"
         # Characters that need quoting: # (comment), : (key separator), leading/trailing spaces
@@ -334,10 +345,12 @@ def format_playlist_yaml(data: dict) -> str:
             lines.append(f"    end: {item['end']}")
         
         if item.get('tags'):
-            # Format tags as YAML list
-            lines.append("    tags:")
-            for tag in item['tags']:
-                lines.append(f"      - {yaml_quote(tag)}")
+            # Format tags as YAML list - filter out invalid tags
+            valid_tags = [t for t in item['tags'] if isinstance(t, str) and t.strip()]
+            if valid_tags:
+                lines.append("    tags:")
+                for tag in valid_tags:
+                    lines.append(f"      - {yaml_quote(tag)}")
         
         # Emulator fields for games
         if item.get('emulator_core'):
@@ -356,12 +369,9 @@ def format_playlist_yaml(data: dict) -> str:
 def create_app(data_dir: Path, config=None) -> Flask:
     app = Flask(__name__)
     
-    # Limit upload sizes; default 2GB (can override via MAGIC_MAX_UPLOAD_MB)
-    try:
-        max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "2048"))
-        app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
-    except Exception:
-        app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
+    # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
+    max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
+    app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
     
     # Use a temp directory on the SD card instead of /tmp (which is limited tmpfs)
     # This prevents "No space left on device" errors for large file uploads
@@ -831,10 +841,38 @@ def create_app(data_dir: Path, config=None) -> Flask:
             traceback.print_exc()
             return error_response("INTERNAL_ERROR", str(e), status=500)
 
+    def _normalize_video_path(path: str) -> str:
+        """Normalize video path for comparison - strips prefixes to get just filename."""
+        if not path:
+            return ''
+        clean = path
+        # Remove leading slash
+        if clean.startswith('/'):
+            clean = clean[1:]
+        # Remove ../ prefixes
+        while clean.startswith('../'):
+            clean = clean[3:]
+        # Remove magic_dingus_box_cpp/ prefix
+        if clean.startswith('magic_dingus_box_cpp/'):
+            clean = clean[len('magic_dingus_box_cpp/'):]
+        # Remove data/ or dev_data/ prefix
+        if clean.startswith('data/'):
+            clean = clean[len('data/'):]
+        elif clean.startswith('dev_data/'):
+            clean = clean[len('dev_data/'):]
+        # Remove media/ prefix
+        if clean.startswith('media/'):
+            clean = clean[len('media/'):]
+        return clean
+
     @app.delete("/admin/playlists/<name>")
     @require_csrf
     def delete_playlist(name):  # type: ignore[no-redef]
-        """Delete a playlist."""
+        """Delete a playlist, optionally with associated videos.
+
+        Query params:
+            delete_videos: If 'true', also delete videos only used in this playlist
+        """
         try:
             safe_name = _sanitize_filename(name, allowed_extensions=['.yaml', '.yml'])
         except ValueError as e:
@@ -847,10 +885,379 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not str(p_resolved).startswith(str(playlists_dir_resolved)):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
-        if p.exists():
-            p.unlink()
-            return success_response(message="Playlist deleted")
-        return error_response("NOT_FOUND", f"Playlist '{name}' not found", status=404)
+        if not p.exists():
+            return error_response("NOT_FOUND", f"Playlist '{name}' not found", status=404)
+
+        videos_deleted = 0
+        delete_videos = request.args.get('delete_videos', 'false').lower() == 'true'
+
+        if delete_videos:
+            try:
+                # Parse the playlist to get video paths
+                playlist_data = yaml.safe_load(p.read_text())
+                playlist_videos = set()
+                for item in playlist_data.get('items', []):
+                    if item.get('source_type') == 'local' and item.get('path'):
+                        playlist_videos.add(_normalize_video_path(item['path']))
+
+                # Build set of videos used in OTHER playlists
+                videos_used_elsewhere = set()
+                for other_playlist in playlists_dir.glob("*.y*ml"):
+                    if other_playlist.name == safe_name:
+                        continue  # Skip the playlist being deleted
+                    try:
+                        other_data = yaml.safe_load(other_playlist.read_text())
+                        for item in other_data.get('items', []):
+                            if item.get('source_type') == 'local' and item.get('path'):
+                                videos_used_elsewhere.add(_normalize_video_path(item['path']))
+                    except Exception:
+                        continue  # Skip problematic playlists
+
+                # Determine orphaned videos (only in this playlist)
+                orphaned_videos = playlist_videos - videos_used_elsewhere
+
+                # Delete orphaned videos
+                for normalized_filename in orphaned_videos:
+                    # Try to find and delete the video file
+                    # Check both media_dir and dev_media_dir
+                    video_path = media_dir / normalized_filename
+                    dev_media_dir = data_dir.parent / "dev_data" / "media"
+                    dev_video_path = dev_media_dir / normalized_filename
+
+                    # Security check: ensure we're deleting within allowed directories
+                    for candidate in [video_path, dev_video_path]:
+                        if candidate.exists() and candidate.is_file():
+                            candidate_resolved = candidate.resolve()
+                            # Verify path is within data directories
+                            data_parent = data_dir.parent.resolve()
+                            if str(candidate_resolved).startswith(str(data_parent)):
+                                try:
+                                    candidate.unlink()
+                                    videos_deleted += 1
+                                    print(f"Deleted video: {candidate}", file=sys.stderr)
+                                    break  # Only delete from one location
+                                except Exception as e:
+                                    print(f"Failed to delete video {candidate}: {e}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"Error processing videos for deletion: {e}", file=sys.stderr)
+                # Continue with playlist deletion even if video deletion fails
+
+        # Delete the playlist file
+        p.unlink()
+
+        if videos_deleted > 0:
+            return success_response(
+                data={"videos_deleted": videos_deleted},
+                message=f"Playlist deleted along with {videos_deleted} video(s)"
+            )
+        return success_response(message="Playlist deleted")
+
+    @app.post("/admin/playlists/import")
+    @require_csrf
+    def import_playlist():  # type: ignore[no-redef]
+        """Import a playlist from a YAML file.
+        
+        Accepts multipart form upload with a .yaml or .yml file.
+        The playlist will be saved with either the filename from the upload
+        or extracted from the 'title' field in the YAML.
+        
+        Query params:
+            overwrite: If 'true', overwrite existing playlist with same name
+        """
+        try:
+            if 'file' not in request.files:
+                return error_response("VALIDATION_ERROR", "No file provided")
+            
+            file = request.files['file']
+            if not file.filename:
+                return error_response("VALIDATION_ERROR", "No filename")
+            
+            # Validate file extension
+            original_filename = file.filename
+            if not original_filename.lower().endswith(('.yaml', '.yml')):
+                return error_response(
+                    "VALIDATION_ERROR", 
+                    "File must be a .yaml or .yml file"
+                )
+            
+            # Read and parse YAML content
+            try:
+                yaml_content = file.read().decode('utf-8')
+                data = yaml.safe_load(yaml_content)
+            except UnicodeDecodeError:
+                return error_response("VALIDATION_ERROR", "File must be valid UTF-8 text")
+            except yaml.YAMLError as e:
+                return error_response("VALIDATION_ERROR", f"Invalid YAML: {e}")
+            
+            if not data:
+                return error_response("VALIDATION_ERROR", "Empty YAML file")
+            
+            # Validate basic playlist structure
+            if not isinstance(data, dict):
+                return error_response("VALIDATION_ERROR", "Playlist must be a YAML object")
+            
+            if 'items' not in data or not isinstance(data.get('items'), list):
+                return error_response(
+                    "VALIDATION_ERROR", 
+                    "Playlist must have an 'items' list"
+                )
+            
+            # Determine output filename
+            # Prefer 'title' from YAML, fall back to uploaded filename
+            title = data.get('title', '').strip()
+            if title:
+                # Sanitize title for use as filename
+                safe_title = re.sub(r'[^\w\s-]', '', title).strip()
+                safe_title = re.sub(r'[-\s]+', '_', safe_title)
+                output_name = f"{safe_title}.yaml"
+            else:
+                output_name = original_filename
+            
+            try:
+                safe_name = _sanitize_filename(output_name, allowed_extensions=['.yaml', '.yml'])
+            except ValueError as e:
+                return error_response("VALIDATION_ERROR", str(e))
+            
+            # Check if already exists
+            output_path = playlists_dir / safe_name
+            overwrite = request.args.get('overwrite', 'false').lower() == 'true'
+            
+            if output_path.exists() and not overwrite:
+                return error_response(
+                    "ALREADY_EXISTS", 
+                    f"Playlist '{safe_name}' already exists. Set overwrite=true to replace.",
+                    status=409
+                )
+            
+            # Re-format YAML through our formatter for consistency
+            formatted_yaml = format_playlist_yaml(data)
+            
+            # Save
+            playlists_dir.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(formatted_yaml)
+            
+            item_count = len(data.get('items', []))
+            print(f"Imported playlist: {safe_name} ({item_count} items)", file=sys.stderr)
+            
+            return success_response(
+                data={
+                    "filename": safe_name,
+                    "title": data.get('title', safe_name),
+                    "item_count": item_count,
+                    "overwritten": output_path.exists() and overwrite,
+                },
+                message=f"Playlist imported successfully with {item_count} items"
+            )
+            
+        except Exception as e:
+            print(f"Error importing playlist: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    @app.post("/admin/playlists/import-package")
+    @require_csrf
+    def import_package():  # type: ignore[no-redef]
+        """Import a complete playlist package (ZIP with videos + playlist YAML).
+
+        Accepts a ZIP file containing:
+        - playlist.yaml (required) - the playlist definition
+        - media/*.mp4 (optional) - video files to upload
+
+        Videos are extracted to data/media/, then the playlist is imported.
+
+        Query params:
+            overwrite: If 'true', overwrite existing playlist/videos with same names
+        """
+        try:
+            if 'file' not in request.files:
+                return error_response("VALIDATION_ERROR", "No file provided")
+
+            file = request.files['file']
+            if not file.filename:
+                return error_response("VALIDATION_ERROR", "No filename")
+
+            # Validate file extension
+            if not file.filename.lower().endswith('.zip'):
+                return error_response(
+                    "VALIDATION_ERROR",
+                    "File must be a .zip file"
+                )
+
+            overwrite = request.args.get('overwrite', 'false').lower() == 'true'
+
+            # Hybrid Upload Handling
+            # < 100MB: RAM for speed
+            # >= 100MB or Unknown: Disk for safety
+            
+            RAM_LIMIT = 100 * 1024 * 1024  # 100MB
+            content_length = request.content_length or 0
+            temp_path = None
+            
+            try:
+                # Use RAM only if we know the size is safe
+                if content_length > 0 and content_length < RAM_LIMIT:
+                    # Small file: Load into RAM
+                    print(f"Upload size {content_length}: Processing in RAM", file=sys.stderr)
+                    source = io.BytesIO(file.read())
+                    zf = zipfile.ZipFile(source, 'r')
+                else:
+                    # Large file: Stream to Disk
+                    print(f"Upload size {content_length}: Processing on Disk", file=sys.stderr)
+                    fd, temp_path = tempfile.mkstemp(suffix='.zip')
+                    os.close(fd)
+                    file.save(temp_path)
+                    zf = zipfile.ZipFile(temp_path, 'r')
+
+                with zf:
+                    # List contents
+                    namelist = zf.namelist()
+
+                    # Find playlist YAML (can be at root or in a subfolder)
+                    playlist_file = None
+                    for name in namelist:
+                        basename = os.path.basename(name)
+                        if basename.lower() in ('playlist.yaml', 'playlist.yml'):
+                            playlist_file = name
+                            break
+
+                    if not playlist_file:
+                        return error_response(
+                            "VALIDATION_ERROR",
+                            "ZIP must contain a playlist.yaml file"
+                        )
+
+                    # Parse playlist YAML
+                    try:
+                        with zf.open(playlist_file) as pf:
+                            yaml_content = pf.read().decode('utf-8')
+                            playlist_data = yaml.safe_load(yaml_content)
+                    except UnicodeDecodeError:
+                        return error_response("VALIDATION_ERROR", "playlist.yaml must be valid UTF-8")
+                    except yaml.YAMLError as e:
+                        return error_response("VALIDATION_ERROR", f"Invalid YAML: {e}")
+
+                    if not playlist_data or not isinstance(playlist_data, dict):
+                        return error_response("VALIDATION_ERROR", "Invalid playlist structure")
+
+                    if 'items' not in playlist_data or not isinstance(playlist_data.get('items'), list):
+                        return error_response("VALIDATION_ERROR", "Playlist must have an 'items' list")
+
+                    # Determine output filename for playlist BEFORE extracting videos
+                    title = playlist_data.get('title', '').strip()
+                    if title:
+                        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
+                        safe_title = re.sub(r'[-\s]+', '_', safe_title)
+                        output_name = f"{safe_title}.yaml"
+                    else:
+                        output_name = "imported_playlist.yaml"
+
+                    # Check if playlist exists BEFORE extracting any files
+                    playlist_path = playlists_dir / output_name
+                    if playlist_path.exists() and not overwrite:
+                        return error_response(
+                            "ALREADY_EXISTS",
+                            f"Playlist '{output_name}' already exists. Set overwrite=true to replace.",
+                            status=409
+                        )
+
+                    # Find media files in the ZIP
+                    media_files = []
+                    for name in namelist:
+                        # Accept files in media/ folder or root level video files
+                        lower_name = name.lower()
+                        if lower_name.endswith(('.mp4', '.mkv', '.avi', '.mov', '.webm')):
+                            media_files.append(name)
+
+                    # Guard against ZIP bombs: limit total extracted size (default 10GB)
+                    MAX_EXTRACT_BYTES = int(os.getenv("MAGIC_MAX_EXTRACT_MB", "10240")) * 1024 * 1024
+                    total_extracted = 0
+
+                    # Extract media files
+                    videos_imported = 0
+                    videos_skipped = 0
+                    for media_file in media_files:
+                        # Get just the filename (strip directory path)
+                        filename = os.path.basename(media_file)
+                        if not filename:
+                            continue
+
+                        # Sanitize filename
+                        safe_filename = re.sub(r'[^\w\s\-\.\[\]]', '', filename)
+                        safe_filename = safe_filename.strip()
+                        if not safe_filename:
+                            continue
+
+                        # Check declared size before extracting
+                        info = zf.getinfo(media_file)
+                        if total_extracted + info.file_size > MAX_EXTRACT_BYTES:
+                            return error_response(
+                                "VALIDATION_ERROR",
+                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
+                                status=413
+                            )
+
+                        output_path = media_dir / safe_filename
+
+                        # Check if exists
+                        if output_path.exists() and not overwrite:
+                            videos_skipped += 1
+                            continue
+
+                        # Extract to media directory
+                        media_dir.mkdir(parents=True, exist_ok=True)
+
+                        # Stream extraction to disk to avoid MemoryError on large files
+                        with zf.open(media_file) as src, open(output_path, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+
+                        total_extracted += info.file_size
+                        videos_imported += 1
+
+                # Update playlist paths to use sanitized filenames (matching what we saved)
+                for item in playlist_data.get('items', []):
+                    if 'path' in item:
+                        path = item['path']
+                        if item.get('source_type') == 'local':
+                            basename = os.path.basename(path)
+                            # Sanitize the basename the same way we sanitized the files
+                            safe_basename = re.sub(r'[^\w\s\-\.\[\]]', '', basename)
+                            safe_basename = safe_basename.strip()
+                            if safe_basename:
+                                item['path'] = f"media/{safe_basename}"
+
+                # Format and save playlist
+                formatted_yaml = format_playlist_yaml(playlist_data)
+                playlists_dir.mkdir(parents=True, exist_ok=True)
+                playlist_path.write_text(formatted_yaml)
+
+                item_count = len(playlist_data.get('items', []))
+                print(f"Imported package: {output_name} ({item_count} items, {videos_imported} videos)", file=sys.stderr)
+
+                return success_response(
+                    data={
+                        "playlist_filename": output_name,
+                        "playlist_title": playlist_data.get('title', output_name),
+                        "item_count": item_count,
+                        "videos_imported": videos_imported,
+                        "videos_skipped": videos_skipped,
+                    },
+                    message=f"Package imported: {item_count} playlist items, {videos_imported} videos uploaded"
+                )
+
+            except zipfile.BadZipFile:
+                return error_response("VALIDATION_ERROR", "Invalid ZIP file")
+            finally:
+                # cleanup temp file
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
+
+        except Exception as e:
+            print(f"Error importing package: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return error_response("INTERNAL_ERROR", str(e), status=500)
 
     # ===== MEDIA MANAGEMENT =====
 
@@ -870,8 +1277,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
             for ext in ['*.mp4', '*.mkv', '*.avi', '*.mov', '*.webm']:
                 files.extend(dev_media_dir.glob(f"**/{ext}"))
 
+        def _get_clean_title(filename: str) -> str:
+            """Extract clean title from filename (remove Youtube ID suffix)."""
+            # Match "Title [video_id].ext"
+            # Allow flexible ID format (anything in brackets at end of name)
+            match = re.search(r"^(.*?) \[([^\]]+)\]\.[a-zA-Z0-9]+$", filename)
+            if match:
+                return match.group(1).strip()
+            return filename
+
         media_list = [{
             'filename': f.name,
+            'title': _get_clean_title(f.name),
             'path': str(f.relative_to(data_dir.parent)),  # Relative to parent of data dir
             'size': f.stat().st_size,
             'modified': f.stat().st_mtime

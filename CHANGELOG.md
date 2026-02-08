@@ -5,6 +5,27 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-08
+
+### Added
+- Rotary encoder video seeking with velocity-sensitive progress bar
+- Playlist package import/export (ZIP with videos + playlist YAML)
+- Playlist deletion with orphaned video cleanup
+- Alphabetical playlist sorting on device
+
+### Fixed
+- Audio output setting (HDMI/Headphone) now persists across reboots
+- Audio output configured before intro video plays (no mid-intro switching)
+- Upload size limited to 8GB default (prevents storage exhaustion)
+- ZIP extraction size limited to 10GB (prevents ZIP bomb attacks)
+- XSS vulnerability in notification messages
+- Playlist existence check now runs before extracting videos in package import
+
+### Improved
+- Content Manager UI with drag-and-drop playlist management
+- YAML formatting handles non-string types safely
+- Deploy script uses configurable paths instead of hardcoded values
+
 ## [1.0.7] - 2026-01-18
 
 ### Fixed

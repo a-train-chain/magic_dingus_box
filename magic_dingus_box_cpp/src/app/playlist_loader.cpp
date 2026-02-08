@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iostream>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 namespace fs = std::filesystem;
 
@@ -28,6 +30,19 @@ std::vector<Playlist> PlaylistLoader::load_playlists(const std::string& director
     } catch (const std::exception& e) {
         std::cerr << "Failed to read playlist directory: " << e.what() << std::endl;
     }
+    
+    // Sort playlists alphabetically by title (case-insensitive)
+    std::sort(playlists.begin(), playlists.end(),
+        [](const Playlist& a, const Playlist& b) {
+            // Case-insensitive string comparison
+            std::string a_lower = a.title;
+            std::string b_lower = b.title;
+            std::transform(a_lower.begin(), a_lower.end(), a_lower.begin(),
+                [](unsigned char c) { return std::tolower(c); });
+            std::transform(b_lower.begin(), b_lower.end(), b_lower.begin(),
+                [](unsigned char c) { return std::tolower(c); });
+            return a_lower < b_lower;
+        });
     
     return playlists;
 }
