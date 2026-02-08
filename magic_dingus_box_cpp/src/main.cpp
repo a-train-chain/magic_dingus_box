@@ -824,6 +824,11 @@ int main(int /* argc */, char* /* argv */[]) {
     // Track current mode to detect changes at runtime
     app::DisplayMode current_display_mode = state.display_settings.mode;
 
+    // One-shot audio output reapply: move GStreamer's stream to the correct sink
+    // PulseAudio default sink is set in init_audio.sh, but GStreamer may still
+    // connect to the wrong sink. We move the stream once after playback starts.
+    bool audio_stream_move_pending = (state.audio_settings.output != app::AudioOutput::AUTO);
+
     while (running) {
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -942,6 +947,13 @@ int main(int /* argc */, char* /* argv */[]) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
         
+        // One-shot: move audio stream to correct sink once playback starts
+        // GStreamer may connect to the wrong PulseAudio sink despite default being set
+        if (audio_stream_move_pending && state.video_active) {
+            state.audio_settings.apply_output();
+            audio_stream_move_pending = false;
+        }
+
         // Update seek bar timer (countdown to auto-hide)
         if (state.seek_bar_timer > 0.0) {
             state.seek_bar_timer -= delta / 1000.0;  // delta is in ms

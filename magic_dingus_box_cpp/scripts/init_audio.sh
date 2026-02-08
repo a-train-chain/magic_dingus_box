@@ -27,6 +27,40 @@ if [ $WAITED -ge $MAX_WAIT ]; then
     echo "Warning: HDMI audio card not detected after ${MAX_WAIT}s, proceeding anyway"
 fi
 
+# Determine desired audio output from saved settings BEFORE starting PulseAudio
+# This configures default.pa so PulseAudio starts with the correct default sink
+SETTINGS_FILE="/opt/magic_dingus_box/config/settings.json"
+PULSE_CONFIG="$HOME/.config/pulse/default.pa"
+HDMI_SINK="alsa_output.platform-fef00700.hdmi.hdmi-stereo"
+HEADPHONE_SINK="alsa_output.platform-fe00b840.mailbox.stereo-fallback"
+DEFAULT_SINK="$HDMI_SINK"  # Default to HDMI
+
+if [ -f "$SETTINGS_FILE" ]; then
+    AUDIO_OUTPUT=$(python3 -c "import json; d=json.load(open('$SETTINGS_FILE')); print(d.get('audio',{}).get('output','auto'))" 2>/dev/null)
+    case "$AUDIO_OUTPUT" in
+        headphone)
+            DEFAULT_SINK="$HEADPHONE_SINK"
+            echo "Audio output setting: Headphone"
+            ;;
+        hdmi)
+            DEFAULT_SINK="$HDMI_SINK"
+            echo "Audio output setting: HDMI"
+            ;;
+        *)
+            echo "Audio output setting: Auto (HDMI default)"
+            ;;
+    esac
+fi
+
+# Write PulseAudio config with correct default sink BEFORE starting PulseAudio
+# This ensures all new streams (including GStreamer) connect to the right sink
+mkdir -p "$(dirname "$PULSE_CONFIG")"
+cat > "$PULSE_CONFIG" <<PAEOF
+.include /etc/pulse/default.pa
+set-default-sink $DEFAULT_SINK
+PAEOF
+echo "PulseAudio default sink configured: $DEFAULT_SINK"
+
 # Start PulseAudio (--start daemonizes, so no exec needed)
 /usr/bin/pulseaudio --start --log-target=syslog
 
@@ -38,24 +72,4 @@ for i in $(seq 1 10); do
     sleep 0.5
 done
 
-# Apply saved audio output setting before the app starts
-# This ensures the intro video plays on the correct output from the start
-SETTINGS_FILE="/opt/magic_dingus_box/config/settings.json"
-if [ -f "$SETTINGS_FILE" ]; then
-    AUDIO_OUTPUT=$(python3 -c "import json; d=json.load(open('$SETTINGS_FILE')); print(d.get('audio',{}).get('output','auto'))" 2>/dev/null)
-    case "$AUDIO_OUTPUT" in
-        headphone)
-            SINK="alsa_output.platform-fe00b840.mailbox.stereo-fallback"
-            echo "Setting audio output to Headphone"
-            pactl set-default-sink "$SINK" 2>/dev/null
-            ;;
-        hdmi)
-            SINK="alsa_output.platform-fef00700.hdmi.hdmi-stereo"
-            echo "Setting audio output to HDMI"
-            pactl set-default-sink "$SINK" 2>/dev/null
-            ;;
-        *)
-            echo "Audio output: Auto (system default)"
-            ;;
-    esac
-fi
+echo "PulseAudio ready, default sink: $(pactl info 2>/dev/null | grep 'Default Sink' | cut -d: -f2 | tr -d ' ')"
