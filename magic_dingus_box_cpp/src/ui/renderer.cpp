@@ -662,7 +662,7 @@ void Renderer::render(const app::AppState& state) {
         
         // Render UI components
         render_title(text_alpha, state.video_active, state.ui_visible_when_playing);
-        render_playlist_list(state.playlists, state.selected_index, state.video_active, state.ui_visible_when_playing);
+        render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing);
         render_footer(state, text_alpha, state.video_active, state.ui_visible_when_playing);
         
         // Render loading overlay if needed
@@ -677,7 +677,10 @@ void Renderer::render(const app::AppState& state) {
     
     // Render volume overlay (always on top if active)
     render_volume_overlay(state);
-            
+
+    // Render seek progress bar (only during active seeking via rotary encoder)
+    render_seek_bar(state);
+
     // Render settings menu if active (on top of everything, before scanlines)
     if (state.settings_menu && state.settings_menu->is_active()) {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
@@ -1062,11 +1065,11 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
               header_x + header_width, header_line_y, 2.0f, theme_->accent2, text_alpha);
 }
 
-void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, bool video_active, bool ui_visible_when_playing) {
+void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing) {
     // Debug: Log playlist rendering
     static int playlist_render_count = 0;
     if (playlist_render_count < 2) {
-        std::cout << "    Rendering playlist list: " << playlists.size() << " playlists, selected=" << selected_index << std::endl;
+        std::cout << "    Rendering playlist list: " << playlists.size() << " playlists, selected=" << selected_index << ", scroll=" << scroll_offset << std::endl;
         playlist_render_count++;
     }
     
@@ -1080,7 +1083,14 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
     int header_line_height = static_cast<int>(theme_->font_heading_size * 1.2f);
     
     // Increased spacing below header line (was 20.0f, now 40.0f)
-    float y = header_baseline + header_line_height + 4.0f + 40.0f;
+    float start_y = header_baseline + header_line_height + 4.0f + 40.0f;
+    
+    // Fixed max visible items for reliable layout on CRT native (640x480)
+    // 8 items fits well with proper spacing for scroll arrows
+    int max_visible = 8;
+    if (max_visible > static_cast<int>(playlists.size())) {
+        max_visible = static_cast<int>(playlists.size());
+    }
     
     // Determine alpha multipliers based on video state
     // When video is active and UI is visible: text fully opaque (1.0), backgrounds 50% transparent (0.5)
@@ -1095,9 +1105,56 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_blink_time).count();
     bool indicator_visible = (elapsed_ms / 500) % 2 == 0;  // Blink every 500ms (matching Python)
     
-    for (size_t i = 0; i < playlists.size() && i < 12; i++) {
-        const auto& pl = playlists[i];
-        bool selected = (static_cast<int>(i) == selected_index);
+    // Calculate if we need to show scroll arrows
+    int total_playlists = static_cast<int>(playlists.size());
+    bool show_up_arrow = scroll_offset > 0;
+    bool show_down_arrow = scroll_offset + max_visible < total_playlists;
+    
+    // Reserve space for arrows if needed
+    float arrow_size = 6.0f;  // Smaller arrows for better spacing
+    float arrow_margin = 12.0f;
+    // Position arrows aligned with center of "Playlists" header text
+    // Header starts at margin_x + 36.0f, "Playlists" is ~100px wide, so center is ~50px in
+    float header_x = static_cast<float>(theme_->margin_x) + 36.0f;
+    float header_text_width = static_cast<float>(title_font_manager_->get_text_width("Playlists", theme_->font_heading_size));
+    float arrow_center_x = header_x + (header_text_width / 2.0f);  // Center of "Playlists" text
+    float y = start_y;
+    
+    // If showing up arrow, draw it just above the first visible playlist item
+    // Position it symmetrically with how the down arrow is positioned below the last item
+    if (show_up_arrow) {
+        float arrow_y = start_y - arrow_margin;  // Position above start of playlist area
+        
+        // Draw triangle pointing UP
+        float triangle_vertices[] = {
+            arrow_center_x - arrow_size, arrow_y + arrow_size * 1.2f, 0.0f, 0.0f,  // Bottom-left
+            arrow_center_x + arrow_size, arrow_y + arrow_size * 1.2f, 1.0f, 0.0f,  // Bottom-right  
+            arrow_center_x, arrow_y,                                  0.5f, 1.0f   // Top (pointing up)
+        };
+        
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
+        
+        GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+        if (colorLoc >= 0) {
+            glUniform4f(colorLoc, theme_->accent2.r / 255.0f, theme_->accent2.g / 255.0f, 
+                       theme_->accent2.b / 255.0f, (theme_->accent2.a / 255.0f) * ui_alpha_ * text_alpha);
+        }
+        GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+        if (useTextureLoc >= 0) {
+            glUniform1i(useTextureLoc, 0);
+        }
+        
+        glBindVertexArray(vao_);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+    }
+    
+    // Render visible playlists starting from scroll_offset
+    for (int i = 0; i < max_visible && (scroll_offset + i) < total_playlists; i++) {
+        int playlist_idx = scroll_offset + i;
+        const auto& pl = playlists[playlist_idx];
+        bool selected = (playlist_idx == selected_index);
         
         // Selection highlight bar (subtle background - very transparent so it doesn't block text)
         if (selected) {
@@ -1112,9 +1169,9 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             draw_quad(highlight_x, highlight_y, highlight_w, highlight_h, highlight_color, 1.0f);
         }
         
-        // Channel number (01., 02., etc.)
+        // Channel number (01., 02., etc.) - use actual playlist index + 1
         char channel_buf[16];
-        snprintf(channel_buf, sizeof(channel_buf), "%02zu.", i + 1);
+        snprintf(channel_buf, sizeof(channel_buf), "%02d.", playlist_idx + 1);
         std::string channel_num = channel_buf;
         
         // Playlist title only (curator removed per user request)
@@ -1179,6 +1236,35 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         }
         
         y += static_cast<float>(theme_->playlist_item_height);
+    }
+    
+    // If showing down arrow, draw it after the list items
+    if (show_down_arrow) {
+        float arrow_y = y + arrow_margin / 2.0f;
+        
+        // Draw triangle pointing DOWN (arrow_center_x already defined above)
+        float triangle_vertices[] = {
+            arrow_center_x - arrow_size, arrow_y,            0.0f, 0.0f,  // Top-left
+            arrow_center_x + arrow_size, arrow_y,            1.0f, 0.0f,  // Top-right
+            arrow_center_x, arrow_y + arrow_size * 1.2f,     0.5f, 1.0f   // Bottom (pointing down)
+        };
+        
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
+        
+        GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+        if (colorLoc >= 0) {
+            glUniform4f(colorLoc, theme_->accent2.r / 255.0f, theme_->accent2.g / 255.0f, 
+                       theme_->accent2.b / 255.0f, (theme_->accent2.a / 255.0f) * ui_alpha_ * text_alpha);
+        }
+        GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+        if (useTextureLoc >= 0) {
+            glUniform1i(useTextureLoc, 0);
+        }
+        
+        glBindVertexArray(vao_);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
     }
 }
 
@@ -1558,6 +1644,67 @@ void Renderer::render_volume_overlay(const app::AppState& state) {
     if (fill_width > 0) {
         draw_quad(bar_x, bar_y, fill_width, bar_height, theme_->accent);
     }
+}
+
+void Renderer::render_seek_bar(const app::AppState& state) {
+    if (!state.show_seek_bar || !state.video_active) return;
+
+    // Fade behavior: full opacity when timer > 0.5, linear fade 0.5 -> 0.0
+    float alpha = 1.0f;
+    if (state.seek_bar_timer <= 0.5) {
+        alpha = static_cast<float>(state.seek_bar_timer / 0.5);
+    }
+    if (alpha <= 0.0f) return;
+
+    double position = state.position;
+    double duration = state.duration;
+    if (duration <= 0.0) return;
+
+    float progress = static_cast<float>(position / duration);
+    progress = std::max(0.0f, std::min(1.0f, progress));
+
+    // Layout: centered at bottom, 80% screen width
+    float bar_total_width = static_cast<float>(width_) * 0.8f;
+    float bar_x = (static_cast<float>(width_) - bar_total_width) / 2.0f;
+    float bar_y = static_cast<float>(height_) - 60.0f;
+    float bar_height = 4.0f;
+
+    // Track background (dim gray)
+    ui::Color track_color = theme_->dim;
+    track_color.a = static_cast<uint8_t>(track_color.a * alpha);
+    draw_quad(bar_x, bar_y, bar_total_width, bar_height, track_color);
+
+    // Progress fill (accent/gold)
+    float fill_width = bar_total_width * progress;
+    if (fill_width > 0.0f) {
+        ui::Color fill_color = theme_->accent;
+        fill_color.a = static_cast<uint8_t>(fill_color.a * alpha);
+        draw_quad(bar_x, bar_y, fill_width, bar_height, fill_color);
+    }
+
+    // Playhead indicator (bright square at current position)
+    float head_size = 10.0f;
+    float head_x = bar_x + fill_width - head_size / 2.0f;
+    float head_y = bar_y - (head_size - bar_height) / 2.0f;
+    ui::Color head_color = theme_->fg;
+    head_color.a = static_cast<uint8_t>(head_color.a * alpha);
+    draw_quad(head_x, head_y, head_size, head_size, head_color);
+
+    // Time labels above the bar
+    std::string time_current = format_time(position);
+    std::string time_total = format_time(duration);
+    int font_size = theme_->font_small_size;
+    float label_y = bar_y - 8.0f;  // Just above the bar
+
+    // Current time (left-aligned)
+    ui::Color text_color = theme_->fg;
+    text_color.a = static_cast<uint8_t>(text_color.a * alpha);
+    draw_text(time_current, bar_x, label_y, font_size, text_color, false, alpha);
+
+    // Total duration (right-aligned)
+    int total_width = body_font_manager_->get_text_width(time_total, font_size);
+    float total_x = bar_x + bar_total_width - static_cast<float>(total_width);
+    draw_text(time_total, total_x, label_y, font_size, text_color, false, alpha);
 }
 
 void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha) {

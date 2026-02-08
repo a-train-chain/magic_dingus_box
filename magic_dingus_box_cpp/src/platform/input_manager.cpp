@@ -383,6 +383,19 @@ std::vector<InputEvent> InputManager::poll() {
                         // (User requested inversion)
                         input_ev.delta = (accumulator > 0) ? -1 : 1;
                         accumulator = 0;
+
+                        // Calculate velocity based on time between rotary events
+                        auto now_tp = std::chrono::steady_clock::now();
+                        auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(now_tp - last_rotary_event_time_).count();
+                        last_rotary_event_time_ = now_tp;
+                        // Map: <50ms = fast (1.0), >300ms = slow (0.0), linear between
+                        if (dt <= 50) {
+                            input_ev.velocity = 1.0f;
+                        } else if (dt >= 300) {
+                            input_ev.velocity = 0.0f;
+                        } else {
+                            input_ev.velocity = 1.0f - static_cast<float>(dt - 50) / 250.0f;
+                        }
                     }
                 }
             }

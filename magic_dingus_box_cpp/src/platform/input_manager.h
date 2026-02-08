@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@ struct InputEvent {
     InputAction action;
     int delta;  // For ROTATE: -1 or +1
     bool pressed;  // For buttons: true on press, false on release
+    float velocity = 0.0f;  // For ROTATE: 0.0 = slowest, 1.0 = fastest
 };
 
 class InputManager {
@@ -61,6 +63,9 @@ private:
     int last_rotate_dir_;
     double last_rotate_time_;
     static constexpr double ROTATE_REPEAT_HZ = 8.0;
+
+    // Rotary encoder velocity tracking
+    std::chrono::steady_clock::time_point last_rotary_event_time_;
 };
 
 } // namespace platform

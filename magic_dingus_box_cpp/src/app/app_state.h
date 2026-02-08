@@ -85,6 +85,7 @@ struct AppState {
     std::vector<Playlist> playlists;  // Video playlists (shown on main screen)
     std::vector<Playlist> game_playlists;  // Game playlists (for menu)
     int selected_index;
+    int playlist_scroll_offset = 0;  // Index of first visible playlist in scroll window
 
     // Display state
     bool ui_visible_when_playing = true; // Tracks whether UI should be visible when video is active
@@ -160,6 +161,10 @@ public:
     // Master Volume Control
     int master_volume = 100; // 0-100%
     bool show_volume_slider = false;
+
+    // Seek bar overlay state (only visible while actively seeking via rotary encoder)
+    bool show_seek_bar = false;
+    double seek_bar_timer = 0.0;  // Countdown timer - bar hides when this reaches 0
     
     // UI Visibility Timer
     double ui_visibility_timer = 0.0; // Seconds to keep UI visible

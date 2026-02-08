@@ -95,9 +95,10 @@ private:
     
     // Component renderers
     void render_title(float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
-    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, bool video_active, bool ui_visible_when_playing);
+    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing);
     void render_footer(const app::AppState& state, float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
     void render_volume_overlay(const app::AppState& state);
+    void render_seek_bar(const app::AppState& state);
     void render_scanlines(); // Deprecated, replaced by render_crt_effects
     void render_settings_menu(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, bool video_active, bool ui_visible_when_playing);
     void render_game_browser(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha);

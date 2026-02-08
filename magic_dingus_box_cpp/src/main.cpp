@@ -824,6 +824,11 @@ int main(int /* argc */, char* /* argv */[]) {
     // Track current mode to detect changes at runtime
     app::DisplayMode current_display_mode = state.display_settings.mode;
 
+    // Re-apply audio output after PulseAudio sinks are fully available
+    // The initial apply_output() in load_settings may run before sinks register
+    bool audio_reapply_pending = (state.audio_settings.output != AudioOutput::AUTO);
+    auto audio_reapply_time = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+
     while (running) {
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -942,6 +947,21 @@ int main(int /* argc */, char* /* argv */[]) {
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
         
+        // Deferred audio output reapply (PulseAudio sinks may not be ready at boot)
+        if (audio_reapply_pending && now >= audio_reapply_time) {
+            state.audio_settings.apply_output();
+            audio_reapply_pending = false;
+        }
+
+        // Update seek bar timer (countdown to auto-hide)
+        if (state.seek_bar_timer > 0.0) {
+            state.seek_bar_timer -= delta / 1000.0;  // delta is in ms
+            if (state.seek_bar_timer <= 0.0) {
+                state.seek_bar_timer = 0.0;
+                state.show_seek_bar = false;
+            }
+        }
+
         // Update menu state (Wi-Fi scanning, etc.)
         settings_menu.update();
 
@@ -1233,10 +1253,39 @@ int main(int /* argc */, char* /* argv */[]) {
                 case InputAction::ROTATE_VERTICAL:
                     // Only allow navigation when UI is available
                     if (ui_available && !state.playlists.empty()) {
+                        // Fixed max visible items (must match renderer's max_visible = 8)
+                        int max_visible = 8;
+                        
+                        // Move selection without wrapping (clamp at boundaries)
                         if (ev.delta > 0) {
-                            state.selected_index = (state.selected_index + 1) % state.playlists.size();
+                            // Moving down - don't go past last item
+                            if (state.selected_index < static_cast<int>(state.playlists.size()) - 1) {
+                                state.selected_index++;
+                            }
                         } else if (ev.delta < 0) {
-                            state.selected_index = (state.selected_index - 1 + state.playlists.size()) % state.playlists.size();
+                            // Moving up - don't go below first item
+                            if (state.selected_index > 0) {
+                                state.selected_index--;
+                            }
+                        }
+                        
+                        // Adjust scroll offset to keep selected item visible
+                        // If selection is below visible window, scroll down
+                        if (state.selected_index >= state.playlist_scroll_offset + max_visible) {
+                            state.playlist_scroll_offset = state.selected_index - max_visible + 1;
+                        }
+                        // If selection is above visible window, scroll up
+                        if (state.selected_index < state.playlist_scroll_offset) {
+                            state.playlist_scroll_offset = state.selected_index;
+                        }
+                        // Clamp scroll offset to valid range
+                        int max_scroll = static_cast<int>(state.playlists.size()) - max_visible;
+                        if (max_scroll < 0) max_scroll = 0;
+                        if (state.playlist_scroll_offset > max_scroll) {
+                            state.playlist_scroll_offset = max_scroll;
+                        }
+                        if (state.playlist_scroll_offset < 0) {
+                            state.playlist_scroll_offset = 0;
                         }
                         
                         // If video is active, show UI briefly
@@ -1244,6 +1293,16 @@ int main(int /* argc */, char* /* argv */[]) {
                             state.ui_visible_when_playing = true;
                             state.ui_visibility_timer = 3.0; // Show for 3 seconds
                         }
+                    } else if (state.video_active && !state.ui_visible_when_playing) {
+                        // Seek mode: rotary encoder seeks through video when UI is hidden
+                        double velocity = static_cast<double>(ev.velocity);
+                        // Exponential curve: slow turn = 5s, fast turn = 30s
+                        double seek_seconds = 5.0 + 25.0 * (velocity * velocity);
+                        controller.seek(seek_seconds * ev.delta);
+
+                        // Show seek bar and reset auto-hide timer
+                        state.show_seek_bar = true;
+                        state.seek_bar_timer = 1.5;
                     }
                     break;
                     
