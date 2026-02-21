@@ -8,7 +8,7 @@ Before=graphical.target lightdm.service
 Conflicts=lightdm.service
 
 [Service]
-Type=simple
+Type=notify
 # Run as magic user (member of video group)
 User=magic
 Group=magic
@@ -36,6 +36,8 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5
+WatchdogSec=10
+Restart=on-watchdog
 
 [Install]
 # Start at multi-user target (before X11)

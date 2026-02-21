@@ -40,6 +40,10 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+#ifdef HAVE_SYSTEMD
+#include <systemd/sd-daemon.h>
+#endif
+
 using namespace platform;
 using namespace video;
 using namespace ui;
@@ -489,6 +493,10 @@ int main(int /* argc */, char* /* argv */[]) {
         state.intro_complete = true;  // No intro video, show UI immediately
     }
     
+#ifdef HAVE_SYSTEMD
+    sd_notify(0, "READY=1");
+#endif
+
     // Main loop
     bool running = true;
     auto last_frame = std::chrono::steady_clock::now();
@@ -831,6 +839,10 @@ int main(int /* argc */, char* /* argv */[]) {
     bool audio_stream_move_pending = (state.audio_settings.output != app::AudioOutput::AUTO);
 
     while (running) {
+#ifdef HAVE_SYSTEMD
+        sd_notify(0, "WATCHDOG=1");
+#endif
+
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
             // Display is closed - RetroArch has taken over
@@ -1913,6 +1925,10 @@ int main(int /* argc */, char* /* argv */[]) {
         }
     }
     
+#ifdef HAVE_SYSTEMD
+    sd_notify(0, "STOPPING=1");
+#endif
+
     // Cleanup
     LOG_INFO("Shutting down...");
     ui_renderer.cleanup();

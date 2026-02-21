@@ -39,6 +39,12 @@ if(GPIOD_FOUND)
     add_compile_definitions(HAVE_GPIOD)
 endif()
 
+# Systemd notification (optional - for watchdog support)
+pkg_check_modules(SYSTEMD libsystemd)
+if(SYSTEMD_FOUND)
+    add_compile_definitions(HAVE_SYSTEMD)
+endif()
+
 # Data parsing
 pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
@@ -114,6 +120,7 @@ target_include_directories(magic_dingus_box_cpp PRIVATE
     ${GLES2_INCLUDE_DIRS}
     ${EVDEV_INCLUDE_DIRS}
     ${GPIOD_INCLUDE_DIRS}
+    ${SYSTEMD_INCLUDE_DIRS}
     ${YAMLCPP_INCLUDE_DIRS}
     ${JSONCPP_INCLUDE_DIRS}
     ${GST_INCLUDE_DIRS}
@@ -131,6 +138,7 @@ target_link_libraries(magic_dingus_box_cpp
     ${GLES2_LIBRARIES}
     ${EVDEV_LIBRARIES}
     ${GPIOD_LIBRARIES}
+    ${SYSTEMD_LIBRARIES}
     ${YAMLCPP_LIBRARIES}
     ${JSONCPP_LIBRARIES}
     ${GST_LIBRARIES}
