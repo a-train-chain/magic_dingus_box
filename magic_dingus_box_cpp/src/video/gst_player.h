@@ -58,7 +58,10 @@ private:
     // Bus watch
     guint bus_watch_id_;
     static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data);
-    
+
+    // Deferred decoder inspection (counts down frames after playback starts)
+    int decoder_inspect_frames_;
+
     void update_position();
 };
 

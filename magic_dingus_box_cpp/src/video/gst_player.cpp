@@ -19,6 +19,7 @@ GstPlayer::GstPlayer()
     , duration_(0.0)
     , position_(0.0)
     , bus_watch_id_(0)
+    , decoder_inspect_frames_(0)
 {
 }
 
@@ -357,15 +358,7 @@ void GstPlayer::seek_absolute(double timestamp) {
 void GstPlayer::stop() {
     if (!initialized_) return;
 
-    // Try to send EOS event first to gracefully stop playback
-    if (playbin_) {
-        gst_element_send_event(playbin_, gst_event_new_eos());
-    }
-
-    // Wait a bit for EOS to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Force state change to NULL
+    // Set pipeline to NULL (stops playback and releases stream resources)
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_NULL);
     if (ret == GST_STATE_CHANGE_FAILURE) {
         LOG_ERROR("Failed to set pipeline to NULL state in stop()");
@@ -373,8 +366,10 @@ void GstPlayer::stop() {
 
     // Wait for state change with timeout
     GstState current_state, pending_state;
-    ret = gst_element_get_state(pipeline_, &current_state, &pending_state, 1000000000); // 1 second timeout
-    // We don't log success/failure here to avoid spam
+    ret = gst_element_get_state(pipeline_, &current_state, &pending_state, GST_SECOND); // 1 second timeout
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_WARN("Pipeline did not reach NULL state within timeout");
+    }
 
     // Force update of our internal state immediately
     is_playing_ = false;
@@ -425,11 +420,11 @@ double GstPlayer::get_volume() const {
 void GstPlayer::update_state() {
     if (!initialized_ || !pipeline_) return;
 
-    // Poll current pipeline state
+    // Poll current pipeline state (non-blocking to avoid stalling render loop)
     GstState current_state, pending_state;
-    GstStateChangeReturn ret = gst_element_get_state(pipeline_, &current_state, &pending_state, GST_CLOCK_TIME_NONE);
+    GstStateChangeReturn ret = gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
 
-    if (ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL) {
+    if (ret == GST_STATE_CHANGE_SUCCESS || ret == GST_STATE_CHANGE_NO_PREROLL || ret == GST_STATE_CHANGE_ASYNC) {
         // Update our cached state
         bool was_playing = is_playing_;
         bool now_playing = (current_state == GST_STATE_PLAYING);
@@ -437,47 +432,50 @@ void GstPlayer::update_state() {
         is_playing_ = now_playing;
         is_paused_ = (current_state == GST_STATE_PAUSED);
 
-        // If we just started playing, inspect the pipeline for decoders
+        // Log when playback starts (decoder inspection deferred to avoid blocking render loop)
         if (!was_playing && now_playing) {
-            LOG_DEBUG("Pipeline now playing! Inspecting elements...");
+            LOG_DEBUG("Pipeline now playing");
+            decoder_inspect_frames_ = 30; // Inspect after ~30 frames to let decoders settle
+        }
 
-            // Give pipeline a moment to fully initialize decoders
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // Deferred decoder inspection (non-blocking, runs after pipeline has settled)
+        if (decoder_inspect_frames_ > 0) {
+            decoder_inspect_frames_--;
+            if (decoder_inspect_frames_ == 0) {
+                GstIterator* it = gst_bin_iterate_recurse(GST_BIN(pipeline_));
+                GValue item = G_VALUE_INIT;
+                bool done = false;
+                while (!done) {
+                    switch (gst_iterator_next(it, &item)) {
+                        case GST_ITERATOR_OK: {
+                            GstElement* element = GST_ELEMENT(g_value_get_object(&item));
+                            gchar* name = gst_element_get_name(element);
+                            GstElementFactory* factory = gst_element_get_factory(element);
 
-            // Inspect pipeline to see what decoder is used
-            GstIterator* it = gst_bin_iterate_recurse(GST_BIN(pipeline_));
-            GValue item = G_VALUE_INIT;
-            bool done = false;
-            while (!done) {
-                switch (gst_iterator_next(it, &item)) {
-                    case GST_ITERATOR_OK: {
-                        GstElement* element = GST_ELEMENT(g_value_get_object(&item));
-                        gchar* name = gst_element_get_name(element);
-                        GstElementFactory* factory = gst_element_get_factory(element);
-
-                        if (factory) {
-                            const gchar* factory_name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
-                            if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec") ||
-                                               strstr(factory_name, "v4l2") || strstr(factory_name, "omx") ||
-                                               strstr(factory_name, "mmal"))) {
-                                LOG_DEBUG("  Found decoder element: {} (Factory: {})", name, factory_name);
+                            if (factory) {
+                                const gchar* factory_name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
+                                if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec") ||
+                                                   strstr(factory_name, "v4l2") || strstr(factory_name, "omx") ||
+                                                   strstr(factory_name, "mmal"))) {
+                                    LOG_DEBUG("  Decoder: {} ({})", name, factory_name);
+                                }
                             }
-                        }
 
-                        g_free(name);
-                        g_value_reset(&item);
-                        break;
+                            g_free(name);
+                            g_value_reset(&item);
+                            break;
+                        }
+                        case GST_ITERATOR_RESYNC:
+                            gst_iterator_resync(it);
+                            break;
+                        case GST_ITERATOR_ERROR:
+                        case GST_ITERATOR_DONE:
+                            done = true;
+                            break;
                     }
-                    case GST_ITERATOR_RESYNC:
-                        gst_iterator_resync(it);
-                        break;
-                    case GST_ITERATOR_ERROR:
-                    case GST_ITERATOR_DONE:
-                        done = true;
-                        break;
                 }
+                gst_iterator_free(it);
             }
-            gst_iterator_free(it);
         }
     }
 

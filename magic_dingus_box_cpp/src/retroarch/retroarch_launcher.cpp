@@ -10,7 +10,6 @@
 #include <filesystem>
 #include <thread>
 #include <chrono>
-#include <chrono>
 #include <fstream>
 #include <vector>
 #include <errno.h>
@@ -267,63 +266,6 @@ namespace {
             // Turbo buttons (often mapped to X/Y)
             map.y_btn = "0"; // Turbo II -> RetroPad Y
             map.x_btn = "3"; // Turbo I -> RetroPad X
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
-            map.menu_toggle_btn = "12";
-
-        } else if (core_name.find("genesis_plus_gx") != std::string::npos) {
-            map.name = "Sega Genesis / Mega Drive";
-            map.analog_dpad_mode = "0"; // Digital only
-            
-            // Genesis 3-button: A, B, C
-            // Genesis 6-button: A, B, C, X, Y, Z
-            // RetroArch Standard Mapping:
-            // B -> A
-            // Y -> B
-            // A -> C
-            // L -> X
-            // X -> Y
-            // R -> Z
-            
-            // Let's map to physical face buttons for intuitive play
-            // Physical B (1) -> RetroPad B -> Genesis A
-            // Physical A (2) -> RetroPad A -> Genesis C
-            // Physical Y (0) -> RetroPad Y -> Genesis B
-            
-            map.b_btn = "1"; // RetroPad B
-            map.a_btn = "2"; // RetroPad A
-            map.y_btn = "0"; // RetroPad Y
-            
-            // 6-button extras
-            map.l_btn = "4"; // L1 -> X
-            map.x_btn = "3"; // X -> Y
-            map.r_btn = "6"; // R1 -> Z
-            
-            map.start_btn = "12"; // Start
-            // Mode button often mapped to Select
-            map.select_btn = "10"; 
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
-            map.menu_toggle_btn = "12";
-
-        } else if (core_name.find("snes9x") != std::string::npos) {
-            map.name = "Super Nintendo (SNES)";
-            map.analog_dpad_mode = "0"; // Digital only
-            
-            // SNES Layout: B, A, Y, X, L, R
-            // Map 1:1 to RetroPad
-            map.b_btn = "1"; // B
-            map.a_btn = "2"; // A
-            map.y_btn = "0"; // Y
-            map.x_btn = "3"; // X
-            
-            map.l_btn = "4"; // L
-            map.r_btn = "6"; // R
-            
-            map.select_btn = "10";
-            map.start_btn = "12";
             
             // Hotkeys
             map.enable_hotkey_btn = "5";
@@ -593,8 +535,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "savestate_directory = \"" << config::retroarch::get_states_dir() << "\"\n";
             script_file << "sort_savefiles_by_content_enable = \"true\"\n";
             script_file << "sort_savestates_by_content_enable = \"true\"\n";
-            script_file << "savestate_auto_save = \"false\"\n";
-            script_file << "savestate_auto_load = \"false\"\n";
+            script_file << "savestate_auto_save = \"true\"\n";
+            script_file << "savestate_auto_load = \"true\"\n";
             
             // Dynamic Video Driver Selection
             // Dynamic Video Driver Selection

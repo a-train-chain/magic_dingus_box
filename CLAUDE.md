@@ -58,11 +58,11 @@ sudo usermod -a -G video,input $USER
   - `drm_display` - DRM/KMS display init, mode setting, CRTC management
   - `gbm_context` - GBM surface for EGL
   - `egl_context` - OpenGL ES 3.0 context, swap chain
-  - `input_manager` - evdev event processing, joystick/keyboard mapping
+  - `input_manager` - evdev event processing, joystick/keyboard mapping, rotary encoder support
   - `gpio_manager` - GPIO access (power button, LEDs)
-- **`video/`** - Video playback
-  - `gst_player`, `gst_renderer` - GStreamer pipeline and GL texture rendering
-  - `mpv_player`, `mpv_renderer` - Legacy MPV integration
+- **`video/`** - Video playback (GStreamer backend)
+  - `gst_player` - GStreamer pipeline management, playback control
+  - `gst_renderer` - GL texture rendering from GStreamer video frames
 - **`ui/`** - User interface
   - `renderer` - Immediate-mode 2D renderer (quads, text, alpha blending)
   - `theme` - Color palette and layout constants
@@ -72,12 +72,14 @@ sudo usermod -a -G video,input $USER
   - `qrcodegen` - QR code generation for WiFi setup
 - **`app/`** - Application logic
   - `app_state.h` - Global state (playlists, playback, settings)
-  - `controller` - High-level video/audio control
+  - `controller` - High-level video/audio control, RetroArch launch/return orchestration
   - `playlist_loader` - YAML playlist parsing
   - `settings_persistence` - YAML settings storage
+  - `sample_mode` - Sample/demo mode for kiosk auto-play
 - **`retroarch/`** - Game emulation
-  - `retroarch_launcher` - VT switching, process launch, display restoration
+  - `retroarch_launcher` - DRM/KMS handoff, per-core controller mapping, config generation, process lifecycle
 - **`utils/`** - Utilities
+  - `config` - Centralized path configuration (base paths, RetroArch paths, save dirs)
   - `path_resolver` - Asset path resolution
   - `wifi_manager` - WiFi scanning/connection via nmcli
 
@@ -90,40 +92,91 @@ Both video and UI render to the same OpenGL ES context:
 
 This guarantees correct compositing without X11/compositor overhead.
 
+### RetroArch Launch/Return Flow
+
+1. Stop GStreamer pipeline → Release DRM master (keep CRTC for Vulkan) → Release input devices
+2. Fork RetroArch process with generated config and per-core controller mapping
+3. Block on waitpid() until RetroArch exits
+4. Re-acquire DRM master (5 retries) → Re-init input (3 retries) → Restore EGL context → Rebuild GL resources
+
+### Audio System
+
+- PulseAudio for routing (HDMI/Headphone/Auto selection)
+- `init_audio.sh` configures PulseAudio default sink BEFORE app starts
+- Runtime one-shot `apply_output()` moves active GStreamer stream to correct sink
+- Per-game volume offset for RetroArch (dB conversion from system volume)
+- Settings persist in `config/settings.json`
+
+### Save System (RetroArch)
+
+- SRAM saves: `data/saves/<CoreName>/` (e.g., `data/saves/PCSX-ReARMed/game.srm`)
+- Save states: `data/states/<CoreName>/`
+- `sort_savefiles_by_content_enable = true` auto-creates core subdirectories
+- Auto-save on exit and auto-load on start enabled for seamless kiosk experience
+
 ### Web Admin (`magic_dingus_box/web/`)
 
-- `admin.py` - Flask routes for device discovery, playlist CRUD, content uploads
-- `static/manager.js` - Frontend: device discovery, playlist builder, file uploads
+- `admin.py` - Flask routes for device discovery, playlist CRUD, content uploads, game ROM management
+- `static/manager.js` - Frontend: device discovery, drag-and-drop playlist builder, file uploads
+- Features: video transcoding (CRT 640x480 / Modern 720p presets), playlist package import/export (ZIP), system monitoring
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 
 ## Key Dependencies
 
 C++ (via pkg-config): `libdrm`, `libgbm`, `libegl`, `libgles2`, `libevdev`, `libgpiod`, `yaml-cpp`, `jsoncpp`, `gstreamer-1.0`, `gstreamer-app-1.0`, `gstreamer-video-1.0`, `gstreamer-gl-1.0`
 
-Header-only: `stb_truetype.h` (download to `src/ui/` before building)
+Header-only: `stb_truetype.h`, `stb_image.h` (in `src/utils/`), `spdlog` (fetched via CMake FetchContent)
 
 Python: Flask (for web admin only)
 
 ## Playlist Format
 
-YAML files in `data/playlists/`. See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for schema.
+YAML files in `data/playlists/`. Two item types:
+- `source_type: video` - Video playback (path to video file)
+- `source_type: emulated_game` - RetroArch game (path to ROM, `emulator_core`, `emulator_system`)
+
+See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema.
 
 ## Controls
 
+### Main UI
 - **DPad/Axis X**: Navigate playlists
-- **A/Enter/Space**: Select playlist
+- **A/Enter/Space**: Select playlist item
 - **Z**: Play/Pause
 - **L/R Triggers**: Seek ±10s
 - **C-Stick**: Seek ±5s
+- **Rotary Encoder**: Velocity-sensitive video seeking with progress bar
 - **B**: Settings menu
 - **Q/Esc**: Quit
 
+### In RetroArch
+- Per-core button mappings (N64 controller → RetroPad) defined in `retroarch_launcher.cpp`
+- **Z + Start**: Toggle RetroArch menu (hotkey combo for all cores)
+- Auto-save state on exit, auto-load on start
+
 ## RetroArch Cores
 
-Pre-installed via `--cores` flag:
-- NES: `nestopia_libretro`
-- N64: `mupen64plus-next_libretro`
-- PS1: `pcsx_rearmed_libretro`
+7 cores installed via `--cores` flag (`scripts/install_cores.sh`):
+
+| System | Core | Notes |
+|--------|------|-------|
+| NES | `nestopia_libretro` | Digital input, analog-to-dpad mapping |
+| SNES | `snes9x2010_libretro` | Digital input |
+| Genesis/Mega Drive | `genesis_plus_gx_libretro` | 3/6-button support |
+| PS1 | `pcsx_rearmed_libretro` | Analog pad type, requires BIOS (`scph5501.bin` in system dir) |
+| PC Engine | `mednafen_pce_fast_libretro` | I/II + turbo buttons |
+| Atari 7800 | `prosystem_libretro` | 2-button |
+| Arcade | `fbneo_libretro` | 6-button layout |
+
+BIOS location: `~/.config/retroarch/system/`
+Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/libretro/` (system)
+
+## OTA Updates
+
+- `scripts/update.sh` checks GitHub API for latest release
+- Downloads tarball, backs up current installation, extracts update
+- Rollback support if update fails
+- Triggered via web admin `/api/update/*` endpoints
 
 ## Additional Documentation
 
@@ -133,3 +186,6 @@ Extensive docs in `magic_dingus_box_cpp/docs/`:
 - `RETROARCH_INTEGRATION.md` - Emulator setup
 - `WEB_UI_GUIDE.md` - Web admin usage
 - `DATA_SYNC_GUIDE.md` - Content synchronization
+- `PLAYLIST_FORMAT.md` - Playlist YAML schema
+- `GAME_CONTROLS.md` - Input mapping details
+- `USB_CONNECTION_GUIDE.md` - USB Ethernet Gadget setup

@@ -23,6 +23,7 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 #include <cstdlib>
@@ -833,8 +834,9 @@ int main(int /* argc */, char* /* argv */[]) {
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
             // Display is closed - RetroArch has taken over
-            // Just sleep and continue loop (don't render, don't poll input, don't do anything)
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Still poll GPIO so restart button works during gameplay
+            gpio.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
         
@@ -942,7 +944,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
-        static int frame_count = 0;
+        static uint32_t frame_count = 0;
         auto now = std::chrono::steady_clock::now();
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
@@ -1154,7 +1156,21 @@ int main(int /* argc */, char* /* argv */[]) {
                                         };
                                         
                                         // Launch the game
+                                        // Spawn GPIO polling thread so restart button works during gameplay
+                                        std::atomic<bool> game_running{true};
+                                        std::thread gpio_poll_thread([&gpio, &game_running]() {
+                                            while (game_running.load()) {
+                                                gpio.poll();
+                                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                                            }
+                                        });
+
                                         auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+
+                                        game_running.store(false);
+                                        if (gpio_poll_thread.joinable()) {
+                                            gpio_poll_thread.join();
+                                        }
 
                                         // Reset loading state
                                         state.is_loading_game = false;

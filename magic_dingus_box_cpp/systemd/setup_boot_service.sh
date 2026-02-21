@@ -136,7 +136,7 @@ Environment=DISPLAY=
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=10
+TimeoutStopSec=5
 
 [Install]
 # Start at multi-user target (before X11)
