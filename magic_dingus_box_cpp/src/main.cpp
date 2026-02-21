@@ -1177,7 +1177,15 @@ int main(int /* argc */, char* /* argv */[]) {
                                             }
                                         });
 
+#ifdef HAVE_SYSTEMD
+                                        // Disable watchdog during RetroArch (blocks on waitpid)
+                                        sd_notify(0, "WATCHDOG=usec=0");
+#endif
                                         auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+#ifdef HAVE_SYSTEMD
+                                        // Re-enable watchdog after RetroArch exits
+                                        sd_notify(0, "WATCHDOG=1");
+#endif
 
                                         game_running.store(false);
                                         if (gpio_poll_thread.joinable()) {

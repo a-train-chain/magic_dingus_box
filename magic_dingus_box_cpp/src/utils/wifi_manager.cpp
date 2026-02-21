@@ -4,6 +4,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <set>
 #include <thread>
 #include <cstdio>
 #include <unistd.h>
@@ -244,9 +245,23 @@ std::string WifiManager::exec_command_argv(const std::vector<std::string>& args)
 
 std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string& output) {
     std::vector<WifiNetwork> networks;
+
+    // Build set of saved WiFi SSIDs for cross-referencing
+    std::set<std::string> saved_ssids;
+    std::string saved_output = exec_command("nmcli -t -f NAME,TYPE connection show 2>/dev/null");
+    std::istringstream saved_stream(saved_output);
+    std::string saved_line;
+    while (std::getline(saved_stream, saved_line)) {
+        // Format: NAME:TYPE  (e.g., "MyWiFi:802-11-wireless")
+        size_t colon = saved_line.rfind(':');
+        if (colon != std::string::npos && saved_line.substr(colon + 1) == "802-11-wireless") {
+            saved_ssids.insert(saved_line.substr(0, colon));
+        }
+    }
+
     std::istringstream stream(output);
     std::string line;
-    
+
     // Format: SSID:SIGNAL:SECURITY:IN-USE
     while (std::getline(stream, line)) {
         if (line.empty()) continue;
@@ -296,7 +311,7 @@ std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string&
         }
         net.security = security;
         net.in_use = (in_use_str == "*");
-        net.saved = false; // We don't know from scan if it's saved without checking connections
+        net.saved = saved_ssids.count(ssid) > 0;
         
         // Deduplicate: nmcli returns multiple BSSIDs for same SSID
         bool found = false;
