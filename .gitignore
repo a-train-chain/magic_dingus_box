@@ -74,3 +74,6 @@ tests/
 # Test files (large binaries)
 magic_dingus_box/web/test_files/
 
+
+# Worktrees
+.worktrees/
