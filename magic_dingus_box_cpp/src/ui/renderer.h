@@ -44,6 +44,9 @@ public:
     // scanlines_enabled: if true, scanlines are rendered (based on settings), otherwise forced off
     void render_crt_effects(const app::AppState& state, bool scanlines_enabled);
 
+    // Render error overlay banner
+    void render_error_overlay(const app::AppState& state);
+
     // Cleanup
     void cleanup();
     
@@ -113,7 +116,7 @@ private:
     
     // Component renderers
     void render_title(float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
-    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing);
+    void render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index = -1);
     void render_footer(const app::AppState& state, float text_alpha = 1.0f, bool video_active = false, bool ui_visible_when_playing = false);
     void render_volume_overlay(const app::AppState& state);
     void render_seek_bar(const app::AppState& state);

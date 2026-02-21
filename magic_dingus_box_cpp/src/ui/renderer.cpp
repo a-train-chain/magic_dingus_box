@@ -80,15 +80,6 @@ uniform float interlacingIntensity;
 uniform float flickerIntensity;
 uniform vec2 screenSize;
 
-// Helper for RGB mask
-float rgb_mask(float x) {
-    float m = mod(x, 3.0);
-    if (m < 1.0) return 1.0; // Red
-    if (m < 2.0) return 1.0; // Green
-    return 1.0;              // Blue
-    // Simplified: just return 1.0 for now, real RGB mask needs per-channel masking
-}
-
 void main() {
     vec4 color = vec4(0.0, 0.0, 0.0, 0.0); // Start transparent
     
@@ -112,19 +103,7 @@ void main() {
         }
     }
     
-    // 3. RGB Mask (Vertical stripes)
-    if (rgbMaskIntensity > 0.0) {
-        float x = gl_FragCoord.x;
-        float m = mod(x, 3.0);
-        // We want to darken 2 of the 3 subpixels slightly to simulate the mask
-        // This is a "black overlay" approach
-        // If we are on Red pixel, we darken Green and Blue? 
-        // No, we are drawing black lines between subpixels?
-        // Let's just draw thin vertical lines
-        if (m > 2.0) { // Every 3rd pixel
-            color.a = max(color.a, rgbMaskIntensity);
-        }
-    }
+    // 3. RGB Mask - handled below after finalRGB/finalAlpha declaration
     
     // 4. Phosphor Glow (Vignette)
     if (glowIntensity > 0.0) {
@@ -189,7 +168,19 @@ void main() {
         finalRGB += vec3(1.0, 1.0, 1.0) * bloomIntensity * centerGlow * 0.2;
         finalAlpha = max(finalAlpha, bloomIntensity * centerGlow * 0.1);
     }
-    
+
+    // RGB Mask (subpixel column darkening)
+    if (rgbMaskIntensity > 0.0) {
+        float m = mod(gl_FragCoord.x, 3.0);
+        float r = smoothstep(1.0, 0.0, abs(m - 0.0));
+        float g = smoothstep(1.0, 0.0, abs(m - 1.0));
+        float b = smoothstep(1.0, 0.0, abs(m - 2.0));
+        vec3 mask = vec3(r, g, b) * 0.5 + 0.5;
+        vec3 darkening = vec3(1.0) - mask;
+        finalRGB = mix(finalRGB, vec3(0.0), darkening * rgbMaskIntensity * 0.5);
+        finalAlpha = max(finalAlpha, rgbMaskIntensity * length(darkening) * 0.3);
+    }
+
     fragColor = vec4(finalRGB, finalAlpha);
 }
 )";
@@ -678,7 +669,7 @@ void Renderer::render(const app::AppState& state) {
         
         // Render UI components
         render_title(text_alpha, state.video_active, state.ui_visible_when_playing);
-        render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing);
+        render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing, state.current_playlist_index);
         render_footer(state, text_alpha, state.video_active, state.ui_visible_when_playing);
         
         // Render loading overlay if needed
@@ -696,6 +687,9 @@ void Renderer::render(const app::AppState& state) {
 
     // Render seek progress bar (only during active seeking via rotary encoder)
     render_seek_bar(state);
+
+    // Render error overlay banner (if any error message is set)
+    render_error_overlay(state);
 
     // Render settings menu if active (on top of everything, before scanlines)
     if (state.settings_menu && state.settings_menu->is_active()) {
@@ -977,8 +971,8 @@ void Renderer::render_virtual_keyboard(const VirtualKeyboard& keyboard) {
             int font_size = 20;
             if (label.length() > 1) font_size = 16;
             
-            // Simple centering (approximate)
-            float text_width = label.length() * (font_size * 0.6f); 
+            // Proper font-based centering
+            float text_width = static_cast<float>(body_font_manager_->get_text_width(label, font_size));
             float tx = kx + (kw - text_width) / 2.0f + (font_size * 0.2f); // minor adjustment
             // Center text vertically
             // draw_text uses y as baseline. To center vertically, baseline should be lower.
@@ -1081,7 +1075,7 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
               header_x + header_width, header_line_y, 2.0f, theme_->accent2, text_alpha);
 }
 
-void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing) {
+void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists, int selected_index, int scroll_offset, bool video_active, bool ui_visible_when_playing, int current_playlist_index) {
     // Debug: Log playlist rendering
     static int playlist_render_count = 0;
     if (playlist_render_count < 2) {
@@ -1206,7 +1200,15 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         // Draw playlist text on the same baseline - use body font
         float text_x = static_cast<float>(theme_->margin_x) + 36.0f;
         draw_text(text, text_x, item_baseline, font_size, text_color, false, text_alpha);
-        
+
+        // "Now Playing" indicator - small accent-colored square next to currently-playing playlist
+        int actual_index = scroll_offset + i;
+        if (actual_index == current_playlist_index && current_playlist_index >= 0) {
+            float indicator_x = static_cast<float>(theme_->margin_x) + 8.0f;
+            float indicator_y = y - 4.0f;
+            draw_quad(indicator_x, indicator_y, 6.0f, 6.0f, theme_->accent, text_alpha);
+        }
+
         // Blinking selection indicator (triangle pointing LEFT toward text, at end of text)
         if (selected && indicator_visible) {
             // Position triangle at the end of the text with spacing
@@ -1285,19 +1287,34 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
 }
 
 std::string Renderer::format_time(double seconds) {
-    if (seconds < 0) {
-        std::ostringstream oss;
-        int minutes = static_cast<int>(seconds) / 60;
-        int secs = static_cast<int>(seconds) % 60;
-        oss << minutes << ":" << std::setfill('0') << std::setw(2) << std::abs(secs); // Use abs for seconds
-        return oss.str();
-    }
+    if (seconds < 0) seconds = 0;
     int total = static_cast<int>(seconds);
     int m = total / 60;
     int s = total % 60;
     char buf[16];
     snprintf(buf, sizeof(buf), "%02d:%02d", m, s);
     return std::string(buf);
+}
+
+void Renderer::render_error_overlay(const app::AppState& state) {
+    if (!state.has_error_message()) return;
+
+    std::string msg = state.error_message;
+    float banner_h = 40.0f;
+    float banner_y = static_cast<float>(height_) - banner_h - 20.0f;
+    float banner_w = static_cast<float>(width_) * 0.6f;
+    float banner_x = (static_cast<float>(width_) - banner_w) / 2.0f;
+
+    // Semi-transparent dark background
+    ui::Color bg = {0, 0, 0, 180};
+    draw_quad(banner_x, banner_y, banner_w, banner_h, bg);
+
+    // Error text in red, centered
+    int font_size = 18;
+    float text_w = static_cast<float>(body_font_manager_->get_text_width(msg, font_size));
+    float text_x = banner_x + (banner_w - text_w) / 2.0f;
+    float text_y = banner_y + banner_h / 2.0f + font_size * 0.3f;
+    draw_text(msg, text_x, text_y, font_size, {255, 100, 100, 255});
 }
 
 void Renderer::render_loading_overlay(const app::AppState& state) {
@@ -2084,7 +2101,7 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
             int total_items = static_cast<int>(playlist.items.size()) + 1; // +1 for Back
 
-            static int game_scroll_offset = 0;
+            int game_scroll_offset = 0;
             if (selected_game < game_scroll_offset) {
                 game_scroll_offset = selected_game;
             } else if (selected_game >= game_scroll_offset + max_visible) {

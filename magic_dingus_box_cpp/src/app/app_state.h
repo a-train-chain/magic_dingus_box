@@ -170,6 +170,10 @@ public:
     double ui_visibility_timer = 0.0; // Seconds to keep UI visible
 
     std::string status_text;
+
+    // Error message overlay (displayed as a banner at bottom of screen)
+    std::string error_message;
+    bool has_error_message() const { return !error_message.empty(); }
     
     // Sample mode
     bool sample_mode_active;
