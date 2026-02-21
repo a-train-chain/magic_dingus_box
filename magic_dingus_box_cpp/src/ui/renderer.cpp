@@ -1196,11 +1196,64 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         int item_baseline_offset = body_font_manager_->get_baseline_at_size(font_size);
         float item_baseline = y + item_baseline_offset;
 
-        // Draw channel number (will align to baseline using its own bearing_y) - use body font
-        draw_text(channel_num, static_cast<float>(theme_->margin_x), item_baseline, theme_->font_small_size, channel_color, false, text_alpha);
+        float text_x = static_cast<float>(theme_->margin_x) + 36.0f;
+
+        if (playlist_idx == 0) {
+            // Draw shuffle icon (crossed arrows) instead of channel number for Master Shuffle
+            float icon_size = static_cast<float>(theme_->font_small_size) * 0.8f;
+            float icon_x = static_cast<float>(theme_->margin_x) + 4.0f;
+            float line_height = static_cast<float>(font_size) * 1.2f;
+            float icon_cy = y + line_height * 0.45f;  // vertical center of text line
+            float icon_w = icon_size * 1.2f;
+            float icon_h = icon_size * 0.7f;
+            float half_h = icon_h / 2.0f;
+            float arrow_w = icon_size * 0.3f;  // arrowhead width
+            float line_body = icon_w - arrow_w;
+            float t = icon_size * 0.1f;  // line half-thickness
+
+            // Normalize diagonal direction for perpendicular offset
+            float diag_len = sqrtf(line_body * line_body + half_h * half_h);
+            float px = (half_h / diag_len) * t;
+            float py = (line_body / diag_len) * t;
+
+            // Line 1: bottom-left to top-right (4 vertices = 2 triangles)
+            float x1 = icon_x, y1 = icon_cy + half_h;
+            float x2 = icon_x + line_body, y2 = icon_cy - half_h;
+            // Line 2: top-left to bottom-right
+            float x3 = icon_x, y3 = icon_cy - half_h;
+            float x4 = icon_x + line_body, y4 = icon_cy + half_h;
+
+            float verts[] = {
+                // Line 1 quad (bottom-left → top-right)
+                x1 - px, y1 - py, 0, 0,   x1 + px, y1 + py, 0, 0,   x2 + px, y2 + py, 0, 0,
+                x1 - px, y1 - py, 0, 0,   x2 + px, y2 + py, 0, 0,   x2 - px, y2 - py, 0, 0,
+                // Line 2 quad (top-left → bottom-right)
+                x3 + px, y3 - py, 0, 0,   x3 - px, y3 + py, 0, 0,   x4 - px, y4 + py, 0, 0,
+                x3 + px, y3 - py, 0, 0,   x4 - px, y4 + py, 0, 0,   x4 + px, y4 - py, 0, 0,
+                // Arrowhead 1 at top-right (pointing right-up)
+                x2, y2 - t * 2.5f, 0, 0,   x2, y2 + t * 2.5f, 0, 0,   x2 + arrow_w, y2, 0, 0,
+                // Arrowhead 2 at bottom-right (pointing right-down)
+                x4, y4 - t * 2.5f, 0, 0,   x4, y4 + t * 2.5f, 0, 0,   x4 + arrow_w, y4, 0, 0,
+            };
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+            GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+            if (colorLoc >= 0) {
+                glUniform4f(colorLoc, channel_color.r / 255.0f, channel_color.g / 255.0f,
+                           channel_color.b / 255.0f, (channel_color.a / 255.0f) * ui_alpha_ * text_alpha);
+            }
+            GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+            if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 0);
+            glBindVertexArray(vao_);
+            glDrawArrays(GL_TRIANGLES, 0, 18);  // 6 triangles
+            glBindVertexArray(0);
+        } else {
+            // Draw channel number for regular playlists
+            draw_text(channel_num, static_cast<float>(theme_->margin_x), item_baseline, theme_->font_small_size, channel_color, false, text_alpha);
+        }
 
         // Draw playlist text on the same baseline - use body font
-        float text_x = static_cast<float>(theme_->margin_x) + 36.0f;
         draw_text(text, text_x, item_baseline, font_size, text_color, false, text_alpha);
 
         // Blinking selection indicator (triangle pointing LEFT toward text, at end of text)

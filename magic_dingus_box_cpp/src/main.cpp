@@ -307,7 +307,7 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Insert "Master Shuffle" playlist at the beginning
     Playlist master_shuffle;
-    master_shuffle.title = "[S] Master Shuffle";
+    master_shuffle.title = "Master Shuffle";
     master_shuffle.path = ""; // Virtual path
     master_shuffle.items.push_back({}); // Dummy item to make it selectable
     video_playlists.insert(video_playlists.begin(), master_shuffle);

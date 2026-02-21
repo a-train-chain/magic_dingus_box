@@ -312,7 +312,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
     const auto& item = playlist.items[item_index];
 
     // Check for Master Shuffle (index 0 in playlist 0)
-    if (playlist.title == "[S] Master Shuffle") {
+    if (playlist.title == "Master Shuffle") {
         std::cout << "Master Shuffle selected! Starting global shuffle..." << std::endl;
         return utils::Result<>::ok();
     }
