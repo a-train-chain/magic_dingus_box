@@ -113,33 +113,29 @@ namespace {
                                "nestopia_audio_vol_dpcm = \"100\"\n";
             
         } else if (core_name.find("pcsx") != std::string::npos || core_name.find("beetle_psx") != std::string::npos || core_name.find("swanstation") != std::string::npos) {
-            map.name = "PS1 (Crash Bandicoot Optimized)";
+            map.name = "PS1 (N64 Controller)";
             map.core_option_pad_type = "analog";
             // Disable auto-analog-dpad to use explicit axis mapping
             map.analog_dpad_mode = "0";
-            
-            // Mappings from our latest successful test:
-            // A (Physical 0) -> Cross (RetroPad B) -> Jump
-            // B (Physical 1) -> Square (RetroPad Y) -> Spin
-            // C-Down (Physical 4? Wait, 4 was C-Down in deduction) -> Circle (RetroPad A) -> Slide
-            // L (Physical 7) -> Triangle (RetroPad X) -> Inventory
-            
-            // Based on your last verification:
-            map.b_btn = "2";  // Jump (Cross) mapped to Physical ID 2 (A button)
-            map.y_btn = "1";  // Spin (Square) mapped to Physical ID 1 (B button)
-            map.a_btn = "3";  // Slide (Circle) mapped to Physical ID 3 (C-Down)
-            map.x_btn = "4";  // Inventory (Triangle) mapped to Physical ID 4 (L Trigger)
-            
-            map.start_btn = "12"; // Start mapped to ID 12
-            // Map Select to C-Up (Guessing ID 9 based on layout gaps)
-            // Sequence: 0=C-L, 1=B, 2=A, 3=C-D, 4=L, 5=Z, 6=R, 7=?, 8=?, 9=C-Up?
-            map.select_btn = "9";
-            
-            // Shoulders
-            map.l_btn = "0";  // C-Left (ID 0) -> L1
-            map.r_btn = "6";  // R (ID 6? Guess) -> R1
-            map.l2_btn = "5"; // Z Trigger (ID 5) -> L2
-            map.r2_btn = "8"; // C-Right (ID 8) -> R2
+
+            // N64 Controller Button IDs (verified via jstest):
+            //   0=C-Left, 1=B, 2=A, 3=C-Down, 4=L, 5=Z, 6=R, 8=C-Right, 9=C-Up, 12=Start
+            //   Axes: 0/1=Analog Stick, 4/5=D-pad Hat
+            //
+            // PS1 face buttons on right-hand buttons (A, B, C-cluster):
+            map.b_btn = "2";  // Cross (primary action) -> A button (big, easiest to press)
+            map.a_btn = "1";  // Circle (secondary) -> B button (next to A)
+            map.y_btn = "3";  // Square (attack/action) -> C-Down
+            map.x_btn = "0";  // Triangle (menu/special) -> C-Left
+
+            map.start_btn = "12"; // Start -> Start
+            map.select_btn = "9"; // Select -> C-Up (rarely needed)
+
+            // Shoulder buttons on actual shoulder/trigger positions:
+            map.l_btn = "4";  // L1 -> L Trigger (left index finger)
+            map.r_btn = "6";  // R1 -> R Trigger (right index finger)
+            map.l2_btn = "5"; // L2 -> Z Trigger (center grip, left index)
+            map.r2_btn = "8"; // R2 -> C-Right
 
             // Axis (Reverted to Standard X=0, Y=1)
             // We will use explicit D-Pad Axis mapping to fix direction
