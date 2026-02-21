@@ -31,7 +31,7 @@ StandardError=journal
 # Environment (if needed)
 Environment=HOME=/home/magic
 Environment=DISPLAY=
-Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=XDG_RUNTIME_DIR=/run/user/1000
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM
