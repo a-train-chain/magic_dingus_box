@@ -173,9 +173,11 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_EOS:
             LOG_DEBUG("End of stream");
-            // Handle EOS (e.g. auto loop or stop)
             player->is_playing_ = false;
             player->is_paused_ = false;
+            if (player->eos_callback_) {
+                player->eos_callback_();
+            }
             break;
 
         case GST_MESSAGE_ERROR: {
@@ -320,10 +322,12 @@ void GstPlayer::play() {
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
     LOG_DEBUG("GstPlayer::play() state change return: {}", static_cast<int>(ret));
 
-    // Check current state after a short delay
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Non-blocking state check with 3-second timeout
     GstState current, pending;
-    gst_element_get_state(pipeline_, &current, &pending, GST_CLOCK_TIME_NONE);
+    GstStateChangeReturn result = gst_element_get_state(pipeline_, &current, &pending, 3 * GST_SECOND);
+    if (result == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("GstPlayer::play() - state change to PLAYING failed");
+    }
     LOG_DEBUG("GstPlayer::play() current state: {}, pending: {}",
               gst_element_state_get_name(current),
               gst_element_state_get_name(pending));

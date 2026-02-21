@@ -7,6 +7,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <functional>
 
 namespace video {
 
@@ -41,6 +42,9 @@ public:
     GstElement* get_pipeline() const { return pipeline_; }
     GstElement* get_appsink() const { return appsink_; }
 
+    // EOS callback
+    void set_eos_callback(std::function<void()> cb) { eos_callback_ = std::move(cb); }
+
     // Poll for state updates (call this regularly from main loop)
     void update_state();
 
@@ -61,6 +65,9 @@ private:
 
     // Deferred decoder inspection (counts down frames after playback starts)
     int decoder_inspect_frames_;
+
+    // EOS callback
+    std::function<void()> eos_callback_;
 
     void update_position();
 };
