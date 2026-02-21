@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <unordered_map>
 #include "theme.h"  // For Color type
 
 namespace ui {
@@ -87,6 +88,23 @@ private:
     int bezel_width_ = 0;
     int bezel_height_ = 0;
     std::string current_bezel_path_;
+
+    // Game thumbnail
+    uint32_t thumbnail_texture_id_ = 0;
+    int thumbnail_width_ = 0;
+    int thumbnail_height_ = 0;
+    std::string current_thumbnail_path_;
+    bool load_thumbnail(const std::string& rom_path);
+
+    // System logo cache (white-on-transparent logos for each console)
+    struct CachedLogo {
+        uint32_t texture_id = 0;
+        int width = 0;
+        int height = 0;
+    };
+    std::unordered_map<std::string, CachedLogo> system_logo_cache_;
+    const CachedLogo* get_system_logo(const std::string& system_key);
+    std::string get_system_key(const app::Playlist& playlist) const;
     
     // Helper methods
     void draw_quad(float x, float y, float w, float h, const ui::Color& color, float alpha_multiplier = 1.0f);

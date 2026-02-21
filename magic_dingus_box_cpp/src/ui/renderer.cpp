@@ -243,7 +243,23 @@ void Renderer::reset_gl() {
         glDeleteTextures(1, &logo_texture_id_);
         logo_texture_id_ = 0;
     }
-    
+    if (bezel_texture_id_ != 0) {
+        glDeleteTextures(1, &bezel_texture_id_);
+        bezel_texture_id_ = 0;
+        current_bezel_path_.clear();
+    }
+    if (thumbnail_texture_id_ != 0) {
+        glDeleteTextures(1, &thumbnail_texture_id_);
+        thumbnail_texture_id_ = 0;
+        current_thumbnail_path_.clear();
+    }
+    for (auto& pair : system_logo_cache_) {
+        if (pair.second.texture_id != 0) {
+            glDeleteTextures(1, &pair.second.texture_id);
+        }
+    }
+    system_logo_cache_.clear();
+
     // Reset font manager GL resources (keep font data for re-rasterization)
     if (title_font_manager_) {
         title_font_manager_->reset_textures();
@@ -1707,6 +1723,188 @@ void Renderer::render_seek_bar(const app::AppState& state) {
     draw_text(time_total, total_x, label_y, font_size, text_color, false, alpha);
 }
 
+bool Renderer::load_thumbnail(const std::string& rom_path) {
+    // Derive thumbnail path from ROM path: data/roms/ps1/Game.chd -> data/thumbnails/ps1/Game.png
+    // Find the system directory component
+    std::string thumb_path;
+    size_t roms_pos = rom_path.find("data/roms/");
+    if (roms_pos != std::string::npos) {
+        thumb_path = rom_path.substr(0, roms_pos) + "data/thumbnails/" + rom_path.substr(roms_pos + 10); // skip "data/roms/"
+    } else {
+        // Fallback: just try replacing extension
+        thumb_path = rom_path;
+    }
+
+    // Replace ROM extension (.chd, .m3u, .z64, .nes, etc.) with .png
+    size_t dot_pos = thumb_path.rfind('.');
+    if (dot_pos != std::string::npos) {
+        thumb_path = thumb_path.substr(0, dot_pos) + ".png";
+    }
+
+    if (thumb_path == current_thumbnail_path_) {
+        return thumbnail_texture_id_ != 0; // Already loaded
+    }
+
+    // Free old texture
+    if (thumbnail_texture_id_ != 0) {
+        glDeleteTextures(1, &thumbnail_texture_id_);
+        thumbnail_texture_id_ = 0;
+    }
+    current_thumbnail_path_ = thumb_path;
+
+    // Try to resolve to absolute path
+    std::string abs_path = thumb_path;
+    // Also try relative to working directory with ../
+    std::vector<std::string> search_paths = {
+        thumb_path,
+        "../" + thumb_path,
+    };
+
+    // Try progressively simpler filename variants
+    for (const auto& sp : std::vector<std::string>{thumb_path, "../" + thumb_path}) {
+        std::string base = sp;
+
+        // Strip " (Disc N)" patterns
+        size_t disc_pos = base.find(" (Disc ");
+        if (disc_pos != std::string::npos) {
+            search_paths.push_back(base.substr(0, disc_pos) + ".png");
+        }
+
+        // Strip version info: " (v1.1)" etc.
+        size_t ver_pos = base.find(" (v");
+        if (ver_pos != std::string::npos) {
+            // Strip everything from (vN.N) onward, keep region code before it
+            search_paths.push_back(base.substr(0, ver_pos) + ".png");
+        }
+
+        // Strip everything after region code: "Game (USA) (anything).png" -> "Game (USA).png"
+        // Look for common region codes
+        for (const char* region : {"(USA)", "(Europe)", "(Japan)", "(World)"}) {
+            size_t region_pos = base.find(region);
+            if (region_pos != std::string::npos) {
+                std::string stripped = base.substr(0, region_pos + strlen(region)) + ".png";
+                search_paths.push_back(stripped);
+                break;
+            }
+        }
+    }
+
+    int channels;
+    unsigned char* data = nullptr;
+    for (const auto& path : search_paths) {
+        data = stbi_load(path.c_str(), &thumbnail_width_, &thumbnail_height_, &channels, 4);
+        if (data) break;
+    }
+
+    if (!data) {
+        return false;
+    }
+
+    glGenTextures(1, &thumbnail_texture_id_);
+    glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbnail_width_, thumbnail_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    stbi_image_free(data);
+
+    return true;
+}
+
+std::string Renderer::get_system_key(const app::Playlist& playlist) const {
+    // Try emulator_system from the first item
+    for (const auto& item : playlist.items) {
+        if (!item.emulator_system.empty()) {
+            std::string sys = item.emulator_system;
+            // Lowercase
+            for (auto& c : sys) c = tolower(c);
+
+            if (sys == "ps1" || sys == "playstation") return "ps1";
+            if (sys == "nes") return "nes";
+            if (sys == "snes" || sys == "super nintendo") return "snes";
+            if (sys == "genesis" || sys == "md" || sys == "mega drive") return "genesis";
+            if (sys == "atari7800" || sys == "7800" || sys == "atari 7800") return "atari7800";
+            if (sys == "pcengine" || sys == "tg16" || sys == "turbografx") return "pcengine";
+            if (sys == "arcade" || sys == "mame" || sys == "fba") return "arcade";
+            return sys; // Use as-is if no mapping found
+        }
+    }
+
+    // Try emulator_core from the first item
+    for (const auto& item : playlist.items) {
+        if (!item.emulator_core.empty()) {
+            const std::string& core = item.emulator_core;
+            if (core.find("nestopia") != std::string::npos || core.find("fceumm") != std::string::npos) return "nes";
+            if (core.find("snes9x") != std::string::npos || core.find("bsnes") != std::string::npos) return "snes";
+            if (core.find("pcsx") != std::string::npos) return "ps1";
+            if (core.find("genesis_plus") != std::string::npos || core.find("picodrive") != std::string::npos) return "genesis";
+            if (core.find("prosystem") != std::string::npos) return "atari7800";
+            if (core.find("mednafen_pce") != std::string::npos || core.find("supergrafx") != std::string::npos) return "pcengine";
+            if (core.find("mame") != std::string::npos || core.find("fbneo") != std::string::npos || core.find("fbalpha") != std::string::npos) return "arcade";
+            if (core.find("mupen64") != std::string::npos) return "n64";
+        }
+    }
+
+    // Fallback: derive from playlist title
+    std::string title = playlist.title;
+    for (auto& c : title) c = tolower(c);
+
+    if (title.find("playstation") != std::string::npos || title.find("ps1") != std::string::npos) return "ps1";
+    if (title.find("super nintendo") != std::string::npos || title.find("snes") != std::string::npos) return "snes";
+    if (title.find("nes") != std::string::npos) return "nes"; // After SNES check
+    if (title.find("genesis") != std::string::npos || title.find("sega") != std::string::npos || title.find("mega drive") != std::string::npos) return "genesis";
+    if (title.find("atari") != std::string::npos) return "atari7800";
+    if (title.find("pc engine") != std::string::npos || title.find("turbografx") != std::string::npos) return "pcengine";
+    if (title.find("arcade") != std::string::npos) return "arcade";
+
+    return "";
+}
+
+const Renderer::CachedLogo* Renderer::get_system_logo(const std::string& system_key) {
+    if (system_key.empty()) return nullptr;
+
+    // Check cache first
+    auto it = system_logo_cache_.find(system_key);
+    if (it != system_logo_cache_.end()) {
+        return it->second.texture_id != 0 ? &it->second : nullptr;
+    }
+
+    // Load from disk
+    std::vector<std::string> search_paths = {
+        "data/thumbnails/systems/" + system_key + ".png",
+        "../data/thumbnails/systems/" + system_key + ".png",
+    };
+
+    CachedLogo logo;
+    int channels;
+    unsigned char* data = nullptr;
+    for (const auto& path : search_paths) {
+        data = stbi_load(path.c_str(), &logo.width, &logo.height, &channels, 4);
+        if (data) break;
+    }
+
+    if (!data) {
+        // Cache the miss so we don't retry every frame
+        system_logo_cache_[system_key] = logo;
+        return nullptr;
+    }
+
+    glGenTextures(1, &logo.texture_id);
+    glBindTexture(GL_TEXTURE_2D, logo.texture_id);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo.width, logo.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    stbi_image_free(data);
+
+    system_logo_cache_[system_key] = logo;
+    return &system_logo_cache_[system_key];
+}
+
 void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha) {
     // Render game browser header
     std::string header_text = "Select Game Library";
@@ -1727,43 +1925,178 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
     float underline_y = header_baseline + 10.0f;
     draw_line(header_x, underline_y, header_x + header_width, underline_y, 2.0f, section_color, text_alpha);
 
-    float start_y = underline_y + 30.0f;
-    int item_height = 60;
-    int max_visible = 7;
+    float content_start_y = underline_y + 15.0f;
 
     if (menu->is_viewing_games_in_playlist()) {
-        // Show games in current playlist
+        // Show games in current playlist with thumbnail above the list
         int playlist_idx = menu->get_current_game_playlist_index();
         if (playlist_idx >= 0 && playlist_idx < static_cast<int>(game_playlists.size())) {
             const auto& playlist = game_playlists[playlist_idx];
             int selected_game = menu->get_selected_game_in_playlist();
 
-            // Render game list (plus Back button)
-            int total_items = static_cast<int>(playlist.items.size()) + 1; // +1 for Back button
-            
-            // Calculate scroll offset based on selected item
-            // We need to access the menu's scroll offset logic, but it's internal to SettingsMenuManager
-            // However, SettingsMenuManager::navigate updates scroll_offset_ for standard menus.
-            // For game browser, we need to implement our own scrolling or expose it.
-            // Looking at SettingsMenuManager::navigate, it updates scroll_offset_ but only for standard menus.
-            // For game browser, it just updates the selected index.
-            // So we need to calculate a local scroll offset here.
-            
+            // --- Thumbnail or placeholder rendering ---
+            float thumb_display_h = 160.0f; // Fixed height for thumbnail area
+            float thumbnail_area_height = thumb_display_h + 10.0f; // Always reserve space
+
+            if (selected_game >= 0 && selected_game < static_cast<int>(playlist.items.size())) {
+                const auto& selected_item = playlist.items[selected_game];
+                bool has_thumbnail = load_thumbnail(selected_item.path);
+
+                if (has_thumbnail && thumbnail_texture_id_ != 0) {
+                    // Scale thumbnail to fit, preserving aspect ratio
+                    float max_thumb_w = static_cast<float>(menu_width) - 40.0f;
+                    float scale = std::min(max_thumb_w / thumbnail_width_, thumb_display_h / thumbnail_height_);
+                    float draw_w = thumbnail_width_ * scale;
+                    float draw_h = thumbnail_height_ * scale;
+
+                    // Center in the reserved area
+                    float thumb_x = menu_x + (static_cast<float>(menu_width) - draw_w) / 2.0f;
+                    float thumb_y = content_start_y + (thumb_display_h - draw_h) / 2.0f;
+
+                    float vertices[] = {
+                        thumb_x, thumb_y,                 0.0f, 0.0f,
+                        thumb_x + draw_w, thumb_y,        1.0f, 0.0f,
+                        thumb_x, thumb_y + draw_h,        0.0f, 1.0f,
+                        thumb_x + draw_w, thumb_y + draw_h, 1.0f, 1.0f
+                    };
+
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+                    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+                    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                                1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha);
+                    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+
+                    glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
+                    glBindVertexArray(vao_);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glBindVertexArray(0);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                } else {
+                    // Placeholder: dark box with system console logo
+                    float placeholder_size = thumb_display_h * 0.8f;
+                    float ph_x = menu_x + (static_cast<float>(menu_width) - placeholder_size) / 2.0f;
+                    float ph_y = content_start_y + (thumb_display_h - placeholder_size) / 2.0f;
+
+                    // Dark background
+                    ui::Color ph_bg = {40, 35, 40, 180};
+                    draw_quad(ph_x, ph_y, placeholder_size, placeholder_size, ph_bg, text_alpha);
+
+                    // Border
+                    ui::Color border_color = section_color;
+                    border_color.a = 80;
+                    draw_line(ph_x, ph_y, ph_x + placeholder_size, ph_y, 1.0f, border_color, text_alpha);
+                    draw_line(ph_x, ph_y + placeholder_size, ph_x + placeholder_size, ph_y + placeholder_size, 1.0f, border_color, text_alpha);
+                    draw_line(ph_x, ph_y, ph_x, ph_y + placeholder_size, 1.0f, border_color, text_alpha);
+                    draw_line(ph_x + placeholder_size, ph_y, ph_x + placeholder_size, ph_y + placeholder_size, 1.0f, border_color, text_alpha);
+
+                    // System logo centered in placeholder
+                    std::string sys_key = get_system_key(playlist);
+                    const CachedLogo* logo = get_system_logo(sys_key);
+                    if (logo) {
+                        // Scale logo to fit inside placeholder with padding
+                        float logo_max_w = placeholder_size * 0.7f;
+                        float logo_max_h = placeholder_size * 0.7f;
+                        float logo_scale = std::min(logo_max_w / logo->width, logo_max_h / logo->height);
+                        float logo_w = logo->width * logo_scale;
+                        float logo_h = logo->height * logo_scale;
+
+                        float logo_x = ph_x + (placeholder_size - logo_w) / 2.0f;
+                        float logo_y = ph_y + (placeholder_size - logo_h) / 2.0f;
+
+                        float vertices[] = {
+                            logo_x, logo_y,                 0.0f, 0.0f,
+                            logo_x + logo_w, logo_y,        1.0f, 0.0f,
+                            logo_x, logo_y + logo_h,        0.0f, 1.0f,
+                            logo_x + logo_w, logo_y + logo_h, 1.0f, 1.0f
+                        };
+
+                        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+                        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+                        // Render logo in white to match text color
+                        glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                                    1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha * 0.5f);
+                        glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+
+                        glBindTexture(GL_TEXTURE_2D, logo->texture_id);
+                        glBindVertexArray(vao_);
+                        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                        glBindVertexArray(0);
+                        glBindTexture(GL_TEXTURE_2D, 0);
+                    }
+                }
+            } else {
+                // "Back" selected — show dimmed system logo placeholder
+                float placeholder_size = thumb_display_h * 0.8f;
+                float ph_x = menu_x + (static_cast<float>(menu_width) - placeholder_size) / 2.0f;
+                float ph_y = content_start_y + (thumb_display_h - placeholder_size) / 2.0f;
+                ui::Color ph_bg = {40, 35, 40, 100};
+                draw_quad(ph_x, ph_y, placeholder_size, placeholder_size, ph_bg, text_alpha);
+
+                // Show system logo dimmed
+                std::string sys_key = get_system_key(playlist);
+                const CachedLogo* logo = get_system_logo(sys_key);
+                if (logo) {
+                    float logo_max_w = placeholder_size * 0.7f;
+                    float logo_max_h = placeholder_size * 0.7f;
+                    float logo_scale = std::min(logo_max_w / logo->width, logo_max_h / logo->height);
+                    float logo_w = logo->width * logo_scale;
+                    float logo_h = logo->height * logo_scale;
+
+                    float logo_x = ph_x + (placeholder_size - logo_w) / 2.0f;
+                    float logo_y = ph_y + (placeholder_size - logo_h) / 2.0f;
+
+                    float vertices[] = {
+                        logo_x, logo_y,                 0.0f, 0.0f,
+                        logo_x + logo_w, logo_y,        1.0f, 0.0f,
+                        logo_x, logo_y + logo_h,        0.0f, 1.0f,
+                        logo_x + logo_w, logo_y + logo_h, 1.0f, 1.0f
+                    };
+
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+                    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+                    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                                1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha * 0.3f);
+                    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+
+                    glBindTexture(GL_TEXTURE_2D, logo->texture_id);
+                    glBindVertexArray(vao_);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glBindVertexArray(0);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                }
+
+                // Clear cached thumbnail
+                if (thumbnail_texture_id_ != 0) {
+                    glDeleteTextures(1, &thumbnail_texture_id_);
+                    thumbnail_texture_id_ = 0;
+                    current_thumbnail_path_.clear();
+                }
+            }
+
+            // --- Game list (tighter spacing, no subtitle) ---
+            int item_height = 30;
+            float start_y = content_start_y + thumbnail_area_height;
+            float available_height = static_cast<float>(height_) - start_y - 10.0f;
+            int max_visible = std::max(3, static_cast<int>(available_height / item_height));
+
+            int total_items = static_cast<int>(playlist.items.size()) + 1; // +1 for Back
+
             static int game_scroll_offset = 0;
-            // Update scroll offset to keep selected item in view
             if (selected_game < game_scroll_offset) {
                 game_scroll_offset = selected_game;
             } else if (selected_game >= game_scroll_offset + max_visible) {
                 game_scroll_offset = selected_game - max_visible + 1;
             }
-            // Clamp
             if (game_scroll_offset < 0) game_scroll_offset = 0;
             if (game_scroll_offset > total_items - max_visible) game_scroll_offset = std::max(0, total_items - max_visible);
-            
+
             for (int i = 0; i < max_visible; ++i) {
                 int idx = game_scroll_offset + i;
                 if (idx >= total_items) break;
-                
+
                 bool is_selected = (idx == selected_game);
                 float y = start_y + static_cast<float>(i) * item_height;
 
@@ -1771,13 +2104,13 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                 if (is_selected) {
                     ui::Color highlight = section_color;
                     highlight.a = 40;
-                    draw_quad(menu_x + 10.0f, y - 5.0f, static_cast<float>(menu_width) - 20.0f,
+                    draw_quad(menu_x + 10.0f, y - 2.0f, static_cast<float>(menu_width) - 20.0f,
                              static_cast<float>(item_height), highlight, background_alpha);
 
-                    // Selection indicator
+                    // Selection indicator triangle
                     float indicator_x = menu_x + 15.0f;
-                    float indicator_y = y + item_height / 2.0f - 5.0f;
-                    float size = 8.0f;
+                    float indicator_y = y + item_height / 2.0f;
+                    float size = 6.0f;
                     float right_x = indicator_x + size * 1.2f;
                     float triangle_vertices[] = {
                         indicator_x, indicator_y - size,   0.0f, 0.0f,
@@ -1803,50 +2136,49 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     glBindVertexArray(0);
                 }
 
-                // Render item text
+                // Game title only (no subtitle)
                 int font_size = is_selected ? theme_->font_medium_size : theme_->font_small_size;
                 ui::Color text_color = is_selected ? section_color : theme_->fg;
                 float text_x = menu_x + 35.0f;
                 int item_baseline_offset = body_font_manager_->get_baseline_at_size(font_size);
-                float item_baseline = y + item_baseline_offset;
+                float item_baseline = y + (item_height - font_size) / 2.0f + item_baseline_offset;
 
                 if (idx < static_cast<int>(playlist.items.size())) {
-                    // Game item
                     draw_text(playlist.items[idx].title, text_x, item_baseline, font_size, text_color, false, text_alpha);
-
-                    // System name as sublabel
-                    if (!playlist.items[idx].emulator_system.empty()) {
-                        float sublabel_baseline = item_baseline + font_size + 4.0f;
-                        draw_text(playlist.items[idx].emulator_system, text_x, sublabel_baseline, theme_->font_small_size, theme_->dim, false, text_alpha);
-                    }
                 } else {
-                    // Back button
                     draw_text("Back", text_x, item_baseline, font_size, text_color, false, text_alpha);
                 }
             }
         }
     } else {
-        // Show game playlists
+        // Show game playlists (keep subtitle with game count)
+        int item_height = 50;
+        int max_visible = 8;
+        float start_y = content_start_y + 15.0f;
         int selected_playlist = menu->get_game_browser_selected();
 
-        // Render playlist list (plus Back button)
-        int total_items = static_cast<int>(game_playlists.size()) + 1; // +1 for Back button
-        
+        int total_items = static_cast<int>(game_playlists.size()) + 1; // +1 for Back
+
         static int playlist_scroll_offset = 0;
-        // Update scroll offset
         if (selected_playlist < playlist_scroll_offset) {
             playlist_scroll_offset = selected_playlist;
         } else if (selected_playlist >= playlist_scroll_offset + max_visible) {
             playlist_scroll_offset = selected_playlist - max_visible + 1;
         }
-        // Clamp
         if (playlist_scroll_offset < 0) playlist_scroll_offset = 0;
         if (playlist_scroll_offset > total_items - max_visible) playlist_scroll_offset = std::max(0, total_items - max_visible);
+
+        // Clear thumbnail when not viewing games
+        if (thumbnail_texture_id_ != 0) {
+            glDeleteTextures(1, &thumbnail_texture_id_);
+            thumbnail_texture_id_ = 0;
+            current_thumbnail_path_.clear();
+        }
 
         for (int i = 0; i < max_visible; ++i) {
             int idx = playlist_scroll_offset + i;
             if (idx >= total_items) break;
-            
+
             bool is_selected = (idx == selected_playlist);
             float y = start_y + static_cast<float>(i) * item_height;
 
@@ -1894,7 +2226,6 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
             float item_baseline = y + item_baseline_offset;
 
             if (idx < static_cast<int>(game_playlists.size())) {
-                // Playlist item
                 draw_text(game_playlists[idx].title, text_x, item_baseline, font_size, text_color, false, text_alpha);
 
                 // Game count as sublabel
@@ -1902,7 +2233,6 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                 float sublabel_baseline = item_baseline + font_size + 4.0f;
                 draw_text(count_text, text_x, sublabel_baseline, theme_->font_small_size, theme_->dim, false, text_alpha);
             } else {
-                // Back button
                 draw_text("Back", text_x, item_baseline, font_size, text_color, false, text_alpha);
             }
         }
@@ -2084,6 +2414,24 @@ void Renderer::cleanup() {
         glDeleteBuffers(1, &vbo_);
         vbo_ = 0;
     }
+    if (logo_texture_id_ != 0) {
+        glDeleteTextures(1, &logo_texture_id_);
+        logo_texture_id_ = 0;
+    }
+    if (bezel_texture_id_ != 0) {
+        glDeleteTextures(1, &bezel_texture_id_);
+        bezel_texture_id_ = 0;
+    }
+    if (thumbnail_texture_id_ != 0) {
+        glDeleteTextures(1, &thumbnail_texture_id_);
+        thumbnail_texture_id_ = 0;
+    }
+    for (auto& pair : system_logo_cache_) {
+        if (pair.second.texture_id != 0) {
+            glDeleteTextures(1, &pair.second.texture_id);
+        }
+    }
+    system_logo_cache_.clear();
     if (title_font_manager_) {
         title_font_manager_->cleanup();
     }

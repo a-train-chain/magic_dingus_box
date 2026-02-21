@@ -100,6 +100,14 @@ rsync -avz \
     --exclude 'data/roms/*' \
     --exclude 'data/media/*' \
     --exclude 'data/device_info.json' \
+    --filter 'P data/thumbnails/ps1' \
+    --filter 'P data/thumbnails/nes' \
+    --filter 'P data/thumbnails/snes' \
+    --filter 'P data/thumbnails/genesis' \
+    --filter 'P data/thumbnails/arcade' \
+    --filter 'P data/thumbnails/atari7800' \
+    --filter 'P data/thumbnails/pcengine' \
+    --filter 'P data/thumbnails/n64' \
     --exclude 'dev_data/roms/*' \
     --exclude 'dev_data/media/*' \
     "${CPP_DIR}/" \
