@@ -1236,12 +1236,12 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             float line_height = static_cast<float>(font_size) * 1.2f;
             float icon_cy = y + line_height * 0.45f;
             float icon_x = static_cast<float>(theme_->margin_x) + 2.0f;
-            float icon_w = 22.0f;
-            float icon_h = 14.0f;
+            float icon_w = 16.0f;
+            float icon_h = 10.0f;
             float half_h = icon_h / 2.0f;
-            float arrow_w = 5.0f;
+            float arrow_w = 4.0f;
             float line_body = icon_w - arrow_w;
-            float t = 1.8f;  // line half-thickness
+            float t = 1.4f;  // line half-thickness
 
             // Perpendicular offset for diagonal lines
             float diag_len = sqrtf(line_body * line_body + half_h * half_h);
@@ -1253,7 +1253,7 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             float x2 = icon_x + line_body, y2 = icon_cy - half_h;   // top-right
             float x3 = icon_x,             y3 = icon_cy - half_h;   // top-left
             float x4 = icon_x + line_body, y4 = icon_cy + half_h;   // bottom-right
-            float ah = 3.5f;  // arrowhead half-height
+            float ah = 2.8f;  // arrowhead half-height
 
             float verts[] = {
                 // Line 1: bottom-left → top-right
