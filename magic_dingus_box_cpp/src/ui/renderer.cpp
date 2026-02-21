@@ -1188,26 +1188,20 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         std::string text = pl.title;
         
         int font_size = selected ? theme_->font_large_size : theme_->font_medium_size;
-        ui::Color text_color = selected ? theme_->accent2 : theme_->fg;
-        
+        bool is_now_playing = (playlist_idx == current_playlist_index && current_playlist_index >= 0);
+        ui::Color text_color = selected ? theme_->accent2 : (is_now_playing ? theme_->highlight1 : theme_->fg);
+        ui::Color channel_color = is_now_playing ? theme_->highlight1 : theme_->dim;
+
         // Use a common baseline for all text on this line (based on the larger font)
         int item_baseline_offset = body_font_manager_->get_baseline_at_size(font_size);
         float item_baseline = y + item_baseline_offset;
-        
+
         // Draw channel number (will align to baseline using its own bearing_y) - use body font
-        draw_text(channel_num, static_cast<float>(theme_->margin_x), item_baseline, theme_->font_small_size, theme_->dim, false, text_alpha);
-        
+        draw_text(channel_num, static_cast<float>(theme_->margin_x), item_baseline, theme_->font_small_size, channel_color, false, text_alpha);
+
         // Draw playlist text on the same baseline - use body font
         float text_x = static_cast<float>(theme_->margin_x) + 36.0f;
         draw_text(text, text_x, item_baseline, font_size, text_color, false, text_alpha);
-
-        // "Now Playing" indicator - small accent-colored square next to currently-playing playlist
-        int actual_index = scroll_offset + i;
-        if (actual_index == current_playlist_index && current_playlist_index >= 0) {
-            float indicator_x = static_cast<float>(theme_->margin_x) + 8.0f;
-            float indicator_y = y - 4.0f;
-            draw_quad(indicator_x, indicator_y, 6.0f, 6.0f, theme_->accent, text_alpha);
-        }
 
         // Blinking selection indicator (triangle pointing LEFT toward text, at end of text)
         if (selected && indicator_visible) {
