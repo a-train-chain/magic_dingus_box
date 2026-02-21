@@ -112,6 +112,7 @@ private:
     // Helper methods
     void draw_quad(float x, float y, float w, float h, const ui::Color& color, float alpha_multiplier = 1.0f);
     void draw_text(const std::string& text, float x, float y, int font_size, const ui::Color& color, bool use_title_font = false, float alpha_multiplier = 1.0f);
+    void draw_glyph(char32_t codepoint, float x, float baseline_y, int font_size, const ui::Color& color, float alpha_multiplier = 1.0f);
     void draw_line(float x1, float y1, float x2, float y2, float width, const ui::Color& color, float alpha_multiplier = 1.0f);
     
     // Component renderers
