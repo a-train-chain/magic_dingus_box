@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <cstdint>
 #include <chrono>
 #include <atomic>
@@ -157,7 +158,24 @@ public:
     // Master shuffle queue - pairs of (playlist_index, item_index) for global shuffle
     std::vector<std::pair<int, int>> master_shuffle_queue;
     int master_shuffle_queue_position = 0;
-    
+
+    // Shuffle history for "Previous" in master shuffle (max 10)
+    std::deque<std::pair<int, int>> shuffle_history;
+
+    void push_shuffle_history(int playlist_idx, int item_idx) {
+        shuffle_history.push_back({playlist_idx, item_idx});
+        if (shuffle_history.size() > 10) shuffle_history.pop_front();
+    }
+
+    bool pop_shuffle_history(int& playlist_idx, int& item_idx) {
+        if (shuffle_history.empty()) return false;
+        auto [p, i] = shuffle_history.back();
+        shuffle_history.pop_back();
+        playlist_idx = p;
+        item_idx = i;
+        return true;
+    }
+
     // Master Volume Control
     int master_volume = 100; // 0-100%
     bool show_volume_slider = false;
@@ -173,7 +191,19 @@ public:
 
     // Error message overlay (displayed as a banner at bottom of screen)
     std::string error_message;
-    bool has_error_message() const { return !error_message.empty(); }
+    std::chrono::steady_clock::time_point error_message_time;
+
+    void set_error(const std::string& msg) {
+        error_message = msg;
+        error_message_time = std::chrono::steady_clock::now();
+    }
+
+    bool has_error_message() const {
+        if (error_message.empty()) return false;
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - error_message_time);
+        return elapsed.count() < 4;
+    }
     
     // Sample mode
     bool sample_mode_active;

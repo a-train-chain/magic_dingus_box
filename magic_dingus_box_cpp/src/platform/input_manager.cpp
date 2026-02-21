@@ -459,10 +459,15 @@ InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
             dir = -1;
         }
         
-        if (dir != 0 && dir != last_rotate_dir_) {
-            last_rotate_dir_ = dir;
+        if (dir != 0) {
             auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
+            if (dir != last_rotate_dir_) {
+                // Direction changed - fire immediately
+                last_rotate_dir_ = dir;
+                last_rotate_time_ = now;
+                return InputAction::ROTATE;
+            } else if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
+                // Same direction held - fire at repeat rate
                 last_rotate_time_ = now;
                 return InputAction::ROTATE;
             }

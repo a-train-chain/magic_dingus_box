@@ -1182,6 +1182,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                             settings_menu.close();
                                         } else {
                                             std::cout << "Game launch failed: " << launch_result.error() << std::endl;
+                                            state.set_error("Failed to launch game");
                                         }
                                     } else {
                                         std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
@@ -1496,6 +1497,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
                             // In Master Shuffle, NEXT triggers another random video
+                            // Save current position to shuffle history for "Previous" support
+                            if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                                state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
+                            }
                             controller.play_random_global_video(state, playlist_directory);
                         } else {
                             controller.load_next_item(state, playlist_directory);
@@ -1514,8 +1519,24 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Don't allow if we're switching playlists
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
-                            // In Master Shuffle, PREV also triggers another random video
-                            controller.play_random_global_video(state, playlist_directory);
+                            // In Master Shuffle, PREV goes back through shuffle history
+                            int prev_playlist, prev_item;
+                            if (state.pop_shuffle_history(prev_playlist, prev_item)) {
+                                if (prev_playlist >= 0 && prev_playlist < static_cast<int>(state.playlists.size())) {
+                                    const auto& pl = state.playlists[prev_playlist];
+                                    if (prev_item >= 0 && prev_item < static_cast<int>(pl.items.size())) {
+                                        state.current_playlist_index = prev_playlist;
+                                        state.current_item_index = prev_item;
+                                        state.last_advanced_item_index = -1;
+                                        state.last_advanced_duration = 0.0;
+                                        state.playback_started_ = false;
+                                        controller.load_playlist_item(state, pl, prev_item, playlist_directory);
+                                    }
+                                }
+                            } else {
+                                // No history - pick another random video
+                                controller.play_random_global_video(state, playlist_directory);
+                            }
                         } else {
                             controller.load_previous_item(state, playlist_directory);
                         }
@@ -1551,12 +1572,11 @@ int main(int /* argc */, char* /* argv */[]) {
         sample_mode.update_state(state);
         
         // Clear playlist switching flag if it's been stuck for too long (timeout safety)
-        // This prevents the flag from getting stuck if video fails to load or MPV gets into bad state
-        // Increased timeout to handle slow storage and MPV initialization issues
+        // This prevents the flag from getting stuck if video fails to load or gets into bad state
         if (state.is_switching_playlist) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.playlist_switch_start_time);
-            if (elapsed.count() > 5000) {  // 5 second timeout (increased for robustness)
+            if (elapsed.count() > 2000) {  // 2 second timeout
                 std::cerr << "CRITICAL: Playlist switch timeout after " << elapsed.count() << "ms - clearing flag and resetting state" << std::endl;
                 std::cerr << "  Debug info: video_active=" << state.video_active
                           << ", is_playing=" << controller.is_playing()
@@ -1717,6 +1737,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     state.last_advanced_duration = state.duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
+                // Save current position to shuffle history before auto-advancing
+                if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                    state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
+                }
                 controller.play_random_global_video(state, playlist_directory);
             } else {
                 controller.load_next_item(state, playlist_directory);
