@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <filesystem>
 #include <thread>
@@ -405,8 +406,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
 
     std::vector<std::string> cmd = {
         retroarch_bin_.value(),
-        // NO CONFIG ARGUMENT! We are overriding the default config directly.
-        // This is the only reliable way to force config on this system.
+        "--config", "/tmp/retroarch_mdb.cfg",
         "-L", core_name,
         game_info.rom_path,
         "--verbose"
@@ -442,8 +442,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // ISOLATED CONFIG STRATEGY (Matches Manual Test)
             // We write a fresh config to /tmp/retroarch_ui.cfg and pass it via --config
-            script_file << "# CRITICAL: We overwrite the DEFAULT config because --config is ignored\n";
-            script_file << "UI_CONFIG=\"$HOME/.config/retroarch/retroarch.cfg\"\n";
+            script_file << "# Use isolated temp config to avoid overwriting user's RetroArch config\n";
+            script_file << "UI_CONFIG=\"/tmp/retroarch_mdb.cfg\"\n";
             
             script_file << "# CRITICAL: Create a minimal default config to prevent RetroArch from creating one with autoconfig enabled\n";
             script_file << "mkdir -p \"$HOME/.config/retroarch\"\n";
@@ -454,11 +454,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "mkdir -p \"" << config::retroarch::get_saves_dir() << "\"\n";
             script_file << "mkdir -p \"" << config::retroarch::get_states_dir() << "\"\n";
             
-            // Backup existing config
-            script_file << "if [ -f \"$UI_CONFIG\" ]; then\n";
-            script_file << "    cp \"$UI_CONFIG\" \"$UI_CONFIG.backup.$(date +%s)\"\n";
-            script_file << "    echo 'Launcher: Backed up default config' >> /tmp/retroarch_launcher.log\n";
-            script_file << "fi\n"; // Empty dir for hiding autoconfigs
+            // No backup needed - using isolated temp config in /tmp
             
             script_file << "# CRITICAL: Ensure autoconfig file exists and is accessible (DO NOT disable it!)\n";
             script_file << "# Autoconfig is ENABLED, so we need the autoconfig file to be present\n";
@@ -828,7 +824,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "    ls -la /dev/input/js* >> /tmp/retroarch_launcher.log 2>&1 || true\n";
             script_file << "fi\n";
             script_file << "# Set essential environment for RetroArch\n";
-            script_file << "export XDG_RUNTIME_DIR=/run/user/1000\n";
+            script_file << "export XDG_RUNTIME_DIR=/run/user/" << getuid() << "\n";
             script_file << "export HOME=" << config::get_home_path() << "\n";
             script_file << "# CRITICAL: Ensure we have access to input devices\n";
             script_file << "export DISPLAY=:0\n";
@@ -888,14 +884,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "kill $KEEPALIVE_PID2 2>/dev/null || true\n";
             script_file << "wait $KEEPALIVE_PID1 2>/dev/null || true\n";
             script_file << "wait $KEEPALIVE_PID2 2>/dev/null || true\n";
-            // Restore default config
-            script_file << "# Restore default config from backup\n";
-            script_file << "find \"$(dirname \"$UI_CONFIG\")\" -name \"$(basename \"$UI_CONFIG\").backup.*\" -type f | sort -r | head -n 1 | while read backup; do\n";
-            script_file << "    mv \"$backup\" \"$UI_CONFIG\" 2>/dev/null || true\n";
-            script_file << "    echo 'Launcher: Restored default config' >> /tmp/retroarch_launcher.log\n";
-            script_file << "done\n";
-            // Clean up old backups
-            script_file << "find \"$(dirname \"$UI_CONFIG\")\" -name \"$(basename \"$UI_CONFIG\").backup.*\" -type f -mtime +1 -delete 2>/dev/null || true\n";
+            // Clean up temp config files (no restore needed - we used isolated /tmp config)
+            script_file << "rm -f \"$UI_CONFIG\"\n";
             script_file << "rm -f /tmp/retroarch_core_options.cfg\n";
             script_file << "# CRITICAL: Autoconfig file should remain in place (not backed up/restored)\n";
             script_file << "# Clean up any old backup files from previous runs\n";
@@ -906,7 +896,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file.close();
 
             // Make script executable
-            std::system(("chmod +x " + launcher_script).c_str());
+            chmod(launcher_script.c_str(), 0755);
             std::cout << "Created launcher script: " << launcher_script << std::endl;
         } else {
             std::cerr << "Failed to create launcher script" << std::endl;
@@ -915,7 +905,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         }
 
         // Set environment variables for the RetroArch process
-        setenv("XDG_RUNTIME_DIR", "/run/user/1000", 1);
+        std::string xdg_runtime = "/run/user/" + std::to_string(getuid());
+        setenv("XDG_RUNTIME_DIR", xdg_runtime.c_str(), 1);
         setenv("HOME", config::get_home_path().c_str(), 1);
         setenv("DISPLAY", ":0", 1);
         
@@ -1237,7 +1228,7 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file.close();
 
             // Make script executable
-            std::system(("chmod +x " + launcher_script).c_str());
+            chmod(launcher_script.c_str(), 0755);
             std::cout << "Created downloader script: " << launcher_script << std::endl;
         } else {
             std::cerr << "Failed to create downloader script" << std::endl;
@@ -1259,9 +1250,9 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
 
     std::cout << "RetroArch downloader service started via systemd-run" << std::endl;
 
-    // Exit immediately to release DRM resources for RetroArch
-    std::cout << "Main app exiting immediately to let RetroArch take over..." << std::endl;
-    exit(0);
+    // Return to caller so it can release DRM resources for RetroArch
+    std::cout << "RetroArch downloader service started, returning to caller..." << std::endl;
+    return true;
 }
 
 void RetroArchLauncher::release_controllers() {
