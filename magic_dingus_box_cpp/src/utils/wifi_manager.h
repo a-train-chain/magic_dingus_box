@@ -58,6 +58,9 @@ private:
     
     // Helper to execute shell command and get output
     std::string exec_command(const char* cmd);
+
+    // Secure alternative: execute command with argument vector (no shell injection)
+    std::string exec_command_argv(const std::vector<std::string>& args);
     
     std::vector<WifiNetwork> parse_nmcli_scan_output(const std::string& output);
     

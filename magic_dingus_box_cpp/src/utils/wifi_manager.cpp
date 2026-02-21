@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <thread>
 #include <cstdio>
+#include <unistd.h>
+#include <sys/wait.h>
 
 namespace utils {
 
@@ -104,16 +106,14 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             }
         }
 
+        std::string output;
         if (password.empty()) {
-            // Open network
-            cmd = "sudo nmcli dev wifi connect \"" + ssid + "\"";
+            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid});
         } else {
-            // Secure network
-            cmd = "sudo nmcli dev wifi connect \"" + ssid + "\" password \"" + password + "\"";
+            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password});
         }
-        
-        std::cout << "WifiManager: Executing connect command: " << cmd << std::endl;
-        std::string output = exec_command(cmd.c_str());
+
+        std::cout << "WifiManager: Connecting to SSID: " << ssid << std::endl;
         std::cout << "WifiManager: Connect output: " << output << std::endl;
         
         // nmcli output contains "successfully activated" on success
@@ -122,8 +122,7 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             
             // Explicitly ensure autoconnect is enabled for persistence
             // Usually default, but we enforce it per user request
-            std::string auto_cmd = "sudo nmcli connection modify id \"" + ssid + "\" connection.autoconnect yes 2>/dev/null";
-            exec_command(auto_cmd.c_str());
+            exec_command_argv({"sudo", "nmcli", "connection", "modify", "id", ssid, "connection.autoconnect", "yes"});
             std::cout << "WifiManager: Enforced autoconnect=yes for '" << ssid << "'" << std::endl;
             
             connection_result_ = ConnectionResult::SUCCESS;
@@ -151,13 +150,9 @@ std::string WifiManager::get_current_ssid() {
     // This might show UUIDs or other connections, simpler to look at wifi status
     std::string output = exec_command("nmcli -t -f GENERAL.CONNECTION dev show wlan0 2>/dev/null");
     if (output.empty()) {
-        // Try simple scan of in-use
-         output = exec_command("nmcli -t -f SSID,IN-USE dev wifi list | grep ':*'");
-         // Only useful if we parse.
-         // Let's stick to device show
-         // Fallback if wlan0 isn't the interface name?
-         // Try general active connections of type wifi
-         output = exec_command("nmcli -t -f NAME,TYPE connection show --active | grep ':802-11-wireless' | cut -d: -f1");
+        // Fallback if wlan0 isn't the interface name:
+        // Try general active connections of type wifi
+        output = exec_command("nmcli -t -f NAME,TYPE connection show --active | grep ':802-11-wireless' | cut -d: -f1");
     }
     
     // Clean up output (remove newlines)
@@ -185,9 +180,7 @@ bool WifiManager::is_connected() {
 }
 
 bool WifiManager::forget_network(const std::string& ssid) {
-    // Use sudo to ensure we can delete root-owned profiles
-    std::string cmd = "sudo nmcli connection delete \"" + ssid + "\"";
-    std::string output = exec_command(cmd.c_str());
+    std::string output = exec_command_argv({"sudo", "nmcli", "connection", "delete", ssid});
     return (output.find("successfully") != std::string::npos);
 }
 
@@ -201,6 +194,51 @@ std::string WifiManager::exec_command(const char* cmd) {
     while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
         result += buffer.data();
     }
+    return result;
+}
+
+std::string WifiManager::exec_command_argv(const std::vector<std::string>& args) {
+    if (args.empty()) return "";
+
+    int pipefd[2];
+    if (pipe(pipefd) == -1) return "";
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "";
+    }
+
+    if (pid == 0) {
+        // Child process
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+
+        std::vector<const char*> argv;
+        for (const auto& a : args) argv.push_back(a.c_str());
+        argv.push_back(nullptr);
+
+        execvp(argv[0], const_cast<char* const*>(argv.data()));
+        _exit(127);
+    }
+
+    // Parent process
+    close(pipefd[1]);
+
+    std::string result;
+    char buffer[128];
+    ssize_t n;
+    while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[n] = '\0';
+        result += buffer;
+    }
+    close(pipefd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
     return result;
 }
 

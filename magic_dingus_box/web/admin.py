@@ -1329,12 +1329,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # filepath is relative to /opt/magic_dingus_box (parent of data_dir)
         target = data_dir.parent / filepath
 
-        # Security check: ensure path is within allowed directories
+        # Security check: only allow deletion within media subdirectories
         target_resolved = target.resolve()
-        data_dir_resolved = data_dir.parent.resolve()
+        allowed_dirs = [
+            (data_dir / "media").resolve(),
+            (data_dir.parent / "dev_data" / "media").resolve(),
+        ]
 
-        # Check if path is within the parent directory
-        if not str(target_resolved).startswith(str(data_dir_resolved)):
+        if not any(str(target_resolved).startswith(str(d)) for d in allowed_dirs):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         if target.exists() and target.is_file():
