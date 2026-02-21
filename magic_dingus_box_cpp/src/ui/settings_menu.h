@@ -96,16 +96,17 @@ public:
 
 private:
     app::AppState* app_state_;
-    bool active_;
+    mutable bool active_;
     int selected_index_;
     std::chrono::steady_clock::time_point animation_start_;
     float animation_duration_;
-    bool is_opening_;
-    bool is_closing_;
+    mutable bool is_opening_;
+    mutable bool is_closing_;
     int scroll_offset_;
     // State for async operations
     bool was_scanning_;
     bool was_connecting_;
+    bool wifi_disconnect_confirm_ = false;
     
     MenuSection current_submenu_;
     std::vector<MenuItem> menu_items_;

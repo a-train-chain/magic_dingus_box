@@ -216,15 +216,15 @@ float SettingsMenuManager::get_animation_progress() const {
     if (is_closing_) {
         float progress = 1.0f - (elapsed / animation_duration_);
         if (progress <= 0.0f) {
-            const_cast<SettingsMenuManager*>(this)->active_ = false;
-            const_cast<SettingsMenuManager*>(this)->is_closing_ = false;
+            active_ = false;
+            is_closing_ = false;
             return 0.0f;
         }
         return progress;
     } else {
         float progress = elapsed / animation_duration_;
         if (progress >= 1.0f) {
-            const_cast<SettingsMenuManager*>(this)->is_opening_ = false;
+            is_opening_ = false;
             return 1.0f;
         }
         return progress;
@@ -308,6 +308,7 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
     current_submenu_ = section;
     selected_index_ = 0;
     scroll_offset_ = 0;
+    wifi_disconnect_confirm_ = false;
     
     if (section == MenuSection::VIDEO_GAMES) {
         submenu_items_ = build_games_submenu();
@@ -330,6 +331,7 @@ void SettingsMenuManager::exit_submenu() {
     current_submenu_ = MenuSection::BACK;
     selected_index_ = 0;
     scroll_offset_ = 0;
+    wifi_disconnect_confirm_ = false;
     submenu_items_.clear();
 }
 
@@ -370,7 +372,6 @@ void SettingsMenuManager::exit_game_list() {
 std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {
     return {
         MenuItem("Browse Games", MenuSection::BROWSE_GAMES, "Game libraries"),
-        MenuItem("Controllers", MenuSection::BACK, "Button map"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
@@ -527,10 +528,19 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
                  [&]() {
                      utils::WifiManager::instance().scan_networks_async();
                  }),
-        MenuItem("Disconnect", MenuSection::WIFI, "Forget current",
+        MenuItem(wifi_disconnect_confirm_ ? "Confirm Disconnect?" : "Disconnect",
+                 MenuSection::WIFI,
+                 wifi_disconnect_confirm_ ? "Press again to confirm" : "Forget current network",
                  [this]() {
-                     utils::WifiManager::instance().forget_network(utils::WifiManager::instance().get_current_ssid());
-                     rebuild_current_submenu(); // Refresh to show updated status
+                     if (wifi_disconnect_confirm_) {
+                         utils::WifiManager::instance().forget_network(
+                             utils::WifiManager::instance().get_current_ssid());
+                         wifi_disconnect_confirm_ = false;
+                         rebuild_current_submenu();
+                     } else {
+                         wifi_disconnect_confirm_ = true;
+                         rebuild_current_submenu();
+                     }
                  }),
         MenuItem("Back", MenuSection::BACK)
     };
@@ -572,26 +582,34 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
         std::string label = net.ssid;
         if (net.in_use) label += " (Connected)";
         else if (net.saved) label += " (Saved)";
-        
+
         std::string sub = "Signal: " + std::to_string(net.signal_strength) + "% " + net.security;
-        
-        // Use WIFI to return to Wi-Fi menu after connection attempt
-        items.emplace_back(label, MenuSection::WIFI, sub, 
-            [this, net]() {
-                // Open Keyboard
-                if (app_state_ && app_state_->keyboard) {
-                    app_state_->keyboard->open("", "Enter Password for " + net.ssid, 
-                        [this, net](const std::string& password) {
-                            utils::WifiManager::instance().connect_async(net.ssid, password);
-                            // Connection result will be shown via update() -> rebuild_current_submenu()
-                        },
-                        [this]() { 
-                            // Cancel - stay in Wi-Fi menu
-                            enter_submenu(MenuSection::WIFI);
-                        }
-                    );
-                }
-            });
+
+        if (net.in_use) {
+            // Already connected - no action needed
+            items.emplace_back(label, MenuSection::BACK, sub);
+        } else if (net.saved) {
+            // Saved network - reconnect without password
+            items.emplace_back(label, MenuSection::WIFI, sub,
+                [this, net]() {
+                    utils::WifiManager::instance().connect_async(net.ssid, "");
+                    enter_submenu(MenuSection::WIFI);
+                });
+        } else {
+            items.emplace_back(label, MenuSection::WIFI, sub,
+                [this, net]() {
+                    if (app_state_ && app_state_->keyboard) {
+                        app_state_->keyboard->open("", "Enter Password for " + net.ssid,
+                            [this, net](const std::string& password) {
+                                utils::WifiManager::instance().connect_async(net.ssid, password);
+                            },
+                            [this]() {
+                                enter_submenu(MenuSection::WIFI);
+                            }
+                        );
+                    }
+                });
+        }
     }
     
     if (items.empty()) {
