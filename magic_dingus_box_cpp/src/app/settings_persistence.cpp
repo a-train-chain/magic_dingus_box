@@ -61,10 +61,11 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     audio["retroarch_volume_offset_db"] = state.audio_settings.retroarch_volume_offset_db;
     root["audio"] = audio;
 
-    // Write to file with styled formatting
-    std::ofstream file(path);
+    // Write to temporary file first for atomic save (crash-safe)
+    std::string tmp_path = path + ".tmp";
+    std::ofstream file(tmp_path);
     if (!file.is_open()) {
-        std::string error = "Failed to open settings file for writing: " + path;
+        std::string error = "Failed to open temp settings file for writing: " + tmp_path;
         LOG_ERROR("{}", error);
         return utils::Result<>::fail(error);
     }
@@ -75,6 +76,25 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     writer->write(root, &file);
     file << std::endl;
     file.close();
+
+    // Check for write errors
+    if (file.fail()) {
+        std::string error = "Failed to write settings to temp file: " + tmp_path;
+        LOG_ERROR("{}", error);
+        std::error_code ec;
+        fs::remove(tmp_path, ec);
+        return utils::Result<>::fail(error);
+    }
+
+    // Atomically rename temp file to target
+    std::error_code ec;
+    fs::rename(tmp_path, path, ec);
+    if (ec) {
+        std::string error = "Failed to rename settings file: " + ec.message();
+        LOG_ERROR("{}", error);
+        fs::remove(tmp_path, ec);
+        return utils::Result<>::fail(error);
+    }
 
     LOG_DEBUG("Settings saved to {}", path);
     return utils::Result<>::ok();
@@ -88,7 +108,7 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         std::string info = "No settings file found at " + path + ", using defaults";
         LOG_DEBUG("{}", info);
         // This is not really an error - just no file yet
-        return utils::Result<>::fail(info);
+        return utils::Result<>::ok();
     }
 
     // Parse JSON using JsonCpp
