@@ -5,6 +5,40 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-21
+
+### Added
+- Systemd watchdog with automatic crash recovery (Type=notify, 10s watchdog)
+- Now-playing indicator (accent dot) on current playlist in playlist list
+- Error overlay banner for game launch failures (4-second auto-dismiss)
+- Master shuffle history with "Previous" support (up to 10 entries)
+- EOS callback infrastructure for GStreamer end-of-stream events
+
+### Fixed
+- **Security:** Shell injection in WiFi manager (SSID/password via fork/execvp instead of popen)
+- **Security:** Tightened delete_media path validation to media directories only
+- Atomic settings file write (temp file + rename) prevents corruption on crash
+- Missing settings file no longer treated as error on first run
+- GStreamer play() no longer blocks forever (3-second timeout replaces infinite wait)
+- RetroArch uses isolated temp config (/tmp/retroarch_mdb.cfg) instead of overwriting user config
+- Removed exit(0) in core downloader that killed the entire application
+- Hardcoded XDG_RUNTIME_DIR replaced with dynamic getuid() in RetroArch launcher
+- Replaced std::system("chmod") with POSIX chmod() calls
+- Virtual keyboard text centering uses actual font metrics
+- format_time() handles negative seconds gracefully
+- Game scroll offset resets correctly when switching playlists
+- WiFi saved networks reconnect without prompting for password
+- WiFi disconnect requires two-press confirmation
+- Removed dead "Controllers" menu link from Games submenu
+- Removed const_cast antipattern in settings menu (uses mutable members)
+- Analog stick auto-repeat fires immediately on direction change
+- Playlist switching timeout reduced from 5s to 2s
+- Watchdog paused during RetroArch gameplay to prevent false kills
+
+### Improved
+- RGB mask CRT shader uses smoothstep-based subpixel column darkening
+- WiFi scan results cross-reference saved connections for accurate status
+
 ## [1.1.0] - 2026-02-08
 
 ### Added
