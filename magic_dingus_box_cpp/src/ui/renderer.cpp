@@ -1212,14 +1212,14 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             draw_quad(highlight_x, highlight_y, highlight_w, highlight_h, highlight_color, 1.0f);
         }
         
-        // Channel number (01., 02., etc.) - use actual playlist index + 1
+        // Channel number - regular playlists start from 01 (Master Shuffle has no number)
         char channel_buf[16];
-        snprintf(channel_buf, sizeof(channel_buf), "%02d.", playlist_idx + 1);
+        snprintf(channel_buf, sizeof(channel_buf), "%02d.", playlist_idx);
         std::string channel_num = channel_buf;
-        
+
         // Playlist title only (curator removed per user request)
         std::string text = pl.title;
-        
+
         int font_size = selected ? theme_->font_large_size : theme_->font_medium_size;
         bool is_now_playing = (playlist_idx == current_playlist_index && current_playlist_index >= 0);
         ui::Color text_color = selected ? theme_->accent2 : (is_now_playing ? theme_->highlight1 : theme_->fg);
@@ -1232,8 +1232,54 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         float text_x = static_cast<float>(theme_->margin_x) + 36.0f;
 
         if (playlist_idx == 0) {
-            // Draw shuffle symbol (⇄ U+21C4) instead of channel number for Master Shuffle
-            draw_glyph(U'\u21C4', static_cast<float>(theme_->margin_x), item_baseline, font_size, channel_color, text_alpha);
+            // Draw shuffle icon (crossed arrows) instead of channel number for Master Shuffle
+            float line_height = static_cast<float>(font_size) * 1.2f;
+            float icon_cy = y + line_height * 0.45f;
+            float icon_x = static_cast<float>(theme_->margin_x) + 2.0f;
+            float icon_w = 22.0f;
+            float icon_h = 14.0f;
+            float half_h = icon_h / 2.0f;
+            float arrow_w = 5.0f;
+            float line_body = icon_w - arrow_w;
+            float t = 1.8f;  // line half-thickness
+
+            // Perpendicular offset for diagonal lines
+            float diag_len = sqrtf(line_body * line_body + half_h * half_h);
+            float px = (half_h / diag_len) * t;
+            float py = (line_body / diag_len) * t;
+
+            // Line endpoints
+            float x1 = icon_x,             y1 = icon_cy + half_h;   // bottom-left
+            float x2 = icon_x + line_body, y2 = icon_cy - half_h;   // top-right
+            float x3 = icon_x,             y3 = icon_cy - half_h;   // top-left
+            float x4 = icon_x + line_body, y4 = icon_cy + half_h;   // bottom-right
+            float ah = 3.5f;  // arrowhead half-height
+
+            float verts[] = {
+                // Line 1: bottom-left → top-right
+                x1 - px, y1 - py, 0, 0,   x1 + px, y1 + py, 0, 0,   x2 + px, y2 + py, 0, 0,
+                x1 - px, y1 - py, 0, 0,   x2 + px, y2 + py, 0, 0,   x2 - px, y2 - py, 0, 0,
+                // Line 2: top-left → bottom-right
+                x3 + px, y3 - py, 0, 0,   x3 - px, y3 + py, 0, 0,   x4 - px, y4 + py, 0, 0,
+                x3 + px, y3 - py, 0, 0,   x4 - px, y4 + py, 0, 0,   x4 + px, y4 - py, 0, 0,
+                // Arrowhead at top-right
+                x2, y2 - ah, 0, 0,   x2, y2 + ah, 0, 0,   x2 + arrow_w, y2, 0, 0,
+                // Arrowhead at bottom-right
+                x4, y4 - ah, 0, 0,   x4, y4 + ah, 0, 0,   x4 + arrow_w, y4, 0, 0,
+            };
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+            GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+            if (colorLoc >= 0) {
+                glUniform4f(colorLoc, channel_color.r / 255.0f, channel_color.g / 255.0f,
+                           channel_color.b / 255.0f, (channel_color.a / 255.0f) * ui_alpha_ * text_alpha);
+            }
+            GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+            if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 0);
+            glBindVertexArray(vao_);
+            glDrawArrays(GL_TRIANGLES, 0, 18);
+            glBindVertexArray(0);
         } else {
             // Draw channel number for regular playlists
             draw_text(channel_num, static_cast<float>(theme_->margin_x), item_baseline, theme_->font_small_size, channel_color, false, text_alpha);
