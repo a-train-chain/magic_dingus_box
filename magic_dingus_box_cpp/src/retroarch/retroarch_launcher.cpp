@@ -138,8 +138,9 @@ namespace {
             // Shoulders
             map.l_btn = "0";  // C-Left (ID 0) -> L1
             map.r_btn = "6";  // R (ID 6? Guess) -> R1
-            map.l2_btn = "5"; // Right Trigger (ID 5) -> L2
-            
+            map.l2_btn = "5"; // Z Trigger (ID 5) -> L2
+            map.r2_btn = "8"; // C-Right (ID 8) -> R2
+
             // Axis (Reverted to Standard X=0, Y=1)
             // We will use explicit D-Pad Axis mapping to fix direction
             map.l_x_plus = "+0";
@@ -518,12 +519,39 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "echo 'Launcher: aplay -l output:' >> /tmp/retroarch_launcher.log\n";
             script_file << "aplay -l >> /tmp/retroarch_launcher.log 2>&1 || true\n";
             
-            // Create Core Options file
+            // Create Core Options file with performance-tuned settings
             script_file << "cat > /tmp/retroarch_core_options.cfg << 'OPTS'\n";
             if (core_name.find("pcsx") != std::string::npos || core_name.find("beetle_psx") != std::string::npos || core_name.find("swanstation") != std::string::npos) {
                 script_file << "pcsx_rearmed_pad1type = \"analog\"\n";
+                // Performance: offload SPU audio to separate CPU core (Pi 4B has 4 cores)
+                script_file << "pcsx_rearmed_spu_thread = \"enabled\"\n";
+                // Audio: enable CD audio and XA decoding for full game experience
+                script_file << "pcsx_rearmed_nocdaudio = \"disabled\"\n";
+                script_file << "pcsx_rearmed_noxadecoding = \"disabled\"\n";
+                // Performance: auto-frameskip as safety net (only skips when falling behind)
+                script_file << "pcsx_rearmed_frameskip_type = \"auto_threshold\"\n";
+                script_file << "pcsx_rearmed_frameskip_threshold = \"33\"\n";
+                script_file << "pcsx_rearmed_frameskip_interval = \"3\"\n";
+                // Performance: fast GPU linked list processing
+                script_file << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
+                // Keep DRC (dynamic recompiler) enabled - critical for performance
+                script_file << "pcsx_rearmed_drc = \"enabled\"\n";
+                // Keep icache emulation for compatibility (disabling breaks some games)
+                script_file << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
+                // Standard PSX clock (57 = native speed)
+                script_file << "pcsx_rearmed_psxclock = \"57\"\n";
+                // Audio quality
+                script_file << "pcsx_rearmed_spu_interpolation = \"simple\"\n";
+                script_file << "pcsx_rearmed_spu_reverb = \"enabled\"\n";
+                // Rendering at native 1x resolution (no upscaling overhead)
+                script_file << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
+                script_file << "pcsx_rearmed_dithering = \"enabled\"\n";
             }
             script_file << "OPTS\n";
+
+            // Delete per-core .opt override file so our core options take effect
+            // RetroArch's per-core .opt files override core_options_path
+            script_file << "rm -f \"$HOME/.config/retroarch/config/PCSX-ReARMed/PCSX-ReARMed.opt\" 2>/dev/null\n";
             
             // Write the FULL config to our ISOLATED config location
             script_file << "cat > \"$UI_CONFIG\" << 'EOF'\n";
@@ -582,9 +610,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
-            script_file << "# CRITICAL: Enable input logging to debug button presses\n";
-            script_file << "input_logging_enable = \"true\"\n";
-            script_file << "input_logging_level = \"2\"\n";  // Level 2 = maximum logging (matches working test)
+            script_file << "input_logging_enable = \"false\"\n";
+            script_file << "input_logging_level = \"0\"\n";
             script_file << "input_block_timeout = \"0\"\n";
             script_file << "input_hotkey_block_delay = \"0\"\n";
             script_file << "# CRITICAL: Ensure input is enabled and controller works in-game\n";
@@ -635,7 +662,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "audio_sync = \"true\"\n";
 //             script_file << "audio_resampler = \"sinc\"\n";
             script_file << "audio_out_rate = \"48000\"\n";
-            script_file << "audio_latency = \"64\"\n";
+            script_file << "audio_latency = \"48\"\n";  // Tighter audio sync (was 64)
             script_file << "# Audio buffer settings - ensure audio callback works\n";
 //             script_file << "audio_block_frames = \"512\"\n";
 //             script_file << "audio_rate_control = \"true\"\n";
@@ -680,8 +707,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // script_file << "video_threaded = \"false\"\n"; // Handled dynamically above
             script_file << "video_hard_sync = \"false\"\n";
             script_file << "video_vsync = \"true\"\n";
-            script_file << "video_frame_delay = \"0\"\n";
-            script_file << "video_max_swapchain_images = \"2\"\n";
+            script_file << "video_frame_delay = \"4\"\n";  // Reduce input lag by ~4ms
+            script_file << "video_max_swapchain_images = \"3\"\n";  // Triple buffering for smoother frame pacing
             script_file << "video_shader_enable = \"false\"\n";
             script_file << "video_filter = \"\"\n";
             script_file << "video_frame_blend = \"false\"\n";
@@ -1067,9 +1094,8 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
-            script_file << "# CRITICAL: Enable input logging to debug button presses\n";
-            script_file << "input_logging_enable = \"true\"\n";
-            script_file << "input_logging_level = \"2\"\n";  // Level 2 = maximum logging (matches working test)
+            script_file << "input_logging_enable = \"false\"\n";
+            script_file << "input_logging_level = \"0\"\n";
             script_file << "input_block_timeout = \"0\"\n";
             script_file << "input_hotkey_block_delay = \"0\"\n";
             script_file << "# CRITICAL: Ensure input is enabled and controller works in-game\n";
@@ -1115,7 +1141,7 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "audio_sync = \"true\"\n";
             script_file << "audio_resampler = \"sinc\"\n";
             script_file << "audio_out_rate = \"48000\"\n";
-            script_file << "audio_latency = \"64\"\n";
+            script_file << "audio_latency = \"48\"\n";  // Tighter audio sync (was 64)
             script_file << "# Audio buffer settings - ensure audio callback works\n";
             script_file << "audio_block_frames = \"512\"\n";
             script_file << "audio_rate_control = \"true\"\n";
@@ -1160,8 +1186,8 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             // script_file << "video_threaded = \"false\"\n"; // Handled dynamically above
             script_file << "video_hard_sync = \"false\"\n";
             script_file << "video_vsync = \"true\"\n";
-            script_file << "video_frame_delay = \"0\"\n";
-            script_file << "video_max_swapchain_images = \"2\"\n";
+            script_file << "video_frame_delay = \"4\"\n";  // Reduce input lag by ~4ms
+            script_file << "video_max_swapchain_images = \"3\"\n";  // Triple buffering for smoother frame pacing
             script_file << "video_shader_enable = \"false\"\n";
             script_file << "video_filter = \"\"\n";
             script_file << "video_frame_blend = \"false\"\n";
