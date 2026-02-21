@@ -2101,10 +2101,9 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
 
             int total_items = static_cast<int>(playlist.items.size()) + 1; // +1 for Back
 
+            // Compute scroll offset from selection (resets across playlists since not static)
             int game_scroll_offset = 0;
-            if (selected_game < game_scroll_offset) {
-                game_scroll_offset = selected_game;
-            } else if (selected_game >= game_scroll_offset + max_visible) {
+            if (selected_game >= max_visible) {
                 game_scroll_offset = selected_game - max_visible + 1;
             }
             if (game_scroll_offset < 0) game_scroll_offset = 0;

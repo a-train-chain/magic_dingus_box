@@ -76,8 +76,6 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     connection_result_ = ConnectionResult::IN_PROGRESS;
     
     std::thread([this, ssid, password]() {
-        std::string cmd;
-        
         // Delete existing connections with matching SSID to avoid "property is missing" errors
         // Use UUIDs to avoid ambiguity with names containing spaces
         std::string list_out = exec_command("sudo nmcli -t -f UUID,NAME connection show");

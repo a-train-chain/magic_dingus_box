@@ -1179,12 +1179,12 @@ int main(int /* argc */, char* /* argv */[]) {
 
 #ifdef HAVE_SYSTEMD
                                         // Disable watchdog during RetroArch (blocks on waitpid)
-                                        sd_notify(0, "WATCHDOG=usec=0");
+                                        sd_notify(0, "WATCHDOG_USEC=0");
 #endif
                                         auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
 #ifdef HAVE_SYSTEMD
-                                        // Re-enable watchdog after RetroArch exits
-                                        sd_notify(0, "WATCHDOG=1");
+                                        // Re-enable watchdog after RetroArch exits (10s = 10000000 usec)
+                                        sd_notify(0, "WATCHDOG_USEC=10000000");
 #endif
 
                                         game_running.store(false);
@@ -1737,40 +1737,40 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Check that we haven't already advanced from this specific item index
                 // AND that playback has actually started (prevents double-trigger from stale state)
                 bool can_advance = false;
-            if (state.master_shuffle_active) {
-                // In Master Shuffle we always advance to a new random video
-                // BUT we must ensure the new video has actually started playing
-                // to avoid double-triggering on stale state from the previous video
-                can_advance = state.playback_started_;
-            } else {
-                // Normal playlist advance logic
-                // Advance when video ends, even if menu overlay is visible
-                can_advance = (state.current_item_index != state.last_advanced_item_index &&
-                               state.playback_started_);
-            }
-                
+                if (state.master_shuffle_active) {
+                    // In Master Shuffle we always advance to a new random video
+                    // BUT we must ensure the new video has actually started playing
+                    // to avoid double-triggering on stale state from the previous video
+                    can_advance = state.playback_started_;
+                } else {
+                    // Normal playlist advance logic
+                    // Advance when video ends, even if menu overlay is visible
+                    can_advance = (state.current_item_index != state.last_advanced_item_index &&
+                                   state.playback_started_);
+                }
+
                 if (can_advance) {
-                    std::cout << "Auto-advancing from item " << state.current_item_index 
+                    std::cout << "Auto-advancing from item " << state.current_item_index
                               << " at position " << state.position << "/" << state.duration << std::endl;
                     // Set flag BEFORE calling load_next_item to prevent race conditions
                     state.last_advanced_item_index = state.current_item_index;
                     state.last_advanced_duration = state.duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
-                // Save current position to shuffle history before auto-advancing
-                if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
-                    state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
-                }
-                controller.play_random_global_video(state, playlist_directory);
-            } else {
-                controller.load_next_item(state, playlist_directory);
-            }
+                        // Save current position to shuffle history before auto-advancing
+                        if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                            state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
+                        }
+                        controller.play_random_global_video(state, playlist_directory);
+                    } else {
+                        controller.load_next_item(state, playlist_directory);
+                    }
                 } else if (state.position >= state.duration - 0.5) {
                     if (!state.master_shuffle_active) {
-                    std::cout << "NOT auto-advancing: item=" << state.current_item_index
-                              << ", last_advanced=" << state.last_advanced_item_index
-                              << ", playback_started=" << state.playback_started_ << std::endl;
-                }
+                        std::cout << "NOT auto-advancing: item=" << state.current_item_index
+                                  << ", last_advanced=" << state.last_advanced_item_index
+                                  << ", playback_started=" << state.playback_started_ << std::endl;
+                    }
                 }
             } else {
                 // Reset the flags when video is playing normally (not at end)
