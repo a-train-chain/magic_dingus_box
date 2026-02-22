@@ -65,6 +65,7 @@ private:
 
     // Deferred decoder inspection (counts down frames after playback starts)
     int decoder_inspect_frames_;
+    bool decoder_inspected_ = false;  // Guard to run decoder inspection only once per pipeline
 
     // EOS callback
     std::function<void()> eos_callback_;

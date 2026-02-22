@@ -67,6 +67,11 @@ private:
     bool gl_initialized_;
     bool letterbox_mode_ = false;  // When true, render 4:3 centered
     bool swap_uv_ = false; // Swap U/V planes (fix for red video)
+    bool frame_dirty_ = false;  // Set when new frame arrives from appsink
+    bool textures_allocated_ = false;  // Track if textures have been allocated
+    int allocated_width_ = 0;
+    int allocated_height_ = 0;
+    int allocated_format_ = -1;  // Track allocated format for glTexSubImage2D
     
     void init_gl_resources();
     void upload_frame(GstSample* sample);

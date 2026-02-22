@@ -64,7 +64,8 @@ private:
     double last_rotate_time_;
     static constexpr double ROTATE_REPEAT_HZ = 8.0;
 
-    // Rotary encoder velocity tracking
+    // Rotary encoder state
+    int rotary_accumulator_ = 0;
     std::chrono::steady_clock::time_point last_rotary_event_time_;
 };
 

@@ -14,6 +14,9 @@
 #include <thread>
 #include <random>
 #include <algorithm>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 #include "../platform/input_manager.h"
 
@@ -40,17 +43,28 @@ void Controller::set_system_volume(int percent) {
     // Clamp percentage
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
-    
+
     current_system_volume_ = percent;
-    
-    // 1. Try to set 'Master' volume
-    std::string command_master = "amixer sset 'Master' " + std::to_string(percent) + "% > /dev/null 2>&1";
-    int ret_master = std::system(command_master.c_str());
-    
-    // 2. Try to set 'PCM' volume (fallback or additional)
-    std::string command_pcm = "amixer sset 'PCM' " + std::to_string(percent) + "% > /dev/null 2>&1";
-    int ret_pcm = std::system(command_pcm.c_str());
-    
+
+    std::string pct = std::to_string(percent) + "%";
+
+    auto run_amixer = [](const std::string& control, const std::string& pct_str) -> int {
+        pid_t pid = fork();
+        if (pid == -1) return -1;
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+            execlp("amixer", "amixer", "sset", control.c_str(), pct_str.c_str(), nullptr);
+            _exit(127);
+        }
+        int status;
+        waitpid(pid, &status, 0);
+        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    };
+
+    int ret_master = run_amixer("Master", pct);
+    int ret_pcm = run_amixer("PCM", pct);
+
     if (ret_master != 0 && ret_pcm != 0) {
         std::cerr << "Warning: Failed to set system volume (amixer Master/PCM both failed)" << std::endl;
     }
@@ -468,8 +482,19 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
         std::cout << "Waking up controller before RetroArch launch..." << std::endl;
-        std::system("sudo udevadm trigger --action=change --sysname-match=js* 2>/dev/null || true");
-        std::system("sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true");
+        auto run_udevadm = [](const char* match) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
+                       match, nullptr);
+                _exit(127);
+            }
+            if (pid > 0) { int s; waitpid(pid, &s, 0); }
+        };
+        run_udevadm("--sysname-match=js*");
+        run_udevadm("--sysname-match=event*");
         wait_with_callback(200, progress_callback);
         std::cout << "Controller wake-up signal sent" << std::endl;
         
@@ -488,7 +513,16 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
         // This prevents "zombie" processes from holding onto DRM/Input resources
         std::cout << "RetroArch exited. Ensuring process termination..." << std::endl;
-        std::system("pkill -9 retroarch 2>/dev/null || true");
+        {
+            pid_t pid = fork();
+            if (pid == 0) {
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                execlp("pkill", "pkill", "-9", "retroarch", nullptr);
+                _exit(127);
+            }
+            if (pid > 0) { int s; waitpid(pid, &s, 0); }
+        }
         
         // Add delay here to ensure RetroArch has fully released DRM master and kernel resources
         std::cout << "Waiting for system to settle..." << std::endl;
@@ -524,8 +558,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             bool input_initialized = false;
             for (int i = 0; i < 3; ++i) {
                 // Re-wake controller before initializing
-                std::system("sudo udevadm trigger --action=change --sysname-match=js* 2>/dev/null || true");
-                std::system("sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true");
+                run_udevadm("--sysname-match=js*");
+                run_udevadm("--sysname-match=event*");
                 std::this_thread::sleep_for(std::chrono::milliseconds(300));
                 
                 if (input_manager_->initialize()) {
@@ -763,7 +797,12 @@ utils::Result<> Controller::initialize_retroarch_launcher() {
     return utils::Result<>::ok();
 }
 
-void Controller::play_random_global_video(AppState& state, const std::string& playlist_directory) {
+void Controller::play_random_global_video(AppState& state, const std::string& playlist_directory, int depth) {
+    if (depth > 5) {
+        std::cerr << "Error: play_random_global_video exceeded max retry depth" << std::endl;
+        return;
+    }
+
     if (state.playlists.size() <= 1) {
         std::cerr << "Warning: No playlists available for Master Shuffle" << std::endl;
         return;
@@ -777,7 +816,7 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
         std::cerr << "Error: Invalid playlist index from master shuffle queue" << std::endl;
         // Regenerate and retry
         state.master_shuffle_queue.clear();
-        play_random_global_video(state, playlist_directory);
+        play_random_global_video(state, playlist_directory, depth + 1);
         return;
     }
     
@@ -787,7 +826,7 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
         std::cerr << "Error: Invalid item index from master shuffle queue" << std::endl;
         // Regenerate and retry
         state.master_shuffle_queue.clear();
-        play_random_global_video(state, playlist_directory);
+        play_random_global_video(state, playlist_directory, depth + 1);
         return;
     }
 
@@ -810,25 +849,22 @@ void Controller::play_random_global_video(AppState& state, const std::string& pl
 
     if (!result) {
         // Skip this item and try next (error already logged by load_playlist_item)
-        play_random_global_video(state, playlist_directory);
+        play_random_global_video(state, playlist_directory, depth + 1);
     }
 }
 
 // Generate a shuffled queue of indices for the current playlist
 // Uses Fisher-Yates shuffle to randomize order
 void Controller::generate_shuffle_queue(AppState& state, int playlist_size) {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    
     // Create sequential indices
     state.shuffle_queue.clear();
     state.shuffle_queue.reserve(playlist_size);
     for (int i = 0; i < playlist_size; ++i) {
         state.shuffle_queue.push_back(i);
     }
-    
+
     // Fisher-Yates shuffle
-    std::shuffle(state.shuffle_queue.begin(), state.shuffle_queue.end(), gen);
+    std::shuffle(state.shuffle_queue.begin(), state.shuffle_queue.end(), rng_);
     
     // Reset position to start
     state.shuffle_queue_position = 0;
@@ -855,11 +891,8 @@ int Controller::get_next_shuffled_index(AppState& state, int playlist_size) {
 
 // Generate a shuffled queue for Master Shuffle (all items from all playlists)
 void Controller::generate_master_shuffle_queue(AppState& state) {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    
     state.master_shuffle_queue.clear();
-    
+
     // Collect all items from all playlists (skip playlist 0 which is Master Shuffle itself)
     for (size_t playlist_idx = 1; playlist_idx < state.playlists.size(); ++playlist_idx) {
         const auto& playlist = state.playlists[playlist_idx];
@@ -867,9 +900,9 @@ void Controller::generate_master_shuffle_queue(AppState& state) {
             state.master_shuffle_queue.emplace_back(static_cast<int>(playlist_idx), static_cast<int>(item_idx));
         }
     }
-    
+
     // Fisher-Yates shuffle
-    std::shuffle(state.master_shuffle_queue.begin(), state.master_shuffle_queue.end(), gen);
+    std::shuffle(state.master_shuffle_queue.begin(), state.master_shuffle_queue.end(), rng_);
     
     // Reset position to start
     state.master_shuffle_queue_position = 0;

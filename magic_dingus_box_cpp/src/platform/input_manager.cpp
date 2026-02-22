@@ -12,6 +12,7 @@
 #include <chrono>
 #include <thread>
 #include <cstdlib>
+#include <sys/wait.h>
 
 namespace platform {
 
@@ -50,8 +51,19 @@ bool InputManager::initialize() {
     
     // CRITICAL: Wake up controller before opening devices
     // Controller may be in sleep mode and needs to be triggered
-    std::system("sudo udevadm trigger --action=change --sysname-match=js* 2>/dev/null || true");
-    std::system("sudo udevadm trigger --action=change --sysname-match=event* 2>/dev/null || true");
+    auto run_udevadm = [](const char* match) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+            execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
+                   match, nullptr);
+            _exit(127);
+        }
+        if (pid > 0) { int s; waitpid(pid, &s, 0); }
+    };
+    run_udevadm("--sysname-match=js*");
+    run_udevadm("--sysname-match=event*");
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     if (!open_joystick_devices()) {
@@ -372,17 +384,16 @@ std::vector<InputEvent> InputManager::poll() {
                 if (ev.code == REL_X) {
                     // Software Accumulator to fix sensitivity and "skipping"
                     // Require accumulating 4 units (either magnitude 4 or 4 events of 1) to trigger 1 step
-                    static int accumulator = 0;
-                    const int THRESHOLD = 4; 
-                    
-                    accumulator += ev.value;
-                    
-                    if (std::abs(accumulator) >= THRESHOLD) {
+                    const int THRESHOLD = 4;
+
+                    rotary_accumulator_ += ev.value;
+
+                    if (std::abs(rotary_accumulator_) >= THRESHOLD) {
                         input_ev.action = InputAction::ROTATE;
                         // INVERT direction: positive accumulator -> negative delta
                         // (User requested inversion)
-                        input_ev.delta = (accumulator > 0) ? -1 : 1;
-                        accumulator = 0;
+                        input_ev.delta = (rotary_accumulator_ > 0) ? -1 : 1;
+                        rotary_accumulator_ = 0;
 
                         // Calculate velocity based on time between rotary events
                         auto now_tp = std::chrono::steady_clock::now();
@@ -489,16 +500,11 @@ InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
 
 InputAction InputManager::map_key_to_action(uint16_t code) {
     // Keyboard mappings (matching Python keyboard.py)
-    // Note: Arrow keys are handled in poll() to set delta
+    // Note: Arrow keys (Left/Right/Up/Down) are handled in poll() as ROTATE/ROTATE_VERTICAL
     switch (code) {
         case KEY_ENTER:
         case KEY_SPACE:
             return InputAction::SELECT;
-        // Up/Down handled in poll() as ROTATE_VERTICAL
-        case KEY_LEFT:
-            return InputAction::SEEK_LEFT;
-        case KEY_RIGHT:
-            return InputAction::SEEK_RIGHT;
         case KEY_N:
             return InputAction::NEXT;
         case KEY_P:
@@ -520,6 +526,7 @@ void InputManager::cleanup() {
         }
     }
     devices_.clear();
+    rotary_accumulator_ = 0;
 }
 
 } // namespace platform

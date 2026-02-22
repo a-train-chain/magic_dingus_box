@@ -146,6 +146,11 @@ void GstRenderer::reset_gl() {
     frame_format_ = -1;
     frame_width_ = 0;
     frame_height_ = 0;
+    textures_allocated_ = false;
+    allocated_width_ = 0;
+    allocated_height_ = 0;
+    allocated_format_ = -1;
+    frame_dirty_ = false;
 
     LOG_DEBUG("GstRenderer: GL resources reset complete, will re-init on next render");
 }
@@ -262,23 +267,36 @@ void GstRenderer::cleanup() {
         if (program_id_ != 0) glDeleteProgram(program_id_);
         gl_initialized_ = false;
     }
+    textures_allocated_ = false;
+    allocated_width_ = 0;
+    allocated_height_ = 0;
+    allocated_format_ = -1;
+    frame_dirty_ = false;
 }
 
 uint64_t GstRenderer::get_update_flags() const {
-    return UPDATE_FRAME; 
+    // Always report UPDATE_FRAME when pipeline is active.
+    // We can't peek the appsink without consuming the sample, and GStreamer
+    // delivers frames asynchronously. The render() method uses try_pull_sample
+    // with a 0 timeout which is already non-blocking, so the cost of calling
+    // render() when no new frame is available is minimal (just a failed pull).
+    if (appsink_ && gl_initialized_) {
+        return UPDATE_FRAME;
+    }
+    return 0;
 }
 
 void GstRenderer::render() {
     if (!gl_initialized_) init_gl_resources();
-    
+
     // Pull sample (non-blocking)
     GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0);
-    
+
     if (sample) {
         upload_frame(sample);
         gst_sample_unref(sample);
     }
-    
+
     render_quad();
 }
 
@@ -341,71 +359,103 @@ void GstRenderer::upload_frame(GstSample* sample) {
     frame_width_ = w;
     frame_height_ = h;
     
+    // Check if texture dimensions or format changed (need full reallocation)
+    bool size_changed = !textures_allocated_ || w != allocated_width_ || h != allocated_height_ || format != allocated_format_;
+
     GstMapInfo map;
     if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
         if (format == 0) { // RGBA
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
-            // Ideally use PBO for async upload, but simple upload for now
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, map.data);
-        } 
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, map.data);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, map.data);
+            }
+        }
         else if (format == 1) { // I420 (Y, U, V planar)
             // Calculate plane sizes using strides for proper alignment
             int y_plane_size = y_stride * h;
             int u_plane_size = uv_stride * ((h + 1) / 2);
-
-            // Use the strides we got from GStreamer caps
             int actual_uv_stride = uv_stride;
-            // Note: GStreamer buffer usually has padding, but with appsink and video/x-raw we might get packed or strided.
-            // We assume packed for simplicity or handle stride if we can parse it. 
-            // video/x-raw usually provides packed data unless we check strides.
-            // Let's try strict upload assuming packed first.
-            
+
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            
+
             // Upload Y plane
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, map.data);
+            }
             LOG_TRACE("GstRenderer: Uploaded Y plane {}x{} from offset 0", w, h);
 
-            // Upload U/V planes (handle optional swap)
+            // Upload U plane (handle optional swap)
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 2 : 1]); // If swap, put U data into V texture
+            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 2 : 1]);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_uv_stride, (h + 1) / 2, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
+            }
             LOG_TRACE("GstRenderer: Uploaded U plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size);
 
             // Upload V plane
             glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 1 : 2]); // If swap, put V data into U texture
+            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 1 : 2]);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_uv_stride, (h + 1) / 2, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
+            }
             LOG_TRACE("GstRenderer: Uploaded V plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size + u_plane_size);
 
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);  // Reset to default
         }
         else if (format == 2) { // NV12 (Y plane, then UV interleaved)
-            int y_size = w * h;
             int uv_width = (w + 1) / 2;
             int uv_height = (h + 1) / 2;
-            
+
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride);  // Y plane: 1 byte/texel, stride in bytes = texels
+
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, map.data);
+            }
+
+            // UV plane: GL_RG = 2 bytes/texel, row has y_stride bytes = y_stride/2 RG texels
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride / 2);
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, texture_ids_[1]);
-            // UV plane is w/2 x h/2 but 2 bytes per pixel (interleaved) -> same width as UV in I420 but RG texture
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, uv_width, uv_height, 0, GL_RG, GL_UNSIGNED_BYTE, map.data + y_size);
-            
+            if (size_changed) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, uv_width, uv_height, 0, GL_RG, GL_UNSIGNED_BYTE,
+                             map.data + y_stride * h);  // Use stride for offset
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uv_width, uv_height, GL_RG, GL_UNSIGNED_BYTE,
+                                map.data + y_stride * h);
+            }
+
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         }
-        
+
+        // Track allocated dimensions and format for glTexSubImage2D optimization
+        if (size_changed) {
+            textures_allocated_ = true;
+            allocated_width_ = w;
+            allocated_height_ = h;
+            allocated_format_ = format;
+        }
+
         gst_buffer_unmap(buffer, &map);
     }
 }

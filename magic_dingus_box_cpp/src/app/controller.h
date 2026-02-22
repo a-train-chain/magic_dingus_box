@@ -6,6 +6,7 @@
 #include "../utils/result.h"
 #include <string>
 #include <functional>
+#include <random>
 
 namespace platform {
     class DrmDisplay;  // Forward declaration
@@ -60,7 +61,7 @@ public:
     void load_previous_item(AppState& state, const std::string& playlist_directory);
     
     // Play a random video from any playlist (Master Shuffle)
-    void play_random_global_video(AppState& state, const std::string& playlist_directory);
+    void play_random_global_video(AppState& state, const std::string& playlist_directory, int depth = 0);
     
     // Audio recovery
     void check_audio_recovery();
@@ -80,7 +81,8 @@ private:
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;
-    
+    std::mt19937 rng_{std::random_device{}()};
+
     // Shuffle queue helpers
     void generate_shuffle_queue(AppState& state, int playlist_size);
     void generate_master_shuffle_queue(AppState& state);

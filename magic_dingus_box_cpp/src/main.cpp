@@ -26,6 +26,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <vector>
+#include <optional>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -691,6 +692,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
             } else {
                 // Subsequent frames: use page flip
+                // Static: persists across frames intentionally for DRM page flip callback
                 static PageFlipContext flip_ctx;
                 flip_ctx.waiting_for_flip = true;
 
@@ -990,14 +992,17 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         
         // Track Menu button state for volume control
-        static bool menu_button_held = false;
-        static bool volume_changed_while_held = false;
-        static std::chrono::steady_clock::time_point menu_press_time;
-        
+        struct MenuHoldState {
+            bool button_held = false;
+            bool volume_changed_while_held = false;
+            std::chrono::steady_clock::time_point press_time;
+        };
+        static MenuHoldState menu_hold;
+
         // Time-based check for showing slider (if held long enough)
-        if (menu_button_held && !state.show_volume_slider) {
+        if (menu_hold.button_held && !state.show_volume_slider) {
             auto now = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - menu_press_time).count();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now - menu_hold.press_time).count();
             if (duration > 300) {
                 state.show_volume_slider = true;
             }
@@ -1007,25 +1012,25 @@ int main(int /* argc */, char* /* argv */[]) {
             // Handle Menu button hold logic
             if (ev.action == InputAction::SETTINGS_MENU) {
                 if (ev.pressed) {
-                    menu_button_held = true;
-                    volume_changed_while_held = false;
-                    menu_press_time = std::chrono::steady_clock::now();
+                    menu_hold.button_held = true;
+                    menu_hold.volume_changed_while_held = false;
+                    menu_hold.press_time = std::chrono::steady_clock::now();
                     state.show_volume_slider = false; // Don't show immediately
                 } else {
-                    menu_button_held = false;
+                    menu_hold.button_held = false;
                     state.show_volume_slider = false; // Hide immediately
                     
                     auto release_time = std::chrono::steady_clock::now();
-                    auto hold_duration = std::chrono::duration_cast<std::chrono::milliseconds>(release_time - menu_press_time).count();
+                    auto hold_duration = std::chrono::duration_cast<std::chrono::milliseconds>(release_time - menu_hold.press_time).count();
                     
                     // Only toggle menu if we didn't change volume AND it was a short press
-                    if (!volume_changed_while_held && hold_duration < 300) {
+                    if (!menu_hold.volume_changed_while_held && hold_duration < 300) {
                         // Only allow settings menu when UI is visible
                         bool ui_available = !state.video_active || state.ui_visible_when_playing;
                         if (ui_available) {
                             settings_menu.toggle();
                         }
-                    } else if (volume_changed_while_held) {
+                    } else if (menu_hold.volume_changed_while_held) {
                         // Volume was changed, save settings now
                         app::SettingsPersistence::save_settings(state);
                     }
@@ -1034,7 +1039,7 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             
             // If Menu button is held, hijack Rotate/Up/Down for volume
-            if (menu_button_held) {
+            if (menu_hold.button_held) {
                 if (ev.action == InputAction::ROTATE) {
                     int vol_change = ev.delta * 5; // 5% increments
                     state.master_volume += vol_change;
@@ -1048,7 +1053,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                     // Show slider immediately on interaction and mark as changed
                     state.show_volume_slider = true;
-                    volume_changed_while_held = true;
+                    menu_hold.volume_changed_while_held = true;
                 } else if (ev.action == InputAction::ROTATE_VERTICAL) {
                     // Invert delta for vertical axis (Up = -1 -> Volume Up)
                     int vol_change = -ev.delta * 5; // 5% increments
@@ -1063,7 +1068,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                     // Show slider immediately on interaction and mark as changed
                     state.show_volume_slider = true;
-                    volume_changed_while_held = true;
+                    menu_hold.volume_changed_while_held = true;
                 }
                 continue; // Consume event
             }
@@ -1814,8 +1819,8 @@ int main(int /* argc */, char* /* argv */[]) {
         }
 
         // Debug video rendering decision
-        static int last_render_decision = -1;
-        if (should_render_video != last_render_decision) {
+        static std::optional<bool> last_render_decision;
+        if (!last_render_decision.has_value() || should_render_video != *last_render_decision) {
             std::cout << "Video render decision changed: should_render=" << should_render_video
                      << ", intro_complete=" << state.intro_complete
                      << ", video_active=" << state.video_active
@@ -1903,7 +1908,11 @@ int main(int /* argc */, char* /* argv */[]) {
             state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
             const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
             if (!bezel.file.empty()) {
-                ui_renderer.load_bezel(bezel.file);
+                static std::string loaded_bezel_path;
+                if (bezel.file != loaded_bezel_path) {
+                    ui_renderer.load_bezel(bezel.file);
+                    loaded_bezel_path = bezel.file;
+                }
                 // Reset viewport to fullscreen for bezel overlay
                 glViewport(0, 0, mode.width, mode.height);
                 ui_renderer.render_bezel();

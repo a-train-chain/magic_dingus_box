@@ -207,39 +207,41 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                     player->is_playing_ = true;
                     player->is_paused_ = false;
 
-                    // Inspect pipeline to see what decoder is used
-                    GstIterator* it = gst_bin_iterate_recurse(GST_BIN(player->pipeline_));
-                    GValue item = G_VALUE_INIT;
-                    bool done = false;
-                    while (!done) {
-                        switch (gst_iterator_next(it, &item)) {
-                            case GST_ITERATOR_OK: {
-                                GstElement* element = GST_ELEMENT(g_value_get_object(&item));
-                                gchar* name = gst_element_get_name(element);
-                                GstElementFactory* factory = gst_element_get_factory(element);
+                    // Inspect pipeline to see what decoder is used (only once per pipeline)
+                    if (!player->decoder_inspected_) {
+                        player->decoder_inspected_ = true;
+                        GstIterator* it = gst_bin_iterate_recurse(GST_BIN(player->pipeline_));
+                        GValue item = G_VALUE_INIT;
+                        bool done = false;
+                        while (!done) {
+                            switch (gst_iterator_next(it, &item)) {
+                                case GST_ITERATOR_OK: {
+                                    GstElement* element = GST_ELEMENT(g_value_get_object(&item));
+                                    gchar* name = gst_element_get_name(element);
+                                    GstElementFactory* factory = gst_element_get_factory(element);
 
-                                // Check if it looks like a decoder
-                                if (factory) {
-                                    const gchar* factory_name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
-                                    if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec"))) {
-                                        LOG_DEBUG("  Decoder: {} ({})", name, factory_name);
+                                    if (factory) {
+                                        const gchar* factory_name = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory));
+                                        if (factory_name && (strstr(factory_name, "dec") || strstr(factory_name, "avdec"))) {
+                                            LOG_DEBUG("  Decoder: {} ({})", name, factory_name);
+                                        }
                                     }
-                                }
 
-                                g_free(name);
-                                g_value_reset(&item);
-                                break;
+                                    g_free(name);
+                                    g_value_reset(&item);
+                                    break;
+                                }
+                                case GST_ITERATOR_RESYNC:
+                                    gst_iterator_resync(it);
+                                    break;
+                                case GST_ITERATOR_ERROR:
+                                case GST_ITERATOR_DONE:
+                                    done = true;
+                                    break;
                             }
-                            case GST_ITERATOR_RESYNC:
-                                gst_iterator_resync(it);
-                                break;
-                            case GST_ITERATOR_ERROR:
-                            case GST_ITERATOR_DONE:
-                                done = true;
-                                break;
                         }
+                        gst_iterator_free(it);
                     }
-                    gst_iterator_free(it);
 
                 } else if (new_state == GST_STATE_PAUSED) {
                     player->is_paused_ = true;
@@ -286,6 +288,7 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
     if (!initialized_) return false;
 
     stop();
+    decoder_inspected_ = false;  // Re-inspect decoder for new media
 
     std::string uri = "file://" + path;
     // Handle absolute paths
@@ -443,9 +446,11 @@ void GstPlayer::update_state() {
         }
 
         // Deferred decoder inspection (non-blocking, runs after pipeline has settled)
-        if (decoder_inspect_frames_ > 0) {
+        // Guarded by decoder_inspected_ to avoid duplicate inspection (bus_call also inspects)
+        if (decoder_inspect_frames_ > 0 && !decoder_inspected_) {
             decoder_inspect_frames_--;
             if (decoder_inspect_frames_ == 0) {
+                decoder_inspected_ = true;
                 GstIterator* it = gst_bin_iterate_recurse(GST_BIN(pipeline_));
                 GValue item = G_VALUE_INIT;
                 bool done = false;

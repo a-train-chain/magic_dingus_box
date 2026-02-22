@@ -8,6 +8,9 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 
 namespace app {
 
@@ -288,22 +291,34 @@ public:
         // Sink 1 = HDMI (platform-fef00700.hdmi)
         void apply_output() const {
             std::string sink_name;
-            
+
             if (output == AudioOutput::HEADPHONE) {
                 sink_name = "alsa_output.platform-fe00b840.mailbox.stereo-fallback";
             } else {
                 // HDMI for both AUTO and HDMI modes
                 sink_name = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
             }
-            
-            // Set the default sink for new streams
-            std::string set_default = "pactl set-default-sink " + sink_name + " >/dev/null 2>&1";
-            system(set_default.c_str());
-            
-            // Move all currently playing streams to the new sink
-            // This ensures the currently playing video switches immediately
+
+            // Set default sink via fork/execvp
+            pid_t pid = fork();
+            if (pid == 0) {
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                execlp("pactl", "pactl", "set-default-sink", sink_name.c_str(), nullptr);
+                _exit(127);
+            }
+            if (pid > 0) { int s; waitpid(pid, &s, 0); }
+
+            // Move active streams - needs shell for pipeline, but sink_name is a hardcoded constant (not user input)
             std::string move_streams = "for i in $(pactl list short sink-inputs 2>/dev/null | cut -f1); do pactl move-sink-input $i " + sink_name + " 2>/dev/null; done";
-            system(move_streams.c_str());
+            pid_t pid2 = fork();
+            if (pid2 == 0) {
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                execl("/bin/sh", "sh", "-c", move_streams.c_str(), nullptr);
+                _exit(127);
+            }
+            if (pid2 > 0) { int s; waitpid(pid2, &s, 0); }
         }
         
         // Get volume offset label for display

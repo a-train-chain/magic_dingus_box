@@ -236,15 +236,10 @@ namespace {
             map.left_btn = "h0left";
             map.right_btn = "h0right";
             
-            // Hotkeys
-            // 5 = R Trigger (R1)
-            // 0 = C-Left
-            // 1 = B
-            // 2 = A
-            // 3 = C-Down
-            // 6 = R (C-Right?)
-            // Let's stick to ID 5 (R Trigger) as hotkey if that's the standard "Z" button on this controller setup.
-            map.enable_hotkey_btn = "5"; 
+            // Hotkeys - use Select (10) as hotkey enable to avoid R shoulder conflict
+            // Button 5 is R shoulder (used in gameplay), so we can't use it as hotkey
+            // Select + Start = toggle RetroArch menu
+            map.enable_hotkey_btn = "10";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("mednafen_pce_fast") != std::string::npos) {
@@ -1346,14 +1341,27 @@ std::string RetroArchLauncher::detect_alsa_device() {
 void RetroArchLauncher::stop_gstreamer_and_cleanup() {
     std::cout << "Stopping GStreamer and cleaning up audio resources..." << std::endl;
     
-    // Kill any GStreamer processes
-    std::cout << "Killing GStreamer processes..." << std::endl;
-    std::system("pkill -9 gst-launch-1.0 2>/dev/null || true");
-    std::system("pkill -9 -f 'gst.*playbin' 2>/dev/null || true");
-    
+    // Kill GStreamer processes that are children of our app (avoid killing unrelated processes)
+    std::cout << "Killing GStreamer child processes..." << std::endl;
+    std::string our_pid = std::to_string(getpid());
+    auto run_pkill = [](const char* const args[]) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+            execvp(args[0], const_cast<char* const*>(args));
+            _exit(127);
+        }
+        if (pid > 0) { int s; waitpid(pid, &s, 0); }
+    };
+    const char* kill_gst1[] = {"pkill", "-9", "-P", our_pid.c_str(), "-f", "gst", nullptr};
+    const char* kill_gst2[] = {"pkill", "-9", "gst-launch-1.0", nullptr};
+    run_pkill(kill_gst1);
+    run_pkill(kill_gst2);
+
     // Wait for processes to exit
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
+
     // Check if ALSA device is still in use
     FILE* lsof_pipe = popen("lsof 2>/dev/null | grep snd || true", "r");
     if (lsof_pipe) {
@@ -1367,15 +1375,12 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
             }
         }
         pclose(lsof_pipe);
-        
+
         if (device_busy) {
             std::cout << "ALSA device still busy, waiting additional 300ms..." << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         }
     }
-    
-    // Kill any lingering magic+GStreamer processes
-    std::system("pkill -9 -f 'magic.*gst' 2>/dev/null || true");
     
     std::cout << "GStreamer cleanup complete" << std::endl;
 }
