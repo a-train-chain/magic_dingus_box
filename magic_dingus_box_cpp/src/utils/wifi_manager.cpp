@@ -1,14 +1,14 @@
 #include "wifi_manager.h"
-#include <array>
-#include <memory>
 #include <iostream>
 #include <sstream>
 #include <algorithm>
 #include <set>
 #include <thread>
-#include <cstdio>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <poll.h>
+#include <signal.h>
+#include <chrono>
 
 namespace utils {
 
@@ -28,8 +28,7 @@ WifiManager::~WifiManager() {
 }
 
 bool WifiManager::initialize() {
-    // Check if nmcli exists
-    std::string output = exec_command("which nmcli");
+    std::string output = exec_command_argv({"which", "nmcli"});
     return !output.empty();
 }
 
@@ -42,11 +41,8 @@ void WifiManager::scan_networks_async() {
     std::cout << "WifiManager: Starting async scan..." << std::endl;
     is_scanning_ = true;
     std::thread([this]() {
-        // -f: fields (SSID, SIGNAL, SECURITY, IN-USE)
-        // -t: terse (colon separated, escaping)
-        // dev wifi list
-        std::string cmd = "nmcli -t -f SSID,SIGNAL,SECURITY,IN-USE dev wifi list --rescan yes 2>&1";
-        std::string output = exec_command(cmd.c_str());
+        std::string output = exec_command_argv({"nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
+                                                "dev", "wifi", "list", "--rescan", "yes"});
         
         std::cout << "WifiManager: Scan complete. Output length: " << output.length() << std::endl;
         // std::cout << "Raw output: " << output << std::endl; // Uncomment if needed, might be spammy
@@ -76,64 +72,88 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     connection_result_ = ConnectionResult::IN_PROGRESS;
     
     std::thread([this, ssid, password]() {
+        // Clear previous error
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            connection_error_.clear();
+        }
+
         // Delete existing connections with matching SSID to avoid "property is missing" errors
-        // Use UUIDs to avoid ambiguity with names containing spaces
-        std::string list_out = exec_command("sudo nmcli -t -f UUID,NAME connection show");
+        std::string list_out = exec_command_argv({"sudo", "nmcli", "-t", "-f", "UUID,NAME", "connection", "show"});
         std::istringstream stream(list_out);
         std::string line;
         while (std::getline(stream, line)) {
             if (line.empty()) continue;
-            
-            // Format is UUID:NAME
+
             size_t colon = line.find(':');
             if (colon == std::string::npos) continue;
-            
+
             std::string uuid = line.substr(0, colon);
-            std::string name = line.substr(colon + 1);
-            
-            // Query SSID for this connection using UUID
-            std::string query = "sudo nmcli -t -f 802-11-wireless.ssid connection show " + uuid + " 2>/dev/null";
-            std::string conn_ssid = exec_command(query.c_str());
-            
-            // Trim newline
+
+            std::string conn_ssid = exec_command_argv({"sudo", "nmcli", "-t", "-f",
+                                                        "802-11-wireless.ssid", "connection", "show", uuid});
             conn_ssid.erase(std::remove(conn_ssid.begin(), conn_ssid.end(), '\n'), conn_ssid.end());
-            
+
+            // nmcli outputs "802-11-wireless.ssid:ActualSSID"
+            size_t ssid_colon = conn_ssid.find(':');
+            if (ssid_colon != std::string::npos) {
+                conn_ssid = conn_ssid.substr(ssid_colon + 1);
+            }
+
             if (conn_ssid == ssid) {
-                std::cout << "WifiManager: Deleting stale connection '" << name << "' (UUID: " << uuid << ") matches SSID '" << ssid << "'" << std::endl;
-                std::string del = "sudo nmcli connection delete " + uuid;
-                exec_command(del.c_str());
+                std::string name = line.substr(colon + 1);
+                std::cout << "WifiManager: Deleting stale connection '" << name
+                          << "' (UUID: " << uuid << ") matches SSID '" << ssid << "'" << std::endl;
+                exec_command_argv({"sudo", "nmcli", "connection", "delete", uuid});
             }
         }
 
+        // Attempt connection with timeout
         std::string output;
         if (password.empty()) {
-            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid});
+            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid},
+                                       CONNECTION_TIMEOUT_SECONDS);
         } else {
-            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password});
+            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password},
+                                       CONNECTION_TIMEOUT_SECONDS);
         }
 
         std::cout << "WifiManager: Connecting to SSID: " << ssid << std::endl;
         std::cout << "WifiManager: Connect output: " << output << std::endl;
-        
-        // nmcli output contains "successfully activated" on success
+
         if (output.find("successfully activated") != std::string::npos) {
             std::cout << "WifiManager: Connection SUCCESS detected" << std::endl;
-            
-            // Explicitly ensure autoconnect is enabled for persistence
-            // Usually default, but we enforce it per user request
             exec_command_argv({"sudo", "nmcli", "connection", "modify", "id", ssid, "connection.autoconnect", "yes"});
-            std::cout << "WifiManager: Enforced autoconnect=yes for '" << ssid << "'" << std::endl;
-            
             connection_result_ = ConnectionResult::SUCCESS;
         } else {
-            std::cerr << "WifiManager: Connection FAILURE detected from output" << std::endl;
-            // Additional check: maybe it's already connected?
-            if (output.find("Error: Connection activation failed") != std::string::npos) {
-                 std::cerr << "WifiManager: Activation failed (wrong password?)" << std::endl;
+            // Parse specific error
+            std::string error_msg;
+            if (output.empty()) {
+                error_msg = "Connection timed out";
+                connection_result_ = ConnectionResult::TIMEOUT;
+            } else if (output.find("Secrets were required") != std::string::npos ||
+                       output.find("secrets were required") != std::string::npos ||
+                       output.find("No secrets") != std::string::npos) {
+                error_msg = "Wrong password";
+                connection_result_ = ConnectionResult::FAILURE;
+            } else if (output.find("No network with SSID") != std::string::npos) {
+                error_msg = "Network not found";
+                connection_result_ = ConnectionResult::FAILURE;
+            } else {
+                // Extract first line of output for context
+                std::string first_line = output.substr(0, output.find('\n'));
+                if (first_line.length() > 60) first_line = first_line.substr(0, 60) + "...";
+                error_msg = "Connection failed: " + first_line;
+                connection_result_ = ConnectionResult::FAILURE;
             }
-            connection_result_ = ConnectionResult::FAILURE;
+
+            std::cerr << "WifiManager: " << error_msg << std::endl;
+            {
+                std::lock_guard<std::mutex> lock(error_mutex_);
+                connection_error_ = error_msg;
+            }
         }
-        
+
         is_connecting_ = false;
     }).detach();
 }
@@ -144,38 +164,48 @@ void WifiManager::reset_connection_state() {
 }
 
 std::string WifiManager::get_current_ssid() {
-    // Get active connection on wifi device
-    // nmcli -t -f NAME connection show --active
-    // This might show UUIDs or other connections, simpler to look at wifi status
-    std::string output = exec_command("nmcli -t -f GENERAL.CONNECTION dev show wlan0 2>/dev/null");
+    std::string output = exec_command_argv({"nmcli", "-t", "-f", "GENERAL.CONNECTION", "dev", "show", "wlan0"});
     if (output.empty()) {
-        // Fallback if wlan0 isn't the interface name:
-        // Try general active connections of type wifi
-        output = exec_command("nmcli -t -f NAME,TYPE connection show --active | grep ':802-11-wireless' | cut -d: -f1");
+        // Fallback: get active wifi connections and filter in C++
+        output = exec_command_argv({"nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"});
+        std::istringstream stream(output);
+        std::string line;
+        while (std::getline(stream, line)) {
+            size_t colon = line.rfind(':');
+            if (colon != std::string::npos && line.substr(colon + 1) == "802-11-wireless") {
+                return line.substr(0, colon);
+            }
+        }
+        return "";
     }
-    
-    // Clean up output (remove newlines)
+
     output.erase(std::remove(output.begin(), output.end(), '\n'), output.end());
-    // remove "GENERAL.CONNECTION:" prefix if present from device show
     size_t colon = output.find(':');
     if (colon != std::string::npos) {
         output = output.substr(colon + 1);
     }
-    
     return output;
 }
 
 std::string WifiManager::get_ip_address() {
-    std::string output = exec_command("hostname -I | cut -d' ' -f1"); // quick hack
+    std::string output = exec_command_argv({"hostname", "-I"});
     output.erase(std::remove(output.begin(), output.end(), '\n'), output.end());
+    // Take first token (first IP address)
+    size_t space = output.find(' ');
+    if (space != std::string::npos) {
+        output = output.substr(0, space);
+    }
     return output;
 }
 
 bool WifiManager::is_connected() {
-    // Check global connectivity
-    std::string output = exec_command("nmcli -t -f CONNECTIVITY general");
-    // full, limited
+    std::string output = exec_command_argv({"nmcli", "-t", "-f", "CONNECTIVITY", "general"});
     return (output.find("full") != std::string::npos || output.find("limited") != std::string::npos);
+}
+
+std::string WifiManager::get_connection_error() {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return connection_error_;
 }
 
 bool WifiManager::forget_network(const std::string& ssid) {
@@ -183,20 +213,7 @@ bool WifiManager::forget_network(const std::string& ssid) {
     return (output.find("successfully") != std::string::npos);
 }
 
-std::string WifiManager::exec_command(const char* cmd) {
-    std::array<char, 128> buffer;
-    std::string result;
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
-    if (!pipe) {
-        return "";
-    }
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-    }
-    return result;
-}
-
-std::string WifiManager::exec_command_argv(const std::vector<std::string>& args) {
+std::string WifiManager::exec_command_argv(const std::vector<std::string>& args, int timeout_seconds) {
     if (args.empty()) return "";
 
     int pipefd[2];
@@ -229,15 +246,68 @@ std::string WifiManager::exec_command_argv(const std::vector<std::string>& args)
 
     std::string result;
     char buffer[128];
-    ssize_t n;
-    while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[n] = '\0';
-        result += buffer;
-    }
-    close(pipefd[0]);
 
-    int status;
-    waitpid(pid, &status, 0);
+    if (timeout_seconds > 0) {
+        // Timeout-aware read using poll()
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+        struct pollfd pfd;
+        pfd.fd = pipefd[0];
+        pfd.events = POLLIN;
+
+        bool timed_out = false;
+        while (true) {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (remaining.count() <= 0) {
+                timed_out = true;
+                break;
+            }
+
+            int ret = poll(&pfd, 1, static_cast<int>(remaining.count()));
+            if (ret > 0 && (pfd.revents & POLLIN)) {
+                ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
+                if (n <= 0) break; // EOF or error
+                buffer[n] = '\0';
+                result += buffer;
+            } else if (ret == 0) {
+                timed_out = true;
+                break;
+            } else {
+                break; // poll error
+            }
+        }
+        close(pipefd[0]);
+
+        if (timed_out) {
+            // Kill the child process
+            kill(pid, SIGTERM);
+            // Brief wait for graceful shutdown
+            usleep(200000); // 200ms
+            int status;
+            if (waitpid(pid, &status, WNOHANG) == 0) {
+                // Still alive, force kill
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+            }
+            std::cerr << "WifiManager: Command timed out after " << timeout_seconds << "s" << std::endl;
+            return ""; // Empty string signals timeout
+        }
+
+        int status;
+        waitpid(pid, &status, 0);
+    } else {
+        // No timeout - blocking read
+        ssize_t n;
+        while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[n] = '\0';
+            result += buffer;
+        }
+        close(pipefd[0]);
+
+        int status;
+        waitpid(pid, &status, 0);
+    }
+
     return result;
 }
 
@@ -246,7 +316,7 @@ std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string&
 
     // Build set of saved WiFi SSIDs for cross-referencing
     std::set<std::string> saved_ssids;
-    std::string saved_output = exec_command("nmcli -t -f NAME,TYPE connection show 2>/dev/null");
+    std::string saved_output = exec_command_argv({"nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"});
     std::istringstream saved_stream(saved_output);
     std::string saved_line;
     while (std::getline(saved_stream, saved_line)) {

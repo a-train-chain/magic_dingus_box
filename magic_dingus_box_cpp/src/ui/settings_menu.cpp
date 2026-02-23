@@ -558,12 +558,13 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
 
     // Check previous result
     utils::ConnectionResult result = wifi.get_connection_result();
-    if (result == utils::ConnectionResult::FAILURE) {
-        wifi.reset_connection_state(); // Clear it so we don't show it forever
+    if (result == utils::ConnectionResult::FAILURE || result == utils::ConnectionResult::TIMEOUT) {
+        std::string error = wifi.get_connection_error();
+        wifi.reset_connection_state();
         return {
-            MenuItem("Connection Failed", MenuSection::BACK, "Check password/signal"),
-            MenuItem("Back", MenuSection::BACK, "Return to list", 
-                []() { utils::WifiManager::instance().scan_networks_async(); }) 
+            MenuItem("Connection Failed", MenuSection::BACK, error.empty() ? "Unknown error" : error),
+            MenuItem("Back", MenuSection::BACK, "Return to list",
+                []() { utils::WifiManager::instance().scan_networks_async(); })
         };
     }
 
