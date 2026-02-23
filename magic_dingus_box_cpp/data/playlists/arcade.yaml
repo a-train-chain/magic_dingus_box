@@ -18,13 +18,6 @@ items:
     emulator_core: fbneo_libretro
     emulator_system: Arcade
 
-  - title: Double Dragon
-    artist: ''
-    source_type: emulated_game
-    path: data/roms/arcade/ddragon.zip
-    emulator_core: fbneo_libretro
-    emulator_system: Arcade
-
   - title: Defender
     artist: ''
     source_type: emulated_game
@@ -85,13 +78,6 @@ items:
     artist: ''
     source_type: emulated_game
     path: data/roms/arcade/mk2.zip
-    emulator_core: fbneo_libretro
-    emulator_system: Arcade
-
-  - title: Metal Slug
-    artist: ''
-    source_type: emulated_game
-    path: data/roms/arcade/mslug.zip
     emulator_core: fbneo_libretro
     emulator_system: Arcade
 
