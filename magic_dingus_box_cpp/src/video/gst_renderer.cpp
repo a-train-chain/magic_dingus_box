@@ -280,7 +280,7 @@ uint64_t GstRenderer::get_update_flags() const {
     // delivers frames asynchronously. The render() method uses try_pull_sample
     // with a 0 timeout which is already non-blocking, so the cost of calling
     // render() when no new frame is available is minimal (just a failed pull).
-    if (appsink_ && gl_initialized_) {
+    if (appsink_) {
         return UPDATE_FRAME;
     }
     return 0;

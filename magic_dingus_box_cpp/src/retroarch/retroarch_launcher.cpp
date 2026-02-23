@@ -74,236 +74,202 @@ namespace {
         std::string exit_emulator_btn = ""; // Optional exit button
     };
 
+    // N64 Controller Physical Button IDs (verified via evtest):
+    //   0=C-Left, 1=B, 2=A, 3=C-Down, 4=L shoulder, 5=R shoulder,
+    //   6=Z trigger, 8=C-Right, 9=C-Up, 10=unused, 12=Start
+    //   Axes: 0/1=Analog Stick, Hat0X/Hat0Y=D-pad
+    //
+    // NOTE: evdev names are misleading on this adapter:
+    //   BTN_Z (309) = physical R shoulder (button 5)
+    //   BTN_TL (310) = physical Z trigger (button 6)
+    //
+    // Hotkey: Z trigger (button 6) + Start (button 12) = toggle RetroArch menu
+    // This combo is consistent across ALL cores.
+
     ControllerMapping get_mapping_for_core(const std::string& core_name) {
         ControllerMapping map; // Starts with defaults
-        
+
         if (core_name.find("nestopia") != std::string::npos || core_name.find("fceumm") != std::string::npos) {
             map.name = "NES (N64 Controller)";
             map.analog_dpad_mode = "0"; // Disable auto-analog, use explicit mapping
-            
-            // NES B (Run) -> N64 B (ID 1)
-            map.b_btn = "1";
-            // NES A (Jump) -> N64 A (ID 2)
-            map.a_btn = "2";
-            
-            // Select -> C-Up (ID 9)
-            map.select_btn = "9";
-            // Start -> Start (ID 12)
-            map.start_btn = "12";
-            
-            // Turbo Buttons (Optional)
-            // Map N64 C-Down (3) to Turbo A (X)
-            map.x_btn = "3";
-            // Map N64 C-Left (0) to Turbo B (Y)
-            map.y_btn = "0";
-            
-            // Explicitly map Analog Stick to D-Pad functions (so stick works for Mario)
+
+            map.b_btn = "1";  // NES B (Run) -> N64 B
+            map.a_btn = "2";  // NES A (Jump) -> N64 A
+
+            map.select_btn = "9";  // Select -> C-Up
+            map.start_btn = "12";  // Start -> Start
+
+            // Turbo Buttons
+            map.x_btn = "3";  // Turbo A -> C-Down
+            map.y_btn = "0";  // Turbo B -> C-Left
+
+            // Analog Stick -> D-Pad (so stick works for Mario)
             map.right_axis = "+0";
             map.left_axis = "-0";
             map.down_axis = "+1";
             map.up_axis = "-1";
 
-            // Hotkeys (Z + Start for Menu)
-            map.enable_hotkey_btn = "5"; // Z
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6"; // Z trigger (under center grip)
             map.menu_toggle_btn = "12";  // Start
-            
+
             map.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
                                "nestopia_audio_vol_sq2 = \"100\"\n"
                                "nestopia_audio_vol_tri = \"100\"\n"
                                "nestopia_audio_vol_noise = \"100\"\n"
                                "nestopia_audio_vol_dpcm = \"100\"\n";
-            
+
         } else if (core_name.find("pcsx") != std::string::npos || core_name.find("beetle_psx") != std::string::npos || core_name.find("swanstation") != std::string::npos) {
             map.name = "PS1 (N64 Controller)";
             map.core_option_pad_type = "analog";
-            // Disable auto-analog-dpad to use explicit axis mapping
             map.analog_dpad_mode = "0";
 
-            // N64 Controller Button IDs (verified via jstest):
-            //   0=C-Left, 1=B, 2=A, 3=C-Down, 4=L, 5=Z, 6=R, 8=C-Right, 9=C-Up, 12=Start
-            //   Axes: 0/1=Analog Stick, 4/5=D-pad Hat
-            //
             // PS1 face buttons on right-hand buttons (A, B, C-cluster):
-            map.b_btn = "2";  // Cross (primary action) -> A button (big, easiest to press)
-            map.a_btn = "1";  // Circle (secondary) -> B button (next to A)
+            map.b_btn = "2";  // Cross (primary action) -> A button
+            map.a_btn = "1";  // Circle (secondary) -> B button
             map.y_btn = "3";  // Square (attack/action) -> C-Down
             map.x_btn = "0";  // Triangle (menu/special) -> C-Left
 
             map.start_btn = "12"; // Start -> Start
-            map.select_btn = "9"; // Select -> C-Up (rarely needed)
+            map.select_btn = "9"; // Select -> C-Up
 
-            // Shoulder buttons on actual shoulder/trigger positions:
-            map.l_btn = "4";  // L1 -> L Trigger (left index finger)
-            map.r_btn = "6";  // R1 -> R Trigger (right index finger)
-            map.l2_btn = "5"; // L2 -> Z Trigger (center grip, left index)
+            // Shoulder buttons:
+            map.l_btn = "4";  // L1 -> L shoulder
+            map.r_btn = "5";  // R1 -> R shoulder
             map.r2_btn = "8"; // R2 -> C-Right
 
-            // Axis (Reverted to Standard X=0, Y=1)
-            // We will use explicit D-Pad Axis mapping to fix direction
+            // Analog Stick
             map.l_x_plus = "+0";
             map.l_x_minus = "-0";
             map.l_y_plus = "+1";
             map.l_y_minus = "-1";
-            
-            // Explicitly map Analog Stick to D-Pad functions
-            // Right (0+) -> Right
+
+            // Analog Stick -> D-Pad
             map.right_axis = "+0";
             map.left_axis = "-0";
-            // Down (1+) -> Down
             map.down_axis = "+1";
             map.up_axis = "-1";
 
-            // Menu Toggle: Hold Z (L2) + Start
-            // Using ID 5 for Z (L2) as modifier
-            map.enable_hotkey_btn = "5";
-            // Using ID 12 (Start) to toggle menu
-            map.menu_toggle_btn = "12";
-            
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6"; // Z trigger (under center grip)
+            map.menu_toggle_btn = "12";  // Start
 
         } else if (core_name.find("prosystem") != std::string::npos) {
             map.name = "Atari 7800";
             map.analog_dpad_mode = "0"; // Digital only
-            
-            // Atari 7800 has 2 buttons: A and B
-            // Map to RetroPad B and A
+
             map.b_btn = "1"; // Button 1 -> RetroPad B
             map.a_btn = "2"; // Button 2 -> RetroPad A
-            
-            // Console buttons
-            map.select_btn = "10"; // Select
-            map.start_btn = "12";  // Pause/Start
-            
-            // Standard D-Pad
+
+            map.select_btn = "10";
+            map.start_btn = "12";
+
             map.up_btn = "h0up";
             map.down_btn = "h0down";
             map.left_btn = "h0left";
             map.right_btn = "h0right";
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
+
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("genesis_plus_gx") != std::string::npos) {
             map.name = "Sega Genesis";
             map.analog_dpad_mode = "0"; // Digital only
-            
-            // Genesis 3-button controller: A, B, C
-            // Map C -> RetroPad A (ID 2)
-            // Map B -> RetroPad B (ID 1)
-            // Map A -> RetroPad Y (ID 3)
+
+            // Genesis 3-button: A, B, C
             map.a_btn = "2"; // C
             map.b_btn = "1"; // B
             map.y_btn = "3"; // A
-            
-            // Start
+
             map.start_btn = "12";
-            
-            // D-Pad
+
             map.up_btn = "h0up";
             map.down_btn = "h0down";
             map.left_btn = "h0left";
             map.right_btn = "h0right";
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
+
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("snes9x") != std::string::npos) {
             map.name = "Super Nintendo";
             map.analog_dpad_mode = "0"; // Digital only
-            
+
             // SNES Layout: B, A, Y, X, L, R
-            // Map B -> RetroPad B (ID 1)
-            // Map A -> RetroPad A (ID 2)
-            // Map Y -> RetroPad Y (ID 3)
-            // Map X -> RetroPad X (ID 0)
             map.b_btn = "1";
             map.a_btn = "2";
             map.y_btn = "3";
             map.x_btn = "0";
-            
-            // Shoulders
-            map.l_btn = "4"; // L -> L1 (ID 4)
-            map.r_btn = "5"; // R -> R1 (ID 5)
-            
-            // Start/Select
+
+            // Shoulders on physical shoulder buttons
+            map.l_btn = "4"; // L -> L shoulder
+            map.r_btn = "5"; // R -> R shoulder
+
             map.start_btn = "12";
-            map.select_btn = "10"; // Select (ID 10 matches NES/PCE)
-            
-            // D-Pad
+            map.select_btn = "10";
+
             map.up_btn = "h0up";
             map.down_btn = "h0down";
             map.left_btn = "h0left";
             map.right_btn = "h0right";
-            
-            // Hotkeys - use Select (10) as hotkey enable to avoid R shoulder conflict
-            // Button 5 is R shoulder (used in gameplay), so we can't use it as hotkey
-            // Select + Start = toggle RetroArch menu
-            map.enable_hotkey_btn = "10";
-            map.menu_toggle_btn = "12";
+
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6"; // Z trigger (under center grip)
+            map.menu_toggle_btn = "12";  // Start
 
         } else if (core_name.find("mednafen_pce_fast") != std::string::npos) {
             map.name = "PC Engine / TurboGrafx-16";
             map.analog_dpad_mode = "0"; // Digital only
-            
-            // PCE has I and II buttons
-            // Map II -> RetroPad B (ID 1)
-            // Map I -> RetroPad A (ID 2)
-            map.b_btn = "1"; 
-            map.a_btn = "2";
-            
-            // Run/Select
+
+            // PCE: I and II buttons
+            map.b_btn = "1";  // II
+            map.a_btn = "2";  // I
+
             map.start_btn = "12"; // Run
             map.select_btn = "10"; // Select
-            
-            // Turbo buttons (often mapped to X/Y)
-            map.y_btn = "0"; // Turbo II -> RetroPad Y
-            map.x_btn = "3"; // Turbo I -> RetroPad X
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
+
+            // Turbo buttons
+            map.y_btn = "0"; // Turbo II -> C-Left
+            map.x_btn = "3"; // Turbo I -> C-Down
+
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("fbneo") != std::string::npos) {
             map.name = "Arcade (FinalBurn Neo)";
-            map.analog_dpad_mode = "0"; // Use explicit mapping (Digital Mode) - Matches PS1/NES
-            
+            map.analog_dpad_mode = "0";
+
             // Standard 6-button arcade layout
-            // 1 2 3
-            // 4 5 6
-            // Map to:
-            // Y X L
-            // B A R
-            
-            map.y_btn = "0"; // 1
-            map.x_btn = "3"; // 2
-            map.l_btn = "4"; // 3
-            
-            map.b_btn = "1"; // 4
-            map.a_btn = "2"; // 5
-            map.r_btn = "6"; // 6
-            
-            // Coin/Start
-            map.select_btn = "9";  // Coin (ID 9 matches NES/PS1)
+            // 1 2 3    ->  Y  X  L
+            // 4 5 6    ->  B  A  R
+            map.y_btn = "0"; // 1 -> C-Left
+            map.x_btn = "3"; // 2 -> C-Down
+            map.l_btn = "4"; // 3 -> L shoulder
+
+            map.b_btn = "1"; // 4 -> B
+            map.a_btn = "2"; // 5 -> A
+            map.r_btn = "5"; // 6 -> R shoulder
+
+            map.select_btn = "9";  // Coin -> C-Up
             map.start_btn = "12";  // Start
-            
-            // Explicitly map Analog Stick to D-Pad functions
-            // This ensures the stick works even in Digital mode
+
+            // Analog Stick -> D-Pad
             map.l_x_plus = "+0";
             map.l_x_minus = "-0";
             map.l_y_plus = "+1";
             map.l_y_minus = "-1";
-            
+
             map.right_axis = "+0";
             map.left_axis = "-0";
             map.down_axis = "+1";
             map.up_axis = "-1";
-            
-            // Hotkeys
-            map.enable_hotkey_btn = "5";
+
+            // Hotkeys: Z trigger + Start for Menu
+            map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
-            
-            // Vertical games might need rotation, handled by core options if needed
         }
         return map;
     }

@@ -1628,8 +1628,8 @@ int main(int /* argc */, char* /* argv */[]) {
             // Use multiple conditions to ensure reliable detection
             bool video_ended = false;
 
-            // Primary check: position near end
-            if (state.position >= state.duration - 0.5) {
+            // Primary check: position near end (tight margin so video plays fully)
+            if (state.position >= state.duration - 0.05) {
                 video_ended = true;
             }
 
