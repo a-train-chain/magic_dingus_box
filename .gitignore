@@ -32,6 +32,17 @@ dist/
 **/dev_data/
 magic_dingus_box_cpp/dev_data/
 
+# Exclude production ROMs and game thumbnails (binary content, deployed separately)
+magic_dingus_box_cpp/data/roms/
+magic_dingus_box_cpp/data/thumbnails/arcade/
+magic_dingus_box_cpp/data/thumbnails/atari7800/
+magic_dingus_box_cpp/data/thumbnails/nes/
+magic_dingus_box_cpp/data/thumbnails/pcengine/
+magic_dingus_box_cpp/data/thumbnails/snes/
+magic_dingus_box_cpp/data/thumbnails/genesis/
+magic_dingus_box_cpp/data/thumbnails/ps1/
+magic_dingus_box_cpp/data/thumbnails/n64/
+
 # Exclude binary libretro cores
 magic_dingus_box_cpp/libretro_cores/
 **/*.so

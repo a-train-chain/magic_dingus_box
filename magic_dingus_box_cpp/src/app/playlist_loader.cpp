@@ -113,15 +113,29 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
                     if (item["emulator_core"]) {
                         playlist_item.emulator_core = item["emulator_core"].as<std::string>();
                     } else {
-                        playlist_item.emulator_core = "";  // Empty if not provided
+                        playlist_item.emulator_core = "";
                     }
                     if (item["emulator_system"]) {
                         playlist_item.emulator_system = item["emulator_system"].as<std::string>();
                     } else {
-                        playlist_item.emulator_system = "";  // Empty if not provided
+                        playlist_item.emulator_system = "";
                     }
                 }
-                
+
+                // Validate: emulated_game items must have a core and path
+                if (playlist_item.source_type == "emulated_game") {
+                    if (playlist_item.emulator_core.empty()) {
+                        std::cerr << "Warning: Skipping game '" << playlist_item.title
+                                  << "' in " << path << " - missing emulator_core" << std::endl;
+                        continue;
+                    }
+                    if (playlist_item.path.empty()) {
+                        std::cerr << "Warning: Skipping game '" << playlist_item.title
+                                  << "' in " << path << " - missing path" << std::endl;
+                        continue;
+                    }
+                }
+
                 pl.items.push_back(playlist_item);
             }
         }

@@ -1,3 +1,138 @@
 title: "Arcade Classics"
 playlist_type: game
-items: []
+curator: Alex Chaney
+description: "Classic arcade games"
+loop: false
+items:
+  - title: Asteroids
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/asteroid.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Centipede
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/centiped.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Double Dragon
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/ddragon.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Defender
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/defender.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Dig Dug
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/digdug.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Donkey Kong
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/dkong.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Frogger
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/frogger.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Galaga
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/galaga.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Galaxian
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/galaxian.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Space Invaders
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/invaders.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Missile Command
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/missile.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Mortal Kombat II
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/mk2.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Metal Slug
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/mslug.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Ms. Pac-Man
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/mspacman.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: NBA Jam Tournament Edition
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/nbajamte.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Pac-Man
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/pacman.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: "Street Fighter II': Champion Edition"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/sf2ce.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: "TMNT: Turtles in Time"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/tmnt22pu.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade
+
+  - title: Tron
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/arcade/tron.zip
+    emulator_core: fbneo_libretro
+    emulator_system: Arcade

@@ -1,3 +1,110 @@
 title: "PC Engine"
 playlist_type: game
-items: []
+curator: Alex Chaney
+description: "PC Engine / TurboGrafx-16 classics"
+loop: false
+items:
+  - title: Air Zonk
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Air Zonk (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Alien Crush
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Alien Crush (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Blazing Lazers
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Blazing Lazers (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: "Bomberman '93"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Bomberman '93 (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: "Bonk's Adventure"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Bonk's Adventure (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: "Bonk's Revenge"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Bonk's Revenge (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Cadash
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Cadash (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: "Devil's Crush"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Devil's Crush (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Dungeon Explorer
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Dungeon Explorer (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Magical Chase
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Magical Chase (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Neutopia
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Neutopia (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Ninja Spirit
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Ninja Spirit (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: R-Type
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/R-Type (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Soldier Blade
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Soldier Blade (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine
+
+  - title: Splatterhouse
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/pcengine/Splatterhouse (USA).zip
+    emulator_core: mednafen_pce_fast_libretro
+    emulator_system: PC Engine

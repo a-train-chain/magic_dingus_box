@@ -156,7 +156,7 @@ namespace {
 
         } else if (core_name.find("prosystem") != std::string::npos) {
             map.name = "Atari 7800";
-            map.analog_dpad_mode = "0"; // Digital only
+            map.analog_dpad_mode = "0"; // Disable auto-analog, use explicit mapping
 
             map.b_btn = "1"; // Button 1 -> RetroPad B
             map.a_btn = "2"; // Button 2 -> RetroPad A
@@ -169,13 +169,19 @@ namespace {
             map.left_btn = "h0left";
             map.right_btn = "h0right";
 
+            // Analog Stick -> D-Pad (so stick works for movement)
+            map.right_axis = "+0";
+            map.left_axis = "-0";
+            map.down_axis = "+1";
+            map.up_axis = "-1";
+
             // Hotkeys: Z trigger + Start for Menu
             map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("genesis_plus_gx") != std::string::npos) {
             map.name = "Sega Genesis";
-            map.analog_dpad_mode = "0"; // Digital only
+            map.analog_dpad_mode = "0"; // Disable auto-analog, use explicit mapping
 
             // Genesis 3-button: A, B, C
             map.a_btn = "2"; // C
@@ -189,13 +195,19 @@ namespace {
             map.left_btn = "h0left";
             map.right_btn = "h0right";
 
+            // Analog Stick -> D-Pad (so stick works for movement)
+            map.right_axis = "+0";
+            map.left_axis = "-0";
+            map.down_axis = "+1";
+            map.up_axis = "-1";
+
             // Hotkeys: Z trigger + Start for Menu
             map.enable_hotkey_btn = "6";
             map.menu_toggle_btn = "12";
 
         } else if (core_name.find("snes9x") != std::string::npos) {
             map.name = "Super Nintendo";
-            map.analog_dpad_mode = "0"; // Digital only
+            map.analog_dpad_mode = "0"; // Disable auto-analog, use explicit mapping
 
             // SNES Layout: B, A, Y, X, L, R
             map.b_btn = "1";
@@ -215,13 +227,19 @@ namespace {
             map.left_btn = "h0left";
             map.right_btn = "h0right";
 
+            // Analog Stick -> D-Pad (so stick works for movement)
+            map.right_axis = "+0";
+            map.left_axis = "-0";
+            map.down_axis = "+1";
+            map.up_axis = "-1";
+
             // Hotkeys: Z trigger + Start for Menu
             map.enable_hotkey_btn = "6"; // Z trigger (under center grip)
             map.menu_toggle_btn = "12";  // Start
 
         } else if (core_name.find("mednafen_pce_fast") != std::string::npos) {
             map.name = "PC Engine / TurboGrafx-16";
-            map.analog_dpad_mode = "0"; // Digital only
+            map.analog_dpad_mode = "0"; // Disable auto-analog, use explicit mapping
 
             // PCE: I and II buttons
             map.b_btn = "1";  // II
@@ -233,6 +251,12 @@ namespace {
             // Turbo buttons
             map.y_btn = "0"; // Turbo II -> C-Left
             map.x_btn = "3"; // Turbo I -> C-Down
+
+            // Analog Stick -> D-Pad (so stick works for movement)
+            map.right_axis = "+0";
+            map.left_axis = "-0";
+            map.down_axis = "+1";
+            map.up_axis = "-1";
 
             // Hotkeys: Z trigger + Start for Menu
             map.enable_hotkey_btn = "6";
@@ -377,17 +401,18 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     // The systemd-run service will wait for cleanup to complete before launching RetroArch
 
     // Build the RetroArch command (skip the binary path which is already in cmd[0])
+    // Use single-quote wrapping for shell safety - handles $, `, ", spaces, etc.
+    // Only need to escape literal single quotes: ' -> '\''
     std::string retroarch_cmd = "/usr/bin/retroarch";
-    for (size_t i = 1; i < cmd.size(); ++i) {  // Start from index 1 to skip the binary path
+    for (size_t i = 1; i < cmd.size(); ++i) {
         const auto& arg = cmd[i];
-        // Escape double quotes in arguments for shell safety
-            std::string escaped_arg = arg;
-            size_t pos = 0;
-        while ((pos = escaped_arg.find("\"", pos)) != std::string::npos) {
-            escaped_arg.replace(pos, 1, "\\\"");
-            pos += 2;
+        std::string escaped_arg = arg;
+        size_t pos = 0;
+        while ((pos = escaped_arg.find("'", pos)) != std::string::npos) {
+            escaped_arg.replace(pos, 1, "'\\''");
+            pos += 4;
         }
-        retroarch_cmd += " \"" + escaped_arg + "\"";
+        retroarch_cmd += " '" + escaped_arg + "'";
     }
 
     // Detect ALSA device
@@ -584,8 +609,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# When bind_defaults=true, RetroArch will automatically assign standard button mappings\n";
             script_file << "# This ensures buttons work even if autoconfig doesn't match perfectly\n";
             script_file << "input_joypad_driver_mapping_dir = \"\"\n";
-            script_file << "# CRITICAL: Disable remap binds since autoconfig is disabled\n";
-            script_file << "input_remap_binds_enable = \"true\"\n";  // CRITICAL: Enable so core can receive input
             script_file << "# Don't save config on exit (prevents overwriting our settings)\n";
             script_file << "config_save_on_exit = \"false\"\n";
             script_file << "# CRITICAL: Single press to quit (don't require double press)\n";
@@ -840,11 +863,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << retroarch_cmd << "\n";
             script_file << "RETROARCH_EXIT=$?\n";
             script_file << "echo \"Launcher: RetroArch exited with code $RETROARCH_EXIT\" >> /tmp/retroarch_launcher.log\n";
-            script_file << "# Stop keepalive processes when RetroArch exits\n";
-            script_file << "kill $KEEPALIVE_PID1 2>/dev/null || true\n";
-            script_file << "kill $KEEPALIVE_PID2 2>/dev/null || true\n";
-            script_file << "wait $KEEPALIVE_PID1 2>/dev/null || true\n";
-            script_file << "wait $KEEPALIVE_PID2 2>/dev/null || true\n";
             // Clean up temp config files (no restore needed - we used isolated /tmp config)
             script_file << "rm -f \"$UI_CONFIG\"\n";
             script_file << "rm -f /tmp/retroarch_core_options.cfg\n";
@@ -916,7 +934,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Close file descriptors 3 and up to prevent inheritance
             // This is crucial to ensure RetroArch doesn't inherit input FDs
-            for (int fd = 3; fd < 256; fd++) {
+            long max_fd = sysconf(_SC_OPEN_MAX);
+            if (max_fd < 0) max_fd = 1024;
+            for (int fd = 3; fd < max_fd; fd++) {
                 close(fd);
             }
 
@@ -1063,8 +1083,6 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "# When bind_defaults=true, RetroArch will automatically assign standard button mappings\n";
             script_file << "# This ensures buttons work even if autoconfig doesn't match perfectly\n";
             script_file << "input_joypad_driver_mapping_dir = \"\"\n";
-            script_file << "# CRITICAL: Disable remap binds since autoconfig is disabled\n";
-            script_file << "input_remap_binds_enable = \"true\"\n";  // CRITICAL: Enable so core can receive input
             script_file << "# Don't save config on exit (prevents overwriting our settings)\n";
             script_file << "config_save_on_exit = \"false\"\n";
             script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";

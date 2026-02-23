@@ -1,33 +1,145 @@
-title: NES Classics
+title: "NES Classics"
 playlist_type: game
 curator: Alex Chaney
-description: ''
+description: "Classic NES games"
 loop: false
 items:
-  - title: Super Mario Bros. 3
+  - title: Bubble Bobble
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/nes/Super Mario Bros. 3.nes
+    path: data/roms/nes/Bubble Bobble (USA).zip
     emulator_core: nestopia_libretro
     emulator_system: NES
-    
+
+  - title: "Castlevania III: Dracula's Curse"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Castlevania III - Dracula's Curse (USA) (Castlevania Anniversary Collection).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Contra
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Contra (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Dragon Warrior
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Dragon Warrior (USA) (Rev 1).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: DuckTales
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/DuckTales (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Final Fantasy
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Final Fantasy (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Kid Icarus
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Kid Icarus (USA, Europe) (Rev 1).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
   - title: The Legend of Zelda
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/nes/The Legend of Zelda.nes
+    path: data/roms/nes/Legend of Zelda, The (USA) (Rev 1).zip
     emulator_core: nestopia_libretro
     emulator_system: NES
-    
+
   - title: Mega Man 2
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/nes/Mega Man 2.nes
+    path: data/roms/nes/Mega Man 2 (USA).zip
     emulator_core: nestopia_libretro
     emulator_system: NES
-    
-  - title: Mega Man
+
+  - title: Mega Man 3
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/nes/Mega Man.nes
+    path: data/roms/nes/Mega Man 3 (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Metroid
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Metroid (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: "Mike Tyson's Punch-Out!!"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Mike Tyson's Punch-Out!! (Japan, USA) (Rev 1).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Ninja Gaiden
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Ninja Gaiden (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: River City Ransom
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/River City Ransom (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Super Mario Bros. / Duck Hunt
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Super Mario Bros. + Duck Hunt (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Super Mario Bros. 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Super Mario Bros. 2 (USA) (Rev 1).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Super Mario Bros. 3
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Super Mario Bros. 3 (USA) (Rev 1).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: "TMNT II: The Arcade Game"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Teenage Mutant Ninja Turtles II - The Arcade Game (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: Tetris
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Tetris (USA).zip
+    emulator_core: nestopia_libretro
+    emulator_system: NES
+
+  - title: "Zelda II: The Adventure of Link"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/nes/Zelda II - The Adventure of Link (USA).zip
     emulator_core: nestopia_libretro
     emulator_system: NES

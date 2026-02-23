@@ -416,9 +416,16 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             std::cout << "Resolved auto core for " << system << " -> " << core_name << std::endl;
         }
         
+        // Validate ROM path is not empty
+        if (item.path.empty()) {
+            std::string error = "No ROM path specified for game: " + item.title;
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
+        }
+
         // Resolve full ROM path
         std::string resolved_rom_path = utils::resolve_video_path(item.path, playlist_directory);
-        
+
         // Check if ROM exists
         if (!fs::exists(resolved_rom_path)) {
             std::string error = "ROM file does not exist: " + resolved_rom_path;
@@ -572,7 +579,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             }
             
             if (!input_initialized) {
-                std::cerr << "CRITICAL: Failed to re-initialize input devices!" << std::endl;
+                std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
+                // Last-resort attempt: sleep longer and try once more
+                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+                run_udevadm("--sysname-match=js*");
+                run_udevadm("--sysname-match=event*");
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                if (input_manager_->initialize()) {
+                    std::cout << "Input devices initialized on final retry." << std::endl;
+                } else {
+                    std::cerr << "CRITICAL: Input devices permanently failed. Controller may not work." << std::endl;
+                }
             }
         }
         
