@@ -308,35 +308,63 @@ std::vector<InputEvent> InputManager::poll() {
                 
                 // Handle keyboard arrow keys for rotation (before other mappings)
                 if (device->is_keyboard) {
-                    if (ev.code == KEY_LEFT && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = -1;
-                    } else if (ev.code == KEY_RIGHT && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = 1;
-                    } else if (ev.code == KEY_UP && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = -1;
-                    } else if (ev.code == KEY_DOWN && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = 1;
+                    if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
+                        auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                        if (ev.value == 1) {
+                            int dir = (ev.code == KEY_LEFT) ? -1 : 1;
+                            dpad_held_x_ = dir;
+                            dpad_press_time_x_ = now;
+                            dpad_last_fire_x_ = now;
+                            input_ev.action = InputAction::ROTATE;
+                            input_ev.delta = dir;
+                        } else if (ev.value == 0) {
+                            dpad_held_x_ = 0;
+                        }
+                        // value==2 (autorepeat) is ignored
+                    } else if (ev.code == KEY_UP || ev.code == KEY_DOWN) {
+                        auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                        if (ev.value == 1) {
+                            int dir = (ev.code == KEY_UP) ? -1 : 1;
+                            dpad_held_y_ = dir;
+                            dpad_press_time_y_ = now;
+                            dpad_last_fire_y_ = now;
+                            input_ev.action = InputAction::ROTATE_VERTICAL;
+                            input_ev.delta = dir;
+                        } else if (ev.value == 0) {
+                            dpad_held_y_ = 0;
+                        }
+                        // value==2 (autorepeat) is ignored
                     } else {
                         input_ev.action = map_key_to_action(ev.code);
                     }
                 } else if (device->is_joystick) {
                     // Handle D-pad buttons (common on some controllers)
-                    if (ev.code == BTN_DPAD_UP && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = -1;
-                    } else if (ev.code == BTN_DPAD_DOWN && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = 1;
-                    } else if (ev.code == BTN_DPAD_LEFT && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = -1;
-                    } else if (ev.code == BTN_DPAD_RIGHT && ev.value == 1) {
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = 1;
+                    if (ev.code == BTN_DPAD_UP || ev.code == BTN_DPAD_DOWN) {
+                        if (ev.value == 1) {
+                            auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                            int dir = (ev.code == BTN_DPAD_UP) ? -1 : 1;
+                            dpad_held_y_ = dir;
+                            dpad_press_time_y_ = now;
+                            dpad_last_fire_y_ = now;
+                            input_ev.action = InputAction::ROTATE_VERTICAL;
+                            input_ev.delta = dir;
+                        } else if (ev.value == 0) {
+                            int dir = (ev.code == BTN_DPAD_UP) ? -1 : 1;
+                            if (dpad_held_y_ == dir) dpad_held_y_ = 0;
+                        }
+                    } else if (ev.code == BTN_DPAD_LEFT || ev.code == BTN_DPAD_RIGHT) {
+                        if (ev.value == 1) {
+                            auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                            int dir = (ev.code == BTN_DPAD_LEFT) ? -1 : 1;
+                            dpad_held_x_ = dir;
+                            dpad_press_time_x_ = now;
+                            dpad_last_fire_x_ = now;
+                            input_ev.action = InputAction::ROTATE;
+                            input_ev.delta = dir;
+                        } else if (ev.value == 0) {
+                            int dir = (ev.code == BTN_DPAD_LEFT) ? -1 : 1;
+                            if (dpad_held_x_ == dir) dpad_held_x_ = 0;
+                        }
                     } else {
                         input_ev.action = map_button_to_action(ev.code, input_ev.pressed);
                     }
@@ -344,22 +372,32 @@ std::vector<InputEvent> InputManager::poll() {
             } else if (ev.type == EV_ABS && device->is_joystick) {
                 // Handle DPad hat switches (ABS_HAT0X, ABS_HAT0Y)
                 if (ev.code == ABS_HAT0Y) {
-                    // DPad Up/Down for ROTATE_VERTICAL (matching Python: DPad Up = -1, Down = +1)
-                    if (ev.value == -1) {  // Up
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = -1;
-                    } else if (ev.value == 1) {  // Down
-                        input_ev.action = InputAction::ROTATE_VERTICAL;
-                        input_ev.delta = 1;
+                    if (ev.value != 0) {
+                        if (dpad_held_y_ != ev.value) {
+                            // New direction or first press - reset timing
+                            auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                            dpad_held_y_ = ev.value;
+                            dpad_press_time_y_ = now;
+                            dpad_last_fire_y_ = now;
+                            input_ev.action = InputAction::ROTATE_VERTICAL;
+                            input_ev.delta = ev.value;
+                        }
+                        // Same value repeated while held - ignore (generate_dpad_repeats handles it)
+                    } else {
+                        dpad_held_y_ = 0;
                     }
                 } else if (ev.code == ABS_HAT0X) {
-                    // DPad Left/Right for ROTATE
-                    if (ev.value == -1) {  // Left
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = -1;
-                    } else if (ev.value == 1) {  // Right
-                        input_ev.action = InputAction::ROTATE;
-                        input_ev.delta = 1;
+                    if (ev.value != 0) {
+                        if (dpad_held_x_ != ev.value) {
+                            auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                            dpad_held_x_ = ev.value;
+                            dpad_press_time_x_ = now;
+                            dpad_last_fire_x_ = now;
+                            input_ev.action = InputAction::ROTATE;
+                            input_ev.delta = ev.value;
+                        }
+                    } else {
+                        dpad_held_x_ = 0;
                     }
                 } else if (ev.code == ABS_Y) {
                     // Analog Stick Y for ROTATE_VERTICAL
@@ -418,8 +456,51 @@ std::vector<InputEvent> InputManager::poll() {
             rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
         }
     }
-    
+
+    generate_dpad_repeats(events);
     return events;
+}
+
+void InputManager::generate_dpad_repeats(std::vector<InputEvent>& events) {
+    auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    // X axis (left/right)
+    if (dpad_held_x_ != 0) {
+        double elapsed = now - dpad_press_time_x_;
+        if (elapsed >= DPAD_INITIAL_DELAY) {
+            double hz = (elapsed - DPAD_INITIAL_DELAY >= DPAD_ACCEL_THRESHOLD)
+                        ? DPAD_REPEAT_FAST_HZ : DPAD_REPEAT_SLOW_HZ;
+            double interval = 1.0 / hz;
+            if (now - dpad_last_fire_x_ >= interval) {
+                InputEvent ev;
+                ev.action = InputAction::ROTATE;
+                ev.delta = dpad_held_x_;
+                ev.pressed = false;
+                ev.velocity = 0.0f;
+                events.push_back(ev);
+                dpad_last_fire_x_ = now;
+            }
+        }
+    }
+
+    // Y axis (up/down)
+    if (dpad_held_y_ != 0) {
+        double elapsed = now - dpad_press_time_y_;
+        if (elapsed >= DPAD_INITIAL_DELAY) {
+            double hz = (elapsed - DPAD_INITIAL_DELAY >= DPAD_ACCEL_THRESHOLD)
+                        ? DPAD_REPEAT_FAST_HZ : DPAD_REPEAT_SLOW_HZ;
+            double interval = 1.0 / hz;
+            if (now - dpad_last_fire_y_ >= interval) {
+                InputEvent ev;
+                ev.action = InputAction::ROTATE_VERTICAL;
+                ev.delta = dpad_held_y_;
+                ev.pressed = false;
+                ev.velocity = 0.0f;
+                events.push_back(ev);
+                dpad_last_fire_y_ = now;
+            }
+        }
+    }
 }
 
 InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
@@ -527,6 +608,8 @@ void InputManager::cleanup() {
     }
     devices_.clear();
     rotary_accumulator_ = 0;
+    dpad_held_x_ = 0;
+    dpad_held_y_ = 0;
 }
 
 } // namespace platform

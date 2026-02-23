@@ -64,6 +64,21 @@ private:
     double last_rotate_time_;
     static constexpr double ROTATE_REPEAT_HZ = 8.0;
 
+    // D-pad hold-to-repeat
+    static constexpr double DPAD_INITIAL_DELAY = 0.4;
+    static constexpr double DPAD_REPEAT_SLOW_HZ = 8.0;
+    static constexpr double DPAD_REPEAT_FAST_HZ = 20.0;
+    static constexpr double DPAD_ACCEL_THRESHOLD = 1.0;
+
+    int dpad_held_x_ = 0;
+    int dpad_held_y_ = 0;
+    double dpad_press_time_x_ = 0.0;
+    double dpad_press_time_y_ = 0.0;
+    double dpad_last_fire_x_ = 0.0;
+    double dpad_last_fire_y_ = 0.0;
+
+    void generate_dpad_repeats(std::vector<InputEvent>& events);
+
     // Rotary encoder state
     int rotary_accumulator_ = 0;
     std::chrono::steady_clock::time_point last_rotary_event_time_;
