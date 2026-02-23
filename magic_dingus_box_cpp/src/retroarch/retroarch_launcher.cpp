@@ -332,7 +332,7 @@ std::optional<std::string> RetroArchLauncher::find_retroarch() {
     return std::nullopt;
 }
 
-bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db) {
+bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output) {
     if (!retroarch_available_) {
         std::cerr << "RetroArch not available" << std::endl;
         return false;
@@ -348,11 +348,11 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
     
     // Always use DRM/KMS launch (matches app architecture)
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
-    return launch_drm(game_info, system_volume_percent, volume_offset_db);
+    return launch_drm(game_info, system_volume_percent, volume_offset_db, audio_output);
 }
 
 
-bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db) {
+bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output) {
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
@@ -415,8 +415,17 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         retroarch_cmd += " '" + escaped_arg + "'";
     }
 
-    // Detect ALSA device
-    std::string alsa_device = detect_alsa_device();
+    // Select ALSA device based on user's audio output preference
+    // audio_output: 0=AUTO, 1=HDMI, 2=HEADPHONE
+    std::string alsa_device;
+    if (audio_output == 2) {
+        // User selected headphone output
+        alsa_device = "sysdefault:CARD=Headphones";
+        std::cout << "Using headphone ALSA device: " << alsa_device << std::endl;
+    } else {
+        // AUTO or HDMI: detect HDMI device (existing behavior)
+        alsa_device = detect_alsa_device();
+    }
 
     // Create a simple launcher script (persistent for debugging)
     std::string launcher_script = config::retroarch::get_launcher_script();
@@ -982,8 +991,8 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
     
     // Stop GStreamer and cleanup audio resources first
     stop_gstreamer_and_cleanup();
-    
-    // Detect ALSA device
+
+    // Core downloader doesn't have audio preference context, use HDMI detection
     std::string alsa_device = detect_alsa_device();
 
     // Build command for core downloader

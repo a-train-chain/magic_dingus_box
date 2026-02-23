@@ -513,7 +513,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         };
         
         
-        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db);
+        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output));
         
         // Game has exited. Restore system.
         
@@ -592,7 +592,12 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 }
             }
         }
-        
+
+        // Restore PulseAudio default sink to match user's audio output preference
+        // RetroArch uses ALSA directly, so PulseAudio state may have drifted
+        std::cout << "Restoring audio output after RetroArch..." << std::endl;
+        state.audio_settings.apply_output();
+
         if (launched) {
             std::cout << "Successfully launched game: " << item.title << std::endl;
             
