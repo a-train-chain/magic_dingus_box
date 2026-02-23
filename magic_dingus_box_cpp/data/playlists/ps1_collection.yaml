@@ -1,26 +1,243 @@
-title: PlayStation Classics
+title: "PlayStation Classics"
 playlist_type: game
 curator: Alex Chaney
-description: ''
+description: "PlayStation 1 classics"
 loop: false
 items:
-  - title: Crash Bandicoot
+  - title: "007: Tomorrow Never Dies"
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/ps1/Crash Bandicoot/Crash Bandicoot.cue
+    path: data/roms/ps1/007 - Tomorrow Never Dies (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Castlevania: Symphony of the Night"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Castlevania - Symphony of the Night (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Crash Bandicoot: Warped"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Crash Bandicoot - Warped (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Dave Mirra Freestyle BMX
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Dave Mirra Freestyle BMX (USA).chd
     emulator_core: pcsx_rearmed_libretro
     emulator_system: PS1
 
   - title: Doom
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/ps1/Doom/Doom.cue
+    path: data/roms/ps1/Doom (USA).chd
     emulator_core: pcsx_rearmed_libretro
     emulator_system: PS1
 
-  - title: Tony Hawk's Pro Skater 2
+  - title: Final Fantasy VII
     artist: ''
     source_type: emulated_game
-    path: dev_data/roms/ps1/Tony Hawk S Pro Skater 2/Tony Hawk's Pro Skater 2.ccd
+    path: data/roms/ps1/Final Fantasy VII (USA).m3u
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Grand Theft Auto
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Grand Theft Auto (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Grand Theft Auto 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Grand Theft Auto 2 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Gran Turismo
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Gran Turismo (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Gran Turismo 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Gran Turismo 2 (USA) (v1.1).m3u
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Medal of Honor"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Medal of Honor (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Medal of Honor: Underground"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Medal of Honor - Underground (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Metal Gear Solid
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Metal Gear Solid (USA) (v1.1).m3u
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "NBA Jam: Tournament Edition"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/NBA Jam - Tournament Edition (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: NBA Jam Extreme
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/NBA Jam Extreme (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Need for Speed II
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed II (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Need for Speed III: Hot Pursuit"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed III - Hot Pursuit (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Need for Speed: High Stakes"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed - High Stakes (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Need for Speed: Porsche Unleashed"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed - Porsche Unleashed (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Need for Speed: V-Rally"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed - V-Rally (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Need for Speed: V-Rally 2"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Need for Speed - V-Rally 2 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Rampage 2: Universal Tour"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Rampage 2 - Universal Tour (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Resident Evil 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Resident Evil 2 - Dual Shock Ver. (USA).m3u
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Silent Hill
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Silent Hill (USA) (v1.1).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Spyro the Dragon
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Spyro the Dragon (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Tekken 3
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Tekken 3 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Tony Hawk's Pro Skater 2"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Tony Hawk's Pro Skater 2 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Tony Hawk's Pro Skater 3"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Tony Hawk's Pro Skater 3 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: "Tony Hawk's Pro Skater 4"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Tony Hawk's Pro Skater 4 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Twisted Metal
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Twisted Metal (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Twisted Metal 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Twisted Metal 2 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Twisted Metal III
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Twisted Metal III (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Twisted Metal 4
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Twisted Metal 4 (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
+  - title: Worms Armageddon
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Worms Armageddon (USA).chd
     emulator_core: pcsx_rearmed_libretro
     emulator_system: PS1
