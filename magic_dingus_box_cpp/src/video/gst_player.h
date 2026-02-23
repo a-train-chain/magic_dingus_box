@@ -38,6 +38,10 @@ public:
     
     void cleanup() override;
 
+    // Set PulseAudio device on the audio sink (e.g. sink name)
+    // Must be called after initialize(). Also stored for pipeline re-creation.
+    void set_audio_device(const std::string& pulse_device);
+
     // GStreamer specific
     GstElement* get_pipeline() const { return pipeline_; }
     GstElement* get_appsink() const { return appsink_; }
@@ -69,6 +73,9 @@ private:
 
     // EOS callback
     std::function<void()> eos_callback_;
+
+    // Stored PulseAudio device name for pipeline re-creation
+    std::string pulse_device_;
 
     void update_position();
 };

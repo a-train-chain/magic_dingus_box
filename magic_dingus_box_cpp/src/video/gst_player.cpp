@@ -69,6 +69,11 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     // Configure audio sink (playbin takes ownership)
     auto audio_sink = make_element("pulsesink", "audio-sink");
     if (audio_sink) {
+        // Set specific PulseAudio device if configured (bypasses default sink)
+        if (!pulse_device_.empty()) {
+            g_object_set(G_OBJECT(audio_sink.get()), "device", pulse_device_.c_str(), nullptr);
+            LOG_DEBUG("Set pulsesink device to: {}", pulse_device_);
+        }
         g_object_set(G_OBJECT(playbin.get()), "audio-sink", audio_sink.release(), nullptr);
         LOG_DEBUG("Configured pulsesink for audio");
     } else {
@@ -502,6 +507,21 @@ void GstPlayer::update_position() {
     }
     if (gst_element_query_duration(pipeline_, GST_FORMAT_TIME, &dur)) {
         duration_ = static_cast<double>(dur) / GST_SECOND;
+    }
+}
+
+void GstPlayer::set_audio_device(const std::string& pulse_device) {
+    pulse_device_ = pulse_device;
+
+    // If pipeline is already running, update the pulsesink device property
+    if (initialized_ && playbin_) {
+        GstElement* audio_sink = nullptr;
+        g_object_get(G_OBJECT(playbin_), "audio-sink", &audio_sink, nullptr);
+        if (audio_sink) {
+            g_object_set(G_OBJECT(audio_sink), "device", pulse_device.c_str(), nullptr);
+            gst_object_unref(audio_sink);
+            LOG_DEBUG("Updated pulsesink device to: {}", pulse_device);
+        }
     }
 }
 

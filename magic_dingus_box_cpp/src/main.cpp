@@ -900,10 +900,23 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
             }
 
-            // Restore PulseAudio default sink after RetroArch
-            // Must happen after pipeline re-init so new streams use the correct output
+            // Restore audio output after RetroArch
+            // 1. Set PulseAudio default sink (for any non-GStreamer streams)
             std::cout << "Restoring audio output after display reset..." << std::endl;
             state.audio_settings.apply_output();
+
+            // 2. Set pulsesink device directly on GStreamer pipeline
+            // This bypasses PulseAudio default sink which can be overridden by
+            // module-switch-on-port-available or module-default-device-restore
+            {
+                std::string pulse_device;
+                if (state.audio_settings.output == app::AudioOutput::HEADPHONE) {
+                    pulse_device = "alsa_output.platform-fe00b840.mailbox.stereo-fallback";
+                } else {
+                    pulse_device = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
+                }
+                player.set_audio_device(pulse_device);
+            }
 
             // CRITICAL: Also reset UI Renderer GL resources
             // The UI shaders, VAO, VBO, and logo texture also become invalid
