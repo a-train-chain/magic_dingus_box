@@ -382,6 +382,8 @@ install_update() {
     rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
+        --exclude 'magic_dingus_box_cpp/data/saves/*' \
+        --exclude 'magic_dingus_box_cpp/data/states/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || {
         json_response "false" "Failed to create backup"
         rm -rf "$TEMP_DIR"
@@ -403,6 +405,8 @@ install_update() {
     # PRESERVED (user content - never overwritten):
     #   - data/media/*      - User-uploaded video files
     #   - data/roms/*       - User-uploaded ROM files
+    #   - data/saves/*      - Game save files (SRAM per core)
+    #   - data/states/*     - Save states (per core)
     #   - data/playlists/*  - User-created playlist YAML files
     #   - data/device_info.json - Device configuration
     #   - config/*          - User settings (settings.json, WiFi, etc.)
@@ -422,6 +426,8 @@ install_update() {
     rsync -av --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
+        --exclude 'magic_dingus_box_cpp/data/saves/*' \
+        --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
@@ -559,6 +565,8 @@ rollback_internal() {
     rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
+        --exclude 'magic_dingus_box_cpp/data/saves/*' \
+        --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
@@ -608,6 +616,8 @@ rollback() {
     rsync -av --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
+        --exclude 'magic_dingus_box_cpp/data/saves/*' \
+        --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \

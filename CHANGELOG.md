@@ -5,6 +5,34 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-22
+
+### Added
+- 148 curated games across 7 systems: Arcade (16), Atari 7800 (20), NES (20), PC Engine (15), SNES (20), Sega Genesis (20), PlayStation 1 (34), with cover art thumbnails
+- Multi-disc PS1 support via .m3u files (Final Fantasy VII, Metal Gear Solid, Gran Turismo 2, Resident Evil 2)
+- D-pad hold-to-repeat for accelerated menu navigation
+- Analog stick-to-D-pad axis mappings for SNES, Genesis, Atari 7800, and PC Engine cores
+
+### Fixed
+- **Critical:** OTA updates now preserve game saves (`data/saves/`, `data/states/`) during install, rollback, and backup
+- RetroArch shell escaping uses single-quote wrapping (fixes games with apostrophes like "Tony Hawk's Pro Skater")
+- Intro video no longer cuts off early
+- Controller hotkey combo (Z + Start) restored for RetroArch menu toggle
+- WiFi connection timeout (30s) with specific error messages instead of hanging
+- WiFi shell injection eliminated (fork/execvp for nmcli commands)
+- Input device last-resort recovery after RetroArch exits
+- Playlist loader validates emulated_game items at load time (skips entries missing core or path)
+- Empty ROM path validation before RetroArch launch
+- File descriptor close limit uses sysconf() instead of hardcoded 256
+- Removed dead keepalive process cleanup code and duplicate config writes in RetroArch launcher
+- Removed broken Double Dragon and Metal Slug from arcade playlist
+
+### Improved
+- Master Shuffle uses GL-drawn crossed-arrows icon instead of text marker
+- Now-playing playlist shown with green text instead of dot indicator
+- Playlists numbered from 01 after Master Shuffle entry
+- Code quality: security, performance, and reliability hardening pass
+
 ## [1.2.0] - 2026-02-21
 
 ### Added
