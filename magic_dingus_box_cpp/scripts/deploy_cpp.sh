@@ -98,6 +98,8 @@ rsync -avz \
     --exclude 'CMakeFiles' \
     --exclude 'data/playlists/*' \
     --exclude 'data/roms/*' \
+    --exclude 'data/saves/*' \
+    --exclude 'data/states/*' \
     --exclude 'data/media/*' \
     --exclude 'data/device_info.json' \
     --filter 'P data/thumbnails/ps1' \
