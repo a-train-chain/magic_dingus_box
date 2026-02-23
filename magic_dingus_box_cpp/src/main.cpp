@@ -899,7 +899,12 @@ int main(int /* argc */, char* /* argv */[]) {
                     std::cerr << "Failed to re-initialize GStreamer renderer!" << std::endl;
                 }
             }
-            
+
+            // Restore PulseAudio default sink after RetroArch
+            // Must happen after pipeline re-init so new streams use the correct output
+            std::cout << "Restoring audio output after display reset..." << std::endl;
+            state.audio_settings.apply_output();
+
             // CRITICAL: Also reset UI Renderer GL resources
             // The UI shaders, VAO, VBO, and logo texture also become invalid
             ui_renderer.reset_gl();
