@@ -1,0 +1,15 @@
+[Unit]
+Description=Magic Dingus Box First Boot Setup
+After=local-fs.target systemd-udev-settle.service
+Before=magic-dingus-box-cpp.service magic-dingus-web.service
+ConditionPathExists=/opt/magic_dingus_box/scripts/golden_image/first_boot.sh
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
