@@ -140,7 +140,12 @@ else
 DEVEOF
 
     chown "${MAGIC_USER}:${MAGIC_USER}" "$DEVICE_INFO_PATH"
-    log "[3/6] Device identity created: ${DEVICE_UUID}"
+
+    # Set unique hostname derived from device UUID (e.g., magicpi-a3f2)
+    SHORT_ID=$(echo "$DEVICE_UUID" | cut -c1-4)
+    NEW_HOSTNAME="magicpi-${SHORT_ID}"
+    hostnamectl set-hostname "$NEW_HOSTNAME"
+    log "[3/6] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
 fi
 
 # ---------------------------------------------------------------------------
