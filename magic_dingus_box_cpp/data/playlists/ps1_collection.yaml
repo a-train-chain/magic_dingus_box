@@ -186,6 +186,13 @@ items:
     emulator_core: pcsx_rearmed_libretro
     emulator_system: PS1
 
+  - title: "Tony Hawk's Pro Skater"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/ps1/Tony Hawk's Pro Skater (USA).chd
+    emulator_core: pcsx_rearmed_libretro
+    emulator_system: PS1
+
   - title: "Tony Hawk's Pro Skater 2"
     artist: ''
     source_type: emulated_game
