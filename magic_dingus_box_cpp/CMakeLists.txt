@@ -97,6 +97,7 @@ set(UTILS_SOURCES
 
 set(RETROARCH_SOURCES
     src/retroarch/retroarch_launcher.cpp
+    src/retroarch/controller_detector.cpp
 )
 
 set(ALL_SOURCES
