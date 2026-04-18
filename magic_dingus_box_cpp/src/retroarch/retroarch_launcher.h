@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ostream>
 #include <string>
 #include <optional>
 #include <vector>
@@ -56,6 +57,10 @@ private:
     
     // Stop GStreamer and cleanup audio resources
     void stop_gstreamer_and_cleanup();
+
+    // Emit video + overlay config lines to the RetroArch config stream
+    // based on the launch options. Branching on display_mode lives here.
+    void write_video_config(std::ostream& out, const LaunchOptions& opts);
 
 private:
     std::optional<std::string> retroarch_bin_;

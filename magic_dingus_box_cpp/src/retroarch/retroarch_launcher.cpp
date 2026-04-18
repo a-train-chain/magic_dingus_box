@@ -555,27 +555,11 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "savestate_auto_save = \"true\"\n";
             script_file << "savestate_auto_load = \"true\"\n";
             
-            // Dynamic Video Driver Selection
-            // Dynamic Video Driver Selection
-            // Default to Vulkan for others
-            script_file << "video_driver = \"vulkan\"\n";
-            script_file << "video_threaded = \"false\"\n";
+            // Video config (driver, resolution, viewport, sync)
+            write_video_config(script_file, opts);
             script_file << "audio_driver = \"alsa\"\n"; // Default to alsa for other cores
             script_file << "audio_resampler = \"sinc\"\n"; // High quality for other cores
-            
-            script_file << "video_fullscreen = \"true\"\n";
-            
-            // Resolution Logic
-            // Resolution Logic
-            // Others: 640x480
-            script_file << "video_fullscreen_x = \"640\"\n";
-            script_file << "video_fullscreen_y = \"480\"\n";
-            script_file << "video_windowed_fullscreen = \"false\"\n"; 
-            
-            script_file << "video_scale_integer = \"false\"\n";
-            
-            script_file << "# CRITICAL: Ensure RetroArch sets CRTC mode (don't assume it's already set)\n";
-            script_file << "video_gpu_screenshot = \"false\"\n";
+
             script_file << "input_joypad_driver = \"udev\"\n";
             script_file << "input_max_users = \"4\"\n";
             script_file << "# Enhanced controller detection and configuration\n";
@@ -663,44 +647,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "core_updater_buildbot_cores_url = \"https://buildbot.libretro.com/nightly/linux/aarch64/latest\"\n";
             script_file << "core_updater_buildbot_assets_url = \"https://buildbot.libretro.com/assets/\"\n";
             script_file << "core_updater_auto_extract_archive = \"true\"\n";
-            script_file << "# KMS driver handles context internally\n";
-            script_file << "# video_context_driver not needed when using video_driver = \"kms\"\n";
-            script_file << "video_allow_rotate = \"false\"\n";
-            script_file << "video_crop_overscan = \"false\"\n";
-            script_file << "# Force RetroArch to set display mode explicitly\n";
-            script_file << "video_refresh_rate = \"60.000000\"\n";
-            script_file << "# CRT native resolution: Force Mode Switch to 640x480\n";
-//             script_file << "video_fullscreen_x = \"640\"\n";
-//             script_file << "video_fullscreen_y = \"480\"\n";
-            script_file << "video_windowed_width = \"640\"\n";
-            script_file << "video_windowed_height = \"480\"\n";
-            script_file << "video_windowed_fullscreen = \"false\"\n"; // False = True Exclusive Mode Switch
-            script_file << "video_fullscreen = \"true\"\n";
-            script_file << "# CRITICAL: Render games at native resolution (e.g., 256x224 for NES), scale to 640x480\n";
-            script_file << "video_custom_viewport_enable = \"false\"\n";
-            script_file << "# Let cores render at their native resolution - RetroArch will scale automatically\n";
-            script_file << "video_aspect_ratio = \"1.333\"\n";
-            script_file << "video_force_aspect = \"true\"\n";
-            script_file << "aspect_ratio_index = \"23\"\n";
-            script_file << "# Allow non-integer scaling to fill 640x480 while maintaining 4:3 aspect ratio\n";
-            script_file << "video_scale_integer = \"false\"\n";
-            script_file << "video_scale = \"1.0\"\n";
-            script_file << "video_scale_filter = \"0\"\n";
-            script_file << "video_smooth = \"false\"\n";
-            script_file << "# Ensure games use their native internal resolution\n";
-            script_file << "video_crop_overscan = \"false\"\n";
-            script_file << "video_rotation = \"0\"\n";
-            script_file << "# Critical video rendering settings for KMS\n";
-            // script_file << "video_threaded = \"false\"\n"; // Handled dynamically above
-            script_file << "video_hard_sync = \"false\"\n";
-            script_file << "video_vsync = \"true\"\n";
-            script_file << "video_frame_delay = \"4\"\n";  // Reduce input lag by ~4ms
-            script_file << "video_max_swapchain_images = \"3\"\n";  // Triple buffering for smoother frame pacing
-            script_file << "video_shader_enable = \"false\"\n";
-            script_file << "video_filter = \"\"\n";
-            script_file << "video_frame_blend = \"false\"\n";
-            script_file << "video_gpu_record = \"false\"\n";
-            script_file << "video_record = \"false\"\n";
             script_file << "# Ensure core actually runs\n";
             script_file << "rewind_enable = \"false\"\n";
             script_file << "run_ahead_enabled = \"false\"\n";
@@ -709,7 +655,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "content_load_auto_remap = \"false\"\n";
             script_file << "content_load_mode_manual = \"false\"\n";
             script_file << "pause_nonactive = \"false\"\n";
-            script_file << "video_disable_composition = \"false\"\n";
             
             // Trojan Horse moved to after EOF
             script_file << "echo 'Launcher: Core name is " << core_name << "' >> /tmp/retroarch_launcher.log\n";
@@ -1043,13 +988,9 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "aplay -l >> /tmp/retroarch_launcher.log 2>&1 || true\n";
             script_file << "cat > /tmp/retroarch_launcher.cfg << 'EOF'\n";
             script_file << "# DRM/KMS RetroArch config for Magic Dingus Box\n";
-            script_file << "# CRITICAL: Use Vulkan driver (works best with KMS/DRM)\n";
-            script_file << "video_driver = \"vulkan\"\n";
-            script_file << "video_fullscreen = \"true\"\n";
-            script_file << "# Auto-detect resolution (match UI)\n";
-            script_file << "video_windowed_fullscreen = \"true\"\n";
-            script_file << "# CRITICAL: Ensure RetroArch sets CRTC mode (don't assume it's already set)\n";
-            script_file << "video_gpu_screenshot = \"false\"\n";
+            // Video config (driver, resolution, viewport, sync)
+            LaunchOptions default_opts;  // core downloader always runs in CRT mode
+            write_video_config(script_file, default_opts);
             script_file << "input_joypad_driver = \"udev\"\n";
             script_file << "input_max_users = \"4\"\n";
             script_file << "# Enhanced controller detection and configuration\n";
@@ -1132,44 +1073,6 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "core_updater_buildbot_cores_url = \"https://buildbot.libretro.com/nightly/linux/aarch64/latest\"\n";
             script_file << "core_updater_buildbot_assets_url = \"https://buildbot.libretro.com/assets/\"\n";
             script_file << "core_updater_auto_extract_archive = \"true\"\n";
-            script_file << "# KMS driver handles context internally\n";
-            script_file << "# video_context_driver not needed when using video_driver = \"kms\"\n";
-            script_file << "video_allow_rotate = \"false\"\n";
-            script_file << "video_crop_overscan = \"false\"\n";
-            script_file << "# Force RetroArch to set display mode explicitly\n";
-            script_file << "video_refresh_rate = \"60.000000\"\n";
-            script_file << "# CRT native resolution: Force Mode Switch to 640x480\n";
-            script_file << "video_fullscreen_x = \"640\"\n";
-            script_file << "video_fullscreen_y = \"480\"\n";
-            script_file << "video_windowed_width = \"640\"\n";
-            script_file << "video_windowed_height = \"480\"\n";
-            script_file << "video_windowed_fullscreen = \"false\"\n"; // False = True Exclusive Mode Switch
-            script_file << "video_fullscreen = \"true\"\n";
-            script_file << "# CRITICAL: Render games at native resolution (e.g., 256x224 for NES), scale to 640x480\n";
-            script_file << "video_custom_viewport_enable = \"false\"\n";
-            script_file << "# Let cores render at their native resolution - RetroArch will scale automatically\n";
-            script_file << "video_aspect_ratio = \"1.333\"\n";
-            script_file << "video_force_aspect = \"true\"\n";
-            script_file << "aspect_ratio_index = \"23\"\n";
-            script_file << "# Allow non-integer scaling to fill 640x480 while maintaining 4:3 aspect ratio\n";
-            script_file << "video_scale_integer = \"false\"\n";
-            script_file << "video_scale = \"1.0\"\n";
-            script_file << "video_scale_filter = \"0\"\n";
-            script_file << "video_smooth = \"false\"\n";
-            script_file << "# Ensure games use their native internal resolution\n";
-            script_file << "video_crop_overscan = \"false\"\n";
-            script_file << "video_rotation = \"0\"\n";
-            script_file << "# Critical video rendering settings for KMS\n";
-            // script_file << "video_threaded = \"false\"\n"; // Handled dynamically above
-            script_file << "video_hard_sync = \"false\"\n";
-            script_file << "video_vsync = \"true\"\n";
-            script_file << "video_frame_delay = \"4\"\n";  // Reduce input lag by ~4ms
-            script_file << "video_max_swapchain_images = \"3\"\n";  // Triple buffering for smoother frame pacing
-            script_file << "video_shader_enable = \"false\"\n";
-            script_file << "video_filter = \"\"\n";
-            script_file << "video_frame_blend = \"false\"\n";
-            script_file << "video_gpu_record = \"false\"\n";
-            script_file << "video_record = \"false\"\n";
             script_file << "# Ensure core actually runs\n";
             script_file << "rewind_enable = \"false\"\n";
             script_file << "run_ahead_enabled = \"false\"\n";
@@ -1178,7 +1081,6 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "content_load_auto_remap = \"false\"\n";
             script_file << "content_load_mode_manual = \"false\"\n";
             script_file << "pause_nonactive = \"false\"\n";
-            script_file << "video_disable_composition = \"false\"\n";
             script_file << "# NES core-specific audio settings for full sound\n";
             script_file << "nestopia_audio_vol_sq1 = \"100\"\n";
             script_file << "nestopia_audio_vol_sq2 = \"100\"\n";
@@ -1378,6 +1280,45 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
     }
     
     std::cout << "GStreamer cleanup complete" << std::endl;
+}
+
+void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOptions& opts) {
+    (void)opts;
+    // --- Common video settings (apply to both modes) ---
+    out << "video_driver = \"vulkan\"\n";
+    out << "video_threaded = \"false\"\n";
+    out << "video_fullscreen = \"true\"\n";
+    out << "video_windowed_fullscreen = \"false\"\n";
+    out << "video_gpu_screenshot = \"false\"\n";
+    out << "video_allow_rotate = \"false\"\n";
+    out << "video_crop_overscan = \"false\"\n";
+    out << "video_refresh_rate = \"60.000000\"\n";
+    out << "video_aspect_ratio = \"1.333\"\n";
+    out << "video_force_aspect = \"true\"\n";
+    out << "video_scale = \"1.0\"\n";
+    out << "video_scale_integer = \"false\"\n";
+    out << "video_scale_filter = \"0\"\n";
+    out << "video_smooth = \"false\"\n";
+    out << "video_rotation = \"0\"\n";
+    out << "video_hard_sync = \"false\"\n";
+    out << "video_vsync = \"true\"\n";
+    out << "video_frame_delay = \"4\"\n";
+    out << "video_max_swapchain_images = \"3\"\n";
+    out << "video_shader_enable = \"false\"\n";
+    out << "video_filter = \"\"\n";
+    out << "video_frame_blend = \"false\"\n";
+    out << "video_gpu_record = \"false\"\n";
+    out << "video_record = \"false\"\n";
+    out << "video_disable_composition = \"false\"\n";
+
+    // --- Mode-specific resolution + viewport ---
+    // CRT_NATIVE: 640x480, no custom viewport (current behavior)
+    out << "video_fullscreen_x = \"640\"\n";
+    out << "video_fullscreen_y = \"480\"\n";
+    out << "video_windowed_width = \"640\"\n";
+    out << "video_windowed_height = \"480\"\n";
+    out << "video_custom_viewport_enable = \"false\"\n";
+    out << "aspect_ratio_index = \"23\"\n";
 }
 
 } // namespace retroarch
