@@ -168,6 +168,21 @@ EOF
 echo "  ✓ C++ App Service installed and started"
 echo ""
 
+# Step 1.7b: Install CPU Performance Governor Service
+echo "Step 1.7b: Installing CPU Performance Governor Service..."
+rsync -avz \
+    "${CPP_DIR}/systemd/magic-cpu-performance.service" \
+    "${PI_HOST}:${PI_DIR}/systemd/"
+
+ssh "${PI_HOST}" bash <<EOF
+sudo cp ${PI_DIR}/systemd/magic-cpu-performance.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable magic-cpu-performance.service
+sudo systemctl start magic-cpu-performance.service
+EOF
+echo "  ✓ CPU Performance Governor Service installed"
+echo ""
+
 # Step 1.8: Install Local Cores
 echo "Step 1.8: Installing Local Cores..."
 # Ensure core directory exists
