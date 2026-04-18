@@ -332,7 +332,7 @@ std::optional<std::string> RetroArchLauncher::find_retroarch() {
     return std::nullopt;
 }
 
-bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output) {
+bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
     if (!retroarch_available_) {
         std::cerr << "RetroArch not available" << std::endl;
         return false;
@@ -348,15 +348,17 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
     
     // Always use DRM/KMS launch (matches app architecture)
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
-    return launch_drm(game_info, system_volume_percent, volume_offset_db, audio_output);
+    return launch_drm(game_info, system_volume_percent, volume_offset_db, audio_output, opts);
 }
 
 
-bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output) {
+bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
     std::cout << "Overlay: " << game_info.overlay_path << std::endl;
+    std::cout << "Display mode: " << (opts.display_mode == app::DisplayMode::MODERN_TV ? "MODERN_TV" : "CRT_NATIVE") << std::endl;
+    std::cout << "Bezel file: " << (opts.bezel_file.empty() ? "(none)" : opts.bezel_file) << std::endl;
     std::cout << "Launching RetroArch in DRM/KMS mode" << std::endl;
     
     // Stop GStreamer and cleanup audio resources first
