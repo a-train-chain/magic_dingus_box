@@ -1,4 +1,5 @@
 #include "retroarch_launcher.h"
+#include "controller_detector.h"
 #include "../utils/config.h"
 #include <iostream>
 #include <cstdlib>
@@ -86,7 +87,7 @@ namespace {
     // Hotkey: Z trigger (button 6) + Start (button 12) = toggle RetroArch menu
     // This combo is consistent across ALL cores.
 
-    ControllerMapping get_mapping_for_core(const std::string& core_name) {
+    ControllerMapping get_mapping_n64_adapter(const std::string& core_name) {
         ControllerMapping map; // Starts with defaults
 
         if (core_name.find("nestopia") != std::string::npos || core_name.find("fceumm") != std::string::npos) {
@@ -296,6 +297,19 @@ namespace {
             map.menu_toggle_btn = "12";
         }
         return map;
+    }
+
+    // Dispatch to the right per-core mapping based on the detected controller.
+    // Unknown controllers fall back to the N64 adapter mapping, preserving
+    // existing behavior for anyone without the PS pad plugged in.
+    ControllerMapping get_mapping(ControllerType type, const std::string& core_name) {
+        switch (type) {
+            // PS_STYLE_DRAGONRISE case added in Task 3.
+            case ControllerType::N64_ADAPTER:
+            case ControllerType::UNKNOWN:
+            default:
+                return get_mapping_n64_adapter(core_name);
+        }
     }
 }
 
@@ -659,8 +673,10 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Trojan Horse moved to after EOF
             script_file << "echo 'Launcher: Core name is " << core_name << "' >> /tmp/retroarch_launcher.log\n";
             
-            // 1. Get the mapping configuration
-            ControllerMapping map = get_mapping_for_core(core_name);
+            // 1. Detect the connected controller and dispatch to its mapping
+            ControllerType controller_type = detect_primary_controller();
+            std::cout << "Controller detected: " << controller_type_name(controller_type) << std::endl;
+            ControllerMapping map = get_mapping(controller_type, core_name);
             
             script_file << "# === Controller Mapping: " << map.name << " ===\n";
             script_file << "echo 'Launcher: Applying controller mapping for: " << map.name << "' >> /tmp/retroarch_launcher.log\n";
