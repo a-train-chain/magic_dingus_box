@@ -1342,7 +1342,9 @@ void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOption
             out << "input_overlay = \"" << cfg_path << "\"\n";
             out << "input_overlay_enable = \"true\"\n";
             out << "input_overlay_opacity = \"1.0\"\n";
-            out << "input_overlay_hide_in_menu = \"false\"\n";
+            // Hide overlay when RetroArch's in-game menu is open so it doesn't
+            // obscure the menu UI (Z+Start hotkey). Overlay returns on menu close.
+            out << "input_overlay_hide_in_menu = \"true\"\n";
         }
     } else {
         // CRT_NATIVE: 640x480, no custom viewport (unchanged from pre-change behavior)
