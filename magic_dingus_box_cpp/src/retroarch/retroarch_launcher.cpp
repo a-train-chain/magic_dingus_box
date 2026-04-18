@@ -585,42 +585,80 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "mkdir -p \"" << config::retroarch::get_states_dir() << "\"\n";
             
             // No backup needed - using isolated temp config in /tmp
-            
+
+            // 1. Detect the connected controller for both autoconfig emission and mapping dispatch
+            ControllerType controller_type = detect_primary_controller();
+            std::cout << "Controller detected: " << controller_type_name(controller_type) << std::endl;
+
             script_file << "# CRITICAL: Ensure autoconfig file exists and is accessible (DO NOT disable it!)\n";
             script_file << "# Autoconfig is ENABLED, so we need the autoconfig file to be present\n";
             script_file << "AUTOCONFIG_DIR=\"$HOME/.config/retroarch/autoconfig/udev\"\n";
             script_file << "mkdir -p \"$AUTOCONFIG_DIR\"\n";
-            script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/0e6d_111d.cfg\"\n";
-            
-            // Restore any backup files from previous runs (in case they exist)
-            script_file << "for backup in \"$AUTOCONFIG_FILE.backup.\"*; do\n";
-            script_file << "    if [ -f \"$backup\" ]; then\n";
-            script_file << "        mv \"$backup\" \"$AUTOCONFIG_FILE\" 2>/dev/null || true\n";
-            script_file << "        echo 'Launcher: Restored autoconfig file from backup' >> /tmp/retroarch_launcher.log\n";
-            script_file << "        break\n";
-            script_file << "    fi\n";
-            script_file << "done\n";
-            script_file << "# Ensure autoconfig file exists (create if missing)\n";
-            script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
-            script_file << "    echo '# RetroArch Autoconfig for SWITCH CO.,LTD. Controller' > \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_device = \"SWITCH CO.,LTD. Controller\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_driver = \"udev\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_vendor_id = \"3677\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_product_id = \"4381\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_a_btn = \"0\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_b_btn = \"1\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_x_btn = \"4\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_y_btn = \"3\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_l_btn = \"5\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_r_btn = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_start_btn = \"2\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_select_btn = \"10\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_up_btn = \"h0up\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_down_btn = \"h0down\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_left_btn = \"h0left\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'input_right_btn = \"h0right\"' >> \"$AUTOCONFIG_FILE\"\n";
-            script_file << "    echo 'Launcher: Created autoconfig file' >> /tmp/retroarch_launcher.log\n";
-            script_file << "fi\n";
+
+            // Autoconfig file emission is controller-specific. RetroArch's autoconfig
+            // is disabled at runtime (see input_autoconfig_enable below), so this is
+            // mainly for backup/restore hygiene and future-proofing.
+            if (controller_type == ControllerType::N64_ADAPTER) {
+                script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/0e6d_111d.cfg\"\n";
+                // Restore any backup files from previous runs
+                script_file << "for backup in \"$AUTOCONFIG_FILE.backup.\"*; do\n";
+                script_file << "    if [ -f \"$backup\" ]; then\n";
+                script_file << "        mv \"$backup\" \"$AUTOCONFIG_FILE\" 2>/dev/null || true\n";
+                script_file << "        echo 'Launcher: Restored autoconfig file from backup' >> /tmp/retroarch_launcher.log\n";
+                script_file << "        break\n";
+                script_file << "    fi\n";
+                script_file << "done\n";
+                script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
+                script_file << "    echo '# RetroArch Autoconfig for SWITCH CO.,LTD. Controller' > \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_device = \"SWITCH CO.,LTD. Controller\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_driver = \"udev\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_vendor_id = \"3677\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_product_id = \"4381\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_a_btn = \"0\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_b_btn = \"1\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_x_btn = \"4\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_y_btn = \"3\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_btn = \"5\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_r_btn = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_start_btn = \"2\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_select_btn = \"10\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_up_btn = \"h0up\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_down_btn = \"h0down\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_left_btn = \"h0left\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_right_btn = \"h0right\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'Launcher: Created N64 autoconfig file' >> /tmp/retroarch_launcher.log\n";
+                script_file << "fi\n";
+            } else if (controller_type == ControllerType::PS_STYLE_DRAGONRISE) {
+                script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/0079_0006.cfg\"\n";
+                script_file << "if [ ! -f \"$AUTOCONFIG_FILE\" ]; then\n";
+                script_file << "    echo '# RetroArch Autoconfig for DragonRise/Microntek Generic USB Joystick' > \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_device = \"USB Joystick\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_driver = \"udev\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_vendor_id = \"121\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_product_id = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_a_btn = \"1\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_b_btn = \"2\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_x_btn = \"0\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_y_btn = \"3\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_btn = \"4\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_r_btn = \"5\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l2_btn = \"6\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_r2_btn = \"7\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_select_btn = \"8\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_start_btn = \"9\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_up_btn = \"h0up\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_down_btn = \"h0down\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_left_btn = \"h0left\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_right_btn = \"h0right\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_x_plus_axis = \"+0\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_x_minus_axis = \"-0\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_y_plus_axis = \"+1\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'input_l_y_minus_axis = \"-1\"' >> \"$AUTOCONFIG_FILE\"\n";
+                script_file << "    echo 'Launcher: Created PS-style autoconfig file' >> /tmp/retroarch_launcher.log\n";
+                script_file << "fi\n";
+            }
+            // UNKNOWN: skip autoconfig write entirely; RetroArch's autoconfig is
+            // disabled anyway and the explicit input_player1_*_btn lines drive input.
             script_file << "# CRITICAL: Audio settings will be in the main config file (simpler approach)\n";
             // Get service name for restart
             const char* service_name_env = std::getenv("MAGIC_UI_SERVICE");
@@ -792,9 +830,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Trojan Horse moved to after EOF
             script_file << "echo 'Launcher: Core name is " << core_name << "' >> /tmp/retroarch_launcher.log\n";
             
-            // 1. Detect the connected controller and dispatch to its mapping
-            ControllerType controller_type = detect_primary_controller();
-            std::cout << "Controller detected: " << controller_type_name(controller_type) << std::endl;
+            // 2. Dispatch to the per-controller mapping (controller_type detected earlier)
             ControllerMapping map = get_mapping(controller_type, core_name);
             
             script_file << "# === Controller Mapping: " << map.name << " ===\n";
