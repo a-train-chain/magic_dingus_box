@@ -299,12 +299,131 @@ namespace {
         return map;
     }
 
+    // PS-style USB pad (DragonRise/Microntek 0079:0006):
+    //   Face buttons: 0=Triangle, 1=Circle, 2=Cross, 3=Square
+    //   Shoulders:    4=L1, 5=R1, 6=L2, 7=R2
+    //   Center:       8=Select, 9=Start
+    //   D-pad:        hat0
+    //   Left stick:   axes 0 (X) / 1 (Y)
+    //   Right stick:  axes 2 (Rx) / 5 (Ry)
+    //
+    // Hotkey combo across all cores: Select (8) + Start (9) = RetroArch menu toggle.
+    ControllerMapping get_mapping_ps_style(const std::string& core_name) {
+        ControllerMapping map;
+        map.analog_dpad_mode = "0";
+
+        // Universal PS-pad hotkey
+        map.enable_hotkey_btn = "8"; // Select
+        map.menu_toggle_btn   = "9"; // Start
+
+        // Left stick defaults (most cores use it for D-pad emulation)
+        map.l_x_plus  = "+0";
+        map.l_x_minus = "-0";
+        map.l_y_plus  = "+1";
+        map.l_y_minus = "-1";
+
+        map.right_axis = "+0";
+        map.left_axis  = "-0";
+        map.down_axis  = "+1";
+        map.up_axis    = "-1";
+
+        if (core_name.find("nestopia") != std::string::npos || core_name.find("fceumm") != std::string::npos) {
+            map.name = "NES (PS-style)";
+            map.b_btn       = "2"; // Cross -> RetroPad B (NES B, run)
+            map.a_btn       = "1"; // Circle -> RetroPad A (NES A, jump)
+            map.y_btn       = "3"; // Square -> RetroPad Y (turbo B)
+            map.x_btn       = "0"; // Triangle -> RetroPad X (turbo A)
+            map.select_btn  = "8";
+            map.start_btn   = "9";
+            map.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
+                               "nestopia_audio_vol_sq2 = \"100\"\n"
+                               "nestopia_audio_vol_tri = \"100\"\n"
+                               "nestopia_audio_vol_noise = \"100\"\n"
+                               "nestopia_audio_vol_dpcm = \"100\"\n";
+
+        } else if (core_name.find("snes9x") != std::string::npos) {
+            map.name = "Super Nintendo (PS-style)";
+            map.b_btn      = "2"; // Cross -> B (bottom)
+            map.a_btn      = "1"; // Circle -> A (right)
+            map.y_btn      = "3"; // Square -> Y (left)
+            map.x_btn      = "0"; // Triangle -> X (top)
+            map.l_btn      = "4"; // L1
+            map.r_btn      = "5"; // R1
+            map.select_btn = "8";
+            map.start_btn  = "9";
+
+        } else if (core_name.find("genesis_plus_gx") != std::string::npos) {
+            map.name = "Sega Genesis (PS-style)";
+            // 3-button: A B C on face; 6-button adds X Y Z on top row
+            map.y_btn      = "3"; // Square -> RetroPad Y -> Genesis A (left)
+            map.b_btn      = "2"; // Cross -> RetroPad B -> Genesis B (middle)
+            map.a_btn      = "1"; // Circle -> RetroPad A -> Genesis C (right)
+            map.x_btn      = "0"; // Triangle -> RetroPad X -> Genesis X (6-btn top)
+            map.l_btn      = "4"; // L1 -> RetroPad L -> Genesis Y
+            map.r_btn      = "5"; // R1 -> RetroPad R -> Genesis Z
+            map.start_btn  = "9";
+
+        } else if (core_name.find("pcsx") != std::string::npos ||
+                   core_name.find("beetle_psx") != std::string::npos ||
+                   core_name.find("swanstation") != std::string::npos) {
+            map.name = "PS1 (PS-style, 1:1)";
+            map.core_option_pad_type = "analog";
+            map.b_btn      = "2"; // Cross -> RetroPad B (== PS1 Cross)
+            map.a_btn      = "1"; // Circle -> RetroPad A (== PS1 Circle)
+            map.y_btn      = "3"; // Square -> RetroPad Y (== PS1 Square)
+            map.x_btn      = "0"; // Triangle -> RetroPad X (== PS1 Triangle)
+            map.l_btn      = "4"; // L1
+            map.r_btn      = "5"; // R1
+            map.l2_btn     = "6"; // L2
+            map.r2_btn     = "7"; // R2
+            map.select_btn = "8";
+            map.start_btn  = "9";
+
+        } else if (core_name.find("prosystem") != std::string::npos) {
+            map.name = "Atari 7800 (PS-style)";
+            map.b_btn      = "2"; // Cross -> Button 1
+            map.a_btn      = "1"; // Circle -> Button 2
+            map.select_btn = "8";
+            map.start_btn  = "9";
+
+        } else if (core_name.find("mednafen_pce_fast") != std::string::npos) {
+            map.name = "PC Engine (PS-style)";
+            map.b_btn      = "2"; // Cross -> II (secondary)
+            map.a_btn      = "1"; // Circle -> I  (primary, right on real PCE pad)
+            map.y_btn      = "3"; // Square -> Turbo II
+            map.x_btn      = "0"; // Triangle -> Turbo I
+            map.select_btn = "8";
+            map.start_btn  = "9";
+
+        } else if (core_name.find("fbneo") != std::string::npos) {
+            map.name = "Arcade / FBNeo (PS-style)";
+            // Classic Capcom 6-button fighter: top row = punches, bottom row = kicks.
+            //     Square Triangle R1     (1 = LP, 2 = MP, 3 = HP)
+            //     Cross  Circle   R2     (4 = LK, 5 = MK, 6 = HK)  <- note: R1 is HP, R2 position unused here
+            // RetroPad assignments (RetroArch's internal "arcade button N" indices):
+            //   Y=1, X=2, L=3, B=4, A=5, R=6
+            map.y_btn      = "3"; // Square -> RetroPad Y -> arcade 1 (LP)
+            map.x_btn      = "0"; // Triangle -> RetroPad X -> arcade 2 (MP)
+            map.l_btn      = "4"; // L1 -> RetroPad L -> arcade 3 (HP)
+            map.b_btn      = "2"; // Cross -> RetroPad B -> arcade 4 (LK)
+            map.a_btn      = "1"; // Circle -> RetroPad A -> arcade 5 (MK)
+            map.r_btn      = "5"; // R1 -> RetroPad R -> arcade 6 (HK)
+            map.select_btn = "8";
+            map.start_btn  = "9";
+        }
+        // else: leave map with defaults — shouldn't happen because every
+        // shipped core matches one of the branches above.
+
+        return map;
+    }
+
     // Dispatch to the right per-core mapping based on the detected controller.
     // Unknown controllers fall back to the N64 adapter mapping, preserving
     // existing behavior for anyone without the PS pad plugged in.
     ControllerMapping get_mapping(ControllerType type, const std::string& core_name) {
         switch (type) {
-            // PS_STYLE_DRAGONRISE case added in Task 3.
+            case ControllerType::PS_STYLE_DRAGONRISE:
+                return get_mapping_ps_style(core_name);
             case ControllerType::N64_ADAPTER:
             case ControllerType::UNKNOWN:
             default:
