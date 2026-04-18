@@ -1906,11 +1906,10 @@ int main(int /* argc */, char* /* argv */[]) {
             state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
             const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
             if (!bezel.file.empty()) {
-                static std::string loaded_bezel_path;
-                if (bezel.file != loaded_bezel_path) {
-                    ui_renderer.load_bezel(bezel.file);
-                    loaded_bezel_path = bezel.file;
-                }
+                // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
+                // We must call it every frame so the bezel is re-uploaded after reset_gl()
+                // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
+                ui_renderer.load_bezel(bezel.file);
                 // Reset viewport to fullscreen for bezel overlay
                 glViewport(0, 0, mode.width, mode.height);
                 ui_renderer.render_bezel();
