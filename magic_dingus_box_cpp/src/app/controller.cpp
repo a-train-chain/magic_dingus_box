@@ -536,9 +536,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             core_name,
             overlay_path
         };
-        
-        
-        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output));
+
+        retroarch::LaunchOptions opts;
+        opts.display_mode = state.display_settings.mode;
+        {
+            int idx = state.display_settings.bezel_index;
+            if (idx >= 0 && idx < static_cast<int>(state.available_bezels.size())) {
+                opts.bezel_file = state.available_bezels[idx].file;
+            }
+        }
+
+        bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
         
         // Game has exited. Restore system.
         
