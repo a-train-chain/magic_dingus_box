@@ -2,14 +2,24 @@
 # Wait for HDMI audio card to be available before starting PulseAudio
 # This prevents race conditions where PulseAudio starts before HDMI is initialized
 
-MAX_WAIT=10  # Maximum seconds to wait
+MAX_WAIT=10
 WAITED=0
 
-# Kill any conflicting PulseAudio instances (e.g. from other users or auto-login)
+# Kill any existing PulseAudio and clean up stale socket
 echo "Cleaning up existing PulseAudio processes..."
 sudo killall pulseaudio 2>/dev/null || true
-# Wait a moment for processes to exit
 sleep 1
+
+# Ensure XDG_RUNTIME_DIR exists (may not exist on cold boot before user login)
+if [ ! -d "/run/user/1000" ]; then
+    echo "Creating /run/user/1000..."
+    sudo mkdir -p /run/user/1000
+    sudo chown magic:magic /run/user/1000
+    sudo chmod 700 /run/user/1000
+fi
+
+# Remove stale PulseAudio socket to prevent "Address already in use"
+rm -f /run/user/1000/pulse/native /run/user/1000/pulse/pid 2>/dev/null
 
 echo "Waiting for HDMI audio card..."
 
@@ -58,6 +68,7 @@ mkdir -p "$(dirname "$PULSE_CONFIG")"
 cat > "$PULSE_CONFIG" <<PAEOF
 .include /etc/pulse/default.pa
 set-default-sink $DEFAULT_SINK
+load-module module-stream-restore restore_device=false
 PAEOF
 echo "PulseAudio default sink configured: $DEFAULT_SINK"
 

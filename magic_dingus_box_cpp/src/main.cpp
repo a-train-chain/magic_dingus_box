@@ -765,49 +765,15 @@ int main(int /* argc */, char* /* argv */[]) {
     // Initialize resolution rendering state
     bool mode_applied = false;
     
-    // Probe hardware resolution but RESPECT saved user settings.
-    // Adapters often report High Res (720p) even for CRTs, so we shouldn't auto-switch based on resolution alone.
-    // Instead, we rely on our Fallback Logic and Logical Scaling to handle whatever the user chose.
-    if (display.set_mode(0, 0)) {
-        auto probe = display.get_current_mode();
-        std::cout << "Hardware Probe: " << probe.width << "x" << probe.height << std::endl;
-    } else {
-        std::cerr << "Hardware Probe failed. Defaulting to safe CRT_NATIVE resolution logic." << std::endl;
-    }
-    
-    // Apply Mode-Specific Resolution logic using SAVED state
-    if (state.display_settings.mode == app::DisplayMode::CRT_NATIVE) {
-        // CRT Native: Use Auto/Preferred resolution
-        if (display.set_mode(0, 0)) {
-             // SAFETY CHECK: If Auto mode picked a very high resolution (e.g. 4K),
-             // it might exceed Pi 5 bandwidth/plane limits with our overlay setup.
-             // Clamp to safe resolution to ensure image is visible.
-             auto current = display.get_current_mode();
-             if (current.height > config::display::CRT_MAX_HEIGHT) {
-                 std::cout << "Native resolution " << current.height << "p too high for CRT Native mode safely. Clamping to "
-                           << config::display::PREFERRED_HEIGHT << "p." << std::endl;
-                 if (display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
-                     std::cout << "Clamped to " << config::display::PREFERRED_WIDTH << "x"
-                               << config::display::PREFERRED_HEIGHT << "." << std::endl;
-                 } else {
-                     std::cerr << "Clamp to " << config::display::PREFERRED_HEIGHT << "p failed. Reverting to Auto." << std::endl;
-                     display.set_mode(0, 0);
-                 }
-             }
-             mode_applied = true;
-        } else {
-             std::cerr << "CRT Auto-Mode failed!" << std::endl;
-        }
-    } else {
-         // Modern TV: Force preferred resolution for best performance/scaling integration
-         if (display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
-             std::cout << "Forcing Modern TV resolution: " << config::display::PREFERRED_WIDTH << "x"
-                       << config::display::PREFERRED_HEIGHT << std::endl;
-             mode_applied = true;
-         } else {
-             std::cerr << "Failed to set Modern TV " << config::display::PREFERRED_WIDTH << "x"
-                       << config::display::PREFERRED_HEIGHT << "!" << std::endl;
-         }
+    // Display mode was already set during initialization (before intro video).
+    // Skip redundant mode probe/switch here to avoid disrupting the intro video
+    // with mode changes that cause the TV to lose sync.
+    // The initial mode set (lines 98-119) handles the preferred resolution cascade:
+    //   1280x720 -> 1024x768 -> 640x480 -> auto-detect
+    {
+        auto current = display.get_current_mode();
+        std::cout << "Display mode (already set): " << current.width << "x" << current.height << std::endl;
+        mode_applied = true;
     }
     
     // Fallback if requested mode failed
@@ -1460,17 +1426,27 @@ int main(int /* argc */, char* /* argv */[]) {
                             load_success = static_cast<bool>(load_result);
                             if (!load_result) {
                                 std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
+                                state.set_error("Could not load: " + pl.title);
                             }
-                            // Track which playlist and item is playing (already set above)
-                            // When starting video, hide UI completely so video shows through fully
-                            state.ui_visible_when_playing = false;
-                            // Original volume will be captured in update_state when video becomes active
+                            if (load_success) {
+                                // Only hide UI when video actually loaded
+                                state.ui_visible_when_playing = false;
+                            }
+                        } else if (!pl.items.empty() && pl.is_game_playlist()) {
+                            // Game playlists are launched from Settings > Video Games
+                            state.set_error("Use Settings to launch games");
+                            load_success = false;
+                        } else {
+                            state.set_error("No content in playlist");
+                            load_success = false;
                         }
                     }
 
-                    // If load failed, clear the flag immediately to allow retry
+                    // If load failed, clear the flag and restore UI state
                     if (!load_success) {
                         state.is_switching_playlist = false;
+                        state.ui_visible_when_playing = true;
+                        state.video_active = false;
                         std::cerr << "Playlist switch failed - flag cleared, ready for retry" << std::endl;
                     }
                     // Otherwise, the flag will be cleared when the new video becomes active
@@ -1512,12 +1488,16 @@ int main(int /* argc */, char* /* argv */[]) {
                                 state.current_item_index = 0;
                                 // When starting video, hide UI completely so video shows through fully
                                 state.ui_visible_when_playing = false;
-                                // Original volume will be captured in update_state when video becomes active
                             } else {
-                                // Load failed - clear flag immediately
+                                // Load failed - clear flag and show error
                                 std::cerr << "Failed to load playlist item: " << load_result.error() << std::endl;
+                                state.set_error("Could not load: " + pl.title);
                                 state.is_switching_playlist = false;
                             }
+                        } else if (!pl.items.empty() && pl.is_game_playlist()) {
+                            state.set_error("Use Settings to launch games");
+                        } else {
+                            state.set_error("No content in playlist");
                         }
                     }
                 }

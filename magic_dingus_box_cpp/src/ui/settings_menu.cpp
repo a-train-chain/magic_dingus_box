@@ -194,6 +194,11 @@ void SettingsMenuManager::open() {
         selected_index_ = 0;
         scroll_offset_ = 0;
         current_submenu_ = MenuSection::BACK;
+        game_browser_active_ = false;
+        viewing_games_in_playlist_ = false;
+        current_game_playlist_index_ = 0;
+        selected_game_in_playlist_ = 0;
+        game_browser_selected_ = 0;
     }
 }
 
@@ -292,14 +297,17 @@ MenuSection SettingsMenuManager::select_current() {
     if (!active_) {
         return MenuSection::BACK;
     }
-    
+
     const std::vector<MenuItem>& items = current_submenu_ == MenuSection::BACK ? menu_items_ : submenu_items_;
     if (selected_index_ >= 0 && selected_index_ < static_cast<int>(items.size())) {
-        const MenuItem& item = items[selected_index_];
-        if (item.action) {
-            item.action();
+        // Save section BEFORE calling action — action may rebuild the submenu,
+        // invalidating any references into the items vector
+        MenuSection section = items[selected_index_].section;
+        auto action = items[selected_index_].action;
+        if (action) {
+            action();
         }
-        return item.section;
+        return section;
     }
     return MenuSection::BACK;
 }
@@ -339,10 +347,12 @@ void SettingsMenuManager::rebuild_current_submenu() {
     if (current_submenu_ == MenuSection::BACK) {
         return;
     }
-    
+
     int old_index = selected_index_;
+    int old_scroll = scroll_offset_;
     enter_submenu(current_submenu_);
     selected_index_ = std::min(old_index, static_cast<int>(submenu_items_.size() - 1));
+    scroll_offset_ = std::min(old_scroll, std::max(0, static_cast<int>(submenu_items_.size()) - 1));
 }
 
 void SettingsMenuManager::enter_game_browser() {

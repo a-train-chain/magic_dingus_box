@@ -421,16 +421,16 @@ std::vector<InputEvent> InputManager::poll() {
                 // Handle Rotary Encoder (REL_X)
                 if (ev.code == REL_X) {
                     // Software Accumulator to fix sensitivity and "skipping"
-                    // Require accumulating 4 units (either magnitude 4 or 4 events of 1) to trigger 1 step
-                    const int THRESHOLD = 4;
+                    // Require accumulating 2 units (one detent click) to trigger 1 step
+                    const int THRESHOLD = 2;
 
                     rotary_accumulator_ += ev.value;
 
                     if (std::abs(rotary_accumulator_) >= THRESHOLD) {
                         input_ev.action = InputAction::ROTATE;
-                        // INVERT direction: positive accumulator -> negative delta
-                        // (User requested inversion)
-                        input_ev.delta = (rotary_accumulator_ > 0) ? -1 : 1;
+                        // Clockwise (positive) = down/next (positive delta)
+                        // Counterclockwise (negative) = up/previous (negative delta)
+                        input_ev.delta = (rotary_accumulator_ > 0) ? 1 : -1;
                         rotary_accumulator_ = 0;
 
                         // Calculate velocity based on time between rotary events

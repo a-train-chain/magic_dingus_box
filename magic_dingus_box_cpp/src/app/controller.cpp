@@ -376,6 +376,31 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             std::cerr << "Error: " << error << std::endl;
             return utils::Result<>::fail(error);
         }
+    } else if (item.source_type == "video") {
+        // Treat "video" as an alias for "local"
+        std::cout << "Starting playlist transition (source_type=video)..." << std::endl;
+
+        stop();
+        wait_with_callback(200, progress_callback);
+
+        std::cout << "Loading file: " << item.path << std::endl;
+        auto load_result = load_file_with_resolution(item.path, playlist_directory, 0.0, 0.0, false);
+        if (load_result) {
+            std::cout << "File loaded successfully, starting playback..." << std::endl;
+            play();
+            if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
+                gst_player->update_state();
+            }
+            wait_with_callback(1000, progress_callback);
+            if (!is_playing()) {
+                std::cerr << "Warning: Playback did not start after load" << std::endl;
+            }
+            return utils::Result<>::ok();
+        } else {
+            std::string error = "Failed to load playlist item: " + item.path + " (" + load_result.error() + ")";
+            std::cerr << "Error: " << error << std::endl;
+            return utils::Result<>::fail(error);
+        }
     } else if (item.source_type == "emulated_game") {
         // Handle RetroArch game launch
         std::cout << "Launching RetroArch game: " << item.title << std::endl;
@@ -723,19 +748,37 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
     auto load_result = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
 
     if (!load_result) {
-        // If load failed, revert to previous index and try next item (skip broken file)
+        // If load failed, try skipping to next valid item (up to playlist size attempts)
         std::cerr << "Warning: Failed to load item " << (state.current_item_index + 1)
                   << ": " << load_result.error() << ", skipping..." << std::endl;
-        state.current_item_index = old_index;  // Revert index
         state.last_advanced_item_index = -1;  // Reset advance flag to allow retry
-        // Try next item if there are more
-        if (playlist.items.size() > 1) {
+
+        int attempts = 0;
+        int max_attempts = static_cast<int>(playlist.items.size());
+        bool found = false;
+
+        while (attempts < max_attempts && !found) {
             state.current_item_index = (state.current_item_index + 1) % playlist.items.size();
-            if (state.current_item_index != old_index) {  // Only if we have another item
-                // Stop current playback before trying next item
-                player_->stop();
-                load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
+            if (state.current_item_index == old_index) break; // Wrapped around, give up
+
+            player_->stop();
+            auto retry = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
+            if (retry) {
+                found = true;
+            } else {
+                std::cerr << "Warning: Also failed item " << (state.current_item_index + 1)
+                          << ": " << retry.error() << std::endl;
             }
+            attempts++;
+        }
+
+        if (!found) {
+            // All items failed - stop and show UI
+            std::cerr << "All playlist items failed to load, stopping." << std::endl;
+            stop();
+            state.video_active = false;
+            state.ui_visible_when_playing = true;
+            state.set_error("No playable content in playlist");
         }
     }
 

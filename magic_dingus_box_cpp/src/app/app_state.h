@@ -77,7 +77,7 @@ struct Playlist {
     bool is_video_playlist() const {
         if (items.empty()) return false;
         for (const auto& item : items) {
-            if (item.source_type == "local" || item.source_type == "youtube") {
+            if (item.source_type == "local" || item.source_type == "video" || item.source_type == "youtube") {
                 return true;
             }
         }
