@@ -1283,7 +1283,6 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
 }
 
 void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOptions& opts) {
-    (void)opts;
     // --- Common video settings (apply to both modes) ---
     out << "video_driver = \"vulkan\"\n";
     out << "video_threaded = \"false\"\n";
@@ -1311,14 +1310,49 @@ void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOption
     out << "video_record = \"false\"\n";
     out << "video_disable_composition = \"false\"\n";
 
-    // --- Mode-specific resolution + viewport ---
-    // CRT_NATIVE: 640x480, no custom viewport (current behavior)
-    out << "video_fullscreen_x = \"640\"\n";
-    out << "video_fullscreen_y = \"480\"\n";
-    out << "video_windowed_width = \"640\"\n";
-    out << "video_windowed_height = \"480\"\n";
-    out << "video_custom_viewport_enable = \"false\"\n";
-    out << "aspect_ratio_index = \"23\"\n";
+    // --- Mode-specific resolution + viewport + overlay ---
+    if (opts.display_mode == app::DisplayMode::MODERN_TV) {
+        // 1920x1080 output, game rendered into a 4:3 viewport centered
+        // on the bezel's screen cutout. Cutout intersection across both
+        // bezel families is (251, 10, 1415, 1059). RetroArch enforces
+        // strict 4:3 inside that viewport via video_force_aspect above.
+        out << "video_fullscreen_x = \"1920\"\n";
+        out << "video_fullscreen_y = \"1080\"\n";
+        out << "video_windowed_width = \"1920\"\n";
+        out << "video_windowed_height = \"1080\"\n";
+        out << "video_custom_viewport_enable = \"true\"\n";
+        out << "video_custom_viewport_x = \"251\"\n";
+        out << "video_custom_viewport_y = \"10\"\n";
+        out << "video_custom_viewport_width = \"1415\"\n";
+        out << "video_custom_viewport_height = \"1059\"\n";
+        out << "aspect_ratio_index = \"22\"\n";  // 22 = custom viewport
+
+        // Bezel overlay (optional — skipped when user has procedural "Simple" selected)
+        if (!opts.bezel_file.empty()) {
+            // Swap .png -> .cfg (RetroArch overlay configs live alongside PNGs)
+            std::string cfg_name = opts.bezel_file;
+            auto dot = cfg_name.rfind('.');
+            if (dot != std::string::npos) {
+                cfg_name.replace(dot, std::string::npos, ".cfg");
+            } else {
+                cfg_name += ".cfg";
+            }
+            std::string cfg_path = config::get_bezels_dir() + "/" + cfg_name;
+
+            out << "input_overlay = \"" << cfg_path << "\"\n";
+            out << "input_overlay_enable = \"true\"\n";
+            out << "input_overlay_opacity = \"1.0\"\n";
+            out << "input_overlay_hide_in_menu = \"false\"\n";
+        }
+    } else {
+        // CRT_NATIVE: 640x480, no custom viewport (unchanged from pre-change behavior)
+        out << "video_fullscreen_x = \"640\"\n";
+        out << "video_fullscreen_y = \"480\"\n";
+        out << "video_windowed_width = \"640\"\n";
+        out << "video_windowed_height = \"480\"\n";
+        out << "video_custom_viewport_enable = \"false\"\n";
+        out << "aspect_ratio_index = \"23\"\n";
+    }
 }
 
 } // namespace retroarch
