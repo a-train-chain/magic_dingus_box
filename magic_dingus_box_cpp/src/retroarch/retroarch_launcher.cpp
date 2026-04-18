@@ -529,9 +529,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
                 script_file << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
                 // Standard PSX clock (57 = native speed)
                 script_file << "pcsx_rearmed_psxclock = \"57\"\n";
-                // Audio quality
-                script_file << "pcsx_rearmed_spu_interpolation = \"simple\"\n";
-                script_file << "pcsx_rearmed_spu_reverb = \"enabled\"\n";
+                // Audio quality (minimal CPU: no interpolation, no reverb)
+                script_file << "pcsx_rearmed_spu_interpolation = \"off\"\n";
+                script_file << "pcsx_rearmed_spu_reverb = \"disabled\"\n";
                 // Rendering at native 1x resolution (no upscaling overhead)
                 script_file << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
                 script_file << "pcsx_rearmed_dithering = \"enabled\"\n";
@@ -1285,7 +1285,7 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
 void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOptions& opts) {
     // --- Common video settings (apply to both modes) ---
     out << "video_driver = \"vulkan\"\n";
-    out << "video_threaded = \"false\"\n";
+    out << "video_threaded = \"true\"\n";  // Decouples GPU from emulation core (helps PS1 on Pi 4B)
     out << "video_fullscreen = \"true\"\n";
     out << "video_windowed_fullscreen = \"false\"\n";
     out << "video_gpu_screenshot = \"false\"\n";

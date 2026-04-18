@@ -1146,12 +1146,28 @@ int main(int /* argc */, char* /* argv */[]) {
                                         auto progress_callback = [&]() {
                                             // Clear screen
                                             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-                                            // Render UI to show loading screen
+                                            glClear(GL_COLOR_BUFFER_BIT);
+
+                                            // Render loading screen FIRST so the bezel can layer on top
                                             ui_renderer.render_loading_overlay(state);
-                                            
+
+                                            // Render bezel overlay LAST so it frames the loading screen
+                                            // (same z-order as the main render path at end of frame)
+                                            if (state.display_settings.mode == app::DisplayMode::MODERN_TV &&
+                                                !state.available_bezels.empty() &&
+                                                state.display_settings.bezel_index >= 0 &&
+                                                state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
+                                                const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
+                                                if (!bezel.file.empty()) {
+                                                    ui_renderer.load_bezel(bezel.file);
+                                                    glViewport(0, 0, mode.width, mode.height);
+                                                    ui_renderer.render_bezel();
+                                                }
+                                            }
+
                                             // Swap buffers (renders to GBM surface)
                                             egl.swap_buffers();
-                                            
+
                                             // Present frame (flips DRM page)
                                             present_frame();
                                         };
