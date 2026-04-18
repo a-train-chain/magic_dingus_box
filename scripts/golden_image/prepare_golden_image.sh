@@ -295,9 +295,58 @@ fi
 echo -e "  ${GREEN}Done${NC}"
 
 # ---------------------------------------------------------------------------
-# Step 8: Install first-boot service
+# Step 8: Clear WiFi, apt cache, cloud-init, and system state
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}[8/9] Installing first-boot service...${NC}"
+echo -e "${CYAN}[8/12] Clearing WiFi connections...${NC}"
+
+wifi_count=0
+while IFS= read -r conn_name; do
+    [[ -z "$conn_name" ]] && continue
+    nmcli connection delete "$conn_name" 2>/dev/null && \
+        echo -e "  ${RED}Removed${NC} WiFi: ${conn_name}" && \
+        ((wifi_count++)) || true
+done < <(nmcli -t -f NAME,TYPE connection show | grep ':802-11-wireless$' | cut -d: -f1)
+
+if [[ "$wifi_count" -eq 0 ]]; then
+    echo -e "  ${DIM}No WiFi connections to remove${NC}"
+else
+    echo -e "  ${GREEN}Done${NC} (removed ${wifi_count} connection(s))"
+fi
+
+echo -e "${CYAN}[9/12] Cleaning apt cache...${NC}"
+
+apt_size_before=$(du -sh /var/cache/apt/archives/ 2>/dev/null | cut -f1)
+apt-get clean -y 2>/dev/null
+apt_size_after=$(du -sh /var/cache/apt/archives/ 2>/dev/null | cut -f1)
+echo -e "  ${RED}Cleaned${NC} apt cache (${apt_size_before} -> ${apt_size_after})"
+
+echo -e "${CYAN}[10/12] Removing cloud-init...${NC}"
+
+if dpkg -l cloud-init &>/dev/null 2>&1; then
+    apt-get purge -y cloud-init 2>/dev/null
+    rm -rf /etc/cloud /var/lib/cloud
+    echo -e "  ${RED}Removed${NC} cloud-init and its data"
+else
+    echo -e "  ${DIM}cloud-init not installed${NC}"
+fi
+
+# Clean up disabled playlists directory
+disabled_dir="${DATA_DIR}/playlists/disabled"
+if [[ -d "$disabled_dir" ]]; then
+    rm -rf "$disabled_dir"
+    echo -e "  ${RED}Removed${NC} disabled playlists directory"
+fi
+
+# Clean PulseAudio state (will regenerate on boot via init_audio.sh)
+if [[ -d "${MAGIC_HOME}/.config/pulse" ]]; then
+    rm -rf "${MAGIC_HOME}/.config/pulse"
+    echo -e "  ${RED}Cleared${NC} PulseAudio state"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 11: Install first-boot service
+# ---------------------------------------------------------------------------
+echo -e "${CYAN}[11/12] Installing first-boot service...${NC}"
 
 if [[ -f "$SYSTEMD_SRC" ]]; then
     cp "$SYSTEMD_SRC" /etc/systemd/system/magic-first-boot.service
@@ -310,9 +359,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 9: Verification
+# Step 12: Verification
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}[9/9] Running verification checks...${NC}"
+echo -e "${CYAN}[12/12] Running verification checks...${NC}"
 echo ""
 
 pass=0
@@ -415,6 +464,28 @@ if [[ ! -f "${CONFIG_DIR}/settings.json" ]]; then
     check_pass "Settings cleared (will regenerate with factory defaults)"
 else
     check_fail "settings.json still exists"
+fi
+
+# WiFi cleared
+wifi_remaining=$(nmcli -t -f TYPE connection show 2>/dev/null | grep -c '802-11-wireless' || true)
+if [[ "$wifi_remaining" -eq 0 ]]; then
+    check_pass "WiFi connections cleared"
+else
+    check_fail "WiFi connections still present: ${wifi_remaining} remaining"
+fi
+
+# Cloud-init removed
+if ! dpkg -l cloud-init &>/dev/null 2>&1; then
+    check_pass "cloud-init removed"
+else
+    check_fail "cloud-init still installed"
+fi
+
+# SSH authorized_keys preserved
+if [[ -f "${MAGIC_HOME}/.ssh/authorized_keys" ]] && [[ -s "${MAGIC_HOME}/.ssh/authorized_keys" ]]; then
+    check_pass "SSH authorized_keys preserved for remote access"
+else
+    check_fail "SSH authorized_keys missing (remote access will not work)"
 fi
 
 echo ""
