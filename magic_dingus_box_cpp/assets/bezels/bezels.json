@@ -1,6 +1,24 @@
 {
   "bezels": [
     {
+      "id": "mdb_1974",
+      "name": "MDB-1974",
+      "file": "mdb_1974.png",
+      "description": "70s wood-grain console"
+    },
+    {
+      "id": "mdb_1986",
+      "name": "MDB-1986",
+      "file": "mdb_1986.png",
+      "description": "80s Memphis neon"
+    },
+    {
+      "id": "mdb_kv19",
+      "name": "MDB-KV19",
+      "file": "mdb_kv19.png",
+      "description": "80s sleek black broadcast monitor"
+    },
+    {
       "id": "procedural",
       "name": "Simple (Built-in)",
       "file": null,
@@ -50,4 +68,3 @@
     }
   ]
 }
-
