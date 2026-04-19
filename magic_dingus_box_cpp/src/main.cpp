@@ -1917,18 +1917,31 @@ int main(int /* argc */, char* /* argv */[]) {
         
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center
-        if (use_letterbox && !state.available_bezels.empty() && 
-            state.display_settings.bezel_index >= 0 && 
-            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
-            const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
-            if (!bezel.file.empty()) {
-                // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
-                // We must call it every frame so the bezel is re-uploaded after reset_gl()
-                // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
-                ui_renderer.load_bezel(bezel.file);
-                // Reset viewport to fullscreen for bezel overlay
-                glViewport(0, 0, mode.width, mode.height);
-                ui_renderer.render_bezel();
+        {
+            static int bezel_diag_counter = 0;
+            bool letterbox_ok = use_letterbox;
+            bool bezels_ok = !state.available_bezels.empty();
+            bool index_ok = state.display_settings.bezel_index >= 0 &&
+                            state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size());
+            if (++bezel_diag_counter % 120 == 0) {  // ~every 2 seconds at 60fps
+                std::cout << "BEZEL_DIAG: letterbox=" << letterbox_ok
+                          << " bezels_loaded=" << state.available_bezels.size()
+                          << " index=" << state.display_settings.bezel_index
+                          << " index_ok=" << index_ok
+                          << (index_ok ? (" file='" + state.available_bezels[state.display_settings.bezel_index].file + "'") : std::string{})
+                          << std::endl;
+            }
+            if (letterbox_ok && bezels_ok && index_ok) {
+                const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
+                if (!bezel.file.empty()) {
+                    // load_bezel() dedupes internally (skips if path matches AND texture is still valid).
+                    // We must call it every frame so the bezel is re-uploaded after reset_gl()
+                    // (e.g. after returning from RetroArch) — a stale path tracker here would block that.
+                    ui_renderer.load_bezel(bezel.file);
+                    // Reset viewport to fullscreen for bezel overlay
+                    glViewport(0, 0, mode.width, mode.height);
+                    ui_renderer.render_bezel();
+                }
             }
         }
         

@@ -526,11 +526,11 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
         case 304:  // BTN_SOUTH (standard A button)
         case 306:  // A button (N64)
         case 316:  // START
-        case 290:  // Cross (PS pad, primary confirm)
+        case 291:  // Square (PS pad, joystick button 3 — ENTER per user preference)
         case 297:  // Start (PS pad)
             return InputAction::SELECT;
         case 305:  // BTN_EAST (B button)
-        case 289:  // Circle (PS pad, cancel/menu)
+        case 290:  // Cross (PS pad, joystick button 2 — MENU per user preference)
             return InputAction::SETTINGS_MENU;
         case 310:  // Z
         case 288:  // Triangle (PS pad)
