@@ -23,8 +23,18 @@ struct InputManager::Device {
     bool is_joystick;
     bool is_keyboard;
     bool is_rotary;
-    
-    Device() : fd(-1), dev(nullptr), is_joystick(false), is_keyboard(false), is_rotary(false) {}
+    // Some cheap PS-style USB pads (e.g. DragonRise/Microntek 0079:0006)
+    // report axes ABS_X/Y in 0..255 range with the D-pad sending extremes
+    // (0 or 255) instead of using ABS_HAT0X/Y. True for those devices.
+    bool axis_is_8bit;
+    // Tracks the last-known D-pad direction emitted from ABS_X/Y on 8-bit
+    // controllers, so we only fire on transitions (press/release), not on
+    // every event that happens to land in the extreme zone.
+    int dpad_x_8bit_last;
+    int dpad_y_8bit_last;
+
+    Device() : fd(-1), dev(nullptr), is_joystick(false), is_keyboard(false), is_rotary(false),
+               axis_is_8bit(false), dpad_x_8bit_last(0), dpad_y_8bit_last(0) {}
     
     ~Device() {
         if (dev) {
@@ -139,6 +149,19 @@ bool InputManager::open_joystick_devices() {
             device->dev = dev;
             device->name = dev_name ? dev_name : "Unknown";
             device->is_joystick = true;
+            // Detect 8-bit-axis controllers (DragonRise-style): ABS_X reported
+            // with min=0 means values are 0..255 with center 127, NOT signed
+            // 16-bit. The D-pad on these pads sends ABS_X/Y extremes (0 or
+            // 255) instead of HAT events.
+            if (libevdev_has_event_code(dev, EV_ABS, ABS_X)) {
+                int abs_min = libevdev_get_abs_minimum(dev, ABS_X);
+                int abs_max = libevdev_get_abs_maximum(dev, ABS_X);
+                if (abs_min == 0 && abs_max <= 255) {
+                    device->axis_is_8bit = true;
+                    std::cout << "  Joystick uses 8-bit axes (D-pad on ABS_X/Y extremes): "
+                              << device->name << std::endl;
+                }
+            }
             
             // Grab device for exclusive access (may fail, but that's OK)
             int grab_rc = libevdev_grab(dev, LIBEVDEV_GRAB);
@@ -305,7 +328,7 @@ std::vector<InputEvent> InputManager::poll() {
             if (ev.type == EV_KEY) {
                 // Button/key press
                 input_ev.pressed = (ev.value == 1);
-                
+
                 // Handle keyboard arrow keys for rotation (before other mappings)
                 if (device->is_keyboard) {
                     if (ev.code == KEY_LEFT || ev.code == KEY_RIGHT) {
@@ -370,6 +393,62 @@ std::vector<InputEvent> InputManager::poll() {
                     }
                 }
             } else if (ev.type == EV_ABS && device->is_joystick) {
+                // 8-bit-axis controllers (DragonRise/Microntek): D-pad rides
+                // on ABS_X/Y extremes (0 = -1, 255 = +1, ~127 = center).
+                // Treat extremes as digital direction transitions (the same
+                // way HAT events are handled below). ABS_Z / ABS_RZ on these
+                // pads is the right analog stick — explicitly ignored here so
+                // analog wiggle never fires kiosk actions.
+                if (device->axis_is_8bit) {
+                    if (ev.code == ABS_X) {
+                        int dir = (ev.value <= 32) ? -1 : (ev.value >= 224 ? 1 : 0);
+                        if (dir != device->dpad_x_8bit_last) {
+                            device->dpad_x_8bit_last = dir;
+                            if (dir != 0) {
+                                auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                                dpad_held_x_ = dir;
+                                dpad_press_time_x_ = now;
+                                dpad_last_fire_x_ = now;
+                                input_ev.action = InputAction::ROTATE;
+                                input_ev.delta = dir;
+                            } else {
+                                dpad_held_x_ = 0;
+                            }
+                        }
+                        rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
+                        if (input_ev.action != InputAction::NONE) {
+                            events.push_back(input_ev);
+                        }
+                        continue;
+                    }
+                    if (ev.code == ABS_Y) {
+                        int dir = (ev.value <= 32) ? -1 : (ev.value >= 224 ? 1 : 0);
+                        if (dir != device->dpad_y_8bit_last) {
+                            device->dpad_y_8bit_last = dir;
+                            if (dir != 0) {
+                                auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                                dpad_held_y_ = dir;
+                                dpad_press_time_y_ = now;
+                                dpad_last_fire_y_ = now;
+                                input_ev.action = InputAction::ROTATE_VERTICAL;
+                                input_ev.delta = dir;
+                            } else {
+                                dpad_held_y_ = 0;
+                            }
+                        }
+                        rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
+                        if (input_ev.action != InputAction::NONE) {
+                            events.push_back(input_ev);
+                        }
+                        continue;
+                    }
+                    if (ev.code == ABS_Z || ev.code == ABS_RZ) {
+                        // Right analog stick on cheap PS-style pads — explicitly
+                        // do nothing so wiggling it never fires kiosk actions.
+                        rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
+                        continue;
+                    }
+                }
                 // Handle DPad hat switches (ABS_HAT0X, ABS_HAT0Y)
                 if (ev.code == ABS_HAT0Y) {
                     if (ev.value != 0) {
