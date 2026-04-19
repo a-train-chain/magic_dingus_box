@@ -515,19 +515,31 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
     // Button 310 = Z -> PLAY_PAUSE
     // Button 309 = R -> NEXT
     // Button 308 = L -> PREV
-    
+    //
+    // PS-style USB pad (DragonRise/Microntek 0079:0006) uses the "joystick"
+    // button range (BTN_TRIGGER..BTN_BASE6 = 288..299):
+    //   288 Triangle / 289 Circle / 290 Cross / 291 Square
+    //   292 L1 / 293 R1 / 294 L2 / 295 R2 / 296 Select / 297 Start
+    // Natural PS-style mapping onto the kiosk's existing actions.
+
     switch (code) {
         case 304:  // BTN_SOUTH (standard A button)
         case 306:  // A button (N64)
         case 316:  // START
+        case 290:  // Cross (PS pad, primary confirm)
+        case 297:  // Start (PS pad)
             return InputAction::SELECT;
         case 305:  // BTN_EAST (B button)
+        case 289:  // Circle (PS pad, cancel/menu)
             return InputAction::SETTINGS_MENU;
         case 310:  // Z
+        case 288:  // Triangle (PS pad)
             return InputAction::PLAY_PAUSE;
         case 309:  // R
+        case 293:  // R1 (PS pad)
             return InputAction::NEXT;
         case 308:  // L
+        case 292:  // L1 (PS pad)
             return InputAction::PREV;
         default:
             return InputAction::NONE;
