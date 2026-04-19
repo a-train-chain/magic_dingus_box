@@ -5,6 +5,25 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-04-18
+
+### Added
+- **Three custom MDB bezels** (MDB-1974 wood-grain console, MDB-1986 Memphis neon, MDB-KV19 sleek black broadcast monitor) shipped as the new defaults in [bezels.json](magic_dingus_box_cpp/assets/bezels/bezels.json) with matching RetroArch overlay `.cfg` sidecars.
+- **RetroArch bezel overlay in Modern TV mode**: launching a game in `MODERN_TV` mode now writes a 1920×1080 RetroArch config with a 4:3 `custom_viewport` at `(251, 10, 1415, 1059)` (the geometric intersection of all bezel families' transparent cutouts) and `input_overlay` pointing at the user's selected bezel `.cfg`. The bezel frames the game so a modern 16:9 TV presents retro titles inside their period-appropriate "screen". CRT_NATIVE mode launches at 640×480 with no overlay (byte-identical to pre-feature behavior).
+- **Auto-detected dual controller mappings**: kiosk now scans `/dev/input/js*` and reads VID/PID from sysfs at game-launch time, classifying as `N64_ADAPTER` (`0e6d:111d`), `PS_STYLE_DRAGONRISE` (`0079:0006`), or `UNKNOWN`. Dispatches to per-core mapping tables tailored to each controller. PS-style pad gets PS1 1:1 mapping, classic SNES face button positions, Genesis A/B/C, FBNeo 6-button fighter layout, etc. Unknown / no-controller falls back to N64 mapping.
+- **Kiosk UI input support for PS-style USB pads**: button codes 288–299 now recognized alongside N64 codes. Cross opens settings menu, Square selects, Triangle play/pause, L1/R1 prev/next, D-pad navigates. Detects 8-bit-axis controllers (`abs_min == 0`, `abs_max ≤ 255`) and treats `ABS_X/Y` extremes as digital D-pad presses. `ABS_Z`/`ABS_RZ` (right stick on these pads when in analog mode) explicitly ignored.
+- **Tier 1 performance overclock**: CPU 1.8 → 2.0 GHz, V3D GPU 500 → 600 MHz, GPU memory split 76 → 256 MB, force_turbo, performance governor pinned via new `magic-cpu-performance.service` (one-shot at boot). Net ~+15% headroom for heavier cores like PS1 at 1080p output. CPU/GPU clocks set in `/boot/firmware/config.txt` (captured by golden image). Service file in [magic_dingus_box_cpp/systemd/magic-cpu-performance.service](magic_dingus_box_cpp/systemd/magic-cpu-performance.service) and auto-installed by `deploy_cpp.sh`.
+
+### Fixed
+- **Bezel disappearing after RetroArch exit**: removed a stale `static loaded_bezel_path` tracker in the main render loop that blocked `load_bezel()` from being called after `reset_gl()` destroyed the bezel texture. The renderer's own dedupe handles repeat calls correctly.
+- **Bezel obscuring RetroArch in-game menu**: set `input_overlay_hide_in_menu = "true"` so the bezel auto-hides when the RetroArch menu opens (Z+Start hotkey).
+- **Loading screen z-order**: the brief "Loading..." overlay during the kiosk → RetroArch handoff now renders the bezel on top of the loading text instead of the loading text covering the bezel — continuous visual framing through the transition.
+
+### Improved
+- **PS1 core (`pcsx_rearmed`) tuning**: SPU reverb disabled, SPU interpolation off — small CPU savings with no audible impact on most titles. Combined with the global `video_threaded = true` (was false), notably smoother on Pi 4B.
+- **RetroArch launcher refactor**: extracted duplicated video-config blocks from `launch_drm()` and `open_core_downloader_direct()` into a single `write_video_config(stream, opts)` helper that branches on `display_mode`. Per-core controller mapping logic split into `get_mapping_n64_adapter()` and `get_mapping_ps_style()` with a `get_mapping(type, core_name)` dispatcher.
+- **RetroArch autoconfig file** now matches whichever controller is detected (`0e6d_111d.cfg` for N64, `0079_0006.cfg` for PS-style, none for UNKNOWN).
+
 ## [1.3.0] - 2026-02-22
 
 ### Added
