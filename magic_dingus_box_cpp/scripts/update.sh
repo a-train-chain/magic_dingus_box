@@ -56,9 +56,9 @@ json_response() {
     shift 2
 
     if [ "$ok" = "true" ]; then
-        echo "{\"ok\": true, \"message\": \"$message\"$@}"
+        echo "{\"ok\": true, \"message\": \"$message\"$*}"
     else
-        echo "{\"ok\": false, \"error\": {\"message\": \"$message\"}$@}"
+        echo "{\"ok\": false, \"error\": {\"message\": \"$message\"}$*}"
     fi
 }
 
