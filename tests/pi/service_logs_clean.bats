@@ -13,6 +13,8 @@ ALLOWLIST=(
     'Found left-over process'                                 # systemd housekeeping during service restart
     'module-alsa-card.*Failed to find a working profile'      # second HDMI port has no display attached; benign
     'Failed to load module "module-alsa-card".*hdmi'          # same root cause as above
+    'Page flip failed.*ret=-22'                               # intermittent DRM/KMS quirk; kiosk auto-recovers
+    'Page flip recovery'                                      # the recovery message itself
 )
 
 @test "no unallowlisted errors in current boot's journal" {
