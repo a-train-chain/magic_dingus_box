@@ -1,7 +1,10 @@
 #!/usr/bin/env bats
 load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
-CORE_DIR="/usr/lib/aarch64-linux-gnu/libretro"
+# Cores can live in either system or user directory — the kiosk's
+# retroarch_launcher.cpp checks both locations at launch time.
+SYSTEM_CORE_DIR="/usr/lib/aarch64-linux-gnu/libretro"
+USER_CORE_DIR="/home/magic/.config/retroarch/cores"
 EXPECTED_CORES=(
     "nestopia_libretro.so"
     "snes9x2010_libretro.so"
@@ -14,10 +17,11 @@ EXPECTED_CORES=(
 
 setup() { require_pi; }
 
-@test "every expected libretro core is installed" {
+@test "every expected libretro core is installed (system or user dir)" {
     for core in "${EXPECTED_CORES[@]}"; do
-        run pi_ssh "test -f '$CORE_DIR/$core'"
-        [ "$status" -eq 0 ] || { echo "MISSING CORE: $CORE_DIR/$core"; false; }
+        run pi_ssh "test -f '$SYSTEM_CORE_DIR/$core' || test -f '$USER_CORE_DIR/$core'"
+        [ "$status" -eq 0 ] \
+            || { echo "MISSING CORE: $core (looked in $SYSTEM_CORE_DIR/ and $USER_CORE_DIR/)"; false; }
     done
 }
 
