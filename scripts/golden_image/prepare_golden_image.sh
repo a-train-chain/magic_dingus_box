@@ -76,6 +76,47 @@ if [[ ! -f "${CPP_DIR}/build/magic_dingus_box_cpp" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Test suite preflight
+# ---------------------------------------------------------------------------
+# Refuse to prep a golden image from a state where tests are red.
+# To override (with audit logging): pass --skip-tests as the first argument.
+SKIP_TESTS=0
+NEW_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --skip-tests) SKIP_TESTS=1 ;;
+        *) NEW_ARGS+=("$arg") ;;
+    esac
+done
+set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
+
+if [[ "$SKIP_TESTS" -eq 1 ]]; then
+    AUDIT_LOG="/tmp/golden_image_audit.log"
+    {
+        echo "WARNING: --skip-tests passed. Image being prepared without test gating."
+        echo "  Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "  User: $(whoami)@$(hostname)"
+        echo ""
+    } | tee -a "$AUDIT_LOG"
+else
+    TESTS_RUNNER="${INSTALL_DIR}/tests/run_all.sh"
+    if [[ -x "$TESTS_RUNNER" ]]; then
+        echo -e "${BOLD}${CYAN}=== Running test suite preflight ===${NC}"
+        if ! "$TESTS_RUNNER"; then
+            echo ""
+            echo -e "${RED}${BOLD}ABORT: Test suite has failures. Image not prepared.${NC}" >&2
+            echo -e "${RED}  Fix the failures, or pass --skip-tests to bypass (audit-logged).${NC}" >&2
+            exit 1
+        fi
+        echo -e "${GREEN}=== Tests green; proceeding with image prep ===${NC}"
+        echo ""
+    else
+        echo -e "${YELLOW}WARNING: ${TESTS_RUNNER} not found; skipping preflight.${NC}" >&2
+        echo -e "${YELLOW}  This script assumes tests/ is deployed alongside the rest of the repo.${NC}" >&2
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Show plan
 # ---------------------------------------------------------------------------
 echo ""
