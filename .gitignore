@@ -68,23 +68,20 @@ __pycache__/
 .idea/
 .vscode/
 
-# Runtime-only: exclude docs and markdown from repo (keep root README.md)
+# Runtime-only: exclude docs and markdown from repo (keep root README.md and CLAUDE.md)
 docs/
+# Markdown: exclude all except specific root-level files and test suite
 *.md
 !README.md
 !CLAUDE.md
 !CHANGELOG.md
-# Allow README files in subdirectories for documentation
 !magic_dingus_box_cpp/README.md
+!tests/README.md
+!tests/**/*.md
+!tests/*.md
 
-# Exclude tests from runtime repo (but allow OTA tests)
-tests/
-!magic_dingus_box/web/tests/
-!magic_dingus_box_cpp/scripts/tests/
-
-# Test files (large binaries)
+# Test data/large binaries only (not the test suite itself)
 magic_dingus_box/web/test_files/
-
 
 # Worktrees
 .worktrees/
