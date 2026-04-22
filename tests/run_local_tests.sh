@@ -27,11 +27,13 @@ done
 
 # Discover .bats files
 bats_files=()
-for f in "$LOCAL_DIR"/*.bats; do
-    [[ -f "$f" ]] && bats_files+=("$f")
-done
+if [[ -d "$LOCAL_DIR" ]]; then
+    for f in "$LOCAL_DIR"/*.bats; do
+        [[ -f "$f" ]] && bats_files+=("$f")
+    done
+fi
 
-if [[ -n "$FILTER" ]]; then
+if [[ -n "$FILTER" && ${#bats_files[@]} -gt 0 ]]; then
     filtered=()
     for f in "${bats_files[@]}"; do
         [[ "$(basename "$f")" == *"$FILTER"* ]] && filtered+=("$f")

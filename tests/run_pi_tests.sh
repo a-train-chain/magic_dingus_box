@@ -36,11 +36,13 @@ if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "$PI_HOST" true 2>/dev/null; then
 fi
 
 bats_files=()
-for f in "$PI_DIR"/*.bats; do
-    [[ -f "$f" ]] && bats_files+=("$f")
-done
+if [[ -d "$PI_DIR" ]]; then
+    for f in "$PI_DIR"/*.bats; do
+        [[ -f "$f" ]] && bats_files+=("$f")
+    done
+fi
 
-if [[ -n "$FILTER" ]]; then
+if [[ -n "$FILTER" && ${#bats_files[@]} -gt 0 ]]; then
     filtered=()
     for f in "${bats_files[@]}"; do
         [[ "$(basename "$f")" == *"$FILTER"* ]] && filtered+=("$f")
