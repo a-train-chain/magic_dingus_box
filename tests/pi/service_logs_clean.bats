@@ -15,6 +15,7 @@ ALLOWLIST=(
     'Failed to load module "module-alsa-card".*hdmi'          # same root cause as above
     'Page flip failed.*ret=-22'                               # intermittent DRM/KMS quirk; kiosk auto-recovers
     'Page flip recovery'                                      # the recovery message itself
+    '\(Failures: [0-9]+, Successes: [0-9]+\)'                 # page flip recovery counters
 )
 
 @test "no unallowlisted errors in current boot's journal" {
