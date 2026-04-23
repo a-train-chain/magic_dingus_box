@@ -203,3 +203,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/dev_data)
     )
 endif()
 
+# ============================================================
+# Media Browser feature (Phase 1+) — disabled by default.
+# When ON, builds libtorrent-backed movie/TV browser scaffolding
+# and a standalone test_media_browser executable.
+# ============================================================
+option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
+
+if(ENABLE_MEDIA_BROWSER)
+    message(STATUS "Media Browser: ENABLED")
+    # Tasks 2+ will populate this block. Phase 1 placeholder proves the flag wires up.
+    add_compile_definitions(MEDIA_BROWSER_ENABLED)
+endif()
