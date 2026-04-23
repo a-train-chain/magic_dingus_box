@@ -702,8 +702,11 @@ void Renderer::render(const app::AppState& state) {
             std::string qr_label;
             
             if (!qr_url.empty()) {
-                // Determine label based on IP
-                if (qr_url.find("192.168.7.1") != std::string::npos) {
+                // Determine label by comparing to the URLs the settings
+                // menu computed. Avoids hardcoding any specific IP — the
+                // QR works whether the gadget service uses 10.55.0.1,
+                // 192.168.7.1, or anything else.
+                if (!state.usb_url.empty() && qr_url == state.usb_url) {
                     qr_label = "USB Connection (Preferred)";
                 } else {
                     qr_label = "Wi-Fi Connection";
