@@ -24,36 +24,50 @@ FetchContent_MakeAvailable(spdlog)
 # Find required libraries using pkg-config
 find_package(PkgConfig REQUIRED)
 
-# DRM/KMS, GBM, EGL, OpenGL ES
-pkg_check_modules(DRM REQUIRED libdrm)
-pkg_check_modules(GBM REQUIRED gbm)
-pkg_check_modules(EGL REQUIRED egl)
-pkg_check_modules(GLES2 REQUIRED glesv2)
+# Detect whether to build the kiosk binary. Requires Linux-only packages
+# (DRM/KMS/GBM/EGL/evdev). On non-Linux platforms (e.g. macOS dev machines)
+# we skip these so developers can still build ENABLE_MEDIA_BROWSER targets.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(BUILD_KIOSK_DEFAULT ON)
+else()
+    set(BUILD_KIOSK_DEFAULT OFF)
+endif()
+option(BUILD_KIOSK "Build the kiosk executable (requires Linux kiosk deps)" ${BUILD_KIOSK_DEFAULT})
 
-# Input handling
-pkg_check_modules(EVDEV REQUIRED libevdev)
+if(BUILD_KIOSK)
+    # DRM/KMS, GBM, EGL, OpenGL ES
+    pkg_check_modules(DRM REQUIRED libdrm)
+    pkg_check_modules(GBM REQUIRED gbm)
+    pkg_check_modules(EGL REQUIRED egl)
+    pkg_check_modules(GLES2 REQUIRED glesv2)
 
-# GPIO (optional - only available on Raspberry Pi)
-pkg_check_modules(GPIOD libgpiod)
-if(GPIOD_FOUND)
-    add_compile_definitions(HAVE_GPIOD)
+    # Input handling
+    pkg_check_modules(EVDEV REQUIRED libevdev)
+
+    # GPIO (optional - only available on Raspberry Pi)
+    pkg_check_modules(GPIOD libgpiod)
+    if(GPIOD_FOUND)
+        add_compile_definitions(HAVE_GPIOD)
+    endif()
+
+    # Systemd notification (optional - for watchdog support)
+    pkg_check_modules(SYSTEMD libsystemd)
+    if(SYSTEMD_FOUND)
+        add_compile_definitions(HAVE_SYSTEMD)
+    endif()
+
+    # GStreamer (video backend, Linux-only for kiosk)
+    pkg_check_modules(GST REQUIRED gstreamer-1.0)
+    pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
+    pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
+    pkg_check_modules(GST_GL REQUIRED gstreamer-gl-1.0)
+
+    # YAML config parsing (kiosk-only — media_browser uses JSON)
+    pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
 endif()
 
-# Systemd notification (optional - for watchdog support)
-pkg_check_modules(SYSTEMD libsystemd)
-if(SYSTEMD_FOUND)
-    add_compile_definitions(HAVE_SYSTEMD)
-endif()
-
-# Data parsing
-pkg_check_modules(YAMLCPP REQUIRED yaml-cpp)
+# JSON parsing (cross-platform — used by both kiosk settings and media_browser)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
-
-# GStreamer
-pkg_check_modules(GST REQUIRED gstreamer-1.0)
-pkg_check_modules(GST_APP REQUIRED gstreamer-app-1.0)
-pkg_check_modules(GST_VIDEO REQUIRED gstreamer-video-1.0)
-pkg_check_modules(GST_GL REQUIRED gstreamer-gl-1.0)
 
 # Filesystem (C++17 std::filesystem)
 
@@ -110,69 +124,71 @@ set(ALL_SOURCES
     ${RETROARCH_SOURCES}
 )
 
-# Executable
-add_executable(magic_dingus_box_cpp ${ALL_SOURCES})
+if(BUILD_KIOSK)
+    # Executable
+    add_executable(magic_dingus_box_cpp ${ALL_SOURCES})
 
-# Include directories
-target_include_directories(magic_dingus_box_cpp PRIVATE
-    ${DRM_INCLUDE_DIRS}
-    ${GBM_INCLUDE_DIRS}
-    ${EGL_INCLUDE_DIRS}
-    ${GLES2_INCLUDE_DIRS}
-    ${EVDEV_INCLUDE_DIRS}
-    ${GPIOD_INCLUDE_DIRS}
-    ${SYSTEMD_INCLUDE_DIRS}
-    ${YAMLCPP_INCLUDE_DIRS}
-    ${JSONCPP_INCLUDE_DIRS}
-    ${GST_INCLUDE_DIRS}
-    ${GST_APP_INCLUDE_DIRS}
-    ${GST_VIDEO_INCLUDE_DIRS}
-    ${GST_GL_INCLUDE_DIRS}
-    src/
-)
+    # Include directories
+    target_include_directories(magic_dingus_box_cpp PRIVATE
+        ${DRM_INCLUDE_DIRS}
+        ${GBM_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS}
+        ${GLES2_INCLUDE_DIRS}
+        ${EVDEV_INCLUDE_DIRS}
+        ${GPIOD_INCLUDE_DIRS}
+        ${SYSTEMD_INCLUDE_DIRS}
+        ${YAMLCPP_INCLUDE_DIRS}
+        ${JSONCPP_INCLUDE_DIRS}
+        ${GST_INCLUDE_DIRS}
+        ${GST_APP_INCLUDE_DIRS}
+        ${GST_VIDEO_INCLUDE_DIRS}
+        ${GST_GL_INCLUDE_DIRS}
+        src/
+    )
 
-# Link libraries
-target_link_libraries(magic_dingus_box_cpp
-    ${DRM_LIBRARIES}
-    ${GBM_LIBRARIES}
-    ${EGL_LIBRARIES}
-    ${GLES2_LIBRARIES}
-    ${EVDEV_LIBRARIES}
-    ${GPIOD_LIBRARIES}
-    ${SYSTEMD_LIBRARIES}
-    ${YAMLCPP_LIBRARIES}
-    ${JSONCPP_LIBRARIES}
-    ${GST_LIBRARIES}
-    ${GST_APP_LIBRARIES}
-    ${GST_VIDEO_LIBRARIES}
-    ${GST_GL_LIBRARIES}
-    spdlog::spdlog_header_only
-    pthread
-    m
-    dl
-)
+    # Link libraries
+    target_link_libraries(magic_dingus_box_cpp
+        ${DRM_LIBRARIES}
+        ${GBM_LIBRARIES}
+        ${EGL_LIBRARIES}
+        ${GLES2_LIBRARIES}
+        ${EVDEV_LIBRARIES}
+        ${GPIOD_LIBRARIES}
+        ${SYSTEMD_LIBRARIES}
+        ${YAMLCPP_LIBRARIES}
+        ${JSONCPP_LIBRARIES}
+        ${GST_LIBRARIES}
+        ${GST_APP_LIBRARIES}
+        ${GST_VIDEO_LIBRARIES}
+        ${GST_GL_LIBRARIES}
+        spdlog::spdlog_header_only
+        pthread
+        m
+        dl
+    )
 
-# Compiler flags
-target_compile_options(magic_dingus_box_cpp PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
-)
+    # Compiler flags
+    target_compile_options(magic_dingus_box_cpp PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
 
-# Link filesystem library for GCC < 9 (std::filesystem is built-in for GCC 9+)
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
-    target_link_libraries(magic_dingus_box_cpp stdc++fs)
+    # Link filesystem library for GCC < 9 (std::filesystem is built-in for GCC 9+)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
+        target_link_libraries(magic_dingus_box_cpp stdc++fs)
+    endif()
+
+    # Debug flags
+    target_compile_definitions(magic_dingus_box_cpp PRIVATE
+        $<$<CONFIG:Debug>:DEBUG=1>
+    )
+
+    # Install target (optional)
+    install(TARGETS magic_dingus_box_cpp
+        RUNTIME DESTINATION bin
+    )
 endif()
-
-# Debug flags
-target_compile_definitions(magic_dingus_box_cpp PRIVATE
-    $<$<CONFIG:Debug>:DEBUG=1>
-)
-
-# Install target (optional)
-install(TARGETS magic_dingus_box_cpp
-    RUNTIME DESTINATION bin
-)
 
 # Copy assets to build directory for development
 file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
@@ -212,6 +228,54 @@ option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
 
 if(ENABLE_MEDIA_BROWSER)
     message(STATUS "Media Browser: ENABLED")
-    # Tasks 2+ will populate this block. Phase 1 placeholder proves the flag wires up.
     add_compile_definitions(MEDIA_BROWSER_ENABLED)
+
+    # --- Dependencies (system packages) ---
+    pkg_check_modules(LIBTORRENT REQUIRED libtorrent-rasterbar)
+    pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+    pkg_check_modules(CURL REQUIRED libcurl)
+
+    # --- Catch2 v3 via FetchContent (header-only test framework) ---
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.5.2
+    )
+    FetchContent_MakeAvailable(Catch2)
+
+    # --- Media browser library sources (expanded in later tasks) ---
+    set(MEDIA_BROWSER_SOURCES
+        # Populated by later tasks.
+    )
+
+    # --- Unit test runner ---
+    set(MEDIA_BROWSER_TEST_SOURCES
+        tests/media_browser/test_smoke.cpp
+        # Additional test files appended by later tasks.
+    )
+
+    add_executable(test_media_browser_unit ${MEDIA_BROWSER_TEST_SOURCES})
+    target_include_directories(test_media_browser_unit PRIVATE
+        src/
+        ${LIBTORRENT_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+        ${CURL_INCLUDE_DIRS}
+        ${JSONCPP_INCLUDE_DIRS}
+    )
+    target_link_directories(test_media_browser_unit PRIVATE
+        ${LIBTORRENT_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS}
+        ${CURL_LIBRARY_DIRS}
+        ${JSONCPP_LIBRARY_DIRS}
+    )
+    target_link_libraries(test_media_browser_unit PRIVATE
+        Catch2::Catch2WithMain
+        ${LIBTORRENT_LIBRARIES}
+        ${SQLITE3_LIBRARIES}
+        ${CURL_LIBRARIES}
+        ${JSONCPP_LIBRARIES}
+        spdlog::spdlog_header_only
+        pthread
+    )
+    target_compile_options(test_media_browser_unit PRIVATE -Wall -Wextra)
 endif()

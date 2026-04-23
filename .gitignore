@@ -85,3 +85,6 @@ magic_dingus_box/web/test_files/
 
 # Worktrees
 .worktrees/
+
+# Local Mac build tree for Media Browser dev
+build-mac/
