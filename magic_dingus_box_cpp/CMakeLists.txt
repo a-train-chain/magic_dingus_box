@@ -284,4 +284,33 @@ if(ENABLE_MEDIA_BROWSER)
         pthread
     )
     target_compile_options(test_media_browser_unit PRIVATE -Wall -Wextra)
+
+    # --- test_media_browser CLI ---
+    add_executable(test_media_browser
+        src/media_browser/test_cli/main.cpp
+        ${MEDIA_BROWSER_SOURCES}
+    )
+    target_include_directories(test_media_browser PRIVATE
+        src/
+        ${LIBTORRENT_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
+        ${CURL_INCLUDE_DIRS}
+        ${JSONCPP_INCLUDE_DIRS}
+        ${Boost_INCLUDE_DIRS}
+    )
+    target_link_directories(test_media_browser PRIVATE
+        ${LIBTORRENT_LIBRARY_DIRS}
+        ${SQLITE3_LIBRARY_DIRS}
+        ${CURL_LIBRARY_DIRS}
+        ${JSONCPP_LIBRARY_DIRS}
+    )
+    target_link_libraries(test_media_browser PRIVATE
+        ${LIBTORRENT_LIBRARIES}
+        ${SQLITE3_LIBRARIES}
+        ${CURL_LIBRARIES}
+        ${JSONCPP_LIBRARIES}
+        spdlog::spdlog_header_only
+        pthread
+    )
+    target_compile_options(test_media_browser PRIVATE -Wall -Wextra)
 endif()
