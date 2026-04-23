@@ -112,6 +112,24 @@ In Modern TV mode:
 - [ ] Upload a small video file via web admin → confirms upload-handling works
 - [ ] OTA check: web admin's "check for updates" returns the current version (not "newer available" since we just bumped to this version)
 
+## Phase 9 — Web admin playlist editor (both playlists)
+
+Verify the drag-handle + drop indicator work on **both** playlist editors:
+
+### Video playlist
+- [ ] Leftmost ⋮⋮ handle visible on every row (light gray, grabbable)
+- [ ] Drag a row from position 5 → drop between positions 1 and 2 → item lands at position 2 (insert, not swap)
+- [ ] While dragging, a horizontal line shows exactly where the item will land
+- [ ] Title input: Cmd+A selects all text in field (not whole page); drag-select inside input works; paste works
+- [ ] Artist input: same Cmd+A / drag-select / paste verification
+- [ ] ▲ / ▼ arrow buttons still move rows by one position
+- [ ] ✕ delete button still works
+
+### Game/ROM playlist
+- [ ] Same drag handle + drop indicator behavior
+- [ ] Same title + artist input editing fidelity
+- [ ] Same ▲ / ▼ and ✕ buttons work
+
 ## Sign-off
 
 All Phases 0-7 complete and green: ____________________ (your initials)
