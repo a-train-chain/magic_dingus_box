@@ -234,6 +234,7 @@ if(ENABLE_MEDIA_BROWSER)
     pkg_check_modules(LIBTORRENT REQUIRED libtorrent-rasterbar)
     pkg_check_modules(SQLITE3 REQUIRED sqlite3)
     pkg_check_modules(CURL REQUIRED libcurl)
+    find_package(Boost REQUIRED)  # libtorrent header dependency (headers only)
 
     # --- Catch2 v3 via FetchContent (header-only test framework) ---
     FetchContent_Declare(
@@ -247,6 +248,7 @@ if(ENABLE_MEDIA_BROWSER)
     set(MEDIA_BROWSER_SOURCES
         src/media_browser/library/library_db.cpp
         src/media_browser/tmdb_client.cpp
+        src/media_browser/torrent/torrent_session.cpp
     )
 
     # --- Unit test runner ---
@@ -264,6 +266,7 @@ if(ENABLE_MEDIA_BROWSER)
         ${SQLITE3_INCLUDE_DIRS}
         ${CURL_INCLUDE_DIRS}
         ${JSONCPP_INCLUDE_DIRS}
+        ${Boost_INCLUDE_DIRS}
     )
     target_link_directories(test_media_browser_unit PRIVATE
         ${LIBTORRENT_LIBRARY_DIRS}
