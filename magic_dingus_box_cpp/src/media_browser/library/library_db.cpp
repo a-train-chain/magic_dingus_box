@@ -81,7 +81,6 @@ struct Migration {
     const char* sql;
 };
 
-// Phase 1 ships only the schema_version table itself. Real schema lands in Task 4.
 static const Migration MIGRATIONS[] = {
     {1, "schema_version_table",
      "CREATE TABLE IF NOT EXISTS schema_version ("
@@ -89,6 +88,42 @@ static const Migration MIGRATIONS[] = {
      "  name TEXT NOT NULL,"
      "  applied_at INTEGER NOT NULL"
      ");"},
+    {2, "phase1_core_tables",
+     "CREATE TABLE titles ("
+     "  id INTEGER PRIMARY KEY,"
+     "  tmdb_id INTEGER NOT NULL UNIQUE,"
+     "  kind TEXT NOT NULL CHECK(kind IN ('movie','tv')),"
+     "  title TEXT NOT NULL,"
+     "  original_title TEXT,"
+     "  year INTEGER,"
+     "  overview TEXT,"
+     "  poster_path TEXT,"
+     "  fanart_path TEXT,"
+     "  runtime_minutes INTEGER,"
+     "  tmdb_rating REAL,"
+     "  added_at INTEGER NOT NULL,"
+     "  updated_at INTEGER NOT NULL"
+     ");"
+     "CREATE TABLE queue ("
+     "  id INTEGER PRIMARY KEY,"
+     "  title_id INTEGER NOT NULL REFERENCES titles(id),"
+     "  state TEXT NOT NULL,"
+     "  torrent_hash TEXT,"
+     "  progress REAL DEFAULT 0,"
+     "  last_error TEXT,"
+     "  started_at INTEGER NOT NULL,"
+     "  updated_at INTEGER NOT NULL"
+     ");"
+     "CREATE TABLE history ("
+     "  id INTEGER PRIMARY KEY,"
+     "  title_id INTEGER REFERENCES titles(id),"
+     "  event TEXT NOT NULL,"
+     "  release_name TEXT,"
+     "  detail TEXT,"
+     "  occurred_at INTEGER NOT NULL"
+     ");"
+     "CREATE INDEX idx_queue_state ON queue(state);"
+     "CREATE INDEX idx_history_title ON history(title_id);"},
 };
 }  // namespace
 

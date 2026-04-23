@@ -50,3 +50,37 @@ TEST_CASE("LibraryDb: run_migrations is idempotent", "[library_db]") {
     REQUIRE(v1 == v2);
     fs::remove(path);
 }
+
+TEST_CASE("LibraryDb: phase 1 schema creates titles table", "[library_db][schema]") {
+    auto path = make_temp_db_path();
+    media_browser::LibraryDb db;
+    REQUIRE(db.open(path.string()));
+    REQUIRE(db.run_migrations());
+    REQUIRE(db.exec(
+        "INSERT INTO titles(tmdb_id, kind, title, year, added_at, updated_at) "
+        "VALUES (603, 'movie', 'The Matrix', 1999, 0, 0);"));
+    fs::remove(path);
+}
+
+TEST_CASE("LibraryDb: phase 1 schema creates queue table", "[library_db][schema]") {
+    auto path = make_temp_db_path();
+    media_browser::LibraryDb db;
+    REQUIRE(db.open(path.string()));
+    REQUIRE(db.run_migrations());
+    REQUIRE(db.exec(
+        "INSERT INTO titles(tmdb_id, kind, title, year, added_at, updated_at) "
+        "VALUES (603, 'movie', 'The Matrix', 1999, 0, 0);"));
+    REQUIRE(db.exec(
+        "INSERT INTO queue(title_id, state, started_at, updated_at) "
+        "VALUES (1, 'searching', 0, 0);"));
+    fs::remove(path);
+}
+
+TEST_CASE("LibraryDb: phase 1 schema is at version 2", "[library_db][schema]") {
+    auto path = make_temp_db_path();
+    media_browser::LibraryDb db;
+    REQUIRE(db.open(path.string()));
+    REQUIRE(db.run_migrations());
+    REQUIRE(db.schema_version() == 2);
+    fs::remove(path);
+}
