@@ -834,9 +834,18 @@ function updateConnectionBadge() {
     if (!badge || !badgeText) return;
 
     if (currentDevice) {
-        // Determine connection type based on IP address
+        // Determine connection type based on IP address. The USB gadget
+        // currently assigns 10.55.0.1 via usb-gadget-network.service; older
+        // setups used 192.168.7.1. Both are USB gadget subnets — check for
+        // the IPs directly and either of the /24 networks in case the
+        // service ever assigns a different host address.
         const deviceUrl = currentDevice.url || '';
-        const isUSB = deviceUrl.includes('192.168.7.1');
+        const isUSB = (
+            deviceUrl.includes('192.168.7.1') ||
+            deviceUrl.includes('10.55.0.1') ||
+            /\/\/192\.168\.7\.\d+[:\/]/.test(deviceUrl) ||
+            /\/\/10\.55\.0\.\d+[:\/]/.test(deviceUrl)
+        );
         const connectionType = isUSB ? 'USB' : 'WiFi';
         const icon = isUSB ? '🔌' : '📶';
 
