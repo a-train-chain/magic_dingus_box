@@ -2419,13 +2419,54 @@ header::after {
     background: rgba(255, 255, 255, 0.03);
 }
 
+/* Row whose handle is currently being dragged — subtle dim for feedback.
+   Previous behavior marked the whole row as draggable; now only the handle is. */
 .playlist-table tbody tr.dragging {
     opacity: 0.5;
-    background: var(--accent2);
 }
 
-.playlist-table tbody tr.drag-over {
-    border-top: 2px solid var(--accent);
+/* Handle column: just enough width for the glyph */
+.playlist-table .col-handle {
+    width: 28px;
+    text-align: center;
+    padding: 0.25rem !important;
+}
+
+/* The drag handle itself — the only draggable surface on each row */
+.drag-handle {
+    display: inline-block;
+    color: var(--text-secondary);
+    cursor: grab;
+    user-select: none;
+    line-height: 1;
+    padding: 0.25rem 0.25rem;
+    font-size: 1rem;
+    letter-spacing: -2px; /* tighten the ⋮⋮ glyphs */
+    border-radius: 3px;
+    transition: color 0.15s, background 0.15s;
+}
+.drag-handle:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.05);
+}
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+/* Drop indicator: one per table container, absolutely positioned */
+.playlist-table-container {
+    position: relative; /* anchor for the absolute-positioned indicator */
+}
+.playlist-drop-indicator {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    pointer-events: none;
+    display: none;
+    z-index: 10;
 }
 
 .playlist-table td {
