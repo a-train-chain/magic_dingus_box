@@ -245,13 +245,14 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
-        # Populated by later tasks.
+        src/media_browser/library/library_db.cpp
     )
 
     # --- Unit test runner ---
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
-        # Additional test files appended by later tasks.
+        tests/media_browser/test_library_db.cpp
+        ${MEDIA_BROWSER_SOURCES}
     )
 
     add_executable(test_media_browser_unit ${MEDIA_BROWSER_TEST_SOURCES})
