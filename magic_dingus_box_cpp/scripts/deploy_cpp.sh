@@ -8,6 +8,7 @@ set -euo pipefail
 #   ./scripts/deploy_cpp.sh --build      # sync + build on Pi
 #   ./scripts/deploy_cpp.sh --test       # sync + build + test
 #   ./scripts/deploy_cpp.sh --cores      # sync + build + install cores
+#   ./scripts/deploy_cpp.sh --media-browser  # sync + build with Media Browser
 #   PI_HOST=pi@1.2.3.4 ./scripts/deploy_cpp.sh
 #
 
@@ -20,6 +21,7 @@ BUILD=false
 TEST=false
 INSTALL_CORES=false
 SETUP_USB_GADGET=false
+MEDIA_BROWSER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -41,6 +43,11 @@ while [[ $# -gt 0 ]]; do
             SETUP_USB_GADGET=true
             shift
             ;;
+        --media-browser|-m)
+            BUILD=true
+            MEDIA_BROWSER=true
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Usage: $(basename "$0") [options]
@@ -50,6 +57,7 @@ Options:
   --test, -t      Sync, build, and test on Pi
   --cores, -c     Sync, build, install RetroArch cores
   --usb-gadget, -u  Setup USB Ethernet Gadget mode for fast uploads
+  --media-browser, -m  Install Media Browser deps + build with ENABLE_MEDIA_BROWSER=ON
   --help, -h      Show this help
 
 Environment overrides:
@@ -183,14 +191,17 @@ EOF
 echo "  ✓ CPU Performance Governor Service installed"
 echo ""
 
-# Step 1.8: Install Local Cores
-echo "Step 1.8: Installing Local Cores..."
-# Ensure core directory exists
-ssh "${PI_HOST}" "mkdir -p /home/magic/.config/retroarch/cores"
-rsync -avz \
-    "${CPP_DIR}/libretro_cores/" \
-    "${PI_HOST}:/home/magic/.config/retroarch/cores/"
-echo "  ✓ Local cores installed"
+# Step 1.8: Install Local Cores (skip if dir not present in source tree)
+if [ -d "${CPP_DIR}/libretro_cores" ]; then
+    echo "Step 1.8: Installing Local Cores..."
+    ssh "${PI_HOST}" "mkdir -p /home/magic/.config/retroarch/cores"
+    rsync -avz \
+        "${CPP_DIR}/libretro_cores/" \
+        "${PI_HOST}:/home/magic/.config/retroarch/cores/"
+    echo "  ✓ Local cores installed"
+else
+    echo "Step 1.8: Skipping local cores (source dir absent; use --cores to install from apt)"
+fi
 echo ""
 
 # Step 2: Download stb_truetype.h (always update to ensure it's the real file)
@@ -223,7 +234,7 @@ echo ""
 # Step 3: Build (if requested)
 if [ "$BUILD" = true ]; then
     echo "Step 3: Building on Pi..."
-    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" bash <<'BUILDEOF'
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" MEDIA_BROWSER="${MEDIA_BROWSER}" bash <<'BUILDEOF'
 set -e
 cd "${PI_DIR}/magic_dingus_box_cpp"
 
@@ -241,10 +252,22 @@ declare -A PKG_MAP=(
     ["libgpiod"]="libgpiod-dev"
     ["yaml-cpp"]="libyaml-cpp-dev"
     ["jsoncpp"]="libjsoncpp-dev"
+    ["libtorrent-rasterbar"]="libtorrent-rasterbar-dev"
+    ["sqlite3"]="libsqlite3-dev"
+    ["libcurl"]="libcurl4-openssl-dev"
+    ["pugixml"]="libpugixml-dev"
 )
 
+# Base dependency set
+CHECK_PKGS=(libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp)
+
+# Add Media Browser deps when requested
+if [ "${MEDIA_BROWSER}" = "true" ]; then
+    CHECK_PKGS+=(libtorrent-rasterbar sqlite3 libcurl pugixml)
+fi
+
 # Check each dependency
-for pkg in libdrm gbm egl glesv2 libevdev libgpiod yaml-cpp jsoncpp; do
+for pkg in "${CHECK_PKGS[@]}"; do
     if ! pkg-config --exists "$pkg" 2>/dev/null; then
         MISSING_DEPS+=("${PKG_MAP[$pkg]}")
     fi
@@ -259,13 +282,20 @@ else
     echo "  ✓ All dependencies present"
 fi
 
+# Determine CMake flags
+CMAKE_FLAGS=""
+if [ "${MEDIA_BROWSER}" = "true" ]; then
+    CMAKE_FLAGS="-DENABLE_MEDIA_BROWSER=ON"
+    echo "  Media Browser: ENABLED"
+fi
+
 # Build
-echo "  Running cmake..."
+echo "  Running cmake ${CMAKE_FLAGS}..."
 mkdir -p build
 cd build
 
 # Always run cmake to ensure it's up to date
-if ! cmake ..; then
+if ! cmake .. ${CMAKE_FLAGS}; then
     echo "  ✗ CMake configuration failed!"
     exit 1
 fi
@@ -277,6 +307,10 @@ if ! make -j4; then
 fi
 
 echo "  ✓ Build complete"
+if [ "${MEDIA_BROWSER}" = "true" ]; then
+    echo "  Artifacts:"
+    ls -la test_media_browser test_media_browser_unit 2>/dev/null | awk '{print "    " $NF " (" $5 " bytes)"}'
+fi
 BUILDEOF
     echo ""
 fi

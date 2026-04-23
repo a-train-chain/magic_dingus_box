@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 # Quick script to install all dependencies on Pi
+#
+# Usage:
+#   ./install_deps.sh                  # install base kiosk deps
+#   ./install_deps.sh --media-browser  # also install Media Browser deps
 
 set -e
+
+INCLUDE_MEDIA_BROWSER=0
+for arg in "$@"; do
+    case "$arg" in
+        --media-browser) INCLUDE_MEDIA_BROWSER=1 ;;
+    esac
+done
 
 echo "Installing C++ Kiosk Engine dependencies..."
 
@@ -28,5 +39,13 @@ sudo apt install -y \
   gstreamer1.0-plugins-ugly \
   gstreamer1.0-gl
 
-echo "✓ All dependencies installed!"
+if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
+    echo "Installing Media Browser dependencies..."
+    sudo apt install -y \
+      libtorrent-rasterbar-dev \
+      libsqlite3-dev \
+      libcurl4-openssl-dev \
+      libpugixml-dev
+fi
 
+echo "✓ All dependencies installed!"
