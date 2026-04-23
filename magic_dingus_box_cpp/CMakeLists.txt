@@ -246,12 +246,14 @@ if(ENABLE_MEDIA_BROWSER)
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
         src/media_browser/library/library_db.cpp
+        src/media_browser/tmdb_client.cpp
     )
 
     # --- Unit test runner ---
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_library_db.cpp
+        tests/media_browser/test_tmdb_client.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
 
