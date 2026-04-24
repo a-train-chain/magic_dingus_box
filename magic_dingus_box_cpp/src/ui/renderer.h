@@ -19,14 +19,22 @@ struct Playlist;
 struct AppState;
 }
 
+#ifdef MEDIA_BROWSER_ENABLED
+namespace media_browser {
+class ArtworkCache;
+}
+#endif
+
 namespace ui {
 
 class Renderer {
+#ifdef MEDIA_BROWSER_ENABLED
     // Toast overlay needs access to private drawing helpers (draw_quad,
     // draw_text, draw_line) and to theme_/body_font_manager_ for measuring
     // and styling its centered panel. Kept as a friend to avoid widening
     // the public Renderer API for a single overlay primitive.
     friend class Toast;
+#endif
 
 public:
     Renderer(uint32_t width, uint32_t height);
@@ -75,6 +83,20 @@ public:
     int  mb_text_width(const std::string& text, int font_size);
     int  mb_text_baseline(int font_size);
     const ui::Theme& mb_theme() const { return *theme_; }
+
+    // Draw a poster at the given rect. If the ArtworkCache has a texture
+    // for `url`, draws a textured quad; otherwise draws `fallback_tint`
+    // as a filled rect AND enqueues the URL for background fetching.
+    // Idempotent — safe to call every frame for the same URL.
+    void mb_draw_poster_or_tint(const std::string& url,
+                                float x, float y, float w, float h,
+                                const ui::Color& fallback_tint,
+                                float alpha_multiplier = 1.0f);
+
+    // Called once per frame from the main loop. Drains any completed
+    // background fetches and performs the GL uploads. Must run on the
+    // GL-owning thread.
+    void pump_artwork();
 #endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)
@@ -135,6 +157,20 @@ private:
     int thumbnail_height_ = 0;
     std::string current_thumbnail_path_;
     bool load_thumbnail(const std::string& rom_path);
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // Async poster/artwork cache (main thread API, background-thread
+    // fetcher). Owned by the Renderer so its lifetime tracks the GL
+    // context lifetime. Pointer keeps the artwork_cache.h include out
+    // of this header.
+    std::unique_ptr<media_browser::ArtworkCache> artwork_cache_;
+    // Lazy first-use init so the background thread doesn't start
+    // unless the Media Browser is actually used.
+    media_browser::ArtworkCache& artwork_cache();
+    // Textured-quad drawing helper (used by mb_draw_poster_or_tint).
+    void draw_textured_quad(uint32_t tex_id, float x, float y, float w, float h,
+                            float alpha_multiplier);
+#endif
 
     // System logo cache (white-on-transparent logos for each console)
     struct CachedLogo {

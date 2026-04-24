@@ -13,6 +13,10 @@
 #include "../app/settings_persistence.h" // For getting config if needed
 #include "../utils/config.h"
 
+#ifdef MEDIA_BROWSER_ENABLED
+#include "../media_browser/artwork/artwork_cache.h"
+#endif
+
 #include <GLES3/gl3.h>
 #include <iostream>
 #include <sstream>
@@ -702,8 +706,11 @@ void Renderer::render(const app::AppState& state) {
             std::string qr_label;
             
             if (!qr_url.empty()) {
-                // Determine label based on IP
-                if (qr_url.find("192.168.7.1") != std::string::npos) {
+                // Determine label by comparing to the URLs the settings
+                // menu computed. Avoids hardcoding any specific IP — the
+                // QR works whether the gadget service uses 10.55.0.1,
+                // 192.168.7.1, or anything else.
+                if (!state.usb_url.empty() && qr_url == state.usb_url) {
                     qr_label = "USB Connection (Preferred)";
                 } else {
                     qr_label = "Wi-Fi Connection";
@@ -1581,6 +1588,74 @@ int Renderer::mb_text_width(const std::string& text, int font_size) {
 int Renderer::mb_text_baseline(int font_size) {
     if (!body_font_manager_) return font_size;
     return body_font_manager_->get_baseline_at_size(font_size);
+}
+
+media_browser::ArtworkCache& Renderer::artwork_cache() {
+    if (!artwork_cache_) {
+        // 256MB budget matches the default from artwork_cache.h. Could
+        // be tuned per-hardware later; on Pi 4B this leaves plenty of
+        // headroom below our 2GB system RAM.
+        artwork_cache_ = std::make_unique<media_browser::ArtworkCache>();
+    }
+    return *artwork_cache_;
+}
+
+void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
+                                  float w, float h, float alpha_multiplier) {
+    // Same vertex layout as draw_quad, but switch the shader into
+    // textured mode and bind the supplied texture. Mirrors the
+    // render_title() logo-drawing idiom.
+    float vertices[] = {
+        x, y,         0.0f, 0.0f,
+        x + w, y,     1.0f, 0.0f,
+        x, y + h,     0.0f, 1.0f,
+        x + w, y + h, 1.0f, 1.0f
+    };
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier);
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+
+    glBindTexture(GL_TEXTURE_2D, tex_id);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    // Restore solid-color mode so the next draw_quad doesn't sample
+    // whatever texture was bound.
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+}
+
+void Renderer::mb_draw_poster_or_tint(const std::string& url,
+                                      float x, float y, float w, float h,
+                                      const ui::Color& fallback_tint,
+                                      float alpha_multiplier) {
+    // Empty URL: just draw the fallback tint. Don't pester the cache.
+    if (url.empty()) {
+        draw_quad(x, y, w, h, fallback_tint, alpha_multiplier);
+        return;
+    }
+
+    uint32_t tex_id = artwork_cache().get_or_fetch(url);
+    if (tex_id == 0) {
+        // Not yet loaded — draw placeholder tint, the fetch is already
+        // enqueued by get_or_fetch.
+        draw_quad(x, y, w, h, fallback_tint, alpha_multiplier);
+        return;
+    }
+    draw_textured_quad(tex_id, x, y, w, h, alpha_multiplier);
+}
+
+void Renderer::pump_artwork() {
+    // Only pump if the cache exists. Avoids lazy-init forcing a
+    // background thread to start on frames where Media Browser isn't
+    // being used.
+    if (artwork_cache_) {
+        artwork_cache_->pump();
+    }
 }
 #endif
 

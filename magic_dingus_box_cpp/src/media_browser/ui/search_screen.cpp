@@ -405,7 +405,9 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float cell_y = grid_top + (row - scroll_row_) * (kCellH + kCellPadding);
 
             ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            r.mb_fill_rect(cell_x, cell_y, kPosterW, kPosterH, tint, 1.0f);
+            r.mb_draw_poster_or_tint(m.poster_url,
+                                     cell_x, cell_y, kPosterW, kPosterH,
+                                     tint, 1.0f);
             r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH, 1.0f,
                              th.dim, 0.4f);
 

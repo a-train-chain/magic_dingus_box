@@ -334,9 +334,13 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float cell_x = kGridPaddingX + col * (kCellW + col_gap);
             float cell_y = grid_top + (row - scroll_row_) * (kCellH + kCellPadding);
 
-            // Poster placeholder
+            // Poster: real artwork if the async cache has it yet,
+            // else the deterministic tint as a placeholder. Cache
+            // auto-enqueues the fetch on first call.
             ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            r.mb_fill_rect(cell_x, cell_y, kPosterW, kPosterH, tint, 1.0f);
+            r.mb_draw_poster_or_tint(m.poster_url,
+                                     cell_x, cell_y, kPosterW, kPosterH,
+                                     tint, 1.0f);
 
             // Subtle inset to give it depth
             r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH, 1.0f,

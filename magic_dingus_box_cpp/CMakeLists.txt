@@ -148,6 +148,7 @@ if(BUILD_KIOSK)
             src/media_browser/radarr/radarr_parsers.cpp
             src/media_browser/radarr/radarr_client.cpp
             src/media_browser/radarr/radarr_mock.cpp
+            src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -310,10 +311,22 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_sequence_detector.cpp
         tests/media_browser/test_radarr_parsers.cpp
+        tests/media_browser/test_artwork_cache.cpp
+        src/media_browser/artwork/artwork_cache.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
 
     add_executable(test_media_browser_unit ${MEDIA_BROWSER_TEST_SOURCES})
+    # The artwork cache compiles into tests in "test mode" — no GL, no
+    # libcurl, so the unit test binary stays portable (runs on mac dev
+    # box). The production kiosk build compiles artwork_cache.cpp
+    # without this define, enabling the real libcurl + GLES upload path.
+    set_source_files_properties(
+        src/media_browser/artwork/artwork_cache.cpp
+        tests/media_browser/test_artwork_cache.cpp
+        PROPERTIES COMPILE_DEFINITIONS
+        "ARTWORK_CACHE_TEST_MODE"
+    )
     target_include_directories(test_media_browser_unit PRIVATE
         src/
         ${LIBTORRENT_INCLUDE_DIRS}

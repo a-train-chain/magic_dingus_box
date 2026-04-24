@@ -39,7 +39,9 @@
 #include <unordered_map>
 #include <vector>
 #include <optional>
+#ifdef MEDIA_BROWSER_ENABLED
 #include <algorithm>
+#endif
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -1076,9 +1078,8 @@ int main(int /* argc */, char* /* argv */[]) {
         auto input_events = input.poll();
 
         // Poll GPIO (buttons, encoder) and merge with controller/keyboard events
-        std::vector<platform::InputEvent> gpio_events;
         if (gpio.is_available()) {
-            gpio_events = gpio.poll();
+            auto gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
 
@@ -2274,6 +2275,11 @@ int main(int /* argc */, char* /* argv */[]) {
         if (state.current_screen == app::AppScreen::MediaBrowser) {
             glViewport(0, 0, mode.width, mode.height);
             active_mb_screen->render(ui_renderer, mode.width, mode.height);
+            // Drain any completed poster fetches and upload them to GL.
+            // Must happen on the GL-owning main thread. Without this
+            // call the background fetcher thread's decoded images would
+            // never make it onto screen.
+            ui_renderer.pump_artwork();
         }
 
         // Render Media Browser toast overlay (fades in/out over 3s). Drawn

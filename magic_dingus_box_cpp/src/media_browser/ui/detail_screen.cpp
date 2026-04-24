@@ -430,10 +430,22 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // --- Top banner / backdrop ---------------------------------------
     if (mode_ != Mode::Error) {
-        // Backdrop: dimmed poster-tint rectangle. Real fanart loading is a
-        // future task.
+        // Backdrop: prefer real fanart if the async cache has it;
+        // else fall back to a dimmed poster-tint rectangle. Falling
+        // back to the poster_url if fanart is missing keeps the banner
+        // useful for records that only have one artwork type.
         ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
-        r.mb_fill_rect(0.0f, 0.0f, w, banner_h, tint, 0.7f);
+        std::string backdrop_url;
+        if (movie_.has_value()) {
+            backdrop_url = movie_->fanart_url.empty() ? movie_->poster_url
+                                                      : movie_->fanart_url;
+        } else if (hit_.has_value()) {
+            backdrop_url = hit_->fanart_url.empty() ? hit_->poster_url
+                                                    : hit_->fanart_url;
+        }
+        r.mb_draw_poster_or_tint(backdrop_url,
+                                 0.0f, 0.0f, w, banner_h,
+                                 tint, 0.7f);
         // Subtle bottom fade — a second dark rect with gradient-ish alpha to
         // make the text legible. We don't have a real gradient primitive so
         // approximate with two stacked bands.

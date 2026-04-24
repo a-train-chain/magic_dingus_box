@@ -336,11 +336,12 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                  th.accent, 1.0f);
             }
 
-            // --- Left: poster placeholder ---
+            // --- Left: poster thumb (real artwork if cached) ---
             float poster_x = row_x + kRowInnerPadding;
             float poster_y = ry + (kRowHeight - kPosterH) / 2.0f;
-            r.mb_fill_rect(poster_x, poster_y, kPosterW, kPosterH,
-                           tint_for_queue_id(q.id), 1.0f);
+            r.mb_draw_poster_or_tint(q.poster_url,
+                                     poster_x, poster_y, kPosterW, kPosterH,
+                                     tint_for_queue_id(q.id), 1.0f);
             r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,
                              1.0f, th.dim, 0.4f);
 
