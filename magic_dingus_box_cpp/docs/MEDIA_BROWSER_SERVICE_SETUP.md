@@ -47,7 +47,9 @@ every Pi boot.
    - Password: (your new password)
 
 6. **Verify the default quality profile**
-   Radarr → Settings → Profiles. Confirm "1080p Standard" exists.
+   Radarr → Settings → Profiles. Confirm "HD-1080p" exists (Radarr ships
+   this built-in on every fresh install; the kiosk uses it by default for
+   new movie adds).
 
 ## Ongoing maintenance
 

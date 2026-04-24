@@ -82,33 +82,18 @@ fi
 sed -i "s|RADARR_API_KEY=.*|RADARR_API_KEY=${RADARR_KEY}|" "${ENV_FILE}"
 sed -i "s|PROWLARR_API_KEY=.*|PROWLARR_API_KEY=${PROWLARR_KEY}|" "${ENV_FILE}"
 
-# 8. Seed default quality profile in Radarr (1080p Standard)
-echo "Seeding 1080p Standard quality profile in Radarr..."
-curl -fsS -X POST "http://localhost:7878/api/v3/qualityprofile" \
-    -H "X-Api-Key: ${RADARR_KEY}" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "name": "1080p Standard",
-        "upgradeAllowed": true,
-        "cutoff": 7,
-        "items": [
-            {"quality": {"id": 1, "name": "SDTV"}, "allowed": false},
-            {"quality": {"id": 2, "name": "DVD"}, "allowed": false},
-            {"quality": {"id": 8, "name": "WEBDL-480p"}, "allowed": false},
-            {"quality": {"id": 3, "name": "WEBDL-720p"}, "allowed": true},
-            {"quality": {"id": 4, "name": "HDTV-720p"}, "allowed": true},
-            {"quality": {"id": 9, "name": "HDTV-1080p"}, "allowed": true},
-            {"quality": {"id": 5, "name": "WEBDL-1080p"}, "allowed": true},
-            {"quality": {"id": 7, "name": "Bluray-1080p"}, "allowed": true},
-            {"quality": {"id": 16, "name": "HDTV-2160p"}, "allowed": false},
-            {"quality": {"id": 18, "name": "WEBDL-2160p"}, "allowed": false},
-            {"quality": {"id": 19, "name": "Bluray-2160p"}, "allowed": false}
-        ],
-        "minFormatScore": 0,
-        "cutoffFormatScore": 0,
-        "formatItems": [],
-        "language": {"id": 1, "name": "English"}
-    }' >/dev/null || echo "WARN: Quality profile may already exist (ignoring)"
+# 8. Verify Radarr's built-in HD-1080p profile is available.
+# Radarr ships 6 built-in profiles on fresh install (Any, SD, HD-720p, HD-1080p,
+# Ultra-HD, HD - 720p/1080p). We use HD-1080p (id 4) as the kiosk default rather
+# than seeding a custom one — avoids schema-drift issues across Radarr versions
+# (minUpgradeFormatScore requirement changed in 5.14+).
+echo "Verifying Radarr built-in HD-1080p profile..."
+PROFILE_JSON=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" http://localhost:7878/api/v3/qualityprofile || echo "[]")
+if echo "${PROFILE_JSON}" | grep -q '"name":"HD-1080p"'; then
+    echo "  ✓ HD-1080p profile present"
+else
+    echo "  WARN: HD-1080p profile not found in Radarr response. Verify via web UI."
+fi
 
 # 9. Print credentials to operator
 cat <<EOF
