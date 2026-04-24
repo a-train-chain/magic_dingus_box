@@ -996,9 +996,16 @@ int main(int /* argc */, char* /* argv */[]) {
             auto seq_now = steady_clock::now();
             platform::SeqInput seq_ev = platform::SeqInput::NONE;
 
-            if (gpio.is_available() && gpio.is_chord_btn1_btn3()) {
+            // Edge-detect the chord: gpio.is_chord_btn1_btn3() is a level
+            // check, so feeding the detector every frame while the chord is
+            // held would reset the state machine (BTN1_BTN3_CHORD is only
+            // expected at step 0, so step>=1 would get reset). Only fire on
+            // the false -> true transition.
+            static bool chord_was_active = false;
+            bool chord_now = gpio.is_available() && gpio.is_chord_btn1_btn3();
+            if (chord_now && !chord_was_active) {
                 seq_ev = platform::SeqInput::BTN1_BTN3_CHORD;
-            } else {
+            } else if (!chord_now) {
                 for (const auto& e : gpio_events) {
                     if (!e.pressed) continue;
                     switch (e.action) {
@@ -1038,6 +1045,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     LOG_INFO("Media Browser: secret sequence matched, feature unlocked");
                 }
             }
+
+            // Update chord edge-detector state for next frame
+            chord_was_active = chord_now;
         }
 #endif
 
@@ -1993,8 +2003,17 @@ int main(int /* argc */, char* /* argv */[]) {
             if (use_letterbox) {
                 ui_renderer.set_content_viewport(content_w, content_h);
             }
+#ifdef MEDIA_BROWSER_ENABLED
+            // Skip main kiosk UI when the Media Browser screen is active;
+            // the placeholder (drawn below) replaces it. This avoids
+            // rendering the main UI underneath the placeholder every frame.
+            if (state.current_screen != app::AppScreen::MediaBrowser) {
+                ui_renderer.render(state);
+            }
+#else
             ui_renderer.render(state);
-            
+#endif
+
             // Reset viewport after UI render
             if (use_letterbox) {
                 ui_renderer.reset_content_viewport();
