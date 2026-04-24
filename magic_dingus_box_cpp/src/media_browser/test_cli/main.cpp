@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "media_browser/library/library_db.h"
+#include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/torrent/torrent_session.h"
 
@@ -25,6 +26,8 @@ struct Config {
     std::string download_dir = "data/downloads/incomplete";
     std::string complete_dir = "data/library";
     std::string tmdb_api_key;
+    std::string radarr_api_key;
+    std::string radarr_base_url = "http://localhost:7878";
 };
 
 std::string read_file_trimmed(const fs::path& p) {
@@ -51,6 +54,8 @@ Config load_config() {
     if (const char* d = std::getenv("MDB_DB_PATH")) c.db_path = d;
     if (const char* d = std::getenv("MDB_DOWNLOAD_DIR")) c.download_dir = d;
     if (const char* d = std::getenv("MDB_COMPLETE_DIR")) c.complete_dir = d;
+    if (const char* k = std::getenv("MDB_RADARR_API_KEY")) c.radarr_api_key = k;
+    if (const char* u = std::getenv("MDB_RADARR_BASE_URL")) c.radarr_base_url = u;
     return c;
 }
 
@@ -71,12 +76,20 @@ void print_help() {
         "  torrent-status               Show status of all active torrents.\n"
         "  torrent-wait <hash> [secs]   Block until torrent completes (default 600s).\n"
         "  torrent-remove <hash>        Remove torrent (keeps files).\n"
+        "  radarr-status                Ping Radarr, show version + reachability.\n"
+        "  radarr-search <query>        Radarr /movie/lookup.\n"
+        "  radarr-library               Show all movies in library.\n"
+        "  radarr-queue                 Show active download queue.\n"
+        "  radarr-add <tmdb_id>         Add movie to library (triggers search).\n"
+        "  radarr-profiles              List quality profiles.\n"
         "\n"
         "Environment:\n"
         "  MDB_TMDB_API_KEY   TMDB v3 API key (or ~/.config/magic_dingus_box/tmdb_api_key).\n"
         "  MDB_DB_PATH        Override DB path (default: data/media_browser.db).\n"
         "  MDB_DOWNLOAD_DIR   Override incomplete dir (default: data/downloads/incomplete).\n"
-        "  MDB_COMPLETE_DIR   Override complete dir (default: data/library).\n");
+        "  MDB_COMPLETE_DIR   Override complete dir (default: data/library).\n"
+        "  MDB_RADARR_API_KEY Radarr v3 API key (required for radarr-* commands).\n"
+        "  MDB_RADARR_BASE_URL Radarr base URL (default: http://localhost:7878).\n");
 }
 
 // Forward declarations for dispatch (implemented in Tasks 8-10).
@@ -89,6 +102,12 @@ int cmd_torrent_add_file(const Config& c, const std::string& path);
 int cmd_torrent_status(const Config& c);
 int cmd_torrent_wait(const Config& c, const std::string& hash, int secs);
 int cmd_torrent_remove(const Config& c, const std::string& hash);
+int cmd_radarr_status(const Config& c);
+int cmd_radarr_search(const Config& c, const std::string& query);
+int cmd_radarr_library(const Config& c);
+int cmd_radarr_queue(const Config& c);
+int cmd_radarr_add(const Config& c, int tmdb_id);
+int cmd_radarr_profiles(const Config& c);
 
 }  // namespace
 
@@ -135,6 +154,18 @@ int main(int argc, char** argv) {
         if (argc < 3) { print_help(); return 2; }
         return cmd_torrent_remove(cfg, argv[2]);
     }
+    if (cmd == "radarr-status") return cmd_radarr_status(cfg);
+    if (cmd == "radarr-search") {
+        if (argc < 3) { print_help(); return 2; }
+        return cmd_radarr_search(cfg, argv[2]);
+    }
+    if (cmd == "radarr-library") return cmd_radarr_library(cfg);
+    if (cmd == "radarr-queue") return cmd_radarr_queue(cfg);
+    if (cmd == "radarr-add") {
+        if (argc < 3) { print_help(); return 2; }
+        return cmd_radarr_add(cfg, std::atoi(argv[2]));
+    }
+    if (cmd == "radarr-profiles") return cmd_radarr_profiles(cfg);
 
     spdlog::error("Unknown command: {}", cmd);
     print_help();
@@ -332,6 +363,118 @@ int cmd_torrent_remove(const Config& c, const std::string& hash) {
     reattach_existing_torrents(ses, c);
     bool ok = ses.remove(hash, /*delete_files=*/false);
     return ok ? 0 : 1;
+}
+
+// --- radarr commands -------------------------------------------------
+
+media_browser::RadarrClient::Config make_radarr_config(const Config& c) {
+    media_browser::RadarrClient::Config rc;
+    rc.base_url = c.radarr_base_url;
+    rc.api_key = c.radarr_api_key;
+    return rc;
+}
+
+int cmd_radarr_status(const Config& c) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto status = r.get_status();
+    if (!status) {
+        spdlog::error("fetch failed: {}", r.last_error());
+        return 1;
+    }
+    spdlog::info("Radarr: {} (reachable: true)", status->version);
+    return 0;
+}
+
+int cmd_radarr_search(const Config& c, const std::string& query) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto hits = r.lookup(query);
+    spdlog::info("{} results for \"{}\":", hits.size(), query);
+    for (const auto& h : hits) {
+        spdlog::info("  [{:>7}] {} ({}) rating={:.1f}",
+                     h.tmdb_id, h.title, h.year, h.rating);
+    }
+    return 0;
+}
+
+int cmd_radarr_library(const Config& c) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto lib = r.get_library();
+    spdlog::info("Library: {} movies", lib.size());
+    for (const auto& m : lib) {
+        spdlog::info("  [{:>5}] {} ({})  have_file={}  quality={}",
+                     m.radarr_id, m.title, m.year, m.has_file, m.file_quality);
+    }
+    return 0;
+}
+
+int cmd_radarr_queue(const Config& c) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto q = r.get_queue();
+    spdlog::info("Queue: {} items", q.size());
+    for (const auto& it : q) {
+        spdlog::info("  [{:>5}] {} {:.1f}% state={}", it.id, it.title,
+                     it.progress * 100.0, it.state);
+    }
+    return 0;
+}
+
+int cmd_radarr_add(const Config& c, int tmdb_id) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto profiles = r.get_quality_profiles();
+    if (profiles.empty()) {
+        spdlog::error("no quality profiles in Radarr — set up in web UI first");
+        return 1;
+    }
+    // Prefer Radarr's built-in "HD-1080p" profile (id 4 on a fresh install).
+    // Fall back to a custom "1080p Standard" if someone seeded one,
+    // then to the first profile as a last resort.
+    int qp = profiles[0].id;
+    bool found = false;
+    for (const auto& p : profiles) {
+        if (p.name == "HD-1080p") { qp = p.id; found = true; break; }
+    }
+    if (!found) {
+        for (const auto& p : profiles) {
+            if (p.name == "1080p Standard") { qp = p.id; break; }
+        }
+    }
+    bool ok = r.add_movie(tmdb_id, qp, /*monitor=*/true);
+    if (ok) spdlog::info("added tmdb_id={} with quality profile {}", tmdb_id, qp);
+    else spdlog::error("failed: {}", r.last_error());
+    return ok ? 0 : 1;
+}
+
+int cmd_radarr_profiles(const Config& c) {
+    if (c.radarr_api_key.empty()) {
+        spdlog::error("no Radarr API key - set MDB_RADARR_API_KEY");
+        return 1;
+    }
+    media_browser::RadarrClient r(make_radarr_config(c));
+    auto p = r.get_quality_profiles();
+    for (const auto& q : p) {
+        spdlog::info("  [{:>3}] {}", q.id, q.name);
+    }
+    return 0;
 }
 
 }  // namespace
