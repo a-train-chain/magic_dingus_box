@@ -22,18 +22,30 @@ ENV_FILE="${SERVICES_DIR}/.env"
 
 echo "=== Media Browser V2 service setup ==="
 
-# 1. Docker install check
+# 1. Docker install check + group membership
+# The user under which systemd runs the services unit (User=magic) must be in
+# the docker group, otherwise `docker compose up` fails with EACCES on the
+# Docker socket on every boot. We handle install + group membership together.
+#
+# Note: this script runs via `sudo`, so $(whoami) is root. We target the real
+# invoking user via $SUDO_USER (set when the script is invoked with sudo).
+TARGET_USER="${SUDO_USER:-magic}"
+
 if ! command -v docker &>/dev/null; then
     echo "Installing Docker..."
     curl -fsSL https://get.docker.com | sh
-    sudo usermod -aG docker "$(whoami)"
-    echo "Docker installed. You may need to log out and back in for group changes."
+    echo "Docker installed."
 fi
 
 if ! docker compose version &>/dev/null; then
     echo "ERROR: docker compose plugin required. Install docker-compose-plugin."
     exit 1
 fi
+
+# Ensure target user is in the docker group (idempotent — usermod -aG
+# silently succeeds if already a member).
+echo "Ensuring ${TARGET_USER} is in docker group..."
+usermod -aG docker "${TARGET_USER}"
 
 # 2. Storage layout
 echo "Creating storage layout at ${STORAGE_ROOT}..."
