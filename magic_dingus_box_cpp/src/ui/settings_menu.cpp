@@ -200,11 +200,24 @@ void SettingsMenuManager::open() {
         selected_game_in_playlist_ = 0;
         game_browser_selected_ = 0;
 
-        // NOTE: Top-level menu contents match the constructor's initialization.
-        // Media Browser rows ("Movies" / "Hide Movies feature") are injected
-        // into the System submenu by build_system_submenu() instead, so the
-        // unlock state is re-evaluated every time the user enters that
-        // submenu (enter_submenu() rebuilds submenu_items_ on each entry).
+        // Rebuild the top-level menu on every open() so the "Movies" row
+        // (conditional on media_browser_unlocked) is re-evaluated each time.
+        // Placement: directly under "Video Games" — the feature entry point
+        // deserves prominent top-level placement. The administrative
+        // "Hide Movies feature" row lives inside the System submenu.
+        menu_items_.clear();
+        menu_items_.emplace_back("Video Games", MenuSection::VIDEO_GAMES, "Emulated games");
+#ifdef MEDIA_BROWSER_ENABLED
+        if (app_state_ && app_state_->media_browser_unlocked) {
+            menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+        }
+#endif
+        menu_items_.emplace_back("Display", MenuSection::DISPLAY, "Screen settings");
+        menu_items_.emplace_back("Audio", MenuSection::AUDIO, "Volume");
+        menu_items_.emplace_back("Wi-Fi", MenuSection::WIFI, "Network Setup");
+        menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
+        menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
+        menu_items_.emplace_back("Back", MenuSection::BACK);
     }
 }
 
@@ -449,12 +462,15 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     };
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Inject Media Browser rows conditionally. This submenu is rebuilt on
-    // every enter_submenu(SYSTEM) call, so the unlock state is re-evaluated
+    // Inject "Hide Movies feature" row conditionally. This submenu is rebuilt
+    // on every enter_submenu(SYSTEM) call, so the unlock state is re-evaluated
     // each time the user navigates in — picking up changes made elsewhere
-    // (e.g. HIDE_MEDIA_BROWSER selection, or fresh unlock via secret seq).
+    // (e.g. fresh unlock via secret seq).
+    //
+    // NOTE: The "Movies" entry point lives at the top level (see open()),
+    // directly under "Video Games". Only the administrative re-lock row
+    // belongs here alongside Playlist Loop / Shuffle.
     if (app_state_->media_browser_unlocked) {
-        items.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
         items.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
     }
 #endif
