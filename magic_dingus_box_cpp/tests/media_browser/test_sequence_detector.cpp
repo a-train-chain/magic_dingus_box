@@ -3,10 +3,10 @@
 #include "platform/sequence_detector.h"
 
 using namespace platform;
-using clock_t = std::chrono::steady_clock;
+using seq_clock = std::chrono::steady_clock;
 
-static clock_t::time_point t(int ms) {
-    return clock_t::time_point(std::chrono::milliseconds(ms));
+static seq_clock::time_point t(int ms) {
+    return seq_clock::time_point(std::chrono::milliseconds(ms));
 }
 
 TEST_CASE("SequenceDetector: full correct sequence unlocks", "[sequence]") {
