@@ -1170,13 +1170,16 @@ int main(int /* argc */, char* /* argv */[]) {
                 current_mb_screen = media_browser::ui::Screen::Browse;
                 active_mb_screen = &mb_browse;
             } else if (next != current_mb_screen) {
-                // When transitioning into Detail from Browse, forward the
-                // selected tmdb_id so Detail knows which movie to show.
-                // Task 20 will fetch the full metadata; for now Detail just
-                // remembers the id.
-                if (next == media_browser::ui::Screen::Detail &&
-                    current_mb_screen == media_browser::ui::Screen::Browse) {
-                    mb_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
+                // When transitioning into Detail, forward the selected
+                // tmdb_id from whichever source screen produced it so
+                // Detail knows which movie to show. Task 20 will fetch
+                // the full metadata; for now Detail just remembers the id.
+                if (next == media_browser::ui::Screen::Detail) {
+                    if (current_mb_screen == media_browser::ui::Screen::Browse) {
+                        mb_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
+                    } else if (current_mb_screen == media_browser::ui::Screen::Search) {
+                        mb_detail.set_tmdb_id(mb_search.selected_tmdb_id());
+                    }
                 }
                 active_mb_screen->leave();
                 current_mb_screen = next;
