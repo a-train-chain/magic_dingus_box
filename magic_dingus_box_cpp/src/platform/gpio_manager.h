@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 #include <memory>
+#include <chrono>
 
 // Forward declare libgpiod types to avoid header dependency
 struct gpiod_chip;
@@ -54,7 +55,16 @@ public:
     // Poll for input events (non-blocking)
     // Returns events in same format as InputManager for easy integration
     std::vector<InputEvent> poll();
-    
+
+    // Snapshot of current (post-debounce) button press state, indexed
+    // 0..NUM_BUTTONS-1. True = currently pressed. Called from main loop
+    // after poll() for features that need chord detection.
+    const bool* button_state_snapshot() const { return &button_pressed_[0]; }
+
+    // Whether BTN1 and BTN3 are both pressed right now (chord).
+    // Uses a small tolerance window to forgive asynchronous presses.
+    bool is_chord_btn1_btn3() const;
+
     // LED control
     void set_led(int index, bool on);  // index 0-3
     void set_all_leds(bool on);
@@ -92,6 +102,10 @@ private:
     };
     ButtonState button_states_[gpio::NUM_BUTTONS];
     ButtonState encoder_sw_state_;
+
+    // Current press state + press timestamps (for snapshot / chord API)
+    bool button_pressed_[gpio::NUM_BUTTONS] = {false, false, false, false};
+    std::chrono::steady_clock::time_point button_press_times_[gpio::NUM_BUTTONS];
     
     // Encoder state
     int last_clk_state_ = 1;

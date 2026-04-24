@@ -264,14 +264,33 @@ std::vector<InputEvent> GpioManager::poll() {
                 ev.delta = 0;
                 ev.pressed = pressed;
                 events.push_back(ev);
-                
+
                 // Update LED to match button state (light while pressed)
                 set_led(i, pressed);
+
+                // Track press state + time for chord/snapshot API
+                button_pressed_[i] = pressed;
+                if (pressed) {
+                    button_press_times_[i] = std::chrono::steady_clock::now();
+                }
             }
         }
     }
-    
+
     return events;
+}
+
+bool GpioManager::is_chord_btn1_btn3() const {
+    // Chord = both buttons currently pressed AND they transitioned to
+    // pressed within 50ms of each other.
+    if (!button_pressed_[0] || !button_pressed_[2]) return false;
+
+    auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(
+        button_press_times_[0] > button_press_times_[2]
+            ? button_press_times_[0] - button_press_times_[2]
+            : button_press_times_[2] - button_press_times_[0]).count();
+
+    return diff <= 50;
 }
 
 void GpioManager::set_led(int index, bool on) {
@@ -479,6 +498,7 @@ void GpioManager::stop_boot_led_sequence() {}
 void GpioManager::update_intro_animation(uint64_t /*elapsed_ms*/) {}
 void GpioManager::play_shutdown_animation() {}
 void GpioManager::stop_animation() {}
+bool GpioManager::is_chord_btn1_btn3() const { return false; }
 
 #endif  // HAVE_GPIOD
 
