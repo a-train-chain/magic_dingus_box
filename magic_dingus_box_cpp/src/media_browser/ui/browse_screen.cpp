@@ -382,7 +382,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    th.dim, 0.6f);
 
     const std::string hint =
-        "Select: A/RCLICK   Back: Menu   Search: S button";
+        "Rotate to navigate   RCLICK/A: Select   BTN4/B: Exit";
     int hint_size = th.font_small_size;
     int hint_baseline = r.mb_text_baseline(hint_size);
     int hint_w = r.mb_text_width(hint, hint_size);

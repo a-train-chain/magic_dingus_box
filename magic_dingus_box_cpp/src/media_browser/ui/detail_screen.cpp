@@ -251,9 +251,10 @@ void DetailScreen::update() {
 Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& events) {
     for (const auto& e : events) {
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            // MVP back-stack: always return to Browse. A real back-stack
-            // would remember whether we arrived from Browse or Search.
-            return Screen::Browse;
+            // Return to the screen that opened us (Browse / Search /
+            // Library / ...). main.cpp sets origin_ on every transition
+            // into Detail; default is Browse.
+            return origin_;
         }
 
         if (e.action == platform::InputAction::ROTATE && e.delta != 0) {

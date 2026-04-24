@@ -280,10 +280,30 @@ Screen MbSettingsScreen::handle_input(
 
             cursor_ = std::clamp(cursor_ + delta, 0, n - 1);
 
-            // Skip the AdvancedUrlHint row — it's read-only fine print
-            // and should never take focus.
-            if (rows_[cursor_].kind == RowKind::AdvancedUrlHint) {
-                cursor_ = std::clamp(cursor_ - 1, 0, n - 1);
+            // Skip any non-focusable row (currently only AdvancedUrlHint,
+            // which is read-only fine print). We step in the direction we
+            // were already moving — if the caller walked DOWN onto a
+            // non-focusable row we keep walking DOWN; if we hit the end
+            // we reverse. This keeps the cursor off non-focusable rows
+            // even if someone later inserts another row after them.
+            {
+                int step = (delta > 0) ? +1 : -1;
+                // Bound the scan to n iterations so we can't infinite-loop
+                // if every row is marked non-focusable (shouldn't happen,
+                // but defensive).
+                int guard = n;
+                while (guard-- > 0 &&
+                       rows_[cursor_].kind == RowKind::AdvancedUrlHint) {
+                    int candidate = cursor_ + step;
+                    if (candidate < 0 || candidate >= n) {
+                        // Fell off the end — reverse direction and keep
+                        // scanning for the nearest focusable row.
+                        step = -step;
+                        candidate = cursor_ + step;
+                        if (candidate < 0 || candidate >= n) break;
+                    }
+                    cursor_ = candidate;
+                }
             }
 
             // Landing on the indexer row: reset sub-cursor.

@@ -69,6 +69,15 @@ public:
     }
     int tmdb_id() const { return tmdb_id_; }
 
+    // Remember which screen we came from so BTN4 / SETTINGS_MENU returns
+    // there instead of always dumping the user back to Browse. main.cpp
+    // calls this on every transition INTO Detail, using the dispatcher's
+    // current_mb_screen at the moment of transition. Library → Detail →
+    // BTN4 should return to Library, Search → Detail → BTN4 should return
+    // to Search (preserving query + results), etc.
+    void set_origin(Screen s) { origin_ = s; }
+    Screen origin() const { return origin_; }
+
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
@@ -130,6 +139,10 @@ private:
     RadarrClient& radarr_;
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
+
+    // Screen to return to on BTN4 / SETTINGS_MENU. Default Browse preserves
+    // legacy behavior for any callers that forget to set_origin().
+    Screen origin_ = Screen::Browse;
 
     Mode mode_ = Mode::Loading;
     // If the movie is in the library we have the full Movie record (with

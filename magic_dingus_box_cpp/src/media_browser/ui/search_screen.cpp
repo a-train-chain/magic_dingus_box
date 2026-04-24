@@ -206,6 +206,24 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
                     query_ = after;
                     last_input_time_ = std::chrono::steady_clock::now();
                 }
+                // ENTER and CANCEL both call close() internally, which
+                // sets active_=false. If we don't handle that here, the
+                // user is left staring at a dead keyboard with no
+                // escape but BTN4. Treat it as "done entering text":
+                // if we have results, move focus to the grid; if not,
+                // silently re-open the keyboard with the current query
+                // so typing can continue (no-op escape).
+                if (!keyboard_.is_active()) {
+                    if (!results_.empty()) {
+                        focus_ = Focus::Results;
+                        grid_cursor_ = 0;
+                        scroll_row_ = 0;
+                    } else {
+                        keyboard_.open(query_, "Search Movies",
+                                       /*on_enter=*/nullptr,
+                                       /*on_cancel=*/nullptr);
+                    }
+                }
                 continue;
             }
             // Results grid: pick this poster and hand off to Detail.

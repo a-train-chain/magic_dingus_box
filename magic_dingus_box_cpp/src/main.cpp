@@ -1267,6 +1267,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     } else if (current_mb_screen == media_browser::ui::Screen::Library) {
                         mb_detail.set_tmdb_id(mb_library.selected_tmdb_id());
                     }
+                    // Remember where we came from so BTN4 on Detail
+                    // returns the user to the screen that opened it
+                    // (preserves Search query/results, Library scroll,
+                    // etc.) instead of always landing on Browse.
+                    mb_detail.set_origin(current_mb_screen);
                 }
                 active_mb_screen->leave();
                 current_mb_screen = next;
