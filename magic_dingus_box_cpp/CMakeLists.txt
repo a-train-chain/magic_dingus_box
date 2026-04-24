@@ -133,8 +133,28 @@ set(ALL_SOURCES
 )
 
 if(BUILD_KIOSK)
+    # Media Browser UI + Radarr client sources are linked into the kiosk
+    # binary when the feature flag is on. Torrent/library-db stay test-only
+    # for now (Tasks 24+ will wire them in).
+    set(KIOSK_MEDIA_BROWSER_SOURCES "")
+    if(ENABLE_MEDIA_BROWSER)
+        list(APPEND KIOSK_MEDIA_BROWSER_SOURCES
+            src/media_browser/radarr/radarr_parsers.cpp
+            src/media_browser/radarr/radarr_client.cpp
+            src/media_browser/radarr/radarr_mock.cpp
+            src/media_browser/ui/browse_screen.cpp
+            src/media_browser/ui/search_screen.cpp
+            src/media_browser/ui/detail_screen.cpp
+            src/media_browser/ui/queue_screen.cpp
+            src/media_browser/ui/library_screen.cpp
+            src/media_browser/ui/mb_settings_screen.cpp
+        )
+        # libcurl is required by radarr_client.cpp.
+        pkg_check_modules(CURL REQUIRED libcurl)
+    endif()
+
     # Executable
-    add_executable(magic_dingus_box_cpp ${ALL_SOURCES})
+    add_executable(magic_dingus_box_cpp ${ALL_SOURCES} ${KIOSK_MEDIA_BROWSER_SOURCES})
 
     # Include directories
     target_include_directories(magic_dingus_box_cpp PRIVATE
@@ -151,6 +171,7 @@ if(BUILD_KIOSK)
         ${GST_APP_INCLUDE_DIRS}
         ${GST_VIDEO_INCLUDE_DIRS}
         ${GST_GL_INCLUDE_DIRS}
+        ${CURL_INCLUDE_DIRS}
         src/
     )
 
@@ -169,6 +190,7 @@ if(BUILD_KIOSK)
         ${GST_APP_LIBRARIES}
         ${GST_VIDEO_LIBRARIES}
         ${GST_GL_LIBRARIES}
+        ${CURL_LIBRARIES}
         spdlog::spdlog_header_only
         pthread
         m
@@ -261,6 +283,18 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/radarr/radarr_client.cpp
         src/media_browser/radarr/radarr_mock.cpp
         src/platform/sequence_detector.cpp
+    )
+
+    # Task 17: screen dispatcher + stub screens. Header-only base class
+    # (mb_screen.h) + 6 concrete .cpp files. Kept in a separate list so
+    # the test binary (which has no Renderer) doesn't need to link them.
+    set(MEDIA_BROWSER_UI_SOURCES
+        src/media_browser/ui/browse_screen.cpp
+        src/media_browser/ui/search_screen.cpp
+        src/media_browser/ui/detail_screen.cpp
+        src/media_browser/ui/queue_screen.cpp
+        src/media_browser/ui/library_screen.cpp
+        src/media_browser/ui/mb_settings_screen.cpp
     )
 
     # --- Unit test runner ---

@@ -10,6 +10,14 @@
 #ifdef MEDIA_BROWSER_ENABLED
 #include "ui/toast.h"
 #include "platform/sequence_detector.h"
+#include "media_browser/radarr/radarr_client.h"
+#include "media_browser/radarr/radarr_mock.h"
+#include "media_browser/ui/browse_screen.h"
+#include "media_browser/ui/search_screen.h"
+#include "media_browser/ui/detail_screen.h"
+#include "media_browser/ui/queue_screen.h"
+#include "media_browser/ui/library_screen.h"
+#include "media_browser/ui/mb_settings_screen.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
@@ -415,6 +423,42 @@ int main(int /* argc */, char* /* argv */[]) {
     // GPIO events; fires Toast + sets state.media_browser_unlocked when
     // the full chord → BTN2 × 3 → rotary-click sequence is entered.
     platform::SequenceDetector seq_detector;
+
+    // Task 17: screen dispatcher for the Media Browser.
+    //
+    // Radarr client is the real HTTP client when MDB_RADARR_API_KEY is set
+    // in the environment (set by the Media-Browser setup script / systemd
+    // unit). Otherwise we fall back to RadarrMockClient so the stub UI
+    // still works on dev machines without a Radarr instance.
+    std::unique_ptr<media_browser::RadarrClient> radarr_owned;
+    if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) {
+        media_browser::RadarrClient::Config radarr_cfg;
+        if (const char* base = std::getenv("MDB_RADARR_BASE_URL"); base && *base) {
+            radarr_cfg.base_url = base;
+        }
+        radarr_cfg.api_key = rk;
+        std::string base_url_for_log = radarr_cfg.base_url;
+        radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
+        std::cout << "[media_browser] Using real RadarrClient (base_url="
+                  << base_url_for_log << ")" << std::endl;
+    } else {
+        radarr_owned = std::make_unique<media_browser::RadarrMockClient>();
+        std::cout << "[media_browser] No MDB_RADARR_API_KEY set — using RadarrMockClient" << std::endl;
+    }
+    media_browser::RadarrClient& radarr = *radarr_owned;
+
+    // Six screens — dispatcher owns one instance of each.
+    media_browser::ui::BrowseScreen     mb_browse(radarr);
+    media_browser::ui::SearchScreen     mb_search(radarr);
+    media_browser::ui::DetailScreen     mb_detail(radarr);
+    media_browser::ui::QueueScreen      mb_queue(radarr);
+    media_browser::ui::LibraryScreen    mb_library(radarr);
+    media_browser::ui::MbSettingsScreen mb_mb_settings(radarr);
+
+    media_browser::ui::Screen current_mb_screen = media_browser::ui::Screen::Browse;
+    media_browser::ui::MbScreen* active_mb_screen = &mb_browse;
+    // enter() is called the first time we actually transition into the
+    // Media Browser, so entering always starts fresh on Browse.
 #endif
     
     // Try to load intro video at startup
@@ -1108,18 +1152,45 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
-        for (const auto& ev : input_events) {
 #ifdef MEDIA_BROWSER_ENABLED
-            // Media Browser placeholder screen: consume all input until
-            // the user presses Menu (SETTINGS_MENU / BTN4) to return to
-            // the main screen. Replaced by full input handling in Task 17+.
-            if (state.current_screen == app::AppScreen::MediaBrowser) {
-                if (ev.action == InputAction::SETTINGS_MENU && ev.pressed) {
-                    state.current_screen = app::AppScreen::MainMenu;
+        // Media Browser screen dispatcher (Task 17). When the user is in
+        // the Media Browser, the active MbScreen owns all input: it may
+        // consume events, transition to a sibling screen, or return
+        // Screen::Exit to hand control back to the main kiosk UI.
+        // Input events are NOT forwarded to the main input-handling loop
+        // below, which prevents stray Menu / DPad / Select events from
+        // leaking into the main UI while the Media Browser is active.
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
+            auto next = active_mb_screen->handle_input(input_events);
+            if (next == media_browser::ui::Screen::Exit) {
+                active_mb_screen->leave();
+                state.current_screen = app::AppScreen::MainMenu;
+                // Reset to Browse so the next entry into the Media Browser
+                // starts fresh on the landing screen.
+                current_mb_screen = media_browser::ui::Screen::Browse;
+                active_mb_screen = &mb_browse;
+            } else if (next != current_mb_screen) {
+                active_mb_screen->leave();
+                current_mb_screen = next;
+                switch (next) {
+                    case media_browser::ui::Screen::Browse:        active_mb_screen = &mb_browse;      break;
+                    case media_browser::ui::Screen::Search:        active_mb_screen = &mb_search;      break;
+                    case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
+                    case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;
+                    case media_browser::ui::Screen::Library:       active_mb_screen = &mb_library;     break;
+                    case media_browser::ui::Screen::MovieSettings: active_mb_screen = &mb_mb_settings; break;
+                    case media_browser::ui::Screen::Exit: break;  // handled above
                 }
-                continue;
+                active_mb_screen->enter();
             }
+            active_mb_screen->update();
+            // Consume all input events so the main UI's per-event loop
+            // below sees an empty queue this frame.
+            input_events.clear();
+        }
 #endif
+
+        for (const auto& ev : input_events) {
             // Handle Menu button hold logic
             if (ev.action == InputAction::SETTINGS_MENU) {
                 if (ev.pressed) {
@@ -1393,10 +1464,14 @@ int main(int /* argc */, char* /* argv */[]) {
 #ifdef MEDIA_BROWSER_ENABLED
                         } else if (section == ui::MenuSection::MEDIA_BROWSER) {
                             // Close settings menu and transition to the
-                            // Media Browser screen (placeholder until
-                            // Task 17+ wires the real UI).
+                            // Media Browser screen (dispatcher + stub
+                            // screens; Tasks 18-23 fill in real UIs).
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
+                            // Always start on the Browse landing screen.
+                            current_mb_screen = media_browser::ui::Screen::Browse;
+                            active_mb_screen = &mb_browse;
+                            active_mb_screen->enter();
                         } else if (section == ui::MenuSection::HIDE_MEDIA_BROWSER) {
                             // Re-lock the Media Browser. Both the "Movies" and
                             // "Hide Movies feature" rows will disappear next
@@ -2090,12 +2165,12 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         
 #ifdef MEDIA_BROWSER_ENABLED
-        // Media Browser placeholder screen: render a full-screen overlay
-        // when the user has transitioned to the Movies screen. Replaced in
-        // Task 17+ with real search/library/queue UI.
+        // Media Browser screen dispatcher: render the currently active
+        // MbScreen full-screen. Each stub screen draws only a centered
+        // identifier label for now; Tasks 18-23 replace with real UI.
         if (state.current_screen == app::AppScreen::MediaBrowser) {
             glViewport(0, 0, mode.width, mode.height);
-            ui_renderer.render_media_browser_placeholder();
+            active_mb_screen->render(ui_renderer, mode.width, mode.height);
         }
 
         // Render Media Browser toast overlay (fades in/out over 3s). Drawn

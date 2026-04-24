@@ -52,6 +52,12 @@ public:
     // background with centered "Movies — Media Browser" text + a hint to
     // press the Menu button to return to the main UI.
     void render_media_browser_placeholder();
+
+    // Task 17 stub helper: draws a dark full-screen overlay with a centered
+    // screen label (e.g. "Browse", "Search") and a "[Menu to return]" hint.
+    // Used by the stub MbScreen implementations until Tasks 18-23 replace
+    // each screen's render() with real UI.
+    void render_media_browser_screen_stub(const std::string& label);
 #endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)
