@@ -44,8 +44,10 @@ std::size_t curl_write_to_string(void* contents, std::size_t size,
 
 ArtworkCache::ArtworkCache(std::size_t max_bytes)
     : max_bytes_(max_bytes) {
+    spdlog::info("[artwork] cache ctor, max_bytes={}", max_bytes);
 #ifndef ARTWORK_CACHE_TEST_MODE
     fetcher_thread_ = std::thread(&ArtworkCache::fetcher_thread_main, this);
+    spdlog::info("[artwork] fetcher thread spawned");
 #endif
 }
 
@@ -93,6 +95,8 @@ std::uint32_t ArtworkCache::get_or_fetch(const std::string& url) {
         if (in_flight_.insert(url).second) {
             work_queue_.push_back(url);
             work_cv_.notify_one();
+            spdlog::info("[artwork] enqueued url='{}' (queue_size={})",
+                         url.substr(0, 80), work_queue_.size());
         }
     }
     return 0;
@@ -206,6 +210,7 @@ std::size_t ArtworkCache::bytes_waiting_upload() const {
 
 void ArtworkCache::fetcher_thread_main() {
 #ifndef ARTWORK_CACHE_TEST_MODE
+    spdlog::info("[artwork] fetcher thread entered, initializing curl");
     // Initialize libcurl once per thread. curl_global_init is called at
     // process start by RadarrClient already, so we don't need it here;
     // per-handle init is the per-thread part.
@@ -214,6 +219,7 @@ void ArtworkCache::fetcher_thread_main() {
         spdlog::error("[artwork] curl_easy_init failed — fetcher thread exiting");
         return;
     }
+    spdlog::info("[artwork] fetcher thread ready, entering work loop");
     // Sensible defaults for TMDB image CDN. 15s connect, 30s transfer.
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
@@ -233,6 +239,7 @@ void ArtworkCache::fetcher_thread_main() {
             url = std::move(work_queue_.front());
             work_queue_.pop_front();
         }
+        spdlog::info("[artwork] fetcher picked up url='{}'", url.substr(0, 80));
 
         std::string body;
         body.reserve(256 * 1024);  // typical poster JPEG is 30-200KB

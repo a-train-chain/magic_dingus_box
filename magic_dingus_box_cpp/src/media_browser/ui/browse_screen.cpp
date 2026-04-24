@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+#include <spdlog/spdlog.h>
+
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -58,6 +60,8 @@ void BrowseScreen::enter() {
     // also lets the user know why the grid is empty if services are
     // still coming up after boot.
     services_ok_ = radarr_.is_reachable();
+    spdlog::info("[BrowseScreen] enter: radarr_ok={}, loaded={}",
+                 services_ok_, loaded_);
     if (!loaded_) {
         load_category(category_);
         loaded_ = true;
@@ -106,8 +110,18 @@ void BrowseScreen::load_category(Category cat) {
     const char* query = query_for_category(cat);
     if (!query || !*query) return;
     loading_ = true;
+    spdlog::info("[BrowseScreen] load_category: {} (query=\"{}\")",
+                 label_for_category(cat), query);
     movies_ = radarr_.lookup(query);
     loading_ = false;
+    spdlog::info("[BrowseScreen] load_category done: {} results",
+                 movies_.size());
+    if (!movies_.empty()) {
+        const auto& m = movies_.front();
+        spdlog::info("[BrowseScreen] first result: tmdb_id={} title='{}' poster_url='{}'",
+                     m.tmdb_id, m.title,
+                     m.poster_url.empty() ? "(EMPTY)" : m.poster_url.substr(0, 80));
+    }
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {
