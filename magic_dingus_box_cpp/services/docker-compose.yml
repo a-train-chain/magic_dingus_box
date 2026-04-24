@@ -57,6 +57,11 @@ services:
       - "8080:8080"
       - "6881:6881"
       - "6881:6881/udp"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v2/app/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 # Services share the default bridge network; inter-container DNS resolves names.
