@@ -6,9 +6,11 @@
 #include <vector>
 
 #include "media_browser/radarr/radarr_types.h"
+#include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_screen.h"
 
 namespace media_browser { class RadarrClient; }
+namespace media_browser { class TmdbClient; }
 
 namespace media_browser::ui {
 
@@ -50,11 +52,13 @@ namespace media_browser::ui {
 //   - Loading: "Loading..." centered while enter() is in flight.
 //   - tmdb_id == 0 (shouldn't happen if the dispatcher handoff is correct):
 //     centered "No movie selected" message, no actions.
-//   - Lookup failure (Radarr offline): "Radarr service offline" with a
-//     [Retry] button that re-runs enter().
+//   - TMDB fetch failure: centered "Couldn't fetch movie info from TMDB"
+//     with a [Retry] button. Radarr being unreachable does NOT enter the
+//     error state — DetailScreen still renders TMDB metadata and only
+//     surfaces a banner warning that library actions may fail.
 class DetailScreen : public MbScreen {
 public:
-    explicit DetailScreen(RadarrClient& radarr);
+    DetailScreen(RadarrClient& radarr, TmdbClient& tmdb);
 
     // Set the tmdb_id of the movie the detail screen should display. The
     // dispatcher in main.cpp calls this just before transitioning to this
@@ -115,8 +119,10 @@ private:
     // it falls outside the new range.
     void rebuild_buttons();
 
-    // Resolve tmdb_id_ against library and, if missing, lookup. Populates
-    // movie_/hit_/mode_. Also fetches quality profiles (best-effort).
+    // TMDB-first metadata fetch. Populates tmdb_detail_, then resolves
+    // tmdb_id_ against the Radarr library to set movie_/mode_. Quality
+    // profiles are fetched best-effort. If Radarr is unreachable the screen
+    // still displays full TMDB metadata; only library actions degrade.
     void fetch();
 
     // Helpers that run on SELECT. Each returns the next Screen (often the
@@ -137,6 +143,7 @@ private:
     int pick_quality_profile_id() const;
 
     RadarrClient& radarr_;
+    TmdbClient& tmdb_;
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
 
@@ -145,11 +152,16 @@ private:
     Screen origin_ = Screen::Browse;
 
     Mode mode_ = Mode::Loading;
-    // If the movie is in the library we have the full Movie record (with
-    // radarr_id, has_file, runtime, etc). Otherwise we only have the
-    // MovieSearchHit from lookup().
+    // TMDB-sourced metadata — populated by tmdb_.get_movie() and used as the
+    // primary source for title / year / overview / artwork. This was Radarr
+    // SkyHook before; switched to TMDB direct because SkyHook (api.radarr.video)
+    // has flaky transient 503s that bricked Detail even when Radarr itself
+    // was healthy.
+    std::optional<TmdbMovieDetail> tmdb_detail_;
+    // If the movie is in the library we also have the full Movie record
+    // (with radarr_id, has_file, etc) — used for library-mutating actions
+    // (Play / Search Again / Remove).
     std::optional<Movie> movie_;
-    std::optional<MovieSearchHit> hit_;
     std::vector<QualityProfile> profiles_;
 
     std::vector<Button> buttons_;

@@ -78,8 +78,8 @@ TEST_CASE("TmdbClient::parse_movie_detail extracts full record", "[tmdb]") {
     REQUIRE(detail->title == "The Matrix");
     REQUIRE(detail->year == 1999);
     REQUIRE(detail->runtime_minutes == 136);
-    REQUIRE(detail->poster_path == "/poster.jpg");
-    REQUIRE(detail->backdrop_path == "/backdrop.jpg");
+    REQUIRE(detail->poster_path == "https://image.tmdb.org/t/p/w500/poster.jpg");
+    REQUIRE(detail->backdrop_path == "https://image.tmdb.org/t/p/w500/backdrop.jpg");
 }
 
 TEST_CASE("TmdbClient::parse_search_response handles empty results", "[tmdb]") {

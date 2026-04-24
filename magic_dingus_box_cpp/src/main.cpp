@@ -516,7 +516,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // Six screens — dispatcher owns one instance of each.
     media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
     media_browser::ui::SearchScreen     mb_search(radarr);
-    media_browser::ui::DetailScreen     mb_detail(radarr);
+    media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb);
     media_browser::ui::QueueScreen      mb_queue(radarr);
     media_browser::ui::LibraryScreen    mb_library(radarr);
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox

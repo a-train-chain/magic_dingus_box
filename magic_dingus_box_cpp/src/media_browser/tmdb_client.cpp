@@ -268,8 +268,12 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
     d.title = root.get("title", "").asString();
     d.original_title = root.get("original_title", "").asString();
     d.overview = root.get("overview", "").asString();
-    d.poster_path = root.get("poster_path", "").asString();
-    d.backdrop_path = root.get("backdrop_path", "").asString();
+    // Prefix poster/backdrop with the image base URL so DetailScreen and the
+    // artwork cache can consume them directly — same convention as
+    // parse_list_response. Empty strings stay empty (artwork cache treats
+    // those as "no art" and falls back to the tint placeholder).
+    d.poster_path = resolve_poster_url(root.get("poster_path", "").asString());
+    d.backdrop_path = resolve_poster_url(root.get("backdrop_path", "").asString());
     d.runtime_minutes = root.get("runtime", 0).asInt();
     d.rating = root.get("vote_average", 0.0).asDouble();
     d.year = extract_year(root.get("release_date", "").asString());

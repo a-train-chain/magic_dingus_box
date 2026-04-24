@@ -24,7 +24,9 @@ struct TmdbMovieDetail {
     std::string title;
     std::string original_title;
     std::string overview;
-    std::string poster_path;     // relative path (detail endpoint — kept as-is for now)
+    // Full image URL (w500 prefix already applied — same convention as
+    // TmdbSearchHit::poster_path). Pass directly to the artwork cache.
+    std::string poster_path;
     std::string backdrop_path;
     int year = 0;
     int runtime_minutes = 0;

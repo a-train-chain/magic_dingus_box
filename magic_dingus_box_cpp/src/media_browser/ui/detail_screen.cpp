@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/tmdb_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -125,7 +126,8 @@ std::string format_rating(double rating) {
 
 }  // namespace
 
-DetailScreen::DetailScreen(RadarrClient& radarr) : radarr_(radarr) {
+DetailScreen::DetailScreen(RadarrClient& radarr, TmdbClient& tmdb)
+    : radarr_(radarr), tmdb_(tmdb) {
     mode_ = Mode::Loading;
     rebuild_buttons();
 }
@@ -143,7 +145,8 @@ void DetailScreen::enter() {
 void DetailScreen::fetch() {
     needs_refresh_ = false;
     movie_.reset();
-    hit_.reset();
+    tmdb_detail_.reset();
+    banner_.clear();
 
     if (tmdb_id_ == 0) {
         mode_ = Mode::NoTmdb;
@@ -151,50 +154,51 @@ void DetailScreen::fetch() {
         return;
     }
 
-    // 1) Is the movie already in the Radarr library?
-    auto library = radarr_.get_library();
-    // Treat an empty library with a non-empty last_error as an error.
-    bool library_failed = library.empty() && !radarr_.last_error().empty();
-    if (library_failed) {
+    // 1) TMDB metadata — the primary source. Always try this first. We used
+    // to route through radarr_.lookup() (Radarr's SkyHook proxy to TMDB)
+    // but SkyHook on api.radarr.video has flaky transient 503s, which
+    // bricked the entire Detail screen even when Radarr itself was healthy.
+    auto detail = tmdb_.get_movie(tmdb_id_);
+    if (!detail) {
+        // TMDB itself failed — rare. Show an error with Retry.
         mode_ = Mode::Error;
         rebuild_buttons();
         return;
     }
+    tmdb_detail_ = *detail;
 
-    for (const auto& m : library) {
-        if (m.tmdb_id == tmdb_id_) {
-            movie_ = m;
-            mode_ = m.has_file ? Mode::InLibraryWithFile : Mode::InLibraryNoFile;
-            // Pre-fetch profiles — we won't need them for Play/Remove/Search,
-            // but they're cheap and keep behavior consistent on re-entry.
-            profiles_ = radarr_.get_quality_profiles();
-            rebuild_buttons();
-            return;
+    // 2) Radarr library state — optional. If Radarr is unreachable we still
+    // render the Detail screen with TMDB metadata; only the action buttons
+    // become best-effort (Add will fail with a toast, etc.).
+    auto library = radarr_.get_library();
+    bool library_ok = library.empty() ? radarr_.last_error().empty() : true;
+
+    const Movie* found = nullptr;
+    if (library_ok) {
+        for (const auto& m : library) {
+            if (m.tmdb_id == tmdb_id_) { found = &m; break; }
         }
     }
 
-    // 2) Not in library — fall back to TMDB lookup via Radarr. Radarr's
-    // /movie/lookup accepts a bare string; looking up by tmdb_id is done by
-    // passing the id as the query string.
-    auto hits = radarr_.lookup(std::to_string(tmdb_id_));
-    if (hits.empty()) {
-        // No error string but no result — treat as service offline (the
-        // most likely cause at single-user scale).
-        mode_ = Mode::Error;
-        rebuild_buttons();
-        return;
+    if (found) {
+        movie_ = *found;
+        mode_ = found->has_file ? Mode::InLibraryWithFile : Mode::InLibraryNoFile;
+    } else {
+        mode_ = Mode::NotInLibrary;
     }
 
-    // Prefer an exact tmdb_id match, otherwise take the first hit.
-    const MovieSearchHit* best = nullptr;
-    for (const auto& h : hits) {
-        if (h.tmdb_id == tmdb_id_) { best = &h; break; }
+    // Best-effort fetch of quality profiles — needed for Add. Cheap; safe
+    // to call even when not strictly required.
+    if (library_ok) {
+        profiles_ = radarr_.get_quality_profiles();
     }
-    if (!best) best = &hits.front();
-    hit_ = *best;
 
-    profiles_ = radarr_.get_quality_profiles();
-    mode_ = Mode::NotInLibrary;
+    // If Radarr was unreachable, surface a non-blocking banner so the user
+    // knows mutating actions may fail.
+    if (!library_ok) {
+        show_banner("Radarr service offline — adding to library may fail");
+    }
+
     rebuild_buttons();
 }
 
@@ -442,10 +446,11 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
     // Error state: render a centered message above the Retry button row
-    // (button row layout is handled by the common code below).
+    // (button row layout is handled by the common code below). Only TMDB
+    // failures land here — Radarr being unreachable just sets a banner.
     if (mode_ == Mode::Error) {
         int sz = th.font_large_size;
-        std::string msg = "Radarr service offline";
+        std::string msg = "Couldn't fetch movie info from TMDB. Check network?";
         int mw = r.mb_text_width(msg, sz);
         float x = (w - static_cast<float>(mw)) / 2.0f;
         float y = (overview_bottom / 2.0f)
@@ -461,13 +466,18 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // back to the poster_url if fanart is missing keeps the banner
         // useful for records that only have one artwork type.
         ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
+        // TMDB metadata is the primary source; fall back to library record
+        // (mostly relevant for movies that have local fanart not yet in
+        // TMDB's payload, e.g. user-supplied artwork).
         std::string backdrop_url;
-        if (movie_.has_value()) {
+        if (tmdb_detail_.has_value()) {
+            backdrop_url = tmdb_detail_->backdrop_path.empty()
+                               ? tmdb_detail_->poster_path
+                               : tmdb_detail_->backdrop_path;
+        }
+        if (backdrop_url.empty() && movie_.has_value()) {
             backdrop_url = movie_->fanart_url.empty() ? movie_->poster_url
                                                       : movie_->fanart_url;
-        } else if (hit_.has_value()) {
-            backdrop_url = hit_->fanart_url.empty() ? hit_->poster_url
-                                                    : hit_->fanart_url;
         }
         r.mb_draw_poster_or_tint(backdrop_url,
                                  0.0f, 0.0f, w, banner_h,
@@ -480,20 +490,24 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         r.mb_fill_rect(0.0f, banner_h - 1.0f, w, 1.0f, th.dim, 0.8f);
 
         // Title / year / rating (bottom-left). Runtime (bottom-right).
+        // Prefer TMDB fields (always populated when mode != Error/NoTmdb).
+        // Fall back to the library Movie record only if TMDB somehow has
+        // an empty title (defensive — shouldn't happen in practice).
         std::string title;
         int year = 0;
         double rating = 0.0;
         int runtime = 0;
-        if (movie_.has_value()) {
+        if (tmdb_detail_.has_value()) {
+            title = tmdb_detail_->title;
+            year = tmdb_detail_->year;
+            rating = tmdb_detail_->rating;
+            runtime = tmdb_detail_->runtime_minutes;
+        }
+        if (title.empty() && movie_.has_value()) {
             title = movie_->title;
             year = movie_->year;
             rating = movie_->rating;
             runtime = movie_->runtime_minutes;
-        } else if (hit_.has_value()) {
-            title = hit_->title;
-            year = hit_->year;
-            rating = hit_->rating;
-            runtime = hit_->runtime_minutes;
         }
         if (title.empty()) title = "Untitled";
 
@@ -553,8 +567,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // --- Middle: overview text ---------------------------------------
     if (mode_ != Mode::Error) {
         std::string overview;
-        if (movie_.has_value()) overview = movie_->overview;
-        else if (hit_.has_value()) overview = hit_->overview;
+        if (tmdb_detail_.has_value()) overview = tmdb_detail_->overview;
+        if (overview.empty() && movie_.has_value()) overview = movie_->overview;
 
         if (!overview.empty()) {
             int ov_size = th.font_medium_size;
