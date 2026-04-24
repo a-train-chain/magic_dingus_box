@@ -1,0 +1,64 @@
+# Media Browser V2 — Companion Services
+# Deployed to /opt/magic_dingus_box/services/ on the Pi.
+# Managed by magic-dingus-services.service (systemd).
+# All images pinned to known-good versions for reproducibility.
+
+services:
+  radarr:
+    image: lscr.io/linuxserver/radarr:5.14.0
+    container_name: mdb_radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/radarr:/config
+      - ${STORAGE_ROOT}/downloads:/downloads
+      - ${STORAGE_ROOT}/library:/library
+    ports:
+      - "7878:7878"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:1.26.1
+    container_name: mdb_prowlarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/prowlarr:/config
+    ports:
+      - "9696:9696"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:5.0.3
+    container_name: mdb_qbittorrent
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8080
+    volumes:
+      - ./config/qbittorrent:/config
+      - ${STORAGE_ROOT}/downloads:/downloads
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+
+# Services share the default bridge network; inter-container DNS resolves names.
+# Radarr reaches qBittorrent via http://qbittorrent:8080.
+# Kiosk C++ reaches all services via localhost:<port> (host network).
