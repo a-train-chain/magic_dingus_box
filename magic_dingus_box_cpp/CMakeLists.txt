@@ -101,8 +101,14 @@ set(UI_SOURCES
     src/ui/settings_menu.cpp
     src/ui/virtual_keyboard.cpp
     src/ui/qrcodegen.cpp
-    src/ui/toast.cpp
 )
+
+# toast.cpp is Media Browser V2 chrome — only compile it when the feature
+# flag is on so the ENABLE_MEDIA_BROWSER=OFF build stays bit-identical to
+# pre-V2 baseline (invariant enforced by CI golden_image preflight).
+if(ENABLE_MEDIA_BROWSER)
+    list(APPEND UI_SOURCES src/ui/toast.cpp)
+endif()
 
 set(APP_SOURCES
     src/app/playlist_loader.cpp

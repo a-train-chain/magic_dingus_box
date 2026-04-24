@@ -12,7 +12,10 @@ public:
     struct Config {
         std::string base_url = "http://localhost:7878";
         std::string api_key;
-        int timeout_secs = 10;
+        // HTTP timeout for all Radarr requests. Kept short so a stalled
+        // Radarr instance doesn't freeze the kiosk main render thread while
+        // get_queue() / is_reachable() are in-flight.
+        int timeout_secs = 5;
     };
 
     explicit RadarrClient(Config config);

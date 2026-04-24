@@ -3,7 +3,9 @@
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
+#include <cstdio>
 #include <sstream>
+#include <string>
 
 namespace media_browser {
 
@@ -86,6 +88,39 @@ std::optional<Movie> RadarrParsers::parse_movie(const std::string& json) {
     return m;
 }
 
+namespace {
+
+// Parse Radarr `timeleft` strings into total seconds.
+// Accepts "HH:MM:SS" and "D.HH:MM:SS" (days-dot-hours). Returns 0 on parse
+// failure so the caller can leave QueueItem::eta_seconds at its default.
+int parse_timeleft_to_seconds(const std::string& s) {
+    if (s.empty()) return 0;
+    int days = 0;
+    size_t time_start = 0;
+    // Optional "D.HH:MM:SS" prefix
+    size_t dot = s.find('.');
+    size_t first_colon = s.find(':');
+    if (dot != std::string::npos && first_colon != std::string::npos &&
+        dot < first_colon) {
+        try {
+            days = std::stoi(s.substr(0, dot));
+        } catch (...) {
+            return 0;
+        }
+        time_start = dot + 1;
+    }
+    const std::string t = s.substr(time_start);
+    int hh = 0, mm = 0, ss = 0;
+    // sscanf returns the number of successfully parsed fields.
+    if (std::sscanf(t.c_str(), "%d:%d:%d", &hh, &mm, &ss) != 3) {
+        return 0;
+    }
+    if (hh < 0 || mm < 0 || ss < 0) return 0;
+    return days * 86400 + hh * 3600 + mm * 60 + ss;
+}
+
+}  // namespace
+
 std::vector<QueueItem> RadarrParsers::parse_queue(const std::string& json) {
     std::vector<QueueItem> out;
     Json::Value root;
@@ -104,6 +139,26 @@ std::vector<QueueItem> RadarrParsers::parse_queue(const std::string& json) {
             q.progress = static_cast<double>(q.size_bytes - q.sizeleft_bytes)
                          / static_cast<double>(q.size_bytes);
         }
+
+        // Live telemetry (optional fields — absent on older Radarr versions
+        // or non-torrent download clients).
+        if (r.isMember("timeleft")) {
+            q.eta_seconds = parse_timeleft_to_seconds(
+                r["timeleft"].asString());
+        }
+        if (r.isMember("seeders")) {
+            q.seeds = r.get("seeders", 0).asInt();
+        }
+        if (r.isMember("leechers")) {
+            q.peers = r.get("leechers", 0).asInt();
+        }
+        // NOTE: download_rate_bps / upload_rate_bps stay at 0. Radarr's
+        // /api/v3/queue shape does not reliably expose live transfer rates
+        // across download-client types — qBittorrent-specific rate fields
+        // live on the qBittorrent WebUI, not in Radarr's generic queue
+        // record. Fetching them would require a second HTTP round-trip to
+        // qBittorrent, which is out of scope for this parser.
+
         out.push_back(std::move(q));
     }
     return out;

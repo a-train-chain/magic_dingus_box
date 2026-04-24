@@ -7,6 +7,7 @@
 #include <string>
 
 #include <curl/curl.h>
+#include <json/json.h>
 
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
@@ -199,54 +200,27 @@ void MbSettingsScreen::refresh_indexers() {
         "http://localhost:9696/api/v1/indexer", header);
     if (body.empty()) return;
 
-    // Minimal hand-parse — we only need `id`, `name`, and `enable`. Keeping
-    // this off the jsoncpp path to avoid pulling the dependency into a file
-    // that already uses curl directly. The response is an array of objects;
-    // the three fields we care about are simple scalars.
-    size_t pos = 0;
-    while (true) {
-        size_t id_pos = body.find("\"id\"", pos);
-        if (id_pos == std::string::npos) break;
+    // Parse with jsoncpp (same pattern as radarr_parsers.cpp). The Prowlarr
+    // /api/v1/indexer shape is an array of indexer objects; we only need
+    // `id`, `name`, and `enable` (with `enabled` as a fallback on older
+    // Prowlarr builds).
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(body);
+    if (!Json::parseFromStream(rb, is, &root, &err) || !root.isArray()) {
+        return;
+    }
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
         ProwlarrIndexer idx;
-
-        // id
-        size_t colon = body.find(':', id_pos);
-        if (colon == std::string::npos) break;
-        idx.id = std::atoi(body.c_str() + colon + 1);
-
-        // name
-        size_t name_pos = body.find("\"name\"", id_pos);
-        if (name_pos != std::string::npos) {
-            size_t q1 = body.find('"', body.find(':', name_pos));
-            if (q1 != std::string::npos) {
-                size_t q2 = body.find('"', q1 + 1);
-                if (q2 != std::string::npos) {
-                    idx.name = body.substr(q1 + 1, q2 - q1 - 1);
-                }
-            }
+        idx.id = r.get("id", 0).asInt();
+        idx.name = r.get("name", "").asString();
+        if (r.isMember("enable")) {
+            idx.enabled = r.get("enable", false).asBool();
+        } else if (r.isMember("enabled")) {
+            idx.enabled = r.get("enabled", false).asBool();
         }
-
-        // enable (Prowlarr uses `enable`; fall back to `enabled` if absent)
-        size_t enable_pos = body.find("\"enable\"", id_pos);
-        if (enable_pos == std::string::npos) {
-            enable_pos = body.find("\"enabled\"", id_pos);
-        }
-        if (enable_pos != std::string::npos) {
-            size_t c2 = body.find(':', enable_pos);
-            if (c2 != std::string::npos) {
-                // Skip whitespace
-                size_t v = c2 + 1;
-                while (v < body.size() &&
-                       (body[v] == ' ' || body[v] == '\t')) ++v;
-                idx.enabled = (v < body.size() && body[v] == 't');
-            }
-        }
-
-        // Advance past this record. Find the next "id" that's outside the
-        // current one — cheap heuristic: skip ahead past the next
-        // top-level `}` by bumping the cursor past the enable token.
-        pos = (enable_pos != std::string::npos) ? enable_pos + 8 : id_pos + 4;
-
         if (!idx.name.empty()) indexers_.push_back(std::move(idx));
     }
 }

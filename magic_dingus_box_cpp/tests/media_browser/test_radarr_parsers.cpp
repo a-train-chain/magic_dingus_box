@@ -43,6 +43,35 @@ TEST_CASE("parse_queue: extracts 1 queue item", "[radarr][parsers]") {
     REQUIRE(items[0].state == "downloading");
     // Progress derived: (size - sizeleft) / size
     REQUIRE(items[0].progress == Catch::Approx(0.5139).margin(0.01));
+    // Live telemetry from new parser fields
+    // timeleft "00:15:30" -> 15*60 + 30 = 930 seconds
+    REQUIRE(items[0].eta_seconds == 930);
+    REQUIRE(items[0].seeds == 42);
+    REQUIRE(items[0].peers == 7);
+    // Rates intentionally not populated by Radarr's queue shape
+    REQUIRE(items[0].download_rate_bps == 0);
+    REQUIRE(items[0].upload_rate_bps == 0);
+}
+
+TEST_CASE("parse_queue: timeleft parser handles D.HH:MM:SS and bad input",
+          "[radarr][parsers]") {
+    // Direct test via a synthetic JSON blob — exercise days-prefix path
+    // and malformed input to confirm graceful fallback to 0.
+    const std::string j = R"({
+      "records": [
+        { "id": 1, "title": "days",     "timeleft": "2.03:04:05" },
+        { "id": 2, "title": "bad",      "timeleft": "not-a-time" },
+        { "id": 3, "title": "empty",    "timeleft": "" },
+        { "id": 4, "title": "missing" }
+      ]
+    })";
+    auto items = media_browser::RadarrParsers::parse_queue(j);
+    REQUIRE(items.size() == 4);
+    // 2 days + 3h + 4m + 5s = 183845
+    REQUIRE(items[0].eta_seconds == 2 * 86400 + 3 * 3600 + 4 * 60 + 5);
+    REQUIRE(items[1].eta_seconds == 0);
+    REQUIRE(items[2].eta_seconds == 0);
+    REQUIRE(items[3].eta_seconds == 0);
 }
 
 TEST_CASE("parse_quality_profiles: extracts profiles", "[radarr][parsers]") {

@@ -15,7 +15,9 @@
       "indexer": "PublicHD",
       "downloadClient": "qBittorrent",
       "estimatedCompletionTime": "2026-04-23T17:30:00Z",
-      "timeleft": "00:15:00"
+      "timeleft": "00:15:30",
+      "seeders": 42,
+      "leechers": 7
     }
   ]
 }
