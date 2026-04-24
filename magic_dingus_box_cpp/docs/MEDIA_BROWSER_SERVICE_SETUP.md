@@ -51,6 +51,60 @@ every Pi boot.
    this built-in on every fresh install; the kiosk uses it by default for
    new movie adds).
 
+## VPN setup (ProtonVPN + Gluetun)
+
+qBittorrent traffic is routed through a Gluetun VPN container with kill-switch.
+If the VPN drops, no traffic leaves the container — your real IP never leaks.
+
+### Get ProtonVPN OpenVPN credentials
+
+1. Sign up for the free tier at https://account.protonvpn.com/signup
+2. Log in to the web dashboard at https://account.protonvpn.com/account-password
+3. Scroll to **OpenVPN / IKEv2 username** — this username/password pair is
+   DIFFERENT from your account email/password. Use this pair (not your login).
+
+### Set credentials on the Pi
+
+```bash
+ssh magic@magicpi.local
+sudo -e /opt/magic_dingus_box/services/.env
+# Set these:
+#   VPN_USERNAME=your-openvpn-username
+#   VPN_PASSWORD=your-openvpn-password
+#   VPN_COUNTRIES=Netherlands   # free tier supports: Netherlands, Japan, United States
+sudo systemctl restart magic-dingus-services.service
+```
+
+### Verify VPN is up + kill-switch works
+
+```bash
+# Check IP as seen by the Internet — should be Dutch (VPN exit node),
+# NOT your home IP:
+sudo docker exec mdb_gluetun wget -qO- https://ifconfig.me
+# Expected: a Netherlands IP, e.g. 185.x.x.x
+
+# Kill-switch test: kill gluetun, verify qBittorrent can't reach the internet:
+sudo docker stop mdb_gluetun
+sudo docker exec mdb_qbittorrent wget -qO- --timeout=5 https://ifconfig.me
+# Expected: connection timeout (kill-switch blocking traffic)
+sudo docker start mdb_gluetun
+# qBittorrent automatically regains internet when Gluetun recovers.
+```
+
+### NOTE — ProtonVPN free tier P2P restriction
+
+ProtonVPN free tier **does not permit P2P / BitTorrent** traffic on its servers.
+The tunnel will come up and qBittorrent's WebUI will work, but actual
+torrent downloads will be blocked or severely throttled until you upgrade
+to a paid plan. All non-BitTorrent traffic works fine (HTTPS downloads
+from Internet Archive, etc.).
+
+### Radarr → qBittorrent hostname
+
+When adding qBittorrent as a download client in Radarr's web UI, use hostname
+**`gluetun`** (not `qbittorrent`), because qBittorrent shares Gluetun's
+network namespace. Port stays `8080`.
+
 ## Ongoing maintenance
 
 - **View logs:** `docker compose logs -f radarr` on the Pi

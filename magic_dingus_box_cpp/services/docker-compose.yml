@@ -42,9 +42,43 @@ services:
       timeout: 5s
       retries: 3
 
+  gluetun:
+    image: qmcgaw/gluetun:v3
+    container_name: mdb_gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-protonvpn}
+      - VPN_TYPE=${VPN_TYPE:-openvpn}
+      - OPENVPN_USER=${VPN_USERNAME}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD}
+      - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
+      # Allow LAN + docker inter-container traffic through firewall:
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
+      - TZ=${TZ}
+    ports:
+      # qBittorrent web UI + peer ports are exposed via Gluetun
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    volumes:
+      - ./config/gluetun:/gluetun
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "https://ifconfig.me"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:5.0.3
     container_name: mdb_qbittorrent
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
@@ -53,17 +87,10 @@ services:
     volumes:
       - ./config/qbittorrent:/config
       - ${STORAGE_ROOT}/downloads:/downloads
-    ports:
-      - "8080:8080"
-      - "6881:6881"
-      - "6881:6881/udp"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v2/app/version"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
     restart: unless-stopped
 
 # Services share the default bridge network; inter-container DNS resolves names.
-# Radarr reaches qBittorrent via http://qbittorrent:8080.
+# Radarr reaches qBittorrent via http://gluetun:8080 (qBittorrent shares
+# Gluetun's network namespace, so its WebUI is accessible at the gluetun
+# container's hostname).
 # Kiosk C++ reaches all services via localhost:<port> (host network).
