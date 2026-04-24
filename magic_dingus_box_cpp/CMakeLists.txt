@@ -94,6 +94,7 @@ set(UI_SOURCES
     src/ui/settings_menu.cpp
     src/ui/virtual_keyboard.cpp
     src/ui/qrcodegen.cpp
+    src/ui/toast.cpp
 )
 
 set(APP_SOURCES

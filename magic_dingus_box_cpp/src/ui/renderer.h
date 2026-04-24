@@ -22,6 +22,12 @@ struct AppState;
 namespace ui {
 
 class Renderer {
+    // Toast overlay needs access to private drawing helpers (draw_quad,
+    // draw_text, draw_line) and to theme_/body_font_manager_ for measuring
+    // and styling its centered panel. Kept as a friend to avoid widening
+    // the public Renderer API for a single overlay primitive.
+    friend class Toast;
+
 public:
     Renderer(uint32_t width, uint32_t height);
     ~Renderer();
