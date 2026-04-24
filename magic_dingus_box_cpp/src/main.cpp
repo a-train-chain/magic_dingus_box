@@ -31,6 +31,7 @@
 #include <unordered_map>
 #include <vector>
 #include <optional>
+#include <algorithm>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -991,10 +992,19 @@ int main(int /* argc */, char* /* argv */[]) {
         // Feed the Media Browser unlock sequence detector. Chord wins over
         // single-button events; otherwise we translate the first matching
         // GPIO/rotary press edge of this tick into a SeqInput.
+        //
+        // IMPORTANT: when the sequence detector matches an event (PROGRESS
+        // or UNLOCKED), that event is CONSUMED — removed from input_events
+        // so the normal dispatch loop below does not also fire its action.
+        // Otherwise entering the sequence would double-fire playback
+        // controls (e.g. triple BTN2 toggles play/pause three times, and
+        // the final RCLICK fires SELECT). Unmatched events (NO_MATCH)
+        // pass through normally, so random button use is unaffected.
         {
             using namespace std::chrono;
             auto seq_now = steady_clock::now();
             platform::SeqInput seq_ev = platform::SeqInput::NONE;
+            std::optional<size_t> consumed_event_idx;
 
             // Edge-detect the chord: gpio.is_chord_btn1_btn3() is a level
             // check, so feeding the detector every frame while the chord is
@@ -1005,39 +1015,68 @@ int main(int /* argc */, char* /* argv */[]) {
             bool chord_now = gpio.is_available() && gpio.is_chord_btn1_btn3();
             if (chord_now && !chord_was_active) {
                 seq_ev = platform::SeqInput::BTN1_BTN3_CHORD;
+                // For the chord case we don't track a single index; if the
+                // detector matches we'll sweep input_events and remove both
+                // PREV and NEXT press events from this frame.
             } else if (!chord_now) {
-                for (const auto& e : gpio_events) {
+                for (size_t i = 0; i < input_events.size(); ++i) {
+                    const auto& e = input_events[i];
                     if (!e.pressed) continue;
+                    platform::SeqInput mapped = platform::SeqInput::NONE;
                     switch (e.action) {
                         case platform::InputAction::PREV:
-                            seq_ev = platform::SeqInput::BTN1_PRESS;
+                            mapped = platform::SeqInput::BTN1_PRESS;
                             break;
                         case platform::InputAction::PLAY_PAUSE:
-                            seq_ev = platform::SeqInput::BTN2_PRESS;
+                            mapped = platform::SeqInput::BTN2_PRESS;
                             break;
                         case platform::InputAction::NEXT:
-                            seq_ev = platform::SeqInput::BTN3_PRESS;
+                            mapped = platform::SeqInput::BTN3_PRESS;
                             break;
                         case platform::InputAction::SETTINGS_MENU:
-                            seq_ev = platform::SeqInput::BTN4_PRESS;
+                            mapped = platform::SeqInput::BTN4_PRESS;
                             break;
                         case platform::InputAction::SELECT:
                             // Only the rotary-encoder push switch counts as
                             // ROTARY_CLICK; the A button / keyboard Enter
                             // never set this flag.
                             if (e.is_from_rotary) {
-                                seq_ev = platform::SeqInput::ROTARY_CLICK;
+                                mapped = platform::SeqInput::ROTARY_CLICK;
                             }
                             break;
                         default:
                             break;
                     }
-                    if (seq_ev != platform::SeqInput::NONE) break;
+                    if (mapped != platform::SeqInput::NONE) {
+                        seq_ev = mapped;
+                        consumed_event_idx = i;
+                        break;  // only feed one sequence input per frame
+                    }
                 }
             }
 
             if (seq_ev != platform::SeqInput::NONE) {
                 auto seq_result = seq_detector.feed(seq_ev, seq_now);
+                if (seq_result != platform::SeqResult::NO_MATCH) {
+                    // Consume the matched input so the normal dispatch loop
+                    // below does not also fire its action (prev/next,
+                    // play/pause, select, etc.).
+                    if (seq_ev == platform::SeqInput::BTN1_BTN3_CHORD) {
+                        // The chord is the combination of PREV + NEXT
+                        // presses arriving this frame; remove both.
+                        input_events.erase(
+                            std::remove_if(input_events.begin(), input_events.end(),
+                                [](const platform::InputEvent& e) {
+                                    return e.pressed &&
+                                           (e.action == platform::InputAction::PREV ||
+                                            e.action == platform::InputAction::NEXT);
+                                }),
+                            input_events.end());
+                    } else if (consumed_event_idx.has_value() &&
+                               *consumed_event_idx < input_events.size()) {
+                        input_events.erase(input_events.begin() + *consumed_event_idx);
+                    }
+                }
                 if (seq_result == platform::SeqResult::UNLOCKED) {
                     state.media_browser_unlocked = true;
                     app::SettingsPersistence::save_settings(state);
