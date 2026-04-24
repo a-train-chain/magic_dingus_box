@@ -1194,6 +1194,41 @@ int main(int /* argc */, char* /* argv */[]) {
         // below, which prevents stray Menu / DPad / Select events from
         // leaking into the main UI while the Media Browser is active.
         if (state.current_screen == app::AppScreen::MediaBrowser) {
+            // Controller-free navigation on the kiosk enclosure:
+            // synthesize vertical nav from BTN1 (yellow/PREV) and BTN3
+            // (green/NEXT) so users can reach every UI element with only
+            // the 4 hardware buttons + rotary encoder (no USB controller
+            // needed). A plugged-in controller still works — its DPad
+            // already produces ROTATE_VERTICAL natively.
+            //
+            //   BTN1 press -> ROTATE_VERTICAL delta=-1  (up)
+            //   BTN3 press -> ROTATE_VERTICAL delta=+1  (down)
+            //
+            // The original PREV/NEXT events also remain in the queue; no
+            // screen currently consumes them, but if one ever does the
+            // synth is additive, not destructive.
+            {
+                std::vector<platform::InputEvent> synth_events;
+                synth_events.reserve(input_events.size());
+                for (const auto& e : input_events) {
+                    if (!e.pressed) continue;
+                    if (e.action == platform::InputAction::PREV) {
+                        platform::InputEvent s{};
+                        s.action = platform::InputAction::ROTATE_VERTICAL;
+                        s.delta = -1;
+                        s.pressed = true;
+                        synth_events.push_back(s);
+                    } else if (e.action == platform::InputAction::NEXT) {
+                        platform::InputEvent s{};
+                        s.action = platform::InputAction::ROTATE_VERTICAL;
+                        s.delta = +1;
+                        s.pressed = true;
+                        synth_events.push_back(s);
+                    }
+                }
+                for (auto& s : synth_events) input_events.push_back(std::move(s));
+            }
+
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
                 active_mb_screen->leave();
