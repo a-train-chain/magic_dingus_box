@@ -1,22 +1,100 @@
 #pragma once
 
+#include <vector>
+
+#include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 
 namespace media_browser { class RadarrClient; }
 
 namespace media_browser::ui {
 
-// Task 17 stub. Task 22 will replace render() with the local library view
-// (downloaded movies available to watch offline).
+// Task 22: the Library screen — replaces the Task 17 stub.
+//
+// Lists every movie that's been added to Radarr (monitored or otherwise)
+// with a corner-dot state indicator so the user can see at a glance what's
+// downloaded, what's missing, and what could be upgraded.
+//
+// Layout:
+//   - Top bar (~56px): "Library" title + "(N movies)" count on the left,
+//     filter chip row on the right (All / Unwatched / Missing Upgrades /
+//     Recent). Active chip is drawn in the theme accent color; others are
+//     dimmed. The focused chip (when focus_ == FilterStrip) gets a small
+//     underline.
+//   - Main area: 4-column poster grid. Each cell has a deterministic
+//     colored-quad placeholder (like BrowseScreen), title + year below, and
+//     a colored corner dot indicating file state:
+//       * green  (highlight1):  has_file = true, quality looks like Bluray
+//                               or WEB-DL 1080p+ ("best" state)
+//       * orange (highlight3):  has_file = true but not 1080p+/Bluray —
+//                               upgrade available (approximation: filters
+//                               against a prefix match on "Bluray" / "WEBDL-1080p")
+//       * red    (highlight2):  monitored but has_file = false — no file yet
+//     The focused cell gets an accent-colored outline.
+//   - Bottom bar (~40px): "Select: Open details   LEFT/RIGHT: Filter   Menu: Back"
+//
+// Navigation:
+//   - LEFT / RIGHT (ROTATE) at top-strip level switches filter chip; in the
+//     grid it steps horizontally through cells.
+//   - UP from grid row 0 jumps focus to the filter strip.
+//   - DOWN from strip jumps focus back to grid row 0.
+//   - UP / DOWN (ROTATE_VERTICAL) inside the grid walks rows.
+//   - SELECT / ROTARY_CLICK on a grid cell stores that movie's tmdb_id and
+//     transitions to Screen::Detail (same handoff as BrowseScreen:
+//     dispatcher reads selected_tmdb_id() and forwards to DetailScreen).
+//   - SETTINGS_MENU / BTN4 returns to Screen::Browse.
 class LibraryScreen : public MbScreen {
 public:
     explicit LibraryScreen(RadarrClient& radarr);
 
+    void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
+    // tmdb_id of the poster most recently selected by the user. Consumed
+    // by the dispatcher in main.cpp to forward to DetailScreen on
+    // transition (mirrors BrowseScreen / SearchScreen).
+    int selected_tmdb_id() const { return selected_tmdb_id_; }
+
 private:
+    enum class Filter {
+        All = 0,
+        Unwatched = 1,       // MVP: alias for has_file == true (no watch tracking yet).
+        MissingUpgrades = 2, // has_file == true but quality not 1080p-class.
+        Recent = 3,          // All, sorted by added_at descending.
+    };
+    enum class Focus { FilterStrip, PosterGrid };
+
+    static constexpr int kNumFilters = 4;
+    static constexpr int kGridCols = 4;
+
+    // Categorises a library entry into the three dot-color buckets used
+    // by the grid state indicator and the MissingUpgrades filter logic.
+    enum class FileState {
+        HasGoodFile,        // green   — 1080p-class file present
+        UpgradeAvailable,   // orange  — has file but lower quality
+        MissingFile,        // red     — monitored, no file yet
+    };
+
+    void reload();                        // Pull fresh library from Radarr.
+    void rebuild_view();                  // Apply current filter + sort to library_.
+    static const char* label_for_filter(Filter f);
+    static FileState classify(const Movie& m);
+    static bool is_1080p_quality(const std::string& q);
+
     RadarrClient& radarr_;
+
+    Filter filter_ = Filter::All;
+    Focus focus_ = Focus::PosterGrid;
+    int filter_cursor_ = 0;   // Index into the top strip when Focus::FilterStrip.
+    int grid_cursor_ = 0;     // Flat index into view_ when Focus::PosterGrid.
+    int scroll_row_ = 0;      // Topmost visible row index.
+
+    std::vector<Movie> library_;          // Full library, as returned by Radarr.
+    std::vector<const Movie*> view_;      // Filter-applied, possibly-sorted view.
+    bool loaded_ = false;
+
+    int selected_tmdb_id_ = 0;
 };
 
 }  // namespace media_browser::ui

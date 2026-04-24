@@ -1179,6 +1179,8 @@ int main(int /* argc */, char* /* argv */[]) {
                         mb_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
                     } else if (current_mb_screen == media_browser::ui::Screen::Search) {
                         mb_detail.set_tmdb_id(mb_search.selected_tmdb_id());
+                    } else if (current_mb_screen == media_browser::ui::Screen::Library) {
+                        mb_detail.set_tmdb_id(mb_library.selected_tmdb_id());
                     }
                 }
                 active_mb_screen->leave();
