@@ -1,4 +1,5 @@
 #include "font_manager.h"
+#include "text_utf8.h"
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -237,8 +238,11 @@ int FontManager::get_baseline_at_size(int size) const {
 
 int FontManager::get_text_width(const std::string& text) {
     int width = 0;
-    for (char c : text) {
-        Glyph g = get_glyph(static_cast<char32_t>(c));
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        char32_t c = ::ui::decode_utf8(text, pos);
+        if (c == 0) break;
+        Glyph g = get_glyph(c);
         width += g.advance;
     }
     return width;
@@ -246,8 +250,11 @@ int FontManager::get_text_width(const std::string& text) {
 
 int FontManager::get_text_width(const std::string& text, int font_size) {
     int width = 0;
-    for (char c : text) {
-        Glyph g = get_glyph_at_size(static_cast<char32_t>(c), font_size);
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        char32_t c = ::ui::decode_utf8(text, pos);
+        if (c == 0) break;
+        Glyph g = get_glyph_at_size(c, font_size);
         width += g.advance;
     }
     return width;

@@ -8,6 +8,7 @@
 #include "settings_menu.h"
 #include "virtual_keyboard.h" // Added for virtual keyboard rendering
 #include "qrcodegen.hpp" // QR code generation
+#include "text_utf8.h"
 #include "../app/app_state.h"
 #include "../app/playlist_loader.h"
 #include "../app/settings_persistence.h" // For getting config if needed
@@ -802,24 +803,28 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
     // All glyphs will be aligned to this common baseline
     float baseline_y = y;
     
-    for (char c : text) {
-        if (c == '\n') {
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        char32_t c = ::ui::decode_utf8(text, pos);
+        if (c == 0) break;
+
+        if (c == U'\n') {
             // Calculate line height for this font size
             int line_height = static_cast<int>(font_size * 1.2f);  // Approximate line height
             baseline_y += line_height;
             current_x = x;
             continue;
         }
-        
+
         // Skip spaces - they don't need to be rendered, just advance
-        if (c == ' ') {
+        if (c == U' ') {
             // Get the space glyph just for its advance width
-            ui::Glyph space_glyph = font_manager->get_glyph_at_size(static_cast<char32_t>(' '), font_size);
+            ui::Glyph space_glyph = font_manager->get_glyph_at_size(U' ', font_size);
             current_x += space_glyph.advance;
             continue;
         }
-        
-        ui::Glyph glyph = font_manager->get_glyph_at_size(static_cast<char32_t>(c), font_size);
+
+        ui::Glyph glyph = font_manager->get_glyph_at_size(c, font_size);
         if (glyph.texture_id == 0) {
             // Glyph not available, just advance
             current_x += glyph.advance;
