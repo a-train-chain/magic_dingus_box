@@ -1,0 +1,21 @@
+{
+  "page": 1,
+  "pageSize": 20,
+  "totalRecords": 1,
+  "records": [
+    {
+      "id": 42,
+      "movieId": 5,
+      "title": "Sita Sings the Blues (2008)",
+      "size": 1234567890,
+      "sizeleft": 600000000,
+      "status": "downloading",
+      "trackedDownloadState": "downloading",
+      "protocol": "torrent",
+      "indexer": "PublicHD",
+      "downloadClient": "qBittorrent",
+      "estimatedCompletionTime": "2026-04-23T17:30:00Z",
+      "timeleft": "00:15:00"
+    }
+  ]
+}
