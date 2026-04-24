@@ -426,24 +426,46 @@ int main(int /* argc */, char* /* argv */[]) {
 
     // Task 17: screen dispatcher for the Media Browser.
     //
-    // Radarr client is the real HTTP client when MDB_RADARR_API_KEY is set
-    // in the environment (set by the Media-Browser setup script / systemd
-    // unit). Otherwise we fall back to RadarrMockClient so the stub UI
-    // still works on dev machines without a Radarr instance.
+    // Radarr client is the real HTTP client when we can find an API key:
+    //   1. MDB_RADARR_API_KEY env var (preferred — explicit kiosk config)
+    //   2. RADARR_API_KEY env var (systemd EnvironmentFile of services/.env)
+    //   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
+    //      for when systemd env propagation isn't set up)
+    // Otherwise we fall back to RadarrMockClient for dev machines.
+    auto read_env_file_key = [](const std::string& path, const std::string& key) -> std::string {
+        std::ifstream f(path);
+        if (!f) return "";
+        std::string line;
+        const std::string prefix = key + "=";
+        while (std::getline(f, line)) {
+            if (line.rfind(prefix, 0) == 0) {
+                std::string v = line.substr(prefix.size());
+                while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) v.pop_back();
+                return v;
+            }
+        }
+        return "";
+    };
+
     std::unique_ptr<media_browser::RadarrClient> radarr_owned;
-    if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) {
+    std::string radarr_key;
+    if (const char* rk = std::getenv("MDB_RADARR_API_KEY"); rk && *rk) radarr_key = rk;
+    else if (const char* rk2 = std::getenv("RADARR_API_KEY"); rk2 && *rk2) radarr_key = rk2;
+    else radarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "RADARR_API_KEY");
+
+    if (!radarr_key.empty()) {
         media_browser::RadarrClient::Config radarr_cfg;
         if (const char* base = std::getenv("MDB_RADARR_BASE_URL"); base && *base) {
             radarr_cfg.base_url = base;
         }
-        radarr_cfg.api_key = rk;
+        radarr_cfg.api_key = radarr_key;
         std::string base_url_for_log = radarr_cfg.base_url;
         radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
         std::cout << "[media_browser] Using real RadarrClient (base_url="
                   << base_url_for_log << ")" << std::endl;
     } else {
         radarr_owned = std::make_unique<media_browser::RadarrMockClient>();
-        std::cout << "[media_browser] No MDB_RADARR_API_KEY set — using RadarrMockClient" << std::endl;
+        std::cout << "[media_browser] No Radarr API key found — using RadarrMockClient" << std::endl;
     }
     media_browser::RadarrClient& radarr = *radarr_owned;
 
