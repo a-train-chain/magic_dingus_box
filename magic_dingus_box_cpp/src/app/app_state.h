@@ -27,6 +27,17 @@ enum class AudioOutput {
     HEADPHONE   // 3.5mm headphone jack (amixer numid=3 value 1)
 };
 
+// Top-level screen/view the app is currently showing. Historically the
+// kiosk has had a single main screen (playlist list + settings overlay);
+// the Media Browser V2 feature introduces a separate full-screen view
+// unlocked by a secret sequence. Task 17+ will add real screens (search,
+// library, queue); for now we just need a way to route the main render
+// dispatch between the default view and a placeholder.
+enum class AppScreen {
+    MainMenu,      // Default playlist + settings overlay view
+    MediaBrowser   // V2 — unlocked via secret sequence (placeholder until Task 17)
+};
+
 // Bezel info structure
 struct BezelInfo {
     std::string id;
@@ -185,6 +196,10 @@ public:
 
     // Media Browser feature (unlocked via secret sequence)
     bool media_browser_unlocked = false;
+
+    // Active top-level screen. Only meaningful when media_browser_unlocked
+    // is true; otherwise always MainMenu.
+    AppScreen current_screen = AppScreen::MainMenu;
 
     // Seek bar overlay state (only visible while actively seeking via rotary encoder)
     bool show_seek_bar = false;

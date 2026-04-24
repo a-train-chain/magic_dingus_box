@@ -199,6 +199,24 @@ void SettingsMenuManager::open() {
         current_game_playlist_index_ = 0;
         selected_game_in_playlist_ = 0;
         game_browser_selected_ = 0;
+
+#ifdef MEDIA_BROWSER_ENABLED
+        // Rebuild main menu so the Movies row appears/disappears based on
+        // the current unlock state. Other menu rows are identical to the
+        // constructor list.
+        menu_items_ = {
+            MenuItem("Video Games", MenuSection::VIDEO_GAMES, "Emulated games"),
+            MenuItem("Display", MenuSection::DISPLAY, "Screen settings"),
+            MenuItem("Audio", MenuSection::AUDIO, "Volume"),
+            MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
+            MenuItem("System", MenuSection::SYSTEM, "Settings"),
+            MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
+        };
+        if (app_state_ && app_state_->media_browser_unlocked) {
+            menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+        }
+        menu_items_.emplace_back("Back", MenuSection::BACK);
+#endif
     }
 }
 

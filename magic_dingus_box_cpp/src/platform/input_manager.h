@@ -32,6 +32,12 @@ struct InputEvent {
     int delta;  // For ROTATE: -1 or +1
     bool pressed;  // For buttons: true on press, false on release
     float velocity = 0.0f;  // For ROTATE: 0.0 = slowest, 1.0 = fastest
+    // True when the SELECT event was produced by the rotary-encoder push
+    // switch (as opposed to the controller A button / keyboard Enter).
+    // Used by the Media Browser unlock sequence detector to distinguish
+    // ROTARY_CLICK from regular SELECT — set only by GpioManager for the
+    // encoder switch, default false for all other sources.
+    bool is_from_rotary = false;
 };
 
 class InputManager {

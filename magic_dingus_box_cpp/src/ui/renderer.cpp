@@ -1486,6 +1486,35 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     glBindVertexArray(0);
 }
 
+#ifdef MEDIA_BROWSER_ENABLED
+void Renderer::render_media_browser_placeholder() {
+    // Solid near-black background covering the full screen.
+    draw_quad(0.0f, 0.0f,
+              static_cast<float>(width_), static_cast<float>(height_),
+              ui::Color(0, 0, 0, 240));
+
+    if (!body_font_manager_) return;
+
+    // Title line
+    const std::string title_text = "Movies - Media Browser";
+    int title_size = theme_->font_large_size;
+    float title_w = body_font_manager_->get_text_width(title_text, title_size);
+    float title_baseline = body_font_manager_->get_baseline_at_size(title_size);
+    float title_x = (static_cast<float>(width_) - title_w) / 2.0f;
+    float title_y = (static_cast<float>(height_) / 2.0f) - (title_size / 2.0f) + title_baseline;
+    draw_text(title_text, title_x, title_y, title_size, theme_->accent, false, 1.0f);
+
+    // Hint line below
+    const std::string hint_text = "[Menu to return]";
+    int hint_size = theme_->font_small_size;
+    float hint_w = body_font_manager_->get_text_width(hint_text, hint_size);
+    float hint_baseline = body_font_manager_->get_baseline_at_size(hint_size);
+    float hint_x = (static_cast<float>(width_) - hint_w) / 2.0f;
+    float hint_y = title_y + static_cast<float>(title_size) + hint_baseline;
+    draw_text(hint_text, hint_x, hint_y, hint_size, theme_->fg, false, 0.8f);
+}
+#endif
+
 void Renderer::render_footer(const app::AppState& state, float text_alpha, bool video_active, bool ui_visible_when_playing) {
     // Footer baseline position (bottom-right, MTV-style)
     // Position baseline so text appears at height - 60

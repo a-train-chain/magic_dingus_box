@@ -45,6 +45,14 @@ public:
     
     // Render loading overlay
     void render_loading_overlay(const app::AppState& state);
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // Placeholder full-screen overlay for the Media Browser screen. Replaced
+    // by real screens (search / library / queue) in Task 17+. Draws a dark
+    // background with centered "Movies — Media Browser" text + a hint to
+    // press the Menu button to return to the main UI.
+    void render_media_browser_placeholder();
+#endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)
     // scanlines_enabled: if true, scanlines are rendered (based on settings), otherwise forced off

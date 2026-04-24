@@ -82,6 +82,13 @@ set(PLATFORM_SOURCES
     src/platform/gpio_manager.cpp
 )
 
+# Media Browser unlock sequence detector — compiled into the kiosk binary
+# when ENABLE_MEDIA_BROWSER is on (also linked into test_media_browser_unit
+# via MEDIA_BROWSER_SOURCES further down).
+if(ENABLE_MEDIA_BROWSER)
+    list(APPEND PLATFORM_SOURCES src/platform/sequence_detector.cpp)
+endif()
+
 set(VIDEO_SOURCES
     src/video/gst_player.cpp
     src/video/gst_renderer.cpp

@@ -35,7 +35,8 @@ enum class MenuSection {
     CYCLE_PHOSPHOR_MASK,
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
-    DOWNLOAD_CORES
+    DOWNLOAD_CORES,
+    MEDIA_BROWSER   // Opens Media Browser screen (only shown when unlocked via secret sequence)
 };
 
 struct MenuItem {

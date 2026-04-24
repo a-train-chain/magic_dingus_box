@@ -7,6 +7,10 @@
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
+#ifdef MEDIA_BROWSER_ENABLED
+#include "ui/toast.h"
+#include "platform/sequence_detector.h"
+#endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
@@ -404,6 +408,13 @@ int main(int /* argc */, char* /* argv */[]) {
     // Initialize settings menu
     ui::SettingsMenuManager settings_menu(&state);
     state.settings_menu = &settings_menu;
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // Media Browser secret-unlock sequence detector. Fed each frame from
+    // GPIO events; fires Toast + sets state.media_browser_unlocked when
+    // the full chord → BTN2 × 3 → rotary-click sequence is entered.
+    platform::SequenceDetector seq_detector;
+#endif
     
     // Try to load intro video at startup
     // Look for intro video in common locations (prefer .30fps version)
@@ -968,13 +979,69 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Poll input
         auto input_events = input.poll();
-        
+
         // Poll GPIO (buttons, encoder) and merge with controller/keyboard events
+        std::vector<platform::InputEvent> gpio_events;
         if (gpio.is_available()) {
-            auto gpio_events = gpio.poll();
+            gpio_events = gpio.poll();
             input_events.insert(input_events.end(), gpio_events.begin(), gpio_events.end());
         }
-        
+
+#ifdef MEDIA_BROWSER_ENABLED
+        // Feed the Media Browser unlock sequence detector. Chord wins over
+        // single-button events; otherwise we translate the first matching
+        // GPIO/rotary press edge of this tick into a SeqInput.
+        {
+            using namespace std::chrono;
+            auto seq_now = steady_clock::now();
+            platform::SeqInput seq_ev = platform::SeqInput::NONE;
+
+            if (gpio.is_available() && gpio.is_chord_btn1_btn3()) {
+                seq_ev = platform::SeqInput::BTN1_BTN3_CHORD;
+            } else {
+                for (const auto& e : gpio_events) {
+                    if (!e.pressed) continue;
+                    switch (e.action) {
+                        case platform::InputAction::PREV:
+                            seq_ev = platform::SeqInput::BTN1_PRESS;
+                            break;
+                        case platform::InputAction::PLAY_PAUSE:
+                            seq_ev = platform::SeqInput::BTN2_PRESS;
+                            break;
+                        case platform::InputAction::NEXT:
+                            seq_ev = platform::SeqInput::BTN3_PRESS;
+                            break;
+                        case platform::InputAction::SETTINGS_MENU:
+                            seq_ev = platform::SeqInput::BTN4_PRESS;
+                            break;
+                        case platform::InputAction::SELECT:
+                            // Only the rotary-encoder push switch counts as
+                            // ROTARY_CLICK; the A button / keyboard Enter
+                            // never set this flag.
+                            if (e.is_from_rotary) {
+                                seq_ev = platform::SeqInput::ROTARY_CLICK;
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                    if (seq_ev != platform::SeqInput::NONE) break;
+                }
+            }
+
+            if (seq_ev != platform::SeqInput::NONE) {
+                auto seq_result = seq_detector.feed(seq_ev, seq_now);
+                if (seq_result == platform::SeqResult::UNLOCKED) {
+                    state.media_browser_unlocked = true;
+                    app::SettingsPersistence::save_settings(state);
+                    ui::Toast::show("Movie section unlocked");
+                    LOG_INFO("Media Browser: secret sequence matched, feature unlocked");
+                }
+            }
+        }
+#endif
+
+
         // Track Menu button state for volume control
         struct MenuHoldState {
             bool button_held = false;
@@ -993,6 +1060,17 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         
         for (const auto& ev : input_events) {
+#ifdef MEDIA_BROWSER_ENABLED
+            // Media Browser placeholder screen: consume all input until
+            // the user presses Menu (SETTINGS_MENU / BTN4) to return to
+            // the main screen. Replaced by full input handling in Task 17+.
+            if (state.current_screen == app::AppScreen::MediaBrowser) {
+                if (ev.action == InputAction::SETTINGS_MENU && ev.pressed) {
+                    state.current_screen = app::AppScreen::MainMenu;
+                }
+                continue;
+            }
+#endif
             // Handle Menu button hold logic
             if (ev.action == InputAction::SETTINGS_MENU) {
                 if (ev.pressed) {
@@ -1263,6 +1341,14 @@ int main(int /* argc */, char* /* argv */[]) {
                         } else if (section == ui::MenuSection::BROWSE_GAMES) {
                             // Enter game browser
                             settings_menu.enter_game_browser();
+#ifdef MEDIA_BROWSER_ENABLED
+                        } else if (section == ui::MenuSection::MEDIA_BROWSER) {
+                            // Close settings menu and transition to the
+                            // Media Browser screen (placeholder until
+                            // Task 17+ wires the real UI).
+                            settings_menu.close();
+                            state.current_screen = app::AppScreen::MediaBrowser;
+#endif
                         } else if (section == ui::MenuSection::BACK) {
                             if (settings_menu.get_current_submenu() != ui::MenuSection::BACK) {
                                 settings_menu.exit_submenu();
@@ -1932,6 +2018,22 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
+#ifdef MEDIA_BROWSER_ENABLED
+        // Media Browser placeholder screen: render a full-screen overlay
+        // when the user has transitioned to the Movies screen. Replaced in
+        // Task 17+ with real search/library/queue UI.
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
+            glViewport(0, 0, mode.width, mode.height);
+            ui_renderer.render_media_browser_placeholder();
+        }
+
+        // Render Media Browser toast overlay (fades in/out over 3s). Drawn
+        // last-in-UI so it sits above bezel and CRT effects. No-op when
+        // no toast is active.
+        glViewport(0, 0, mode.width, mode.height);
+        ui::Toast::render(ui_renderer, mode.width, mode.height);
+#endif
+
         // Swap EGL buffers
         if (!egl.swap_buffers()) {
             std::cerr << "Failed to swap buffers!" << std::endl;

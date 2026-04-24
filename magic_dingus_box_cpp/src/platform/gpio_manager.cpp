@@ -236,11 +236,14 @@ std::vector<InputEvent> GpioManager::poll() {
                 ev.action = InputAction::SELECT;
                 ev.delta = 0;
                 ev.pressed = pressed;
+                // Mark as rotary-origin so the Media Browser sequence
+                // detector can distinguish ROTARY_CLICK from a plain SELECT.
+                ev.is_from_rotary = true;
                 events.push_back(ev);
             }
         }
     }
-    
+
     // ----- Illuminated Buttons -----
     const InputAction button_actions[] = {
         InputAction::PREV,          // Button 1 - Yellow
