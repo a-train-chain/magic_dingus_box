@@ -183,6 +183,9 @@ public:
     int master_volume = 100; // 0-100%
     bool show_volume_slider = false;
 
+    // Media Browser feature (unlocked via secret sequence)
+    bool media_browser_unlocked = false;
+
     // Seek bar overlay state (only visible while actively seeking via rotary encoder)
     bool show_seek_bar = false;
     double seek_bar_timer = 0.0;  // Countdown timer - bar hides when this reaches 0

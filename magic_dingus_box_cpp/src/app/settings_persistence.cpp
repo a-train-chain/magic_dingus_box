@@ -50,6 +50,7 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     playback["playlist_loop"] = state.playlist_loop;
     playback["shuffle"] = state.shuffle;
     playback["master_volume"] = state.master_volume;
+    playback["media_browser_unlocked"] = state.media_browser_unlocked;
     root["playback"] = playback;
 
     // Audio settings
@@ -147,6 +148,7 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
 
         state.playlist_loop = playback.get("playlist_loop", true).asBool();
         state.shuffle = playback.get("shuffle", false).asBool();
+        state.media_browser_unlocked = playback.get("media_browser_unlocked", false).asBool();
 
         int volume = playback.get("master_volume", config::audio::DEFAULT_VOLUME).asInt();
         // Clamp volume to valid range
