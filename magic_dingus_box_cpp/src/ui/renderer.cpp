@@ -1540,6 +1540,48 @@ void Renderer::render_media_browser_screen_stub(const std::string& label) {
     float hint_y = title_y + static_cast<float>(title_size) + hint_baseline;
     draw_text(hint_text, hint_x, hint_y, hint_size, theme_->fg, false, 0.8f);
 }
+
+// ---- Task 18 public drawing primitives for Media Browser screens ----
+
+void Renderer::mb_fill_background() {
+    draw_quad(0.0f, 0.0f,
+              static_cast<float>(width_), static_cast<float>(height_),
+              ui::Color(0, 0, 0, 240));
+}
+
+void Renderer::mb_fill_rect(float x, float y, float w, float h,
+                            const ui::Color& color, float alpha_multiplier) {
+    draw_quad(x, y, w, h, color, alpha_multiplier);
+}
+
+void Renderer::mb_stroke_rect(float x, float y, float w, float h, float thickness,
+                              const ui::Color& color, float alpha_multiplier) {
+    // Top
+    draw_quad(x, y, w, thickness, color, alpha_multiplier);
+    // Bottom
+    draw_quad(x, y + h - thickness, w, thickness, color, alpha_multiplier);
+    // Left
+    draw_quad(x, y, thickness, h, color, alpha_multiplier);
+    // Right
+    draw_quad(x + w - thickness, y, thickness, h, color, alpha_multiplier);
+}
+
+void Renderer::mb_draw_text(const std::string& text, float x, float baseline_y,
+                            int font_size, const ui::Color& color,
+                            float alpha_multiplier) {
+    if (!body_font_manager_) return;
+    draw_text(text, x, baseline_y, font_size, color, false, alpha_multiplier);
+}
+
+int Renderer::mb_text_width(const std::string& text, int font_size) {
+    if (!body_font_manager_) return 0;
+    return body_font_manager_->get_text_width(text, font_size);
+}
+
+int Renderer::mb_text_baseline(int font_size) {
+    if (!body_font_manager_) return font_size;
+    return body_font_manager_->get_baseline_at_size(font_size);
+}
 #endif
 
 void Renderer::render_footer(const app::AppState& state, float text_alpha, bool video_active, bool ui_visible_when_playing) {

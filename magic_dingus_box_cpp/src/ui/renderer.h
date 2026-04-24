@@ -58,6 +58,23 @@ public:
     // Used by the stub MbScreen implementations until Tasks 18-23 replace
     // each screen's render() with real UI.
     void render_media_browser_screen_stub(const std::string& label);
+
+    // Task 18: minimal public drawing primitives that Media Browser screens
+    // use to compose their own layouts (poster grids, category strips,
+    // outlines, etc.). These are thin wrappers over the private draw_*
+    // helpers, intentionally kept scoped to MEDIA_BROWSER_ENABLED so the
+    // rest of the renderer API stays unchanged.
+    void mb_fill_background();                           // Full-screen dark overlay
+    void mb_fill_rect(float x, float y, float w, float h,
+                      const ui::Color& color, float alpha_multiplier = 1.0f);
+    void mb_stroke_rect(float x, float y, float w, float h, float thickness,
+                        const ui::Color& color, float alpha_multiplier = 1.0f);
+    void mb_draw_text(const std::string& text, float x, float baseline_y,
+                      int font_size, const ui::Color& color,
+                      float alpha_multiplier = 1.0f);
+    int  mb_text_width(const std::string& text, int font_size);
+    int  mb_text_baseline(int font_size);
+    const ui::Theme& mb_theme() const { return *theme_; }
 #endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)
