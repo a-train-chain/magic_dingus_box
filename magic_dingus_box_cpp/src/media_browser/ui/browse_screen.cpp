@@ -53,6 +53,11 @@ BrowseScreen::BrowseScreen(RadarrClient& radarr) : radarr_(radarr) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
+    // Health-check Radarr on entry so we can surface a banner when the
+    // service isn't answering. Cheap — hits /api/v3/system/status. This
+    // also lets the user know why the grid is empty if services are
+    // still coming up after boot.
+    services_ok_ = radarr_.is_reachable();
     if (!loaded_) {
         load_category(category_);
         loaded_ = true;
@@ -100,7 +105,9 @@ void BrowseScreen::load_category(Category cat) {
     if (is_nav_chip(cat)) return;
     const char* query = query_for_category(cat);
     if (!query || !*query) return;
+    loading_ = true;
     movies_ = radarr_.lookup(query);
+    loading_ = false;
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {
@@ -285,8 +292,29 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_rect(0.0f, kCategoryStripHeight - 1.0f,
                    static_cast<float>(screen_w), 1.0f, th.dim, 0.6f);
 
+    // --- Services-offline banner -------------------------------------
+    // Drawn just below the category strip, NOT blocking the grid render
+    // below — the user can still navigate the (empty) grid; the banner
+    // just tells them why data is absent.
+    float banner_h = 0.0f;
+    if (!services_ok_) {
+        constexpr float kOfflineBannerH = 32.0f;
+        float by = kCategoryStripHeight;
+        r.mb_fill_rect(0.0f, by, static_cast<float>(screen_w),
+                       kOfflineBannerH, th.highlight2, 0.85f);
+        const std::string msg = "Radarr service offline — check `docker ps` on Pi";
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        int tw = r.mb_text_width(msg, sz);
+        float tx = (static_cast<float>(screen_w) - static_cast<float>(tw)) / 2.0f;
+        float ty = by + (kOfflineBannerH / 2.0f) - (sz / 2.0f)
+                 + static_cast<float>(baseline);
+        r.mb_draw_text(msg, tx, ty, sz, th.fg, 1.0f);
+        banner_h = kOfflineBannerH;
+    }
+
     // --- Poster grid --------------------------------------------------
-    float grid_top    = kCategoryStripHeight + kGridPaddingTop;
+    float grid_top    = kCategoryStripHeight + banner_h + kGridPaddingTop;
     float grid_bottom = static_cast<float>(screen_h) - kBottomBarHeight;
     float grid_h      = grid_bottom - grid_top;
 
@@ -309,14 +337,25 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Empty-state message. Nav chips never become the active category_
     // (they just transition to another Screen), so this only fires for
     // content categories that returned zero results from Radarr.
+    // If the category fetch hasn't completed yet, show "Loading..." —
+    // lookup is synchronous so this is only visible for a fraction of a
+    // second locally, but on slow networks (or while Radarr is warming
+    // up after boot) the feedback matters.
     if (movies_.empty()) {
-        const std::string msg = "No results for this category";
+        std::string msg;
         int msg_size = th.font_large_size;
+        ::ui::Color msg_color = th.dim;
+        if (loading_) {
+            msg = "Loading...";
+        } else {
+            msg = "Nothing here yet. Configure indexers via SSH tunnel: "
+                  "ssh -L 9696:localhost:9696 magic@magicpi.local";
+        }
         int msg_w = r.mb_text_width(msg, msg_size);
         float msg_x = (static_cast<float>(screen_w) - static_cast<float>(msg_w)) / 2.0f;
         float msg_y = grid_top + grid_h / 2.0f
                     + static_cast<float>(r.mb_text_baseline(msg_size));
-        r.mb_draw_text(msg, msg_x, msg_y, msg_size, th.dim, 0.9f);
+        r.mb_draw_text(msg, msg_x, msg_y, msg_size, msg_color, 0.9f);
     }
 
     // Compute column spacing so the grid spans the interior evenly.

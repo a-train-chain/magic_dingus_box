@@ -298,9 +298,21 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             std::string msg = "Queue is empty — no active downloads";
             int mw = r.mb_text_width(msg, sz);
             float mx = (w - static_cast<float>(mw)) / 2.0f;
+            // Lift the primary message slightly so the hint line fits
+            // beneath it without crowding.
             float my = list_top + list_h / 2.0f
+                     - static_cast<float>(sz) * 0.6f
                      + static_cast<float>(r.mb_text_baseline(sz));
             r.mb_draw_text(msg, mx, my, sz, th.dim, 0.9f);
+
+            // Second line — tells the user how to populate the queue.
+            int sz2 = th.font_medium_size;
+            std::string hint = "Add a movie from Browse or Search to start a download.";
+            int hw = r.mb_text_width(hint, sz2);
+            float hx = (w - static_cast<float>(hw)) / 2.0f;
+            float hy = my + static_cast<float>(sz) * 0.9f
+                     + static_cast<float>(r.mb_text_baseline(sz2));
+            r.mb_draw_text(hint, hx, hy, sz2, th.dim, 0.8f);
         }
     } else {
         // Clamp scroll so the cursor stays visible.

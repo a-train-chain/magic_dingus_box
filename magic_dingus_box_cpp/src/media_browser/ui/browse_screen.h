@@ -94,6 +94,15 @@ private:
 
     std::vector<MovieSearchHit> movies_;
     bool loaded_ = false;
+    // True while load_category() is in-flight (the Radarr lookup call is
+    // synchronous today, but this flag lets render() show "Loading..." in
+    // the grid area until the very first fetch completes — important on
+    // slow networks or during Radarr warmup at boot).
+    bool loading_ = false;
+    // Snapshot of radarr_.is_reachable() at enter() time. Drives the
+    // "Radarr service offline" banner. Defaults to true so the banner
+    // stays hidden on first render before enter() has run.
+    bool services_ok_ = true;
 
     int selected_tmdb_id_ = 0;
     // Set when handle_input() wants the dispatcher to transition to Search

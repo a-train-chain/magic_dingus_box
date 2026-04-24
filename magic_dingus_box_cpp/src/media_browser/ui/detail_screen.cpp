@@ -9,6 +9,7 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
+#include "ui/toast.h"
 
 namespace media_browser::ui {
 
@@ -316,13 +317,19 @@ Screen DetailScreen::do_add_to_library() {
     }
     bool ok = radarr_.add_movie(tmdb_id_, qp, /*monitor=*/true);
     if (!ok) {
-        show_banner("Add failed");
+        // Keep the in-screen banner and also surface a top-level toast so
+        // the failure is visible outside the action button row context.
+        show_banner("Add failed — see Radarr logs");
+        ::ui::Toast::show("Add failed — see Radarr logs");
         return Screen::Detail;
     }
-    show_banner("Added to library");
-    // Refresh so the button row flips to [Search Again] [Remove] immediately.
+    // Success: pop a toast confirming the action, refresh the library
+    // cache (so Detail shows the new record if the user comes back), and
+    // jump to the Queue screen so they see the download start populating
+    // in real time.
+    ::ui::Toast::show("Added to library — downloading");
     fetch();
-    return Screen::Detail;
+    return Screen::Queue;
 }
 
 Screen DetailScreen::do_search_again() {

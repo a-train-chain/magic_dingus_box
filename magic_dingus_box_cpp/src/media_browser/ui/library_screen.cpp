@@ -381,11 +381,15 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    : (static_cast<int>(view_.size()) - 1) / kGridCols + 1;
     int end_row = std::min(total_rows, scroll_row_ + visible_rows);
 
-    // Empty-state message
+    // Empty-state message. When the library is genuinely empty AND the
+    // filter is "All" (so the user hasn't just filtered everything out),
+    // use the welcoming copy that points them at Browse.
     if (view_.empty()) {
         std::string msg;
         if (!loaded_) {
             msg = "Loading library...";
+        } else if (library_.empty() && filter_ == Filter::All) {
+            msg = "Your library is empty. Add movies from Browse to build it.";
         } else if (library_.empty()) {
             msg = "No movies in library yet — add some from Browse";
         } else {
