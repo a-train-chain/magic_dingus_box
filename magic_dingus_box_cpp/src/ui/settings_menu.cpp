@@ -200,24 +200,11 @@ void SettingsMenuManager::open() {
         selected_game_in_playlist_ = 0;
         game_browser_selected_ = 0;
 
-#ifdef MEDIA_BROWSER_ENABLED
-        // Rebuild main menu so the Movies row appears/disappears based on
-        // the current unlock state. Other menu rows are identical to the
-        // constructor list.
-        menu_items_ = {
-            MenuItem("Video Games", MenuSection::VIDEO_GAMES, "Emulated games"),
-            MenuItem("Display", MenuSection::DISPLAY, "Screen settings"),
-            MenuItem("Audio", MenuSection::AUDIO, "Volume"),
-            MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
-            MenuItem("System", MenuSection::SYSTEM, "Settings"),
-            MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
-        };
-        if (app_state_ && app_state_->media_browser_unlocked) {
-            menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
-            menu_items_.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
-        }
-        menu_items_.emplace_back("Back", MenuSection::BACK);
-#endif
+        // NOTE: Top-level menu contents match the constructor's initialization.
+        // Media Browser rows ("Movies" / "Hide Movies feature") are injected
+        // into the System submenu by build_system_submenu() instead, so the
+        // unlock state is re-evaluated every time the user enters that
+        // submenu (enter_submenu() rebuilds submenu_items_ on each entry).
     }
 }
 
@@ -443,24 +430,37 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
 
     std::string loop_status = app_state_->playlist_loop ? "ON" : "OFF";
     std::string shuffle_status = app_state_->shuffle ? "ON" : "OFF";
-    
-    return {
-        MenuItem("Playlist Loop: " + loop_status, 
+
+    std::vector<MenuItem> items = {
+        MenuItem("Playlist Loop: " + loop_status,
                  MenuSection::TOGGLE_PLAYLIST_LOOP, "Auto-restart",
-                 [&]() { 
-                     app_state_->playlist_loop = !app_state_->playlist_loop; 
+                 [&]() {
+                     app_state_->playlist_loop = !app_state_->playlist_loop;
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-        MenuItem("Shuffle: " + shuffle_status, 
+        MenuItem("Shuffle: " + shuffle_status,
                  MenuSection::TOGGLE_SHUFFLE, "Random order",
-                 [&]() { 
-                     app_state_->shuffle = !app_state_->shuffle; 
+                 [&]() {
+                     app_state_->shuffle = !app_state_->shuffle;
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-        MenuItem("Back", MenuSection::BACK)
     };
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // Inject Media Browser rows conditionally. This submenu is rebuilt on
+    // every enter_submenu(SYSTEM) call, so the unlock state is re-evaluated
+    // each time the user navigates in — picking up changes made elsewhere
+    // (e.g. HIDE_MEDIA_BROWSER selection, or fresh unlock via secret seq).
+    if (app_state_->media_browser_unlocked) {
+        items.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+        items.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
+    }
+#endif
+
+    items.emplace_back("Back", MenuSection::BACK);
+    return items;
 }
 
 // Helper to check interface status
