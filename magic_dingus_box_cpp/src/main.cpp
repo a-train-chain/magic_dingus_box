@@ -319,6 +319,23 @@ int main(int /* argc */, char* /* argv */[]) {
         }
     }
     
+#ifdef MEDIA_BROWSER_ENABLED
+    // Media Browser V2: append a synthetic "Movies" playlist populated from
+    // the Radarr download root (/mnt/ssd/library/Movies). Only add it if at
+    // least one movie has been downloaded — an empty "Movies" row would
+    // confuse users on a fresh install before any content lands.
+    {
+        Playlist movies_pl = PlaylistLoader::load_movies_library();
+        if (!movies_pl.items.empty()) {
+            LOG_INFO("Media Browser: loaded {} movies from library",
+                     movies_pl.items.size());
+            video_playlists.push_back(movies_pl);
+        } else {
+            LOG_INFO("Media Browser: no movies found in library (yet)");
+        }
+    }
+#endif
+
     // Insert "Master Shuffle" playlist at the beginning
     Playlist master_shuffle;
     master_shuffle.title = "Master Shuffle";
