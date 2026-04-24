@@ -12,9 +12,15 @@ namespace media_browser::ui {
 // Task 18: the Browse screen. Landing UI for the Movies feature.
 //
 // Layout:
-//   - Top strip (~72px): 5 category labels (Popular, Now Playing, Top
-//     Rated, Discover, Search). Active category is drawn in the theme
-//     accent color; others are dimmed.
+//   - Top strip (~72px): 8 chips split into two groups.
+//       - Content chips (4): Popular, Now Playing, Top Rated, Discover.
+//         Activating one reloads the poster grid. Active chip is drawn
+//         in the theme accent color; inactive content chips are dim.
+//       - A thin vertical divider separates the groups.
+//       - Nav chips (4): Search, Library, Queue, Settings. Activating
+//         any of them transitions to the corresponding Screen instead of
+//         reloading the grid. Nav chips are rendered in action/accent2
+//         color when unfocused to set them apart from content chips.
 //   - Main area: 4-column poster grid. Each cell has a colored-quad
 //     placeholder (a per-tmdb_id deterministic tint) + title + year. The
 //     focused cell gets an accent-colored outline.
@@ -26,9 +32,9 @@ namespace media_browser::ui {
 //   - DPad / ROTATE left/right: step through the grid (wraps to previous /
 //     next row) or through the category labels when the strip has focus.
 //   - SELECT (A button / rotary click): activate the focused item —
-//     categories switch the loaded list (Search category transitions to
-//     Screen::Search); posters remember the tmdb_id and transition to
-//     Screen::Detail.
+//     content chips switch the loaded list; nav chips transition to the
+//     corresponding Screen (Search / Library / Queue / MovieSettings);
+//     posters remember the tmdb_id and transition to Screen::Detail.
 //   - SETTINGS_MENU (BTN4 / Menu): return to the kiosk main menu.
 //
 // Category -> Radarr mapping:
@@ -50,17 +56,29 @@ public:
     int selected_tmdb_id() const { return selected_tmdb_id_; }
 
 private:
+    // The top strip has two groups of chips laid out left-to-right:
+    // content chips [0..kNumContentCategories) and nav chips
+    // [kNumContentCategories..kNumCategories). Content chips reload the
+    // poster grid; nav chips transition to another Screen.
     enum class Category {
         Popular = 0,
         NowPlaying = 1,
         TopRated = 2,
         Discover = 3,
         Search = 4,
+        Library = 5,
+        Queue = 6,
+        Settings = 7,
     };
     enum class Focus { CategoryStrip, PosterGrid };
 
-    static constexpr int kNumCategories = 5;
+    static constexpr int kNumContentCategories = 4;  // Popular..Discover
+    static constexpr int kNumCategories = 8;
     static constexpr int kGridCols = 4;
+
+    static bool is_nav_chip(Category cat) {
+        return static_cast<int>(cat) >= kNumContentCategories;
+    }
 
     void load_category(Category cat);
     static const char* label_for_category(Category cat);

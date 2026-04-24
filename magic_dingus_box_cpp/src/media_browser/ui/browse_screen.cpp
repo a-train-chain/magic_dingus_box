@@ -66,6 +66,9 @@ const char* BrowseScreen::label_for_category(Category cat) {
         case Category::TopRated:   return "Top Rated";
         case Category::Discover:   return "Discover";
         case Category::Search:     return "Search";
+        case Category::Library:    return "Library";
+        case Category::Queue:      return "Queue";
+        case Category::Settings:   return "Settings";
     }
     return "";
 }
@@ -75,12 +78,17 @@ const char* BrowseScreen::query_for_category(Category cat) {
     // search-based /movie/lookup endpoint, which is the only discovery
     // surface Radarr exposes. They are intentionally coarse — swap in a
     // real TMDB Discover call in a later phase if we want genuine lists.
+    // Nav chips (Search, Library, Queue, Settings) do not fetch; they
+    // transition out to their own Screen.
     switch (cat) {
         case Category::Popular:    return "popular";
         case Category::NowPlaying: return "2026";
         case Category::TopRated:   return "best";
         case Category::Discover:   return "discover";
-        case Category::Search:     return "";  // Search transitions out — no fetch.
+        case Category::Search:
+        case Category::Library:
+        case Category::Queue:
+        case Category::Settings:   return "";  // Nav chips transition out — no fetch.
     }
     return "";
 }
@@ -89,7 +97,7 @@ void BrowseScreen::load_category(Category cat) {
     movies_.clear();
     grid_cursor_ = 0;
     scroll_row_ = 0;
-    if (cat == Category::Search) return;
+    if (is_nav_chip(cat)) return;
     const char* query = query_for_category(cat);
     if (!query || !*query) return;
     movies_ = radarr_.lookup(query);
@@ -157,8 +165,15 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (focus_ == Focus::CategoryStrip) {
                 Category chosen = static_cast<Category>(category_cursor_);
-                if (chosen == Category::Search) {
-                    return Screen::Search;
+                // Nav chips transition to their Screen without touching
+                // category_ / movies_, so returning to Browse later keeps
+                // the previous content grid intact.
+                switch (chosen) {
+                    case Category::Search:   return Screen::Search;
+                    case Category::Library:  return Screen::Library;
+                    case Category::Queue:    return Screen::Queue;
+                    case Category::Settings: return Screen::MovieSettings;
+                    default: break;  // Content chip — fall through.
                 }
                 category_ = chosen;
                 load_category(category_);
@@ -203,6 +218,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        + static_cast<float>(strip_baseline);
 
     // Measure all labels to lay them out evenly across the strip.
+    // Layout is two groups (content + nav) with a thin vertical divider
+    // between them. The divider consumes kDividerW worth of the
+    // inter-chip spacing so chips stay evenly distributed.
+    constexpr float kDividerW = 2.0f;
+    constexpr float kDividerPadX = 12.0f;   // padding on each side of divider
     float total_label_w = 0.0f;
     std::vector<float> label_widths(kNumCategories, 0.0f);
     for (int i = 0; i < kNumCategories; ++i) {
@@ -211,17 +231,34 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         label_widths[i] = w;
         total_label_w += w;
     }
-    float spacing = std::max(24.0f,
-        (static_cast<float>(screen_w) - total_label_w - 2.0f * kGridPaddingX)
+    float divider_total = kDividerW + 2.0f * kDividerPadX;
+    float spacing = std::max(18.0f,
+        (static_cast<float>(screen_w) - total_label_w - 2.0f * kGridPaddingX
+         - divider_total)
         / static_cast<float>(kNumCategories - 1));
 
     float cursor_x = kGridPaddingX;
     for (int i = 0; i < kNumCategories; ++i) {
-        const char* label = label_for_category(static_cast<Category>(i));
-        bool is_active = (i == static_cast<int>(category_));
+        Category cat = static_cast<Category>(i);
+        const char* label = label_for_category(cat);
+        // Only content chips can be "active" (the category that owns the
+        // current grid). Nav chips are never active since they just
+        // transition elsewhere.
+        bool is_active = (!is_nav_chip(cat) && i == static_cast<int>(category_));
         bool is_focused = (focus_ == Focus::CategoryStrip && i == category_cursor_);
-        const ::ui::Color& color = is_active ? th.accent : th.dim;
-        float alpha = is_focused ? 1.0f : 0.85f;
+        // Nav chips use the action (steel blue) color when idle to
+        // visually distinguish them from dim/accent content chips.
+        ::ui::Color color;
+        if (is_focused) {
+            color = th.accent;
+        } else if (is_active) {
+            color = th.accent;
+        } else if (is_nav_chip(cat)) {
+            color = th.action;
+        } else {
+            color = th.dim;
+        }
+        float alpha = is_focused ? 1.0f : (is_nav_chip(cat) ? 0.9f : 0.85f);
         r.mb_draw_text(label, cursor_x, strip_text_y, strip_font, color, alpha);
 
         if (is_focused) {
@@ -230,7 +267,18 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             r.mb_fill_rect(cursor_x, underline_y, label_widths[i], 3.0f,
                            th.accent, 1.0f);
         }
-        cursor_x += label_widths[i] + spacing;
+        cursor_x += label_widths[i];
+        // Draw the divider between the last content chip and the first
+        // nav chip, consuming the inter-chip gap on either side.
+        if (i == kNumContentCategories - 1) {
+            cursor_x += kDividerPadX;
+            float div_h = kCategoryStripHeight * 0.5f;
+            float div_y = (kCategoryStripHeight - div_h) / 2.0f;
+            r.mb_fill_rect(cursor_x, div_y, kDividerW, div_h, th.dim, 0.6f);
+            cursor_x += kDividerW + kDividerPadX;
+        } else if (i < kNumCategories - 1) {
+            cursor_x += spacing;
+        }
     }
 
     // Thin separator below the strip.
@@ -258,12 +306,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    : (static_cast<int>(movies_.size()) - 1) / kGridCols + 1;
     int end_row = std::min(total_rows, scroll_row_ + visible_rows);
 
-    // Empty-state message
+    // Empty-state message. Nav chips never become the active category_
+    // (they just transition to another Screen), so this only fires for
+    // content categories that returned zero results from Radarr.
     if (movies_.empty()) {
-        const std::string msg =
-            (category_ == Category::Search)
-                ? "Press SELECT to open Search"
-                : "No results for this category";
+        const std::string msg = "No results for this category";
         int msg_size = th.font_large_size;
         int msg_w = r.mb_text_width(msg, msg_size);
         float msg_x = (static_cast<float>(screen_w) - static_cast<float>(msg_w)) / 2.0f;
