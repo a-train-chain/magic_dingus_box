@@ -1,12 +1,15 @@
 #include "media_browser/ui/browse_screen.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <ctime>
 #include <string>
 
 #include <spdlog/spdlog.h>
 
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/tmdb_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 
@@ -27,9 +30,26 @@ constexpr float kCellW               = kPosterW;
 constexpr float kCellH               = kPosterH + kLabelAreaH;
 constexpr float kOutlineThickness    = 4.0f;
 
+// Filter panel dimensions (Phase B).
+constexpr float kFilterPanelH        = 56.0f;
+constexpr float kFilterControlW      = 260.0f;
+constexpr float kFilterControlGap    = 18.0f;
+
+// Hard-coded sort-by options. Keep small — TMDB supports more sorts but
+// these three cover >99% of actual user intent for a movie browser and
+// keep the UI legible.
+struct SortOption {
+    const char* label;   // Human-readable.
+    const char* value;   // TMDB sort_by value.
+};
+constexpr std::array<SortOption, 3> kSortOptions = {{
+    {"Popularity",   "popularity.desc"},
+    {"Rating",       "vote_average.desc"},
+    {"Release date", "primary_release_date.desc"},
+}};
+
 // Deterministic colored tint for a tmdb_id, used as a poster placeholder
-// until real image loading lands in a later phase. Picks a hue around the
-// theme accent by salting the id into the R/G/B channels.
+// until the artwork cache has fetched the real image.
 ::ui::Color poster_tint_for_tmdb(int tmdb_id) {
     uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;  // Knuth hash
     uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
@@ -49,16 +69,25 @@ std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
     return ellipsis;
 }
 
+// Current calendar year — used as the upper bound of the Year cycle.
+int current_year_now() {
+    std::time_t now = std::time(nullptr);
+    std::tm* lt = std::localtime(&now);
+    if (!lt) return 2026;
+    return 1900 + lt->tm_year;
+}
+
 }  // namespace
 
-BrowseScreen::BrowseScreen(RadarrClient& radarr) : radarr_(radarr) {}
+BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb)
+    : radarr_(radarr), tmdb_(tmdb) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
     // Health-check Radarr on entry so we can surface a banner when the
-    // service isn't answering. Cheap — hits /api/v3/system/status. This
-    // also lets the user know why the grid is empty if services are
-    // still coming up after boot.
+    // service isn't answering. Cheap — hits /api/v3/system/status.
+    // We keep this even though Discovery is now TMDB-powered: Radarr is
+    // still required for add-to-library / queue actions downstream.
     services_ok_ = radarr_.is_reachable();
     spdlog::info("[BrowseScreen] enter: radarr_ok={}, loaded={}",
                  services_ok_, loaded_);
@@ -73,7 +102,8 @@ const char* BrowseScreen::label_for_category(Category cat) {
         case Category::Popular:    return "Popular";
         case Category::NowPlaying: return "Now Playing";
         case Category::TopRated:   return "Top Rated";
-        case Category::Discover:   return "Discover";
+        case Category::Upcoming:   return "Upcoming";
+        case Category::Filter:     return "Filter";
         case Category::Search:     return "Search";
         case Category::Library:    return "Library";
         case Category::Queue:      return "Queue";
@@ -82,24 +112,11 @@ const char* BrowseScreen::label_for_category(Category cat) {
     return "";
 }
 
-const char* BrowseScreen::query_for_category(Category cat) {
-    // These queries approximate TMDB-style categories through Radarr's
-    // search-based /movie/lookup endpoint, which is the only discovery
-    // surface Radarr exposes. They are intentionally coarse — swap in a
-    // real TMDB Discover call in a later phase if we want genuine lists.
-    // Nav chips (Search, Library, Queue, Settings) do not fetch; they
-    // transition out to their own Screen.
-    switch (cat) {
-        case Category::Popular:    return "popular";
-        case Category::NowPlaying: return "2026";
-        case Category::TopRated:   return "best";
-        case Category::Discover:   return "discover";
-        case Category::Search:
-        case Category::Library:
-        case Category::Queue:
-        case Category::Settings:   return "";  // Nav chips transition out — no fetch.
-    }
-    return "";
+void BrowseScreen::ensure_genres_loaded() {
+    if (genres_loaded_) return;
+    genres_ = tmdb_.get_genres();
+    genres_loaded_ = true;
+    spdlog::info("[BrowseScreen] genres loaded: {} entries", genres_.size());
 }
 
 void BrowseScreen::load_category(Category cat) {
@@ -107,12 +124,19 @@ void BrowseScreen::load_category(Category cat) {
     grid_cursor_ = 0;
     scroll_row_ = 0;
     if (is_nav_chip(cat)) return;
-    const char* query = query_for_category(cat);
-    if (!query || !*query) return;
     loading_ = true;
-    spdlog::info("[BrowseScreen] load_category: {} (query=\"{}\")",
-                 label_for_category(cat), query);
-    movies_ = radarr_.lookup(query);
+    spdlog::info("[BrowseScreen] load_category: {}", label_for_category(cat));
+    switch (cat) {
+        case Category::Popular:    movies_ = tmdb_.get_popular();     break;
+        case Category::NowPlaying: movies_ = tmdb_.get_now_playing(); break;
+        case Category::TopRated:   movies_ = tmdb_.get_top_rated();   break;
+        case Category::Upcoming:   movies_ = tmdb_.get_upcoming();    break;
+        case Category::Filter:
+            ensure_genres_loaded();
+            movies_ = tmdb_.discover(current_filter_);
+            break;
+        default: break;
+    }
     loading_ = false;
     spdlog::info("[BrowseScreen] load_category done: {} results",
                  movies_.size());
@@ -120,8 +144,72 @@ void BrowseScreen::load_category(Category cat) {
         const auto& m = movies_.front();
         spdlog::info("[BrowseScreen] first result: tmdb_id={} title='{}' poster_url='{}'",
                      m.tmdb_id, m.title,
-                     m.poster_url.empty() ? "(EMPTY)" : m.poster_url.substr(0, 80));
+                     m.poster_path.empty() ? "(EMPTY)" : m.poster_path.substr(0, 80));
     }
+}
+
+void BrowseScreen::reload_filter_results() {
+    current_filter_.sort_by = kSortOptions[current_sort_index_].value;
+    loading_ = true;
+    movies_ = tmdb_.discover(current_filter_);
+    loading_ = false;
+    grid_cursor_ = 0;
+    scroll_row_ = 0;
+    spdlog::info(
+        "[BrowseScreen] discover: genre_id={} year={} sort_by={} -> {} results",
+        current_filter_.genre_id.value_or(-1),
+        current_filter_.year.value_or(-1),
+        current_filter_.sort_by,
+        movies_.size());
+}
+
+void BrowseScreen::cycle_filter_value(int delta) {
+    if (delta == 0) return;
+    switch (filter_row_) {
+        case FilterRow::Genre: {
+            // Ordering: "Any" (id=-1) then genres_ in order.
+            // Build a flat cycle list of size 1 + genres_.size().
+            int n = 1 + static_cast<int>(genres_.size());
+            if (n <= 0) return;
+            // Find current index.
+            int idx = 0;
+            if (current_filter_.genre_id.has_value()) {
+                int gid = *current_filter_.genre_id;
+                for (size_t i = 0; i < genres_.size(); ++i) {
+                    if (genres_[i].id == gid) { idx = 1 + static_cast<int>(i); break; }
+                }
+            }
+            idx = ((idx + delta) % n + n) % n;
+            if (idx == 0) current_filter_.genre_id.reset();
+            else current_filter_.genre_id = genres_[idx - 1].id;
+            break;
+        }
+        case FilterRow::Year: {
+            // Cycle: Any -> 1970..current_year -> Any.
+            const int lo = 1970;
+            const int hi = current_year_now();
+            int n = 1 + (hi - lo + 1);
+            if (n <= 0) return;
+            int idx = 0;
+            if (current_filter_.year.has_value()) {
+                int y = *current_filter_.year;
+                if (y >= lo && y <= hi) idx = 1 + (y - lo);
+            }
+            idx = ((idx + delta) % n + n) % n;
+            if (idx == 0) current_filter_.year.reset();
+            else current_filter_.year = lo + (idx - 1);
+            break;
+        }
+        case FilterRow::SortBy: {
+            int n = static_cast<int>(kSortOptions.size());
+            if (n <= 0) return;
+            current_sort_index_ =
+                ((current_sort_index_ + delta) % n + n) % n;
+            break;
+        }
+        default: return;
+    }
+    reload_filter_results();
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {
@@ -131,25 +219,47 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             return Screen::Exit;
         }
 
-        // Vertical movement — ROTATE_VERTICAL (dpad up/down).
+        // Vertical movement — ROTATE_VERTICAL (dpad up/down, BTN1/BTN3).
         if (e.action == platform::InputAction::ROTATE_VERTICAL) {
             int delta = e.delta;
             if (delta == 0) continue;
             if (focus_ == Focus::CategoryStrip) {
                 if (delta > 0) {
-                    // Drop into the grid.
+                    // Drop down into the panel (if Filter active) or grid.
+                    if (category_ == Category::Filter) {
+                        focus_ = Focus::FilterPanel;
+                        filter_row_ = FilterRow::Genre;
+                    } else {
+                        focus_ = Focus::PosterGrid;
+                        grid_cursor_ = 0;
+                        scroll_row_ = 0;
+                    }
+                }
+                // Up from the strip is a no-op.
+            } else if (focus_ == Focus::FilterPanel) {
+                // FilterPanel only has ONE row of 3 chips (rendered side-by-
+                // side) so up/down jumps between the strip and the grid,
+                // matching the earlier UX model.
+                if (delta < 0) {
+                    focus_ = Focus::CategoryStrip;
+                    category_cursor_ = static_cast<int>(category_);
+                } else {
                     focus_ = Focus::PosterGrid;
                     grid_cursor_ = 0;
                     scroll_row_ = 0;
                 }
-                // Up from the strip is a no-op.
             } else {
-                // In the grid. Up from the top row jumps to the strip.
+                // In the grid. Up from the top row jumps to the panel (if
+                // Filter is active) or the strip.
                 int row = grid_cursor_ / kGridCols;
                 int col = grid_cursor_ % kGridCols;
                 if (delta < 0 && row == 0) {
-                    focus_ = Focus::CategoryStrip;
-                    category_cursor_ = static_cast<int>(category_);
+                    if (category_ == Category::Filter) {
+                        focus_ = Focus::FilterPanel;
+                    } else {
+                        focus_ = Focus::CategoryStrip;
+                        category_cursor_ = static_cast<int>(category_);
+                    }
                 } else {
                     int new_row = row + (delta > 0 ? 1 : -1);
                     int max_row = movies_.empty()
@@ -174,6 +284,16 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             if (focus_ == Focus::CategoryStrip) {
                 category_cursor_ = std::clamp(category_cursor_ + delta, 0,
                                               kNumCategories - 1);
+            } else if (focus_ == Focus::FilterPanel) {
+                // Horizontal in the panel cycles the focused row's value
+                // (which is the natural UX — rotary left/right changes the
+                // genre / year / sort). UP/DOWN between rows would need
+                // more rows; since we only have 3 controls laid out
+                // horizontally, we walk between them on horizontal too.
+                // Compromise: LEFT/RIGHT cycles VALUE for the focused row.
+                // Rows are swapped via the dedicated button SELECT — see
+                // below. Keeps controls discoverable without 3-layer nav.
+                cycle_filter_value(delta);
             } else {
                 if (movies_.empty()) continue;
                 int n = static_cast<int>(movies_.size());
@@ -198,7 +318,21 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                 }
                 category_ = chosen;
                 load_category(category_);
-                focus_ = Focus::PosterGrid;
+                if (category_ == Category::Filter) {
+                    focus_ = Focus::FilterPanel;
+                    filter_row_ = FilterRow::Genre;
+                } else {
+                    focus_ = Focus::PosterGrid;
+                }
+                continue;
+            }
+            if (focus_ == Focus::FilterPanel) {
+                // SELECT on the filter panel steps the focused row to
+                // the next control (wraps). Left/Right adjusts VALUE;
+                // SELECT moves BETWEEN controls. Simple + discoverable.
+                int n = static_cast<int>(FilterRow::Count);
+                int idx = (static_cast<int>(filter_row_) + 1) % n;
+                filter_row_ = static_cast<FilterRow>(idx);
                 continue;
             }
             if (!movies_.empty() &&
@@ -239,9 +373,6 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        + static_cast<float>(strip_baseline);
 
     // Measure all labels to lay them out evenly across the strip.
-    // Layout is two groups (content + nav) with a thin vertical divider
-    // between them. The divider consumes kDividerW worth of the
-    // inter-chip spacing so chips stay evenly distributed.
     constexpr float kDividerW = 2.0f;
     constexpr float kDividerPadX = 12.0f;   // padding on each side of divider
     float total_label_w = 0.0f;
@@ -253,7 +384,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         total_label_w += w;
     }
     float divider_total = kDividerW + 2.0f * kDividerPadX;
-    float spacing = std::max(18.0f,
+    float spacing = std::max(14.0f,
         (static_cast<float>(screen_w) - total_label_w - 2.0f * kGridPaddingX
          - divider_total)
         / static_cast<float>(kNumCategories - 1));
@@ -262,13 +393,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     for (int i = 0; i < kNumCategories; ++i) {
         Category cat = static_cast<Category>(i);
         const char* label = label_for_category(cat);
-        // Only content chips can be "active" (the category that owns the
-        // current grid). Nav chips are never active since they just
-        // transition elsewhere.
         bool is_active = (!is_nav_chip(cat) && i == static_cast<int>(category_));
         bool is_focused = (focus_ == Focus::CategoryStrip && i == category_cursor_);
-        // Nav chips use the action (steel blue) color when idle to
-        // visually distinguish them from dim/accent content chips.
         ::ui::Color color;
         if (is_focused) {
             color = th.accent;
@@ -307,9 +433,6 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    static_cast<float>(screen_w), 1.0f, th.dim, 0.6f);
 
     // --- Services-offline banner -------------------------------------
-    // Drawn just below the category strip, NOT blocking the grid render
-    // below — the user can still navigate the (empty) grid; the banner
-    // just tells them why data is absent.
     float banner_h = 0.0f;
     if (!services_ok_) {
         constexpr float kOfflineBannerH = 32.0f;
@@ -327,8 +450,64 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         banner_h = kOfflineBannerH;
     }
 
+    // --- Filter panel (Phase B) --------------------------------------
+    float panel_h = 0.0f;
+    if (category_ == Category::Filter) {
+        float py = kCategoryStripHeight + banner_h;
+        r.mb_fill_rect(0.0f, py, static_cast<float>(screen_w), kFilterPanelH,
+                       th.bg, 0.9f);
+        r.mb_fill_rect(0.0f, py + kFilterPanelH - 1.0f,
+                       static_cast<float>(screen_w), 1.0f, th.dim, 0.6f);
+
+        // Compose each control's text and render it as a chip.
+        auto genre_label = [&]() -> std::string {
+            if (!current_filter_.genre_id.has_value()) return "Genre: Any";
+            int gid = *current_filter_.genre_id;
+            for (const auto& g : genres_) {
+                if (g.id == gid) return std::string("Genre: ") + g.name;
+            }
+            return "Genre: ?";
+        };
+        auto year_label = [&]() -> std::string {
+            if (!current_filter_.year.has_value()) return "Year: Any";
+            return std::string("Year: ") + std::to_string(*current_filter_.year);
+        };
+        auto sort_label = [&]() -> std::string {
+            int idx = std::clamp(current_sort_index_, 0,
+                                 static_cast<int>(kSortOptions.size()) - 1);
+            return std::string("Sort: ") + kSortOptions[idx].label;
+        };
+
+        std::array<std::string, 3> labels = {genre_label(), year_label(), sort_label()};
+
+        int pf_size = th.font_medium_size;
+        int pf_baseline = r.mb_text_baseline(pf_size);
+        float text_y = py + (kFilterPanelH / 2.0f) - (pf_size / 2.0f)
+                     + static_cast<float>(pf_baseline);
+
+        float cx = kGridPaddingX;
+        for (int i = 0; i < 3; ++i) {
+            bool is_row_focused =
+                (focus_ == Focus::FilterPanel && i == static_cast<int>(filter_row_));
+            ::ui::Color col = is_row_focused ? th.accent : th.fg;
+            float chip_w = kFilterControlW;
+            // Chip background so the focus ring reads clearly.
+            if (is_row_focused) {
+                r.mb_fill_rect(cx - 8.0f, py + 8.0f,
+                               chip_w + 16.0f, kFilterPanelH - 16.0f,
+                               th.accent, 0.15f);
+            }
+            std::string txt = truncate_to_width(r, labels[i], pf_size, chip_w);
+            r.mb_draw_text(txt, cx, text_y, pf_size, col,
+                           is_row_focused ? 1.0f : 0.9f);
+            cx += chip_w + kFilterControlGap;
+        }
+
+        panel_h = kFilterPanelH;
+    }
+
     // --- Poster grid --------------------------------------------------
-    float grid_top    = kCategoryStripHeight + banner_h + kGridPaddingTop;
+    float grid_top    = kCategoryStripHeight + banner_h + panel_h + kGridPaddingTop;
     float grid_bottom = static_cast<float>(screen_h) - kBottomBarHeight;
     float grid_h      = grid_bottom - grid_top;
 
@@ -348,22 +527,17 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    : (static_cast<int>(movies_.size()) - 1) / kGridCols + 1;
     int end_row = std::min(total_rows, scroll_row_ + visible_rows);
 
-    // Empty-state message. Nav chips never become the active category_
-    // (they just transition to another Screen), so this only fires for
-    // content categories that returned zero results from Radarr.
-    // If the category fetch hasn't completed yet, show "Loading..." —
-    // lookup is synchronous so this is only visible for a fraction of a
-    // second locally, but on slow networks (or while Radarr is warming
-    // up after boot) the feedback matters.
     if (movies_.empty()) {
         std::string msg;
         int msg_size = th.font_large_size;
         ::ui::Color msg_color = th.dim;
         if (loading_) {
             msg = "Loading...";
+        } else if (category_ == Category::Filter) {
+            msg = "No matches. Adjust the filter above.";
         } else {
-            msg = "Nothing here yet. Configure indexers via SSH tunnel: "
-                  "ssh -L 9696:localhost:9696 magic@magicpi.local";
+            msg = "Nothing here yet. TMDB may be unreachable — "
+                  "check network + TMDB API key.";
         }
         int msg_w = r.mb_text_width(msg, msg_size);
         float msg_x = (static_cast<float>(screen_w) - static_cast<float>(msg_w)) / 2.0f;
@@ -387,11 +561,10 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float cell_x = kGridPaddingX + col * (kCellW + col_gap);
             float cell_y = grid_top + (row - scroll_row_) * (kCellH + kCellPadding);
 
-            // Poster: real artwork if the async cache has it yet,
-            // else the deterministic tint as a placeholder. Cache
-            // auto-enqueues the fetch on first call.
             ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            r.mb_draw_poster_or_tint(m.poster_url,
+            // TmdbSearchHit::poster_path is pre-resolved to a full URL
+            // by parse_list_response — pass directly to the cache.
+            r.mb_draw_poster_or_tint(m.poster_path,
                                      cell_x, cell_y, kPosterW, kPosterH,
                                      tint, 1.0f);
 
@@ -438,8 +611,12 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_rect(0.0f, bar_y, static_cast<float>(screen_w), 1.0f,
                    th.dim, 0.6f);
 
-    const std::string hint =
-        "Rotate to navigate   RCLICK/A: Select   BTN4/B: Exit";
+    std::string hint;
+    if (focus_ == Focus::FilterPanel) {
+        hint = "Rotate: change value   A/RCLICK: next control   BTN1/BTN3: up/down   BTN4/B: Exit";
+    } else {
+        hint = "Rotate to navigate   RCLICK/A: Select   BTN4/B: Exit";
+    }
     int hint_size = th.font_small_size;
     int hint_baseline = r.mb_text_baseline(hint_size);
     int hint_w = r.mb_text_width(hint, hint_size);

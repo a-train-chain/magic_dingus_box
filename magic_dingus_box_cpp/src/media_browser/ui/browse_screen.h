@@ -3,49 +3,42 @@
 #include <vector>
 
 #include "media_browser/radarr/radarr_types.h"
+#include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_screen.h"
 
-namespace media_browser { class RadarrClient; }
+namespace media_browser {
+class RadarrClient;
+class TmdbClient;
+}
 
 namespace media_browser::ui {
 
-// Task 18: the Browse screen. Landing UI for the Movies feature.
+// Task 18 + Phase A/B (TMDB Discover overhaul): the Browse screen.
 //
 // Layout:
-//   - Top strip (~72px): 8 chips split into two groups.
-//       - Content chips (4): Popular, Now Playing, Top Rated, Discover.
-//         Activating one reloads the poster grid. Active chip is drawn
-//         in the theme accent color; inactive content chips are dim.
+//   - Top strip (~72px): 9 chips split into two groups.
+//       - Content chips (5): Popular, Now Playing, Top Rated, Upcoming,
+//         Filter. Activating one reloads the poster grid. Active chip is
+//         drawn in the theme accent color; inactive content chips are
+//         dim.
 //       - A thin vertical divider separates the groups.
 //       - Nav chips (4): Search, Library, Queue, Settings. Activating
 //         any of them transitions to the corresponding Screen instead of
 //         reloading the grid. Nav chips are rendered in action/accent2
 //         color when unfocused to set them apart from content chips.
-//   - Main area: 4-column poster grid. Each cell has a colored-quad
-//     placeholder (a per-tmdb_id deterministic tint) + title + year. The
-//     focused cell gets an accent-colored outline.
+//   - Filter panel (Phase B): rendered below the strip when Filter is
+//     the active content category. Exposes Genre, Year, Sort-By. Any
+//     change re-queries /discover/movie.
+//   - Main area: 4-column poster grid.
 //   - Bottom bar (~40px): control hints.
 //
-// Navigation:
-//   - DPad / ROTATE_VERTICAL up/down: jump between the category strip and
-//     the poster grid, and move between rows inside the grid.
-//   - DPad / ROTATE left/right: step through the grid (wraps to previous /
-//     next row) or through the category labels when the strip has focus.
-//   - SELECT (A button / rotary click): activate the focused item —
-//     content chips switch the loaded list; nav chips transition to the
-//     corresponding Screen (Search / Library / Queue / MovieSettings);
-//     posters remember the tmdb_id and transition to Screen::Detail.
-//   - SETTINGS_MENU (BTN4 / Menu): return to the kiosk main menu.
-//
-// Category -> Radarr mapping:
-//   Popular, Now Playing, Top Rated, Discover each call RadarrClient::lookup()
-//   with a representative query term. Radarr does not expose TMDB's real
-//   "popular" / "top rated" endpoints, so these are approximations that
-//   produce reasonable result sets for the first cut of the UI. The exact
-//   queries live in query_for_category() in the .cpp.
+// Data source (Phase A):
+//   TMDB Discover / category endpoints directly — not Radarr's
+//   /movie/lookup search. Radarr stays responsible for library,
+//   add-movie, queue. Clean separation.
 class BrowseScreen : public MbScreen {
 public:
-    explicit BrowseScreen(RadarrClient& radarr);
+    BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb);
 
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -56,24 +49,29 @@ public:
     int selected_tmdb_id() const { return selected_tmdb_id_; }
 
 private:
-    // The top strip has two groups of chips laid out left-to-right:
-    // content chips [0..kNumContentCategories) and nav chips
-    // [kNumContentCategories..kNumCategories). Content chips reload the
-    // poster grid; nav chips transition to another Screen.
+    // Top-strip chip order. Content chips load a grid; nav chips transition.
     enum class Category {
         Popular = 0,
         NowPlaying = 1,
         TopRated = 2,
-        Discover = 3,
-        Search = 4,
-        Library = 5,
-        Queue = 6,
-        Settings = 7,
+        Upcoming = 3,
+        Filter = 4,
+        Search = 5,
+        Library = 6,
+        Queue = 7,
+        Settings = 8,
     };
-    enum class Focus { CategoryStrip, PosterGrid };
+    enum class Focus {
+        CategoryStrip,
+        FilterPanel,   // Phase B — only reachable when Category::Filter is active.
+        PosterGrid,
+    };
 
-    static constexpr int kNumContentCategories = 4;  // Popular..Discover
-    static constexpr int kNumCategories = 8;
+    // Filter panel row / control identifiers.
+    enum class FilterRow { Genre = 0, Year = 1, SortBy = 2, Count = 3 };
+
+    static constexpr int kNumContentCategories = 5;  // Popular..Filter
+    static constexpr int kNumCategories = 9;
     static constexpr int kGridCols = 4;
 
     static bool is_nav_chip(Category cat) {
@@ -81,10 +79,16 @@ private:
     }
 
     void load_category(Category cat);
+    void reload_filter_results();
+    // Lazily fetches /genre/movie/list on first entry to the Filter category.
+    void ensure_genres_loaded();
+    // Cycle the current filter_row_'s value by `delta` (+1 / -1 typical).
+    void cycle_filter_value(int delta);
+
     static const char* label_for_category(Category cat);
-    static const char* query_for_category(Category cat);
 
     RadarrClient& radarr_;
+    TmdbClient& tmdb_;
 
     Category category_ = Category::Popular;
     Focus focus_ = Focus::PosterGrid;
@@ -92,22 +96,30 @@ private:
     int grid_cursor_ = 0;       // Flat index into movies_ when Focus::PosterGrid.
     int scroll_row_ = 0;        // Topmost visible row index.
 
-    std::vector<MovieSearchHit> movies_;
+    // Result set for the active category. Uses TmdbSearchHit directly —
+    // the only shape the renderer needs is tmdb_id/title/year/poster URL.
+    std::vector<TmdbSearchHit> movies_;
     bool loaded_ = false;
-    // True while load_category() is in-flight (the Radarr lookup call is
-    // synchronous today, but this flag lets render() show "Loading..." in
-    // the grid area until the very first fetch completes — important on
-    // slow networks or during Radarr warmup at boot).
+    // True while load_category() is in-flight. Drives the "Loading..." state.
     bool loading_ = false;
     // Snapshot of radarr_.is_reachable() at enter() time. Drives the
-    // "Radarr service offline" banner. Defaults to true so the banner
-    // stays hidden on first render before enter() has run.
+    // "Radarr service offline" banner.
     bool services_ok_ = true;
 
     int selected_tmdb_id_ = 0;
     // Set when handle_input() wants the dispatcher to transition to Search
     // (via the top-strip Search category). Cleared on the next enter().
     bool want_search_screen_ = false;
+
+    // --- Phase B: filter state -------------------------------------
+    DiscoverFilter current_filter_;
+    std::vector<Genre> genres_;
+    bool genres_loaded_ = false;
+    FilterRow filter_row_ = FilterRow::Genre;  // Focused row in the panel.
+
+    // Available sort-by strings (paired with display labels in the .cpp).
+    // current_sort_index_ is the index into a static array in the .cpp.
+    int current_sort_index_ = 0;
 };
 
 }  // namespace media_browser::ui

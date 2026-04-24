@@ -12,6 +12,7 @@
 #include "platform/sequence_detector.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/radarr/radarr_mock.h"
+#include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_screen.h"
 #include "media_browser/ui/search_screen.h"
 #include "media_browser/ui/detail_screen.h"
@@ -488,8 +489,32 @@ int main(int /* argc */, char* /* argv */[]) {
     }
     media_browser::RadarrClient& radarr = *radarr_owned;
 
+    // TMDB client — Phase A: Discover endpoints for Browse categories.
+    // Radarr still handles library/add/queue; TMDB only drives discovery.
+    std::string tmdb_key;
+    if (const char* k = std::getenv("MDB_TMDB_API_KEY"); k && *k) {
+        tmdb_key = k;
+    } else if (const char* home = std::getenv("HOME"); home) {
+        std::ifstream kf(std::string(home) + "/.config/magic_dingus_box/tmdb_api_key");
+        if (kf) std::getline(kf, tmdb_key);
+        while (!tmdb_key.empty() &&
+               (tmdb_key.back() == '\n' || tmdb_key.back() == '\r' ||
+                tmdb_key.back() == ' ')) {
+            tmdb_key.pop_back();
+        }
+    }
+    if (tmdb_key.empty()) {
+        std::cout << "[media_browser] WARN: No TMDB API key (MDB_TMDB_API_KEY or "
+                     "~/.config/magic_dingus_box/tmdb_api_key). Browse categories "
+                     "will be empty until a key is configured." << std::endl;
+    } else {
+        std::cout << "[media_browser] TMDB API key loaded (len=" << tmdb_key.size() << ")"
+                  << std::endl;
+    }
+    auto tmdb = std::make_unique<media_browser::TmdbClient>(tmdb_key);
+
     // Six screens — dispatcher owns one instance of each.
-    media_browser::ui::BrowseScreen     mb_browse(radarr);
+    media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr);
     media_browser::ui::QueueScreen      mb_queue(radarr);
