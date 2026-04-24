@@ -7,6 +7,13 @@ services:
   radarr:
     image: lscr.io/linuxserver/radarr:5.14.0
     container_name: mdb_radarr
+    # Explicit DNS: avoids post-reboot race where Docker's internal DNS
+    # forwarder (127.0.0.11) doesn't yet have host resolv.conf populated,
+    # causing SERVFAIL on api.radarr.video lookups. Pinning public resolvers
+    # makes DNS independent of host boot timing.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
@@ -28,6 +35,10 @@ services:
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:1.26.1
     container_name: mdb_prowlarr
+    # Explicit DNS: see Radarr rationale above.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
@@ -97,6 +108,10 @@ services:
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     container_name: mdb_flaresolverr
+    # Explicit DNS: see Radarr rationale above.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - LOG_LEVEL=info
       - TZ=${TZ}
