@@ -1397,6 +1397,19 @@ int main(int /* argc */, char* /* argv */[]) {
                             // Task 17+ wires the real UI).
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
+                        } else if (section == ui::MenuSection::HIDE_MEDIA_BROWSER) {
+                            // Re-lock the Media Browser. Both the "Movies" and
+                            // "Hide Movies feature" rows will disappear next
+                            // time settings opens (open() rebuilds menu_items_
+                            // based on media_browser_unlocked). User must
+                            // re-enter the secret sequence to unlock again.
+                            // This is an intermediate control — final home is
+                            // the Movies Settings screen (Task 23).
+                            state.media_browser_unlocked = false;
+                            app::SettingsPersistence::save_settings(state);
+                            settings_menu.close();
+                            ui::Toast::show("Movie section hidden");
+                            LOG_INFO("Media Browser: feature re-locked via settings menu");
 #endif
                         } else if (section == ui::MenuSection::BACK) {
                             if (settings_menu.get_current_submenu() != ui::MenuSection::BACK) {

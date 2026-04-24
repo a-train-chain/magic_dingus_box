@@ -214,6 +214,7 @@ void SettingsMenuManager::open() {
         };
         if (app_state_ && app_state_->media_browser_unlocked) {
             menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+            menu_items_.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
         }
         menu_items_.emplace_back("Back", MenuSection::BACK);
 #endif

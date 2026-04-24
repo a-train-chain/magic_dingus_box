@@ -36,7 +36,8 @@ enum class MenuSection {
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
     DOWNLOAD_CORES,
-    MEDIA_BROWSER   // Opens Media Browser screen (only shown when unlocked via secret sequence)
+    MEDIA_BROWSER,   // Opens Media Browser screen (only shown when unlocked via secret sequence)
+    HIDE_MEDIA_BROWSER   // Re-locks the Media Browser (only shown when unlocked)
 };
 
 struct MenuItem {
