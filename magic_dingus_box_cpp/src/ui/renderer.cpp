@@ -1654,6 +1654,53 @@ void Renderer::mb_draw_poster_or_tint(const std::string& url,
     draw_textured_quad(tex_id, x, y, w, h, alpha_multiplier);
 }
 
+void Renderer::mb_draw_poster_fit(const std::string& url,
+                                  float x, float y, float w, float h,
+                                  const ui::Color& fallback_tint,
+                                  float alpha_multiplier) {
+    // Empty URL: just fill the slot with the tint, no fetch.
+    if (url.empty()) {
+        draw_quad(x, y, w, h, fallback_tint, alpha_multiplier);
+        return;
+    }
+
+    uint32_t tex_id = artwork_cache().get_or_fetch(url);
+    if (tex_id == 0) {
+        // Texture still loading — fill the whole slot so the layout doesn't
+        // jump on arrival.
+        draw_quad(x, y, w, h, fallback_tint, alpha_multiplier);
+        return;
+    }
+
+    auto dims = artwork_cache().get_dims(url);
+    if (!dims || dims->w <= 0 || dims->h <= 0) {
+        // Defensive — entry exists but dims unknown. Stretch like the
+        // legacy variant rather than skipping the draw entirely.
+        draw_textured_quad(tex_id, x, y, w, h, alpha_multiplier);
+        return;
+    }
+
+    float img_aspect  = static_cast<float>(dims->w) / static_cast<float>(dims->h);
+    float slot_aspect = (h > 0.0f) ? (w / h) : img_aspect;
+
+    float out_w = w, out_h = h, out_x = x, out_y = y;
+    if (img_aspect > slot_aspect) {
+        // Image is wider than slot → fit width, letterbox top/bottom.
+        out_h = w / img_aspect;
+        out_y = y + (h - out_h) * 0.5f;
+    } else {
+        // Image is taller than slot → fit height, pillarbox left/right.
+        out_w = h * img_aspect;
+        out_x = x + (w - out_w) * 0.5f;
+    }
+
+    // Fill the full slot with a dim version of the fallback tint so the
+    // letterbox/pillarbox bars are visible (not transparent). 0.35 keeps
+    // them subtle without making the bars look like part of the image.
+    draw_quad(x, y, w, h, fallback_tint, alpha_multiplier * 0.35f);
+    draw_textured_quad(tex_id, out_x, out_y, out_w, out_h, alpha_multiplier);
+}
+
 void Renderer::pump_artwork() {
     // Only pump if the cache exists. Avoids lazy-init forcing a
     // background thread to start on frames where Media Browser isn't

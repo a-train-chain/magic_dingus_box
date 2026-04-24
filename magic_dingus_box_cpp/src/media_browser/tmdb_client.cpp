@@ -97,8 +97,11 @@ std::vector<TmdbSearchHit> TmdbClient::search_movie(const std::string& query) {
 }
 
 std::optional<TmdbMovieDetail> TmdbClient::get_movie(int tmdb_id) {
+    // append_to_response=credits gets cast + crew in the same HTTP round-trip,
+    // so DetailScreen can show actors and directors without a second fetch.
     std::ostringstream url;
-    url << kApiBase << "/movie/" << tmdb_id << "?api_key=" << api_key_;
+    url << kApiBase << "/movie/" << tmdb_id << "?api_key=" << api_key_
+        << "&append_to_response=credits";
     auto body = http_get(url.str());
     if (body.empty()) return std::nullopt;
     return parse_movie_detail(body);
@@ -268,6 +271,7 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
     d.title = root.get("title", "").asString();
     d.original_title = root.get("original_title", "").asString();
     d.overview = root.get("overview", "").asString();
+    d.tagline = root.get("tagline", "").asString();
     // Prefix poster/backdrop with the image base URL so DetailScreen and the
     // artwork cache can consume them directly — same convention as
     // parse_list_response. Empty strings stay empty (artwork cache treats
@@ -276,7 +280,52 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
     d.backdrop_path = resolve_poster_url(root.get("backdrop_path", "").asString());
     d.runtime_minutes = root.get("runtime", 0).asInt();
     d.rating = root.get("vote_average", 0.0).asDouble();
-    d.year = extract_year(root.get("release_date", "").asString());
+    d.vote_count = root.get("vote_count", 0).asInt();
+    d.release_date = root.get("release_date", "").asString();
+    d.year = extract_year(d.release_date);
+    d.original_language = root.get("original_language", "").asString();
+
+    // Genres: array of {id, name}. We only need names for display.
+    const auto& genres = root["genres"];
+    if (genres.isArray()) {
+        for (const auto& g : genres) {
+            std::string name = g.get("name", "").asString();
+            if (!name.empty()) d.genres.push_back(std::move(name));
+        }
+    }
+
+    // credits.cast: pre-sorted by "order" (lowest first = top-billed).
+    // Take up to 6 names. Each entry has both `name` (real name) and
+    // `character` (role); the spec asks for `name`.
+    const auto& credits = root["credits"];
+    if (credits.isObject()) {
+        const auto& cast = credits["cast"];
+        if (cast.isArray()) {
+            constexpr int kMaxCast = 6;
+            int taken = 0;
+            for (const auto& c : cast) {
+                if (taken >= kMaxCast) break;
+                std::string name = c.get("name", "").asString();
+                if (!name.empty()) {
+                    d.cast_top.push_back(std::move(name));
+                    ++taken;
+                }
+            }
+        }
+        // credits.crew: filter to job=="Director". Most films have one,
+        // but some (e.g. Wachowskis) have multiple — preserve them all.
+        const auto& crew = credits["crew"];
+        if (crew.isArray()) {
+            for (const auto& c : crew) {
+                std::string job = c.get("job", "").asString();
+                if (job == "Director") {
+                    std::string name = c.get("name", "").asString();
+                    if (!name.empty()) d.directors.push_back(std::move(name));
+                }
+            }
+        }
+    }
+
     return d;
 }
 

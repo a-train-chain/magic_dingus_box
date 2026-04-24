@@ -129,6 +129,8 @@ void ArtworkCache::upload_one(PendingUpload&& p) {
     Entry entry;
     entry.bytes = static_cast<std::size_t>(p.width) *
                   static_cast<std::size_t>(p.height) * 4u;
+    entry.width = p.width;
+    entry.height = p.height;
     entry.last_access = std::chrono::steady_clock::now();
 
 #ifndef ARTWORK_CACHE_TEST_MODE
@@ -202,6 +204,15 @@ std::size_t ArtworkCache::bytes_in_use() const {
 
 std::size_t ArtworkCache::bytes_waiting_upload() const {
     return bytes_waiting_upload_.load(std::memory_order_relaxed);
+}
+
+std::optional<ArtworkCache::TextureDims>
+ArtworkCache::get_dims(const std::string& url) const {
+    std::lock_guard<std::mutex> lock(entries_mutex_);
+    auto it = entries_.find(url);
+    if (it == entries_.end()) return std::nullopt;
+    if (it->second.width <= 0 || it->second.height <= 0) return std::nullopt;
+    return TextureDims{it->second.width, it->second.height};
 }
 
 // ---------------------------------------------------------------------------

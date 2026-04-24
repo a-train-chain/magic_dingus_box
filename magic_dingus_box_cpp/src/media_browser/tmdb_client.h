@@ -24,6 +24,7 @@ struct TmdbMovieDetail {
     std::string title;
     std::string original_title;
     std::string overview;
+    std::string tagline;            // Marketing tagline (e.g. "Free your mind.")
     // Full image URL (w500 prefix already applied — same convention as
     // TmdbSearchHit::poster_path). Pass directly to the artwork cache.
     std::string poster_path;
@@ -31,6 +32,12 @@ struct TmdbMovieDetail {
     int year = 0;
     int runtime_minutes = 0;
     double rating = 0.0;
+    int vote_count = 0;             // Number of TMDB user ratings.
+    std::string release_date;       // ISO yyyy-mm-dd (full date, not just year).
+    std::string original_language;  // ISO 639-1 2-letter code (en, fr, ja, ...).
+    std::vector<std::string> genres;     // Display names, in TMDB order.
+    std::vector<std::string> cast_top;   // Up to 6 actor names from credits.cast.
+    std::vector<std::string> directors;  // Names from credits.crew where job=="Director".
 };
 
 // Inline genre/year filter used for /discover/movie queries.

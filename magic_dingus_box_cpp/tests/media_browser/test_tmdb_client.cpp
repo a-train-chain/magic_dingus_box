@@ -82,6 +82,95 @@ TEST_CASE("TmdbClient::parse_movie_detail extracts full record", "[tmdb]") {
     REQUIRE(detail->backdrop_path == "https://image.tmdb.org/t/p/w500/backdrop.jpg");
 }
 
+TEST_CASE("TmdbClient::parse_movie_detail extracts rich metadata "
+          "(tagline / genres / cast / directors)", "[tmdb]") {
+    // Realistic TMDB payload shape for the new fields.
+    // append_to_response=credits embeds a credits object alongside
+    // the standard /movie/{id} response.
+    std::string json = R"({
+        "id": 603,
+        "title": "The Matrix",
+        "original_title": "The Matrix",
+        "tagline": "Welcome to the Real World.",
+        "release_date": "1999-03-30",
+        "runtime": 136,
+        "vote_average": 8.2,
+        "vote_count": 25000,
+        "original_language": "en",
+        "overview": "A hacker learns the truth.",
+        "poster_path": "/poster.jpg",
+        "backdrop_path": "/backdrop.jpg",
+        "genres": [
+            {"id": 28, "name": "Action"},
+            {"id": 878, "name": "Science Fiction"}
+        ],
+        "credits": {
+            "cast": [
+                {"order": 0, "name": "Keanu Reeves",        "character": "Neo"},
+                {"order": 1, "name": "Laurence Fishburne",  "character": "Morpheus"},
+                {"order": 2, "name": "Carrie-Anne Moss",    "character": "Trinity"},
+                {"order": 3, "name": "Hugo Weaving",        "character": "Agent Smith"},
+                {"order": 4, "name": "Joe Pantoliano",      "character": "Cypher"},
+                {"order": 5, "name": "Gloria Foster",       "character": "Oracle"},
+                {"order": 6, "name": "Marcus Chong",        "character": "Tank"},
+                {"order": 7, "name": "Paul Goddard",        "character": "Agent Brown"}
+            ],
+            "crew": [
+                {"job": "Director",         "name": "Lana Wachowski"},
+                {"job": "Director",         "name": "Lilly Wachowski"},
+                {"job": "Producer",         "name": "Joel Silver"},
+                {"job": "Director of Photography", "name": "Bill Pope"}
+            ]
+        }
+    })";
+
+    auto detail = media_browser::TmdbClient::parse_movie_detail(json);
+    REQUIRE(detail.has_value());
+
+    // Existing core fields still populated.
+    REQUIRE(detail->title == "The Matrix");
+    REQUIRE(detail->year == 1999);
+    REQUIRE(detail->runtime_minutes == 136);
+
+    // New metadata.
+    REQUIRE(detail->tagline == "Welcome to the Real World.");
+    REQUIRE(detail->vote_count == 25000);
+    REQUIRE(detail->release_date == "1999-03-30");
+    REQUIRE(detail->original_language == "en");
+
+    REQUIRE(detail->genres.size() == 2);
+    REQUIRE(detail->genres[0] == "Action");
+    REQUIRE(detail->genres[1] == "Science Fiction");
+
+    // Cast capped at the top 6 (TMDB's order-sorted billing).
+    REQUIRE(detail->cast_top.size() == 6);
+    REQUIRE(detail->cast_top[0] == "Keanu Reeves");
+    REQUIRE(detail->cast_top[5] == "Gloria Foster");
+
+    // Both directors preserved (not just one), producer + DP filtered out.
+    REQUIRE(detail->directors.size() == 2);
+    REQUIRE(detail->directors[0] == "Lana Wachowski");
+    REQUIRE(detail->directors[1] == "Lilly Wachowski");
+}
+
+TEST_CASE("TmdbClient::parse_movie_detail handles missing optional fields",
+          "[tmdb]") {
+    // Minimal payload (no tagline, no credits, no genres) must still parse
+    // — the rich-metadata fields default to empty containers.
+    std::string json = R"({
+        "id": 1,
+        "title": "Minimal",
+        "release_date": "2020-01-01"
+    })";
+    auto detail = media_browser::TmdbClient::parse_movie_detail(json);
+    REQUIRE(detail.has_value());
+    REQUIRE(detail->tagline.empty());
+    REQUIRE(detail->genres.empty());
+    REQUIRE(detail->cast_top.empty());
+    REQUIRE(detail->directors.empty());
+    REQUIRE(detail->vote_count == 0);
+}
+
 TEST_CASE("TmdbClient::parse_search_response handles empty results", "[tmdb]") {
     std::string json = R"({"page":1,"results":[],"total_pages":0,"total_results":0})";
     auto results = media_browser::TmdbClient::parse_search_response(json);

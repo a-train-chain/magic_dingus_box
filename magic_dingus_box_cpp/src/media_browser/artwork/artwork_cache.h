@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -35,6 +36,14 @@ namespace media_browser {
 
 class ArtworkCache {
 public:
+    // Pixel dimensions of a cached, uploaded texture. Returned by get_dims()
+    // so the renderer can preserve native aspect ratio when fitting an image
+    // into a slot of arbitrary aspect.
+    struct TextureDims {
+        int w = 0;
+        int h = 0;
+    };
+
     // max_bytes: LRU eviction threshold; default 256MB (conservative on
     // the Pi 4B with 2GB RAM — TMDB w500 posters are ~50-150KB each so
     // 256MB holds ~2-3k posters uncompressed in GPU memory).
@@ -56,6 +65,12 @@ public:
     // (glGenTextures / glBindTexture / glTexImage2D / glGenerateMipmap).
     // Returns the number of textures uploaded this frame.
     std::size_t pump();
+
+    // Main thread only: returns the pixel dimensions of the cached texture
+    // for `url`, or std::nullopt if the URL is not yet uploaded. Used by
+    // the renderer to preserve aspect ratio when letterboxing/pillarboxing
+    // an image into an arbitrary slot.
+    std::optional<TextureDims> get_dims(const std::string& url) const;
 
     // Diagnostics
     std::size_t entries_count() const;
@@ -97,6 +112,8 @@ private:
     struct Entry {
         std::uint32_t texture_id = 0;
         std::size_t bytes = 0;
+        int width = 0;          // pixel width — used by get_dims() for aspect-fit
+        int height = 0;         // pixel height
         std::chrono::steady_clock::time_point last_access;
     };
 

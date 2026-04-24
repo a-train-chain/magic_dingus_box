@@ -16,24 +16,31 @@ namespace media_browser::ui {
 
 namespace {
 
-// Layout fractions. The spec calls for 35 / 40 / 25. Action row sits in the
-// bottom 25%. Margins below are chosen so the three regions visually
-// separate without overlapping.
-constexpr float kBannerFrac    = 0.35f;
-constexpr float kOverviewFrac  = 0.40f;  // Unused directly, implied by kBannerFrac + kActionFrac.
-constexpr float kActionFrac    = 0.25f;
-constexpr float kPaddingX      = 48.0f;
-constexpr float kBannerPadding = 28.0f;
+// New rich-detail layout (target 1280x720). Pixel constants — all positions
+// are absolute and computed from screen_w/screen_h at render time so the
+// design degrades gracefully at non-720p resolutions.
+constexpr float kBackdropH      = 280.0f;  // 16:9 banner at the top.
+constexpr float kPaddingX       = 32.0f;   // Outer horizontal margin.
+constexpr float kPaddingY       = 18.0f;   // Outer vertical margin.
 
-// Action button metrics.
-constexpr float kButtonW        = 240.0f;
-constexpr float kButtonH        = 60.0f;
-constexpr float kButtonGap      = 24.0f;
+constexpr float kPosterW        = 180.0f;  // 2:3 poster left of metadata.
+constexpr float kPosterH        = 270.0f;
+constexpr float kPosterOverlap  = 60.0f;   // How much the poster sits over the backdrop.
+constexpr float kColumnGap      = 24.0f;   // Between poster and metadata column.
+
+// Genre chips.
+constexpr float kChipH          = 26.0f;
+constexpr float kChipPadX       = 12.0f;
+constexpr float kChipGap        = 8.0f;
+
+// Action buttons.
+constexpr float kButtonW        = 220.0f;
+constexpr float kButtonH        = 52.0f;
+constexpr float kButtonGap      = 20.0f;
 constexpr float kButtonOutlineW = 3.0f;
 
-// Overview layout.
-constexpr int   kOverviewMaxLines = 6;
-constexpr float kOverviewMaxWFrac = 0.60f;
+// Overview wrap settings.
+constexpr int   kOverviewMaxLines = 4;
 
 // Backdrop poster tint — same deterministic hash used by Browse, so the
 // color theme on the detail screen matches the grid placeholder.
@@ -105,14 +112,16 @@ std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
     return ellipsis;
 }
 
-// Format runtime as e.g. "1h 42m".
+// Format runtime as "2h 15m", "95m" (under an hour), "2h" (no minutes), or
+// "N/A" when zero/missing.
 std::string format_runtime(int minutes) {
-    if (minutes <= 0) return "";
+    if (minutes <= 0) return "N/A";
     int h = minutes / 60;
     int m = minutes % 60;
+    if (h == 0) return std::to_string(m) + "m";
     std::ostringstream os;
-    if (h > 0) os << h << "h ";
-    os << m << "m";
+    os << h << "h";
+    if (m > 0) os << " " << m << "m";
     return os.str();
 }
 
@@ -122,6 +131,48 @@ std::string format_rating(double rating) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", rating);
     return buf;
+}
+
+// Compact vote-count formatter: 120 -> "120", 1234 -> "1.2k",
+// 15000 -> "15k", 1500000 -> "1M".
+std::string format_vote_count(int n) {
+    if (n < 1000) return std::to_string(n);
+    if (n < 10000) {
+        // Two-significant-digit format like "1.2k".
+        int whole = n / 1000;
+        int tenth = (n % 1000) / 100;
+        std::ostringstream os;
+        os << whole << "." << tenth << "k";
+        return os.str();
+    }
+    if (n < 1000000) return std::to_string(n / 1000) + "k";
+    return std::to_string(n / 1000000) + "M";
+}
+
+// Cap an already-wrapped vector of lines at max_lines, appending ellipsis
+// to the (now last) line if truncation occurred. Width-aware: tries to
+// keep the ellipsis from overflowing the wrap width.
+void truncate_wrapped(::ui::Renderer& r, std::vector<std::string>& lines,
+                      int font_size, float max_w, int max_lines) {
+    if (static_cast<int>(lines.size()) <= max_lines) return;
+    lines.resize(max_lines);
+    if (lines.empty()) return;
+    std::string& last = lines.back();
+    while (!last.empty() &&
+           r.mb_text_width(last + "...", font_size) > max_w) {
+        last.pop_back();
+    }
+    last += "...";
+}
+
+// Join names with " · " (middle dot). Preserves order. Used for cast list.
+std::string join_with_bullet(const std::vector<std::string>& items) {
+    std::string out;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) out += "  \xE2\x80\xA2  ";  // U+2022
+        out += items[i];
+    }
+    return out;
 }
 
 }  // namespace
@@ -214,6 +265,7 @@ void DetailScreen::rebuild_buttons() {
             break;
         case Mode::NotInLibrary:
             buttons_.push_back({Action::AddToLibrary, "Add to Library"});
+            buttons_.push_back({Action::MoreInfo, "More Info"});
             break;
         case Mode::InLibraryNoFile:
             buttons_.push_back({Action::SearchAgain, "Search Again"});
@@ -315,6 +367,7 @@ Screen DetailScreen::on_activate() {
         case Action::ConfirmRemove:  return do_remove_confirm();
         case Action::Play:           return do_play();
         case Action::Retry:          return do_retry();
+        case Action::MoreInfo:       return do_more_info();
     }
     return Screen::Detail;
 }
@@ -405,6 +458,14 @@ Screen DetailScreen::do_retry() {
     return Screen::Detail;
 }
 
+Screen DetailScreen::do_more_info() {
+    // Placeholder — wires into a future trivia / details sub-screen. For
+    // now we just surface a banner so the button feels alive instead of
+    // dead. Keeps the user oriented while real content is built.
+    show_banner("More Info — coming soon");
+    return Screen::Detail;
+}
+
 void DetailScreen::show_banner(std::string text) {
     banner_ = std::move(text);
     banner_at_ = std::chrono::steady_clock::now();
@@ -421,12 +482,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float w = static_cast<float>(screen_w);
     const float h = static_cast<float>(screen_h);
 
-    const float banner_h  = h * kBannerFrac;
-    const float action_h  = h * kActionFrac;
-    const float overview_top    = banner_h;
-    const float overview_bottom = h - action_h;
-
-    // Special states override the standard layout with a centered message.
+    // --- Centered single-message states ------------------------------
     if (mode_ == Mode::Loading) {
         int sz = th.font_large_size;
         std::string msg = "Loading...";
@@ -445,30 +501,17 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         r.mb_draw_text(msg, x, y, sz, th.dim, 0.9f);
         return;
     }
-    // Error state: render a centered message above the Retry button row
-    // (button row layout is handled by the common code below). Only TMDB
-    // failures land here — Radarr being unreachable just sets a banner.
-    if (mode_ == Mode::Error) {
-        int sz = th.font_large_size;
-        std::string msg = "Couldn't fetch movie info from TMDB. Check network?";
-        int mw = r.mb_text_width(msg, sz);
-        float x = (w - static_cast<float>(mw)) / 2.0f;
-        float y = (overview_bottom / 2.0f)
-                + static_cast<float>(r.mb_text_baseline(sz));
-        r.mb_draw_text(msg, x, y, sz, th.highlight2, 0.95f);
-        // fallthrough into button row render below
-    }
 
-    // --- Top banner / backdrop ---------------------------------------
-    if (mode_ != Mode::Error) {
-        // Backdrop: prefer real fanart if the async cache has it;
-        // else fall back to a dimmed poster-tint rectangle. Falling
-        // back to the poster_url if fanart is missing keeps the banner
-        // useful for records that only have one artwork type.
+    // --- Action row geometry (computed first so other regions clear it) ---
+    const float action_row_h = kButtonH + 2.0f * kPaddingY;
+    const float action_row_y = h - action_row_h;
+    // Bottom-of-screen hint sits below the action row.
+    const float hint_h = static_cast<float>(th.font_small_size) + 12.0f;
+    const float content_bottom = action_row_y - hint_h - 8.0f;
+
+    // --- Backdrop banner ---------------------------------------------
+    {
         ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
-        // TMDB metadata is the primary source; fall back to library record
-        // (mostly relevant for movies that have local fanart not yet in
-        // TMDB's payload, e.g. user-supplied artwork).
         std::string backdrop_url;
         if (tmdb_detail_.has_value()) {
             backdrop_url = tmdb_detail_->backdrop_path.empty()
@@ -479,147 +522,255 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             backdrop_url = movie_->fanart_url.empty() ? movie_->poster_url
                                                       : movie_->fanart_url;
         }
-        r.mb_draw_poster_or_tint(backdrop_url,
-                                 0.0f, 0.0f, w, banner_h,
-                                 tint, 0.7f);
-        // Subtle bottom fade — a second dark rect with gradient-ish alpha to
-        // make the text legible. We don't have a real gradient primitive so
-        // approximate with two stacked bands.
-        r.mb_fill_rect(0.0f, banner_h * 0.55f, w, banner_h * 0.45f,
+        // Aspect-fit so 16:9 backdrops fill nicely; 2:3 fallback posters
+        // letterbox with the tint color rather than warping.
+        r.mb_draw_poster_fit(backdrop_url,
+                             0.0f, 0.0f, w, kBackdropH,
+                             tint, 0.85f);
+        // Approximate bottom fade for legibility — two stacked bands.
+        r.mb_fill_rect(0.0f, kBackdropH * 0.55f, w, kBackdropH * 0.45f,
                        th.bg, 0.55f);
-        r.mb_fill_rect(0.0f, banner_h - 1.0f, w, 1.0f, th.dim, 0.8f);
+        r.mb_fill_rect(0.0f, kBackdropH - 1.0f, w, 1.0f, th.dim, 0.8f);
 
-        // Title / year / rating (bottom-left). Runtime (bottom-right).
-        // Prefer TMDB fields (always populated when mode != Error/NoTmdb).
-        // Fall back to the library Movie record only if TMDB somehow has
-        // an empty title (defensive — shouldn't happen in practice).
-        std::string title;
-        int year = 0;
-        double rating = 0.0;
-        int runtime = 0;
-        if (tmdb_detail_.has_value()) {
-            title = tmdb_detail_->title;
-            year = tmdb_detail_->year;
-            rating = tmdb_detail_->rating;
-            runtime = tmdb_detail_->runtime_minutes;
-        }
-        if (title.empty() && movie_.has_value()) {
-            title = movie_->title;
-            year = movie_->year;
-            rating = movie_->rating;
-            runtime = movie_->runtime_minutes;
-        }
-        if (title.empty()) title = "Untitled";
-
-        int title_size = th.font_title_size;
-        // Truncate title if it would run off the screen (leave room on
-        // the right for runtime).
-        float title_max_w = w - 2.0f * kBannerPadding - 180.0f;
-        std::string title_drawn = truncate_to_width(r, title, title_size, title_max_w);
-        int title_baseline = r.mb_text_baseline(title_size);
-
-        // Meta line (year + rating), rendered below title.
-        int meta_size = th.font_medium_size;
-        std::ostringstream meta_os;
-        if (year > 0) meta_os << year;
-        std::string rating_str = format_rating(rating);
-        if (!rating_str.empty()) {
-            if (year > 0) meta_os << "  \xE2\x80\xA2  ";  // U+2022 bullet
-            meta_os << rating_str << " / 10";
-        }
-        std::string meta = meta_os.str();
-        int meta_baseline = r.mb_text_baseline(meta_size);
-
-        // Position title such that the meta line fits beneath it with
-        // kBannerPadding at the bottom.
-        float meta_y  = banner_h - kBannerPadding
-                      - static_cast<float>(meta_size)
-                      + static_cast<float>(meta_baseline);
-        float title_y = meta_y - static_cast<float>(meta_size)
-                      - static_cast<float>(title_size) * 0.3f;
-        r.mb_draw_text(title_drawn, kBannerPadding, title_y,
-                       title_size, th.accent, 1.0f);
-        if (!meta.empty()) {
-            r.mb_draw_text(meta, kBannerPadding, meta_y,
-                           meta_size, th.fg, 0.95f);
-        }
-
-        // Runtime, right-aligned at the same y as meta.
-        std::string runtime_str = format_runtime(runtime);
-        if (!runtime_str.empty()) {
-            int rw = r.mb_text_width(runtime_str, meta_size);
-            float rx = w - kBannerPadding - static_cast<float>(rw);
-            r.mb_draw_text(runtime_str, rx, meta_y,
-                           meta_size, th.fg, 0.95f);
-        }
-
-        // Back-hint top-right.
-        const std::string back_hint =
-            "Rotate: nav   RCLICK/BTN2: action   BTN4: back (hold: exit)";
+        // Top-right back-hint inside the backdrop area.
+        const std::string back_hint = "BTN4: back (hold: home)";
         int hint_size = th.font_small_size;
         int hint_baseline = r.mb_text_baseline(hint_size);
         int hw = r.mb_text_width(back_hint, hint_size);
-        float hx = w - kBannerPadding - static_cast<float>(hw);
-        float hy = kBannerPadding + static_cast<float>(hint_baseline);
-        r.mb_draw_text(back_hint, hx, hy, hint_size, th.fg, 0.8f);
+        float hx = w - kPaddingX - static_cast<float>(hw);
+        float hy = kPaddingY + static_cast<float>(hint_baseline);
+        r.mb_draw_text(back_hint, hx, hy, hint_size, th.fg, 0.85f);
     }
 
-    // --- Middle: overview text ---------------------------------------
-    if (mode_ != Mode::Error) {
-        std::string overview;
-        if (tmdb_detail_.has_value()) overview = tmdb_detail_->overview;
-        if (overview.empty() && movie_.has_value()) overview = movie_->overview;
+    // --- Pull metadata once (Error state may have nullopt detail) ----
+    std::string title, tagline, overview, language;
+    int year = 0, runtime = 0, vote_count = 0;
+    double rating = 0.0;
+    std::vector<std::string> genres, cast_top, directors;
+    std::string poster_url;
+    if (tmdb_detail_.has_value()) {
+        title       = tmdb_detail_->title;
+        tagline     = tmdb_detail_->tagline;
+        overview    = tmdb_detail_->overview;
+        language    = tmdb_detail_->original_language;
+        year        = tmdb_detail_->year;
+        runtime     = tmdb_detail_->runtime_minutes;
+        rating      = tmdb_detail_->rating;
+        vote_count  = tmdb_detail_->vote_count;
+        genres      = tmdb_detail_->genres;
+        cast_top    = tmdb_detail_->cast_top;
+        directors   = tmdb_detail_->directors;
+        poster_url  = tmdb_detail_->poster_path;
+    }
+    if (title.empty() && movie_.has_value()) {
+        title    = movie_->title;
+        year     = movie_->year;
+        rating   = movie_->rating;
+        runtime  = movie_->runtime_minutes;
+        overview = movie_->overview;
+        if (poster_url.empty()) poster_url = movie_->poster_url;
+    }
+    if (title.empty()) title = "Untitled";
 
-        if (!overview.empty()) {
-            int ov_size = th.font_medium_size;
-            int ov_baseline = r.mb_text_baseline(ov_size);
-            float ov_max_w = w * kOverviewMaxWFrac;
-            auto lines = wrap_text(r, overview, ov_size, ov_max_w);
-            bool truncated = (static_cast<int>(lines.size()) > kOverviewMaxLines);
-            if (truncated) {
-                lines.resize(kOverviewMaxLines);
-                // Append ellipsis to the last line, respecting width.
-                std::string& last = lines.back();
-                while (!last.empty() &&
-                       r.mb_text_width(last + "...", ov_size) > ov_max_w) {
-                    last.pop_back();
-                }
-                last += "...";
+    // --- Poster (left column, overlapping the backdrop bottom edge) --
+    const float poster_x = kPaddingX;
+    const float poster_y = kBackdropH - kPosterOverlap;
+    {
+        ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
+        r.mb_draw_poster_fit(poster_url,
+                             poster_x, poster_y,
+                             kPosterW, kPosterH,
+                             tint, 1.0f);
+        // Subtle outline so the poster reads as a card against the dark bg.
+        r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,
+                         1.0f, th.dim, 0.7f);
+    }
+
+    // --- Right column: title / meta / chips / tagline ----------------
+    const float col_x = poster_x + kPosterW + kColumnGap;
+    const float col_w = w - col_x - kPaddingX;
+    float cursor_y = kBackdropH - kPosterOverlap;  // Aligns top with poster.
+
+    // Title (truncated to column width).
+    {
+        int title_size = th.font_title_size;
+        int title_baseline = r.mb_text_baseline(title_size);
+        std::string title_drawn = truncate_to_width(r, title, title_size, col_w);
+        cursor_y += static_cast<float>(title_baseline);
+        r.mb_draw_text(title_drawn, col_x, cursor_y,
+                       title_size, th.accent, 1.0f);
+        cursor_y += static_cast<float>(title_size) * 0.55f;  // baseline → next-line gap
+    }
+
+    // Meta line: "1999 · 2h 16m · en"  (left)  /  "★ 8.2/10" (right)
+    {
+        int meta_size = th.font_medium_size;
+        int meta_baseline = r.mb_text_baseline(meta_size);
+
+        std::ostringstream meta_os;
+        bool first = true;
+        if (year > 0) {
+            meta_os << year;
+            first = false;
+        }
+        std::string runtime_str = format_runtime(runtime);
+        if (runtime_str != "N/A") {
+            if (!first) meta_os << "  \xE2\x80\xA2  ";
+            meta_os << runtime_str;
+            first = false;
+        }
+        if (!language.empty()) {
+            if (!first) meta_os << "  \xE2\x80\xA2  ";
+            meta_os << language;
+        }
+        std::string meta = meta_os.str();
+
+        cursor_y += static_cast<float>(meta_baseline);
+        if (!meta.empty()) {
+            r.mb_draw_text(meta, col_x, cursor_y,
+                           meta_size, th.fg, 0.92f);
+        }
+
+        // Rating + vote count, right-aligned within the column.
+        std::string rating_str = format_rating(rating);
+        if (!rating_str.empty()) {
+            // U+2605 BLACK STAR (UTF-8 0xE2 0x98 0x85).
+            std::string rating_text = std::string("\xE2\x98\x85 ") + rating_str + "/10";
+            int rw = r.mb_text_width(rating_text, meta_size);
+            float rx = col_x + col_w - static_cast<float>(rw);
+            r.mb_draw_text(rating_text, rx, cursor_y,
+                           meta_size, th.accent, 1.0f);
+
+            if (vote_count > 0) {
+                int sm = th.font_small_size;
+                int sm_baseline = r.mb_text_baseline(sm);
+                std::string votes = "(" + format_vote_count(vote_count) + " votes)";
+                int vw = r.mb_text_width(votes, sm);
+                float vx = col_x + col_w - static_cast<float>(vw);
+                float vy = cursor_y - static_cast<float>(meta_baseline)
+                         + static_cast<float>(meta_size) + 4.0f
+                         + static_cast<float>(sm_baseline);
+                r.mb_draw_text(votes, vx, vy, sm, th.dim, 0.85f);
             }
-            // Center the block vertically in the overview region, and each
-            // line horizontally by its own width (so variable-length lines
-            // all read well).
-            float line_h = static_cast<float>(ov_size) * 1.35f;
-            float total_h = line_h * static_cast<float>(lines.size());
-            float region_h = overview_bottom - overview_top;
-            float start_y = overview_top + (region_h - total_h) / 2.0f
-                          + static_cast<float>(ov_baseline);
-            for (size_t i = 0; i < lines.size(); ++i) {
-                const std::string& line = lines[i];
-                int lw = r.mb_text_width(line, ov_size);
-                float lx = (w - static_cast<float>(lw)) / 2.0f;
-                float ly = start_y + static_cast<float>(i) * line_h;
-                r.mb_draw_text(line, lx, ly, ov_size, th.fg, 0.95f);
-            }
-        } else {
-            // No overview provided — show a dim placeholder.
-            int sz = th.font_medium_size;
-            std::string msg = "No synopsis available.";
-            int mw = r.mb_text_width(msg, sz);
-            float x = (w - static_cast<float>(mw)) / 2.0f;
-            float y = (overview_top + overview_bottom) / 2.0f
-                    + static_cast<float>(r.mb_text_baseline(sz));
-            r.mb_draw_text(msg, x, y, sz, th.dim, 0.7f);
+        }
+        cursor_y += static_cast<float>(meta_size) * 0.4f;
+        // Reserve a slot for the votes line below meta (only if drawn).
+        if (vote_count > 0 && !rating_str.empty()) {
+            cursor_y += static_cast<float>(th.font_small_size) + 4.0f;
         }
     }
 
-    // --- Bottom: action button row -----------------------------------
+    // Genre chips row.
+    if (!genres.empty()) {
+        int chip_size = th.font_small_size;
+        int chip_baseline = r.mb_text_baseline(chip_size);
+        cursor_y += 8.0f;
+        float chip_y = cursor_y;
+        float chip_x = col_x;
+        for (const auto& g : genres) {
+            int tw = r.mb_text_width(g, chip_size);
+            float chip_w = static_cast<float>(tw) + 2.0f * kChipPadX;
+            // Wrap to next row if we'd overflow the column.
+            if (chip_x + chip_w > col_x + col_w) {
+                chip_x = col_x;
+                chip_y += kChipH + kChipGap;
+            }
+            r.mb_fill_rect(chip_x, chip_y, chip_w, kChipH,
+                           th.action, 0.55f);
+            r.mb_stroke_rect(chip_x, chip_y, chip_w, kChipH,
+                             1.0f, th.dim, 0.6f);
+            float tx = chip_x + kChipPadX;
+            float ty = chip_y + (kChipH - static_cast<float>(chip_size)) / 2.0f
+                     + static_cast<float>(chip_baseline);
+            r.mb_draw_text(g, tx, ty, chip_size, th.fg, 0.95f);
+            chip_x += chip_w + kChipGap;
+        }
+        cursor_y = chip_y + kChipH;
+    }
+
+    // Tagline (italic-feeling: smaller + dim).
+    if (!tagline.empty()) {
+        int tg_size = th.font_medium_size;
+        int tg_baseline = r.mb_text_baseline(tg_size);
+        cursor_y += 10.0f + static_cast<float>(tg_baseline);
+        std::string tagline_q = std::string("\xE2\x80\x9C") + tagline + "\xE2\x80\x9D";  // smart quotes
+        std::string drawn = truncate_to_width(r, tagline_q, tg_size, col_w);
+        r.mb_draw_text(drawn, col_x, cursor_y, tg_size, th.dim, 0.95f);
+        cursor_y += static_cast<float>(tg_size) * 0.4f;
+    }
+
+    // --- Below the poster row: overview, cast, director ---------------
+    // The "below" boundary is the lower edge of the poster.
+    const float poster_bottom = poster_y + kPosterH;
+    float info_y = poster_bottom + 18.0f;
+
+    // Overview block (full content width, capped at kOverviewMaxLines).
+    if (mode_ != Mode::Error && !overview.empty()) {
+        int ov_size = th.font_medium_size;
+        int ov_baseline = r.mb_text_baseline(ov_size);
+        float ov_max_w = w - 2.0f * kPaddingX;
+        auto lines = wrap_text(r, overview, ov_size, ov_max_w);
+        truncate_wrapped(r, lines, ov_size, ov_max_w, kOverviewMaxLines);
+
+        float line_h = static_cast<float>(ov_size) * 1.35f;
+        info_y += static_cast<float>(ov_baseline);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            r.mb_draw_text(lines[i],
+                           kPaddingX,
+                           info_y + static_cast<float>(i) * line_h,
+                           ov_size, th.fg, 0.95f);
+        }
+        info_y += line_h * static_cast<float>(lines.size()) - static_cast<float>(ov_baseline);
+        info_y += 12.0f;
+    } else if (mode_ != Mode::Error) {
+        int sz = th.font_medium_size;
+        int sz_baseline = r.mb_text_baseline(sz);
+        info_y += static_cast<float>(sz_baseline);
+        r.mb_draw_text("No synopsis available.", kPaddingX, info_y,
+                       sz, th.dim, 0.7f);
+        info_y += static_cast<float>(sz) * 0.4f + 12.0f;
+    }
+
+    // Error message (replaces overview if TMDB fetch failed).
+    if (mode_ == Mode::Error) {
+        int sz = th.font_large_size;
+        int sz_baseline = r.mb_text_baseline(sz);
+        std::string msg = "Couldn't fetch movie info from TMDB. Check network?";
+        info_y += static_cast<float>(sz_baseline) + 8.0f;
+        r.mb_draw_text(msg, kPaddingX, info_y,
+                       sz, th.highlight2, 0.95f);
+        info_y += static_cast<float>(sz) * 1.5f;
+    }
+
+    // Cast line.
+    if (!cast_top.empty() && info_y < content_bottom) {
+        int sz = th.font_medium_size;
+        int sz_baseline = r.mb_text_baseline(sz);
+        std::string cast_line = "Cast: " + join_with_bullet(cast_top);
+        std::string drawn = truncate_to_width(r, cast_line, sz, w - 2.0f * kPaddingX);
+        info_y += static_cast<float>(sz_baseline);
+        r.mb_draw_text(drawn, kPaddingX, info_y, sz, th.dim, 0.95f);
+        info_y += static_cast<float>(sz) * 1.0f + 6.0f;
+    }
+
+    // Director line.
+    if (!directors.empty() && info_y < content_bottom) {
+        int sz = th.font_medium_size;
+        int sz_baseline = r.mb_text_baseline(sz);
+        std::string label = directors.size() == 1 ? "Directed by: " : "Directors: ";
+        std::string director_line = label + join_with_bullet(directors);
+        std::string drawn = truncate_to_width(r, director_line, sz, w - 2.0f * kPaddingX);
+        info_y += static_cast<float>(sz_baseline);
+        r.mb_draw_text(drawn, kPaddingX, info_y, sz, th.dim, 0.95f);
+    }
+
+    // --- Action button row -------------------------------------------
     if (!buttons_.empty()) {
         int nb = static_cast<int>(buttons_.size());
         float row_w = static_cast<float>(nb) * kButtonW
                     + static_cast<float>(nb - 1) * kButtonGap;
         float row_x = (w - row_w) / 2.0f;
-        float row_y = overview_bottom + (action_h - kButtonH) / 2.0f;
+        float row_y = action_row_y + (action_row_h - kButtonH) / 2.0f;
 
         int lbl_size = th.font_medium_size;
         int lbl_baseline = r.mb_text_baseline(lbl_size);
@@ -630,12 +781,10 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float by = row_y;
             bool focused = (i == focus_);
 
-            // Destructive-looking fill for the Confirm Remove button so the
-            // user notices what they're about to do.
             ::ui::Color bg_color = (btn.action == Action::ConfirmRemove)
                                        ? th.highlight2
                                        : th.action;
-            float fill_alpha = focused ? 0.95f : 0.6f;
+            float fill_alpha = focused ? 0.95f : 0.55f;
             r.mb_fill_rect(bx, by, kButtonW, kButtonH, bg_color, fill_alpha);
 
             if (focused) {
@@ -655,11 +804,21 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float ty = by + (kButtonH / 2.0f)
                      - static_cast<float>(lbl_size) / 2.0f
                      + static_cast<float>(lbl_baseline);
-            const ::ui::Color& fg =
-                (btn.action == Action::ConfirmRemove) ? th.fg : th.fg;
-            r.mb_draw_text(btn.label, tx, ty, lbl_size, fg,
+            r.mb_draw_text(btn.label, tx, ty, lbl_size, th.fg,
                            focused ? 1.0f : 0.9f);
         }
+    }
+
+    // --- Bottom hint -------------------------------------------------
+    {
+        const std::string hint =
+            "Rotate: nav   RCLICK/BTN2: action   BTN4: back (hold for home)";
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        int hw = r.mb_text_width(hint, sz);
+        float hx = (w - static_cast<float>(hw)) / 2.0f;
+        float hy = h - 10.0f - static_cast<float>(sz) + static_cast<float>(baseline);
+        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
     }
 
     // --- Transient banner --------------------------------------------
@@ -671,9 +830,9 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float box_w = static_cast<float>(bw) + 2.0f * pad;
         float box_h = static_cast<float>(sz) + 2.0f * pad * 0.5f;
         float box_x = (w - box_w) / 2.0f;
-        float box_y = overview_bottom - box_h - 12.0f;
-        if (box_y < banner_h + 8.0f) box_y = banner_h + 8.0f;
-        r.mb_fill_rect(box_x, box_y, box_w, box_h, th.bg, 0.9f);
+        float box_y = action_row_y - box_h - 12.0f;
+        if (box_y < kBackdropH + 8.0f) box_y = kBackdropH + 8.0f;
+        r.mb_fill_rect(box_x, box_y, box_w, box_h, th.bg, 0.92f);
         r.mb_stroke_rect(box_x, box_y, box_w, box_h, 2.0f, th.accent, 1.0f);
         float tx = box_x + pad;
         float ty = box_y + (box_h / 2.0f) - static_cast<float>(sz) / 2.0f

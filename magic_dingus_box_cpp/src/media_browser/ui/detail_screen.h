@@ -108,6 +108,7 @@ private:
         ConfirmRemove,   // Transient — Remove's second stage.
         Play,
         Retry,
+        MoreInfo,        // Placeholder — future sub-screen with full trivia.
     };
 
     struct Button {
@@ -134,6 +135,7 @@ private:
     Screen do_remove_confirm();
     Screen do_play();
     Screen do_retry();
+    Screen do_more_info();
 
     // Brief toast messages (e.g. "Search triggered", "Added to library").
     void show_banner(std::string text);

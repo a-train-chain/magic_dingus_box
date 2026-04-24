@@ -93,6 +93,16 @@ public:
                                 const ui::Color& fallback_tint,
                                 float alpha_multiplier = 1.0f);
 
+    // Like mb_draw_poster_or_tint but PRESERVES the image's native aspect
+    // ratio. Letterboxes (top/bottom bars) or pillarboxes (left/right bars)
+    // the texture inside (x, y, w, h), filling the empty space with a dim
+    // copy of fallback_tint so the slot is still visually anchored. If the
+    // poster is not yet loaded, fills the entire slot with fallback_tint.
+    void mb_draw_poster_fit(const std::string& url,
+                            float x, float y, float w, float h,
+                            const ui::Color& fallback_tint,
+                            float alpha_multiplier = 1.0f);
+
     // Called once per frame from the main loop. Drains any completed
     // background fetches and performs the GL uploads. Must run on the
     // GL-owning thread.
