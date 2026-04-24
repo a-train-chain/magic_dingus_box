@@ -9,6 +9,7 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
+#include "ui/toast.h"
 
 namespace media_browser::ui {
 
@@ -178,6 +179,16 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
                 cancel_pending_ = false;
                 cancel_pending_queue_id_ = 0;
             }
+            continue;
+        }
+
+        // BTN2 (PLAY_PAUSE): pause/resume is not implemented on the
+        // Radarr API surface we currently expose, so — per spec — punt
+        // with an interim toast. The user can still pause/resume from the
+        // qBittorrent web UI.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            ::ui::Toast::show(
+                "Pause/resume via qBittorrent web UI (localhost:8080)");
             continue;
         }
 
@@ -465,9 +476,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     std::string hint;
     if (cancel_pending_) {
-        hint = "SELECT: Confirm Cancel   UP/DOWN: navigate   Menu: Back";
+        hint = "SELECT: Confirm Cancel   Rotate: nav   BTN4: back (hold: exit)";
     } else {
-        hint = "SELECT: Cancel selected   UP/DOWN: navigate   Menu: Back";
+        hint = "Rotate: nav   RCLICK: cancel   BTN2: pause   BTN4: back (hold: exit)";
     }
     int hint_size = th.font_small_size;
     int hint_baseline = r.mb_text_baseline(hint_size);

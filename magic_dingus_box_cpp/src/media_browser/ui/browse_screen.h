@@ -1,5 +1,8 @@
 #pragma once
 
+#include <chrono>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "media_browser/radarr/radarr_types.h"
@@ -84,6 +87,10 @@ private:
     void ensure_genres_loaded();
     // Cycle the current filter_row_'s value by `delta` (+1 / -1 typical).
     void cycle_filter_value(int delta);
+    // BTN2 quick-add: lookup library cache + quality profiles, then
+    // radarr_.add_movie() for the focused poster. Surfaces a Toast on
+    // completion. Idempotent — no-op if movie is already in library.
+    void quick_add_focused();
 
     static const char* label_for_category(Category cat);
 
@@ -120,6 +127,14 @@ private:
     // Available sort-by strings (paired with display labels in the .cpp).
     // current_sort_index_ is the index into a static array in the .cpp.
     int current_sort_index_ = 0;
+
+    // --- BTN2 quick-add cache --------------------------------------
+    // Cached tmdb_ids already in the Radarr library, so quick-add doesn't
+    // refetch the full library on every press. Populated on enter() and
+    // refreshed after a successful add.
+    std::unordered_set<int> library_tmdb_ids_;
+    std::vector<QualityProfile> quality_profiles_;
+    bool library_cached_ = false;
 };
 
 }  // namespace media_browser::ui

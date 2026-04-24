@@ -178,6 +178,17 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
             return Screen::Browse;
         }
 
+        // BTN2 (PLAY_PAUSE): "Play" for the focused movie. For now this
+        // transitions to DetailScreen; Task 24 will wire real playback.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            if (focus_ != Focus::PosterGrid) continue;
+            if (view_.empty()) continue;
+            if (grid_cursor_ < 0 ||
+                grid_cursor_ >= static_cast<int>(view_.size())) continue;
+            selected_tmdb_id_ = view_[grid_cursor_]->tmdb_id;
+            return Screen::Detail;
+        }
+
         // Vertical movement — ROTATE_VERTICAL (dpad up/down).
         if (e.action == platform::InputAction::ROTATE_VERTICAL) {
             int delta = e.delta;
@@ -481,7 +492,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_rect(0.0f, bar_y, w, 1.0f, th.dim, 0.6f);
 
     const std::string hint =
-        "Select: Open details   LEFT/RIGHT: Filter   Menu: Back";
+        "Rotate: nav   RCLICK: detail   BTN2: play   BTN4: back (hold: exit)";
     int hint_size = th.font_small_size;
     int hint_baseline = r.mb_text_baseline(hint_size);
     int hint_w = r.mb_text_width(hint, hint_size);

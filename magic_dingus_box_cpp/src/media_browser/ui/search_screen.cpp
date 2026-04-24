@@ -7,6 +7,7 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
+#include "ui/toast.h"
 
 namespace media_browser::ui {
 
@@ -86,6 +87,52 @@ void SearchScreen::enter() {
     // initialize its selected_row/col.
     keyboard_.open("", "Search Movies",
                    /*on_enter=*/nullptr, /*on_cancel=*/nullptr);
+
+    // Cache library + profiles for BTN2 quick-add, once per screen enter.
+    if (!library_cached_) {
+        auto lib = radarr_.get_library();
+        library_tmdb_ids_.clear();
+        for (const auto& m : lib) {
+            if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
+        }
+        quality_profiles_ = radarr_.get_quality_profiles();
+        library_cached_ = true;
+    }
+}
+
+void SearchScreen::quick_add_focused() {
+    // Only fires from the results grid; no-op on the keyboard.
+    if (focus_ != Focus::Results) return;
+    if (results_.empty()) return;
+    if (grid_cursor_ < 0 ||
+        grid_cursor_ >= static_cast<int>(results_.size())) return;
+    const auto& hit = results_[grid_cursor_];
+    if (hit.tmdb_id <= 0) return;
+
+    if (library_tmdb_ids_.count(hit.tmdb_id) > 0) {
+        ::ui::Toast::show("Already in library");
+        return;
+    }
+
+    int qp = 0;
+    for (const auto& p : quality_profiles_) {
+        if (p.name == "HD-1080p") { qp = p.id; break; }
+    }
+    if (qp == 0 && !quality_profiles_.empty()) qp = quality_profiles_.front().id;
+    if (qp == 0) {
+        ::ui::Toast::show("No quality profile — check Radarr");
+        return;
+    }
+
+    bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
+    if (!ok) {
+        ::ui::Toast::show("Add failed — see Radarr logs");
+        return;
+    }
+    library_tmdb_ids_.insert(hit.tmdb_id);
+    std::string msg = "Added: ";
+    msg += (hit.title.empty() ? "movie" : hit.title);
+    ::ui::Toast::show(msg);
 }
 
 void SearchScreen::run_lookup_if_due() {
@@ -124,6 +171,12 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
         // to the kiosk main menu; Browse handles that).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             return Screen::Browse;
+        }
+
+        // BTN2 (PLAY_PAUSE): quick-add focused result. No-op on keyboard.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            quick_add_focused();
+            continue;
         }
 
         // Horizontal nav: always to the keyboard regardless of focus —
@@ -451,8 +504,8 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     const std::string hint =
         (focus_ == Focus::Keyboard)
-            ? "Type: SELECT   Down: into results   Back: Menu"
-            : "Open: SELECT   Up: back to keyboard   Back: Menu";
+            ? "Type: SELECT   Down: into results   BTN4: back (hold: exit)"
+            : "Rotate: nav   RCLICK: open   BTN2: quick-add   BTN4: back (hold: exit)";
     int hint_size = th.font_small_size;
     int hint_baseline = r.mb_text_baseline(hint_size);
     int hint_w = r.mb_text_width(hint, hint_size);

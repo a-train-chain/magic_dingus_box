@@ -1272,6 +1272,68 @@ int main(int /* argc */, char* /* argv */[]) {
                 for (auto& s : synth_events) input_events.push_back(std::move(s));
             }
 
+            // BTN4 (SETTINGS_MENU) long-press detection. Short press
+            // (< 500ms) forwards a synthetic `pressed` event to the active
+            // screen so the existing per-screen "back" logic runs unchanged.
+            // Long press (>= 500ms) bypasses the screen entirely and exits
+            // the Media Browser back to the kiosk MainMenu. Centralizing
+            // this in the dispatcher avoids adding ~10 lines of boilerplate
+            // to every screen.
+            static std::optional<std::chrono::steady_clock::time_point>
+                mb_btn4_pressed_at;
+            constexpr auto kLongPressThreshold =
+                std::chrono::milliseconds(500);
+            bool btn4_long_press_exit = false;
+            {
+                std::vector<platform::InputEvent> forwarded;
+                forwarded.reserve(input_events.size());
+                for (const auto& e : input_events) {
+                    if (e.action == platform::InputAction::SETTINGS_MENU) {
+                        if (e.pressed) {
+                            mb_btn4_pressed_at =
+                                std::chrono::steady_clock::now();
+                            // Don't forward the press yet — wait for the
+                            // release to decide short vs long.
+                        } else {
+                            if (mb_btn4_pressed_at.has_value()) {
+                                auto held =
+                                    std::chrono::steady_clock::now() -
+                                    *mb_btn4_pressed_at;
+                                mb_btn4_pressed_at.reset();
+                                if (held >= kLongPressThreshold) {
+                                    btn4_long_press_exit = true;
+                                } else {
+                                    // Synthesize the short-press "pressed"
+                                    // event expected by the screens' existing
+                                    // SETTINGS_MENU handlers.
+                                    platform::InputEvent synth = e;
+                                    synth.pressed = true;
+                                    forwarded.push_back(synth);
+                                }
+                            }
+                            // If we saw a release with no prior press, drop
+                            // it — the press happened before we entered the
+                            // Media Browser and is no longer meaningful.
+                        }
+                    } else {
+                        forwarded.push_back(e);
+                    }
+                }
+                input_events = std::move(forwarded);
+            }
+
+            if (btn4_long_press_exit) {
+                // Long-press exit bypasses the screen entirely. Mirror the
+                // Screen::Exit return path below: leave the current screen,
+                // reset dispatcher state, and let the rest of the main loop
+                // run this frame (rendering, etc.) with current_screen flipped
+                // to MainMenu.
+                active_mb_screen->leave();
+                state.current_screen = app::AppScreen::MainMenu;
+                current_mb_screen = media_browser::ui::Screen::Browse;
+                active_mb_screen = &mb_browse;
+                input_events.clear();
+            } else {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
                 active_mb_screen->leave();
@@ -1316,6 +1378,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // Consume all input events so the main UI's per-event loop
             // below sees an empty queue this frame.
             input_events.clear();
+            }  // else (not btn4_long_press_exit)
         }
 #endif
 

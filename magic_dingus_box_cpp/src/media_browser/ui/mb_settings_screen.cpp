@@ -255,6 +255,21 @@ Screen MbSettingsScreen::handle_input(
             return Screen::Browse;
         }
 
+        // BTN2 (PLAY_PAUSE): global "refresh service health" shortcut.
+        // Cheap — pings the three services and updates the status dots.
+        // Exposes a transient banner so the user sees what happened.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            refresh_service_health();
+            std::string msg = "Services: ";
+            msg += health_.radarr ? "Radarr ok" : "Radarr down";
+            msg += "  |  ";
+            msg += health_.prowlarr ? "Prowlarr ok" : "Prowlarr down";
+            msg += "  |  ";
+            msg += health_.qbittorrent ? "qBittorrent ok" : "qBittorrent down";
+            show_banner(msg);
+            continue;
+        }
+
         // Vertical movement: move cursor between rows.
         if (e.action == platform::InputAction::ROTATE_VERTICAL) {
             int delta = e.delta;
@@ -715,8 +730,8 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_rect(0.0f, bar_y, w, 1.0f, th.dim, 0.6f);
     {
         const std::string hint =
-            "UP/DOWN: Navigate   LEFT/RIGHT: Adjust   "
-            "SELECT: Toggle/Activate   Menu: Back";
+            "Rotate: nav   RCLICK: toggle   "
+            "BTN2: refresh   BTN4: back (hold: exit)";
         int hint_size = th.font_small_size;
         int hint_baseline = r.mb_text_baseline(hint_size);
         int tw = r.mb_text_width(hint, hint_size);

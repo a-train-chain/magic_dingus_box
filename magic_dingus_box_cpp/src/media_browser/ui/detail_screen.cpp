@@ -277,6 +277,25 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
             if (next != Screen::Detail) return next;
             continue;
         }
+
+        // BTN2 (PLAY_PAUSE): activate the default (leftmost / primary)
+        // action for the current Mode. That's Add in NotInLibrary,
+        // Search Again in InLibraryNoFile, Play in InLibraryWithFile,
+        // Retry in Error. Same flow as selecting button index 0 — we
+        // snap focus_ there before delegating.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            if (buttons_.empty()) continue;
+            focus_ = 0;
+            // Cancel any pending remove confirmation to avoid a surprise
+            // destructive fire from a different button.
+            if (remove_pending_) {
+                remove_pending_ = false;
+                rebuild_buttons();
+            }
+            Screen next = on_activate();
+            if (next != Screen::Detail) return next;
+            continue;
+        }
     }
     return Screen::Detail;
 }
@@ -521,7 +540,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
 
         // Back-hint top-right.
-        const std::string back_hint = "Press Menu to go back";
+        const std::string back_hint =
+            "Rotate: nav   RCLICK/BTN2: action   BTN4: back (hold: exit)";
         int hint_size = th.font_small_size;
         int hint_baseline = r.mb_text_baseline(hint_size);
         int hw = r.mb_text_width(back_hint, hint_size);

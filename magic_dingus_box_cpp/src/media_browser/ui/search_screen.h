@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "media_browser/radarr/radarr_types.h"
@@ -66,6 +67,9 @@ private:
     static constexpr int kDebounceMs = 400;
 
     void run_lookup_if_due();
+    // BTN2 quick-add: only fires when Focus::Results — adds the focused
+    // result to the Radarr library (same behavior as BrowseScreen).
+    void quick_add_focused();
 
     RadarrClient& radarr_;
     ::ui::VirtualKeyboard keyboard_;
@@ -85,6 +89,11 @@ private:
     int scroll_row_ = 0;
 
     int selected_tmdb_id_ = 0;
+
+    // --- BTN2 quick-add cache (same shape as BrowseScreen) ------------
+    std::unordered_set<int> library_tmdb_ids_;
+    std::vector<QualityProfile> quality_profiles_;
+    bool library_cached_ = false;
 };
 
 }  // namespace media_browser::ui
