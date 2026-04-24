@@ -453,7 +453,18 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::DetailScreen     mb_detail(radarr);
     media_browser::ui::QueueScreen      mb_queue(radarr);
     media_browser::ui::LibraryScreen    mb_library(radarr);
-    media_browser::ui::MbSettingsScreen mb_mb_settings(radarr);
+    // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
+    // flips media_browser_unlocked=false and persists settings. The screen
+    // triggers this callback AND returns Screen::Exit, so the dispatcher
+    // below naturally transitions back to MainMenu on the next input tick.
+    media_browser::ui::MbSettingsScreen mb_mb_settings(
+        radarr,
+        [&state]() {
+            state.media_browser_unlocked = false;
+            app::SettingsPersistence::save_settings(state);
+            ui::Toast::show("Movie section hidden");
+            LOG_INFO("Media Browser: feature re-locked via Movies Settings screen");
+        });
 
     media_browser::ui::Screen current_mb_screen = media_browser::ui::Screen::Browse;
     media_browser::ui::MbScreen* active_mb_screen = &mb_browse;
