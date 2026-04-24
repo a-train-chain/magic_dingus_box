@@ -89,6 +89,21 @@ services:
       - ${STORAGE_ROOT}/downloads:/downloads
     restart: unless-stopped
 
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: mdb_flaresolverr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ}
+    ports:
+      - "8191:8191"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "http://localhost:8191/"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
 # Services share the default bridge network; inter-container DNS resolves names.
 # Radarr reaches qBittorrent via http://gluetun:8080 (qBittorrent shares
 # Gluetun's network namespace, so its WebUI is accessible at the gluetun
