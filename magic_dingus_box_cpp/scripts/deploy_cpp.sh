@@ -191,6 +191,33 @@ EOF
 echo "  ✓ CPU Performance Governor Service installed"
 echo ""
 
+# Step 1.7c: Install Media Browser services unit (if --media-browser)
+if [ "${MEDIA_BROWSER:-false}" = "true" ]; then
+    echo "Step 1.7c: Installing Media Browser services..."
+
+    # Copy services directory + systemd unit
+    rsync -avz \
+        "${CPP_DIR}/services/" \
+        "${PI_HOST}:/opt/magic_dingus_box/services/"
+
+    rsync -avz \
+        "${CPP_DIR}/systemd/magic-dingus-services.service" \
+        "${PI_HOST}:/tmp/magic-dingus-services.service"
+
+    rsync -avz \
+        "${CPP_DIR}/scripts/setup_services.sh" \
+        "${PI_HOST}:/tmp/setup_services.sh"
+
+    ssh "${PI_HOST}" "sudo cp /tmp/magic-dingus-services.service /etc/systemd/system/
+                      sudo systemctl daemon-reload
+                      sudo systemctl enable magic-dingus-services.service
+                      chmod +x /tmp/setup_services.sh"
+
+    echo "  ✓ Services unit installed and enabled"
+    echo "  → To initialize services, run on the Pi: sudo /tmp/setup_services.sh"
+fi
+echo ""
+
 # Step 1.8: Install Local Cores (skip if dir not present in source tree)
 if [ -d "${CPP_DIR}/libretro_cores" ]; then
     echo "Step 1.8: Installing Local Cores..."
