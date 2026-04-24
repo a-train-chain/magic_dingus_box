@@ -259,6 +259,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/torrent/torrent_session.cpp
         src/media_browser/radarr/radarr_parsers.cpp
         src/media_browser/radarr/radarr_client.cpp
+        src/media_browser/radarr/radarr_mock.cpp
         src/platform/sequence_detector.cpp
     )
 
