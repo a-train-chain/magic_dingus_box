@@ -27,11 +27,16 @@ every Pi boot.
    Save the printed credentials in a password manager.
 
 3. **Change qBittorrent admin password**
-   Open `http://magicpi.local:8080`, log in with the printed password,
-   go to Tools → Options → Web UI → change password.
+   From your Mac, open an SSH tunnel (see "Fine print" section below):
+   ```bash
+   ssh -L 8080:localhost:8080 magic@magicpi.local
+   ```
+   Then browse to `http://localhost:8080`, log in with the printed
+   password, go to Tools → Options → Web UI → change password.
 
 4. **Add a legal indexer in Prowlarr**
-   Open `http://magicpi.local:9696`. Go to Indexers → Add.
+   With an SSH tunnel open (`ssh -L 9696:localhost:9696 magic@magicpi.local`),
+   browse to `http://localhost:9696`. Go to Indexers → Add.
    Example legal indexer:
    - **Internet Archive** (via Jackett gateway) — public-domain films
    - **LinuxTracker** — Linux ISOs for E2E testing
@@ -123,11 +128,29 @@ network namespace. Port stays `8080`.
 | Downloads stuck at 0% | qBittorrent — check disk space, tracker status |
 | API key wrong / connection refused | Re-run `/tmp/setup_services.sh` (idempotent) |
 
-## Fine print (advanced URL for owner)
+## Fine print — admin access via SSH tunnel
 
-Kiosk operator can access full web UIs for advanced config:
-- Radarr:      `http://magicpi.local:7878`
-- Prowlarr:    `http://magicpi.local:9696`
-- qBittorrent: `http://magicpi.local:8080`
+All service web UIs are bound to `127.0.0.1` on the Pi — they are NOT
+reachable from other devices on the LAN (defense in depth; zero
+network attack surface even if a malicious device joins your Wi-Fi).
 
-All require authentication. Keep credentials private.
+To access them from your Mac/phone for admin config, open an SSH
+tunnel from a trusted device:
+
+```bash
+ssh -L 7878:localhost:7878 \
+    -L 9696:localhost:9696 \
+    -L 8080:localhost:8080 \
+    -L 8191:localhost:8191 \
+    magic@magicpi.local
+```
+
+Then on that device, browse to:
+
+- Radarr:       `http://localhost:7878`
+- Prowlarr:     `http://localhost:9696`
+- qBittorrent:  `http://localhost:8080`
+- FlareSolverr: `http://localhost:8191`
+
+Keep the SSH session open while using the UIs. Close the SSH session
+when done — the tunnels close with it.

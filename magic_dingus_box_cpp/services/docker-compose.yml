@@ -16,7 +16,8 @@ services:
       - ${STORAGE_ROOT}/downloads:/downloads
       - ${STORAGE_ROOT}/library:/library
     ports:
-      - "7878:7878"
+      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
+      - "127.0.0.1:7878:7878"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
@@ -34,7 +35,8 @@ services:
     volumes:
       - ./config/prowlarr:/config
     ports:
-      - "9696:9696"
+      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
+      - "127.0.0.1:9696:9696"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
@@ -59,8 +61,11 @@ services:
       - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
       - TZ=${TZ}
     ports:
-      # qBittorrent web UI + peer ports are exposed via Gluetun
-      - "8080:8080"
+      # qBittorrent web UI + peer ports are exposed via Gluetun.
+      # WebUI: 127.0.0.1 only (admin requires SSH tunnel).
+      # BitTorrent peer port: public — needed for peer connectivity/seeding;
+      # BitTorrent protocol itself does not expose admin surface.
+      - "127.0.0.1:8080:8080"
       - "6881:6881"
       - "6881:6881/udp"
     volumes:
@@ -96,7 +101,8 @@ services:
       - LOG_LEVEL=info
       - TZ=${TZ}
     ports:
-      - "8191:8191"
+      # Bind to 127.0.0.1 only — internal CAPTCHA solver, not needed externally.
+      - "127.0.0.1:8191:8191"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "http://localhost:8191/"]

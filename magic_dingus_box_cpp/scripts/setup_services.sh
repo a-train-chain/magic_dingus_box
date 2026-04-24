@@ -113,19 +113,30 @@ cat <<EOF
 ======================================================================
 Services initialized. SAVE THESE CREDENTIALS in a password manager:
 
-Radarr    → http://$(hostname -I | awk '{print $1}'):7878
+All service UIs are bound to 127.0.0.1 on this Pi (zero LAN attack
+surface). Admin access requires an SSH tunnel from a trusted device:
+
+  ssh -L 7878:localhost:7878 \\
+      -L 9696:localhost:9696 \\
+      -L 8080:localhost:8080 \\
+      -L 8191:localhost:8191 \\
+      magic@magicpi.local
+
+Then from that device:
+
+Radarr    → http://localhost:7878 (via SSH tunnel only — see operator guide)
             API key: ${RADARR_KEY}
 
-Prowlarr  → http://$(hostname -I | awk '{print $1}'):9696
+Prowlarr  → http://localhost:9696 (via SSH tunnel only — see operator guide)
             API key: ${PROWLARR_KEY}
 
-qBittorrent → http://$(hostname -I | awk '{print $1}'):8080
+qBittorrent → http://localhost:8080 (via SSH tunnel only — see operator guide)
             Username: admin
             Password: $(grep QBITTORRENT_ADMIN_PASSWORD "${ENV_FILE}" | cut -d= -f2)
             (Log in and change the default via qBit web UI immediately)
 
 NEXT STEPS:
-  1. Log into qBittorrent and change the admin password
+  1. Open SSH tunnel (above), log into qBittorrent, change admin password
   2. In Prowlarr: add at least one indexer (legal content only)
   3. In Radarr: connect to Prowlarr (auto-discovered) and qBittorrent
   4. Kiosk Media Browser will now talk to Radarr once ENABLE_MEDIA_BROWSER is on
