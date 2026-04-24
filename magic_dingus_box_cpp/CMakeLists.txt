@@ -249,6 +249,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/library/library_db.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
+        src/platform/sequence_detector.cpp
     )
 
     # --- Unit test runner ---
@@ -256,6 +257,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_sequence_detector.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
 
