@@ -198,7 +198,7 @@ if [ "${MEDIA_BROWSER:-false}" = "true" ]; then
     # Copy services directory + systemd unit
     rsync -avz \
         "${CPP_DIR}/services/" \
-        "${PI_HOST}:/opt/magic_dingus_box/services/"
+        "${PI_HOST}:${PI_DIR}/services/"
 
     rsync -avz \
         "${CPP_DIR}/systemd/magic-dingus-services.service" \
