@@ -57,6 +57,13 @@ public:
     // Unrecognized paths pass through unchanged with a warn-level log.
     std::string resolve_host_path(const std::string& container_path) const;
 
+    // Trailing-slash normalization for path prefixes — exposed so main.cpp
+    // can normalize env-var-supplied overrides at the same boundary the
+    // constructor uses internally. Empty input passes through unchanged
+    // (treated as "use default"); otherwise we ensure exactly one '/' at
+    // the end. Defense against /library2/foo falsely matching /library.
+    static std::string normalize_prefix(std::string s);
+
     // Diagnostics
     const std::string& last_error() const { return last_error_; }
 

@@ -16,19 +16,14 @@ static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     s->append(static_cast<char*>(ptr), size * nmemb);
     return size * nmemb;
 }
-
-std::string ensure_trailing_slash(const std::string& s) {
-    if (s.empty()) return s;
-    return s.back() == '/' ? s : s + "/";
-}
 }  // namespace
 
 RadarrClient::RadarrClient(Config config) : cfg_(std::move(config)) {
     // Normalize prefixes so prefix matching can't fall for /library2/foo.
     cfg_.container_library_prefix =
-        ensure_trailing_slash(cfg_.container_library_prefix);
+        RadarrClient::normalize_prefix(cfg_.container_library_prefix);
     cfg_.host_library_prefix =
-        ensure_trailing_slash(cfg_.host_library_prefix);
+        RadarrClient::normalize_prefix(cfg_.host_library_prefix);
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
 }
@@ -219,6 +214,12 @@ std::string RadarrClient::resolve_host_path(const std::string& container_path) c
                  "'{}'; passing through unchanged",
                  container_path, cfg_.container_library_prefix);
     return container_path;
+}
+
+std::string RadarrClient::normalize_prefix(std::string s) {
+    if (s.empty()) return s;
+    if (s.back() != '/') s.push_back('/');
+    return s;
 }
 
 }  // namespace media_browser
