@@ -5,6 +5,8 @@
 #include "app/app_state.h"
 #include "app/controller.h"
 #include "platform/input_manager.h"
+#include "ui/renderer.h"
+#include "ui/theme.h"
 #include "ui/toast.h"
 #include "utils/result.h"
 
@@ -152,9 +154,58 @@ void PlaybackScreen::update() {
     was_video_active_ = video_active_now;
 }
 
-void PlaybackScreen::render(::ui::Renderer& /*r*/,
-                            int /*screen_w*/, int /*screen_h*/) {
-    // Implemented in Task 6.
+void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
+    const ::ui::Theme& th = r.mb_theme();
+    const float w = static_cast<float>(screen_w);
+    const float h = static_cast<float>(screen_h);
+
+    // Title marquee — top-left, 3 seconds with linear fade-out over the
+    // last 500 ms. Matches Detail's "FEATURE PRESENTATION" header style.
+    auto now = std::chrono::steady_clock::now();
+    if (now < title_marquee_until_) {
+        auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            title_marquee_until_ - now).count();
+        float alpha = 1.0f;
+        if (remaining_ms < 500) {
+            alpha = static_cast<float>(remaining_ms) / 500.0f;
+        }
+        std::string heading = "NOW PLAYING";
+        if (!movie_title_.empty()) {
+            heading += " — " + movie_title_;
+        }
+        const float kPaddingX = 32.0f;
+        const float kBaselineY = 38.0f;
+        r.mb_draw_title_text(heading, kPaddingX, kBaselineY,
+                             th.font_heading_size, th.accent2, alpha);
+        // Underline beneath, just like Detail's header rule.
+        const float rule_y = 58.0f;
+        r.mb_draw_line(kPaddingX, rule_y, w - kPaddingX, rule_y,
+                       2.0f, th.accent2, 0.95f * alpha);
+    }
+
+    // Pause indicator — bottom-center, persistent until unpause.
+    if (controller_.is_paused()) {
+        std::string label = "PAUSED";
+        int sz = th.font_medium_size;
+        int baseline = r.mb_text_baseline(sz);
+        int tw = r.mb_text_width(label, sz);
+        float tx = (w - static_cast<float>(tw)) / 2.0f;
+        float ty = h - 60.0f - static_cast<float>(sz)
+                 + static_cast<float>(baseline);
+        r.mb_draw_text(label, tx, ty, sz, th.dim, 0.85f);
+    }
+
+    // Persistent control hint — bottom-right, mirrors Media Browser footer.
+    {
+        std::string hint = "BTN4: stop   PLAY: pause   ROTATE: seek";
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        int tw = r.mb_text_width(hint, sz);
+        float tx = w - 32.0f - static_cast<float>(tw);
+        float ty = h - 12.0f - static_cast<float>(sz)
+                 + static_cast<float>(baseline);
+        r.mb_draw_text(hint, tx, ty, sz, th.dim, 0.7f);
+    }
 }
 
 }  // namespace media_browser::ui
