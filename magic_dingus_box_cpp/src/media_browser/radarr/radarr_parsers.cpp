@@ -68,6 +68,7 @@ std::vector<Movie> RadarrParsers::parse_movie_list(const std::string& json) {
         if (r.isMember("movieFile")) {
             const auto& f = r["movieFile"];
             m.file_path = f.get("relativePath", "").asString();
+            m.file_container_path = f.get("path", "").asString();
             m.file_quality = f["quality"]["quality"].get("name", "").asString();
             m.file_size_bytes = f.get("size", 0).asInt64();
         }

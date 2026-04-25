@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "tmdbId": 45745,
+    "imdbId": "tt1727587",
+    "title": "Sintel",
+    "year": 2010,
+    "monitored": true,
+    "hasFile": true,
+    "added": "2026-04-25T02:10:33Z",
+    "movieFile": {
+      "path": "/library/Sintel (2010)/Sintel (2010) [720p] [BluRay] [YTS.MX].mp4",
+      "relativePath": "Sintel (2010) [720p] [BluRay] [YTS.MX].mp4",
+      "size": 142606336,
+      "quality": {"quality": {"name": "Bluray-720p"}}
+    }
+  }
+]

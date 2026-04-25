@@ -31,6 +31,18 @@ TEST_CASE("parse_movie_lookup: extracts 2 hits from fixture", "[radarr][parsers]
     REQUIRE(hits[1].year == 2003);
 }
 
+TEST_CASE("parse_movie_list: extracts movieFile.path as file_container_path",
+          "[radarr][parsers]") {
+    auto json = read_fixture("movie_list_with_file.json");
+    auto movies = media_browser::RadarrParsers::parse_movie_list(json);
+    REQUIRE(movies.size() == 1);
+    REQUIRE(movies[0].has_file == true);
+    REQUIRE(movies[0].file_path ==
+            "Sintel (2010) [720p] [BluRay] [YTS.MX].mp4");
+    REQUIRE(movies[0].file_container_path ==
+            "/library/Sintel (2010)/Sintel (2010) [720p] [BluRay] [YTS.MX].mp4");
+}
+
 TEST_CASE("parse_queue: extracts 1 queue item", "[radarr][parsers]") {
     auto json = read_fixture("queue.json");
     auto items = media_browser::RadarrParsers::parse_queue(json);
