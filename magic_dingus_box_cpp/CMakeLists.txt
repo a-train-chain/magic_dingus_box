@@ -153,6 +153,7 @@ if(BUILD_KIOSK)
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
+            src/media_browser/ui/playback_screen.cpp
             src/media_browser/ui/queue_screen.cpp
             src/media_browser/ui/library_screen.cpp
             src/media_browser/ui/mb_settings_screen.cpp
@@ -300,6 +301,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/ui/browse_screen.cpp
         src/media_browser/ui/search_screen.cpp
         src/media_browser/ui/detail_screen.cpp
+        src/media_browser/ui/playback_screen.cpp
         src/media_browser/ui/queue_screen.cpp
         src/media_browser/ui/library_screen.cpp
         src/media_browser/ui/mb_settings_screen.cpp
