@@ -45,8 +45,9 @@ namespace media_browser::ui {
 //     to "Confirm Remove" for 2 seconds. Second SELECT within that window
 //     calls radarr_.remove_movie(radarr_id, false) and transitions back to
 //     Screen::Library. Third-party press, or the 2s expiry, cancels.
-//   - [Play]: for now just transitions to Screen::Library — real playback
-//     hookup is Task 24.
+//   - [Play]: transitions to Screen::Playback with the resolved host path
+//     and title forwarded via get_play_target(); the dispatcher hands those
+//     to PlaybackScreen::set_movie before its enter() loads the file.
 //
 // Error / loading states:
 //   - Loading: "Loading..." centered while enter() is in flight.

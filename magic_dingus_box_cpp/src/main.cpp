@@ -480,13 +480,14 @@ int main(int /* argc */, char* /* argv */[]) {
             radarr_cfg.base_url = base;
         }
         radarr_cfg.api_key = radarr_key;
-        // Path-translation overrides (Task 8 of movie-playback plan): allow
-        // the operator to redirect /library/* and /downloads/* between the
-        // Radarr container's view and the host's actual mount point. Defaults
-        // already in radarr_cfg work for the standard /mnt/ssd setup; these
-        // env vars exist so we can change STORAGE_ROOT later without
-        // recompiling. RadarrClient::normalize_prefix ensures both prefixes
-        // end with '/' to avoid /library2/foo falsely matching /library.
+        // Path-translation overrides: redirect /library/* between the Radarr
+        // container's view and the host's actual mount point. Default in
+        // radarr_cfg works for the standard /mnt/ssd setup; the env vars
+        // exist so STORAGE_ROOT can change without a kiosk recompile. The
+        // download/incomplete tree is not exposed via Radarr's API to the
+        // kiosk, so it doesn't need translation here. normalize_prefix
+        // ensures both prefixes end with '/' to avoid /library2/foo
+        // falsely matching /library.
         if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX"); p && *p) {
             radarr_cfg.container_library_prefix =
                 media_browser::RadarrClient::normalize_prefix(p);
@@ -1380,7 +1381,15 @@ int main(int /* argc */, char* /* argv */[]) {
                     // returns the user to the screen that opened it
                     // (preserves Search query/results, Library scroll,
                     // etc.) instead of always landing on Browse.
-                    mb_detail.set_origin(current_mb_screen);
+                    //
+                    // Skip when returning from Playback — Detail's origin
+                    // should still point at whatever screen opened Detail
+                    // BEFORE the user hit Play. Otherwise BTN4 on Detail
+                    // would loop the user right back into the player they
+                    // just exited.
+                    if (current_mb_screen != media_browser::ui::Screen::Playback) {
+                        mb_detail.set_origin(current_mb_screen);
+                    }
                 }
                 // Detail -> Playback: copy resolved host path + title from
                 // Detail to Playback so it knows what to load on enter().

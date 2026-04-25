@@ -24,7 +24,7 @@ struct Movie : MovieSearchHit {
     int radarr_id = 0;
     bool monitored = false;
     bool has_file = false;
-    std::string file_path;            // relative to root folder (e.g. "Sintel.mp4")
+    std::string file_path;            // basename only — e.g. "Sintel.mp4". Use file_container_path for the full path.
     std::string file_container_path;  // absolute path inside Radarr container (e.g. "/library/Sintel (2010)/Sintel.mp4")
     std::string file_quality;         // e.g. "Bluray-1080p"
     int64_t file_size_bytes = 0;
