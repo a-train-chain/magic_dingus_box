@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -472,11 +473,37 @@ Screen DetailScreen::do_remove_confirm() {
     return Screen::Library;
 }
 
+DetailScreen::PlayTarget DetailScreen::get_play_target() const {
+    PlayTarget pt;
+    if (!movie_.has_value()) return pt;
+    if (movie_->file_container_path.empty()) return pt;
+
+    pt.host_path = radarr_.resolve_host_path(movie_->file_container_path);
+    // Prefer the rich TMDB title if available; fall back to the Radarr title.
+    if (tmdb_detail_.has_value() && !tmdb_detail_->title.empty()) {
+        pt.title = tmdb_detail_->title;
+    } else {
+        pt.title = movie_->title;
+    }
+    return pt;
+}
+
 Screen DetailScreen::do_play() {
-    // Task 24 wires up real playback. For now just hand off to Library so
-    // the user ends up somewhere sensible instead of staring at a dead
-    // button.
-    return Screen::Library;
+    if (!movie_.has_value()) {
+        show_banner("No movie record");
+        return Screen::Detail;
+    }
+    auto pt = get_play_target();
+    if (pt.host_path.empty()) {
+        show_banner("Movie file path unknown");
+        return Screen::Detail;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(pt.host_path, ec)) {
+        show_banner("File missing on disk");
+        return Screen::Detail;
+    }
+    return Screen::Playback;
 }
 
 Screen DetailScreen::do_retry() {

@@ -82,6 +82,18 @@ public:
     void set_origin(Screen s) { origin_ = s; }
     Screen origin() const { return origin_; }
 
+    // Carrier struct for the Detail->Playback handoff. Populated by
+    // get_play_target() and consumed by main.cpp dispatcher to call
+    // PlaybackScreen::set_movie before the transition lands.
+    struct PlayTarget {
+        std::string host_path;  // empty if no playable file
+        std::string title;
+    };
+
+    // Returns the host-resolved file path + display title for the currently
+    // loaded movie, or {empty, empty} if no playable file exists.
+    PlayTarget get_play_target() const;
+
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
