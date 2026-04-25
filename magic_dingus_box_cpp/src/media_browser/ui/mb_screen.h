@@ -25,6 +25,7 @@ enum class Screen {
     Detail,
     Queue,
     Library,
+    Playback,        // Ad-hoc movie playback inside the Media Browser.
     MovieSettings,
     Exit   // Return to kiosk main menu (AppScreen::MainMenu).
 };
