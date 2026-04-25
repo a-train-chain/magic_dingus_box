@@ -357,6 +357,17 @@ void GstPlayer::seek(double seconds) {
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         gint64 seek_pos = pos + static_cast<gint64>(seconds * GST_SECOND);
         if (seek_pos < 0) seek_pos = 0;
+        // Clamp upper bound to (duration - 1s) so a seek can't push past
+        // the end. Otherwise a high-velocity rotary scrub past the file's
+        // last frame fires EOS, which our PlaybackScreen treats as
+        // natural end-of-stream and returns to Detail — looks like a
+        // crash to the user. Treat duration_ <= 0 as "unknown" and
+        // skip the upper clamp in that case.
+        double dur = duration_.load();
+        if (dur > 1.0) {
+            gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
+            if (seek_pos > max_pos) seek_pos = max_pos;
+        }
         // ACCURATE seeking instead of KEY_UNIT. KEY_UNIT snaps to the
         // nearest keyframe with SNAP_BEFORE semantics by default, which
         // for a small positive seek (+5s slow scrub) can land BEFORE the
@@ -373,6 +384,14 @@ void GstPlayer::seek(double seconds) {
 void GstPlayer::seek_absolute(double timestamp) {
     if (!initialized_) return;
     gint64 seek_pos = static_cast<gint64>(timestamp * GST_SECOND);
+    if (seek_pos < 0) seek_pos = 0;
+    // Same upper-bound clamp as seek() — prevents over-shooting from
+    // firing EOS (which PlaybackScreen treats as natural end-of-stream).
+    double dur = duration_.load();
+    if (dur > 1.0) {
+        gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
+        if (seek_pos > max_pos) seek_pos = max_pos;
+    }
     gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
         static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
         seek_pos);

@@ -2317,9 +2317,22 @@ int main(int /* argc */, char* /* argv */[]) {
         // Calculate 4:3 viewport for Modern TV mode
         // This is used for both video and UI rendering
         bool use_letterbox = (state.display_settings.mode == app::DisplayMode::MODERN_TV);
+
+        // Media Browser content is modern 16:9 (movie posters, movie
+        // playback) — skip the 4:3 pillarbox viewport that wraps the
+        // main UI's 4:3 playlist videos. Both the per-screen layouts
+        // and ad-hoc movie playback assume the full 1280x720 viewport.
+        // Same gating idea as the bezel skip below (kept as a separate
+        // flag so future tweaks to either don't have to touch the other).
+#ifdef MEDIA_BROWSER_ENABLED
+        bool letterbox_active = use_letterbox &&
+            state.current_screen != app::AppScreen::MediaBrowser;
+#else
+        bool letterbox_active = use_letterbox;
+#endif
         int content_x = 0, content_y = 0, content_w = mode.width, content_h = mode.height;
-        
-        if (use_letterbox) {
+
+        if (letterbox_active) {
             // Calculate 4:3 content area centered in screen
             // Height stays the same, width is adjusted for 4:3 aspect ratio
             content_h = mode.height;
@@ -2340,10 +2353,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // This handles both intro video and regular video playback
         if (should_render_video) {
             // Set letterbox mode based on display settings
-            gst_renderer.set_letterbox_mode(use_letterbox);
-            
+            gst_renderer.set_letterbox_mode(letterbox_active);
+
             // In Modern TV mode, set viewport to 4:3 content area for video
-            if (use_letterbox) {
+            if (letterbox_active) {
                 glViewport(content_x, content_y, content_w, content_h);
             }
             
@@ -2357,7 +2370,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // Set viewport to 4:3 content area for UI in Modern TV mode
             // Also update UI renderer's internal dimensions for proper projection matrix
             glViewport(content_x, content_y, content_w, content_h);
-            if (use_letterbox) {
+            if (letterbox_active) {
                 ui_renderer.set_content_viewport(content_w, content_h);
             }
 #ifdef MEDIA_BROWSER_ENABLED
@@ -2372,7 +2385,7 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
             // Reset viewport after UI render
-            if (use_letterbox) {
+            if (letterbox_active) {
                 ui_renderer.reset_content_viewport();
             }
         }
@@ -2389,7 +2402,7 @@ int main(int /* argc */, char* /* argv */[]) {
 #else
         bool bezel_allowed = true;
 #endif
-        if (bezel_allowed && use_letterbox && !state.available_bezels.empty() &&
+        if (bezel_allowed && letterbox_active && !state.available_bezels.empty() &&
             state.display_settings.bezel_index >= 0 &&
             state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
             const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
