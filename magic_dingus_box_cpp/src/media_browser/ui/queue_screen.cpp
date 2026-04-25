@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -52,7 +53,11 @@ constexpr float kRowHeight           = 100.0f;
 constexpr float kRowGap              = 12.0f;
 constexpr float kRowInnerPadding     = 12.0f;
 constexpr float kPosterW             = 70.0f;
-constexpr float kPosterH             = 100.0f;
+// Poster height intentionally leaves kRowInnerPadding worth of inset on
+// top + bottom so the focused row's gold outline (~3px) doesn't clip
+// through the poster's edges. Width stays the same; mb_draw_poster_fit
+// letterboxes if the poster's native aspect doesn't match.
+constexpr float kPosterH             = kRowHeight - 2.0f * kRowInnerPadding;
 constexpr float kPosterBorderW       = 1.0f;
 constexpr float kProgressBarW        = 300.0f;
 constexpr float kProgressBarH        = 14.0f;
@@ -182,8 +187,36 @@ void QueueScreen::refresh() {
     std::unordered_set<int> active_movie_ids;
     for (const auto& q : queue_) active_movie_ids.insert(q.movie_id);
 
-    awaiting_.clear();
+    // Fetch library once. We use it for two things:
+    //   1. The "awaiting release" list (monitored, no file, not in queue).
+    //   2. Filling in poster_url on each queue item — Radarr's /queue
+    //      API doesn't include movie images, so without this cross-ref
+    //      every queue row would render the deterministic-tint
+    //      placeholder instead of the actual poster.
     auto library = radarr_.get_library();
+
+    // Build a movie_id -> poster_url lookup for the queue cross-ref.
+    std::unordered_map<int, std::string> id_to_poster;
+    id_to_poster.reserve(library.size());
+    for (const auto& m : library) {
+        if (!m.poster_url.empty()) {
+            id_to_poster.emplace(m.radarr_id, m.poster_url);
+        }
+    }
+
+    // Patch poster_url on queue items that came back without one (which
+    // is all of them currently — Radarr's queue endpoint doesn't carry
+    // movie images).
+    for (auto& q : queue_) {
+        if (q.poster_url.empty()) {
+            auto it = id_to_poster.find(q.movie_id);
+            if (it != id_to_poster.end()) q.poster_url = it->second;
+        }
+    }
+
+    // Build "awaiting release" list — monitored library movies that
+    // don't have a file yet and aren't already in the active queue.
+    awaiting_.clear();
     for (auto& m : library) {
         if (!m.monitored) continue;
         if (m.has_file) continue;
