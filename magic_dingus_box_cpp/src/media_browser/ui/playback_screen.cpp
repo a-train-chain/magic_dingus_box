@@ -52,7 +52,12 @@ void PlaybackScreen::enter() {
         return;
     }
 
-    controller_.play();
+    // load_file_with_resolution -> GstPlayer::load_file -> play() internally,
+    // so the pipeline is already transitioning to PLAYING here. Calling
+    // controller_.play() again would issue a second set_state(PLAYING) on
+    // the same pipeline back-to-back, which trips the state machine and
+    // logs spurious "state change to PLAYING failed" errors. One play() per
+    // load is the contract.
 
     // Title marquee for 3 seconds on entry.
     title_marquee_until_ = std::chrono::steady_clock::now()

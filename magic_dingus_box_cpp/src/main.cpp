@@ -2378,8 +2378,18 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
-        // The bezel PNG is stretched fullscreen - content is visible through the transparent center
-        if (use_letterbox && !state.available_bezels.empty() &&
+        // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
+        //
+        // Skip the bezel entirely while the Media Browser owns the screen.
+        // The Media Browser's content is modern 16:9 (movie posters, movie
+        // playback) — the CRT-frame bezel was designed for the main UI's
+        // 4:3 playlist videos and would just clip widescreen content.
+#ifdef MEDIA_BROWSER_ENABLED
+        bool bezel_allowed = state.current_screen != app::AppScreen::MediaBrowser;
+#else
+        bool bezel_allowed = true;
+#endif
+        if (bezel_allowed && use_letterbox && !state.available_bezels.empty() &&
             state.display_settings.bezel_index >= 0 &&
             state.display_settings.bezel_index < static_cast<int>(state.available_bezels.size())) {
             const auto& bezel = state.available_bezels[state.display_settings.bezel_index];
