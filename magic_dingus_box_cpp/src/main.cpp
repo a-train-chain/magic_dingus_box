@@ -1694,8 +1694,24 @@ int main(int /* argc */, char* /* argv */[]) {
 #ifdef MEDIA_BROWSER_ENABLED
                         } else if (section == ui::MenuSection::MEDIA_BROWSER) {
                             // Close settings menu and transition to the
-                            // Media Browser screen (dispatcher + stub
-                            // screens; Tasks 18-23 fill in real UIs).
+                            // Media Browser screen.
+                            //
+                            // Cleanly tear down whatever the main UI was
+                            // playing first. Without this stop(), the
+                            // playlist video keeps running, the GStreamer
+                            // pipeline stays in PLAYING state, and frames
+                            // continue to render underneath the Media
+                            // Browser overlay (mb_fill_background isn't
+                            // fully opaque). The user perceives this as
+                            // the previous video "showing through" their
+                            // movie browse session. Forcing video_active
+                            // to false in the same frame avoids a one-
+                            // frame race where the next render still
+                            // thinks video is active before
+                            // controller.update_state() catches up.
+                            controller.stop();
+                            state.video_active = false;
+                            state.is_switching_playlist = false;
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
                             // Always start on the Browse landing screen.

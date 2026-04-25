@@ -1556,9 +1556,14 @@ void Renderer::render_media_browser_screen_stub(const std::string& label) {
 // ---- Task 18 public drawing primitives for Media Browser screens ----
 
 void Renderer::mb_fill_background() {
+    // Fully opaque so the Media Browser overlay always fully covers any
+    // video frame that may still be rendering underneath (e.g., during
+    // the brief transition window before the controller's stop()
+    // actually flushes the pipeline). Without this, a 6% alpha gap let
+    // the previous main-UI playlist video bleed through.
     draw_quad(0.0f, 0.0f,
               static_cast<float>(width_), static_cast<float>(height_),
-              ui::Color(0, 0, 0, 240));
+              ui::Color(0, 0, 0, 255));
 }
 
 void Renderer::mb_fill_rect(float x, float y, float w, float h,
