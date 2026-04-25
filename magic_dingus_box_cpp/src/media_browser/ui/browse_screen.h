@@ -75,7 +75,11 @@ private:
 
     static constexpr int kNumContentCategories = 5;  // Popular..Filter
     static constexpr int kNumCategories = 9;
-    static constexpr int kGridCols = 4;
+    // 5-column grid: lets the user see 5 posters per row instead of 4 so
+    // more of the catalogue is visible at a glance. Cell width is computed
+    // dynamically in render() from the column count + available width, so
+    // this is the only knob that needs to change.
+    static constexpr int kGridCols = 5;
 
     static bool is_nav_chip(Category cat) {
         return static_cast<int>(cat) >= kNumContentCategories;

@@ -147,6 +147,7 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
     return pl;
 }
 
+#ifdef MEDIA_BROWSER_ENABLED
 Playlist PlaylistLoader::load_movies_library(const std::string& directory) {
     Playlist pl;
     pl.title = "Movies";
@@ -220,6 +221,7 @@ Playlist PlaylistLoader::load_movies_library(const std::string& directory) {
 
     return pl;
 }
+#endif
 
 } // namespace app
 

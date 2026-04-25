@@ -16,31 +16,59 @@ namespace media_browser::ui {
 
 namespace {
 
-// New rich-detail layout (target 1280x720). Pixel constants — all positions
-// are absolute and computed from screen_w/screen_h at render time so the
-// design degrades gracefully at non-720p resolutions.
-constexpr float kBackdropH      = 280.0f;  // 16:9 banner at the top.
-constexpr float kPaddingX       = 32.0f;   // Outer horizontal margin.
-constexpr float kPaddingY       = 18.0f;   // Outer vertical margin.
+// Retro home-menu-inspired layout (target 1280x720). All positions are
+// absolute and laid out top-to-bottom around a big poster on the left and
+// a metadata column on the right. The visual idiom mirrors the home menu:
+//   - "FEATURE PRESENTATION" header in the Zen Dots title font, steel-blue,
+//     underlined with a full-width 2px rule (same pattern as "Playlists")
+//   - Title in gold (accent) with a 2px gold underline matching its width
+//   - Section dividers in steel-blue (accent2)
+//   - Gold-outlined chips and buttons (no fill) — matches the home-menu's
+//     border-and-text aesthetic instead of filled blocks
+//   - Blinking ◂ marker inside the focused action button (same 500ms cycle
+//     and color as the playlist-list selection cursor)
+constexpr float kPaddingX        = 32.0f;
+constexpr float kPaddingY        = 18.0f;
 
-constexpr float kPosterW        = 180.0f;  // 2:3 poster left of metadata.
-constexpr float kPosterH        = 270.0f;
-constexpr float kPosterOverlap  = 60.0f;   // How much the poster sits over the backdrop.
-constexpr float kColumnGap      = 24.0f;   // Between poster and metadata column.
+// Top "FEATURE PRESENTATION" header strip.
+constexpr float kHeaderBaselineY = 38.0f;     // baseline of header text
+constexpr float kHeaderRuleY     = 58.0f;     // Y of the 2px steel-blue rule
+
+// Big poster — 320x480 (2:3) is roughly 2x the previous poster, large
+// enough to anchor the screen the way the playlist list anchors the home
+// menu without overwhelming the metadata column.
+constexpr float kPosterX         = 32.0f;
+constexpr float kPosterY         = 84.0f;
+constexpr float kPosterW         = 320.0f;
+constexpr float kPosterH         = 480.0f;
+constexpr float kPosterBorderW   = 2.0f;
+
+// Gap between poster and metadata column.
+constexpr float kColumnGap       = 32.0f;
 
 // Genre chips.
-constexpr float kChipH          = 26.0f;
-constexpr float kChipPadX       = 12.0f;
-constexpr float kChipGap        = 8.0f;
+constexpr float kChipH           = 28.0f;
+constexpr float kChipPadX        = 14.0f;
+constexpr float kChipGap         = 10.0f;
+constexpr float kChipBorderW     = 2.0f;
 
-// Action buttons.
-constexpr float kButtonW        = 220.0f;
-constexpr float kButtonH        = 52.0f;
-constexpr float kButtonGap      = 20.0f;
-constexpr float kButtonOutlineW = 3.0f;
+// Action row.
+constexpr float kSectionRuleY    = 588.0f;    // 2px steel-blue divider
+constexpr float kActionRowTop    = 608.0f;    // top of buttons
+constexpr float kButtonW         = 260.0f;
+constexpr float kButtonH         = 52.0f;
+constexpr float kButtonGap       = 28.0f;
+constexpr float kButtonOutlineW  = 2.0f;
+// Right-edge "marker zone" reserved inside each focused button so the
+// blinking ◂ cursor never crowds the centered label. The zone exists at
+// all times (focused or not) so widths stay stable across focus changes.
+constexpr float kButtonMarkerW   = 30.0f;
 
-// Overview wrap settings.
-constexpr int   kOverviewMaxLines = 4;
+// Overview wrap is now sized dynamically from the available column space —
+// the constant is gone (was kOverviewMaxLines = 4). The right-column flex
+// region (synopsis + cast + directors) computes per-block line budgets at
+// render time and lets truncate_wrapped add "..." when content actually
+// overflows.
 
 // Backdrop poster tint — same deterministic hash used by Browse, so the
 // color theme on the detail screen matches the grid placeholder.
@@ -482,6 +510,14 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float w = static_cast<float>(screen_w);
     const float h = static_cast<float>(screen_h);
 
+    // 500ms blink cycle, sourced from epoch time so it stays in lockstep
+    // with the home-menu's playlist cursor — both blinks visually breathe
+    // together when transitioning between screens.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const bool blink_on = (epoch_ms / 500) % 2 == 0;
+
     // --- Centered single-message states ------------------------------
     if (mode_ == Mode::Loading) {
         int sz = th.font_large_size;
@@ -500,46 +536,6 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float y = (h / 2.0f) + static_cast<float>(r.mb_text_baseline(sz));
         r.mb_draw_text(msg, x, y, sz, th.dim, 0.9f);
         return;
-    }
-
-    // --- Action row geometry (computed first so other regions clear it) ---
-    const float action_row_h = kButtonH + 2.0f * kPaddingY;
-    const float action_row_y = h - action_row_h;
-    // Bottom-of-screen hint sits below the action row.
-    const float hint_h = static_cast<float>(th.font_small_size) + 12.0f;
-    const float content_bottom = action_row_y - hint_h - 8.0f;
-
-    // --- Backdrop banner ---------------------------------------------
-    {
-        ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
-        std::string backdrop_url;
-        if (tmdb_detail_.has_value()) {
-            backdrop_url = tmdb_detail_->backdrop_path.empty()
-                               ? tmdb_detail_->poster_path
-                               : tmdb_detail_->backdrop_path;
-        }
-        if (backdrop_url.empty() && movie_.has_value()) {
-            backdrop_url = movie_->fanart_url.empty() ? movie_->poster_url
-                                                      : movie_->fanart_url;
-        }
-        // Aspect-fit so 16:9 backdrops fill nicely; 2:3 fallback posters
-        // letterbox with the tint color rather than warping.
-        r.mb_draw_poster_fit(backdrop_url,
-                             0.0f, 0.0f, w, kBackdropH,
-                             tint, 0.85f);
-        // Approximate bottom fade for legibility — two stacked bands.
-        r.mb_fill_rect(0.0f, kBackdropH * 0.55f, w, kBackdropH * 0.45f,
-                       th.bg, 0.55f);
-        r.mb_fill_rect(0.0f, kBackdropH - 1.0f, w, 1.0f, th.dim, 0.8f);
-
-        // Top-right back-hint inside the backdrop area.
-        const std::string back_hint = "BTN4: back (hold: home)";
-        int hint_size = th.font_small_size;
-        int hint_baseline = r.mb_text_baseline(hint_size);
-        int hw = r.mb_text_width(back_hint, hint_size);
-        float hx = w - kPaddingX - static_cast<float>(hw);
-        float hy = kPaddingY + static_cast<float>(hint_baseline);
-        r.mb_draw_text(back_hint, hx, hy, hint_size, th.fg, 0.85f);
     }
 
     // --- Pull metadata once (Error state may have nullopt detail) ----
@@ -572,37 +568,83 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
     if (title.empty()) title = "Untitled";
 
-    // --- Poster (left column, overlapping the backdrop bottom edge) --
-    const float poster_x = kPaddingX;
-    const float poster_y = kBackdropH - kPosterOverlap;
+    // --- Top header bar: "FEATURE PRESENTATION" + back hint ---------
+    // This mirrors render_title()/render_playlist_list()'s pattern: a Zen
+    // Dots heading in steel-blue (accent2), underlined with a 2px rule.
+    {
+        const std::string heading = "FEATURE PRESENTATION";
+        int hd_size = th.font_heading_size;
+        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
+                             hd_size, th.accent2, 1.0f);
+
+        // U+25C2 BLACK LEFT-POINTING SMALL TRIANGLE, encoded as a text glyph
+        // here is fine for the hint because the body font ships triangle
+        // arrows. (The action-button cursor still uses a primitive — that
+        // one needs guaranteed pixel-perfect rendering at small sizes.)
+        const std::string back_hint = "BTN4: back  (hold for home)";
+        int hint_size = th.font_small_size;
+        int hw = r.mb_text_width(back_hint, hint_size);
+        float hx = w - kPaddingX - static_cast<float>(hw);
+        // Align the hint baseline to the heading baseline so both sit on
+        // the same visual line, then nudge a couple of px lower so the
+        // smaller text reads as a subtitle rather than competing.
+        float hy = kHeaderBaselineY + 2.0f;
+        r.mb_draw_text(back_hint, hx, hy, hint_size, th.dim, 0.9f);
+
+        // Full-width 2px steel-blue rule beneath the header — same pattern
+        // as the home menu's title underline, but stretched edge-to-edge so
+        // it reads as a screen frame rather than a heading underline.
+        r.mb_draw_line(kPaddingX, kHeaderRuleY,
+                       w - kPaddingX, kHeaderRuleY,
+                       2.0f, th.accent2, 0.95f);
+    }
+
+    // --- Big poster card (left column) -------------------------------
     {
         ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
         r.mb_draw_poster_fit(poster_url,
-                             poster_x, poster_y,
+                             kPosterX, kPosterY,
                              kPosterW, kPosterH,
                              tint, 1.0f);
-        // Subtle outline so the poster reads as a card against the dark bg.
-        r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,
-                         1.0f, th.dim, 0.7f);
+        // 2px gold border = TV-monitor frame. Matches the home-menu's
+        // bordered-overlay style (volume slider, virtual keyboard).
+        r.mb_stroke_rect(kPosterX, kPosterY, kPosterW, kPosterH,
+                         kPosterBorderW, th.accent, 0.95f);
     }
 
-    // --- Right column: title / meta / chips / tagline ----------------
-    const float col_x = poster_x + kPosterW + kColumnGap;
+    // --- Right column: title / meta / chips / tagline / overview ----
+    const float col_x = kPosterX + kPosterW + kColumnGap;
     const float col_w = w - col_x - kPaddingX;
-    float cursor_y = kBackdropH - kPosterOverlap;  // Aligns top with poster.
+    float cursor_y = kPosterY;  // Start the metadata column flush with poster top.
 
-    // Title (truncated to column width).
+    // Title — Zen Dots, gold (accent), with a 2px gold underline beneath
+    // matching the title text width (same idiom as the home menu's product
+    // title underline).
     {
         int title_size = th.font_title_size;
-        int title_baseline = r.mb_text_baseline(title_size);
-        std::string title_drawn = truncate_to_width(r, title, title_size, col_w);
+        int title_baseline = r.mb_title_text_baseline(title_size);
+        std::string title_drawn = title;
+        // Use the title font for measuring the truncation bound.
+        if (r.mb_title_text_width(title_drawn, title_size)
+                > static_cast<int>(col_w)) {
+            // Body-font measurement is good enough for the truncation loop —
+            // both fonts share roughly the same em width at the same px size,
+            // and the overflow check is conservative.
+            title_drawn = truncate_to_width(r, title, title_size, col_w);
+        }
         cursor_y += static_cast<float>(title_baseline);
-        r.mb_draw_text(title_drawn, col_x, cursor_y,
-                       title_size, th.accent, 1.0f);
-        cursor_y += static_cast<float>(title_size) * 0.55f;  // baseline → next-line gap
+        r.mb_draw_title_text(title_drawn, col_x, cursor_y,
+                             title_size, th.accent, 1.0f);
+        // Gold rule under the title — width matches the actual drawn text.
+        int title_w_drawn = r.mb_title_text_width(title_drawn, title_size);
+        float underline_y = cursor_y + 8.0f;
+        r.mb_draw_line(col_x, underline_y,
+                       col_x + static_cast<float>(title_w_drawn), underline_y,
+                       2.0f, th.accent, 0.95f);
+        cursor_y = underline_y + 14.0f;
     }
 
-    // Meta line: "1999 · 2h 16m · en"  (left)  /  "★ 8.2/10" (right)
+    // Meta line: "1999 · 2h 16m · EN"  +  "★ 8.2/10" + "(25k votes)"
     {
         int meta_size = th.font_medium_size;
         int meta_baseline = r.mb_text_baseline(meta_size);
@@ -621,7 +663,12 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
         if (!language.empty()) {
             if (!first) meta_os << "  \xE2\x80\xA2  ";
-            meta_os << language;
+            // Capitalize the 2-letter language code for retro flair (en → EN).
+            std::string lang_upper = language;
+            for (auto& c : lang_upper) {
+                if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+            }
+            meta_os << lang_upper;
         }
         std::string meta = meta_os.str();
 
@@ -631,14 +678,17 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                            meta_size, th.fg, 0.92f);
         }
 
-        // Rating + vote count, right-aligned within the column.
         std::string rating_str = format_rating(rating);
         if (!rating_str.empty()) {
-            // U+2605 BLACK STAR (UTF-8 0xE2 0x98 0x85).
-            std::string rating_text = std::string("\xE2\x98\x85 ") + rating_str + "/10";
+            std::string rating_text = rating_str + "/10";
             int rw = r.mb_text_width(rating_text, meta_size);
-            float rx = col_x + col_w - static_cast<float>(rw);
-            r.mb_draw_text(rating_text, rx, cursor_y,
+            const float star_r   = static_cast<float>(meta_size) * 0.40f;
+            const float star_gap = 6.0f;
+            float text_x = col_x + col_w - static_cast<float>(rw);
+            float star_cx = text_x - star_gap - star_r;
+            float star_cy = cursor_y - static_cast<float>(meta_size) * 0.33f;
+            r.mb_fill_star(star_cx, star_cy, star_r, th.accent, 1.0f);
+            r.mb_draw_text(rating_text, text_x, cursor_y,
                            meta_size, th.accent, 1.0f);
 
             if (vote_count > 0) {
@@ -653,124 +703,179 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 r.mb_draw_text(votes, vx, vy, sm, th.dim, 0.85f);
             }
         }
-        cursor_y += static_cast<float>(meta_size) * 0.4f;
-        // Reserve a slot for the votes line below meta (only if drawn).
+        // Reserve vertical space for the meta row + (optional) votes line.
+        cursor_y += static_cast<float>(meta_size) * 0.5f;
         if (vote_count > 0 && !rating_str.empty()) {
             cursor_y += static_cast<float>(th.font_small_size) + 4.0f;
         }
     }
 
-    // Genre chips row.
+    // Genre chips — gold outline, no fill, accent text. Pure border-and-text
+    // styling that mirrors the home menu's outlined overlays.
     if (!genres.empty()) {
         int chip_size = th.font_small_size;
         int chip_baseline = r.mb_text_baseline(chip_size);
-        cursor_y += 8.0f;
+        cursor_y += 12.0f;
         float chip_y = cursor_y;
         float chip_x = col_x;
         for (const auto& g : genres) {
             int tw = r.mb_text_width(g, chip_size);
             float chip_w = static_cast<float>(tw) + 2.0f * kChipPadX;
-            // Wrap to next row if we'd overflow the column.
             if (chip_x + chip_w > col_x + col_w) {
                 chip_x = col_x;
                 chip_y += kChipH + kChipGap;
             }
-            r.mb_fill_rect(chip_x, chip_y, chip_w, kChipH,
-                           th.action, 0.55f);
             r.mb_stroke_rect(chip_x, chip_y, chip_w, kChipH,
-                             1.0f, th.dim, 0.6f);
+                             kChipBorderW, th.accent, 0.95f);
             float tx = chip_x + kChipPadX;
             float ty = chip_y + (kChipH - static_cast<float>(chip_size)) / 2.0f
                      + static_cast<float>(chip_baseline);
-            r.mb_draw_text(g, tx, ty, chip_size, th.fg, 0.95f);
+            r.mb_draw_text(g, tx, ty, chip_size, th.accent, 1.0f);
             chip_x += chip_w + kChipGap;
         }
         cursor_y = chip_y + kChipH;
     }
 
-    // Tagline (italic-feeling: smaller + dim).
+    // Tagline — smart-quoted, dim, smaller. Reads as a movie marquee blurb.
     if (!tagline.empty()) {
         int tg_size = th.font_medium_size;
         int tg_baseline = r.mb_text_baseline(tg_size);
-        cursor_y += 10.0f + static_cast<float>(tg_baseline);
-        std::string tagline_q = std::string("\xE2\x80\x9C") + tagline + "\xE2\x80\x9D";  // smart quotes
+        cursor_y += 16.0f + static_cast<float>(tg_baseline);
+        std::string tagline_q = std::string("\xE2\x80\x9C")
+                              + tagline + "\xE2\x80\x9D";
         std::string drawn = truncate_to_width(r, tagline_q, tg_size, col_w);
         r.mb_draw_text(drawn, col_x, cursor_y, tg_size, th.dim, 0.95f);
-        cursor_y += static_cast<float>(tg_size) * 0.4f;
+        cursor_y += static_cast<float>(tg_size) * 0.45f;
     }
 
-    // --- Below the poster row: overview, cast, director ---------------
-    // The "below" boundary is the lower edge of the poster.
-    const float poster_bottom = poster_y + kPosterH;
-    float info_y = poster_bottom + 18.0f;
+    // --- Flex content: synopsis / cast / directors --------------------
+    //
+    // We have a fixed window from the current cursor_y down to just above
+    // the section divider at kSectionRuleY. Three blocks compete for that
+    // space: the overview synopsis, the CAST list, and the DIRECTED BY
+    // list. The user wants ALL of them visible, wrapping over multiple
+    // lines if needed, with "..." truncation only triggering when the
+    // total content genuinely overflows.
+    //
+    // Allocation strategy: synopsis is the biggest block, so it gets to
+    // expand into whatever space remains AFTER reserving a small minimum
+    // (label + 1 wrapped line) for each cast/directors block that has
+    // content. Cast then takes everything left over minus a min reserve
+    // for directors. Directors gets the final remainder. Each block's
+    // wrapped lines are capped at the computed line budget; truncate_wrapped
+    // adds the "..." when the natural wrap exceeds that cap.
+    const float content_bottom    = kSectionRuleY - 16.0f;
+    const float kSectionTopPad    = 14.0f;
+    const float line_h_medium     = static_cast<float>(th.font_medium_size) * 1.4f;
+    // Approximate vertical cost of a small-caps label above a body block:
+    // baseline pad + label glyph height + bottom pad before the body line.
+    const float label_block_h     = static_cast<float>(th.font_small_size) * 1.6f;
+    const float min_section_h     = kSectionTopPad + label_block_h + line_h_medium;
 
-    // Overview block (full content width, capped at kOverviewMaxLines).
-    if (mode_ != Mode::Error && !overview.empty()) {
-        int ov_size = th.font_medium_size;
-        int ov_baseline = r.mb_text_baseline(ov_size);
-        float ov_max_w = w - 2.0f * kPaddingX;
-        auto lines = wrap_text(r, overview, ov_size, ov_max_w);
-        truncate_wrapped(r, lines, ov_size, ov_max_w, kOverviewMaxLines);
+    // Lay out a single wrapped-text block (with optional small-caps label
+    // above it). Returns the number of lines drawn. Updates cursor_y.
+    auto lay_out_block = [&](const std::string& label,
+                             const std::string& body,
+                             int body_font_size,
+                             ::ui::Color body_color,
+                             float top_pad,
+                             int max_lines) -> int {
+        if (body.empty() || max_lines <= 0) return 0;
+        int body_baseline = r.mb_text_baseline(body_font_size);
+        float line_h = static_cast<float>(body_font_size) * 1.4f;
 
-        float line_h = static_cast<float>(ov_size) * 1.35f;
-        info_y += static_cast<float>(ov_baseline);
-        for (size_t i = 0; i < lines.size(); ++i) {
-            r.mb_draw_text(lines[i],
-                           kPaddingX,
-                           info_y + static_cast<float>(i) * line_h,
-                           ov_size, th.fg, 0.95f);
+        auto lines = wrap_text(r, body, body_font_size, col_w);
+        truncate_wrapped(r, lines, body_font_size, col_w, max_lines);
+        if (lines.empty()) return 0;
+
+        cursor_y += top_pad;
+        if (!label.empty()) {
+            int label_size = th.font_small_size;
+            int label_baseline = r.mb_text_baseline(label_size);
+            cursor_y += static_cast<float>(label_baseline);
+            r.mb_draw_text(label, col_x, cursor_y,
+                           label_size, th.accent2, 0.95f);
+            cursor_y += static_cast<float>(label_size) * 0.6f;
         }
-        info_y += line_h * static_cast<float>(lines.size()) - static_cast<float>(ov_baseline);
-        info_y += 12.0f;
+        cursor_y += static_cast<float>(body_baseline);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            r.mb_draw_text(lines[i], col_x,
+                           cursor_y + static_cast<float>(i) * line_h,
+                           body_font_size, body_color, 0.95f);
+        }
+        cursor_y += line_h * static_cast<float>(lines.size())
+                  - static_cast<float>(body_baseline);
+        return static_cast<int>(lines.size());
+    };
+
+    // Synopsis allocation: total flex space minus reserved minimums for
+    // any cast / directors block that has data, minus its own top pad.
+    if (mode_ != Mode::Error && !overview.empty()) {
+        float space = content_bottom - cursor_y;
+        if (!cast_top.empty())  space -= min_section_h;
+        if (!directors.empty()) space -= min_section_h;
+        space -= kSectionTopPad;  // synopsis's own top pad
+        int max_lines = std::max(1,
+            static_cast<int>(space / line_h_medium));
+        lay_out_block("", overview, th.font_medium_size, th.fg,
+                      kSectionTopPad, max_lines);
     } else if (mode_ != Mode::Error) {
         int sz = th.font_medium_size;
         int sz_baseline = r.mb_text_baseline(sz);
-        info_y += static_cast<float>(sz_baseline);
-        r.mb_draw_text("No synopsis available.", kPaddingX, info_y,
+        cursor_y += kSectionTopPad + static_cast<float>(sz_baseline);
+        r.mb_draw_text("No synopsis available.", col_x, cursor_y,
                        sz, th.dim, 0.7f);
-        info_y += static_cast<float>(sz) * 0.4f + 12.0f;
     }
 
-    // Error message (replaces overview if TMDB fetch failed).
     if (mode_ == Mode::Error) {
         int sz = th.font_large_size;
         int sz_baseline = r.mb_text_baseline(sz);
-        std::string msg = "Couldn't fetch movie info from TMDB. Check network?";
-        info_y += static_cast<float>(sz_baseline) + 8.0f;
-        r.mb_draw_text(msg, kPaddingX, info_y,
+        std::string msg = "Couldn't fetch movie info from TMDB.";
+        cursor_y += kSectionTopPad + static_cast<float>(sz_baseline);
+        r.mb_draw_text(msg, col_x, cursor_y,
                        sz, th.highlight2, 0.95f);
-        info_y += static_cast<float>(sz) * 1.5f;
     }
 
-    // Cast line.
-    if (!cast_top.empty() && info_y < content_bottom) {
-        int sz = th.font_medium_size;
-        int sz_baseline = r.mb_text_baseline(sz);
-        std::string cast_line = "Cast: " + join_with_bullet(cast_top);
-        std::string drawn = truncate_to_width(r, cast_line, sz, w - 2.0f * kPaddingX);
-        info_y += static_cast<float>(sz_baseline);
-        r.mb_draw_text(drawn, kPaddingX, info_y, sz, th.dim, 0.95f);
-        info_y += static_cast<float>(sz) * 1.0f + 6.0f;
+    // CAST: take whatever space is left, minus a min reserve for
+    // directors if it'll be drawn. Wraps to as many lines as fit.
+    if (!cast_top.empty()) {
+        float space = content_bottom - cursor_y;
+        if (!directors.empty()) space -= min_section_h;
+        space -= kSectionTopPad + label_block_h;  // own header overhead
+        int max_lines = std::max(1,
+            static_cast<int>(space / line_h_medium));
+        lay_out_block("CAST", join_with_bullet(cast_top),
+                      th.font_medium_size, th.fg,
+                      kSectionTopPad, max_lines);
     }
 
-    // Director line.
-    if (!directors.empty() && info_y < content_bottom) {
-        int sz = th.font_medium_size;
-        int sz_baseline = r.mb_text_baseline(sz);
-        std::string label = directors.size() == 1 ? "Directed by: " : "Directors: ";
-        std::string director_line = label + join_with_bullet(directors);
-        std::string drawn = truncate_to_width(r, director_line, sz, w - 2.0f * kPaddingX);
-        info_y += static_cast<float>(sz_baseline);
-        r.mb_draw_text(drawn, kPaddingX, info_y, sz, th.dim, 0.95f);
+    // DIRECTED BY: claims the final remainder.
+    if (!directors.empty()) {
+        std::string label = directors.size() == 1 ? "DIRECTED BY" : "DIRECTORS";
+        float space = content_bottom - cursor_y;
+        space -= kSectionTopPad + label_block_h;
+        int max_lines = std::max(1,
+            static_cast<int>(space / line_h_medium));
+        lay_out_block(label, join_with_bullet(directors),
+                      th.font_medium_size, th.fg,
+                      kSectionTopPad, max_lines);
     }
+
+    // --- Section divider above action row ----------------------------
+    r.mb_draw_line(kPaddingX, kSectionRuleY,
+                   w - kPaddingX, kSectionRuleY,
+                   2.0f, th.accent2, 0.85f);
 
     // --- Action button row -------------------------------------------
+    // Outlined-only buttons (no fill). Focused button: thicker gold outline,
+    // text in accent (gold), and a blinking ◂ marker inside the right edge —
+    // same blink+marker pattern as the home menu's playlist cursor.
     if (!buttons_.empty()) {
         int nb = static_cast<int>(buttons_.size());
         float row_w = static_cast<float>(nb) * kButtonW
                     + static_cast<float>(nb - 1) * kButtonGap;
         float row_x = (w - row_w) / 2.0f;
-        float row_y = action_row_y + (action_row_h - kButtonH) / 2.0f;
+        float row_y = kActionRowTop;
 
         int lbl_size = th.font_medium_size;
         int lbl_baseline = r.mb_text_baseline(lbl_size);
@@ -781,43 +886,56 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float by = row_y;
             bool focused = (i == focus_);
 
-            ::ui::Color bg_color = (btn.action == Action::ConfirmRemove)
-                                       ? th.highlight2
-                                       : th.action;
-            float fill_alpha = focused ? 0.95f : 0.55f;
-            r.mb_fill_rect(bx, by, kButtonW, kButtonH, bg_color, fill_alpha);
+            // Confirm-remove uses warning color; everything else stays gold.
+            ::ui::Color border_color = (btn.action == Action::ConfirmRemove)
+                                           ? th.highlight2
+                                           : th.accent;
+            float thickness = focused ? (kButtonOutlineW + 1.0f)
+                                       : kButtonOutlineW;
+            r.mb_stroke_rect(bx, by, kButtonW, kButtonH,
+                             thickness, border_color,
+                             focused ? 1.0f : 0.75f);
 
-            if (focused) {
-                r.mb_stroke_rect(bx - kButtonOutlineW / 2.0f,
-                                 by - kButtonOutlineW / 2.0f,
-                                 kButtonW + kButtonOutlineW,
-                                 kButtonH + kButtonOutlineW,
-                                 kButtonOutlineW,
-                                 th.accent, 1.0f);
-            } else {
-                r.mb_stroke_rect(bx, by, kButtonW, kButtonH,
-                                 1.0f, th.dim, 0.6f);
-            }
-
+            // Label centered in the FULL button width. The button is now
+            // wide enough (260px) that even long labels like "Confirm
+            // Remove" leave clear space on the right for the blinking ◂
+            // cursor sitting in the reserved marker zone — the cursor
+            // never visually crowds the text in practice.
             int tw = r.mb_text_width(btn.label, lbl_size);
             float tx = bx + (kButtonW - static_cast<float>(tw)) / 2.0f;
             float ty = by + (kButtonH / 2.0f)
                      - static_cast<float>(lbl_size) / 2.0f
                      + static_cast<float>(lbl_baseline);
-            r.mb_draw_text(btn.label, tx, ty, lbl_size, th.fg,
-                           focused ? 1.0f : 0.9f);
+            ::ui::Color text_color = focused ? border_color : th.fg;
+            r.mb_draw_text(btn.label, tx, ty, lbl_size, text_color,
+                           focused ? 1.0f : 0.85f);
+
+            // Blinking ◂ marker centered in the reserved right-edge zone.
+            if (focused && blink_on) {
+                float marker_size = static_cast<float>(lbl_size) * 0.45f;
+                float marker_cx = bx + kButtonW - kButtonMarkerW * 0.5f;
+                float marker_cy = by + kButtonH / 2.0f;
+                // Triangle pointing LEFT — toward the label, matching the
+                // home-menu cursor orientation.
+                r.mb_fill_triangle(
+                    marker_cx,                marker_cy - marker_size,
+                    marker_cx,                marker_cy + marker_size,
+                    marker_cx - marker_size * 1.2f, marker_cy,
+                    th.accent2, 1.0f);
+            }
         }
     }
 
     // --- Bottom hint -------------------------------------------------
     {
         const std::string hint =
-            "Rotate: nav   RCLICK/BTN2: action   BTN4: back (hold for home)";
+            "Rotate: nav   RCLICK / BTN2: action   BTN4: back (hold for home)";
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         int hw = r.mb_text_width(hint, sz);
         float hx = (w - static_cast<float>(hw)) / 2.0f;
-        float hy = h - 10.0f - static_cast<float>(sz) + static_cast<float>(baseline);
+        float hy = h - 12.0f - static_cast<float>(sz)
+                 + static_cast<float>(baseline);
         r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
     }
 
@@ -830,8 +948,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float box_w = static_cast<float>(bw) + 2.0f * pad;
         float box_h = static_cast<float>(sz) + 2.0f * pad * 0.5f;
         float box_x = (w - box_w) / 2.0f;
-        float box_y = action_row_y - box_h - 12.0f;
-        if (box_y < kBackdropH + 8.0f) box_y = kBackdropH + 8.0f;
+        float box_y = kSectionRuleY - box_h - 12.0f;
+        if (box_y < kHeaderRuleY + 8.0f) box_y = kHeaderRuleY + 8.0f;
         r.mb_fill_rect(box_x, box_y, box_w, box_h, th.bg, 0.92f);
         r.mb_stroke_rect(box_x, box_y, box_w, box_h, 2.0f, th.accent, 1.0f);
         float tx = box_x + pad;

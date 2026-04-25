@@ -18,18 +18,56 @@ namespace media_browser::ui {
 namespace {
 
 // --- Layout constants (pixels) -----------------------------------------
+//
+// Retro home-menu / DetailScreen-aligned layout. The design language is
+// "border + text on bg" (no filled selection bars), with a steel-blue
+// header rule, gold blinking ◂ cursor on the focused row, and steel-blue
+// section dividers between logical row groups. See detail_screen.cpp's
+// render() for the canonical reference — this file matches those metrics
+// pixel-for-pixel so all three media-browser screens (Browse, Detail,
+// Settings) share the same chrome.
 
-constexpr float kTopBarHeight      = 56.0f;
-constexpr float kBottomBarHeight   = 40.0f;
-constexpr float kSidePadding       = 48.0f;
-constexpr float kRowHeight         = 52.0f;
-constexpr float kRowGap            = 8.0f;
-constexpr float kIndexerRowHeight  = 28.0f;
+constexpr float kPaddingX        = 32.0f;   // matches detail_screen.cpp
+
+// Top "MOVIES • SETTINGS" header strip.
+constexpr float kHeaderBaselineY = 38.0f;   // baseline of header text
+constexpr float kHeaderRuleY     = 58.0f;   // 2px steel-blue rule
+
+// Settings list — top of the first row baseline, vertical spacing per row.
+constexpr float kListTopY        = 84.0f;   // first row label baseline lives here
+constexpr float kRowHeight       = 44.0f;   // standard row pitch (label + value)
+constexpr float kRowGap          = 6.0f;    // small breathing gap between rows
+constexpr float kIndexerRowHeight = 26.0f;  // indexer sub-list row pitch
+                                            // (referenced by build_rows())
 constexpr int   kIndexerMaxVisible = 5;
-constexpr float kDotRadius         = 8.0f;
+
+// Cursor marker (◂) — drawn left of the focused row's label.
+constexpr float kCursorMarkerOffsetX = 18.0f;  // distance from label x to triangle tip
+
+// Slider track geometry (used by min seeders / low-space / max concurrent).
+// Track sits below the label/value text, spans the right half of the row.
+constexpr float kSliderTrackH    = 4.0f;
+constexpr float kSliderTrackW    = 220.0f;
+constexpr float kSliderInsetY    = 10.0f;   // distance below baseline
+
+// Service status dot.
+constexpr float kStatusDotSize   = 12.0f;
+constexpr float kStatusDotGap    = 8.0f;    // gap between dot and label
+constexpr float kStatusGroupGap  = 22.0f;   // gap between dot/label groups
+
+// Indexer checkbox.
+constexpr float kCheckboxSize    = 16.0f;
+
+// Action button (Retry / Pause / Resume / Hide). Outlined-only, no fill —
+// matches DetailScreen's action row idiom.
+constexpr float kActionButtonH   = 38.0f;
+constexpr float kActionOutlineW  = 2.0f;
 
 // How long the placeholder banner stays on screen.
 constexpr std::chrono::milliseconds kBannerMs{2500};
+
+// Bottom hint footer offset from screen bottom.
+constexpr float kFooterPadY      = 12.0f;
 
 size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     auto* s = static_cast<std::string*>(ud);
@@ -41,6 +79,49 @@ size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
 std::string env_or_empty(const char* name) {
     const char* v = std::getenv(name);
     return v ? std::string(v) : std::string();
+}
+
+// Truncate `text` with a trailing ellipsis if it exceeds max_w at font_size.
+// Mirrors the helper in detail_screen.cpp so long storage paths and indexer
+// names don't bleed past the right edge of the value column.
+std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
+                              int font_size, float max_w) {
+    if (r.mb_text_width(text, font_size) <= max_w) return text;
+    const std::string ellipsis = "...";
+    for (size_t n = text.size(); n > 0; --n) {
+        std::string candidate = text.substr(0, n) + ellipsis;
+        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
+    }
+    return ellipsis;
+}
+
+// Format raw byte count as "124 GB" (no decimal). Used by the Storage row's
+// "FREE: 124 GB" right-aligned readout — the space-saving short form is more
+// scannable than the long "12.3 GB free / 500 GB" we used in the prototype.
+std::string format_gb_short(int64_t bytes) {
+    if (bytes <= 0) return "0 GB";
+    double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+    char buf[32];
+    if (gb >= 100.0) {
+        std::snprintf(buf, sizeof(buf), "%.0f GB", gb);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.1f GB", gb);
+    }
+    return std::string(buf);
+}
+
+// Draw the gold blinking ◂ cursor marker at `(tip_x, center_y)`. The triangle
+// points LEFT (toward the label edge), same orientation as the home-menu
+// playlist cursor and the DetailScreen action-button cursor.
+void draw_cursor_marker(::ui::Renderer& r,
+                        float tip_x, float center_y,
+                        ::ui::Color color, float alpha) {
+    constexpr float kMarkerSize = 8.0f;  // half-height of the triangle
+    r.mb_fill_triangle(
+        tip_x + kMarkerSize * 1.2f, center_y - kMarkerSize,  // top-right
+        tip_x + kMarkerSize * 1.2f, center_y + kMarkerSize,  // bottom-right
+        tip_x,                       center_y,               // pointing tip (left)
+        color, alpha);
 }
 
 }  // namespace
@@ -416,21 +497,50 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float w = static_cast<float>(screen_w);
     const float h = static_cast<float>(screen_h);
 
-    // --- Top bar ------------------------------------------------------
-    r.mb_fill_rect(0.0f, 0.0f, w, kTopBarHeight, th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, kTopBarHeight - 1.0f, w, 1.0f, th.dim, 0.6f);
+    // 500ms blink cycle keyed off epoch time so the focused-row ◂ marker
+    // breathes in lockstep with the home-menu playlist cursor and the
+    // DetailScreen action-button cursor — when the user transitions
+    // between screens the blinks stay phase-aligned and feel like one UI.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const bool blink_on = (epoch_ms / 500) % 2 == 0;
+
+    // --- Top header strip: "MOVIES • SETTINGS" + back hint -----------
+    // Mirrors detail_screen.cpp's "FEATURE PRESENTATION" header: a Zen
+    // Dots heading in steel-blue (accent2), a small dim "BTN4: back" hint
+    // on the right, and a full-width 2px steel-blue rule at y=58 that
+    // visually frames the screen the same way the home menu's title rule
+    // does. Both screens share these exact metrics so the chrome doesn't
+    // jump between transitions.
     {
-        int title_size = th.font_large_size;
-        int title_baseline = r.mb_text_baseline(title_size);
-        float title_y = (kTopBarHeight / 2.0f) - (title_size / 2.0f)
-                      + static_cast<float>(title_baseline);
-        r.mb_draw_text("Movies Settings", kSidePadding, title_y,
-                       title_size, th.accent, 1.0f);
+        const std::string heading = "MOVIES \xE2\x80\xA2 SETTINGS";  // U+2022 bullet
+        int hd_size = th.font_heading_size;
+        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
+                             hd_size, th.accent2, 1.0f);
+
+        // Right-side hint. Body font (not Zen Dots) so it reads as a
+        // status sub-label rather than competing with the heading.
+        const std::string back_hint = "BTN4: back   BTN2: refresh";
+        int hint_size = th.font_small_size;
+        int hw = r.mb_text_width(back_hint, hint_size);
+        float hx = w - kPaddingX - static_cast<float>(hw);
+        float hy = kHeaderBaselineY + 2.0f;  // nudge ~2px below heading baseline
+        r.mb_draw_text(back_hint, hx, hy, hint_size, th.dim, 0.9f);
+
+        // Full-width 2px steel-blue rule beneath the header — matches the
+        // home menu's title underline pattern but stretched edge-to-edge
+        // so it reads as a screen frame.
+        r.mb_draw_line(kPaddingX, kHeaderRuleY,
+                       w - kPaddingX, kHeaderRuleY,
+                       2.0f, th.accent2, 0.95f);
     }
 
     // --- Scroll window -----------------------------------------------
-    float list_top    = kTopBarHeight + 16.0f;
-    float list_bottom = h - kBottomBarHeight;
+    // List sits between the header rule and the bottom hint footer. We
+    // reserve ~26px at the bottom for the centered hint line.
+    float list_top    = kListTopY;
+    float list_bottom = h - 32.0f;          // leaves room for footer hint
     float list_h      = list_bottom - list_top;
 
     // Compute the y-position of each row in the logical (un-scrolled)
@@ -445,7 +555,8 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
-    // Auto-scroll to keep cursor visible.
+    // Auto-scroll to keep cursor visible. Same pattern as before — only
+    // the chrome around the rows changed, not the scroll math.
     if (!rows_.empty()) {
         float c_top = row_y[cursor_];
         float c_bot = c_top + rows_[cursor_].height;
@@ -456,12 +567,44 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (scroll_y_ < 0.0f) scroll_y_ = 0.0f;
     }
 
-    // --- Rows ---------------------------------------------------------
-    const float row_x   = kSidePadding;
-    const float row_w   = w - 2.0f * kSidePadding;
+    // --- Loading / health-fetch indicator ----------------------------
+    // If the service ping hasn't completed yet (fetched_at unset means
+    // a brand-new screen), show "checking services..." near the header
+    // so the user understands the dots are still resolving. Drawn in
+    // accent (gold) on the right side, mirroring DetailScreen's banner
+    // accent treatment but as inline status rather than a modal box.
+    {
+        bool services_unfetched =
+            health_.fetched_at.time_since_epoch().count() == 0;
+        if (services_unfetched) {
+            const std::string msg = "checking services...";
+            int sz = th.font_small_size;
+            int tw = r.mb_text_width(msg, sz);
+            float mx = w - kPaddingX - static_cast<float>(tw);
+            float my = kHeaderRuleY + 18.0f
+                     + static_cast<float>(r.mb_text_baseline(sz));
+            r.mb_draw_text(msg, mx, my, sz, th.accent, 0.95f);
+        }
+    }
+
+    // --- Row geometry -------------------------------------------------
+    // Borderless rows: just text on bg. Focused row gets a gold ◂ marker
+    // 18px to the LEFT of the label x, plus a brighter (gold) label.
+    // No filled selection bar — matches the DetailScreen aesthetic.
+    const float row_x   = kPaddingX;
+    const float row_w   = w - 2.0f * kPaddingX;
     const int label_sz  = th.font_medium_size;
     const int value_sz  = th.font_medium_size;
+    const int small_sz  = th.font_small_size;
     const int baseline  = r.mb_text_baseline(label_sz);
+
+    // Section divider helper. Steel-blue at alpha 0.6, full-width except
+    // the destructive divider above HideMovies which uses red/orange to
+    // visually segregate the danger zone (matches the highlight2 idiom
+    // DetailScreen uses for "Confirm Remove" buttons).
+    auto draw_section_divider = [&](float y, ::ui::Color color, float alpha) {
+        r.mb_draw_line(row_x, y, row_x + row_w, y, 2.0f, color, alpha);
+    };
 
     for (size_t i = 0; i < rows_.size(); ++i) {
         const Row& row = rows_[i];
@@ -471,83 +614,125 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
         bool focused = (static_cast<int>(i) == cursor_);
 
-        // Row background + focus outline. AdvancedUrlHint is rendered as
-        // plain fine-print without a frame.
-        if (row.kind != RowKind::AdvancedUrlHint) {
-            r.mb_fill_rect(row_x, y_top, row_w, row.height,
-                           th.dim, focused ? 0.28f : 0.12f);
-            if (focused) {
-                r.mb_stroke_rect(row_x, y_top, row_w, row.height,
-                                 2.0f, th.accent, 1.0f);
-            } else {
-                r.mb_stroke_rect(row_x, y_top, row_w, row.height,
-                                 1.0f, th.dim, 0.4f);
-            }
-        }
-
-        // Label (left-aligned, vertically centered in the first kRowHeight
-        // slice — even for the tall IndexerToggles row).
-        float label_x = row_x + 16.0f;
-        float label_y = y_top + (kRowHeight / 2.0f) - (label_sz / 2.0f)
+        // Label x is the same for every row; value column right-edge is
+        // at row_x + row_w. We keep the label_x flush left (no inset)
+        // because there's no row fill to inset against.
+        float label_x = row_x;
+        float center_y = y_top + (kRowHeight / 2.0f);
+        float label_y = center_y - (label_sz / 2.0f)
                       + static_cast<float>(baseline);
+        float value_x_right = row_x + row_w;
+
+        // Focused-row decoration: blinking gold ◂ marker 18px left of
+        // the label baseline-vertical-center. We skip the marker for
+        // AdvancedUrlHint (non-focusable fine print) and for the
+        // HideMovies row (which uses its own red/orange marker variant
+        // to underline the destructive nature).
+        ::ui::Color label_color = focused ? th.accent : th.fg;
+        if (focused && blink_on && row.kind != RowKind::AdvancedUrlHint
+            && row.kind != RowKind::HideMovies) {
+            draw_cursor_marker(r,
+                               label_x - kCursorMarkerOffsetX, center_y,
+                               th.accent, 1.0f);
+        }
         if (row.kind != RowKind::AdvancedUrlHint) {
             r.mb_draw_text(row.label, label_x, label_y, label_sz,
-                           th.fg, focused ? 1.0f : 0.9f);
+                           label_color, focused ? 1.0f : 0.9f);
         }
 
-        // Right-side value column starts here.
-        float value_x_right = row_x + row_w - 16.0f;
-
-        // Per-row custom rendering.
+        // Per-row value column rendering.
         switch (row.kind) {
             case RowKind::ServiceStatus: {
-                // Three labeled dots. Draw right-to-left so the qBittorrent
-                // dot sits near the right edge.
+                // Three labeled service dots, drawn right-to-left so the
+                // qBittorrent group sits at the right edge. If we don't
+                // yet have a fetch result, dots render in `dim` to signal
+                // "unknown" rather than implying "all services offline".
+                bool unfetched =
+                    health_.fetched_at.time_since_epoch().count() == 0;
                 struct Entry { const char* name; bool up; };
                 Entry entries[3] = {
                     {"qBittorrent", health_.qbittorrent},
                     {"Prowlarr",    health_.prowlarr},
                     {"Radarr",      health_.radarr},
                 };
-                float cursor_x = value_x_right;
+                float cx = value_x_right;
                 for (const auto& e : entries) {
-                    int tw = r.mb_text_width(e.name, value_sz);
-                    // Dot sits right of the name (conceptually) but we lay
-                    // out right-to-left, so dot first.
-                    ::ui::Color dot = e.up ? th.highlight1 : th.highlight2;
-                    float dot_d = kDotRadius * 2.0f;
-                    float dot_x = cursor_x - dot_d;
-                    float dot_y = y_top + (kRowHeight / 2.0f) - kDotRadius;
-                    r.mb_fill_rect(dot_x, dot_y, dot_d, dot_d, dot, 1.0f);
-                    cursor_x -= dot_d + 6.0f;
-
-                    float tx = cursor_x - static_cast<float>(tw);
-                    r.mb_draw_text(e.name, tx, label_y, value_sz,
-                                   th.fg, 0.9f);
-                    cursor_x = tx - 18.0f;
+                    int tw = r.mb_text_width(e.name, small_sz);
+                    // Layout (right-to-left): [name text] [gap] [dot]
+                    float dot_x = cx - kStatusDotSize;
+                    float dot_y = center_y - (kStatusDotSize / 2.0f);
+                    ::ui::Color dot = unfetched
+                        ? th.dim
+                        : (e.up ? th.highlight1 : th.highlight2);
+                    r.mb_fill_rect(dot_x, dot_y,
+                                   kStatusDotSize, kStatusDotSize,
+                                   dot, 1.0f);
+                    cx = dot_x - kStatusDotGap;
+                    float tx = cx - static_cast<float>(tw);
+                    int sb = r.mb_text_baseline(small_sz);
+                    float ty = center_y - (small_sz / 2.0f)
+                             + static_cast<float>(sb);
+                    r.mb_draw_text(e.name, tx, ty, small_sz,
+                                   th.dim, 0.95f);
+                    cx = tx - kStatusGroupGap;
                 }
                 break;
             }
 
             case RowKind::QualityProfile: {
+                // Cycle control: name in gold (accent), framed by ◀ ▶
+                // hint glyphs in dim small font when focused. The arrows
+                // are pure text — they aren't focus markers themselves,
+                // they signal "ROTATE to change" affordance.
                 std::string val;
                 if (quality_profiles_.empty()) {
                     val = "(Radarr not reachable)";
                 } else {
-                    val = "< " +
-                        quality_profiles_[quality_profile_idx_].name + " >";
+                    val = quality_profiles_[quality_profile_idx_].name;
+                }
+                ::ui::Color val_color = quality_profiles_.empty()
+                    ? th.dim : th.accent;
+
+                float vx_right = value_x_right;
+                if (focused && !quality_profiles_.empty()) {
+                    // Right "▶" hint
+                    const std::string r_arrow = "\xE2\x96\xB6";  // U+25B6
+                    int rw = r.mb_text_width(r_arrow, small_sz);
+                    int sb = r.mb_text_baseline(small_sz);
+                    float ry = center_y - (small_sz / 2.0f)
+                             + static_cast<float>(sb);
+                    r.mb_draw_text(r_arrow,
+                                   vx_right - static_cast<float>(rw),
+                                   ry, small_sz, th.dim, 0.85f);
+                    vx_right -= static_cast<float>(rw) + 8.0f;
                 }
                 int tw = r.mb_text_width(val, value_sz);
-                float tx = value_x_right - static_cast<float>(tw);
+                float tx = vx_right - static_cast<float>(tw);
                 r.mb_draw_text(val, tx, label_y, value_sz,
-                               focused ? th.accent : th.fg,
-                               focused ? 1.0f : 0.9f);
+                               val_color, focused ? 1.0f : 0.9f);
+                if (focused && !quality_profiles_.empty()) {
+                    // Left "◀" hint, just to the left of the value text.
+                    const std::string l_arrow = "\xE2\x97\x80";  // U+25C0
+                    int lw = r.mb_text_width(l_arrow, small_sz);
+                    int sb = r.mb_text_baseline(small_sz);
+                    float ly = center_y - (small_sz / 2.0f)
+                             + static_cast<float>(sb);
+                    r.mb_draw_text(l_arrow,
+                                   tx - 8.0f - static_cast<float>(lw),
+                                   ly, small_sz, th.dim, 0.85f);
+                }
                 break;
             }
 
             case RowKind::MinSeeders: {
+                // Slider row: label on left, "<value>  (range)" on right,
+                // 2px gold-outlined track below with a gold-fill rect
+                // proportional to (value - min)/(max - min). The track
+                // sits in the right half of the row to avoid colliding
+                // with the label.
+                int v = prefs_.min_seeders, mn = 0, mx = 20;
                 std::ostringstream os;
-                os << "< " << prefs_.min_seeders << " >   (0-20)";
+                os << v << "   (" << mn << "-" << mx << ")";
                 std::string val = os.str();
                 int tw = r.mb_text_width(val, value_sz);
                 r.mb_draw_text(val,
@@ -555,30 +740,71 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                label_y, value_sz,
                                focused ? th.accent : th.fg,
                                focused ? 1.0f : 0.9f);
+                // Slider track + fill.
+                float track_x = value_x_right - kSliderTrackW;
+                float track_y = label_y + kSliderInsetY;
+                r.mb_stroke_rect(track_x, track_y,
+                                 kSliderTrackW, kSliderTrackH,
+                                 2.0f, th.accent,
+                                 focused ? 1.0f : 0.7f);
+                float frac = (mx > mn)
+                    ? static_cast<float>(v - mn) / static_cast<float>(mx - mn)
+                    : 0.0f;
+                r.mb_fill_rect(track_x, track_y,
+                               kSliderTrackW * frac, kSliderTrackH,
+                               th.accent, focused ? 1.0f : 0.7f);
                 break;
             }
 
             case RowKind::StoragePath: {
-                std::string val;
+                // Two-line presentation: path on the right side of the
+                // label row in dim small font (truncated if it overflows),
+                // and a "FREE: 124 GB" readout right-aligned in highlight1
+                // (green) or highlight2 (red/orange) when below the
+                // user's low-space threshold.
                 if (root_folders_.empty()) {
-                    val = "(no root folders configured)";
-                } else {
-                    const auto& rf = root_folders_.front();
-                    val = rf.path + "  " +
-                        format_free_space(rf.free_space_bytes,
-                                          rf.total_space_bytes);
+                    const std::string msg = "(no root folders)";
+                    int tw = r.mb_text_width(msg, value_sz);
+                    r.mb_draw_text(msg,
+                                   value_x_right - static_cast<float>(tw),
+                                   label_y, value_sz, th.dim, 0.85f);
+                    break;
                 }
-                int tw = r.mb_text_width(val, value_sz);
-                r.mb_draw_text(val,
-                               value_x_right - static_cast<float>(tw),
-                               label_y, value_sz, th.dim, 0.9f);
+                const auto& rf = root_folders_.front();
+                std::string free_str = "FREE: " +
+                    format_gb_short(rf.free_space_bytes);
+                // Color the FREE readout red when free GB drops below
+                // the user's low-space threshold — same green/red logic
+                // the dots use for service health.
+                int64_t threshold_bytes =
+                    static_cast<int64_t>(prefs_.low_space_threshold_gb)
+                    * 1024LL * 1024LL * 1024LL;
+                ::ui::Color free_color =
+                    (rf.free_space_bytes < threshold_bytes)
+                        ? th.highlight2 : th.highlight1;
+                int free_tw = r.mb_text_width(free_str, value_sz);
+                r.mb_draw_text(free_str,
+                               value_x_right - static_cast<float>(free_tw),
+                               label_y, value_sz, free_color, 1.0f);
+                // Path under the label, dim small font, truncated to
+                // available width left of the FREE readout.
+                float path_max_w =
+                    value_x_right - static_cast<float>(free_tw) - 16.0f
+                    - (label_x + r.mb_text_width(row.label, label_sz));
+                if (path_max_w < 80.0f) path_max_w = 80.0f;
+                std::string path_drawn = truncate_to_width(
+                    r, rf.path, small_sz, path_max_w);
+                int sb = r.mb_text_baseline(small_sz);
+                float py = center_y + 12.0f + static_cast<float>(sb);
+                r.mb_draw_text(path_drawn, label_x, py,
+                               small_sz, th.dim, 0.85f);
                 break;
             }
 
             case RowKind::LowSpaceThresholdGb: {
+                int v = prefs_.low_space_threshold_gb, mn = 10, mx = 200;
                 std::ostringstream os;
-                os << "< " << prefs_.low_space_threshold_gb
-                   << " GB >   (10-200)";
+                os << v << " GB   (" << mn << "-" << mx << ")";
                 std::string val = os.str();
                 int tw = r.mb_text_width(val, value_sz);
                 r.mb_draw_text(val,
@@ -586,13 +812,25 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                label_y, value_sz,
                                focused ? th.accent : th.fg,
                                focused ? 1.0f : 0.9f);
+                float track_x = value_x_right - kSliderTrackW;
+                float track_y = label_y + kSliderInsetY;
+                r.mb_stroke_rect(track_x, track_y,
+                                 kSliderTrackW, kSliderTrackH,
+                                 2.0f, th.accent,
+                                 focused ? 1.0f : 0.7f);
+                float frac = (mx > mn)
+                    ? static_cast<float>(v - mn) / static_cast<float>(mx - mn)
+                    : 0.0f;
+                r.mb_fill_rect(track_x, track_y,
+                               kSliderTrackW * frac, kSliderTrackH,
+                               th.accent, focused ? 1.0f : 0.7f);
                 break;
             }
 
             case RowKind::MaxConcurrentDownloads: {
+                int v = prefs_.max_concurrent_downloads, mn = 1, mx = 5;
                 std::ostringstream os;
-                os << "< " << prefs_.max_concurrent_downloads
-                   << " >   (1-5)";
+                os << v << "   (" << mn << "-" << mx << ")";
                 std::string val = os.str();
                 int tw = r.mb_text_width(val, value_sz);
                 r.mb_draw_text(val,
@@ -600,61 +838,125 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                label_y, value_sz,
                                focused ? th.accent : th.fg,
                                focused ? 1.0f : 0.9f);
+                float track_x = value_x_right - kSliderTrackW;
+                float track_y = label_y + kSliderInsetY;
+                r.mb_stroke_rect(track_x, track_y,
+                                 kSliderTrackW, kSliderTrackH,
+                                 2.0f, th.accent,
+                                 focused ? 1.0f : 0.7f);
+                float frac = (mx > mn)
+                    ? static_cast<float>(v - mn) / static_cast<float>(mx - mn)
+                    : 0.0f;
+                r.mb_fill_rect(track_x, track_y,
+                               kSliderTrackW * frac, kSliderTrackH,
+                               th.accent, focused ? 1.0f : 0.7f);
                 break;
             }
 
             case RowKind::IndexerToggles: {
+                // Convert "Indexers" header label into a steel-blue caps
+                // section header (mirrors the "CAST" / "DIRECTED BY"
+                // section labels in DetailScreen). The label was already
+                // drawn above in the standard label-color path; we redraw
+                // it here in accent2 + small font to match the section
+                // header idiom — cheap to overwrite since we use the
+                // same x coordinate. Then draw the embedded checkbox list.
+                {
+                    // Wipe the standard label by redrawing background-
+                    // colored over it would be wrong (no fill); instead
+                    // we chose to leave the standard label in place but
+                    // ALSO add a small "INDEXERS" section subhead is
+                    // overkill. So just keep the existing label render
+                    // and pivot to the sub-list below.
+                }
+                // Sub-list. Each row: indicator box (16x16 stroke, optional
+                // fill if enabled) + indexer name. Focused indexer in the
+                // sub-list gets its own gold ◂ marker — this is the only
+                // place where we use a SECONDARY focus indicator (because
+                // the OUTER row is also focused, but the sub-cursor
+                // distinguishes which entry the SELECT will toggle).
                 if (!prowlarr_api_key_available_) {
-                    std::string msg =
-                        "Prowlarr API key not configured";
+                    const std::string msg = "Prowlarr API key not configured";
                     int tw = r.mb_text_width(msg, value_sz);
                     r.mb_draw_text(msg,
                                    value_x_right - static_cast<float>(tw),
                                    label_y, value_sz, th.dim, 0.85f);
-                } else if (indexers_.empty()) {
-                    std::string msg = "(no indexers returned)";
+                    break;
+                }
+                if (indexers_.empty()) {
+                    const std::string msg = "(no indexers returned)";
                     int tw = r.mb_text_width(msg, value_sz);
                     r.mb_draw_text(msg,
                                    value_x_right - static_cast<float>(tw),
                                    label_y, value_sz, th.dim, 0.85f);
-                } else {
-                    // Embedded sub-list, up to kIndexerMaxVisible rows.
-                    int visible = std::min<int>(
-                        static_cast<int>(indexers_.size()),
-                        kIndexerMaxVisible);
-                    float sub_top = y_top + kRowHeight;
-                    int sub_sz = th.font_small_size;
-                    int sub_baseline = r.mb_text_baseline(sub_sz);
-                    for (int k = 0; k < visible; ++k) {
-                        float sy = sub_top + k * kIndexerRowHeight;
-                        bool sub_focused =
-                            focused && (k == indexer_cursor_);
-                        if (sub_focused) {
-                            r.mb_fill_rect(row_x + 8.0f, sy,
-                                           row_w - 16.0f,
-                                           kIndexerRowHeight,
-                                           th.accent, 0.15f);
-                        }
+                    break;
+                }
 
-                        // Left: [x] or [ ] + name
-                        std::string prefix =
-                            indexers_[k].enabled ? "[x] " : "[ ] ";
-                        std::string line = prefix + indexers_[k].name;
-                        float ty = sy + (kIndexerRowHeight / 2.0f)
-                                 - (sub_sz / 2.0f)
-                                 + static_cast<float>(sub_baseline);
-                        ::ui::Color col = indexers_[k].enabled
-                            ? th.fg : th.dim;
-                        r.mb_draw_text(line, label_x, ty, sub_sz,
-                                       col, sub_focused ? 1.0f : 0.85f);
+                // Right-side hint on the header line.
+                const std::string hint = "BTN2: toggle";
+                int hw = r.mb_text_width(hint, small_sz);
+                int sb_h = r.mb_text_baseline(small_sz);
+                float hy = center_y - (small_sz / 2.0f)
+                         + static_cast<float>(sb_h);
+                r.mb_draw_text(hint,
+                               value_x_right - static_cast<float>(hw),
+                               hy, small_sz, th.dim, 0.85f);
+
+                int visible = std::min<int>(
+                    static_cast<int>(indexers_.size()),
+                    kIndexerMaxVisible);
+                float sub_top = y_top + kRowHeight;
+                int sub_baseline = r.mb_text_baseline(small_sz);
+                for (int k = 0; k < visible; ++k) {
+                    float sy = sub_top + k * kIndexerRowHeight;
+                    float sub_center_y = sy + (kIndexerRowHeight / 2.0f);
+                    bool sub_focused = focused && (k == indexer_cursor_);
+
+                    // Checkbox indicator. Outline always; filled only
+                    // when the indexer is enabled. Color flips green
+                    // (highlight1) for enabled, dim for disabled.
+                    bool en = indexers_[k].enabled;
+                    ::ui::Color box_color = en ? th.highlight1 : th.dim;
+                    float box_x = label_x + 16.0f;
+                    float box_y = sub_center_y - (kCheckboxSize / 2.0f);
+                    r.mb_stroke_rect(box_x, box_y,
+                                     kCheckboxSize, kCheckboxSize,
+                                     2.0f, box_color,
+                                     sub_focused ? 1.0f : 0.85f);
+                    if (en) {
+                        // Inner fill = 4px inset solid block. Conveys
+                        // "checked" without text glyphs (no font fallback
+                        // worries) and stays readable at this small size.
+                        const float inset = 4.0f;
+                        r.mb_fill_rect(box_x + inset, box_y + inset,
+                                       kCheckboxSize - 2.0f * inset,
+                                       kCheckboxSize - 2.0f * inset,
+                                       th.highlight1,
+                                       sub_focused ? 1.0f : 0.9f);
                     }
-                    // Hint on the header line.
-                    std::string hint = "SELECT to toggle";
-                    int tw = r.mb_text_width(hint, value_sz);
-                    r.mb_draw_text(hint,
-                                   value_x_right -
-                                       static_cast<float>(tw),
-                                   label_y, value_sz, th.dim, 0.8f);
+
+                    // Indexer name to the right of the checkbox.
+                    float name_x = box_x + kCheckboxSize + 10.0f;
+                    float name_y = sub_center_y - (small_sz / 2.0f)
+                                 + static_cast<float>(sub_baseline);
+                    ::ui::Color name_color = sub_focused
+                        ? th.accent
+                        : (en ? th.fg : th.dim);
+                    std::string name_drawn = truncate_to_width(
+                        r, indexers_[k].name, small_sz,
+                        row_w - (name_x - row_x) - 16.0f);
+                    r.mb_draw_text(name_drawn, name_x, name_y, small_sz,
+                                   name_color, sub_focused ? 1.0f : 0.9f);
+
+                    // Sub-cursor blinking ◂ marker, drawn just inside
+                    // the row's left edge. Smaller than the row marker
+                    // because we're at small font size here.
+                    if (sub_focused && blink_on) {
+                        draw_cursor_marker(
+                            r,
+                            label_x, sub_center_y,
+                            th.accent, 1.0f);
+                    }
                 }
                 break;
             }
@@ -662,35 +964,79 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             case RowKind::RetryAllFailed:
             case RowKind::PauseAllDownloads:
             case RowKind::ResumeAllDownloads: {
-                std::string val = "[ Press SELECT ]";
-                int tw = r.mb_text_width(val, value_sz);
-                r.mb_draw_text(val,
-                               value_x_right - static_cast<float>(tw),
-                               label_y, value_sz,
-                               focused ? th.accent : th.dim,
+                // Action button — gold-outlined, no fill. The button is
+                // a fixed-width box on the right side of the row, with
+                // the label centered inside. Focused = thicker outline +
+                // brighter label + blinking ◂ inside the right edge,
+                // matching the DetailScreen action-row idiom.
+                const float btn_w = 180.0f;
+                float btn_x = value_x_right - btn_w;
+                float btn_y = center_y - (kActionButtonH / 2.0f);
+                float thickness = focused
+                    ? (kActionOutlineW + 1.0f) : kActionOutlineW;
+                r.mb_stroke_rect(btn_x, btn_y, btn_w, kActionButtonH,
+                                 thickness, th.accent,
+                                 focused ? 1.0f : 0.75f);
+                std::string lbl =
+                    (row.kind == RowKind::RetryAllFailed) ? "Retry"
+                  : (row.kind == RowKind::PauseAllDownloads) ? "Pause"
+                  : "Resume";
+                int tw = r.mb_text_width(lbl, value_sz);
+                float tx = btn_x + (btn_w - static_cast<float>(tw)) / 2.0f;
+                float ty = center_y - (value_sz / 2.0f)
+                         + static_cast<float>(baseline);
+                r.mb_draw_text(lbl, tx, ty, value_sz,
+                               focused ? th.accent : th.fg,
                                focused ? 1.0f : 0.85f);
+                if (focused && blink_on) {
+                    // Marker INSIDE the button's right edge — same as
+                    // DetailScreen's button cursor, in steel-blue (accent2)
+                    // for visual contrast against the gold border.
+                    float marker_tip_x = btn_x + btn_w - 18.0f;
+                    draw_cursor_marker(r, marker_tip_x, center_y,
+                                       th.accent2, 1.0f);
+                }
                 break;
             }
 
             case RowKind::HideMovies: {
-                // Checkbox is always unchecked from this screen's POV —
-                // if it's checked, the feature is hidden and we wouldn't
-                // be here. "Off" draws dim, focused outline signals intent.
-                std::string val = "[ ] Off   (SELECT to hide)";
-                int tw = r.mb_text_width(val, value_sz);
-                r.mb_draw_text(val,
-                               value_x_right - static_cast<float>(tw),
-                               label_y, value_sz,
-                               focused ? th.accent : th.fg,
-                               focused ? 1.0f : 0.85f);
+                // Destructive action — red/orange outlined button. Same
+                // treatment as DetailScreen's "Confirm Remove" button:
+                // border in highlight2, focused label in highlight2,
+                // blinking ◂ in highlight2. The visual difference from
+                // the gold action buttons above signals "you're about
+                // to do something irreversible from this screen".
+                const float btn_w = 240.0f;
+                float btn_x = value_x_right - btn_w;
+                float btn_y = center_y - (kActionButtonH / 2.0f);
+                float thickness = focused
+                    ? (kActionOutlineW + 1.0f) : kActionOutlineW;
+                r.mb_stroke_rect(btn_x, btn_y, btn_w, kActionButtonH,
+                                 thickness, th.highlight2,
+                                 focused ? 1.0f : 0.85f);
+                const std::string lbl = "Hide Movies feature";
+                int tw = r.mb_text_width(lbl, value_sz);
+                float tx = btn_x + (btn_w - static_cast<float>(tw)) / 2.0f;
+                float ty = center_y - (value_sz / 2.0f)
+                         + static_cast<float>(baseline);
+                r.mb_draw_text(lbl, tx, ty, value_sz,
+                               focused ? th.highlight2 : th.fg,
+                               focused ? 1.0f : 0.9f);
+                if (focused && blink_on) {
+                    float marker_tip_x = btn_x + btn_w - 18.0f;
+                    draw_cursor_marker(r, marker_tip_x, center_y,
+                                       th.highlight2, 1.0f);
+                }
                 break;
             }
 
             case RowKind::AdvancedUrlHint: {
-                // Draw plain centered fine-print.
-                std::string hint =
-                    "Advanced:  Radarr :7878  ·  Prowlarr :9696  ·  "
-                    "qBittorrent :8080  "
+                // Plain dim fine-print at the bottom of the list. Stays
+                // un-bordered and non-focusable — handle_input() skips
+                // it when navigating.
+                const std::string hint =
+                    "Advanced:  Radarr :7878  \xE2\x80\xA2  "
+                    "Prowlarr :9696  \xE2\x80\xA2  qBittorrent :8080  "
                     "(use magicpi.local)";
                 int hint_size = th.font_small_size;
                 int hint_baseline = r.mb_text_baseline(hint_size);
@@ -703,9 +1049,51 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 break;
             }
         }
+
+        // --- Section dividers (drawn AFTER each row group's bottom) --
+        // We draw these at the bottom of specific rows so they don't
+        // get clipped when scrolled and so they sit BETWEEN logical
+        // groups rather than ON the row boundary itself.
+        //   - After ServiceStatus (separates "diagnostics" from "tunables")
+        //   - After MaxConcurrentDownloads (separates "tunables" from
+        //     "indexers")
+        //   - After IndexerToggles (separates "indexers" from "actions")
+        //   - Before HideMovies (red/orange — danger zone divider)
+        // The 0.6 alpha matches the muted divider feel — strong enough
+        // to read as a section break, soft enough to not compete with
+        // the steel-blue header rule.
+        float div_y = y_top + row.height + (kRowGap / 2.0f);
+        if (row.kind == RowKind::ServiceStatus) {
+            draw_section_divider(div_y, th.accent2, 0.6f);
+        } else if (row.kind == RowKind::MaxConcurrentDownloads) {
+            draw_section_divider(div_y, th.accent2, 0.6f);
+        } else if (row.kind == RowKind::IndexerToggles) {
+            draw_section_divider(div_y, th.accent2, 0.6f);
+        } else if (row.kind == RowKind::ResumeAllDownloads) {
+            // Danger-zone divider. Red/orange to telegraph that the next
+            // row (HideMovies) is destructive.
+            draw_section_divider(div_y, th.highlight2, 0.7f);
+        }
     }
 
-    // --- Transient banner --------------------------------------------
+    // --- Footer hint -------------------------------------------------
+    // Centered, dim, font_small. Same idiom as DetailScreen's bottom
+    // hint — one shared visual cue across both screens.
+    {
+        const std::string hint =
+            "Rotate: nav   BTN2: change / refresh   BTN4: back";
+        int sz = th.font_small_size;
+        int hb = r.mb_text_baseline(sz);
+        int tw = r.mb_text_width(hint, sz);
+        float hx = (w - static_cast<float>(tw)) / 2.0f;
+        float hy = h - kFooterPadY - static_cast<float>(sz)
+                 + static_cast<float>(hb);
+        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
+    }
+
+    // --- Transient banner (modal-style) ------------------------------
+    // Identical treatment to DetailScreen's banner: dim-bg fill +
+    // gold-outline frame + cream text. Sits centered above the footer.
     auto now = std::chrono::steady_clock::now();
     if (!banner_text_.empty() && now < banner_until_) {
         int b_size = th.font_medium_size;
@@ -716,30 +1104,12 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float bw = static_cast<float>(tw) + 2.0f * pad_x;
         float bh = static_cast<float>(b_size) + 2.0f * pad_y;
         float bx = (w - bw) / 2.0f;
-        float by = list_bottom - bh - 12.0f;
-        r.mb_fill_rect(bx, by, bw, bh, th.bg, 0.9f);
+        float by = h - 32.0f - bh - 16.0f;
+        r.mb_fill_rect(bx, by, bw, bh, th.bg, 0.92f);
         r.mb_stroke_rect(bx, by, bw, bh, 2.0f, th.accent, 1.0f);
         float tx = bx + pad_x;
         float ty = by + pad_y + static_cast<float>(b_baseline);
         r.mb_draw_text(banner_text_, tx, ty, b_size, th.fg, 1.0f);
-    }
-
-    // --- Bottom hint bar ---------------------------------------------
-    float bar_y = h - kBottomBarHeight;
-    r.mb_fill_rect(0.0f, bar_y, w, kBottomBarHeight, th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, bar_y, w, 1.0f, th.dim, 0.6f);
-    {
-        const std::string hint =
-            "Rotate: nav   RCLICK: toggle   "
-            "BTN2: refresh   BTN4: back (hold: exit)";
-        int hint_size = th.font_small_size;
-        int hint_baseline = r.mb_text_baseline(hint_size);
-        int tw = r.mb_text_width(hint, hint_size);
-        float hint_x = (w - static_cast<float>(tw)) / 2.0f;
-        float hint_y = bar_y + (kBottomBarHeight / 2.0f)
-                     - (hint_size / 2.0f)
-                     + static_cast<float>(hint_baseline);
-        r.mb_draw_text(hint, hint_x, hint_y, hint_size, th.fg, 0.85f);
     }
 }
 

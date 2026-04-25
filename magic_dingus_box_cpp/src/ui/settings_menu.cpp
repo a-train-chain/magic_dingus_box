@@ -200,6 +200,7 @@ void SettingsMenuManager::open() {
         selected_game_in_playlist_ = 0;
         game_browser_selected_ = 0;
 
+#ifdef MEDIA_BROWSER_ENABLED
         // Rebuild the top-level menu on every open() so the "Movies" row
         // (conditional on media_browser_unlocked) is re-evaluated each time.
         // Placement: directly under "Video Games" — the feature entry point
@@ -207,17 +208,16 @@ void SettingsMenuManager::open() {
         // "Hide Movies feature" row lives inside the System submenu.
         menu_items_.clear();
         menu_items_.emplace_back("Video Games", MenuSection::VIDEO_GAMES, "Emulated games");
-#ifdef MEDIA_BROWSER_ENABLED
         if (app_state_ && app_state_->media_browser_unlocked) {
             menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
         }
-#endif
         menu_items_.emplace_back("Display", MenuSection::DISPLAY, "Screen settings");
         menu_items_.emplace_back("Audio", MenuSection::AUDIO, "Volume");
         menu_items_.emplace_back("Wi-Fi", MenuSection::WIFI, "Network Setup");
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
         menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
         menu_items_.emplace_back("Back", MenuSection::BACK);
+#endif
     }
 }
 
@@ -444,6 +444,7 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     std::string loop_status = app_state_->playlist_loop ? "ON" : "OFF";
     std::string shuffle_status = app_state_->shuffle ? "ON" : "OFF";
 
+#ifdef MEDIA_BROWSER_ENABLED
     std::vector<MenuItem> items = {
         MenuItem("Playlist Loop: " + loop_status,
                  MenuSection::TOGGLE_PLAYLIST_LOOP, "Auto-restart",
@@ -461,7 +462,6 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
                  }),
     };
 
-#ifdef MEDIA_BROWSER_ENABLED
     // Inject "Hide Movies feature" row conditionally. This submenu is rebuilt
     // on every enter_submenu(SYSTEM) call, so the unlock state is re-evaluated
     // each time the user navigates in — picking up changes made elsewhere
@@ -473,10 +473,28 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     if (app_state_->media_browser_unlocked) {
         items.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
     }
-#endif
 
     items.emplace_back("Back", MenuSection::BACK);
     return items;
+#else
+    return {
+        MenuItem("Playlist Loop: " + loop_status,
+                 MenuSection::TOGGLE_PLAYLIST_LOOP, "Auto-restart",
+                 [&]() {
+                     app_state_->playlist_loop = !app_state_->playlist_loop;
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_);
+                 }),
+        MenuItem("Shuffle: " + shuffle_status,
+                 MenuSection::TOGGLE_SHUFFLE, "Random order",
+                 [&]() {
+                     app_state_->shuffle = !app_state_->shuffle;
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_);
+                 }),
+        MenuItem("Back", MenuSection::BACK)
+    };
+#endif
 }
 
 // Helper to check interface status
@@ -498,9 +516,33 @@ static bool is_interface_active(const char* iface_name) {
     return active;
 }
 
+// Read the IPv4 address assigned to the named interface, or empty string.
+// Used so the QR code reflects whatever IP the gadget service actually
+// assigned (10.55.0.1, 192.168.7.1, or anything else) without hardcoding.
+static std::string get_interface_ipv4(const char* iface_name) {
+    struct ifaddrs *ifap, *ifa;
+    if (getifaddrs(&ifap) == -1) return "";
+
+    std::string addr_str;
+    for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (std::string(ifa->ifa_name) != iface_name) continue;
+
+        char buf[INET_ADDRSTRLEN] = {0};
+        auto* sin = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
+            addr_str = buf;
+        }
+        break;
+    }
+    freeifaddrs(ifap);
+    return addr_str;
+}
+
 std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     auto& wifi = utils::WifiManager::instance();
-    
+
     bool usb_active = is_interface_active("usb0");
     bool wifi_active = wifi.is_connected();
 
@@ -508,9 +550,14 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     std::string primary_url = "";
     std::string connection_label = "Not Connected";
     std::string sub_label = "Connect via USB or Wi-Fi";
-    
-    if (usb_active) {
-        primary_url = "http://192.168.7.1:5000";
+
+    // Read the actual IP off usb0 instead of hardcoding (the address
+    // assigned by usb-gadget-network.service is 10.55.0.1, but older
+    // setups used 192.168.7.1 — we don't care which, just what's live).
+    std::string usb_ip = get_interface_ipv4("usb0");
+
+    if (usb_active && !usb_ip.empty()) {
+        primary_url = "http://" + usb_ip + ":5000";
         connection_label = "USB Connection (Active)";
         sub_label = "Fastest / Recommended";
     } else if (wifi_active) {
@@ -521,10 +568,10 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
             sub_label = wifi.get_current_ssid();
         }
     }
-    
+
     // Update app state
     if (app_state_) {
-        app_state_->usb_url = "http://192.168.7.1:5000"; // Always static
+        app_state_->usb_url = !usb_ip.empty() ? ("http://" + usb_ip + ":5000") : "";
         app_state_->wifi_url = wifi_active ? ("http://" + wifi.get_ip_address() + ":5000") : "";
         app_state_->content_manager_url = primary_url;
     }

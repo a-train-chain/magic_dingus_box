@@ -13,35 +13,88 @@ namespace media_browser::ui {
 
 namespace {
 
-// --- Layout constants (fractions of screen height are chosen so the
-// keyboard + query box eat roughly the top 40%, results the bottom 60%).
-constexpr float kTopFrac             = 0.40f;
-constexpr float kPaddingX            = 48.0f;
-constexpr float kQueryBoxHeight      = 56.0f;
-constexpr float kQueryBoxMarginTop   = 20.0f;
-constexpr float kQueryBoxMarginBot   = 16.0f;
-constexpr float kKeyGap              = 6.0f;
-constexpr float kKbPaddingBottom     = 18.0f;
+// Retro home-menu-inspired layout (target 1280x720). The chrome here is
+// intentionally identical in vocabulary to DetailScreen and BrowseScreen
+// so all three screens read as one app:
+//   - Top "SEARCH" header strip in the Zen Dots title font, steel-blue
+//     (accent2), underlined with a full-width 2px rule. Same idiom as
+//     DetailScreen's "FEATURE PRESENTATION" header.
+//   - Query box: 2px gold outline, no fill, ▶ prefix in steel-blue,
+//     blinking caret rendered as a 2px-wide gold rect (consistent with
+//     the playlist-cursor's 500ms blink, sourced from epoch_ms).
+//   - Section divider (steel-blue 2px @ alpha 0.85) between the
+//     keyboard region and the results grid — same divider DetailScreen
+//     uses above its action row.
+//   - Result cells: poster + body-font title/year. Focused cell gets a
+//     3px gold outline, plus a blinking ◂ in steel-blue at the
+//     bottom-right (matches the home-menu/DetailScreen cursor idiom).
+//   - "IN LIBRARY" chip in the focused-or-not cell uses the same
+//     gold-outline / accent-text pattern as DetailScreen's genre chips.
+//   - Footer hint: centered, dim, font_small. No filled bar.
+//
+// The virtual keyboard between the query box and the divider keeps its
+// existing visual style — that widget is shared with the kiosk main UI
+// and we deliberately avoid forking it here. The chrome around it, not
+// the keyboard itself, is what carries the retro look.
+constexpr float kPaddingX            = 32.0f;     // matches DetailScreen
 
-// Results grid (smaller than BrowseScreen's 4-col layout).
+// Top header strip — same dimensions as DetailScreen so the rule sits
+// at exactly the same Y across screens (visual continuity when
+// transitioning).
+constexpr float kHeaderBaselineY     = 38.0f;
+constexpr float kHeaderRuleY         = 58.0f;
+
+// Query box just below the header strip. Outline-only (no fill), tall
+// enough to comfortably hold font_large_size (24px) text + a caret.
+constexpr float kQueryBoxMarginTop   = 18.0f;     // gap below header rule
+constexpr float kQueryBoxHeight      = 48.0f;
+constexpr float kQueryBoxBorderW     = 2.0f;
+constexpr float kQueryBoxPadX        = 16.0f;     // inner left/right padding
+
+// Keyboard sits between the query box and the section divider that
+// separates it from the results grid. The keyboard widget keeps its
+// existing self-rendered look — we just allocate the region.
+constexpr float kKbMarginTop         = 14.0f;     // gap below query box
+constexpr float kKbMarginBottom      = 14.0f;     // gap above section rule
+constexpr float kKeyGap              = 6.0f;
+constexpr float kTopFrac             = 0.40f;     // keyboard region ends here
+
+// Results grid (smaller than BrowseScreen's 4-col layout — 3 columns
+// because the keyboard eats vertical real estate).
 constexpr float kGridPaddingTop      = 18.0f;
-constexpr float kBottomBarHeight     = 40.0f;
 constexpr float kCellPadding         = 16.0f;
 constexpr float kPosterW             = 180.0f;
 constexpr float kPosterH             = 270.0f;
 constexpr float kLabelAreaH          = 48.0f;
 constexpr float kCellW               = kPosterW;
 constexpr float kCellH               = kPosterH + kLabelAreaH;
-constexpr float kOutlineThickness    = 4.0f;
+constexpr float kFocusOutlineW       = 3.0f;      // matches DetailScreen poster
+constexpr float kPosterBorderW       = 2.0f;      // un-focused poster frame
 
+// Library chip (drawn over the focused-or-not poster's bottom-left).
+constexpr float kChipPadX            = 8.0f;
+constexpr float kChipH               = 20.0f;
+constexpr float kChipBorderW         = 2.0f;
+constexpr float kChipMargin          = 8.0f;      // inset from poster edges
+
+// Bottom hint sits this far above the screen bottom (no filled bar).
+constexpr float kHintMarginBottom    = 12.0f;
+
+// Backdrop poster tint — same deterministic Knuth hash used by Browse
+// and Detail, so a movie's placeholder color stays consistent across
+// every screen it appears on.
 ::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;  // Knuth hash
+    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;
     uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
     uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
     uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
     return {r, g, b, 255};
 }
 
+// Truncate `text` with a trailing ellipsis if it exceeds max_w at
+// font_size. Same helper DetailScreen uses; duplicated here rather
+// than shared because the file-pair convention in this directory is
+// for each screen to own its anonymous-namespace helpers.
 std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
                               int font_size, float max_w) {
     if (r.mb_text_width(text, font_size) <= max_w) return text;
@@ -295,225 +348,414 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
 
 void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const ::ui::Theme& th = r.mb_theme();
-
     r.mb_fill_background();
 
-    // --- Region layout -------------------------------------------------
-    float top_h = screen_h * kTopFrac;
+    const float w = static_cast<float>(screen_w);
+    const float h = static_cast<float>(screen_h);
 
-    // --- Query box (above keyboard) -----------------------------------
-    float qb_x = kPaddingX;
-    float qb_y = kQueryBoxMarginTop;
-    float qb_w = screen_w - 2.0f * kPaddingX;
-    float qb_h = kQueryBoxHeight;
+    // 500ms blink cycle, sourced from epoch time so it stays in
+    // lockstep with the home-menu's playlist cursor and DetailScreen's
+    // action-button marker — every blink across the app breathes
+    // together when transitioning between screens.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
-    r.mb_fill_rect(qb_x, qb_y, qb_w, qb_h, th.bg, 0.85f);
-    r.mb_stroke_rect(qb_x, qb_y, qb_w, qb_h, 2.0f,
-                     focus_ == Focus::Keyboard ? th.accent : th.dim,
-                     1.0f);
+    // ---------------------------------------------------------------
+    // Top header strip: "SEARCH" + status (searching... / N results)
+    // Mirrors DetailScreen's "FEATURE PRESENTATION" idiom: Zen Dots
+    // heading in steel-blue (accent2), full-width 2px steel-blue rule
+    // beneath. The rule sits at exactly the same Y across screens so
+    // transitioning between Browse/Search/Detail feels continuous.
+    // ---------------------------------------------------------------
+    {
+        const std::string heading = "SEARCH";
+        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
+                             th.font_heading_size, th.accent2, 1.0f);
 
-    int query_font = th.font_large_size;
-    int query_baseline = r.mb_text_baseline(query_font);
-    float query_text_y = qb_y + (qb_h / 2.0f) - (query_font / 2.0f)
-                       + static_cast<float>(query_baseline);
+        // Right side: live status. While a Radarr lookup is in flight
+        // we show a soft "searching..." in accent (gold) — the in-flight
+        // signal is loud enough to notice but small enough not to fight
+        // the Zen Dots heading. Once results settle we swap to a dim
+        // "N result(s)" so the user gets a confirmation of how many
+        // posters are about to appear.
+        const int   status_size     = th.font_small_size;
+        std::string status_text;
+        ::ui::Color status_color    = th.dim;
+        float       status_alpha    = 0.85f;
+        if (searching_) {
+            status_text  = "searching...";
+            status_color = th.accent;
+            status_alpha = 0.95f;
+        } else if (!query_.empty() && !results_.empty()) {
+            int n = static_cast<int>(results_.size());
+            status_text = std::to_string(n)
+                        + (n == 1 ? " result" : " results");
+        }
+        if (!status_text.empty()) {
+            int sw = r.mb_text_width(status_text, status_size);
+            float sx = w - kPaddingX - static_cast<float>(sw);
+            // Align the status baseline a couple px lower than the
+            // heading so it reads as a subtitle, same trick used in
+            // DetailScreen's back-hint.
+            float sy = kHeaderBaselineY + 2.0f;
+            r.mb_draw_text(status_text, sx, sy, status_size,
+                           status_color, status_alpha);
+        }
 
-    // Blinking cursor, same visual pattern the existing virtual-keyboard
-    // renderer uses.
-    bool cursor_on = (std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now().time_since_epoch())
-                          .count() / 500) % 2 == 0;
-    std::string display = query_.empty() ? std::string("Type to search movies...")
-                                         : query_;
-    if (!query_.empty() && cursor_on) display += "_";
-
-    r.mb_draw_text(display, qb_x + 16.0f, query_text_y, query_font,
-                   query_.empty() ? th.dim : th.fg,
-                   query_.empty() ? 0.6f : 1.0f);
-
-    // "searching..." indicator, right-aligned inside the query box.
-    if (searching_) {
-        const std::string busy = "searching...";
-        int busy_size = th.font_small_size;
-        int busy_baseline = r.mb_text_baseline(busy_size);
-        float busy_y = qb_y + (qb_h / 2.0f) - (busy_size / 2.0f)
-                     + static_cast<float>(busy_baseline);
-        float busy_w = static_cast<float>(r.mb_text_width(busy, busy_size));
-        r.mb_draw_text(busy, qb_x + qb_w - busy_w - 16.0f, busy_y,
-                       busy_size, th.accent, 0.9f);
+        // Full-width 2px steel-blue rule — screen frame, not heading
+        // underline. Identical to DetailScreen's header rule.
+        r.mb_draw_line(kPaddingX, kHeaderRuleY,
+                       w - kPaddingX, kHeaderRuleY,
+                       2.0f, th.accent2, 0.95f);
     }
 
-    // --- Virtual keyboard ---------------------------------------------
-    float kb_top   = qb_y + qb_h + kQueryBoxMarginBot;
-    float kb_bot   = top_h - kKbPaddingBottom;
-    float kb_h     = std::max(120.0f, kb_bot - kb_top);
-    float kb_x     = kPaddingX;
-    float kb_w     = screen_w - 2.0f * kPaddingX;
+    // ---------------------------------------------------------------
+    // Query box: 2px gold outline, no fill. ▶ prefix in steel-blue
+    // matches the home-menu's playlist-item arrow vocabulary; the
+    // query text itself is in fg (warm cream); a 2px-wide gold caret
+    // (rendered as a primitive rect, NOT an underscore glyph) blinks
+    // at the end of the text on the same 500ms cadence as every other
+    // cursor in the app.
+    // ---------------------------------------------------------------
+    const float qb_x = kPaddingX;
+    const float qb_y = kHeaderRuleY + kQueryBoxMarginTop;
+    const float qb_w = w - 2.0f * kPaddingX;
+    const float qb_h = kQueryBoxHeight;
 
-    const auto& layout = keyboard_.get_layout();
-    int nrows = static_cast<int>(layout.size());
-    float row_h = (kb_h - kKeyGap * std::max(0, nrows - 1))
-                / static_cast<float>(std::max(1, nrows));
+    {
+        r.mb_stroke_rect(qb_x, qb_y, qb_w, qb_h,
+                         kQueryBoxBorderW, th.accent, 0.95f);
 
-    int kb_font = th.font_medium_size;
-    int kb_baseline = r.mb_text_baseline(kb_font);
+        const int qf       = th.font_large_size;
+        const int qf_base  = r.mb_text_baseline(qf);
+        // Vertically center the text glyph baseline inside the box.
+        const float text_y = qb_y + (qb_h / 2.0f)
+                           - static_cast<float>(qf) / 2.0f
+                           + static_cast<float>(qf_base);
 
-    bool kb_focused = (focus_ == Focus::Keyboard);
+        // ▶ prefix in steel-blue — accent2 against gold border keeps
+        // the "active text field" cue visible without over-using gold.
+        const std::string prefix = "\xE2\x96\xB6 ";  // U+25B6 + space
+        const float prefix_x = qb_x + kQueryBoxPadX;
+        r.mb_draw_text(prefix, prefix_x, text_y, qf, th.accent2, 0.95f);
+        const float prefix_w = static_cast<float>(
+            r.mb_text_width(prefix, qf));
 
-    for (int row = 0; row < nrows; ++row) {
-        const auto& keys = layout[row];
-        int ncols = static_cast<int>(keys.size());
-        float col_w = (kb_w - kKeyGap * std::max(0, ncols - 1))
-                    / static_cast<float>(std::max(1, ncols));
-        float ky = kb_top + row * (row_h + kKeyGap);
+        const float text_x = prefix_x + prefix_w;
+        if (query_.empty()) {
+            // Placeholder is dim, smaller than the query font would
+            // be — uses the same font_large_size so the ▶ + caret
+            // alignment doesn't jump when the user starts typing.
+            r.mb_draw_text("Type a movie title...",
+                           text_x, text_y, qf, th.dim, 0.7f);
+        } else {
+            // Truncate at the visible width of the box (leave room
+            // for the caret + right padding) so long queries never
+            // bleed across the gold border.
+            const float text_max_w = qb_w - (text_x - qb_x)
+                                   - kQueryBoxPadX - 12.0f;
+            std::string drawn = truncate_to_width(r, query_, qf,
+                                                  text_max_w);
+            r.mb_draw_text(drawn, text_x, text_y, qf, th.fg, 1.0f);
 
-        for (int col = 0; col < ncols; ++col) {
-            float kx = kb_x + col * (col_w + kKeyGap);
-            bool is_selected = kb_focused &&
-                               row == keyboard_.get_selected_row() &&
-                               col == keyboard_.get_selected_col();
-
-            // Key background
-            const ::ui::Color& bg = is_selected ? th.accent : th.action;
-            r.mb_fill_rect(kx, ky, col_w, row_h, bg,
-                           kb_focused ? 0.95f : 0.45f);
-            r.mb_stroke_rect(kx, ky, col_w, row_h, 1.0f, th.dim, 0.5f);
-
-            // Key label (centered).
-            const char* lbl = display_label(keys[col]);
-            int label_size = kb_font;
-            if (std::string(lbl).length() > 1) label_size = th.font_small_size;
-            int label_baseline = (label_size == kb_font)
-                                 ? kb_baseline
-                                 : r.mb_text_baseline(label_size);
-            float tw = static_cast<float>(r.mb_text_width(lbl, label_size));
-            float tx = kx + (col_w - tw) / 2.0f;
-            float ty = ky + (row_h / 2.0f) - (label_size / 2.0f)
-                     + static_cast<float>(label_baseline);
-
-            const ::ui::Color& fg = is_selected ? th.bg : th.fg;
-            r.mb_draw_text(lbl, tx, ty, label_size, fg,
-                           kb_focused ? 1.0f : 0.7f);
+            // Blinking text caret — 2px-wide gold rect, height ≈ glyph
+            // height. We anchor it just past the rendered text width
+            // so it visually "sits at" the insertion point.
+            if (blink_on) {
+                const float caret_w = 2.0f;
+                const float caret_h = static_cast<float>(qf);
+                const float caret_x = text_x
+                    + static_cast<float>(r.mb_text_width(drawn, qf))
+                    + 2.0f;
+                const float caret_y = qb_y + (qb_h - caret_h) / 2.0f;
+                r.mb_fill_rect(caret_x, caret_y, caret_w, caret_h,
+                               th.accent, 1.0f);
+            }
         }
     }
 
-    // Separator between keyboard region and results.
-    float sep_y = top_h;
-    r.mb_fill_rect(0.0f, sep_y, static_cast<float>(screen_w), 1.0f,
-                   th.dim, 0.6f);
+    // ---------------------------------------------------------------
+    // Virtual keyboard region.
+    //
+    // The keyboard widget (ui::VirtualKeyboard) does not own its own
+    // render() method — by convention in this codebase, the screen
+    // that hosts the widget draws it from the widget's exposed state
+    // (get_layout / get_selected_row / get_selected_col). We
+    // deliberately keep the existing key-cell visuals (filled cells
+    // with a thin dim border, accent fill on the focused key) so the
+    // keyboard reads identically to its other appearances in the
+    // kiosk main UI. Only the chrome around it gets the retro
+    // makeover; this preserves muscle memory for users who already
+    // know the keyboard from the home menu.
+    // ---------------------------------------------------------------
+    const float kb_top = qb_y + qb_h + kKbMarginTop;
+    const float kb_bot = h * kTopFrac - kKbMarginBottom;
+    const float kb_h_  = std::max(120.0f, kb_bot - kb_top);
+    const float kb_x   = kPaddingX;
+    const float kb_w   = w - 2.0f * kPaddingX;
 
-    // --- Results grid --------------------------------------------------
-    float grid_top    = top_h + kGridPaddingTop;
-    float grid_bottom = static_cast<float>(screen_h) - kBottomBarHeight;
-    float grid_h      = grid_bottom - grid_top;
+    {
+        const auto& layout = keyboard_.get_layout();
+        const int nrows = static_cast<int>(layout.size());
+        const float row_h = (kb_h_ - kKeyGap * std::max(0, nrows - 1))
+                          / static_cast<float>(std::max(1, nrows));
 
-    int visible_rows = std::max(1,
+        const int kb_font     = th.font_medium_size;
+        const int kb_baseline = r.mb_text_baseline(kb_font);
+        const bool kb_focused = (focus_ == Focus::Keyboard);
+
+        for (int row = 0; row < nrows; ++row) {
+            const auto& keys = layout[row];
+            const int ncols = static_cast<int>(keys.size());
+            const float col_w = (kb_w - kKeyGap * std::max(0, ncols - 1))
+                              / static_cast<float>(std::max(1, ncols));
+            const float ky = kb_top + row * (row_h + kKeyGap);
+
+            for (int col = 0; col < ncols; ++col) {
+                const float kx = kb_x + col * (col_w + kKeyGap);
+                const bool is_selected =
+                    kb_focused &&
+                    row == keyboard_.get_selected_row() &&
+                    col == keyboard_.get_selected_col();
+
+                // Preserve the keyboard's existing visual style: gold
+                // fill on the focused key, dim "action" fill on the
+                // rest, thin dim hairline border. Don't redesign.
+                const ::ui::Color& bg = is_selected ? th.accent : th.action;
+                r.mb_fill_rect(kx, ky, col_w, row_h, bg,
+                               kb_focused ? 0.95f : 0.45f);
+                r.mb_stroke_rect(kx, ky, col_w, row_h, 1.0f, th.dim, 0.5f);
+
+                const char* lbl = display_label(keys[col]);
+                int label_size = kb_font;
+                if (std::string(lbl).length() > 1)
+                    label_size = th.font_small_size;
+                const int label_baseline = (label_size == kb_font)
+                                           ? kb_baseline
+                                           : r.mb_text_baseline(label_size);
+                const float tw = static_cast<float>(
+                    r.mb_text_width(lbl, label_size));
+                const float tx = kx + (col_w - tw) / 2.0f;
+                const float ty = ky + (row_h / 2.0f)
+                               - static_cast<float>(label_size) / 2.0f
+                               + static_cast<float>(label_baseline);
+
+                const ::ui::Color& fg = is_selected ? th.bg : th.fg;
+                r.mb_draw_text(lbl, tx, ty, label_size, fg,
+                               kb_focused ? 1.0f : 0.7f);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Section divider between keyboard region and results grid.
+    // Steel-blue 2px rule at alpha 0.85 — same divider DetailScreen
+    // uses above its action row. Visually anchors the screen into
+    // two clear bands (entry / output).
+    // ---------------------------------------------------------------
+    const float sep_y = h * kTopFrac;
+    r.mb_draw_line(kPaddingX, sep_y,
+                   w - kPaddingX, sep_y,
+                   2.0f, th.accent2, 0.85f);
+
+    // ---------------------------------------------------------------
+    // Results grid (3 columns).
+    // ---------------------------------------------------------------
+    const float grid_top    = sep_y + kGridPaddingTop;
+    const float grid_bottom = h - kHintMarginBottom
+                            - static_cast<float>(th.font_small_size) - 8.0f;
+    const float grid_h      = grid_bottom - grid_top;
+
+    const int visible_rows = std::max(1,
         static_cast<int>(grid_h / (kCellH + kCellPadding)));
 
     if (focus_ == Focus::Results && !results_.empty()) {
-        int focused_row = grid_cursor_ / kGridCols;
+        const int focused_row = grid_cursor_ / kGridCols;
         if (focused_row < scroll_row_) scroll_row_ = focused_row;
         if (focused_row >= scroll_row_ + visible_rows) {
             scroll_row_ = focused_row - visible_rows + 1;
         }
     }
 
-    int total_rows = results_.empty() ? 0
-                   : (static_cast<int>(results_.size()) - 1) / kGridCols + 1;
-    int end_row = std::min(total_rows, scroll_row_ + visible_rows);
+    const int total_rows = results_.empty() ? 0
+                         : (static_cast<int>(results_.size()) - 1) / kGridCols + 1;
+    const int end_row = std::min(total_rows, scroll_row_ + visible_rows);
 
-    float grid_interior_w = static_cast<float>(screen_w) - 2.0f * kPaddingX;
+    const float grid_interior_w = w - 2.0f * kPaddingX;
     float col_gap = (grid_interior_w - kGridCols * kCellW)
-                    / std::max(1.0f, static_cast<float>(kGridCols - 1));
+                  / std::max(1.0f, static_cast<float>(kGridCols - 1));
     if (col_gap < kCellPadding) col_gap = kCellPadding;
 
-    // Empty-state messaging.
+    // ---- Empty / loading / no-match states --------------------------
+    // Drop-fills are out — these are dim-text-only messages centered
+    // in the grid region, so the steel-blue divider above stays the
+    // visual anchor instead of a competing block of color.
     if (results_.empty()) {
         std::string msg;
+        ::ui::Color msg_color = th.dim;
+        float       msg_alpha = 0.85f;
+        int         msg_size  = th.font_large_size;
         if (query_.empty()) {
-            msg = "Type a title to see results";
+            // Placeholder for the "haven't typed anything yet" state.
+            msg = "Type a movie title...";
         } else if (searching_) {
+            // Header already shows "searching..." in accent — repeat
+            // it here large-and-centered as the primary affordance.
             msg = "Searching...";
+            msg_color = th.accent;
+            msg_alpha = 0.95f;
         } else if (query_ != last_queried_) {
-            // User typed but debounce hasn't fired yet.
+            // User typed but the 400ms debounce hasn't fired yet;
+            // keep this minimal so it doesn't flash on every keystroke.
             msg = "...";
+            msg_size = th.font_medium_size;
         } else {
-            msg = "No matches for \"" + query_ + "\"";
+            // Smart-quoted "No results for «query»" — uses the same
+            // U+00AB / U+00BB guillemets as the retro vocabulary. If
+            // the query is long, truncate it inside the message.
+            const std::string open_q  = "\xC2\xAB";   // U+00AB
+            const std::string close_q = "\xC2\xBB";   // U+00BB
+            std::string q_drawn = truncate_to_width(
+                r, query_, msg_size, w - 2.0f * kPaddingX - 240.0f);
+            msg = "No results for " + open_q + q_drawn + close_q;
         }
-        int msg_size = th.font_large_size;
-        int msg_w = r.mb_text_width(msg, msg_size);
-        float msg_x = (static_cast<float>(screen_w)
-                       - static_cast<float>(msg_w)) / 2.0f;
-        float msg_y = grid_top + grid_h / 2.0f
-                    + static_cast<float>(r.mb_text_baseline(msg_size));
-        r.mb_draw_text(msg, msg_x, msg_y, msg_size, th.dim, 0.8f);
+        const int   mw       = r.mb_text_width(msg, msg_size);
+        const float msg_x    = (w - static_cast<float>(mw)) / 2.0f;
+        const float msg_y    = grid_top + grid_h / 2.0f
+                             + static_cast<float>(r.mb_text_baseline(msg_size)) / 2.0f;
+        r.mb_draw_text(msg, msg_x, msg_y, msg_size, msg_color, msg_alpha);
     }
 
+    // ---- Cells ------------------------------------------------------
     for (int row = scroll_row_; row < end_row; ++row) {
         for (int col = 0; col < kGridCols; ++col) {
-            int idx = row * kGridCols + col;
+            const int idx = row * kGridCols + col;
             if (idx >= static_cast<int>(results_.size())) break;
             const auto& m = results_[idx];
 
-            float cell_x = kPaddingX + col * (kCellW + col_gap);
-            float cell_y = grid_top + (row - scroll_row_) * (kCellH + kCellPadding);
+            const float cell_x = kPaddingX + col * (kCellW + col_gap);
+            const float cell_y = grid_top
+                               + (row - scroll_row_) * (kCellH + kCellPadding);
 
-            ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            r.mb_draw_poster_or_tint(m.poster_url,
-                                     cell_x, cell_y, kPosterW, kPosterH,
-                                     tint, 1.0f);
-            r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH, 1.0f,
-                             th.dim, 0.4f);
+            // Poster — fit (preserve aspect) with the deterministic
+            // tint placeholder if no artwork is available yet. Same
+            // helper Browse/Detail use, so a movie's placeholder
+            // color is consistent across screens.
+            const ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
+            r.mb_draw_poster_fit(m.poster_url,
+                                 cell_x, cell_y, kPosterW, kPosterH,
+                                 tint, 1.0f);
 
-            bool focused = (focus_ == Focus::Results && idx == grid_cursor_);
-            if (focused) {
-                r.mb_stroke_rect(cell_x - kOutlineThickness / 2.0f,
-                                 cell_y - kOutlineThickness / 2.0f,
-                                 kPosterW + kOutlineThickness,
-                                 kPosterH + kOutlineThickness,
-                                 kOutlineThickness,
-                                 th.accent, 1.0f);
+            const bool focused =
+                (focus_ == Focus::Results && idx == grid_cursor_);
+
+            // Frame: 2px gold for un-focused, 3px gold for focused.
+            // Same gold-frame "TV monitor" idiom Detail uses on its
+            // big poster — just thinner here because the cells are
+            // smaller and a heavy outline would dominate.
+            const float border_w = focused ? kFocusOutlineW : kPosterBorderW;
+            r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH,
+                             border_w, th.accent,
+                             focused ? 1.0f : 0.85f);
+
+            // Blinking ◂ marker at the bottom-right of the focused
+            // poster — same triangle primitive + 500ms cadence as
+            // DetailScreen's action-button cursor. Steel-blue color
+            // so it doesn't compete with the gold focus outline.
+            if (focused && blink_on) {
+                const float ms = static_cast<float>(th.font_medium_size) * 0.55f;
+                const float mcx = cell_x + kPosterW - 14.0f;
+                const float mcy = cell_y + kPosterH - 14.0f;
+                r.mb_fill_triangle(
+                    mcx,             mcy - ms,
+                    mcx,             mcy + ms,
+                    mcx - ms * 1.2f, mcy,
+                    th.accent2, 1.0f);
             }
 
-            int title_size = th.font_small_size;
-            int title_baseline = r.mb_text_baseline(title_size);
-            std::string title = truncate_to_width(
+            // "IN LIBRARY" chip in the bottom-left of the poster —
+            // gold outline + accent text, same pattern as
+            // DetailScreen's genre chips. We draw a small bg fill
+            // here only because the chip overlays a poster image and
+            // would be unreadable against bright artwork otherwise;
+            // the bg color is th.bg at high alpha so it still reads
+            // as part of the same border-and-text vocabulary.
+            if (m.tmdb_id > 0 && library_tmdb_ids_.count(m.tmdb_id) > 0) {
+                const std::string chip_text = "IN LIBRARY";
+                const int   chip_font = th.font_small_size;
+                const int   chip_base = r.mb_text_baseline(chip_font);
+                const float chip_text_w = static_cast<float>(
+                    r.mb_text_width(chip_text, chip_font));
+                const float chip_w = chip_text_w + 2.0f * kChipPadX;
+                const float chip_x = cell_x + kChipMargin;
+                const float chip_y = cell_y + kPosterH
+                                   - kChipH - kChipMargin;
+
+                // Background pad — bg at high alpha so the chip is
+                // legible even over a bright poster. NOT a flat color
+                // block; it's just a readability backstop behind the
+                // outline-and-text idiom.
+                r.mb_fill_rect(chip_x, chip_y, chip_w, kChipH,
+                               th.bg, 0.85f);
+                r.mb_stroke_rect(chip_x, chip_y, chip_w, kChipH,
+                                 kChipBorderW, th.accent, 1.0f);
+                const float ctx = chip_x + kChipPadX;
+                const float cty = chip_y
+                                + (kChipH - static_cast<float>(chip_font)) / 2.0f
+                                + static_cast<float>(chip_base);
+                r.mb_draw_text(chip_text, ctx, cty,
+                               chip_font, th.accent, 1.0f);
+            }
+
+            // Title + year underneath — body font, fg for the title
+            // (full opacity when focused, 0.9 otherwise) and dim for
+            // the year. Truncated to cell width.
+            const int title_size = th.font_medium_size;
+            const int title_base = r.mb_text_baseline(title_size);
+            const std::string title = truncate_to_width(
                 r, m.title.empty() ? "Untitled" : m.title,
                 title_size, kCellW);
-            float title_y = cell_y + kPosterH + 8.0f
-                          + static_cast<float>(title_baseline);
+            const float title_y = cell_y + kPosterH + 8.0f
+                                + static_cast<float>(title_base);
             r.mb_draw_text(title, cell_x, title_y, title_size, th.fg,
                            focused ? 1.0f : 0.9f);
 
             if (m.year > 0) {
-                std::string year = std::to_string(m.year);
-                int year_size = th.font_small_size;
-                int year_baseline = r.mb_text_baseline(year_size);
-                float year_y = title_y + static_cast<float>(year_size) * 0.9f
-                             + static_cast<float>(year_baseline) * 0.2f;
-                r.mb_draw_text(year, cell_x, year_y, year_size, th.dim, 0.8f);
+                const std::string year = std::to_string(m.year);
+                const int year_size = th.font_small_size;
+                const int year_base = r.mb_text_baseline(year_size);
+                const float year_y = title_y
+                                   + static_cast<float>(title_size) * 0.6f
+                                   + static_cast<float>(year_base);
+                r.mb_draw_text(year, cell_x, year_y,
+                               year_size, th.dim, 0.85f);
             }
         }
     }
 
-    // --- Bottom hint bar ----------------------------------------------
-    float bar_y = static_cast<float>(screen_h) - kBottomBarHeight;
-    r.mb_fill_rect(0.0f, bar_y, static_cast<float>(screen_w), kBottomBarHeight,
-                   th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, bar_y, static_cast<float>(screen_w), 1.0f,
-                   th.dim, 0.6f);
-
-    const std::string hint =
-        (focus_ == Focus::Keyboard)
-            ? "Type: SELECT   Down: into results   BTN4: back (hold: exit)"
-            : "Rotate: nav   RCLICK: open   BTN2: quick-add   BTN4: back (hold: exit)";
-    int hint_size = th.font_small_size;
-    int hint_baseline = r.mb_text_baseline(hint_size);
-    int hint_w = r.mb_text_width(hint, hint_size);
-    float hint_x = (static_cast<float>(screen_w)
-                    - static_cast<float>(hint_w)) / 2.0f;
-    float hint_y = bar_y + (kBottomBarHeight / 2.0f) - (hint_size / 2.0f)
-                 + static_cast<float>(hint_baseline);
-    r.mb_draw_text(hint, hint_x, hint_y, hint_size, th.fg, 0.85f);
+    // ---------------------------------------------------------------
+    // Bottom hint — centered, dim, font_small. No filled bar; the
+    // page is bordered by the steel-blue rules at the top and the
+    // section divider, and another fill block here would feel heavy.
+    // The hint text changes by focus region so the user always sees
+    // the inputs that matter for what's currently active.
+    // ---------------------------------------------------------------
+    {
+        const std::string hint =
+            (focus_ == Focus::Keyboard)
+                ? "Rotate: keyboard   BTN2: type   Down: results   BTN4: back"
+                : "Rotate: nav   RCLICK: open   BTN2: quick-add   BTN4: back";
+        const int sz       = th.font_small_size;
+        const int baseline = r.mb_text_baseline(sz);
+        const int hw       = r.mb_text_width(hint, sz);
+        const float hx     = (w - static_cast<float>(hw)) / 2.0f;
+        const float hy     = h - kHintMarginBottom
+                           - static_cast<float>(sz)
+                           + static_cast<float>(baseline);
+        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
+    }
 }
 
 }  // namespace media_browser::ui

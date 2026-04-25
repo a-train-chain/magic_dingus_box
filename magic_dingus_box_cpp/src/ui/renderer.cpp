@@ -1578,6 +1578,51 @@ void Renderer::mb_stroke_rect(float x, float y, float w, float h, float thicknes
     draw_quad(x + w - thickness, y, thickness, h, color, alpha_multiplier);
 }
 
+void Renderer::mb_fill_star(float cx, float cy, float outer_r,
+                            const ui::Color& color, float alpha_multiplier) {
+    // Rendered as GL_TRIANGLE_FAN: center + 10 alternating outer/inner radius
+    // points + one repeat of the first ring point to close the shape. The
+    // inner radius ratio (~0.382 = sin(18°)/sin(54°)) gives the classic
+    // 5-point star silhouette; changing it makes the star fatter/skinnier.
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr int   kN  = 10;                   // outer+inner points around ring
+    constexpr int   kVerts = 1 + kN + 1;        // center + ring + closing point
+    const float inner_r = outer_r * 0.382f;
+
+    // Each vertex = (x, y, u, v) matching the VAO layout used by draw_quad.
+    // UVs are unused in untextured mode but must still be present for the
+    // attribute stride to stay consistent with the textured path.
+    float vertices[kVerts * 4];
+    vertices[0] = cx;
+    vertices[1] = cy;
+    vertices[2] = 0.0f;
+    vertices[3] = 0.0f;
+    for (int i = 0; i <= kN; ++i) {
+        // Start angle -pi/2 puts the first outer point straight up, so the
+        // star reads as pointing at the ceiling rather than sideways.
+        float angle = -kPi / 2.0f
+                    + static_cast<float>(i) * (2.0f * kPi / static_cast<float>(kN));
+        float r = (i % 2 == 0) ? outer_r : inner_r;
+        int o = (i + 1) * 4;
+        vertices[o + 0] = cx + r * std::cos(angle);
+        vertices[o + 1] = cy + r * std::sin(angle);
+        vertices[o + 2] = 0.0f;
+        vertices[o + 3] = 0.0f;
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, kVerts);
+    glBindVertexArray(0);
+}
+
 void Renderer::mb_draw_text(const std::string& text, float x, float baseline_y,
                             int font_size, const ui::Color& color,
                             float alpha_multiplier) {
@@ -1593,6 +1638,55 @@ int Renderer::mb_text_width(const std::string& text, int font_size) {
 int Renderer::mb_text_baseline(int font_size) {
     if (!body_font_manager_) return font_size;
     return body_font_manager_->get_baseline_at_size(font_size);
+}
+
+void Renderer::mb_draw_title_text(const std::string& text, float x, float baseline_y,
+                                  int font_size, const ui::Color& color,
+                                  float alpha_multiplier) {
+    if (!title_font_manager_) return;
+    // use_title_font=true selects the Zen Dots family — same one render_title()
+    // and the "Playlists" header use, which is the look we're matching.
+    draw_text(text, x, baseline_y, font_size, color, true, alpha_multiplier);
+}
+
+int Renderer::mb_title_text_width(const std::string& text, int font_size) {
+    if (!title_font_manager_) return 0;
+    return title_font_manager_->get_text_width(text, font_size);
+}
+
+int Renderer::mb_title_text_baseline(int font_size) {
+    if (!title_font_manager_) return font_size;
+    return title_font_manager_->get_baseline_at_size(font_size);
+}
+
+void Renderer::mb_draw_line(float x1, float y1, float x2, float y2,
+                            float thickness, const ui::Color& color,
+                            float alpha_multiplier) {
+    draw_line(x1, y1, x2, y2, thickness, color, alpha_multiplier);
+}
+
+void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
+                                float x3, float y3, const ui::Color& color,
+                                float alpha_multiplier) {
+    // Same VAO layout as draw_quad (4 floats per vertex: x, y, u, v).
+    // UVs unused in untextured mode but stride must match.
+    float vertices[] = {
+        x1, y1, 0.0f, 0.0f,
+        x2, y2, 0.0f, 0.0f,
+        x3, y3, 0.0f, 0.0f,
+    };
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
 }
 
 media_browser::ArtworkCache& Renderer::artwork_cache() {

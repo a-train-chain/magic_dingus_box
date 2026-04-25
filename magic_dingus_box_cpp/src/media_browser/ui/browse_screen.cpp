@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <ctime>
 #include <string>
@@ -18,23 +19,84 @@ namespace media_browser::ui {
 
 namespace {
 
-// Poster card layout (fixed pixel sizes — real movie posters are ~2:3).
-constexpr float kCategoryStripHeight = 72.0f;
-constexpr float kBottomBarHeight     = 40.0f;
-constexpr float kGridPaddingX        = 48.0f;
-constexpr float kGridPaddingTop      = 24.0f;
-constexpr float kCellPadding         = 18.0f;
-constexpr float kPosterW             = 220.0f;
-constexpr float kPosterH             = 330.0f;
-constexpr float kLabelAreaH          = 56.0f;   // Title + year below poster
-constexpr float kCellW               = kPosterW;
-constexpr float kCellH               = kPosterH + kLabelAreaH;
-constexpr float kOutlineThickness    = 4.0f;
+// Retro home-menu-inspired layout, deliberately matching DetailScreen's
+// chrome so the two screens read as one consistent kiosk surface. The
+// shared idioms are:
+//   - "BROWSE" header (Zen Dots, steel-blue) underlined with a 2px rule
+//     spanning the full width — same pattern DetailScreen uses for
+//     "FEATURE PRESENTATION".
+//   - Steel-blue (accent2) section dividers between major regions.
+//   - Gold-outline-only chips and focus rings (no fill blocks). The
+//     previous Browse screen used filled chip backgrounds; we drop them
+//     to match the home menu's border-and-text aesthetic.
+//   - Blinking left-pointing ◂ triangle inside the focused chip,
+//     identical 500ms cycle and steel-blue color as the home-menu
+//     playlist cursor and DetailScreen's action-button cursor.
+//   - Centered dim footer hint.
 
-// Filter panel dimensions (Phase B).
-constexpr float kFilterPanelH        = 56.0f;
-constexpr float kFilterControlW      = 260.0f;
-constexpr float kFilterControlGap    = 18.0f;
+// Padding shared with DetailScreen so the header rule lines up exactly.
+constexpr float kPaddingX        = 32.0f;
+constexpr float kHeaderBaselineY = 38.0f;     // baseline of header text
+constexpr float kHeaderRuleY     = 58.0f;     // Y of the 2px steel-blue rule
+constexpr float kBottomBarHeight = 40.0f;
+
+// Category chip strip lives directly below the header rule. Chips are
+// outline-only with a gold border (focused = thicker + blinking ◂);
+// nav chips use the steel-blue (accent2) color when not focused so they
+// read as a different "type" from the content chips, but the geometry
+// is identical.
+constexpr float kChipStripTop    = kHeaderRuleY + 14.0f;
+constexpr float kChipH           = 32.0f;
+// Bumped from 14 -> 18 so chip text has more breathing room from the
+// border on both sides, especially the long ones ("Now Playing"). The
+// chip strip no longer feels cramped; combined with kMarkerZoneW it
+// gives every chip a consistent shape regardless of label length.
+constexpr float kChipPadX        = 18.0f;
+// Minimum gap between chips. The actual gap is computed dynamically per-
+// frame from the slack between natural width and available width, so the
+// chip strip fills the full header bar instead of clustering on the left.
+// 14 is the floor — anything tighter and chips visually merge.
+constexpr float kChipMinGap      = 14.0f;
+constexpr float kChipBorderW     = 2.0f;
+constexpr float kChipFocusBorderW = 3.0f;
+// Reserved zone on the RIGHT side of every chip for the blinking ◂ focus
+// marker. The label is centered inside the LEFT portion of the chip
+// (chip_w minus this zone) so the marker never overlaps the last letter
+// of long labels like "Now Playing". The zone exists on every chip
+// regardless of focus, so chip widths are stable across focus changes
+// (no reflow when arrowing left/right). 22px is wide enough to hold the
+// 14.5px-wide triangle plus a small inset on either side.
+constexpr float kMarkerZoneW     = 22.0f;
+// Steel-blue divider drawn between the last content chip and the first
+// nav chip. Half-height bar, full alpha — separator without weight.
+constexpr float kChipDividerW    = 2.0f;
+constexpr float kChipDividerPadX = 10.0f;
+
+// Section rule below the chip strip (and below the optional filter
+// panel) — same steel-blue 2px rule that appears under the chip strip
+// and above the action row in DetailScreen.
+constexpr float kSectionRuleAlpha = 0.85f;
+
+// Filter panel — same outline-chip language as the category strip,
+// just with three wider chips that show the current Genre / Year / Sort
+// selection and blink the ◂ marker on the focused row.
+constexpr float kFilterPanelGap  = 12.0f;     // gap between strip rule and panel
+constexpr float kFilterChipH     = 36.0f;
+constexpr float kFilterChipGap   = 14.0f;
+constexpr float kFilterChipMinW  = 220.0f;
+
+// Poster grid. With kGridCols=5, cell width is now computed dynamically
+// per-frame from the available interior width and column gap (see the
+// render() block tagged "Compute column spacing"). Poster height is
+// derived from a 2:3 movie-poster aspect ratio so cells stay correctly
+// proportioned no matter what cell_w we land on.
+constexpr float kGridPaddingX     = 32.0f;    // matches kPaddingX so columns align with the rule
+constexpr float kGridPaddingTop   = 18.0f;
+constexpr float kCellPaddingY     = 18.0f;
+constexpr float kCellGap          = 18.0f;    // horizontal gap between cells
+constexpr float kPosterAspect     = 1.5f;     // 2:3 portrait — TMDB poster aspect
+constexpr float kLabelAreaH       = 56.0f;    // title + year area below poster
+constexpr float kPosterBorderW    = 2.0f;
 
 // Hard-coded sort-by options. Keep small — TMDB supports more sorts but
 // these three cover >99% of actual user intent for a movie browser and
@@ -413,109 +475,278 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     return Screen::Browse;
 }
 
+// ----------------------------------------------------------------------------
+// Rendering — retro home-menu aesthetic, matched to DetailScreen.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+// Draw a blinking left-pointing ◂ marker centered at (cx, cy). The
+// geometry and color exactly match DetailScreen's action-button cursor
+// (and the home menu's playlist-list cursor) so the visual cue means
+// the same thing across all screens. Callers are responsible for
+// reserving a "marker zone" inside the chip and passing the zone's
+// center X here, so the marker never overlaps chip text.
+void draw_focus_cursor_at(::ui::Renderer& r, float cx, float cy,
+                          float font_size, const ::ui::Color& color) {
+    float marker_size = font_size * 0.45f;
+    r.mb_fill_triangle(
+        cx,                       cy - marker_size,
+        cx,                       cy + marker_size,
+        cx - marker_size * 1.2f,  cy,
+        color, 1.0f);
+}
+
+}  // namespace
+
 void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const ::ui::Theme& th = r.mb_theme();
-
-    // Background
     r.mb_fill_background();
 
-    // --- Top category strip -------------------------------------------
-    r.mb_fill_rect(0.0f, 0.0f, static_cast<float>(screen_w), kCategoryStripHeight,
-                   th.bg, 0.75f);
+    const float w = static_cast<float>(screen_w);
+    const float h = static_cast<float>(screen_h);
 
-    int strip_font = th.font_medium_size;
-    int strip_baseline = r.mb_text_baseline(strip_font);
-    float strip_text_y = (kCategoryStripHeight / 2.0f) - (strip_font / 2.0f)
-                       + static_cast<float>(strip_baseline);
+    // 500ms blink cycle, sourced from epoch time so this screen, the
+    // DetailScreen, and the home menu all breathe in lockstep — when the
+    // user transitions between screens, the focus cursor doesn't jump
+    // out of phase. Same formula as detail_screen.cpp.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
-    // Measure all labels to lay them out evenly across the strip.
-    constexpr float kDividerW = 2.0f;
-    constexpr float kDividerPadX = 12.0f;   // padding on each side of divider
-    float total_label_w = 0.0f;
-    std::vector<float> label_widths(kNumCategories, 0.0f);
-    for (int i = 0; i < kNumCategories; ++i) {
-        float w = static_cast<float>(
-            r.mb_text_width(label_for_category(static_cast<Category>(i)), strip_font));
-        label_widths[i] = w;
-        total_label_w += w;
+    // --- Top header bar: "BROWSE" + right-aligned home hint ----------
+    // Mirrors DetailScreen's header exactly: Zen Dots heading in
+    // steel-blue (accent2), small dim hint pinned to the right, full-
+    // width 2px steel-blue rule beneath. Same baseline (38) and rule Y
+    // (58) so the chrome aligns pixel-for-pixel when toggling between
+    // Browse and Detail.
+    {
+        const std::string heading = "BROWSE";
+        int hd_size = th.font_heading_size;
+        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
+                             hd_size, th.accent2, 1.0f);
+
+        // Right-aligned dim hint. BTN4 returns to the kiosk main menu —
+        // identical convention to DetailScreen's "back" hint, except
+        // here BTN4 == "home" because Browse IS the entry screen for the
+        // media browser.
+        const std::string back_hint = "BTN4: home";
+        int hint_size = th.font_small_size;
+        int hw = r.mb_text_width(back_hint, hint_size);
+        float hx = w - kPaddingX - static_cast<float>(hw);
+        float hy = kHeaderBaselineY + 2.0f;
+        r.mb_draw_text(back_hint, hx, hy, hint_size, th.dim, 0.9f);
+
+        // 2px steel-blue rule — the screen's primary horizontal frame.
+        r.mb_draw_line(kPaddingX, kHeaderRuleY,
+                       w - kPaddingX, kHeaderRuleY,
+                       2.0f, th.accent2, 0.95f);
     }
-    float divider_total = kDividerW + 2.0f * kDividerPadX;
-    float spacing = std::max(14.0f,
-        (static_cast<float>(screen_w) - total_label_w - 2.0f * kGridPaddingX
-         - divider_total)
-        / static_cast<float>(kNumCategories - 1));
 
-    float cursor_x = kGridPaddingX;
+    // --- Category chip strip -----------------------------------------
+    // Outline-only chips, gold border for content chips, steel-blue
+    // border for nav chips (so the user can tell at a glance which side
+    // of the divider they're on). Active content category gets brighter
+    // gold; inactive content chips fade to ~75% alpha. Focused chip
+    // (regardless of active state) gets a thicker border, brighter color,
+    // and the blinking ◂ marker — same idiom as DetailScreen buttons.
+    //
+    // Chip-width formula (this is the important bit):
+    //
+    //     chip_w = text_w + 2 * kChipPadX + kMarkerZoneW
+    //
+    // Every chip reserves kMarkerZoneW pixels on the right for the
+    // blinking ◂ focus marker. The label is centered horizontally within
+    // [chip_x, chip_x + chip_w - kMarkerZoneW] — i.e., the LEFT portion
+    // only. This keeps the marker from ever overlapping the last letter
+    // of long labels like "Now Playing", and keeps chip widths stable
+    // across focus changes (the marker zone is always reserved, focused
+    // or not, so chips don't shift around when the user arrows L/R).
+    //
+    // Strip-layout formula:
+    //
+    //   1. First pass: measure each chip's natural width with the formula
+    //      above.
+    //   2. Compute slack = available_w - sum(chip_w) - divider_w
+    //                    - (chip_count - 1) * kChipMinGap.
+    //   3. If slack > 0, distribute it as EXTRA gap evenly across the
+    //      (chip_count - 1) inter-chip gaps. The divider also gets a
+    //      share of the slack on each side via kChipDividerPadX.
+    //   4. If slack <= 0, fall back to the minimum gap and let the strip
+    //      slightly overflow (rare on a 1280px target).
+    //
+    // Net effect: the 9 chips spread across the full header bar instead
+    // of clustering on the left, with the gap calculated dynamically so
+    // the strip always fills the available width.
+    float chip_y = kChipStripTop;
+    int chip_font = th.font_small_size;
+    int chip_baseline = r.mb_text_baseline(chip_font);
+
+    // Pre-measure all chips. text_w is stored alongside chip_w so we can
+    // center the label inside the non-marker portion below.
+    std::array<float, kNumCategories> chip_widths{};
+    std::array<float, kNumCategories> chip_text_widths{};
+    float chips_total_w = 0.0f;
+    for (int i = 0; i < kNumCategories; ++i) {
+        float tw = static_cast<float>(
+            r.mb_text_width(label_for_category(static_cast<Category>(i)),
+                            chip_font));
+        chip_text_widths[i] = tw;
+        chip_widths[i] = tw + 2.0f * kChipPadX + kMarkerZoneW;
+        chips_total_w += chip_widths[i];
+    }
+    // Divider occupies its own horizontal slot. The two kChipDividerPadX
+    // values around it act as gaps in their own right, so when computing
+    // distributable slack the divider effectively "consumes" two gap
+    // slots — one on each side. The remaining inter-chip gaps number
+    // (kNumCategories - 2): nine chips have 8 gaps between them, minus
+    // the one gap that the divider replaces.
+    float divider_total = kChipDividerW + 2.0f * kChipDividerPadX;
+    constexpr int kInterChipGapCount = kNumCategories - 2;  // 7 gaps
+    float available_w = w - 2.0f * kPaddingX;
+    float min_gaps_total = kInterChipGapCount * kChipMinGap;
+    float strip_w_min = chips_total_w + min_gaps_total + divider_total;
+    // Slack = unused horizontal space at minimum spacing. Distribute it
+    // evenly across the inter-chip gaps so the strip fills the bar.
+    float slack = available_w - strip_w_min;
+    float gap = kChipMinGap;
+    if (slack > 0.0f && kInterChipGapCount > 0) {
+        gap = kChipMinGap + slack / static_cast<float>(kInterChipGapCount);
+    }
+
+    // When focus is on the poster grid, fade the top-row chips so the user
+    // can still see what their options are but immediately knows their
+    // input won't affect chip selection. The currently-active content
+    // chip stays at full alpha — it's the breadcrumb that says "you're
+    // inside Popular".
+    const float kInactiveChipFade = 0.4f;
+
+    float cursor_x = kPaddingX;
     for (int i = 0; i < kNumCategories; ++i) {
         Category cat = static_cast<Category>(i);
         const char* label = label_for_category(cat);
-        bool is_active = (!is_nav_chip(cat) && i == static_cast<int>(category_));
+        bool nav = is_nav_chip(cat);
+        bool is_active = (!nav && i == static_cast<int>(category_));
         bool is_focused = (focus_ == Focus::CategoryStrip && i == category_cursor_);
-        ::ui::Color color;
-        if (is_focused) {
-            color = th.accent;
-        } else if (is_active) {
-            color = th.accent;
-        } else if (is_nav_chip(cat)) {
-            color = th.action;
-        } else {
-            color = th.dim;
-        }
-        float alpha = is_focused ? 1.0f : (is_nav_chip(cat) ? 0.9f : 0.85f);
-        r.mb_draw_text(label, cursor_x, strip_text_y, strip_font, color, alpha);
 
-        if (is_focused) {
-            // Focus underline below the label.
-            float underline_y = strip_text_y + 6.0f;
-            r.mb_fill_rect(cursor_x, underline_y, label_widths[i], 3.0f,
-                           th.accent, 1.0f);
+        // Per-chip alpha multiplier: when focus is on the poster grid (or
+        // filter panel), fade every top-strip chip EXCEPT the currently
+        // active content chip, which stays bright as a breadcrumb.
+        float chip_alpha_mul =
+            (focus_ != Focus::CategoryStrip && !is_active)
+                ? kInactiveChipFade
+                : 1.0f;
+
+        // Border color: gold for content chips, steel-blue for nav chips.
+        // Active content chip stays full-alpha gold; inactive content
+        // chips fade. Nav chips fade unless focused.
+        ::ui::Color border_color = nav ? th.accent2 : th.accent;
+        float border_alpha;
+        if (is_focused)             border_alpha = 1.0f;
+        else if (is_active)         border_alpha = 1.0f;
+        else if (nav)               border_alpha = 0.85f;
+        else                        border_alpha = 0.75f;
+        float border_w = is_focused ? kChipFocusBorderW : kChipBorderW;
+
+        float chip_w = chip_widths[i];
+        r.mb_stroke_rect(cursor_x, chip_y, chip_w, kChipH,
+                         border_w, border_color, border_alpha * chip_alpha_mul);
+
+        // Text color matches the border so each chip reads as a single
+        // visual unit. Slight alpha bump for active/focused states.
+        ::ui::Color text_color = nav ? th.accent2 : th.accent;
+        float text_alpha;
+        if (is_focused)             text_alpha = 1.0f;
+        else if (is_active)         text_alpha = 1.0f;
+        else if (nav)               text_alpha = 0.9f;
+        else                        text_alpha = 0.8f;
+
+        // Center the label in the FULL chip width. Chips are now sized
+        // generously enough (kChipPadX bumped + kMarkerZoneW reserved in
+        // the width formula) that most labels are shorter than
+        // chip_w - 2*kChipPadX - kMarkerZoneW, so the cursor still sits
+        // over visually empty space at the right edge — no need to keep
+        // the label off-center to make room for it.
+        float tx = cursor_x + (chip_w - chip_text_widths[i]) / 2.0f;  // centered in full chip
+        float ty = chip_y + (kChipH - static_cast<float>(chip_font)) / 2.0f
+                 + static_cast<float>(chip_baseline);
+        r.mb_draw_text(label, tx, ty, chip_font, text_color, text_alpha * chip_alpha_mul);
+
+        // Active content chip gets a green "now-active" dot in the top-
+        // left corner — same highlight1 color as the home-menu's now-
+        // playing dot. Tiny but informative; the focus cursor is a
+        // separate signal so the two don't conflict visually. The active
+        // chip never fades (chip_alpha_mul == 1.0f when is_active), but
+        // we still multiply for consistency.
+        if (is_active && !is_focused) {
+            float dot_r = 3.0f;
+            r.mb_fill_rect(cursor_x + 6.0f, chip_y + 6.0f,
+                           dot_r * 2.0f, dot_r * 2.0f,
+                           th.highlight1, 1.0f * chip_alpha_mul);
         }
-        cursor_x += label_widths[i];
-        // Draw the divider between the last content chip and the first
-        // nav chip, consuming the inter-chip gap on either side.
+
+        // Blinking ◂ marker centered inside the reserved right-side
+        // marker zone. Geometry matches DetailScreen's action-button
+        // cursor exactly. Gated on focus_ == CategoryStrip — the marker
+        // is a "you are here" cue specific to chip-strip focus, and
+        // is_focused already implies that, but we belt-and-suspenders
+        // it so the marker can never fire while focus is on the grid.
+        if (is_focused && blink_on && focus_ == Focus::CategoryStrip) {
+            float marker_cx = cursor_x + chip_w - kMarkerZoneW * 0.5f;
+            draw_focus_cursor_at(r, marker_cx,
+                                 chip_y + kChipH / 2.0f,
+                                 static_cast<float>(chip_font),
+                                 th.accent2);
+        }
+
+        cursor_x += chip_w;
+        // After the last content chip, draw a short steel-blue divider
+        // bar (matches DetailScreen's section dividers in color, but
+        // half-height because it's separating sibling chips, not regions).
         if (i == kNumContentCategories - 1) {
-            cursor_x += kDividerPadX;
-            float div_h = kCategoryStripHeight * 0.5f;
-            float div_y = (kCategoryStripHeight - div_h) / 2.0f;
-            r.mb_fill_rect(cursor_x, div_y, kDividerW, div_h, th.dim, 0.6f);
-            cursor_x += kDividerW + kDividerPadX;
+            cursor_x += kChipDividerPadX;
+            float div_h = kChipH * 0.7f;
+            float div_y = chip_y + (kChipH - div_h) / 2.0f;
+            r.mb_fill_rect(cursor_x, div_y, kChipDividerW, div_h,
+                           th.accent2, 0.85f);
+            cursor_x += kChipDividerW + kChipDividerPadX;
         } else if (i < kNumCategories - 1) {
-            cursor_x += spacing;
+            cursor_x += gap;
         }
     }
 
-    // Thin separator below the strip.
-    r.mb_fill_rect(0.0f, kCategoryStripHeight - 1.0f,
-                   static_cast<float>(screen_w), 1.0f, th.dim, 0.6f);
+    // 2px steel-blue rule below the chip strip — the section divider
+    // separating "navigation" chrome from the content area below.
+    float strip_rule_y = chip_y + kChipH + 14.0f;
+    r.mb_draw_line(kPaddingX, strip_rule_y,
+                   w - kPaddingX, strip_rule_y,
+                   2.0f, th.accent2, kSectionRuleAlpha);
 
-    // --- Services-offline banner -------------------------------------
-    float banner_h = 0.0f;
+    // --- Services-offline notice -------------------------------------
+    // Outline-only treatment to match the rest of the chrome — no big
+    // red bar across the screen. Just a thin highlight2 rule and a
+    // centered warning string. Failure-state styling, not panic-state.
+    float content_top = strip_rule_y + 12.0f;
     if (!services_ok_) {
-        constexpr float kOfflineBannerH = 32.0f;
-        float by = kCategoryStripHeight;
-        r.mb_fill_rect(0.0f, by, static_cast<float>(screen_w),
-                       kOfflineBannerH, th.highlight2, 0.85f);
-        const std::string msg = "Radarr service offline — check `docker ps` on Pi";
+        const std::string msg =
+            "RADARR OFFLINE — check `docker ps` on Pi";
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         int tw = r.mb_text_width(msg, sz);
-        float tx = (static_cast<float>(screen_w) - static_cast<float>(tw)) / 2.0f;
-        float ty = by + (kOfflineBannerH / 2.0f) - (sz / 2.0f)
-                 + static_cast<float>(baseline);
-        r.mb_draw_text(msg, tx, ty, sz, th.fg, 1.0f);
-        banner_h = kOfflineBannerH;
+        float tx = (w - static_cast<float>(tw)) / 2.0f;
+        float ty = content_top + static_cast<float>(baseline);
+        r.mb_draw_text(msg, tx, ty, sz, th.highlight2, 1.0f);
+        content_top += static_cast<float>(sz) + 12.0f;
     }
 
     // --- Filter panel (Phase B) --------------------------------------
+    // Three outlined chips showing Genre / Year / Sort, laid out like
+    // the category strip's chips but bigger and label-rich. Focused
+    // chip blinks ◂ in steel-blue, identical to the strip cursor.
     float panel_h = 0.0f;
     if (category_ == Category::Filter) {
-        float py = kCategoryStripHeight + banner_h;
-        r.mb_fill_rect(0.0f, py, static_cast<float>(screen_w), kFilterPanelH,
-                       th.bg, 0.9f);
-        r.mb_fill_rect(0.0f, py + kFilterPanelH - 1.0f,
-                       static_cast<float>(screen_w), 1.0f, th.dim, 0.6f);
-
-        // Compose each control's text and render it as a chip.
+        // Compose the three labels.
         auto genre_label = [&]() -> std::string {
             if (!current_filter_.genre_id.has_value()) return "Genre: Any";
             int gid = *current_filter_.genre_id;
@@ -534,41 +765,107 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             return std::string("Sort: ") + kSortOptions[idx].label;
         };
 
-        std::array<std::string, 3> labels = {genre_label(), year_label(), sort_label()};
+        std::array<std::string, 3> labels = {
+            genre_label(), year_label(), sort_label()};
 
         int pf_size = th.font_medium_size;
         int pf_baseline = r.mb_text_baseline(pf_size);
-        float text_y = py + (kFilterPanelH / 2.0f) - (pf_size / 2.0f)
-                     + static_cast<float>(pf_baseline);
 
-        float cx = kGridPaddingX;
+        // Three equal-width chips spanning the content area minus gaps.
+        float panel_x = kPaddingX;
+        float panel_w = w - 2.0f * kPaddingX;
+        float chip_w = std::max(kFilterChipMinW,
+            (panel_w - 2.0f * kFilterChipGap) / 3.0f);
+        float panel_y = content_top + kFilterPanelGap;
+
+        // SECTION LABEL above the chips ("FILTER") — small caps, steel-
+        // blue, exactly like DetailScreen's "CAST"/"DIRECTED BY" labels.
+        {
+            int lbl_sz = th.font_small_size;
+            int lbl_baseline = r.mb_text_baseline(lbl_sz);
+            r.mb_draw_text("FILTER", kPaddingX,
+                           panel_y - 4.0f + static_cast<float>(lbl_baseline)
+                                          - static_cast<float>(lbl_sz),
+                           lbl_sz, th.accent2, 0.95f);
+        }
+
+        // Same fade rule as the category strip: when focus is on the
+        // poster grid, the filter panel chips fade so the user knows
+        // input won't affect them. (When focus IS on the filter panel,
+        // no fade.)
+        float panel_alpha_mul =
+            (focus_ == Focus::PosterGrid) ? kInactiveChipFade : 1.0f;
+
         for (int i = 0; i < 3; ++i) {
             bool is_row_focused =
                 (focus_ == Focus::FilterPanel && i == static_cast<int>(filter_row_));
-            ::ui::Color col = is_row_focused ? th.accent : th.fg;
-            float chip_w = kFilterControlW;
-            // Chip background so the focus ring reads clearly.
-            if (is_row_focused) {
-                r.mb_fill_rect(cx - 8.0f, py + 8.0f,
-                               chip_w + 16.0f, kFilterPanelH - 16.0f,
-                               th.accent, 0.15f);
+            float cx = panel_x + i * (chip_w + kFilterChipGap);
+
+            float border_w = is_row_focused ? kChipFocusBorderW : kChipBorderW;
+            float border_alpha = is_row_focused ? 1.0f : 0.85f;
+            r.mb_stroke_rect(cx, panel_y, chip_w, kFilterChipH,
+                             border_w, th.accent, border_alpha * panel_alpha_mul);
+
+            // Center the label in the FULL chip width. Same change as
+            // the category strip: chips are sized with kMarkerZoneW
+            // reserved in the width formula, so centering in the full
+            // width still leaves visual space on the right where the
+            // cursor sits. truncate_to_width still uses the
+            // (chip_w - 2*kChipPadX - kMarkerZoneW) area as the budget
+            // so long labels get an ellipsis before they crowd the
+            // cursor, but the resulting text is centered in the full
+            // chip width.
+            float label_area_w = chip_w - 2.0f * kChipPadX - kMarkerZoneW;
+            std::string txt =
+                truncate_to_width(r, labels[i], pf_size, label_area_w);
+            float text_w = static_cast<float>(r.mb_text_width(txt, pf_size));
+            float tx = cx + (chip_w - text_w) / 2.0f;  // centered in full chip
+            float ty = panel_y + (kFilterChipH - static_cast<float>(pf_size)) / 2.0f
+                     + static_cast<float>(pf_baseline);
+            r.mb_draw_text(txt, tx, ty, pf_size, th.accent,
+                           (is_row_focused ? 1.0f : 0.9f) * panel_alpha_mul);
+
+            if (is_row_focused && blink_on && focus_ == Focus::FilterPanel) {
+                float marker_cx = cx + chip_w - kMarkerZoneW * 0.5f;
+                draw_focus_cursor_at(r, marker_cx,
+                                     panel_y + kFilterChipH / 2.0f,
+                                     static_cast<float>(pf_size),
+                                     th.accent2);
             }
-            std::string txt = truncate_to_width(r, labels[i], pf_size, chip_w);
-            r.mb_draw_text(txt, cx, text_y, pf_size, col,
-                           is_row_focused ? 1.0f : 0.9f);
-            cx += chip_w + kFilterControlGap;
         }
 
-        panel_h = kFilterPanelH;
+        panel_h = kFilterPanelGap + kFilterChipH + 14.0f;
+
+        // Section divider after the panel.
+        float panel_rule_y = panel_y + kFilterChipH + 12.0f;
+        r.mb_draw_line(kPaddingX, panel_rule_y,
+                       w - kPaddingX, panel_rule_y,
+                       2.0f, th.accent2, kSectionRuleAlpha);
     }
 
     // --- Poster grid --------------------------------------------------
-    float grid_top    = kCategoryStripHeight + banner_h + panel_h + kGridPaddingTop;
-    float grid_bottom = static_cast<float>(screen_h) - kBottomBarHeight;
+    // 5 columns (was 4) so the user can scan more of the catalogue at a
+    // glance. Cell width is computed from the interior width and column
+    // gap, then poster height from a 2:3 portrait aspect (TMDB's native
+    // poster aspect). Smaller posters are an acceptable trade — the user
+    // explicitly asked for a denser grid.
+    float grid_top    = content_top + panel_h + kGridPaddingTop;
+    float grid_bottom = h - kBottomBarHeight;
     float grid_h      = grid_bottom - grid_top;
 
+    // cell_w fits kGridCols cells across with (kGridCols-1) gaps of size
+    // kCellGap inside the kGridPaddingX-padded interior. Posters use the
+    // 2:3 movie-poster aspect ratio so they always look right.
+    float grid_interior_w = w - 2.0f * kGridPaddingX;
+    float cell_w = (grid_interior_w
+                    - static_cast<float>(kGridCols - 1) * kCellGap)
+                 / static_cast<float>(kGridCols);
+    float poster_w = cell_w;
+    float poster_h = poster_w * kPosterAspect;
+    float cell_h = poster_h + kLabelAreaH;
+
     int visible_rows = std::max(1,
-        static_cast<int>(grid_h / (kCellH + kCellPadding)));
+        static_cast<int>(grid_h / (cell_h + kCellPaddingY)));
 
     // Clamp scroll so the focused cell stays on screen.
     if (focus_ == Focus::PosterGrid && !movies_.empty()) {
@@ -596,17 +893,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                   "check network + TMDB API key.";
         }
         int msg_w = r.mb_text_width(msg, msg_size);
-        float msg_x = (static_cast<float>(screen_w) - static_cast<float>(msg_w)) / 2.0f;
+        float msg_x = (w - static_cast<float>(msg_w)) / 2.0f;
         float msg_y = grid_top + grid_h / 2.0f
                     + static_cast<float>(r.mb_text_baseline(msg_size));
         r.mb_draw_text(msg, msg_x, msg_y, msg_size, msg_color, 0.9f);
     }
-
-    // Compute column spacing so the grid spans the interior evenly.
-    float grid_interior_w = static_cast<float>(screen_w) - 2.0f * kGridPaddingX;
-    float col_gap = (grid_interior_w - kGridCols * kCellW)
-                    / std::max(1.0f, static_cast<float>(kGridCols - 1));
-    if (col_gap < kCellPadding) col_gap = kCellPadding;
 
     for (int row = scroll_row_; row < end_row; ++row) {
         for (int col = 0; col < kGridCols; ++col) {
@@ -614,41 +905,51 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             if (idx >= static_cast<int>(movies_.size())) break;
             const auto& m = movies_[idx];
 
-            float cell_x = kGridPaddingX + col * (kCellW + col_gap);
-            float cell_y = grid_top + (row - scroll_row_) * (kCellH + kCellPadding);
+            float cell_x = kGridPaddingX + col * (cell_w + kCellGap);
+            float cell_y = grid_top + (row - scroll_row_) * (cell_h + kCellPaddingY);
 
             ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            // TmdbSearchHit::poster_path is pre-resolved to a full URL
-            // by parse_list_response — pass directly to the cache.
             r.mb_draw_poster_or_tint(m.poster_path,
-                                     cell_x, cell_y, kPosterW, kPosterH,
+                                     cell_x, cell_y, poster_w, poster_h,
                                      tint, 1.0f);
 
-            // Subtle inset to give it depth
-            r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH, 1.0f,
-                             th.dim, 0.4f);
-
-            // Focus outline
             bool focused = (focus_ == Focus::PosterGrid && idx == grid_cursor_);
+            // 2px gold border on focus — same treatment as DetailScreen's
+            // big-poster frame, no separate inset/outset rectangles. When
+            // not focused, no border at all so the grid feels like an
+            // unframed contact sheet (the chrome is the strip + dividers).
             if (focused) {
-                r.mb_stroke_rect(cell_x - kOutlineThickness / 2.0f,
-                                 cell_y - kOutlineThickness / 2.0f,
-                                 kPosterW + kOutlineThickness,
-                                 kPosterH + kOutlineThickness,
-                                 kOutlineThickness,
-                                 th.accent, 1.0f);
+                r.mb_stroke_rect(cell_x, cell_y, poster_w, poster_h,
+                                 kPosterBorderW, th.accent, 1.0f);
             }
 
-            // Title (truncated to cell width)
+            // Already-in-library indicator: small green dot in the top-
+            // left corner of the poster. Same highlight1 color as the
+            // home menu's now-playing dot — communicates "you have
+            // this" at a glance, especially useful for the BTN2 quick-
+            // add flow (the user knows not to press it).
+            if (library_tmdb_ids_.count(m.tmdb_id) > 0) {
+                float dot_w = 10.0f;
+                r.mb_fill_rect(cell_x + 8.0f, cell_y + 8.0f,
+                               dot_w, dot_w, th.highlight1, 1.0f);
+            }
+
+            // Title + year in the label area below the poster. Cream
+            // (fg) for the title, dim for the year — same hierarchy as
+            // DetailScreen's title/meta line. The narrower cell at 5
+            // columns means longer titles will truncate sooner; the
+            // existing truncate_to_width helper handles that.
             int title_size = th.font_medium_size;
             int title_baseline = r.mb_text_baseline(title_size);
-            std::string title = truncate_to_width(r, m.title.empty() ? "Untitled" : m.title,
-                                                  title_size, kCellW);
-            float title_y = cell_y + kPosterH + 8.0f + static_cast<float>(title_baseline);
-            r.mb_draw_text(title, cell_x, title_y, title_size, th.fg,
+            std::string title = truncate_to_width(
+                r, m.title.empty() ? "Untitled" : m.title,
+                title_size, cell_w);
+            float title_y = cell_y + poster_h + 8.0f
+                          + static_cast<float>(title_baseline);
+            ::ui::Color title_color = focused ? th.accent : th.fg;
+            r.mb_draw_text(title, cell_x, title_y, title_size, title_color,
                            focused ? 1.0f : 0.9f);
 
-            // Year
             if (m.year > 0) {
                 std::string year = std::to_string(m.year);
                 int year_size = th.font_small_size;
@@ -660,26 +961,27 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
-    // --- Bottom hint bar ---------------------------------------------
-    float bar_y = static_cast<float>(screen_h) - kBottomBarHeight;
-    r.mb_fill_rect(0.0f, bar_y, static_cast<float>(screen_w), kBottomBarHeight,
-                   th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, bar_y, static_cast<float>(screen_w), 1.0f,
-                   th.dim, 0.6f);
-
-    std::string hint;
-    if (focus_ == Focus::FilterPanel) {
-        hint = "Rotate: change value   RCLICK: next control   BTN1/BTN3: up/down   BTN4: back (hold: exit)";
-    } else {
-        hint = "Rotate: nav   RCLICK: open   BTN2: quick-add   BTN4: back (hold: exit)";
+    // --- Bottom hint --------------------------------------------------
+    // Centered dim text, no background bar — matches DetailScreen's
+    // footer exactly. The bar/fill style of the old footer fought the
+    // outline-only chrome elsewhere on the screen.
+    {
+        std::string hint;
+        if (focus_ == Focus::FilterPanel) {
+            hint = "Rotate: change value   RCLICK: next control   "
+                   "BTN1/BTN3: up/down   BTN4: home";
+        } else {
+            hint = "Rotate: nav   RCLICK: open   "
+                   "BTN2: quick-add   BTN4: home";
+        }
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        int hw = r.mb_text_width(hint, sz);
+        float hx = (w - static_cast<float>(hw)) / 2.0f;
+        float hy = h - 12.0f - static_cast<float>(sz)
+                 + static_cast<float>(baseline);
+        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
     }
-    int hint_size = th.font_small_size;
-    int hint_baseline = r.mb_text_baseline(hint_size);
-    int hint_w = r.mb_text_width(hint, hint_size);
-    float hint_x = (static_cast<float>(screen_w) - static_cast<float>(hint_w)) / 2.0f;
-    float hint_y = bar_y + (kBottomBarHeight / 2.0f) - (hint_size / 2.0f)
-                 + static_cast<float>(hint_baseline);
-    r.mb_draw_text(hint, hint_x, hint_y, hint_size, th.fg, 0.85f);
 }
 
 }  // namespace media_browser::ui

@@ -77,11 +77,35 @@ public:
                       const ui::Color& color, float alpha_multiplier = 1.0f);
     void mb_stroke_rect(float x, float y, float w, float h, float thickness,
                         const ui::Color& color, float alpha_multiplier = 1.0f);
+    // Draw a filled 5-point star centered at (cx, cy) with `outer_r` as the
+    // bounding-circle radius. Inner radius is auto-derived to give classic
+    // star proportions. Used by DetailScreen for the rating indicator so we
+    // don't depend on the font shipping the U+2605 codepoint.
+    void mb_fill_star(float cx, float cy, float outer_r,
+                      const ui::Color& color, float alpha_multiplier = 1.0f);
     void mb_draw_text(const std::string& text, float x, float baseline_y,
                       int font_size, const ui::Color& color,
                       float alpha_multiplier = 1.0f);
     int  mb_text_width(const std::string& text, int font_size);
     int  mb_text_baseline(int font_size);
+    // Retro-styled section headers and titles use the Zen Dots title font,
+    // which is the same family the home-menu/playlist UI draws "Playlists"
+    // and the product wordmark in. Body text stays on the body font.
+    void mb_draw_title_text(const std::string& text, float x, float baseline_y,
+                            int font_size, const ui::Color& color,
+                            float alpha_multiplier = 1.0f);
+    int  mb_title_text_width(const std::string& text, int font_size);
+    int  mb_title_text_baseline(int font_size);
+    // Stroke a single-pixel-thick line for underlines / section dividers —
+    // the home menu uses these for the title and "Playlists" header.
+    void mb_draw_line(float x1, float y1, float x2, float y2,
+                      float thickness, const ui::Color& color,
+                      float alpha_multiplier = 1.0f);
+    // Filled triangle (3 vertices). Used for the blinking ◂ selection
+    // marker next to focused buttons, matching the playlist-cursor idiom.
+    void mb_fill_triangle(float x1, float y1, float x2, float y2,
+                          float x3, float y3, const ui::Color& color,
+                          float alpha_multiplier = 1.0f);
     const ui::Theme& mb_theme() const { return *theme_; }
 
     // Draw a poster at the given rect. If the ArtworkCache has a texture

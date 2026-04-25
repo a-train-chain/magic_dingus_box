@@ -15,23 +15,64 @@ namespace media_browser::ui {
 
 namespace {
 
-// --- Layout constants (pixels) -----------------------------------------
+// Retro home-menu-inspired layout (target 1280x720). The Queue screen is
+// the third member of the Browse / Detail / Queue trio, and it adopts the
+// same chrome as DetailScreen so the user feels they're inside one unified
+// kiosk surface as they cross between screens:
+//   - "DOWNLOAD QUEUE" header in the Zen Dots title font, steel-blue
+//     (accent2), with a full-width 2px steel-blue rule beneath.
+//   - Right side of the header carries a count + a "refreshing..." /
+//     "updated Ns ago" indicator, both in dim cream.
+//   - Body is a vertical list of borderless rows. Focused row gets a 3px
+//     gold outline (same idiom as the home menu's playlist cursor); the
+//     rest of the rows have NO chrome — pure background. A blinking ◂
+//     marker rides the right edge of the focused row, on the same 500ms
+//     phase as Detail's button cursor.
+//   - Progress bars are outline-only tracks with a colored fill (green
+//     for active, gold for paused/queued, red for failed) — borrowing the
+//     border-and-text idiom from the home menu's volume slider.
+//   - Footer is a centered, dim small-font hint, no background fill.
+//
+// Drop fills wherever possible: it's all borders and text, the way the
+// kiosk's other surfaces look.
 
-constexpr float kTopBarHeight        = 56.0f;
-constexpr float kBottomBarHeight     = 40.0f;
+// Outer padding and header geometry — kept identical to DetailScreen so
+// the header rule, footer hint, and side-padding align perfectly when the
+// user navigates between screens.
+constexpr float kPaddingX        = 32.0f;
+constexpr float kHeaderBaselineY = 38.0f;     // baseline of header text
+constexpr float kHeaderRuleY     = 58.0f;     // Y of the 2px steel-blue rule
+
+// Row geometry. 100px is tall enough for poster + 2 lines of metadata +
+// a progress bar without being so tall that fewer than ~5 rows fit on a
+// 720p display.
 constexpr float kRowHeight           = 100.0f;
-constexpr float kRowGap              = 10.0f;
-constexpr float kRowPaddingX         = 48.0f;
+constexpr float kRowGap              = 12.0f;
 constexpr float kRowInnerPadding     = 12.0f;
-constexpr float kPosterW             = 60.0f;
-constexpr float kPosterH             = 84.0f;
-constexpr float kProgressBarW        = 320.0f;
-constexpr float kProgressBarH        = 22.0f;
-constexpr float kOutlineThickness    = 3.0f;
+constexpr float kPosterW             = 70.0f;
+constexpr float kPosterH             = 100.0f;
+constexpr float kPosterBorderW       = 1.0f;
+constexpr float kProgressBarW        = 300.0f;
+constexpr float kProgressBarH        = 14.0f;
+constexpr float kProgressBorderW     = 2.0f;
+constexpr float kRowOutlineW         = 3.0f;   // gold focus outline
+constexpr float kRowDimOutlineW      = 1.0f;   // unfocused row outline
 
-// Deterministic colored tint for a queue item. We hash on the queue row
-// id rather than movie_id because the spec says "simpler: hash on queue
-// item id" — and queue rows can outlive a movie record being shuffled.
+// Confirm-cancel CTA box (replaces the ◂ marker on the focused row when
+// the cancel is armed). Outlined-only, red — same border-and-text idiom as
+// the genre chips on Detail.
+constexpr float kCancelBoxH      = 30.0f;
+constexpr float kCancelBoxPadX   = 12.0f;
+constexpr float kCancelBoxBorder = 2.0f;
+
+// Footer hint geometry — centered, dim. No background bar; matches
+// DetailScreen's bottom-hint styling exactly.
+constexpr float kFooterMarginY   = 12.0f;
+
+// Deterministic colored tint for a queue item poster fallback. Hashing on
+// queue id (rather than movie id) keeps the placeholder color stable for
+// the lifetime of a download row even if Radarr renumbers things between
+// refreshes — same hash idiom Detail uses for poster_tint_for_tmdb().
 ::ui::Color tint_for_queue_id(int queue_id) {
     uint32_t h = static_cast<uint32_t>(queue_id) * 2654435761u;  // Knuth hash
     uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
@@ -40,6 +81,10 @@ constexpr float kOutlineThickness    = 3.0f;
     return {r, g, b, 255};
 }
 
+// Truncate `text` with a trailing ellipsis if it exceeds max_w at
+// font_size. Same helper Detail uses — mirrored here so the row's title
+// degrades gracefully when the poster + progress bar squeeze the middle
+// column on narrow displays.
 std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
                               int font_size, float max_w) {
     if (r.mb_text_width(text, font_size) <= max_w) return text;
@@ -83,12 +128,31 @@ std::string format_eta(int eta_seconds) {
     return buf;
 }
 
-// "downloading" -> "Downloading" for display.
+// "downloading" -> "Downloading" for display. Used for the sub-line state
+// label.
 std::string titlecase_state(const std::string& s) {
     if (s.empty()) return "Unknown";
     std::string out = s;
     out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
     return out;
+}
+
+// Pick the progress-bar fill color based on download state. Mirrors the
+// semantic palette used on Detail's action buttons:
+//   - green (highlight1)   : healthy, downloading, completed.
+//   - red   (highlight2)   : failed / warning / stalled.
+//   - gold  (accent)       : queued / paused / waiting — same neutral
+//                            "armed-but-idle" gold the home menu uses.
+::ui::Color progress_color_for_state(const std::string& state,
+                                     const ::ui::Theme& th) {
+    if (state == "failed" || state == "warning" || state == "stalled") {
+        return th.highlight2;
+    }
+    if (state == "downloading" || state == "completed") {
+        return th.highlight1;
+    }
+    // queued, delay, paused, unknown — anything indeterminate or idle.
+    return th.accent;
 }
 
 }  // namespace
@@ -222,36 +286,51 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float w = static_cast<float>(screen_w);
     const float h = static_cast<float>(screen_h);
 
-    // --- Top bar ------------------------------------------------------
-    r.mb_fill_rect(0.0f, 0.0f, w, kTopBarHeight, th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, kTopBarHeight - 1.0f, w, 1.0f, th.dim, 0.6f);
+    // 500ms blink cycle, sourced from epoch time. Keeps the focused-row ◂
+    // cursor breathing in lockstep with DetailScreen's button cursor and
+    // the home menu's playlist cursor — when the user crosses between
+    // screens the indicators visually share the same heartbeat.
+    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+    const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
+    // --- Top header bar: "DOWNLOAD QUEUE" + count + refresh status ----
+    // Same pattern as DetailScreen's header: a Zen Dots heading in
+    // steel-blue (accent2) followed by a full-width 2px steel-blue rule.
+    // The right side carries dim secondary information (count, refresh
+    // status), mirroring how Detail puts "BTN4: back" on the right.
     {
-        int title_size = th.font_large_size;
-        int title_baseline = r.mb_text_baseline(title_size);
-        float title_y = (kTopBarHeight / 2.0f) - (title_size / 2.0f)
-                      + static_cast<float>(title_baseline);
-        r.mb_draw_text("Download Queue", kRowPaddingX, title_y, title_size,
-                       th.accent, 1.0f);
+        const std::string heading = "DOWNLOAD QUEUE";
+        int hd_size = th.font_heading_size;
+        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
+                             hd_size, th.accent2, 1.0f);
 
-        int count_size = th.font_medium_size;
-        int count_baseline = r.mb_text_baseline(count_size);
+        // Count chip ("3 downloads") — sits just to the right of the
+        // heading, dim. Uses singular/plural so it reads naturally.
         std::ostringstream cs;
-        cs << queue_.size() << (queue_.size() == 1 ? " item" : " items");
+        cs << "(" << queue_.size()
+           << (queue_.size() == 1 ? " download)" : " downloads)");
         std::string count_text = cs.str();
-        int title_w = r.mb_text_width("Download Queue", title_size);
-        float count_x = kRowPaddingX + static_cast<float>(title_w) + 18.0f;
-        float count_y = (kTopBarHeight / 2.0f) - (count_size / 2.0f)
-                      + static_cast<float>(count_baseline);
-        r.mb_draw_text(count_text, count_x, count_y, count_size, th.dim, 0.85f);
+        int count_size = th.font_small_size;
+        int hd_w = r.mb_title_text_width(heading, hd_size);
+        float count_x = kPaddingX + static_cast<float>(hd_w) + 14.0f;
+        // Align the count baseline to the heading baseline so both ride
+        // the same line.
+        float count_y = kHeaderBaselineY + 2.0f;
+        r.mb_draw_text(count_text, count_x, count_y, count_size,
+                       th.dim, 0.85f);
 
-        // Refresh indicator on the right. Either "refreshing..." with a
-        // small dot, or "updated Xs ago".
-        int ind_size = th.font_small_size;
-        int ind_baseline = r.mb_text_baseline(ind_size);
+        // Refresh indicator on the far right. "refreshing..." in green
+        // (highlight1) when in flight; "updated Ns ago" in dim cream
+        // otherwise. Same sub-line vertical position as the count.
         std::string ind_text;
+        ::ui::Color ind_color = th.dim;
+        float ind_alpha = 0.85f;
         if (refreshing_) {
             ind_text = "refreshing...";
+            ind_color = th.highlight1;
+            ind_alpha = 0.95f;
         } else {
             auto now = std::chrono::steady_clock::now();
             auto secs = std::chrono::duration_cast<std::chrono::seconds>(
@@ -261,72 +340,96 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                      static_cast<long long>(secs));
             ind_text = buf;
         }
+        int ind_size = th.font_small_size;
         int ind_w = r.mb_text_width(ind_text, ind_size);
-        float ind_x = w - kRowPaddingX - static_cast<float>(ind_w);
-        float ind_y = (kTopBarHeight / 2.0f) - (ind_size / 2.0f)
-                    + static_cast<float>(ind_baseline);
+        float ind_x = w - kPaddingX - static_cast<float>(ind_w);
+        float ind_y = kHeaderBaselineY + 2.0f;
+        r.mb_draw_text(ind_text, ind_x, ind_y, ind_size, ind_color, ind_alpha);
 
-        // Small dot prefix when refreshing.
-        if (refreshing_) {
-            float dot_r = 4.0f;
-            float dot_x = ind_x - (dot_r * 2.0f + 8.0f);
-            float dot_y = (kTopBarHeight / 2.0f) - dot_r;
-            r.mb_fill_rect(dot_x, dot_y, dot_r * 2.0f, dot_r * 2.0f,
-                           th.highlight1, 0.9f);
-        }
-        r.mb_draw_text(ind_text, ind_x, ind_y, ind_size, th.dim, 0.85f);
+        // Full-width 2px steel-blue rule beneath the header — IDENTICAL
+        // to DetailScreen so the chrome lines up pixel-for-pixel as the
+        // user crosses between screens.
+        r.mb_draw_line(kPaddingX, kHeaderRuleY,
+                       w - kPaddingX, kHeaderRuleY,
+                       2.0f, th.accent2, 0.95f);
     }
 
-    // --- Main list area ----------------------------------------------
-    const float list_top = kTopBarHeight + 12.0f;
-    const float list_bottom = h - kBottomBarHeight;
-    const float list_h = list_bottom - list_top;
+    // --- Footer hint (drawn early so we can reserve the bottom band) -
+    // No background fill, no rule — DetailScreen's footer is a plain
+    // centered dim small-font line, and we match. We compute and draw it
+    // up front so the row-list's available height calc can use the same
+    // y-extent as the visible content.
+    const std::string hint = cancel_pending_
+        ? "SELECT: Confirm Cancel   Rotate: nav   BTN4: back (hold: exit)"
+        : "Rotate: nav   RCLICK / BTN2: cancel   BTN4: back (hold: exit)";
+    const int hint_size = th.font_small_size;
+    const int hint_baseline = r.mb_text_baseline(hint_size);
+    const float hint_y = h - kFooterMarginY - static_cast<float>(hint_size)
+                       + static_cast<float>(hint_baseline);
+    // Reserve the footer band height (font + a little breathing room
+    // above) so list rows don't collide with it.
+    const float footer_band_top = h - kFooterMarginY
+                                - static_cast<float>(hint_size) - 8.0f;
 
-    // Empty / offline states.
+    // --- Centered states: empty queue / Radarr offline ---------------
+    // Same mid-screen single-message pattern as Detail's Loading/NoTmdb
+    // states: large text vertically centered between header rule and
+    // footer band, with an optional dim sub-line for context.
+    const float body_top    = kHeaderRuleY + 16.0f;
+    const float body_bottom = footer_band_top;
+    const float body_h      = body_bottom - body_top;
+
     if (queue_.empty()) {
-        // If Radarr gave us an error string, treat as offline. Otherwise
-        // empty-queue is the happy path.
         if (!last_error_.empty()) {
+            // Radarr offline — primary message in red (highlight2),
+            // matching the destructive/warning idiom from Detail's
+            // Confirm-Remove button.
             int sz = th.font_large_size;
             std::string msg = "Radarr service offline";
             int mw = r.mb_text_width(msg, sz);
             float mx = (w - static_cast<float>(mw)) / 2.0f;
-            float my = list_top + list_h / 2.0f
+            float my = body_top + body_h / 2.0f
                      - static_cast<float>(sz) * 0.6f
                      + static_cast<float>(r.mb_text_baseline(sz));
             r.mb_draw_text(msg, mx, my, sz, th.highlight2, 0.95f);
 
+            // Dim sub-line: the underlying error string, truncated to fit.
             int sz2 = th.font_small_size;
             std::string detail = truncate_to_width(r, last_error_, sz2,
-                                                   w - 2.0f * kRowPaddingX);
+                                                   w - 2.0f * kPaddingX);
             int dw = r.mb_text_width(detail, sz2);
             float dx = (w - static_cast<float>(dw)) / 2.0f;
             float dy = my + static_cast<float>(sz) * 0.9f
                      + static_cast<float>(r.mb_text_baseline(sz2));
             r.mb_draw_text(detail, dx, dy, sz2, th.dim, 0.85f);
         } else {
+            // Happy-path empty state — dim large text, with a
+            // medium-font instruction underneath.
             int sz = th.font_large_size;
-            std::string msg = "Queue is empty — no active downloads";
+            std::string msg = "Queue is empty";
             int mw = r.mb_text_width(msg, sz);
             float mx = (w - static_cast<float>(mw)) / 2.0f;
-            // Lift the primary message slightly so the hint line fits
-            // beneath it without crowding.
-            float my = list_top + list_h / 2.0f
+            float my = body_top + body_h / 2.0f
                      - static_cast<float>(sz) * 0.6f
                      + static_cast<float>(r.mb_text_baseline(sz));
             r.mb_draw_text(msg, mx, my, sz, th.dim, 0.9f);
 
-            // Second line — tells the user how to populate the queue.
             int sz2 = th.font_medium_size;
-            std::string hint = "Add a movie from Browse or Search to start a download.";
-            int hw = r.mb_text_width(hint, sz2);
+            std::string hint_msg =
+                "Add a movie from Browse or Search to start a download.";
+            int hw = r.mb_text_width(hint_msg, sz2);
             float hx = (w - static_cast<float>(hw)) / 2.0f;
             float hy = my + static_cast<float>(sz) * 0.9f
                      + static_cast<float>(r.mb_text_baseline(sz2));
-            r.mb_draw_text(hint, hx, hy, sz2, th.dim, 0.8f);
+            r.mb_draw_text(hint_msg, hx, hy, sz2, th.dim, 0.8f);
         }
     } else {
-        // Clamp scroll so the cursor stays visible.
+        // --- Queue rows --------------------------------------------------
+        // Vertical scrolling list. We clamp scroll_row_ here (in render —
+        // not handle_input — because this is where we know how many rows
+        // can fit on the current screen height).
+        const float list_top = body_top;
+        const float list_h   = body_h;
         int visible_rows = std::max(1,
             static_cast<int>(list_h / (kRowHeight + kRowGap)));
         if (cursor_ < scroll_row_) scroll_row_ = cursor_;
@@ -336,158 +439,208 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int n = static_cast<int>(queue_.size());
         int end_row = std::min(n, scroll_row_ + visible_rows);
 
-        const float row_x = kRowPaddingX;
-        const float row_w = w - 2.0f * kRowPaddingX;
+        const float row_x = kPaddingX;
+        const float row_w = w - 2.0f * kPaddingX;
 
         for (int i = scroll_row_; i < end_row; ++i) {
             const auto& q = queue_[i];
-            bool focused = (i == cursor_);
-            float ry = list_top
-                     + (i - scroll_row_) * (kRowHeight + kRowGap);
+            const bool focused      = (i == cursor_);
+            const bool cancel_armed = cancel_pending_
+                                   && cancel_pending_queue_id_ == q.id;
+            float ry = list_top + (i - scroll_row_) * (kRowHeight + kRowGap);
 
-            // Row background: slight lift for focused rows.
-            r.mb_fill_rect(row_x, ry, row_w, kRowHeight,
-                           th.bg, focused ? 0.9f : 0.65f);
-            r.mb_stroke_rect(row_x, ry, row_w, kRowHeight, 1.0f,
-                             th.dim, 0.4f);
+            // Row outline. Unfocused: thin dim outline at low alpha to
+            // delineate without competing with content. Focused: 3px gold
+            // outline — same border-and-text idiom as Detail's focused
+            // button. NO row fill — pure background, like the home menu.
             if (focused) {
-                r.mb_stroke_rect(row_x - kOutlineThickness / 2.0f,
-                                 ry - kOutlineThickness / 2.0f,
-                                 row_w + kOutlineThickness,
-                                 kRowHeight + kOutlineThickness,
-                                 kOutlineThickness,
-                                 th.accent, 1.0f);
+                r.mb_stroke_rect(row_x, ry, row_w, kRowHeight,
+                                 kRowOutlineW, th.accent, 1.0f);
+            } else {
+                r.mb_stroke_rect(row_x, ry, row_w, kRowHeight,
+                                 kRowDimOutlineW, th.dim, 0.4f);
             }
 
-            // --- Left: poster thumb (real artwork if cached) ---
+            // --- Left column: small poster (aspect-fit) --------------
+            // 1px dim border around it — same single-pixel frame Detail
+            // uses on its big poster, just sized down for a row context.
             float poster_x = row_x + kRowInnerPadding;
             float poster_y = ry + (kRowHeight - kPosterH) / 2.0f;
-            r.mb_draw_poster_or_tint(q.poster_url,
-                                     poster_x, poster_y, kPosterW, kPosterH,
-                                     tint_for_queue_id(q.id), 1.0f);
+            r.mb_draw_poster_fit(q.poster_url,
+                                 poster_x, poster_y, kPosterW, kPosterH,
+                                 tint_for_queue_id(q.id), 1.0f);
             r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,
-                             1.0f, th.dim, 0.4f);
+                             kPosterBorderW, th.dim, 0.6f);
 
-            // --- Right: progress bar (right-edge aligned) ---
-            float bar_x = row_x + row_w - kRowInnerPadding - kProgressBarW;
-            float bar_y = ry + (kRowHeight - kProgressBarH) / 2.0f;
-            // Track
-            r.mb_fill_rect(bar_x, bar_y, kProgressBarW, kProgressBarH,
-                           th.dim, 0.35f);
-            r.mb_stroke_rect(bar_x, bar_y, kProgressBarW, kProgressBarH,
-                             1.0f, th.dim, 0.6f);
-            // Fill
-            double pct = std::clamp(q.progress, 0.0, 1.0);
-            float fill_w = static_cast<float>(pct) * kProgressBarW;
-            ::ui::Color fill_color = (q.state == "failed")
-                                         ? th.highlight2
-                                         : th.highlight1;
-            if (fill_w > 0.0f) {
-                r.mb_fill_rect(bar_x, bar_y, fill_w, kProgressBarH,
-                               fill_color, 0.85f);
+            // --- Right edge: cursor / cancel CTA ---------------------
+            // Reserve a slot at the right edge of the row for either a
+            // blinking ◂ marker (focused, idle) or a "CONFIRM CANCEL"
+            // call-to-action box (focused, cancel armed). When the row
+            // is unfocused, this slot is empty — the row is pure content.
+            //
+            // We compute the slot width FIRST so the middle-column text
+            // wrap math knows how much horizontal real estate it has.
+            float right_slot_w = 0.0f;
+            if (focused) {
+                if (cancel_armed) {
+                    // CONFIRM CANCEL box — outlined in red (highlight2),
+                    // text in red. No fill (border-and-text idiom). It
+                    // pulses with the same 500ms blink to communicate
+                    // urgency: alpha drops on the off-phase.
+                    int btn_size = th.font_small_size;
+                    const std::string label = "CONFIRM CANCEL";
+                    int btn_text_w = r.mb_text_width(label, btn_size);
+                    float box_w = static_cast<float>(btn_text_w)
+                                + 2.0f * kCancelBoxPadX;
+                    right_slot_w = box_w + kRowInnerPadding;
+                } else {
+                    // Blinking ◂ marker. Reserve enough slot for the
+                    // triangle plus a small gutter on either side.
+                    right_slot_w = 28.0f;
+                }
             }
-            // Percentage overlay
+
+            // --- Middle column: title (top), sub-line (mid), bar (bot) -
+            // The middle column is everything between the poster and the
+            // right-edge cursor slot. We stack three elements vertically
+            // inside it: title, state/rate/peers/ETA sub-line, and the
+            // progress bar with its percentage.
+            float mid_x = poster_x + kPosterW + kRowInnerPadding;
+            float mid_right = row_x + row_w - kRowInnerPadding - right_slot_w;
+            float mid_max_w = std::max(40.0f, mid_right - mid_x);
+
+            // Title — body font, fg cream, prominent.
+            int title_size = th.font_medium_size;
+            int title_baseline = r.mb_text_baseline(title_size);
+            std::string title_str =
+                q.title.empty() ? std::string("Untitled") : q.title;
+            title_str = truncate_to_width(r, title_str, title_size, mid_max_w);
+            float title_y = ry + kRowInnerPadding
+                          + static_cast<float>(title_baseline);
+            r.mb_draw_text(title_str, mid_x, title_y, title_size, th.fg,
+                           focused ? 1.0f : 0.92f);
+
+            // Sub-line — "Downloading · 1.2 MB/s · 18 peers · ETA 12m 05s"
+            // in dim cream small-font, separated by middle-dot bullets.
+            // Same separator the Detail meta line uses.
+            int sub_size = th.font_small_size;
+            int sub_baseline = r.mb_text_baseline(sub_size);
+            std::ostringstream ss;
+            ss << titlecase_state(q.state);
+            if (q.download_rate_bps > 0) {
+                ss << "  \xE2\x80\xA2  " << format_rate(q.download_rate_bps);
+            }
+            if (q.peers > 0) {
+                ss << "  \xE2\x80\xA2  " << q.peers
+                   << " peer" << (q.peers == 1 ? "" : "s");
+            }
+            if (q.eta_seconds > 0) {
+                ss << "  \xE2\x80\xA2  ETA " << format_eta(q.eta_seconds);
+            }
+            std::string sub_line = truncate_to_width(r, ss.str(),
+                                                     sub_size, mid_max_w);
+            float sub_y = title_y + static_cast<float>(title_size) * 0.5f
+                        + static_cast<float>(sub_baseline);
+            r.mb_draw_text(sub_line, mid_x, sub_y, sub_size, th.dim,
+                           focused ? 0.9f : 0.8f);
+
+            // Progress bar — outline-only track with a colored fill.
+            // The bar lives at the bottom of the row, spanning the
+            // middle column up to a percentage label on the right.
+            const float pct_label_w = 56.0f;  // reserved for "100%"
+            const float pct_gap     = 10.0f;
+            float bar_track_w = std::max(40.0f,
+                std::min(kProgressBarW, mid_max_w - pct_label_w - pct_gap));
+            float bar_x = mid_x;
+            float bar_y = ry + kRowHeight - kRowInnerPadding - kProgressBarH;
+
+            // Track: outline-only, dim. Same idiom as the home menu's
+            // volume slider track.
+            r.mb_stroke_rect(bar_x, bar_y, bar_track_w, kProgressBarH,
+                             kProgressBorderW, th.dim, 0.5f);
+
+            // Fill: colored by state. Inset by the border thickness so
+            // the fill sits cleanly inside the outline.
+            double pct = std::clamp(q.progress, 0.0, 1.0);
+            ::ui::Color fill_color = progress_color_for_state(q.state, th);
+            // Cancel-armed rows recolor the fill red so the visual state
+            // matches the CTA on the right edge.
+            if (cancel_armed) fill_color = th.highlight2;
+            float inset = kProgressBorderW;
+            float inner_w = bar_track_w - 2.0f * inset;
+            float inner_h = kProgressBarH - 2.0f * inset;
+            float fill_w = static_cast<float>(pct) * inner_w;
+            if (fill_w > 0.0f && inner_h > 0.0f) {
+                r.mb_fill_rect(bar_x + inset, bar_y + inset,
+                               fill_w, inner_h, fill_color, 0.9f);
+            }
+
+            // Percentage — right-aligned next to the bar, in the fill
+            // color so the user's eye associates the number with the
+            // progress hue.
             int pct_size = th.font_small_size;
             int pct_baseline = r.mb_text_baseline(pct_size);
             char pct_buf[16];
             snprintf(pct_buf, sizeof(pct_buf), "%d%%",
                      static_cast<int>(pct * 100.0 + 0.5));
             std::string pct_text = pct_buf;
-            int pct_w = r.mb_text_width(pct_text, pct_size);
-            float pct_x = bar_x + (kProgressBarW - static_cast<float>(pct_w)) / 2.0f;
+            int pct_text_w = r.mb_text_width(pct_text, pct_size);
+            // Right-align the percentage inside its reserved label slot
+            // so wider strings ("100%") sit flush with the row's right
+            // content edge instead of jumping around as digits change.
+            float pct_x = bar_x + bar_track_w + pct_gap
+                        + (pct_label_w - static_cast<float>(pct_text_w));
             float pct_y = bar_y + (kProgressBarH / 2.0f)
                         - static_cast<float>(pct_size) / 2.0f
                         + static_cast<float>(pct_baseline);
-            r.mb_draw_text(pct_text, pct_x, pct_y, pct_size, th.fg, 1.0f);
-
-            // ETA under the bar, right-aligned.
-            {
-                int eta_size = th.font_small_size;
-                int eta_baseline = r.mb_text_baseline(eta_size);
-                std::string eta_text = "ETA " + format_eta(q.eta_seconds);
-                int ew = r.mb_text_width(eta_text, eta_size);
-                float ex = bar_x + kProgressBarW - static_cast<float>(ew);
-                float ey = bar_y + kProgressBarH + 4.0f
-                         + static_cast<float>(eta_baseline);
-                if (ey < ry + kRowHeight - 2.0f) {
-                    r.mb_draw_text(eta_text, ex, ey, eta_size, th.dim, 0.85f);
-                }
-            }
-
-            // --- Middle: title + state + rate/peers ---
-            float mid_x = poster_x + kPosterW + kRowInnerPadding;
-            float mid_max_w = bar_x - mid_x - kRowInnerPadding;
-
-            // Title (top).
-            int title_size = th.font_medium_size;
-            int title_baseline = r.mb_text_baseline(title_size);
-            std::string title = q.title.empty() ? std::string("Untitled") : q.title;
-            title = truncate_to_width(r, title, title_size, mid_max_w);
-            float title_y = ry + kRowInnerPadding
-                          + static_cast<float>(title_baseline);
-            r.mb_draw_text(title, mid_x, title_y, title_size, th.fg,
-                           focused ? 1.0f : 0.92f);
-
-            // State + (optional) "Confirm Cancel" flag, middle line.
-            int line_size = th.font_small_size;
-            int line_baseline = r.mb_text_baseline(line_size);
-
-            std::string state_line;
-            if (cancel_pending_ && cancel_pending_queue_id_ == q.id) {
-                state_line = "SELECT again to Confirm Cancel";
-            } else {
-                state_line = titlecase_state(q.state);
-            }
-            std::string state_drawn = truncate_to_width(r, state_line,
-                                                        line_size, mid_max_w);
-            float state_y = title_y + static_cast<float>(title_size) * 0.4f
-                          + static_cast<float>(line_size) * 0.9f
-                          + static_cast<float>(line_baseline) * 0.1f;
-            ::ui::Color state_color =
-                (cancel_pending_ && cancel_pending_queue_id_ == q.id)
-                    ? th.highlight2
-                    : (q.state == "failed"   ? th.highlight2
-                     : q.state == "completed" ? th.highlight1
-                                              : th.accent);
-            r.mb_draw_text(state_drawn, mid_x, state_y, line_size,
-                           state_color,
+            r.mb_draw_text(pct_text, pct_x, pct_y, pct_size, fill_color,
                            focused ? 1.0f : 0.9f);
 
-            // Bottom line: rate + peers.
-            std::ostringstream bs;
-            bs << format_rate(q.download_rate_bps);
-            if (q.peers > 0) {
-                bs << "   " << q.peers << " peer" << (q.peers == 1 ? "" : "s");
-            }
-            std::string bottom_line = truncate_to_width(r, bs.str(),
-                                                         line_size, mid_max_w);
-            float bottom_y = state_y + static_cast<float>(line_size) * 1.4f;
-            if (bottom_y < ry + kRowHeight - 4.0f) {
-                r.mb_draw_text(bottom_line, mid_x, bottom_y, line_size,
-                               th.dim, 0.85f);
+            // --- Right-edge cursor / cancel CTA (drawn last) ---------
+            if (focused && cancel_armed) {
+                // CONFIRM CANCEL box. Vertically centered on the row,
+                // anchored to the right edge.
+                int btn_size = th.font_small_size;
+                int btn_baseline = r.mb_text_baseline(btn_size);
+                const std::string label = "CONFIRM CANCEL";
+                int btn_text_w = r.mb_text_width(label, btn_size);
+                float box_w = static_cast<float>(btn_text_w)
+                            + 2.0f * kCancelBoxPadX;
+                float box_x = row_x + row_w - kRowInnerPadding - box_w;
+                float box_y = ry + (kRowHeight - kCancelBoxH) / 2.0f;
+                // Pulse: full alpha on blink-on, 0.45 on blink-off.
+                float pulse = blink_on ? 1.0f : 0.45f;
+                r.mb_stroke_rect(box_x, box_y, box_w, kCancelBoxH,
+                                 kCancelBoxBorder, th.highlight2, pulse);
+                float tx = box_x + kCancelBoxPadX;
+                float ty = box_y + (kCancelBoxH - static_cast<float>(btn_size))
+                                / 2.0f
+                         + static_cast<float>(btn_baseline);
+                r.mb_draw_text(label, tx, ty, btn_size, th.highlight2, pulse);
+            } else if (focused && blink_on) {
+                // Blinking ◂ marker — same triangle primitive Detail uses
+                // for its focused-button cursor, in steel-blue (accent2).
+                int marker_ref_size = th.font_medium_size;
+                float marker_size = static_cast<float>(marker_ref_size) * 0.45f;
+                float marker_cx = row_x + row_w - 14.0f;
+                float marker_cy = ry + kRowHeight / 2.0f;
+                r.mb_fill_triangle(
+                    marker_cx,                         marker_cy - marker_size,
+                    marker_cx,                         marker_cy + marker_size,
+                    marker_cx - marker_size * 1.2f,    marker_cy,
+                    th.accent2, 1.0f);
             }
         }
     }
 
-    // --- Bottom hint bar ---------------------------------------------
-    float bar_y = h - kBottomBarHeight;
-    r.mb_fill_rect(0.0f, bar_y, w, kBottomBarHeight, th.bg, 0.75f);
-    r.mb_fill_rect(0.0f, bar_y, w, 1.0f, th.dim, 0.6f);
-
-    std::string hint;
-    if (cancel_pending_) {
-        hint = "SELECT: Confirm Cancel   Rotate: nav   BTN4: back (hold: exit)";
-    } else {
-        hint = "Rotate: nav   RCLICK: cancel   BTN2: pause   BTN4: back (hold: exit)";
-    }
-    int hint_size = th.font_small_size;
-    int hint_baseline = r.mb_text_baseline(hint_size);
-    int hint_w = r.mb_text_width(hint, hint_size);
-    float hint_x = (w - static_cast<float>(hint_w)) / 2.0f;
-    float hint_y = bar_y + (kBottomBarHeight / 2.0f) - (hint_size / 2.0f)
-                 + static_cast<float>(hint_baseline);
+    // --- Footer hint (centered, dim) ---------------------------------
+    // Color goes red when a cancel is armed so the destructive intent is
+    // unmissable, otherwise stays dim cream like Detail's footer.
+    int hint_w_px = r.mb_text_width(hint, hint_size);
+    float hint_x = (w - static_cast<float>(hint_w_px)) / 2.0f;
     r.mb_draw_text(hint, hint_x, hint_y, hint_size,
-                   cancel_pending_ ? th.highlight2 : th.fg, 0.9f);
+                   cancel_pending_ ? th.highlight2 : th.dim,
+                   cancel_pending_ ? 0.95f : 0.85f);
 }
 
 }  // namespace media_browser::ui

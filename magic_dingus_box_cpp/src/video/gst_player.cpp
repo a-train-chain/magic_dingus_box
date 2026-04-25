@@ -357,14 +357,25 @@ void GstPlayer::seek(double seconds) {
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         gint64 seek_pos = pos + static_cast<gint64>(seconds * GST_SECOND);
         if (seek_pos < 0) seek_pos = 0;
-        gst_element_seek_simple(pipeline_, GST_FORMAT_TIME, static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT), seek_pos);
+        // ACCURATE seeking instead of KEY_UNIT. KEY_UNIT snaps to the
+        // nearest keyframe with SNAP_BEFORE semantics by default, which
+        // for a small positive seek (+5s slow scrub) can land BEFORE the
+        // current position if there's no closer keyframe ahead — observed
+        // symptom was "slow forward scrub jumps backward ~1 second".
+        // ACCURATE does frame-level seeking; slightly more CPU but the
+        // direction is always correct, which is what scrubbing requires.
+        gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
+            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+            seek_pos);
     }
 }
 
 void GstPlayer::seek_absolute(double timestamp) {
     if (!initialized_) return;
     gint64 seek_pos = static_cast<gint64>(timestamp * GST_SECOND);
-    gst_element_seek_simple(pipeline_, GST_FORMAT_TIME, static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT), seek_pos);
+    gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+        seek_pos);
 }
 
 void GstPlayer::stop() {

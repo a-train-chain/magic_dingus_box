@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <vector>
 #include <memory>
+#ifdef MEDIA_BROWSER_ENABLED
 #include <chrono>
+#endif
 
 // Forward declare libgpiod types to avoid header dependency
 struct gpiod_chip;
@@ -56,6 +58,7 @@ public:
     // Returns events in same format as InputManager for easy integration
     std::vector<InputEvent> poll();
 
+#ifdef MEDIA_BROWSER_ENABLED
     // Snapshot of current (post-debounce) button press state, indexed
     // 0..NUM_BUTTONS-1. True = currently pressed. Called from main loop
     // after poll() for features that need chord detection.
@@ -64,6 +67,7 @@ public:
     // Whether BTN1 and BTN3 are both pressed right now (chord).
     // Uses a small tolerance window to forgive asynchronous presses.
     bool is_chord_btn1_btn3() const;
+#endif
 
     // LED control
     void set_led(int index, bool on);  // index 0-3
@@ -103,10 +107,12 @@ private:
     ButtonState button_states_[gpio::NUM_BUTTONS];
     ButtonState encoder_sw_state_;
 
+#ifdef MEDIA_BROWSER_ENABLED
     // Current press state + press timestamps (for snapshot / chord API)
     bool button_pressed_[gpio::NUM_BUTTONS] = {false, false, false, false};
     std::chrono::steady_clock::time_point button_press_times_[gpio::NUM_BUTTONS];
-    
+#endif
+
     // Encoder state
     int last_clk_state_ = 1;
     

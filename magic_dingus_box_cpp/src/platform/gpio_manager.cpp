@@ -236,9 +236,11 @@ std::vector<InputEvent> GpioManager::poll() {
                 ev.action = InputAction::SELECT;
                 ev.delta = 0;
                 ev.pressed = pressed;
+#ifdef MEDIA_BROWSER_ENABLED
                 // Mark as rotary-origin so the Media Browser sequence
                 // detector can distinguish ROTARY_CLICK from a plain SELECT.
                 ev.is_from_rotary = true;
+#endif
                 events.push_back(ev);
             }
         }
@@ -271,11 +273,13 @@ std::vector<InputEvent> GpioManager::poll() {
                 // Update LED to match button state (light while pressed)
                 set_led(i, pressed);
 
+#ifdef MEDIA_BROWSER_ENABLED
                 // Track press state + time for chord/snapshot API
                 button_pressed_[i] = pressed;
                 if (pressed) {
                     button_press_times_[i] = std::chrono::steady_clock::now();
                 }
+#endif
             }
         }
     }
@@ -283,6 +287,7 @@ std::vector<InputEvent> GpioManager::poll() {
     return events;
 }
 
+#ifdef MEDIA_BROWSER_ENABLED
 bool GpioManager::is_chord_btn1_btn3() const {
     // Chord = both buttons currently pressed AND they transitioned to
     // pressed within 50ms of each other.
@@ -295,6 +300,7 @@ bool GpioManager::is_chord_btn1_btn3() const {
 
     return diff <= 50;
 }
+#endif
 
 void GpioManager::set_led(int index, bool on) {
     if (!impl_->output_request || index < 0 || index >= gpio::NUM_BUTTONS) {
@@ -501,7 +507,9 @@ void GpioManager::stop_boot_led_sequence() {}
 void GpioManager::update_intro_animation(uint64_t /*elapsed_ms*/) {}
 void GpioManager::play_shutdown_animation() {}
 void GpioManager::stop_animation() {}
+#ifdef MEDIA_BROWSER_ENABLED
 bool GpioManager::is_chord_btn1_btn3() const { return false; }
+#endif
 
 #endif  // HAVE_GPIOD
 

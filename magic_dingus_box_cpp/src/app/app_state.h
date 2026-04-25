@@ -27,6 +27,7 @@ enum class AudioOutput {
     HEADPHONE   // 3.5mm headphone jack (amixer numid=3 value 1)
 };
 
+#ifdef MEDIA_BROWSER_ENABLED
 // Top-level screen/view the app is currently showing. Historically the
 // kiosk has had a single main screen (playlist list + settings overlay);
 // the Media Browser V2 feature introduces a separate full-screen view
@@ -37,6 +38,7 @@ enum class AppScreen {
     MainMenu,      // Default playlist + settings overlay view
     MediaBrowser   // V2 — unlocked via secret sequence (placeholder until Task 17)
 };
+#endif
 
 // Bezel info structure
 struct BezelInfo {
@@ -194,12 +196,14 @@ public:
     int master_volume = 100; // 0-100%
     bool show_volume_slider = false;
 
+#ifdef MEDIA_BROWSER_ENABLED
     // Media Browser feature (unlocked via secret sequence)
     bool media_browser_unlocked = false;
 
     // Active top-level screen. Only meaningful when media_browser_unlocked
     // is true; otherwise always MainMenu.
     AppScreen current_screen = AppScreen::MainMenu;
+#endif
 
     // Seek bar overlay state (only visible while actively seeking via rotary encoder)
     bool show_seek_bar = false;

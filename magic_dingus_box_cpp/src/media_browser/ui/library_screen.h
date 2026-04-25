@@ -66,7 +66,11 @@ private:
     enum class Focus { FilterStrip, PosterGrid };
 
     static constexpr int kNumFilters = 4;
-    static constexpr int kGridCols = 4;
+    // 5-column poster grid: prioritises seeing more movies on screen at once
+    // over per-poster size. With kPaddingX=32 and kCellGapX=20 on a 1280-wide
+    // target, each cell ends up ~227px wide (poster ~227x340 at 2:3) which
+    // still reads cleanly as artwork without dominating the grid.
+    static constexpr int kGridCols = 5;
 
     // Categorises a library entry into the three dot-color buckets used
     // by the grid state indicator and the MissingUpgrades filter logic.
