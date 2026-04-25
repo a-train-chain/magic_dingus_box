@@ -2,6 +2,7 @@
 #include "media_browser/radarr/radarr_parsers.h"
 
 #include <curl/curl.h>
+#include <json/json.h>
 #include <spdlog/spdlog.h>
 
 #include <cctype>
@@ -154,14 +155,86 @@ std::optional<Movie> RadarrClient::get_movie(int radarr_id) {
 }
 
 bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) {
-    std::ostringstream body;
-    body << R"({"tmdbId":)" << tmdb_id
-         << R"(,"qualityProfileId":)" << quality_profile_id
-         << R"(,"monitored":)" << (monitor ? "true" : "false")
-         << R"(,"rootFolderPath":"/library/Movies")"
-         << R"(,"addOptions":{"searchForMovie":)" << (monitor ? "true" : "false") << R"(}})";
-    auto resp = http_post("/api/v3/movie", body.str());
-    return !resp.empty();
+    last_error_.clear();
+
+    // Radarr v3 requires the full movie record (title, year, slug, images,
+    // minimumAvailability, etc.) when POSTing to /api/v3/movie. The minimum
+    // {tmdbId, qualityProfileId} payload that older Radarr versions accepted
+    // now returns 400 Validation failed. Pattern: lookup the movie via TMDB
+    // first to get the full object, then mutate the bits we control.
+    std::string lookup_path = "/api/v3/movie/lookup?term=tmdb:"
+                            + std::to_string(tmdb_id);
+    std::string lookup_resp = http_get(lookup_path);
+    if (lookup_resp.empty()) {
+        last_error_ = "Radarr lookup failed for tmdb:" + std::to_string(tmdb_id);
+        spdlog::error("[radarr] add_movie: {}", last_error_);
+        return false;
+    }
+
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(lookup_resp);
+    if (!Json::parseFromStream(rb, is, &root, &err)) {
+        last_error_ = "Radarr lookup parse failed: " + err;
+        spdlog::error("[radarr] add_movie: {}", last_error_);
+        return false;
+    }
+
+    // Lookup endpoint returns either a single object or an array depending
+    // on the Radarr version. Normalize to single object.
+    Json::Value movie;
+    if (root.isArray()) {
+        if (root.size() == 0) {
+            last_error_ = "Radarr lookup returned no results";
+            spdlog::error("[radarr] add_movie: {}", last_error_);
+            return false;
+        }
+        movie = root[0u];
+    } else if (root.isObject()) {
+        movie = root;
+    } else {
+        last_error_ = "Radarr lookup returned unexpected JSON shape";
+        spdlog::error("[radarr] add_movie: {}", last_error_);
+        return false;
+    }
+
+    // Mutate the bits we own. Pick the first registered root folder so
+    // we don't have to hardcode a path that might not exist on every
+    // install. minimumAvailability=released is the right default for a
+    // movie that the user is actively choosing — they want it once it's
+    // out, not blocked behind announcement-only state.
+    auto roots = get_root_folders();
+    if (roots.empty()) {
+        last_error_ = "No root folder configured in Radarr";
+        spdlog::error("[radarr] add_movie: {}", last_error_);
+        return false;
+    }
+    movie["qualityProfileId"]    = quality_profile_id;
+    movie["rootFolderPath"]      = roots.front().path;
+    movie["monitored"]           = monitor;
+    movie["minimumAvailability"] = "released";
+    Json::Value addOptions;
+    addOptions["searchForMovie"] = monitor;
+    addOptions["monitor"]        = "movieOnly";
+    addOptions["addMethod"]      = "manual";
+    movie["addOptions"]          = addOptions;
+
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    std::string body = Json::writeString(wb, movie);
+
+    auto resp = http_post("/api/v3/movie", body);
+    if (resp.empty()) {
+        // last_error_ already set by http_post on failure.
+        spdlog::error("[radarr] add_movie POST failed: {}", last_error_);
+        return false;
+    }
+    spdlog::info("[radarr] add_movie ok: tmdb_id={} title='{}' rootFolder='{}'",
+                 tmdb_id,
+                 movie.get("title", "?").asString(),
+                 roots.front().path);
+    return true;
 }
 
 bool RadarrClient::remove_movie(int radarr_id, bool delete_files) {

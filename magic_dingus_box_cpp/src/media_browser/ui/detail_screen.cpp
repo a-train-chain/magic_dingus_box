@@ -402,8 +402,20 @@ Screen DetailScreen::on_activate() {
 }
 
 int DetailScreen::pick_quality_profile_id() const {
-    // Look for "HD-1080p" (Radarr's default), then "1080p" anywhere in the
-    // name, else fall back to the first profile.
+    // Default to "Any" — most permissive profile, accepts whatever the
+    // indexer ships. The kiosk has 29 GB of USB storage so disk pressure
+    // matters less than getting the movie at all. Power users can switch
+    // to HD-1080p / Ultra-HD via Radarr's web UI for movies they want at
+    // a specific quality. Without this, popular older / public-domain
+    // titles (only available as Bluray-720p on YTS) silently fail to
+    // grab even after a successful Add.
+    for (const auto& p : profiles_) {
+        if (p.name == "Any") return p.id;
+    }
+    // Fallback search order if "Any" is missing for some reason.
+    for (const auto& p : profiles_) {
+        if (p.name == "HD - 720p/1080p") return p.id;
+    }
     for (const auto& p : profiles_) {
         if (p.name == "HD-1080p") return p.id;
     }
