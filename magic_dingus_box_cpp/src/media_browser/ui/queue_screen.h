@@ -75,6 +75,14 @@ private:
     RadarrClient& radarr_;
 
     std::vector<QueueItem> queue_;
+
+    // Movies in library that are monitored but have no file yet AND aren't
+    // already in the active download queue. Populated by refresh() from
+    // get_library() each cycle. Rendered as an "AWAITING RELEASE" section
+    // below the active downloads so the user sees Radarr is watching for
+    // a release even when nothing is grabbing yet.
+    std::vector<Movie> awaiting_;
+
     int cursor_ = 0;
     int scroll_row_ = 0;
 

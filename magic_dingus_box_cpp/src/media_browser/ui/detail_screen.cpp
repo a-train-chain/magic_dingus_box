@@ -756,6 +756,31 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
+    // Show the "Monitored — awaiting release" banner when the movie's in
+    // the user's library but Radarr hasn't grabbed a release yet. Tells
+    // the user the system is working in the background and they don't
+    // need to do anything — Radarr re-checks every ~30 minutes and will
+    // auto-download when seeders appear.
+    if (mode_ == Mode::InLibraryNoFile) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += 12.0f;
+        // Outlined banner — same steel-blue-outline idiom as the section
+        // dividers, sized to fit a single small-font line of body text.
+        const float banner_h = static_cast<float>(sz) + 18.0f;
+        r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
+                         2.0f, th.accent2, 0.9f);
+        std::string txt =
+            "MONITORED  \xE2\x80\xA2  Radarr re-checks indexers every "
+            "30 minutes and will auto-download when seeders appear";
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
+        r.mb_draw_text(drawn, col_x + 12.0f,
+                       cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
+                                + static_cast<float>(baseline),
+                       sz, th.accent2, 0.95f);
+        cursor_y += banner_h + 6.0f;
+    }
+
     // Genre chips — gold outline, no fill, accent text. Pure border-and-text
     // styling that mirrors the home menu's outlined overlays.
     if (!genres.empty()) {

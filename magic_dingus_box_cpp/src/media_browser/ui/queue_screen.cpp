@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <sstream>
 #include <string>
+#include <unordered_set>
+#include <utility>
 
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
@@ -172,6 +174,23 @@ void QueueScreen::refresh() {
     // get_queue() is synchronous in the current client. If it becomes
     // async, refreshing_ will naturally stay true until completion.
     queue_ = radarr_.get_queue();
+
+    // Build the "awaiting release" list from monitored library movies
+    // that don't have a file yet and aren't in the active queue. We
+    // de-dup against queue_ via movie_id (Radarr's queue items carry
+    // their movie_id reference).
+    std::unordered_set<int> active_movie_ids;
+    for (const auto& q : queue_) active_movie_ids.insert(q.movie_id);
+
+    awaiting_.clear();
+    auto library = radarr_.get_library();
+    for (auto& m : library) {
+        if (!m.monitored) continue;
+        if (m.has_file) continue;
+        if (active_movie_ids.count(m.radarr_id) > 0) continue;
+        awaiting_.push_back(std::move(m));
+    }
+
     refreshing_ = false;
     last_refresh_at_ = std::chrono::steady_clock::now();
     last_error_ = queue_.empty() ? radarr_.last_error() : std::string{};
@@ -309,8 +328,15 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // Count chip ("3 downloads") — sits just to the right of the
         // heading, dim. Uses singular/plural so it reads naturally.
         std::ostringstream cs;
-        cs << "(" << queue_.size()
-           << (queue_.size() == 1 ? " download)" : " downloads)");
+        // Count includes both active downloads and awaiting-release movies
+        // so the user sees the full set Radarr is managing for them.
+        int total = static_cast<int>(queue_.size() + awaiting_.size());
+        if (total == 1) {
+            cs << "(1 monitored)";
+        } else {
+            cs << "(" << total << " monitored \xE2\x80\x94 " << queue_.size()
+               << " downloading, " << awaiting_.size() << " awaiting)";
+        }
         std::string count_text = cs.str();
         int count_size = th.font_small_size;
         int hd_w = r.mb_title_text_width(heading, hd_size);
@@ -379,7 +405,13 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float body_bottom = footer_band_top;
     const float body_h      = body_bottom - body_top;
 
-    if (queue_.empty()) {
+    // Track the y-extent consumed by the active-queue render so the
+    // AWAITING RELEASE section below knows where to start drawing. Stays
+    // at body_top when the queue is empty — the awaiting section then
+    // claims the whole body region.
+    float post_queue_y = body_top;
+
+    if (queue_.empty() && awaiting_.empty()) {
         if (!last_error_.empty()) {
             // Radarr offline — primary message in red (highlight2),
             // matching the destructive/warning idiom from Detail's
@@ -423,7 +455,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                      + static_cast<float>(r.mb_text_baseline(sz2));
             r.mb_draw_text(hint_msg, hx, hy, sz2, th.dim, 0.8f);
         }
-    } else {
+    } else if (!queue_.empty()) {
         // --- Queue rows --------------------------------------------------
         // Vertical scrolling list. We clamp scroll_row_ here (in render —
         // not handle_input — because this is where we know how many rows
@@ -629,6 +661,93 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     marker_cx,                         marker_cy + marker_size,
                     marker_cx - marker_size * 1.2f,    marker_cy,
                     th.accent2, 1.0f);
+            }
+        }
+
+        // Where the next row would have been drawn — anchor for the
+        // AWAITING RELEASE section that may follow below.
+        int drawn = end_row - scroll_row_;
+        post_queue_y = list_top
+                     + static_cast<float>(drawn) * (kRowHeight + kRowGap);
+    }
+
+    // -----------------------------------------------------------------
+    // AWAITING RELEASE section — monitored library movies that haven't
+    // grabbed yet because no usable release is available. Radarr's RSS
+    // sync re-checks every ~30 minutes; this section makes the
+    // background watchlist visible to the user.
+    // -----------------------------------------------------------------
+    if (!awaiting_.empty()) {
+        const float row_x_a = kPaddingX;
+        const float row_w_a = w - 2.0f * kPaddingX;
+        // Leave a 32px gap below the active queue rows. When the queue
+        // was empty (post_queue_y == body_top) we sit flush with the
+        // header rule margin so the section fills the body region.
+        float section_y = post_queue_y;
+        if (post_queue_y > body_top) {
+            section_y = post_queue_y + 32.0f - kRowGap;
+        }
+
+        const float footer_reserve =
+            (h - footer_band_top) + 8.0f;
+        if (section_y < h - footer_reserve - 80.0f) {
+            // Section header — same Zen Dots / steel-blue chrome the
+            // top "DOWNLOAD QUEUE" header uses, scaled down so it reads
+            // as a sub-section rather than a peer.
+            int hd_size = th.font_heading_size;
+            const std::string heading = "AWAITING RELEASE";
+            r.mb_draw_title_text(heading, row_x_a,
+                                 section_y + static_cast<float>(hd_size),
+                                 hd_size, th.accent2, 1.0f);
+            float rule_y = section_y + static_cast<float>(hd_size) + 12.0f;
+            r.mb_draw_line(row_x_a, rule_y, row_x_a + row_w_a, rule_y,
+                           2.0f, th.accent2, 0.85f);
+            section_y = rule_y + 14.0f;
+
+            // Sub-line explaining the state — dim cream small-font.
+            int sub_size = th.font_small_size;
+            int sub_baseline = r.mb_text_baseline(sub_size);
+            const std::string sub =
+                "Radarr re-checks indexers every 30 minutes. Movies will "
+                "auto-download when seeders are available.";
+            std::string sub_drawn = truncate_to_width(r, sub, sub_size,
+                                                      row_w_a);
+            r.mb_draw_text(sub_drawn, row_x_a,
+                           section_y + static_cast<float>(sub_baseline),
+                           sub_size, th.dim, 0.85f);
+            section_y += static_cast<float>(sub_size) + 14.0f;
+
+            // One row per awaiting movie. Read-only, no cursor focus.
+            int title_size = th.font_medium_size;
+            int title_baseline = r.mb_text_baseline(title_size);
+            float row_h_a = static_cast<float>(title_size) * 1.6f;
+
+            int drawn_count = 0;
+            for (const auto& m : awaiting_) {
+                if (section_y + row_h_a > h - footer_reserve) break;
+                std::ostringstream label;
+                label << m.title;
+                if (m.year > 0) label << " (" << m.year << ")";
+                label << "  \xE2\x80\xA2  Monitored, awaiting release";
+                std::string label_drawn = truncate_to_width(
+                    r, label.str(), title_size, row_w_a);
+                r.mb_draw_text(label_drawn, row_x_a,
+                               section_y + static_cast<float>(title_baseline),
+                               title_size, th.fg, 0.85f);
+                section_y += row_h_a;
+                ++drawn_count;
+            }
+
+            // If we ran out of room and there are more awaiting items,
+            // surface a "+N more..." indicator.
+            int hidden = static_cast<int>(awaiting_.size()) - drawn_count;
+            if (hidden > 0
+                && section_y + row_h_a <= h - footer_reserve) {
+                std::string more = "+" + std::to_string(hidden)
+                                 + " more awaiting";
+                r.mb_draw_text(more, row_x_a,
+                               section_y + static_cast<float>(title_baseline),
+                               title_size, th.dim, 0.7f);
             }
         }
     }
