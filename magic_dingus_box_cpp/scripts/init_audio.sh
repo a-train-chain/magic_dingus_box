@@ -72,6 +72,19 @@ load-module module-stream-restore restore_device=false
 PAEOF
 echo "PulseAudio default sink configured: $DEFAULT_SINK"
 
+# Disable PulseAudio's 20-second idle-exit. Without this, PA shuts down
+# whenever no audio sinks are connected (e.g., between the intro video
+# ending and the user starting movie playback in the Media Browser).
+# When the next audio client tries to connect, autospawn fails ("Failed
+# to create secure directory /run/user/1000/pulse"), causing GStreamer's
+# pipeline state-change to PLAYING to fail. -1 = run forever, ready for
+# the next client.
+PULSE_DAEMON_CONFIG="$HOME/.config/pulse/daemon.conf"
+cat > "$PULSE_DAEMON_CONFIG" <<PAEOF
+exit-idle-time = -1
+PAEOF
+echo "PulseAudio idle-exit disabled (daemon.conf)"
+
 # Start PulseAudio (--start daemonizes, so no exec needed)
 /usr/bin/pulseaudio --start --log-target=syslog
 

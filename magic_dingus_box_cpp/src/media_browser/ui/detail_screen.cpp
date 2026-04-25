@@ -463,7 +463,14 @@ Screen DetailScreen::do_remove_confirm() {
         rebuild_buttons();
         return Screen::Detail;
     }
-    bool ok = radarr_.remove_movie(movie_->radarr_id, /*delete_files=*/false);
+    // delete_files=true: remove the imported file from /library on disk too,
+    // not just the Radarr DB record. The two-stage Remove → Confirm Remove
+    // flow already protects against accidental presses, and a kiosk with
+    // a 29 GB USB drive can't afford orphaned files. Note: the original
+    // torrent download in /downloads/complete/ and the qBit torrent record
+    // are NOT cleaned up by Radarr's API — that's a known gap, eventual
+    // follow-up to wire qBit's torrents/delete endpoint into this flow.
+    bool ok = radarr_.remove_movie(movie_->radarr_id, /*delete_files=*/true);
     if (!ok) {
         show_banner("Remove failed");
         rebuild_buttons();
