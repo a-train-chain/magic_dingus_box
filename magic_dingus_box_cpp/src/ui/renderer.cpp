@@ -1566,6 +1566,10 @@ void Renderer::mb_fill_background() {
               ui::Color(0, 0, 0, 255));
 }
 
+void Renderer::mb_render_seek_bar(const app::AppState& state) {
+    render_seek_bar(state);
+}
+
 void Renderer::mb_fill_rect(float x, float y, float w, float h,
                             const ui::Color& color, float alpha_multiplier) {
     draw_quad(x, y, w, h, color, alpha_multiplier);

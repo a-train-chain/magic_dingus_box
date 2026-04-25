@@ -220,48 +220,12 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        2.0f, th.accent2, 0.95f * alpha);
     }
 
-    // Seek bar — fades in/out via state.seek_bar_timer (set in handle_input
-    // on every seek event, decremented elsewhere). The kiosk's main render
-    // path normally draws this when state.video_active && state.show_seek_bar,
-    // but its render gate skips MediaBrowser mode, so we render an
-    // equivalent strip here using the same Media Browser primitives the
-    // rest of the HUD uses. Position mirrors the main UI's seek bar:
-    // a thin track ~80% of screen width, centered, sat above the bottom hint.
-    if (state_.show_seek_bar && state_.seek_bar_timer > 0.0) {
-        const float kBarHpad      = 80.0f;          // gutter on each side
-        const float kBarH         = 6.0f;           // total bar thickness
-        const float kBarBottomPad = 96.0f;          // distance above screen bottom
-        float bar_w = w - 2.0f * kBarHpad;
-        if (bar_w < 200.0f) bar_w = 200.0f;
-        float bar_x = (w - bar_w) * 0.5f;
-        float bar_y = h - kBarBottomPad;
-        // Decay alpha during the last 0.5 s of the timer so it fades out.
-        float fade_alpha = 1.0f;
-        if (state_.seek_bar_timer < 0.5) {
-            fade_alpha = static_cast<float>(state_.seek_bar_timer) / 0.5f;
-            if (fade_alpha < 0.0f) fade_alpha = 0.0f;
-        }
-        // Track: dim outline at low alpha — same idiom as Detail's section
-        // dividers / Settings sliders.
-        r.mb_stroke_rect(bar_x, bar_y, bar_w, kBarH,
-                         1.0f, th.dim, 0.5f * fade_alpha);
-        // Fill: position-proportional, in accent (gold). Reads
-        // state.position / state.duration which the controller updates each
-        // frame. Guards against duration <= 0 (transient at startup) by
-        // showing 0% rather than NaN-ing.
-        double duration = state_.duration;
-        double position = state_.position;
-        double pct = (duration > 0.0)
-                       ? (position / duration)
-                       : 0.0;
-        if (pct < 0.0) pct = 0.0;
-        if (pct > 1.0) pct = 1.0;
-        float fill_w = static_cast<float>(pct) * bar_w;
-        if (fill_w > 0.0f) {
-            r.mb_fill_rect(bar_x, bar_y, fill_w, kBarH,
-                           th.accent, 0.95f * fade_alpha);
-        }
-    }
+    // Reuse the main UI's seek bar overlay so movie scrubbing feels
+    // visually identical to playlist scrubbing. The state fields
+    // (show_seek_bar, seek_bar_timer, position, duration) are already
+    // set by handle_input on every seek, controller.update_state syncs
+    // position/duration each frame.
+    r.mb_render_seek_bar(state_);
 
     // Pause indicator — bottom-center, persistent until unpause.
     if (controller_.is_paused()) {

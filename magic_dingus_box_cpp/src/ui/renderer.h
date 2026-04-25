@@ -131,6 +131,15 @@ public:
     // background fetches and performs the GL uploads. Must run on the
     // GL-owning thread.
     void pump_artwork();
+
+    // Renders the same seek bar overlay the main UI draws during scrubs.
+    // The Media Browser's PlaybackScreen calls this so its scrub feedback
+    // is visually identical to the kiosk's playlist scrubbing — same
+    // colors, same position, same fade behavior. Reads
+    // state.show_seek_bar / state.seek_bar_timer / state.position /
+    // state.duration, all of which are already populated by the
+    // controller and the screen's own input handler.
+    void mb_render_seek_bar(const app::AppState& state);
 #endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)

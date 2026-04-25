@@ -1410,6 +1410,22 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::MovieSettings: active_mb_screen = &mb_mb_settings; break;
                     case media_browser::ui::Screen::Exit: break;  // handled above
                 }
+
+                // Clear the framebuffer to black before the new screen's
+                // enter() runs. Some screens' enter() (notably Detail)
+                // do synchronous HTTP work that blocks the render loop
+                // for 200ms-2s. Without this clear, the user sees the
+                // last-rendered frame frozen on screen — and if they
+                // came from Playback, that frame can include garbage
+                // texture data from the just-stopped GStreamer pipeline
+                // (the "green rectangle in upper-right" the user
+                // reported). A single black clear gives clean visual
+                // continuity into the Loading state.
+                glViewport(0, 0, mode.width, mode.height);
+                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                egl.swap_buffers();
+
                 active_mb_screen->enter();
             }
             active_mb_screen->update();
