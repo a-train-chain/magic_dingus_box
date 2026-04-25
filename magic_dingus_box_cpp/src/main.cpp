@@ -487,13 +487,17 @@ int main(int /* argc */, char* /* argv */[]) {
         // env vars exist so we can change STORAGE_ROOT later without
         // recompiling. RadarrClient::normalize_prefix ensures both prefixes
         // end with '/' to avoid /library2/foo falsely matching /library.
-        if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX")) {
+        if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX"); p && *p) {
             radarr_cfg.container_library_prefix =
                 media_browser::RadarrClient::normalize_prefix(p);
+            std::cout << "[media_browser] container_library_prefix override: "
+                      << radarr_cfg.container_library_prefix << std::endl;
         }
-        if (const char* p = std::getenv("MDB_HOST_LIBRARY_PREFIX")) {
+        if (const char* p = std::getenv("MDB_HOST_LIBRARY_PREFIX"); p && *p) {
             radarr_cfg.host_library_prefix =
                 media_browser::RadarrClient::normalize_prefix(p);
+            std::cout << "[media_browser] host_library_prefix override: "
+                      << radarr_cfg.host_library_prefix << std::endl;
         }
         std::string base_url_for_log = radarr_cfg.base_url;
         radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
