@@ -5,6 +5,24 @@
 MAX_WAIT=10
 WAITED=0
 
+# Enable systemd linger for the magic user. Without linger, systemd-logind
+# tears down /run/user/$UID whenever there's no active login session for
+# the user — which on a headless kiosk is "always". The teardown happens
+# every ~20s after the last process exits, wiping pulseaudio's per-user
+# state directory and causing libpulse clients (GStreamer's pulsesink
+# inside the kiosk) to fail with "Failed to create secure directory
+# /run/user/1000/pulse" the next time they try to connect. Symptom from
+# the user's perspective: video plays once after boot, then silently
+# refuses to play any subsequent file.
+#
+# Linger is a one-time persistent setting (stored in
+# /var/lib/systemd/linger/magic) so the enable call below is idempotent
+# across reboots and re-deploys.
+if [ "$(loginctl show-user magic --property=Linger --value 2>/dev/null)" != "yes" ]; then
+    echo "Enabling systemd linger for magic user (persistent /run/user/1000)..."
+    sudo loginctl enable-linger magic
+fi
+
 # Kill any existing PulseAudio and clean up stale socket
 echo "Cleaning up existing PulseAudio processes..."
 sudo killall pulseaudio 2>/dev/null || true
