@@ -19,6 +19,7 @@
 #include "media_browser/ui/queue_screen.h"
 #include "media_browser/ui/library_screen.h"
 #include "media_browser/ui/mb_settings_screen.h"
+#include "media_browser/ui/playback_screen.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
@@ -479,6 +480,21 @@ int main(int /* argc */, char* /* argv */[]) {
             radarr_cfg.base_url = base;
         }
         radarr_cfg.api_key = radarr_key;
+        // Path-translation overrides (Task 8 of movie-playback plan): allow
+        // the operator to redirect /library/* and /downloads/* between the
+        // Radarr container's view and the host's actual mount point. Defaults
+        // already in radarr_cfg work for the standard /mnt/ssd setup; these
+        // env vars exist so we can change STORAGE_ROOT later without
+        // recompiling. RadarrClient::normalize_prefix ensures both prefixes
+        // end with '/' to avoid /library2/foo falsely matching /library.
+        if (const char* p = std::getenv("MDB_CONTAINER_LIBRARY_PREFIX")) {
+            radarr_cfg.container_library_prefix =
+                media_browser::RadarrClient::normalize_prefix(p);
+        }
+        if (const char* p = std::getenv("MDB_HOST_LIBRARY_PREFIX")) {
+            radarr_cfg.host_library_prefix =
+                media_browser::RadarrClient::normalize_prefix(p);
+        }
         std::string base_url_for_log = radarr_cfg.base_url;
         radarr_owned = std::make_unique<media_browser::RadarrClient>(std::move(radarr_cfg));
         std::cout << "[media_browser] Using real RadarrClient (base_url="
@@ -519,6 +535,7 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb);
     media_browser::ui::QueueScreen      mb_queue(radarr);
     media_browser::ui::LibraryScreen    mb_library(radarr);
+    media_browser::ui::PlaybackScreen   mb_playback(controller, state);
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
     // triggers this callback AND returns Screen::Exit, so the dispatcher
@@ -1361,6 +1378,13 @@ int main(int /* argc */, char* /* argv */[]) {
                     // etc.) instead of always landing on Browse.
                     mb_detail.set_origin(current_mb_screen);
                 }
+                // Detail -> Playback: copy resolved host path + title from
+                // Detail to Playback so it knows what to load on enter().
+                if (next == media_browser::ui::Screen::Playback &&
+                    current_mb_screen == media_browser::ui::Screen::Detail) {
+                    auto pt = mb_detail.get_play_target();
+                    mb_playback.set_movie(pt.host_path, pt.title);
+                }
                 active_mb_screen->leave();
                 current_mb_screen = next;
                 switch (next) {
@@ -1369,6 +1393,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
                     case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;
                     case media_browser::ui::Screen::Library:       active_mb_screen = &mb_library;     break;
+                    case media_browser::ui::Screen::Playback:      active_mb_screen = &mb_playback;    break;
                     case media_browser::ui::Screen::MovieSettings: active_mb_screen = &mb_mb_settings; break;
                     case media_browser::ui::Screen::Exit: break;  // handled above
                 }
