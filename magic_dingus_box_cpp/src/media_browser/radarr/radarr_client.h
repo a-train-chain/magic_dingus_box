@@ -16,6 +16,12 @@ public:
         // Radarr instance doesn't freeze the kiosk main render thread while
         // get_queue() / is_reachable() are in-flight.
         int timeout_secs = 5;
+        // Path translation for movie files: Radarr returns container-internal
+        // paths like /library/foo.mp4. The kiosk runs on the host and needs
+        // /mnt/ssd/library/foo.mp4. Both prefixes are normalized to end in
+        // '/' by the constructor (defense against /library2 false-matches).
+        std::string container_library_prefix = "/library/";
+        std::string host_library_prefix      = "/mnt/ssd/library/";
     };
 
     explicit RadarrClient(Config config);
@@ -45,6 +51,11 @@ public:
     // Profiles
     virtual std::vector<QualityProfile> get_quality_profiles();
     virtual std::vector<RootFolder> get_root_folders();
+
+    // Path translation for the movie file Radarr reports. Returns the host
+    // path that GStreamer can open, given a container-internal path.
+    // Unrecognized paths pass through unchanged with a warn-level log.
+    std::string resolve_host_path(const std::string& container_path) const;
 
     // Diagnostics
     const std::string& last_error() const { return last_error_; }

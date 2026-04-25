@@ -16,9 +16,20 @@ static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     s->append(static_cast<char*>(ptr), size * nmemb);
     return size * nmemb;
 }
+
+std::string ensure_trailing_slash(const std::string& s) {
+    if (s.empty()) return s;
+    return s.back() == '/' ? s : s + "/";
+}
 }  // namespace
 
 RadarrClient::RadarrClient(Config config) : cfg_(std::move(config)) {
+    // Normalize prefixes so prefix matching can't fall for /library2/foo.
+    cfg_.container_library_prefix =
+        ensure_trailing_slash(cfg_.container_library_prefix);
+    cfg_.host_library_prefix =
+        ensure_trailing_slash(cfg_.host_library_prefix);
+
     curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
@@ -196,6 +207,18 @@ std::vector<RootFolder> RadarrClient::get_root_folders() {
     auto resp = http_get("/api/v3/rootfolder");
     if (resp.empty()) return {};
     return RadarrParsers::parse_root_folders(resp);
+}
+
+std::string RadarrClient::resolve_host_path(const std::string& container_path) const {
+    if (container_path.empty()) return container_path;
+    if (container_path.rfind(cfg_.container_library_prefix, 0) == 0) {
+        return cfg_.host_library_prefix +
+               container_path.substr(cfg_.container_library_prefix.size());
+    }
+    spdlog::warn("[radarr] resolve_host_path: '{}' does not match prefix "
+                 "'{}'; passing through unchanged",
+                 container_path, cfg_.container_library_prefix);
+    return container_path;
 }
 
 }  // namespace media_browser
