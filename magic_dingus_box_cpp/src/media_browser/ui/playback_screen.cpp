@@ -21,6 +21,9 @@ void PlaybackScreen::set_movie(std::string host_path, std::string title) {
 void PlaybackScreen::enter() {
     exit_pending_ = false;
     deferred_toast_.clear();
+    // Tracks state.video_active across update() ticks for end-of-stream
+    // edge detection. Starts false; update() needs to see false→true (play
+    // started) before a later true→false transition reads as natural EOS.
     was_video_active_ = false;
 
     if (movie_path_.empty()) {
@@ -47,13 +50,6 @@ void PlaybackScreen::enter() {
     }
 
     controller_.play();
-
-    // Initial false — update() needs to see video_active go false→true
-    // (playback actually started) before it can detect a true→false
-    // edge as end-of-stream. Otherwise we'd false-trigger end-of-stream
-    // on the first frame because state.video_active hasn't been updated
-    // by player.update_state() yet.
-    was_video_active_ = false;
 
     // Title marquee for 3 seconds on entry.
     title_marquee_until_ = std::chrono::steady_clock::now()
@@ -87,11 +83,12 @@ Screen PlaybackScreen::handle_input(
     }
 
     for (const auto& e : events) {
-        // BTN4 short-press → stop and return to Detail. The dispatcher's
-        // long-press handler (held >500ms) intercepts before we see it,
-        // so reaching here means it's a short press.
+        // BTN4 short-press → return to Detail. The dispatcher's long-press
+        // handler (held >500ms) intercepts before we see it, so reaching
+        // here means it's a short press. We don't call controller_.stop()
+        // here because leave() will (idempotently); having a single stop
+        // point keeps lifecycle reasoning simple.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            controller_.stop();
             return Screen::Detail;
         }
 
