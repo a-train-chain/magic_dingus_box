@@ -57,6 +57,16 @@ private:
     bool exit_pending_ = false;
     std::string deferred_toast_;
 
+    // Frames remaining during which we suppress end-of-stream detection.
+    // Counted down by update(). The state.video_active flag flickers
+    // false during the brief PAUSED→PLAYING transition that GStreamer
+    // performs as part of a FLUSH seek — without this grace counter,
+    // the EOS edge detector in update() interprets that flicker as the
+    // movie ending and bails to Detail (user perceives it as the
+    // playback "crashing" out). Pumped on enter() (initial warmup) and
+    // every seek (post-seek settle).
+    int eos_suppress_frames_ = 0;
+
     std::chrono::steady_clock::time_point title_marquee_until_{};
 };
 

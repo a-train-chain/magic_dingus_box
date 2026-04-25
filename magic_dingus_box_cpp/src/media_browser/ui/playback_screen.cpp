@@ -63,6 +63,13 @@ void PlaybackScreen::enter() {
     title_marquee_until_ = std::chrono::steady_clock::now()
                           + std::chrono::seconds(3);
 
+    // Initial warmup: suppress EOS detection for ~1 second so an
+    // immediate user-initiated scrub right after pressing Play doesn't
+    // get its post-seek state-flicker mistaken for end-of-stream. The
+    // pipeline takes a moment to reach steady PLAYING state after load,
+    // and seeks issued during that window cause extra-long flicker.
+    eos_suppress_frames_ = 60;
+
     spdlog::info("[playback] playing '{}' (path='{}')",
                  movie_title_, movie_path_);
 }
@@ -105,17 +112,27 @@ Screen PlaybackScreen::handle_input(
             continue;
         }
 
+        // Every seek bumps the EOS-suppression counter. A FLUSH seek
+        // briefly transitions the pipeline through PAUSED, which makes
+        // state.video_active flicker false — without suppression the
+        // EOS edge detector in update() would misread that as end-of-
+        // stream and bail to Detail. 30 frames = ~0.5 s at 60 fps,
+        // plenty of margin for the pipeline to resettle.
+        constexpr int kSeekSuppressFrames = 30;
+
         // ±10s with PREV/NEXT — same as main UI when video is playing.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
             controller_.seek(10.0);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = 1.5;
+            eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
         if (e.action == platform::InputAction::PREV && e.pressed) {
             controller_.seek(-10.0);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = 1.5;
+            eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
 
@@ -124,12 +141,14 @@ Screen PlaybackScreen::handle_input(
             controller_.seek(5.0);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = 1.5;
+            eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
         if (e.action == platform::InputAction::SEEK_LEFT) {
             controller_.seek(-5.0);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = 1.5;
+            eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
 
@@ -140,6 +159,7 @@ Screen PlaybackScreen::handle_input(
             controller_.seek(seek_seconds * e.delta);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = 1.5;
+            eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
     }
@@ -148,12 +168,23 @@ Screen PlaybackScreen::handle_input(
 }
 
 void PlaybackScreen::update() {
-    // Edge-detect natural end-of-stream: state.video_active flips true→false
-    // when the GStreamer pipeline reaches EOS. We only treat it as
-    // end-of-stream if WE didn't trigger the stop (exit_pending stays false
-    // until this branch fires).
+    // Decay the post-seek / post-enter EOS suppression counter. While
+    // it's positive, we ignore the state.video_active true→false
+    // transition that GStreamer's FLUSH-seek state-machine produces;
+    // without this guard, the edge below would mistake "pipeline
+    // briefly went PAUSED for the seek" as "movie ended."
+    if (eos_suppress_frames_ > 0) {
+        --eos_suppress_frames_;
+    }
+
+    // Edge-detect natural end-of-stream: state.video_active flips
+    // true→false when the GStreamer pipeline reaches EOS. We only
+    // treat it as end-of-stream if WE didn't trigger the stop AND the
+    // suppression counter has fully decayed (no recent seek that could
+    // be causing the flicker).
     bool video_active_now = state_.video_active;
-    if (was_video_active_ && !video_active_now && !exit_pending_) {
+    if (was_video_active_ && !video_active_now && !exit_pending_
+        && eos_suppress_frames_ <= 0) {
         exit_pending_ = true;
         spdlog::info("[playback] natural end-of-stream detected");
     }
