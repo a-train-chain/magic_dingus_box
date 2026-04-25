@@ -368,15 +368,23 @@ void GstPlayer::seek(double seconds) {
             gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
             if (seek_pos > max_pos) seek_pos = max_pos;
         }
-        // ACCURATE seeking instead of KEY_UNIT. KEY_UNIT snaps to the
-        // nearest keyframe with SNAP_BEFORE semantics by default, which
-        // for a small positive seek (+5s slow scrub) can land BEFORE the
-        // current position if there's no closer keyframe ahead — observed
-        // symptom was "slow forward scrub jumps backward ~1 second".
-        // ACCURATE does frame-level seeking; slightly more CPU but the
-        // direction is always correct, which is what scrubbing requires.
+        // KEY_UNIT | SNAP_NEAREST instead of ACCURATE. ACCURATE does
+        // frame-exact seeking — fast on 4:3 SD playlist clips (frequent
+        // keyframes, low bitrate) but slow on 1080p H.264 movies where
+        // it has to decode from the previous keyframe forward to the
+        // target frame. During that 500ms-2s decode window the appsink
+        // holds the pre-seek frame and the GL texture briefly contains
+        // uninitialized YUV planes — the user sees a frozen frame plus
+        // a "big green rectangle" (the green is what zero-filled YUV
+        // looks like after color conversion). KEY_UNIT seeks to the
+        // nearest keyframe directly, no re-decode latency. SNAP_NEAREST
+        // picks the closer keyframe in either direction so a slow
+        // forward scrub still lands forward (not backward, which was
+        // the original bug ACCURATE was added to fix).
         gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
-            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
+                                       GST_SEEK_FLAG_KEY_UNIT |
+                                       GST_SEEK_FLAG_SNAP_NEAREST),
             seek_pos);
     }
 }
@@ -392,8 +400,12 @@ void GstPlayer::seek_absolute(double timestamp) {
         gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
         if (seek_pos > max_pos) seek_pos = max_pos;
     }
+    // Same KEY_UNIT | SNAP_NEAREST as seek() above. No re-decode latency,
+    // no green-rectangle artifact on high-bitrate H.264 content.
     gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
-        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+        static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
+                                   GST_SEEK_FLAG_KEY_UNIT |
+                                   GST_SEEK_FLAG_SNAP_NEAREST),
         seek_pos);
 }
 
