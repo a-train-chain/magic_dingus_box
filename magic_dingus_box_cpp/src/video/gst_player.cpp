@@ -400,16 +400,22 @@ void GstPlayer::seek(double seconds) {
             gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
             if (seek_pos > max_pos) seek_pos = max_pos;
         }
-        // KEY_UNIT seeks to the nearest keyframe — fast, no decode-from-
-        // previous-keyframe latency that ACCURATE has on 1080p H.264.
-        // Pick the snap direction by the sign of the requested offset:
-        // forward seeks always go to the NEXT keyframe forward,
-        // backward seeks always go to the PREVIOUS keyframe backward.
-        // Without this, SNAP_NEAREST would pick whichever keyframe was
-        // closer to the target — which on sparse-keyframe 1080p means
-        // a 5s forward request often went BACKWARD to the keyframe the
-        // user just saw, because that keyframe was closer than the next
-        // one. User experienced this as "needs two clicks to advance."
+        // KEY_UNIT + direction-aware snap. Resolves the "+5s forward
+        // scrub goes backward" bug differently from origin/main's
+        // ACCURATE approach: rather than paying ACCURATE's
+        // decode-from-previous-keyframe latency on every scrub
+        // (visible as a ~200ms hitch on 1080p H.264), we keep KEY_UNIT
+        // for the fast keyframe seek but tell GStreamer which
+        // direction to snap. SNAP_NEAREST picked whichever keyframe
+        // was visually closer to the target — on sparse-keyframe
+        // 1080p that's often the keyframe just BEHIND the current
+        // position, so a forward scrub appeared to go backward.
+        //
+        // SNAP_AFTER on positive seeks forces the snap to the next
+        // keyframe forward; SNAP_BEFORE on negatives forces the
+        // previous keyframe backward. Net effect is "scrub direction
+        // matches input direction" — same correctness fix as the
+        // ACCURATE approach, without the per-seek decode hitch.
         GstSeekFlags snap = (seconds >= 0)
             ? GST_SEEK_FLAG_SNAP_AFTER
             : GST_SEEK_FLAG_SNAP_BEFORE;
@@ -432,14 +438,15 @@ void GstPlayer::seek_absolute(double timestamp) {
         gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
         if (seek_pos > max_pos) seek_pos = max_pos;
     }
-    // KEY_UNIT for fast keyframe seeks (no ACCURATE re-decode latency).
-    // Unlike the relative seek() above, absolute seeks don't carry an
-    // intrinsic direction — they're typically chapter / "go to position"
-    // operations from a UI scrub, where the user already sees the target
-    // timestamp and just wants the playhead to land there. SNAP_NEAREST
-    // is the right default in that case: pick whichever keyframe is
-    // visually closest to the requested timestamp, regardless of whether
-    // it's slightly before or after.
+    // KEY_UNIT for fast keyframe seeks (matches the relative seek()
+    // approach above; see that function's comment for the full
+    // rationale on KEY_UNIT vs ACCURATE). Unlike relative seeks,
+    // absolute seeks don't carry an intrinsic direction — they're
+    // typically chapter / "go to position" operations from a UI
+    // scrub, where the user already sees the target timestamp and
+    // just wants the playhead to land there. SNAP_NEAREST is the
+    // right default: pick whichever keyframe is visually closest to
+    // the requested timestamp, regardless of slightly-before/after.
     gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
         static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
                                    GST_SEEK_FLAG_KEY_UNIT |

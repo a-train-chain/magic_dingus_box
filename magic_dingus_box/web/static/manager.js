@@ -834,9 +834,18 @@ function updateConnectionBadge() {
     if (!badge || !badgeText) return;
 
     if (currentDevice) {
-        // Determine connection type based on IP address
+        // Determine connection type based on IP address. The USB gadget
+        // currently assigns 10.55.0.1 via usb-gadget-network.service; older
+        // setups used 192.168.7.1. Both are USB gadget subnets — check for
+        // the IPs directly and either of the /24 networks in case the
+        // service ever assigns a different host address.
         const deviceUrl = currentDevice.url || '';
-        const isUSB = deviceUrl.includes('192.168.7.1');
+        const isUSB = (
+            deviceUrl.includes('192.168.7.1') ||
+            deviceUrl.includes('10.55.0.1') ||
+            /\/\/192\.168\.7\.\d+[:\/]/.test(deviceUrl) ||
+            /\/\/10\.55\.0\.\d+[:\/]/.test(deviceUrl)
+        );
         const connectionType = isUSB ? 'USB' : 'WiFi';
         const icon = isUSB ? '🔌' : '📶';
 
@@ -1090,11 +1099,13 @@ function renderPlaylistItems(type) {
 
         if (isEmptySlot) {
             return `
-                <tr class="${rowClass}" draggable="true" data-index="${index}" data-playlist-type="${type}"
-                    ondragstart="handlePlaylistDragStart(event, '${type}')"
-                    ondragover="handlePlaylistDragOver(event)"
-                    ondrop="handlePlaylistDrop(event, '${type}')"
-                    ondragend="handleDragEnd(event)">
+                <tr class="${rowClass}" data-index="${index}" data-playlist-type="${type}">
+                    <td class="col-handle">
+                        <span class="drag-handle" draggable="true"
+                              ondragstart="handlePlaylistDragStart(event, '${type}', ${index})"
+                              ondragend="handlePlaylistDragEnd(event, '${type}')"
+                              title="Drag to reorder">⋮⋮</span>
+                    </td>
                     <td class="col-num">${index + 1}</td>
                     <td class="col-title"><span class="empty-label">(empty slot)</span></td>
                     <td class="col-artist"></td>
@@ -1113,18 +1124,20 @@ function renderPlaylistItems(type) {
         const artist = item.artist || '';
 
         return `
-            <tr class="${rowClass}" draggable="true" data-index="${index}" data-playlist-type="${type}"
-                ondragstart="handlePlaylistDragStart(event, '${type}')"
-                ondragover="handlePlaylistDragOver(event)"
-                ondrop="handlePlaylistDrop(event, '${type}')"
-                ondragend="handleDragEnd(event)">
+            <tr class="${rowClass}" data-index="${index}" data-playlist-type="${type}">
+                <td class="col-handle">
+                    <span class="drag-handle" draggable="true"
+                          ondragstart="handlePlaylistDragStart(event, '${type}', ${index})"
+                          ondragend="handlePlaylistDragEnd(event, '${type}')"
+                          title="Drag to reorder">⋮⋮</span>
+                </td>
                 <td class="col-num">${index + 1}</td>
                 <td class="col-title">
-                    <input type="text" class="inline-input" value="${escapeHtml(title)}" 
+                    <input type="text" class="inline-input" draggable="false" value="${escapeHtml(title)}"
                            placeholder="Title" onchange="updatePlaylistItem(${index}, 'title', this.value, '${type}')">
                 </td>
                 <td class="col-artist">
-                    <input type="text" class="inline-input" value="${escapeHtml(artist)}" 
+                    <input type="text" class="inline-input" draggable="false" value="${escapeHtml(artist)}"
                            placeholder="Artist" onchange="updatePlaylistItem(${index}, 'artist', this.value, '${type}')">
                 </td>
                 <td class="col-actions">
@@ -1137,6 +1150,14 @@ function renderPlaylistItems(type) {
             </tr>
         `;
     }).join('');
+
+    // Delegate dragover/drop to the tbody so the drop indicator can track
+    // pointer position across all rows in a single handler. Also listen at
+    // the table container level so dragging near the edges (above first row,
+    // below last row) still fires events.
+    const tbody = container;
+    tbody.ondragover = function(event) { handlePlaylistDragOver(event, type); };
+    tbody.ondrop     = function(event) { handlePlaylistDrop(event, type); };
 }
 
 /**
@@ -3309,36 +3330,133 @@ function addItemToPlaylist(draggedItem, type) {
     }
 }
 
-// Playlist item reordering
-let draggedPlaylistIndex = null;
-let draggedPlaylistType = null;
+// ===== PLAYLIST DRAG-HANDLE REORDERING =====
+//
+// Each playlist row has a <span class="drag-handle" draggable="true"> in its
+// leftmost cell. Dragging the handle shows a horizontal drop indicator that
+// follows the pointer, marking the insert-before or insert-after position.
+// On drop, the dragged item is spliced out of its old position and inserted
+// at the indicator's position (not swapped).
+//
+// Module-level state for the in-flight drag:
+let draggedPlaylistIndex = null;     // original index of the item being dragged
+let draggedPlaylistType = null;      // 'video' or 'game'
+let pendingDropIndex = null;         // where the drop would land, computed in dragover
 
-function handlePlaylistDragStart(event, type) {
-    draggedPlaylistIndex = parseInt(event.target.dataset.index);
+function handlePlaylistDragStart(event, type, index) {
+    draggedPlaylistIndex = index;
     draggedPlaylistType = type;
-    event.target.classList.add('dragging');
+    pendingDropIndex = index; // until we hear otherwise
+
+    // Visual feedback on the source row
+    const row = event.target.closest('tr');
+    if (row) row.classList.add('dragging');
+
+    // Firefox requires dataTransfer to be set for the drag to initiate
+    if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        try { event.dataTransfer.setData('text/plain', String(index)); } catch (e) {}
+    }
 }
 
-function handlePlaylistDragOver(event) {
-    event.preventDefault();
+function handlePlaylistDragOver(event, type) {
+    // Only respond if we're dragging within the same playlist type.
+    if (draggedPlaylistType !== type || draggedPlaylistIndex === null) return;
+
+    event.preventDefault(); // allow drop
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+
+    // Find the row under the pointer
+    const row = event.target.closest('tr[data-index]');
+    const container = event.currentTarget.closest('.playlist-table-container');
+    if (!container) return;
+    const indicator = container.querySelector('.playlist-drop-indicator');
+    if (!indicator) return;
+
+    if (!row) {
+        // Pointer is in the tbody but not over a specific row (e.g. gap at the
+        // very bottom). Treat as "insert at end".
+        const items = container.querySelectorAll('tbody tr[data-index]');
+        if (items.length === 0) { indicator.style.display = 'none'; return; }
+        const lastRow = items[items.length - 1];
+        positionIndicatorBelow(indicator, container, lastRow);
+        pendingDropIndex = items.length;
+        return;
+    }
+
+    const rowIndex = parseInt(row.dataset.index, 10);
+    const rect = row.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const before = event.clientY < midY;
+
+    if (before) {
+        positionIndicatorAbove(indicator, container, row);
+        pendingDropIndex = rowIndex;
+    } else {
+        positionIndicatorBelow(indicator, container, row);
+        pendingDropIndex = rowIndex + 1;
+    }
 }
 
 function handlePlaylistDrop(event, type) {
+    if (draggedPlaylistType !== type || draggedPlaylistIndex === null) return;
     event.preventDefault();
-    const dropIndex = parseInt(event.target.closest('.playlist-item').dataset.index);
 
-    if (draggedPlaylistIndex !== null && draggedPlaylistIndex !== dropIndex && draggedPlaylistType === type) {
+    const container = event.currentTarget.closest('.playlist-table-container');
+    const indicator = container ? container.querySelector('.playlist-drop-indicator') : null;
+    if (indicator) indicator.style.display = 'none';
+
+    const fromIndex = draggedPlaylistIndex;
+    let toIndex = pendingDropIndex != null ? pendingDropIndex : fromIndex;
+
+    // Normalize: if dropping "after" its own position, the splice math needs
+    // the toIndex to account for the fact that we remove from fromIndex first,
+    // shifting later indices down by one.
+    if (toIndex > fromIndex) toIndex -= 1;
+
+    // No-op if dropped on itself
+    if (toIndex !== fromIndex) {
         const config = MEDIA_CONFIG[type];
         const items = config.getItems();
-        const item = items[draggedPlaylistIndex];
-        items.splice(draggedPlaylistIndex, 1);
-        items.splice(dropIndex, 0, item);
+        const [moved] = items.splice(fromIndex, 1);
+        items.splice(toIndex, 0, moved);
         config.setItems(items);
         renderPlaylistItems(type);
     }
 
     draggedPlaylistIndex = null;
     draggedPlaylistType = null;
+    pendingDropIndex = null;
+}
+
+function handlePlaylistDragEnd(event, type) {
+    // Always called, even if the drag ended outside a drop target.
+    // Hide indicator + clear state.
+    document.querySelectorAll('.playlist-drop-indicator').forEach(el => {
+        el.style.display = 'none';
+    });
+    document.querySelectorAll('tr.dragging').forEach(el => {
+        el.classList.remove('dragging');
+    });
+    draggedPlaylistIndex = null;
+    draggedPlaylistType = null;
+    pendingDropIndex = null;
+}
+
+// Position the drop indicator at the top edge of a target row.
+function positionIndicatorAbove(indicator, container, row) {
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    indicator.style.top = `${rowRect.top - containerRect.top}px`;
+    indicator.style.display = 'block';
+}
+
+// Position the drop indicator at the bottom edge of a target row.
+function positionIndicatorBelow(indicator, container, row) {
+    const containerRect = container.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    indicator.style.top = `${rowRect.bottom - containerRect.top}px`;
+    indicator.style.display = 'block';
 }
 
 // ===== DRAG AND DROP FOR FILE UPLOADS =====

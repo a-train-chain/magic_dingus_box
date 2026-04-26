@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-04-18
 
+### Fixed (post-2026-04-18)
+- **QR code shows wrong USB URL**: settings menu QR code was hardcoded to `http://192.168.7.1:5000` — the legacy USB gadget address. Current `usb-gadget-network.service` assigns `10.55.0.1`, so the QR was encoding an IP that didn't exist on the gadget network. Now reads the live `usb0` IPv4 via `getifaddrs` and builds the URL from whatever's actually assigned.
+
+
+
 ### Added
 - **Three custom MDB bezels** (MDB-1974 wood-grain console, MDB-1986 Memphis neon, MDB-KV19 sleek black broadcast monitor) shipped as the new defaults in [bezels.json](magic_dingus_box_cpp/assets/bezels/bezels.json) with matching RetroArch overlay `.cfg` sidecars.
 - **RetroArch bezel overlay in Modern TV mode**: launching a game in `MODERN_TV` mode now writes a 1920×1080 RetroArch config with a 4:3 `custom_viewport` at `(251, 10, 1415, 1059)` (the geometric intersection of all bezel families' transparent cutouts) and `input_overlay` pointing at the user's selected bezel `.cfg`. The bezel frames the game so a modern 16:9 TV presents retro titles inside their period-appropriate "screen". CRT_NATIVE mode launches at 640×480 with no overlay (byte-identical to pre-feature behavior).

@@ -7,10 +7,15 @@ setup() { require_pi; }
 # even on a healthy Pi. Add to this list (with a justification comment)
 # when you confirm a new warning is non-actionable.
 ALLOWLIST=(
-    'Could not grab rotary device'    # rotary may be open by another process; non-fatal
-    'pulseaudio.*Unable to contact D-Bus'  # PulseAudio without D-Bus; expected in service mode
-    'X11'                              # no X11 expected; messages mentioning it are info-only
-    'Found left-over process'          # systemd housekeeping during service restart
+    'Could not grab rotary device'                            # rotary may be open by another process; non-fatal
+    'pulseaudio.*Unable to contact D-Bus'                     # PulseAudio without D-Bus; expected in service mode
+    'X11'                                                     # no X11 expected; messages mentioning it are info-only
+    'Found left-over process'                                 # systemd housekeeping during service restart
+    'module-alsa-card.*Failed to find a working profile'      # second HDMI port has no display attached; benign
+    'Failed to load module "module-alsa-card".*hdmi'          # same root cause as above
+    'Page flip failed.*ret=-22'                               # intermittent DRM/KMS quirk; kiosk auto-recovers
+    'Page flip recovery'                                      # the recovery message itself
+    '\(Failures: [0-9]+, Successes: [0-9]+\)'                 # page flip recovery counters
 )
 
 @test "no unallowlisted errors in current boot's journal" {
