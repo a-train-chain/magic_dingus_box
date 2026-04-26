@@ -41,30 +41,30 @@ log "=== Magic Dingus Box first-boot setup starting ==="
 # ---------------------------------------------------------------------------
 # Step 1: Regenerate SSH host keys
 # ---------------------------------------------------------------------------
-log "[1/6] Regenerating SSH host keys..."
+log "[1/7] Regenerating SSH host keys..."
 
 if ls /etc/ssh/ssh_host_* &>/dev/null; then
-    log "[1/6] SSH host keys already exist, skipping regeneration"
+    log "[1/7] SSH host keys already exist, skipping regeneration"
 else
     ssh-keygen -A
-    log "[1/6] SSH host keys regenerated"
+    log "[1/7] SSH host keys regenerated"
 
     # Restart sshd to pick up new keys
     if systemctl is-active sshd.service &>/dev/null; then
         systemctl restart sshd.service
-        log "[1/6] sshd restarted with new host keys"
+        log "[1/7] sshd restarted with new host keys"
     elif systemctl is-active ssh.service &>/dev/null; then
         systemctl restart ssh.service
-        log "[1/6] ssh restarted with new host keys"
+        log "[1/7] ssh restarted with new host keys"
     else
-        log "[1/6] Warning: sshd not running, keys will be used on next start"
+        log "[1/7] Warning: sshd not running, keys will be used on next start"
     fi
 fi
 
 # ---------------------------------------------------------------------------
 # Step 2: Expand root filesystem to fill SD card
 # ---------------------------------------------------------------------------
-log "[2/6] Expanding root filesystem..."
+log "[2/7] Expanding root filesystem..."
 
 # Wait for udev to settle before querying block devices
 udevadm settle
@@ -73,12 +73,12 @@ ROOT_PART=$(findmnt -n -o SOURCE /)
 ROOT_DISK_NAME=$(lsblk -no pkname "$ROOT_PART" 2>/dev/null || true)
 
 if [[ -z "$ROOT_DISK_NAME" ]]; then
-    log "[2/6] WARNING: Could not determine parent disk for ${ROOT_PART}, skipping expansion"
+    log "[2/7] WARNING: Could not determine parent disk for ${ROOT_PART}, skipping expansion"
 else
     ROOT_DISK="/dev/${ROOT_DISK_NAME}"
 
     if [[ ! -b "$ROOT_DISK" ]]; then
-        log "[2/6] WARNING: ${ROOT_DISK} is not a block device, skipping expansion"
+        log "[2/7] WARNING: ${ROOT_DISK} is not a block device, skipping expansion"
     else
         PART_NUM=$(echo "$ROOT_PART" | grep -o '[0-9]*$')
 
@@ -102,18 +102,18 @@ else
         fi
 
         if [[ "$NEEDS_EXPAND" == false ]]; then
-            log "[2/6] Filesystem already fills the SD card, skipping expansion"
+            log "[2/7] Filesystem already fills the SD card, skipping expansion"
         else
-            log "[2/6] Expanding partition ${PART_NUM} on ${ROOT_DISK}..."
+            log "[2/7] Expanding partition ${PART_NUM} on ${ROOT_DISK}..."
             parted -s "$ROOT_DISK" resizepart "$PART_NUM" 100%
 
             # Notify kernel of the updated partition table
             partprobe "$ROOT_DISK" 2>/dev/null || true
             udevadm settle
 
-            log "[2/6] Partition expanded, resizing filesystem on ${ROOT_PART}..."
+            log "[2/7] Partition expanded, resizing filesystem on ${ROOT_PART}..."
             resize2fs "$ROOT_PART"
-            log "[2/6] Filesystem expanded successfully"
+            log "[2/7] Filesystem expanded successfully"
         fi
     fi
 fi
@@ -121,12 +121,12 @@ fi
 # ---------------------------------------------------------------------------
 # Step 3: Generate unique device identity
 # ---------------------------------------------------------------------------
-log "[3/6] Generating unique device identity..."
+log "[3/7] Generating unique device identity..."
 
 DEVICE_INFO_PATH="${DATA_DIR}/device_info.json"
 
 if [[ -f "$DEVICE_INFO_PATH" ]]; then
-    log "[3/6] device_info.json already exists, skipping"
+    log "[3/7] device_info.json already exists, skipping"
 else
     DEVICE_UUID=$(cat /proc/sys/kernel/random/uuid)
     CREATED_AT=$(date +%s)
@@ -145,25 +145,25 @@ DEVEOF
     SHORT_ID=$(echo "$DEVICE_UUID" | cut -c1-4)
     NEW_HOSTNAME="magicpi-${SHORT_ID}"
     hostnamectl set-hostname "$NEW_HOSTNAME"
-    log "[3/6] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
+    log "[3/7] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
 fi
 
 # ---------------------------------------------------------------------------
 # Step 4: Create required directories
 # ---------------------------------------------------------------------------
-log "[4/6] Creating required directories..."
+log "[4/7] Creating required directories..."
 
 mkdir -p "${DATA_DIR}/saves"
 mkdir -p "${DATA_DIR}/states"
 mkdir -p "${DATA_DIR}/media"
 mkdir -p "${CONFIG_DIR}"
 
-log "[4/6] Directories verified: saves, states, media, config"
+log "[4/7] Directories verified: saves, states, media, config"
 
 # ---------------------------------------------------------------------------
 # Step 5: Fix permissions
 # ---------------------------------------------------------------------------
-log "[5/6] Fixing file ownership..."
+log "[5/7] Fixing file ownership..."
 
 # Only fix ownership on directories/files that first-boot created or modified.
 # The golden image already has correct ownership on ROMs, cores, binary, etc.
@@ -173,14 +173,76 @@ chown "${MAGIC_USER}:${MAGIC_USER}" "${CONFIG_DIR}"
 if [[ -f "${DATA_DIR}/device_info.json" ]]; then
     chown "${MAGIC_USER}:${MAGIC_USER}" "${DATA_DIR}/device_info.json"
 fi
-log "[5/6] Set ownership on first-boot created directories and files"
+log "[5/7] Set ownership on first-boot created directories and files"
 
 # ---------------------------------------------------------------------------
-# Step 6: Disable this service (run once only)
+# Step 6: Wipe Media Browser per-Pi state (cloned-image only)
 # ---------------------------------------------------------------------------
-log "[6/6] Disabling first-boot service..."
+# When a cloned SD is booted on a new Pi for the first time, the
+# image still carries the source Pi's Media Browser state:
+#   - services/.env has source's WG private key + auto-generated API
+#     keys + qBit admin password
+#   - services/config/radarr/* has source's library DB + API key
+#   - services/config/prowlarr/* has source's API key + indexer
+#     sync history
+#   - services/config/qbittorrent/* has fastresume + cookies
+#   - services/config/gluetun/* has VPN runtime state
+#
+# Sharing any of those across Pis is a problem (multi-device WG
+# collision with ProtonVPN, identical API keys leaking auth, library
+# state confusion). Wipe them here. The operator restores fresh per-Pi
+# state via the Content Manager UI on the cloned Pi (drops in a new
+# WireGuard config; setup_services.sh rebuilds everything else from
+# the codified fixtures in scripts/data/).
+#
+# Note: first_boot.sh self-disables in Step 7, so this only ever runs
+# once per cloned Pi. The source Pi's restore_after_cloning.sh disabled
+# the unit before we ever got here, so this code path doesn't fire on
+# the source Pi.
+log "[6/7] Cleaning Media Browser per-Pi state..."
+
+SERVICES_DIR="${INSTALL_DIR}/services"
+if [[ -d "$SERVICES_DIR" ]]; then
+    # Stop the Docker stack if it auto-started. On a fresh-cloned Pi,
+    # gluetun would have failed to come up (no WG creds in .env that
+    # we're about to delete anyway), but other containers may have
+    # entered a healthy-ish state. Compose down cleanly.
+    if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null; then
+        (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
+        log "[6/7] Stopped Docker stack (was inherited from source image)"
+    fi
+
+    # Remove the .env (WG creds + API keys + qBit password)
+    if [[ -f "$SERVICES_DIR/.env" ]]; then
+        rm -f "$SERVICES_DIR/.env"
+        log "[6/7] Wiped services/.env"
+    fi
+
+    # Wipe per-service config dirs. Each service will regenerate
+    # fresh state on next start. Setup_services.sh re-creates the
+    # full configuration from fixtures.
+    wipe_count=0
+    for svc in radarr prowlarr qbittorrent gluetun flaresolverr; do
+        if [[ -d "$SERVICES_DIR/config/$svc" ]]; then
+            file_count=$(find "$SERVICES_DIR/config/$svc" -mindepth 1 2>/dev/null | wc -l)
+            if [[ $file_count -gt 0 ]]; then
+                find "$SERVICES_DIR/config/$svc" -mindepth 1 -delete 2>/dev/null || true
+                log "[6/7] Wiped services/config/$svc/ (${file_count} entries)"
+                ((wipe_count++)) || true
+            fi
+        fi
+    done
+    log "[6/7] Media Browser per-Pi state cleaned (${wipe_count} dirs)"
+else
+    log "[6/7] services/ not present; nothing to clean (Pi without Media Browser)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Disable this service (run once only)
+# ---------------------------------------------------------------------------
+log "[7/7] Disabling first-boot service..."
 
 systemctl disable magic-first-boot.service
-log "[6/6] magic-first-boot.service disabled (will not run again)"
+log "[7/7] magic-first-boot.service disabled (will not run again)"
 
 log "=== Magic Dingus Box first-boot setup complete ==="
