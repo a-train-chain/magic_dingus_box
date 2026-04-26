@@ -1,0 +1,150 @@
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace media_browser {
+
+// Aggregate seeder/release stats for a Prowlarr search query. The kiosk
+// only needs roll-up numbers — a full release list would be too dense to
+// display on a 1280x720 UI and isn't actionable here (the user can't
+// pick a specific release; Radarr does that automatically once the
+// movie is added to the library).
+struct ReleaseSummary {
+    int total_releases = 0;   // Number of distinct releases returned.
+    int best_seeders = 0;     // Highest seeder count among results.
+    int total_seeders = 0;    // Sum across all results — rough "depth"
+                              // signal complementing best_seeders.
+};
+
+// Minimal Prowlarr client focused on the kiosk's one need: pre-add
+// availability check on the Detail screen. We deliberately don't model
+// indexers, categories, or release picking here — Radarr handles all of
+// that once the movie is added.
+//
+// Threading: search_async() runs on a detached background thread so the
+// UI thread never blocks on a 3-15s indexer round-trip. Results are
+// posted to a slot the caller polls each frame via take_result().
+class ProwlarrClient {
+public:
+    struct Config {
+        // Default matches the docker-compose service name port. The
+        // kiosk runs on the host where Prowlarr's port is forwarded to
+        // localhost:9696.
+        std::string base_url = "http://localhost:9696";
+
+        // Loaded from MDB_PROWLARR_API_KEY env var by the caller. Empty
+        // = client is disabled (search_async returns immediately with
+        // an "unconfigured" result so the UI can show a setup hint
+        // instead of a perpetual spinner).
+        std::string api_key;
+
+        // 12s is generous for indexer roundtrips. Most searches return
+        // in 2-4s but a slow Cloudflare-protected indexer (especially
+        // when FlareSolverr has to solve a challenge) can stretch to
+        // 8-10s. 12s leaves margin without keeping the spinner up
+        // forever when an indexer is genuinely down.
+        int timeout_secs = 12;
+    };
+
+    explicit ProwlarrClient(Config cfg);
+    ~ProwlarrClient();
+
+    ProwlarrClient(const ProwlarrClient&) = delete;
+    ProwlarrClient& operator=(const ProwlarrClient&) = delete;
+
+    // Returns true if an api_key was configured at construction. UI uses
+    // this to decide whether to show "Sources: not configured (set
+    // MDB_PROWLARR_API_KEY)" vs running an actual search.
+    bool is_configured() const { return !cfg_.api_key.empty(); }
+
+    // State of an in-flight or recently-completed search. The UI polls
+    // get_state() every render and switches its label accordingly.
+    enum class State {
+        Idle,        // No search running, no result to display.
+        Searching,   // Background thread is querying Prowlarr.
+        Ready,       // Result available via take_result() or peek_result().
+        Failed,      // Network/parse error. peek_error() carries detail.
+    };
+
+    State state() const { return state_.load(); }
+
+    // Kick off a background search. Title is required; year is optional
+    // (pass 0 to skip). Cancels any in-flight search via abort flag.
+    // Idempotent if called repeatedly with the same title+year while
+    // a search is in flight (no-op).
+    void search_async(const std::string& title, int year);
+
+    // Returns the result if state == Ready, else nullopt. Non-destructive
+    // — the result remains available until the next search_async().
+    std::optional<ReleaseSummary> peek_result() const;
+
+    // Latest error string when state == Failed.
+    const std::string& peek_error() const { return last_error_; }
+
+    // Stop any in-flight search and join the worker thread. Called by
+    // the destructor; exposed so callers can force-cancel before another
+    // operation that depends on Prowlarr being idle.
+    void cancel();
+
+protected:
+    // Virtual for unit tests. Default implementation does a real curl
+    // GET. Returns the response body, or empty string on transport
+    // failure (with last_error_ populated).
+    virtual std::string http_get(const std::string& path);
+
+    Config cfg_;
+
+private:
+    // Worker entry — runs on background thread spawned by search_async.
+    // gen is captured at spawn time and compared to current_gen_ before
+    // publishing results, so an abandoned worker (search_async called
+    // again before this one finishes) silently drops its result rather
+    // than overwriting the new search's state.
+    void run_search(uint64_t gen, std::string title, int year);
+
+    std::atomic<State>    state_{State::Idle};
+    std::atomic<bool>     abort_{false};
+
+    // Generation counter. search_async bumps it before spawning a new
+    // worker; the worker checks current_gen_ before writing results
+    // and aborts if it changed. This decouples "start a new search"
+    // from "wait for the old one to finish," so search_async never
+    // blocks the UI thread on the worker's join — the previous worker
+    // just runs to completion and its result is discarded. The atomic
+    // load/store is enough; no mutex needed because the comparison is
+    // a single 64-bit read/write.
+    std::atomic<uint64_t> current_gen_{0};
+
+    // Result + error are written by the worker, read by the UI thread.
+    // Mutex protects the strings; ReleaseSummary fits in a single load
+    // but we keep all the assignment + state flip under the same lock
+    // so a concurrent peek_result() never reads a half-initialized
+    // ReleaseSummary.
+    mutable std::mutex result_mtx_;
+    std::optional<ReleaseSummary> result_;
+    std::string last_error_;
+
+    // All worker threads spawned during this client's lifetime, in
+    // creation order. The most recent worker writes the result; older
+    // workers (those whose generation no longer matches current_gen_)
+    // run to completion in the background and silently discard their
+    // results. We keep them all in this vector so the destructor can
+    // join every one — without this, an exit while a worker was
+    // mid-CURL would leave the worker holding references to a freed
+    // ProwlarrClient instance, producing an at-exit segfault that
+    // masks unrelated bugs in the kiosk's shutdown logs.
+    //
+    // Cap on size: realistic max is one new thread per ~12s timeout
+    // window, so even an actively-browsing user accumulates only a
+    // handful before earlier workers complete. cancel() opportunistically
+    // joins finished threads to keep this vector small.
+    std::vector<std::thread> workers_;
+};
+
+}  // namespace media_browser

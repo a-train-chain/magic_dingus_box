@@ -1570,6 +1570,41 @@ void Renderer::mb_render_seek_bar(const app::AppState& state) {
     render_seek_bar(state);
 }
 
+void Renderer::mb_begin_2d_state() {
+    // Mirror the "CRITICAL: Reset OpenGL state after mpv renders" block
+    // from render(state). The Media Browser dispatcher skips render(state)
+    // entirely, so without this call gst_renderer.render()'s YUV shader
+    // stays bound and every subsequent mb_* draw silently writes to the
+    // wrong shader's uniforms. Required before any MB screen draws.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_DITHER);
+    glActiveTexture(GL_TEXTURE0);
+
+    if (shader_program_ != 0) {
+        glUseProgram(shader_program_);
+
+        // Set the screenSize uniform so the shader's NDC conversion
+        // uses the actual framebuffer dimensions.
+        //
+        // Use original_width_ / original_height_ (the framebuffer size
+        // from construction), NOT width_ / height_. The latter pair
+        // gets temporarily overwritten by set_content_viewport() during
+        // the main-menu's 4:3 pillarbox path; if we used width_ here
+        // and a future bezel/letterbox feature were added to the MB
+        // dispatcher, the screenSize uniform would silently shrink to
+        // the pillarbox area and every MB UI element would render at
+        // the wrong scale. The MB dispatcher in main.cpp always sets a
+        // fullscreen glViewport, so original_* is what matches.
+        GLint loc = glGetUniformLocation(shader_program_, "screenSize");
+        if (loc >= 0) {
+            glUniform2f(loc,
+                        static_cast<float>(original_width_),
+                        static_cast<float>(original_height_));
+        }
+    }
+}
+
 void Renderer::mb_fill_rect(float x, float y, float w, float h,
                             const ui::Color& color, float alpha_multiplier) {
     draw_quad(x, y, w, h, color, alpha_multiplier);
@@ -2087,7 +2122,13 @@ void Renderer::render_volume_overlay(const app::AppState& state) {
 }
 
 void Renderer::render_seek_bar(const app::AppState& state) {
-    if (!state.show_seek_bar || !state.video_active) return;
+    // Gate on show_seek_bar only. video_active was previously checked here
+    // as a defensive guard, but show_seek_bar is only flipped true by seek
+    // input handlers that run during active playback in the first place,
+    // so the extra gate was redundant — and it broke the Media Browser's
+    // PlaybackScreen path where state.video_active can briefly drop during
+    // a FLUSH seek transition while the user is actively scrubbing.
+    if (!state.show_seek_bar) return;
 
     // Fade behavior: full opacity when timer > 0.5, linear fade 0.5 -> 0.0
     float alpha = 1.0f;

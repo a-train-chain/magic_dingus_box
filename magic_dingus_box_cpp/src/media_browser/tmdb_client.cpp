@@ -20,13 +20,38 @@ static size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     return size * nmemb;
 }
 
+// Percent-encode an arbitrary UTF-8 string for safe embedding in a URL
+// query value. RFC 3986 unreserved characters pass through unchanged;
+// everything else is %HH-encoded.
+//
+// Why hand-rolled instead of curl_easy_escape: the prior implementation
+// allocated and destroyed a CURL handle on every call, which (a) is
+// surprisingly expensive for what's logically a string transformation,
+// and (b) silently fell through to passing the unencoded string when
+// curl_easy_init() returned nullptr — producing a malformed URL that
+// TMDB would reject with a 400, indistinguishable from a network error
+// for the caller. This loop has no failure mode beyond OOM and is
+// branch-predictable enough that the Pi's branch predictor handles it
+// without measurable overhead in the search path.
 static std::string url_encode(const std::string& s) {
-    CURL* c = curl_easy_init();
-    char* out = curl_easy_escape(c, s.c_str(), static_cast<int>(s.length()));
-    std::string result(out);
-    curl_free(out);
-    curl_easy_cleanup(c);
-    return result;
+    std::string out;
+    out.reserve(s.size() * 3 / 2);  // Generous upper bound: ~50% growth.
+    static const char hex[] = "0123456789ABCDEF";
+    for (unsigned char c : s) {
+        const bool unreserved = (c >= 'A' && c <= 'Z')
+                              || (c >= 'a' && c <= 'z')
+                              || (c >= '0' && c <= '9')
+                              || c == '-' || c == '_'
+                              || c == '.' || c == '~';
+        if (unreserved) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[(c >> 4) & 0x0F]);
+            out.push_back(hex[c & 0x0F]);
+        }
+    }
+    return out;
 }
 
 // Converts a "/abc123.jpg" relative poster_path into a full URL. Handles
@@ -89,7 +114,13 @@ std::string TmdbClient::http_get(const std::string& url) {
 
 std::vector<TmdbSearchHit> TmdbClient::search_movie(const std::string& query) {
     std::ostringstream url;
+    // include_adult=false: belt for the kiosk's family-safe stance. TMDB's
+    // 'adult' field is conservative (porn only, not edgy R-rated content),
+    // and parse_search_response strips any item with adult==true as a
+    // suspenders — so even if a future endpoint forgets the param, the
+    // parser drops anything that slips through.
     url << kApiBase << "/search/movie?api_key=" << api_key_
+        << "&include_adult=false"
         << "&query=" << url_encode(query);
     auto body = http_get(url.str());
     if (body.empty()) return {};
@@ -99,6 +130,10 @@ std::vector<TmdbSearchHit> TmdbClient::search_movie(const std::string& query) {
 std::optional<TmdbMovieDetail> TmdbClient::get_movie(int tmdb_id) {
     // append_to_response=credits gets cast + crew in the same HTTP round-trip,
     // so DetailScreen can show actors and directors without a second fetch.
+    // /movie/{id} doesn't accept include_adult; instead parse_movie_detail
+    // returns nullopt when the movie's adult flag is true (defense in depth
+    // — a user shouldn't be able to land on Detail for an XXX entry by
+    // typing a TMDB id directly into anything we add later).
     std::ostringstream url;
     url << kApiBase << "/movie/" << tmdb_id << "?api_key=" << api_key_
         << "&append_to_response=credits";
@@ -110,6 +145,7 @@ std::optional<TmdbMovieDetail> TmdbClient::get_movie(int tmdb_id) {
 std::vector<TmdbSearchHit> TmdbClient::get_popular(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/popular?api_key=" << api_key_
+        << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
     if (body.empty()) return {};
@@ -119,6 +155,7 @@ std::vector<TmdbSearchHit> TmdbClient::get_popular(int page) {
 std::vector<TmdbSearchHit> TmdbClient::get_now_playing(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/now_playing?api_key=" << api_key_
+        << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
     if (body.empty()) return {};
@@ -128,6 +165,7 @@ std::vector<TmdbSearchHit> TmdbClient::get_now_playing(int page) {
 std::vector<TmdbSearchHit> TmdbClient::get_top_rated(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/top_rated?api_key=" << api_key_
+        << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
     if (body.empty()) return {};
@@ -137,6 +175,7 @@ std::vector<TmdbSearchHit> TmdbClient::get_top_rated(int page) {
 std::vector<TmdbSearchHit> TmdbClient::get_upcoming(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/upcoming?api_key=" << api_key_
+        << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
     if (body.empty()) return {};
@@ -192,6 +231,12 @@ std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& 
     const auto& results = root["results"];
     if (!results.isArray()) return hits;
     for (const auto& r : results) {
+        // Defense-in-depth: drop any item TMDB flags as adult, regardless
+        // of the URL-side include_adult filter. Two reasons: (1) keeps the
+        // parser usable on cached/saved responses where the request param
+        // can't be re-asserted, (2) covers the rare case where TMDB
+        // mis-tags an item that we'd want to drop anyway.
+        if (r.get("adult", false).asBool()) continue;
         TmdbSearchHit h;
         h.tmdb_id = r.get("id", 0).asInt();
         h.title = r.get("title", "").asString();
@@ -218,6 +263,8 @@ std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& js
     const auto& results = root["results"];
     if (!results.isArray()) return hits;
     for (const auto& r : results) {
+        // Same family-safe drop as parse_search_response — see comment there.
+        if (r.get("adult", false).asBool()) continue;
         TmdbSearchHit h;
         h.tmdb_id = r.get("id", 0).asInt();
         h.title = r.get("title", "").asString();
@@ -265,6 +312,18 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
         return std::nullopt;
     }
     if (!root.isObject() || !root.isMember("id")) return std::nullopt;
+
+    // Family-safe gate: drop XXX entries even when the caller hits
+    // /movie/{id} directly with a known TMDB id. The Detail screen treats
+    // this as a "couldn't fetch movie" condition and shows the error
+    // state, which is the right UX (the alternative — silently rendering
+    // a blank Detail — would be confusing). Tied to the same `adult`
+    // flag the search/list parsers check for consistency.
+    if (root.get("adult", false).asBool()) {
+        spdlog::warn("[media_browser] TMDB detail: dropping adult entry id={}",
+                     root.get("id", 0).asInt());
+        return std::nullopt;
+    }
 
     TmdbMovieDetail d;
     d.tmdb_id = root.get("id", 0).asInt();

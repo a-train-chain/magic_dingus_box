@@ -10,6 +10,7 @@
 #ifdef MEDIA_BROWSER_ENABLED
 #include "ui/toast.h"
 #include "platform/sequence_detector.h"
+#include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/radarr/radarr_mock.h"
 #include "media_browser/tmdb_client.h"
@@ -534,10 +535,49 @@ int main(int /* argc */, char* /* argv */[]) {
     }
     auto tmdb = std::make_unique<media_browser::TmdbClient>(tmdb_key);
 
+    // Optional Prowlarr client for the AVAILABILITY readout on Detail.
+    // Same key lookup chain as Radarr above:
+    //   1. MDB_PROWLARR_API_KEY env var
+    //   2. PROWLARR_API_KEY env var (systemd EnvironmentFile)
+    //   3. Parse /opt/magic_dingus_box/services/.env directly
+    // Falls back to nullptr (readout suppressed) if no key is found.
+    std::unique_ptr<media_browser::ProwlarrClient> prowlarr_owned;
+    {
+        std::string prowlarr_key;
+        if (const char* k = std::getenv("MDB_PROWLARR_API_KEY"); k && *k) {
+            prowlarr_key = k;
+        } else if (const char* k2 = std::getenv("PROWLARR_API_KEY"); k2 && *k2) {
+            prowlarr_key = k2;
+        } else {
+            prowlarr_key = read_env_file_key(
+                "/opt/magic_dingus_box/services/.env", "PROWLARR_API_KEY");
+        }
+
+        if (!prowlarr_key.empty()) {
+            media_browser::ProwlarrClient::Config pcfg;
+            pcfg.api_key = prowlarr_key;
+            if (const char* base = std::getenv("MDB_PROWLARR_BASE_URL");
+                base && *base) {
+                pcfg.base_url = base;
+            }
+            prowlarr_owned = std::make_unique<media_browser::ProwlarrClient>(
+                std::move(pcfg));
+            std::cout << "[media_browser] Prowlarr client enabled "
+                      << "(base_url=" << "http://localhost:9696" << ", "
+                      << "key_len=" << prowlarr_key.size() << ")"
+                      << std::endl;
+        } else {
+            std::cout << "[media_browser] Prowlarr client disabled "
+                      << "(no PROWLARR_API_KEY found; AVAILABILITY readout "
+                      << "on Detail will be suppressed)" << std::endl;
+        }
+    }
+
     // Six screens — dispatcher owns one instance of each.
     media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
     media_browser::ui::SearchScreen     mb_search(radarr);
-    media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb);
+    media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
+                                                  prowlarr_owned.get());
     media_browser::ui::QueueScreen      mb_queue(radarr);
     media_browser::ui::LibraryScreen    mb_library(radarr);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state);
@@ -1097,7 +1137,16 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
-        static uint32_t frame_count = 0;
+        // uint64_t (was uint32_t) — at 60 fps a uint32_t overflows after
+        // ~828 days, which is a real concern for a kiosk deployed in
+        // permanent installations. Two consumers depend on this counter:
+        // the every-other-frame controller.update_state branch at the
+        // bottom of the loop (frame_count % 2), and the first-frame
+        // log at swap-buffers (frame_count == 0). Both would behave
+        // erratically for a few microseconds at the wraparound point.
+        // uint64_t pushes the overflow horizon out beyond the lifespan
+        // of the universe, which is good enough.
+        static uint64_t frame_count = 0;
         auto now = std::chrono::steady_clock::now();
         auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_frame).count();
         last_frame = now;
@@ -2087,8 +2136,15 @@ int main(int /* argc */, char* /* argv */[]) {
         player.update_state();
 
                // Update state from controller
-               // Always update during intro, and after intro update very frequently to ensure video_active is set
-               if (!state.intro_complete || state.is_switching_playlist || frame_count % 2 == 0) {
+               // Always update during intro, switching, the seek bar
+               // visible window (so the scrub overlay tracks position
+               // smoothly at 60 Hz instead of 30 Hz, which felt
+               // stuttery on the kiosk's progress bar), and otherwise
+               // every other frame to keep CPU cost down.
+               bool seek_bar_window = state.show_seek_bar
+                                      || state.seek_bar_timer > 0.0;
+               if (!state.intro_complete || state.is_switching_playlist
+                   || seek_bar_window || frame_count % 2 == 0) {
                    controller.update_state(state);
                }
 
@@ -2455,6 +2511,17 @@ int main(int /* argc */, char* /* argv */[]) {
         // identifier label for now; Tasks 18-23 replace with real UI.
         if (state.current_screen == app::AppScreen::MediaBrowser) {
             glViewport(0, 0, mode.width, mode.height);
+
+            // Bind the UI shader, enable blending, and set screen-size
+            // uniform before any MB screen draws. This is normally done
+            // inside ui_renderer.render(state), but that's skipped for
+            // Media Browser — and on the Playback screen, gst_renderer
+            // runs immediately before this block and leaves its YUV
+            // sampler bound. Without resetting state here, all MB draw
+            // calls silently target the wrong shader (invisible scrub
+            // overlay; "green rect" garbage on Playback→Detail exit).
+            ui_renderer.mb_begin_2d_state();
+
             active_mb_screen->render(ui_renderer, mode.width, mode.height);
             // Drain any completed poster fetches and upload them to GL.
             // Must happen on the GL-owning main thread. Without this

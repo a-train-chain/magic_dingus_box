@@ -78,6 +78,16 @@ void PlaybackScreen::leave() {
     // Idempotent — safe to call from any exit path. Catches the case where
     // the user long-presses BTN4 and the dispatcher hard-exits to MainMenu.
     controller_.stop();
+
+    // Force state.video_active false immediately. controller_.stop() tears
+    // down the pipeline, but state.video_active is normally only updated
+    // by Controller::update_state(), which runs every other frame in the
+    // main loop. Without this explicit reset, the next render tick sees
+    // stale video_active=true and runs gst_renderer.render() over a
+    // torn-down pipeline, painting a stale texture fragment (the
+    // upper-right green rectangle the user reports). Same pattern as
+    // main.cpp's main-UI exit path.
+    state_.video_active = false;
     state_.show_seek_bar = false;
 
     if (!deferred_toast_.empty()) {
@@ -120,18 +130,23 @@ Screen PlaybackScreen::handle_input(
         // plenty of margin for the pipeline to resettle.
         constexpr int kSeekSuppressFrames = 30;
 
+        // Reusable timer value. Matches the main UI's 1.5s convention so
+        // the bar's hide-after-scrub feel is identical to the playlist
+        // scrub experience the user wants to mirror.
+        constexpr double kSeekBarVisibleSec = 1.5;
+
         // ±10s with PREV/NEXT — same as main UI when video is playing.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
             controller_.seek(10.0);
             state_.show_seek_bar = true;
-            state_.seek_bar_timer = 1.5;
+            state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
         if (e.action == platform::InputAction::PREV && e.pressed) {
             controller_.seek(-10.0);
             state_.show_seek_bar = true;
-            state_.seek_bar_timer = 1.5;
+            state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
@@ -140,14 +155,14 @@ Screen PlaybackScreen::handle_input(
         if (e.action == platform::InputAction::SEEK_RIGHT) {
             controller_.seek(5.0);
             state_.show_seek_bar = true;
-            state_.seek_bar_timer = 1.5;
+            state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
         if (e.action == platform::InputAction::SEEK_LEFT) {
             controller_.seek(-5.0);
             state_.show_seek_bar = true;
-            state_.seek_bar_timer = 1.5;
+            state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
@@ -158,7 +173,7 @@ Screen PlaybackScreen::handle_input(
             double seek_seconds = 5.0 + 25.0 * (velocity * velocity);
             controller_.seek(seek_seconds * e.delta);
             state_.show_seek_bar = true;
-            state_.seek_bar_timer = 1.5;
+            state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             continue;
         }
@@ -220,24 +235,14 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        2.0f, th.accent2, 0.95f * alpha);
     }
 
-    // Reuse the main UI's seek bar overlay so movie scrubbing feels
-    // visually identical to playlist scrubbing. The state fields
-    // (show_seek_bar, seek_bar_timer, position, duration) are already
-    // set by handle_input on every seek, controller.update_state syncs
-    // position/duration each frame.
+    // Match the main UI's playlist seek bar exactly — same colors,
+    // same geometry (80% screen width, 4px track, 10px playhead, time
+    // labels above), same fade behavior. Single source of truth lives
+    // in Renderer::render_seek_bar; mb_render_seek_bar is a thin
+    // wrapper. video_active is no longer gated inside; the decision to
+    // show is purely show_seek_bar + timer, both of which the
+    // PlaybackScreen handle_input path already manages correctly.
     r.mb_render_seek_bar(state_);
-
-    // Pause indicator — bottom-center, persistent until unpause.
-    if (controller_.is_paused()) {
-        std::string label = "PAUSED";
-        int sz = th.font_medium_size;
-        int baseline = r.mb_text_baseline(sz);
-        int tw = r.mb_text_width(label, sz);
-        float tx = (w - static_cast<float>(tw)) / 2.0f;
-        float ty = h - 60.0f - static_cast<float>(sz)
-                 + static_cast<float>(baseline);
-        r.mb_draw_text(label, tx, ty, sz, th.dim, 0.85f);
-    }
 
     // Persistent control hint — bottom-right, mirrors Media Browser footer.
     {

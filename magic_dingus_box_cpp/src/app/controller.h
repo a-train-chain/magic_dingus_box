@@ -83,6 +83,14 @@ private:
     int current_system_volume_ = 100;
     std::mt19937 rng_{std::random_device{}()};
 
+    // Debounce counter for state.video_active. The GStreamer state poll
+    // and position/duration queries can return transient negatives during
+    // seek transitions (PLAYING→PAUSED→PLAYING). Without this debounce,
+    // state.video_active flickers true→false→true at update_state cadence,
+    // which makes the seek bar invisible and causes video render frames
+    // to be skipped. See controller.cpp::update_state.
+    int video_active_negative_count_ = 0;
+
     // Shuffle queue helpers
     void generate_shuffle_queue(AppState& state, int playlist_size);
     void generate_master_shuffle_queue(AppState& state);

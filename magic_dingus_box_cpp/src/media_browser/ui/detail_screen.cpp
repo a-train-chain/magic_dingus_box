@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <spdlog/spdlog.h>
+
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "ui/renderer.h"
@@ -206,8 +208,9 @@ std::string join_with_bullet(const std::vector<std::string>& items) {
 
 }  // namespace
 
-DetailScreen::DetailScreen(RadarrClient& radarr, TmdbClient& tmdb)
-    : radarr_(radarr), tmdb_(tmdb) {
+DetailScreen::DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
+                           ProwlarrClient* prowlarr)
+    : radarr_(radarr), tmdb_(tmdb), prowlarr_(prowlarr) {
     mode_ = Mode::Loading;
     rebuild_buttons();
 }
@@ -227,6 +230,14 @@ void DetailScreen::fetch() {
     movie_.reset();
     tmdb_detail_.reset();
     banner_.clear();
+
+    // (See ProwlarrClient::search_async — it now bumps a generation
+    // counter so a stale in-flight search can't pin state==Searching
+    // when fetch() runs again. No explicit cancel needed here; the next
+    // search_async call below will happily start a new search even if
+    // a worker is still completing the previous one. Old worker's
+    // results will be discarded because their generation no longer
+    // matches.)
 
     if (tmdb_id_ == 0) {
         mode_ = Mode::NoTmdb;
@@ -277,6 +288,18 @@ void DetailScreen::fetch() {
     // knows mutating actions may fail.
     if (!library_ok) {
         show_banner("Radarr service offline — adding to library may fail");
+    }
+
+    // Kick off a Prowlarr availability check for movies the user could
+    // still add. We skip when the movie is already in library (the
+    // queue/library screens cover progress visibility) and when the
+    // mode is an error/loading variant (no point searching for a movie
+    // we don't have metadata for). The search runs on a background
+    // thread; render() polls the result each frame and updates the
+    // AVAILABILITY readout when it lands.
+    if (prowlarr_ && mode_ == Mode::NotInLibrary && tmdb_detail_.has_value()) {
+        const auto& d = *tmdb_detail_;
+        prowlarr_->search_async(d.title, d.year);
     }
 
     rebuild_buttons();
@@ -432,6 +455,36 @@ Screen DetailScreen::do_add_to_library() {
         show_banner("No quality profile available");
         return Screen::Detail;
     }
+
+    // Disk-space pre-flight. The kiosk's library lives on a 29GB-class
+    // USB SSD and a typical 1080p Bluray release is 8-20GB. Without
+    // this check, the user can queue several large adds simultaneously
+    // and silently fill the disk — Radarr's import then fails without
+    // surfacing a clear "out of space" signal in the kiosk UI. We
+    // probe /mnt/ssd/library (the host-side mount path the kiosk
+    // already references via RadarrClient::host_library_prefix) and
+    // warn at <15GB free. We don't BLOCK the add — the user might be
+    // adding a small WEB-DL release and 10GB is plenty — but we make
+    // the situation visible so they can pre-emptively clean up.
+    {
+        constexpr int64_t kWarnFreeBytes = 15LL * 1024 * 1024 * 1024;  // 15 GB
+        std::error_code ec;
+        auto info = std::filesystem::space("/mnt/ssd/library", ec);
+        if (!ec && info.available > 0) {
+            if (static_cast<int64_t>(info.available) < kWarnFreeBytes) {
+                int gb_free = static_cast<int>(info.available
+                                               / (1024 * 1024 * 1024));
+                ::ui::Toast::show(
+                    "Warning: only " + std::to_string(gb_free)
+                    + " GB free — large releases may fail to import");
+            }
+        }
+        // ec != 0 (mount missing, perms, etc.) is silently ignored.
+        // The kiosk doesn't own the mount lifecycle; surfacing every
+        // transient stat error would be noisy. Radarr will surface a
+        // real error if disk really is full at import time.
+    }
+
     bool ok = radarr_.add_movie(tmdb_id_, qp, /*monitor=*/true);
     if (!ok) {
         // Keep the in-screen banner and also surface a top-level toast so
@@ -475,16 +528,64 @@ Screen DetailScreen::do_remove_confirm() {
         rebuild_buttons();
         return Screen::Detail;
     }
-    // delete_files=true: remove the imported file from /library on disk too,
-    // not just the Radarr DB record. The two-stage Remove → Confirm Remove
-    // flow already protects against accidental presses, and a kiosk with
-    // a 29 GB USB drive can't afford orphaned files. Note: the original
-    // torrent download in /downloads/complete/ and the qBit torrent record
-    // are NOT cleaned up by Radarr's API — that's a known gap, eventual
-    // follow-up to wire qBit's torrents/delete endpoint into this flow.
-    bool ok = radarr_.remove_movie(movie_->radarr_id, /*delete_files=*/true);
+
+    // Three-step cleanup, in this order so each step's prerequisite has
+    // happened before it runs:
+    //
+    //  1. Cancel any in-flight Radarr queue items for this movie. Each
+    //     cancel uses removeFromClient=true, which tells Radarr to send
+    //     qBittorrent the delete-with-files command. Without this step
+    //     a Remove on a still-downloading or just-finished movie leaves
+    //     the torrent stuck in qBit forever (orphaned), eating disk and
+    //     upload bandwidth.
+    //
+    //  2. Remove the movie record itself from Radarr's library, with
+    //     delete_files=true so the imported copy in /library is also
+    //     cleaned up. Step 1 covers the qBit-side artifacts; step 2
+    //     covers Radarr's side and the host's library disk.
+    //
+    //  3. Navigate back to the library view (the screen the user
+    //     conceptually came from when they decided to remove).
+    int radarr_id = movie_->radarr_id;
+    int cancelled = 0;
+    int cancel_failed = 0;
+    auto queue = radarr_.get_queue();
+    for (const auto& q : queue) {
+        if (q.movie_id == radarr_id) {
+            if (radarr_.cancel_queue_item(q.id)) {
+                ++cancelled;
+            } else {
+                ++cancel_failed;
+                spdlog::warn(
+                    "[detail] failed to cancel queue item {} for movie {}: {}",
+                    q.id, radarr_id, radarr_.last_error());
+            }
+        }
+    }
+    if (cancelled > 0) {
+        spdlog::info("[detail] cancelled {} in-flight queue item(s) "
+                     "before removing movie {}", cancelled, radarr_id);
+    }
+
+    // If any queue cancel failed, do NOT proceed to remove the Radarr
+    // record. Removing the movie while a torrent is still in qBit
+    // creates the orphaned-torrent state we built this code to prevent
+    // — qBit keeps seeding the partial download forever, eating disk
+    // and upload bandwidth with no Radarr record to clean it up.
+    // Surface the failure to the user so they can retry, fix the qBit
+    // connection, or remove the Radarr record manually via the web UI
+    // once they've cleaned up qBit.
+    if (cancel_failed > 0) {
+        show_banner("Cancel failed for " + std::to_string(cancel_failed)
+                    + " in-flight torrent(s). Movie not removed; "
+                      "check qBittorrent connectivity and retry.");
+        rebuild_buttons();
+        return Screen::Detail;
+    }
+
+    bool ok = radarr_.remove_movie(radarr_id, /*delete_files=*/true);
     if (!ok) {
-        show_banner("Remove failed");
+        show_banner("Remove failed: " + radarr_.last_error());
         rebuild_buttons();
         return Screen::Detail;
     }
@@ -754,6 +855,81 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (vote_count > 0 && !rating_str.empty()) {
             cursor_y += static_cast<float>(th.font_small_size) + 4.0f;
         }
+    }
+
+    // AVAILABILITY readout — shown only on the Add path. Tells the user
+    // up front whether sources exist before they spend a slot in their
+    // library on something with no seeders. Three visual states:
+    //   - Searching:    dim "Checking sources..." (italic feel via dim)
+    //   - No sources:   red "No sources found" + sub-line explaining
+    //                   Radarr will keep watching once added.
+    //   - Sources:      green "X seeders available across N releases"
+    // We never show this for in-library movies (the awaiting-release
+    // banner below covers that case) or while loading TMDB metadata.
+    if (mode_ == Mode::NotInLibrary && prowlarr_) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += 12.0f;
+        const float banner_h = static_cast<float>(sz) + 18.0f;
+
+        std::string label = "AVAILABILITY";
+        ::ui::Color border_col = th.dim;
+        ::ui::Color text_col   = th.dim;
+        std::string body;
+        float text_alpha = 0.85f;
+
+        switch (prowlarr_->state()) {
+            case ProwlarrClient::State::Idle:
+            case ProwlarrClient::State::Searching: {
+                body = "Checking sources...";
+                border_col = th.dim;
+                text_col   = th.dim;
+                break;
+            }
+            case ProwlarrClient::State::Failed: {
+                body = "Sources unavailable: " + prowlarr_->peek_error();
+                border_col = th.highlight2;
+                text_col   = th.highlight2;
+                text_alpha = 0.95f;
+                break;
+            }
+            case ProwlarrClient::State::Ready: {
+                auto sum = prowlarr_->peek_result();
+                if (!sum || sum->total_releases == 0) {
+                    body = "No sources found  \xE2\x80\xA2  "
+                           "Add anyway and Radarr will keep watching";
+                    border_col = th.highlight2;
+                    text_col   = th.highlight2;
+                    text_alpha = 0.95f;
+                } else {
+                    char buf[160];
+                    snprintf(buf, sizeof(buf),
+                             "%d seeders (best)  \xE2\x80\xA2  "
+                             "%d releases  \xE2\x80\xA2  "
+                             "%d total seeders",
+                             sum->best_seeders,
+                             sum->total_releases,
+                             sum->total_seeders);
+                    body = buf;
+                    border_col = th.highlight1;  // green
+                    text_col   = th.highlight1;
+                    text_alpha = 0.95f;
+                }
+                break;
+            }
+        }
+
+        r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
+                         2.0f, border_col, 0.9f);
+        // Label on the left in dim cream — same pattern Detail uses for
+        // small-caps section labels.
+        std::string drawn = truncate_to_width(r, label + "  " + body,
+                                              sz, col_w - 24.0f);
+        r.mb_draw_text(drawn, col_x + 12.0f,
+                       cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
+                                + static_cast<float>(baseline),
+                       sz, text_col, text_alpha);
+        cursor_y += banner_h + 6.0f;
     }
 
     // Show the "Monitored — awaiting release" banner when the movie's in

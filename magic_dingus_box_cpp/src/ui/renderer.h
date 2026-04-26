@@ -140,6 +140,27 @@ public:
     // state.duration, all of which are already populated by the
     // controller and the screen's own input handler.
     void mb_render_seek_bar(const app::AppState& state);
+
+    // Bind the UI shader program, enable alpha blending, and set the
+    // screenSize uniform. Required before calling any of the mb_*
+    // drawing helpers (mb_fill_rect, mb_draw_text, etc.) when the
+    // caller cannot rely on render(state) having run first.
+    //
+    // Why this exists: render(state) does the same setup at the top of
+    // its body (the "CRITICAL: Reset OpenGL state after mpv renders"
+    // block), but the Media Browser dispatcher in main.cpp skips
+    // render(state) entirely when current_screen == MediaBrowser. That
+    // skip leaves whatever shader gst_renderer.render() most recently
+    // bound (a YUV→RGB sampler) as the active program — so all
+    // subsequent draw_quad / draw_text calls silently bind uniforms on
+    // the wrong program and the geometry renders as garbage (or not at
+    // all). PlaybackScreen, where gst_renderer runs every frame just
+    // before the MB dispatch, was the worst-affected path: scrub
+    // overlay draws were invisible and the Detail screen on exit
+    // showed only fragments of the last video frame ("green rectangle
+    // upper-right"). Calling this from the MB dispatch path guarantees
+    // the UI shader is bound before any MB screen renders.
+    void mb_begin_2d_state();
 #endif
     
     // Render CRT effects (scanlines, warmth, glow, etc.)

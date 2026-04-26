@@ -216,7 +216,25 @@ void Controller::update_state(AppState& state) {
     // but prevent it from being set to false prematurely
     bool was_active = state.video_active;
     bool should_be_active = (state.duration > 0.0) && (mpv_playing || (state.position > 0.0));
-    
+
+    // Debounce single-frame negatives. Once video_active is true, a
+    // transient should_be_active=false (GStreamer reporting PAUSED for
+    // one tick during a seek, or a position/duration query failing) is
+    // not enough to flip video_active off. We require the negative read
+    // to persist across multiple ticks (kVideoActiveNegativeFrames).
+    // This was added because seek bar visibility and video render were
+    // both gated on video_active, and the flicker made them disappear
+    // during scrubbing. EOS still works correctly: the video_ended
+    // detection below fires on position >= duration regardless of
+    // video_active state, and a real stop()/load() resets duration to 0
+    // which is sticky-false here.
+    constexpr int kVideoActiveNegativeFrames = 4;
+    if (should_be_active) {
+        video_active_negative_count_ = 0;
+    } else if (was_active) {
+        ++video_active_negative_count_;
+    }
+
     if (state.is_switching_playlist) {
         // During switch: only allow video_active to become true (new video loaded)
         // Don't allow it to become false (would interfere with switch detection)
@@ -224,6 +242,10 @@ void Controller::update_state(AppState& state) {
             state.video_active = true;
         }
         // If should_be_active is false, keep current state (don't change it)
+    } else if (was_active && !should_be_active
+               && video_active_negative_count_ < kVideoActiveNegativeFrames) {
+        // Hold previous true state through transient negatives. Don't
+        // touch state.video_active.
     } else {
         // Normal operation: set video_active based on actual state
         state.video_active = should_be_active;

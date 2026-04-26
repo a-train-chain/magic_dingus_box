@@ -144,6 +144,27 @@ std::string titlecase_state(const std::string& s) {
     return out;
 }
 
+// Human-readable byte count. Picks GB / MB / KB / B based on magnitude.
+// One decimal under 100 of the chosen unit, no decimal above. Used to
+// surface "1.8 / 4.5 GB" on each queue row so the user can see how
+// much of the download is left to go independently of the percentage.
+std::string format_bytes(int64_t b) {
+    if (b <= 0) return "0 B";
+    double v = static_cast<double>(b);
+    const char* unit = "B";
+    if (v >= 1024.0 * 1024.0 * 1024.0) {
+        v /= (1024.0 * 1024.0 * 1024.0); unit = "GB";
+    } else if (v >= 1024.0 * 1024.0) {
+        v /= (1024.0 * 1024.0); unit = "MB";
+    } else if (v >= 1024.0) {
+        v /= 1024.0; unit = "KB";
+    }
+    char buf[32];
+    if (v >= 100.0) snprintf(buf, sizeof(buf), "%.0f %s", v, unit);
+    else            snprintf(buf, sizeof(buf), "%.1f %s", v, unit);
+    return buf;
+}
+
 // Pick the progress-bar fill color based on download state. Mirrors the
 // semantic palette used on Detail's action buttons:
 //   - green (highlight1)   : healthy, downloading, completed.
@@ -595,12 +616,30 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             if (q.download_rate_bps > 0) {
                 ss << "  \xE2\x80\xA2  " << format_rate(q.download_rate_bps);
             }
-            if (q.peers > 0) {
+            // Combine peers + seeds into one cluster — both are useful
+            // signal (peers = total swarm size, seeds = full-copy
+            // sources) and showing them together makes weak swarms
+            // obvious at a glance: "2 peers · 0 seeds" reads instantly
+            // as "this might stall" without doing math.
+            if (q.peers > 0 || q.seeds > 0) {
                 ss << "  \xE2\x80\xA2  " << q.peers
-                   << " peer" << (q.peers == 1 ? "" : "s");
+                   << " peer" << (q.peers == 1 ? "" : "s")
+                   << " / " << q.seeds
+                   << " seed" << (q.seeds == 1 ? "" : "s");
             }
             if (q.eta_seconds > 0) {
                 ss << "  \xE2\x80\xA2  ETA " << format_eta(q.eta_seconds);
+            }
+            // Downloaded / total readout — surfaces how big the file is
+            // and how much is already on disk, complementing the
+            // percentage. Computed from sizeleft (Radarr's queue API
+            // gives us this directly so we don't have to derive it from
+            // progress * total which loses precision near 0% or 100%).
+            if (q.size_bytes > 0) {
+                int64_t left  = std::max<int64_t>(0, q.sizeleft_bytes);
+                int64_t down  = std::max<int64_t>(0, q.size_bytes - left);
+                ss << "  \xE2\x80\xA2  " << format_bytes(down)
+                   << " / " << format_bytes(q.size_bytes);
             }
             std::string sub_line = truncate_to_width(r, ss.str(),
                                                      sub_size, mid_max_w);

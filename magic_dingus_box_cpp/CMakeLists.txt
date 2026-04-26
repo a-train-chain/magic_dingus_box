@@ -148,6 +148,7 @@ if(BUILD_KIOSK)
             src/media_browser/radarr/radarr_parsers.cpp
             src/media_browser/radarr/radarr_client.cpp
             src/media_browser/radarr/radarr_mock.cpp
+            src/media_browser/prowlarr/prowlarr_client.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
@@ -291,6 +292,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/radarr/radarr_parsers.cpp
         src/media_browser/radarr/radarr_client.cpp
         src/media_browser/radarr/radarr_mock.cpp
+        src/media_browser/prowlarr/prowlarr_client.cpp
         src/platform/sequence_detector.cpp
     )
 

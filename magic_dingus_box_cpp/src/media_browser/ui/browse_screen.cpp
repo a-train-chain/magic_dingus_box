@@ -5,7 +5,9 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 #include <spdlog/spdlog.h>
 
@@ -196,6 +198,26 @@ void BrowseScreen::quick_add_focused() {
     if (qp == 0) {
         ::ui::Toast::show("No quality profile — check Radarr");
         return;
+    }
+
+    // Disk-space pre-flight (matches DetailScreen's check on the slower
+    // add path — kept inline rather than extracted because each screen
+    // is the only caller for its own add flow). Threshold is 15 GB
+    // free; below that, surface a toast as a heads-up. We don't block
+    // the add — small WEB-DL releases fit in <2 GB.
+    {
+        constexpr int64_t kWarnFreeBytes = 15LL * 1024 * 1024 * 1024;
+        std::error_code ec;
+        auto info = std::filesystem::space("/mnt/ssd/library", ec);
+        if (!ec && info.available > 0
+            && static_cast<int64_t>(info.available) < kWarnFreeBytes) {
+            int gb_free = static_cast<int>(info.available
+                                           / (1024 * 1024 * 1024));
+            ::ui::Toast::show(
+                "Warning: only " + std::to_string(gb_free)
+                + " GB free — large releases may fail to import");
+            // Fall through — let the user proceed; warning is informational.
+        }
     }
 
     bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);

@@ -452,7 +452,13 @@ double GstPlayer::get_position() const {
     if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
         return static_cast<double>(pos) / GST_SECOND;
     }
-    return 0.0;
+    // Position queries fail intermittently during seek/state transitions.
+    // Returning 0 here would feed back into Controller::update_state and
+    // flip state.video_active to false (since should_be_active checks
+    // position > 0), causing the seek bar to disappear during scrubbing
+    // and the renderer to skip frames. Fall back to the last cached
+    // value (mirrors get_duration()'s behavior).
+    return position_;
 }
 
 double GstPlayer::get_duration() const {
@@ -489,8 +495,20 @@ void GstPlayer::update_state() {
         bool was_playing = is_playing_;
         bool now_playing = (current_state == GST_STATE_PLAYING);
 
+        // Hold is_playing_ steady through seek transitions. A FLUSH seek
+        // takes the pipeline PLAYING → PAUSED → PLAYING, and during the
+        // brief PAUSED window this poll would report not-playing. With
+        // ret=ASYNC and pending=PLAYING, GStreamer is telling us "I'm
+        // mid-transition back to PLAYING" — treat that as still playing
+        // so state.video_active doesn't flicker (which would hide the
+        // seek bar and skip video render frames).
+        if (!now_playing && ret == GST_STATE_CHANGE_ASYNC
+            && pending_state == GST_STATE_PLAYING) {
+            now_playing = true;
+        }
+
         is_playing_ = now_playing;
-        is_paused_ = (current_state == GST_STATE_PAUSED);
+        is_paused_ = (current_state == GST_STATE_PAUSED && !now_playing);
 
         // Log when playback starts (decoder inspection deferred to avoid blocking render loop)
         if (!was_playing && now_playing) {

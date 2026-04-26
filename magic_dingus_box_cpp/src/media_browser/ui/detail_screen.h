@@ -5,12 +5,14 @@
 #include <string>
 #include <vector>
 
+#include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_screen.h"
 
 namespace media_browser { class RadarrClient; }
 namespace media_browser { class TmdbClient; }
+namespace media_browser { class ProwlarrClient; }
 
 namespace media_browser::ui {
 
@@ -59,7 +61,11 @@ namespace media_browser::ui {
 //     surfaces a banner warning that library actions may fail.
 class DetailScreen : public MbScreen {
 public:
-    DetailScreen(RadarrClient& radarr, TmdbClient& tmdb);
+    // prowlarr is optional — pass nullptr when Prowlarr is unconfigured
+    // or in unit tests. The screen still renders and library actions
+    // still work; only the AVAILABILITY readout is suppressed.
+    DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
+                 ProwlarrClient* prowlarr = nullptr);
 
     // Set the tmdb_id of the movie the detail screen should display. The
     // dispatcher in main.cpp calls this just before transitioning to this
@@ -159,6 +165,7 @@ private:
 
     RadarrClient& radarr_;
     TmdbClient& tmdb_;
+    ProwlarrClient* prowlarr_ = nullptr;
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
 
