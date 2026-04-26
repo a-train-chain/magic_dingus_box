@@ -487,8 +487,11 @@ BrowseScreen::~BrowseScreen() {
     // bails before publishing. Then join all tracked workers so we
     // don't have a thread holding references to *this after the
     // screen is destroyed. Each worker is bounded by TmdbClient's
-    // 10s curl timeout, so worst-case shutdown wait is ~10s; in
-    // practice workers complete in 1-7s.
+    // per-attempt 25s curl timeout × up to 3 attempts with 1.25s of
+    // backoff, so worst-case shutdown wait is ~76s if the network
+    // is genuinely unresponsive. In practice (link healthy) workers
+    // complete in 1-7s. The longer ceiling is an accepted trade for
+    // resilience under transient VPN-egress flakiness.
     tmdb_current_gen_.fetch_add(1);
     for (auto& t : tmdb_workers_) {
         if (t.joinable()) t.join();

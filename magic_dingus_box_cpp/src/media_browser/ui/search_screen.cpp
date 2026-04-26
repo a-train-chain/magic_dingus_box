@@ -128,9 +128,11 @@ SearchScreen::~SearchScreen() {
     // Bump both gens so any in-flight worker sees its result is stale
     // and bails before publishing. Then join all tracked workers so we
     // don't have a thread holding references to *this after the screen
-    // is destroyed. Each worker is bounded by libcurl's ~10s timeout,
-    // so worst-case shutdown wait is ~10s; in practice the lookup
-    // workers complete in 1-3s and the lib worker in ~200ms.
+    // is destroyed. Workers call RadarrClient which has a 5s curl
+    // timeout per request (single-attempt — Radarr is on-Pi-localhost,
+    // no retry needed), so worst-case shutdown wait is ~5s. In
+    // practice the lookup workers complete in 1-3s and the lib worker
+    // in ~200ms.
     lib_current_gen_.fetch_add(1);
     lookup_current_gen_.fetch_add(1);
     for (auto& t : lib_workers_) {

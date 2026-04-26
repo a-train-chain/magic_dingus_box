@@ -223,9 +223,33 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
 
 ### Service operations
 
-- **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects.
+- **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged.
 - **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
-- **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload, Magnetz. Cloudflare-protected indexers need the `cloudflare` tag mapped to FlareSolverr.
+- **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload (with `cloudflare` tag → FlareSolverr). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
+- **Gluetun healthcheck**: `wget http://localhost:8000/v1/publicip/ip` (gluetun's own internal endpoint). Avoids the previous `ifconfig.me` healthcheck which flapped due to Cloudflare challenges on ProtonVPN exit IPs.
+- **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, FlareSolverr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.
+
+### Feature gating
+
+The Media Browser is **hidden by default** behind a kiosk-side secret-sequence unlock (BTN1+BTN3 chord → BTN2 × 3 → rotary click). The flag `media_browser_unlocked` is persisted in `config/settings.json`. Two consequences:
+
+1. **Kiosk UI**: Media Browser entries in the Settings menu only appear when unlocked.
+2. **Content Manager UI**: The "Media Browser" tab in the web admin is hidden when locked. All `/admin/media-browser/*` routes (except `/visibility`) return 403 `media_browser_locked` server-side. Visibility check at page-load decides whether to render the tab DOM at all.
+
+Cloned Pis start LOCKED — `first_boot.sh` Step 6 resets the flag during first-boot setup so a fresh Pi inherits no unlock state from the source.
+
+### Per-Pi setup workflow (no SSH required)
+
+1. Operator opens Content Manager (`http://magicpi-XXXX.local:5000`)
+2. Enters secret sequence on the kiosk to unlock Media Browser visibility
+3. Refreshes Content Manager → "Media Browser" tab appears
+4. Drops in WireGuard `.conf` from ProtonVPN dashboard (NAT-PMP enabled)
+5. Backend writes `services/.env`, runs `setup_services.sh` in background, frontend polls progress
+6. ~90 seconds later: services healthy, Custom Formats + indexers + integrations all configured
+
+### Live SD cloning
+
+`scripts/golden_image/clone_live_sd.sh` clones a running Pi's SD card to a `.img.gz` over SSH without removing the SD physically. Three Pi-side scripts (`prepare_for_cloning.sh`, `restore_after_cloning.sh`, `first_boot.sh` Step 6) handle prepare/restore + per-Pi state cleanup on the cloned image. Source Pi loses no data; total downtime ~1 minute. See `scripts/golden_image/CLONING.md` for full operator workflow.
 
 ## Additional Documentation
 

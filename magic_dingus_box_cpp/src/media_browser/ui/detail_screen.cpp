@@ -405,9 +405,13 @@ DetailScreen::~DetailScreen() {
     // Bump gen so any in-flight worker sees its result is stale and
     // bails before publishing. Then join all tracked workers so we
     // don't have a thread holding references to *this after the
-    // screen is destroyed. Each worker is bounded by libcurl's ~10s
-    // timeout, so worst-case shutdown wait is ~10s; in practice
-    // workers complete in 1-7s.
+    // screen is destroyed. Each worker is bounded by libcurl's per-
+    // attempt 25s timeout × up to 3 attempts + ~1.25s backoff
+    // (configured in tmdb_client.cpp), so worst-case shutdown wait
+    // is ~76s when the network is genuinely unresponsive. In
+    // practice (link healthy) workers complete in 1-7s. The longer
+    // ceiling is an accepted trade for resilience under transient
+    // VPN-egress flakiness.
     tmdb_current_gen_.fetch_add(1);
     for (auto& t : tmdb_workers_) {
         if (t.joinable()) t.join();
