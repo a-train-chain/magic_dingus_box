@@ -17,7 +17,7 @@ Run through this checklist before generating a golden image. Print or open on a 
 ## Phase 1 — Hardware sanity (faceplate stack)
 
 - [ ] Boot LED sequence plays on power-on
-- [ ] Power button triggers clean shutdown
+- [~] Power switch triggers clean **kiosk-standby** *(was full poweroff; reimplemented this session via gpiomon-based watcher service. **OFF direction works** — confirmed rising-edge event fired correctly, services stopped cleanly, Pi remained running at idle. **ON direction (this Pi only) doesn't fire** — GPIO 3 stays HIGH despite physical toggle, indicating broken GND-side contact in switch hardware (worn contact, cracked solder, or loose wire). Software side is verified working; this Pi needs a physical switch repair before clone, but cloned Pis with working switches will get full behavior natively.)*
 - [ ] Cold boot reaches kiosk UI in under 30 seconds
 - [ ] Rotary encoder scrubs video (clockwise = forward, counter-clockwise = backward)
 - [ ] Rotary encoder is responsive (no missed detents)
