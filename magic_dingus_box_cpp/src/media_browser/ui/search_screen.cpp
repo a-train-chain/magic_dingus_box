@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <utility>
+
+#include <spdlog/spdlog.h>
 
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
@@ -121,6 +124,23 @@ const char* display_label(const std::string& key) {
 
 SearchScreen::SearchScreen(RadarrClient& radarr) : radarr_(radarr) {}
 
+SearchScreen::~SearchScreen() {
+    // Bump both gens so any in-flight worker sees its result is stale
+    // and bails before publishing. Then join all tracked workers so we
+    // don't have a thread holding references to *this after the screen
+    // is destroyed. Each worker is bounded by libcurl's ~10s timeout,
+    // so worst-case shutdown wait is ~10s; in practice the lookup
+    // workers complete in 1-3s and the lib worker in ~200ms.
+    lib_current_gen_.fetch_add(1);
+    lookup_current_gen_.fetch_add(1);
+    for (auto& t : lib_workers_) {
+        if (t.joinable()) t.join();
+    }
+    for (auto& t : lookup_workers_) {
+        if (t.joinable()) t.join();
+    }
+}
+
 void SearchScreen::enter() {
     // Start fresh each time the user opens Search. If they navigated in
     // from Browse, they want an empty query.
@@ -130,7 +150,6 @@ void SearchScreen::enter() {
     grid_cursor_ = 0;
     scroll_row_ = 0;
     selected_tmdb_id_ = 0;
-    searching_ = false;
     focus_ = Focus::Keyboard;
     last_input_time_ = std::chrono::steady_clock::time_point::min();
 
@@ -141,20 +160,70 @@ void SearchScreen::enter() {
     keyboard_.open("", "Search Movies",
                    /*on_enter=*/nullptr, /*on_cancel=*/nullptr);
 
-    // Always re-fetch the library on (re-)entry — same reasoning as
-    // BrowseScreen::enter(). Without this, a movie removed via Detail
-    // still shows up as "in library" in search results and BTN2 add
-    // gets blocked with "Already in library." Quality profiles are
-    // cached separately because they don't change on adds/removes.
-    auto lib = radarr_.get_library();
+    // Library cache used to be fetched synchronously here. Run sync it
+    // blocked render for ~1s on every entry to the screen — visible as
+    // a stutter on Browse->Search transitions. Now dispatched async; a
+    // future update() tick drains it via apply_pending_lib(). Until
+    // then, library_tmdb_ids_ may be empty, the IN LIBRARY chips
+    // simply don't render, and BTN2 quick-add is gated on lib_loaded_
+    // (with a "Loading library — please wait" hint) so the user can't
+    // accidentally re-add a movie that's already in their library.
+    start_lib_fetch();
+}
+
+void SearchScreen::start_lib_fetch() {
+    lib_loading_ = true;
+    const uint64_t my_gen = lib_current_gen_.fetch_add(1) + 1;
+    spdlog::info("[SearchScreen] start_lib_fetch (gen={})", my_gen);
+    lib_workers_.emplace_back(&SearchScreen::run_lib_fetch, this, my_gen);
+}
+
+void SearchScreen::run_lib_fetch(uint64_t gen) {
+    LibFetchResult r;
+    r.library = radarr_.get_library();
+    if (gen != lib_current_gen_.load()) {
+        spdlog::info("[SearchScreen] lib gen={} stale after get_library; discarding",
+                     gen);
+        return;
+    }
+    // Profiles are only fetched on the FIRST library load. Subsequent
+    // refreshes (post-add) just need to refresh the in-library set.
+    if (!library_cached_) {
+        r.profiles = radarr_.get_quality_profiles();
+        r.profiles_valid = true;
+        if (gen != lib_current_gen_.load()) {
+            spdlog::info("[SearchScreen] lib gen={} stale after get_quality_profiles; discarding",
+                         gen);
+            return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(lib_result_mtx_);
+        if (gen != lib_current_gen_.load()) return;  // re-check under lock
+        lib_pending_ = std::move(r);
+    }
+    lib_result_ready_.store(true);
+}
+
+void SearchScreen::apply_pending_lib() {
+    if (!lib_result_ready_.exchange(false)) return;
+    LibFetchResult incoming;
+    {
+        std::lock_guard<std::mutex> lk(lib_result_mtx_);
+        incoming = std::move(lib_pending_);
+    }
     library_tmdb_ids_.clear();
-    for (const auto& m : lib) {
+    for (const auto& m : incoming.library) {
         if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
     }
-    if (!library_cached_) {
-        quality_profiles_ = radarr_.get_quality_profiles();
+    if (incoming.profiles_valid) {
+        quality_profiles_ = std::move(incoming.profiles);
         library_cached_ = true;
     }
+    lib_loaded_ = true;
+    lib_loading_ = false;
+    spdlog::info("[SearchScreen] applied lib: {} ids, {} profiles",
+                 library_tmdb_ids_.size(), quality_profiles_.size());
 }
 
 void SearchScreen::quick_add_focused() {
@@ -165,6 +234,17 @@ void SearchScreen::quick_add_focused() {
         grid_cursor_ >= static_cast<int>(results_.size())) return;
     const auto& hit = results_[grid_cursor_];
     if (hit.tmdb_id <= 0) return;
+
+    // Block the add until the in-library cache has populated at least
+    // once. Without this, the user could fire a quick-add before the
+    // async lib_ fetch returns, and we'd happily re-add a movie that's
+    // already in their library (Radarr would then create a duplicate).
+    // A toast keeps the user oriented; the lib fetch is fast enough
+    // that they can retry within a second.
+    if (!lib_loaded_) {
+        ::ui::Toast::show("Loading library — please wait");
+        return;
+    }
 
     if (library_tmdb_ids_.count(hit.tmdb_id) > 0) {
         ::ui::Toast::show("Already in library");
@@ -181,15 +261,27 @@ void SearchScreen::quick_add_focused() {
         return;
     }
 
+    // add_movie() stays synchronous — it's a user-initiated mutation,
+    // expected to block briefly, and serializing it with the lookup
+    // pipeline would add significant complexity for no real win.
     bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
     if (!ok) {
         ::ui::Toast::show("Add failed — see Radarr logs");
         return;
     }
+    // Insert into the local cache immediately so the IN LIBRARY chip
+    // appears without waiting for the async refresh below.
     library_tmdb_ids_.insert(hit.tmdb_id);
     std::string msg = "Added: ";
     msg += (hit.title.empty() ? "movie" : hit.title);
     ::ui::Toast::show(msg);
+
+    // Re-pull the library async so any other state Radarr gained from
+    // the add (radarr_id, etc.) gets picked up next tick. Using the
+    // async path here (instead of a direct radarr_.get_library() call)
+    // matches the Task 6 invariant that all library refreshes go
+    // through the same pipeline.
+    start_lib_fetch();
 }
 
 void SearchScreen::run_lookup_if_due() {
@@ -202,23 +294,65 @@ void SearchScreen::run_lookup_if_due() {
 
     last_queried_ = query_;
     if (query_.empty()) {
+        // Clearing the query: drop visible results immediately and
+        // bump the gen so any in-flight lookup is discarded — we don't
+        // want a stale "wo" lookup to land after the user cleared back
+        // to empty.
+        lookup_current_gen_.fetch_add(1);
         results_.clear();
         grid_cursor_ = 0;
         scroll_row_ = 0;
-        searching_ = false;
+        lookup_loading_ = false;
         return;
     }
-    searching_ = true;
-    // RadarrClient::lookup is synchronous. At single-user scale this is
-    // fine: it blocks the UI for the duration of one Radarr HTTP round
-    // trip, which is typically under a second.
-    results_ = radarr_.lookup(query_);
-    searching_ = false;
+    start_lookup(query_);
+}
+
+void SearchScreen::start_lookup(std::string query) {
+    lookup_loading_ = true;
+    const uint64_t my_gen = lookup_current_gen_.fetch_add(1) + 1;
+    spdlog::info("[SearchScreen] lookup gen={} query='{}'",
+                 my_gen, query);
+    // Pass query by value into the worker — the user keeps typing, so
+    // query_ might mutate in flight. Each worker captures its own copy.
+    lookup_workers_.emplace_back(&SearchScreen::run_lookup, this,
+                                 my_gen, std::move(query));
+}
+
+void SearchScreen::run_lookup(uint64_t gen, std::string query) {
+    auto result = radarr_.lookup(query);
+    if (gen != lookup_current_gen_.load()) {
+        spdlog::info("[SearchScreen] lookup gen={} stale at publish; discarding",
+                     gen);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(lookup_result_mtx_);
+        if (gen != lookup_current_gen_.load()) return;  // re-check under lock
+        lookup_pending_ = std::move(result);
+    }
+    lookup_result_ready_.store(true);
+}
+
+void SearchScreen::apply_pending_lookup() {
+    if (!lookup_result_ready_.exchange(false)) return;
+    std::vector<MovieSearchHit> incoming;
+    {
+        std::lock_guard<std::mutex> lk(lookup_result_mtx_);
+        incoming = std::move(lookup_pending_);
+    }
+    results_ = std::move(incoming);
     grid_cursor_ = 0;
     scroll_row_ = 0;
+    lookup_loading_ = false;
+    spdlog::info("[SearchScreen] applied lookup: {} results", results_.size());
 }
 
 void SearchScreen::update() {
+    // Drain finished async results first so the rest of update() (and
+    // the imminent render() call) sees the latest state.
+    apply_pending_lib();
+    apply_pending_lookup();
     run_lookup_if_due();
 }
 
@@ -388,10 +522,17 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         std::string status_text;
         ::ui::Color status_color    = th.dim;
         float       status_alpha    = 0.85f;
-        if (searching_) {
+        if (lookup_loading_) {
             status_text  = "searching...";
             status_color = th.accent;
             status_alpha = 0.95f;
+        } else if (lib_loading_ && !lib_loaded_) {
+            // Surface the in-flight library cache fetch so the user
+            // understands why "Already in library" / IN LIBRARY chips
+            // might be momentarily missing on first entry.
+            status_text  = "loading library...";
+            status_color = th.dim;
+            status_alpha = 0.85f;
         } else if (!query_.empty() && !results_.empty()) {
             int n = static_cast<int>(results_.size());
             status_text = std::to_string(n)
@@ -604,7 +745,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (query_.empty()) {
             // Placeholder for the "haven't typed anything yet" state.
             msg = "Type a movie title...";
-        } else if (searching_) {
+        } else if (lookup_loading_) {
             // Header already shows "searching..." in accent — repeat
             // it here large-and-centered as the primary affordance.
             msg = "Searching...";
