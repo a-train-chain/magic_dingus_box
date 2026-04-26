@@ -2579,10 +2579,30 @@ int main(int /* argc */, char* /* argv */[]) {
         // BARE BONES: Removed periodic audio checks - let MPV handle audio
         
         frame_count++;
-        
-        // Frame rate limiting (target 60 FPS)
-        if (delta < 16) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16 - delta));
+
+        // Frame rate limiting. 60 FPS (16ms) is the default target for
+        // crisp UI animations. During Media Browser movie playback we
+        // drop to 30 FPS (33ms) so the render thread doesn't hog CPU
+        // away from libav's HEVC decode threads — Pi 4 hardware HEVC
+        // decode isn't reachable through GStreamer (rpivid driver
+        // outputs SAND-format buffers that mainline gst-v4l2codecs
+        // can't consume; fix in flight upstream but not on Bookworm
+        // yet), so HEVC content is software-decoded at ~30-50% of one
+        // core. The kiosk is rendering UI overlay every frame even
+        // during movies, and at 60Hz that competes with decode for
+        // CPU on the Pi 4's 4 cores. Halving the kiosk render rate
+        // gives software HEVC decode roughly 25% more headroom on the
+        // shared cores. Source content is 23.976 fps so 30 FPS UI is
+        // already finer-grained than the underlying video — no
+        // perceived motion difference, just less CPU pressure on
+        // sustained-load scenes.
+        const bool mb_movie_active =
+            state.video_active &&
+            state.current_screen == app::AppScreen::MediaBrowser;
+        const int target_ms = mb_movie_active ? 33 : 16;
+        if (delta < target_ms) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(target_ms - delta));
         }
     }
     

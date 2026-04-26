@@ -72,24 +72,46 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     promote_decoder("v4l2vp8dec", "V4L2 VP8");
     promote_decoder("v4l2vp9dec", "V4L2 VP9");
 
-    // Pi 4's V4L2 stateless H.265 decoder (gst-plugins-bad >= 1.20)
-    // is broken on the current kernel/firmware combination: it
-    // advertises HEVC support, gets picked by playbin's auto-plugger
-    // (primary rank), then fails at pixel-format negotiation with
-    // "Unsupported pixel format" — and playbin gives up rather than
-    // falling back to a working decoder. Symptom is "state change to
-    // PLAYING failed" on every HEVC file. Disabling it here forces
-    // playbin to use avdec_h265 (libav, software-decoded) which
-    // works fine for the 1080p HEVC bitrates we see in practice
-    // (~3 Mbps, well under what an aarch64 Pi 4 core can handle).
+    // Pi 4 hardware HEVC decode exists and works — the VideoCore VI
+    // has a dedicated HEVC block (Main/Main10 up to 4096x4096) and
+    // FFmpeg's `-hwaccel drm` path uses it successfully (~16x realtime
+    // on 1080p content). VLC, Kodi, and mpv all reach it.
     //
-    // Tradeoff: we lose hardware decode for HEVC content. For the
-    // kiosk's typical 720p/1080p Bluray content this is fine —
-    // softdec on Pi 4 for an 8-bit Main-profile 1080p HEVC stream
-    // uses ~30-50% of one core, well within budget. If/when the
-    // V4L2 driver is fixed upstream we can remove this line.
+    // GStreamer cannot. The Pi's `rpivid` kernel driver only outputs
+    // proprietary tiled pixel formats — `NC12` (8-bit) and `NC30`
+    // (10-bit), Broadcom's "SAND" layout — and mainline GStreamer's
+    // v4l2codecs element doesn't understand them. When playbin auto-
+    // plugs v4l2slh265dec, the driver responds with NC12, downstream
+    // elements report "format UNKNOWN," and the negotiation fails.
+    // Symptoms: "Driver does not support the selected stream" /
+    // "Unsupported pixel format" / "GstPlayer::play() - state change
+    // to PLAYING failed."
+    //
+    // The fix is in flight upstream:
+    //   - GStreamer MR gstreamer/gstreamer#9247 adds SAND format
+    //     support to v4l2codecs. Targets GStreamer 1.26 in Debian
+    //     Trixie. Will NOT be backported to 1.22 in Bookworm.
+    //   - Confirmed by GStreamer maintainer Nicolas Dufresne (Feb 2026).
+    //   - See raspberrypi/linux#7137 for our specific failure mode.
+    //
+    // Until that lands and the kiosk is on a Trixie-based image, we
+    // can't reach hardware HEVC through GStreamer at all — there's
+    // no dtoverlay or kernel config that solves it for our pipeline.
+    // Disabling v4l2slh265dec here forces playbin to fall back to
+    // avdec_h265 (libav, software-decoded). For our typical content
+    // (720p/1080p 8-bit Main profile at ~3-5 Mbps) software decode
+    // uses ~30-50% of one A72 core — sustainable. The frame-rate
+    // limiter in main.cpp drops kiosk render to 30 FPS during MB
+    // movie playback, which gives the libav decode threads more
+    // headroom on the shared 4 cores.
+    //
+    // Reaching hardware HEVC would require shelling out to FFmpeg
+    // (LibreELEC's path) and piping decoded frames into our existing
+    // GL renderer — significant refactor for a feature that becomes
+    // free when GStreamer 1.26 lands. Not worth the complexity.
     disable_decoder("v4l2slh265dec",
-                    "Pi 4 V4L2 stateless HEVC: pixel-format negotiation broken");
+                    "Pi 4 V4L2 stateless HEVC: SAND-format mismatch with mainline GStreamer "
+                    "(MR gstreamer/gstreamer#9247 pending, Trixie-only)");
 
     // Create playbin with RAII wrapper
     auto playbin = make_element("playbin", "playbin");
