@@ -64,10 +64,24 @@ services:
       - /dev/net/tun:/dev/net/tun
     environment:
       - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER:-protonvpn}
-      - VPN_TYPE=${VPN_TYPE:-openvpn}
-      - OPENVPN_USER=${VPN_USERNAME}
-      - OPENVPN_PASSWORD=${VPN_PASSWORD}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+      # OpenVPN credentials (used only when VPN_TYPE=openvpn — harmless when
+      # empty / when wireguard is active).
+      - OPENVPN_USER=${VPN_USERNAME:-}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD:-}
+      # Wireguard config (used when VPN_TYPE=wireguard, which is the default).
+      # Without these explicit pass-throughs the Wireguard backend fails on
+      # every fresh container start with "private key is not set" — discovered
+      # post-reboot when the running container restarted clean. The .env's
+      # WIREGUARD_* values are not auto-injected by compose; each one has to
+      # be enumerated here.
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY:-}
+      - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP:-}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
       - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
+      - SERVER_FEATURES=${SERVER_FEATURES:-}
+      - VPN_PORT_FORWARDING=${VPN_PORT_FORWARDING:-on}
       # Allow LAN + docker inter-container traffic through firewall:
       - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
       - TZ=${TZ}
