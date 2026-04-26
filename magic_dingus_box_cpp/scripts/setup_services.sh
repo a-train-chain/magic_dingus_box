@@ -49,7 +49,10 @@ usermod -aG docker "${TARGET_USER}"
 
 # 2. Storage layout
 echo "Creating storage layout at ${STORAGE_ROOT}..."
-sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library/Movies,backups}
+# Radarr writes movies directly to ${STORAGE_ROOT}/library/<Title (Year)>/, no
+# Movies subdirectory. The earlier setup created library/Movies/ which then sat
+# empty forever — drop it.
+sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,backups}
 sudo chown -R "$(whoami):$(whoami)" "${STORAGE_ROOT}"
 
 # 3. Generate .env if missing
