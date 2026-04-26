@@ -305,6 +305,747 @@ else:
 '
 fi
 
+# 11. Prowlarr: cloudflare tag.
+#
+# A handful of indexers (Demonoid, EZTV, Internet Archive, Magnetz,
+# Torrent Downloads, TorrentDownload) sit behind Cloudflare's bot-block
+# and only resolve when Prowlarr routes the request through the
+# FlareSolverr indexer-proxy in Step 12. The wiring is done with a
+# shared "cloudflare" tag — set on both the FlareSolverr proxy AND
+# every Cloudflare-protected indexer. Prowlarr matches tags between
+# the two and routes requests for tagged indexers via the tagged proxy.
+#
+# We seed the tag first so Steps 12 + 13 can reference it by id.
+echo "Configuring Prowlarr 'cloudflare' tag..."
+PROWLARR_TAGS_FILE="$(dirname "$0")/data/prowlarr_tags.json"
+if [[ ! -f "${PROWLARR_TAGS_FILE}" ]]; then
+    echo "  WARN: ${PROWLARR_TAGS_FILE} not found — skipping. Tag may already be configured manually; verify via web UI."
+    PROWLARR_CLOUDFLARE_TAG_ID=""
+else
+    # Idempotent: GET /tag, find by label, POST only if missing. Capture
+    # the resulting id (live or just-created) to a single-line stdout
+    # for the bash-side variable so subsequent steps can pass it as
+    # the tag id when reconciling proxy/indexer "tags": [...] arrays.
+    TAG_RESULT=$(python3 - "${PROWLARR_TAGS_FILE}" "${PROWLARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+tags_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:9696/api/v1"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+with open(tags_path) as f:
+    desired_tags = json.load(f)
+
+live_tags = http("GET", "/tag") or []
+live_by_label = {t["label"]: t for t in live_tags}
+
+created, unchanged = [], []
+label_to_id = {}
+for desired in desired_tags:
+    label = desired["label"]
+    if label in live_by_label:
+        unchanged.append(label)
+        label_to_id[label] = live_by_label[label]["id"]
+    else:
+        result = http("POST", "/tag", {"label": label})
+        created.append(label)
+        label_to_id[label] = result["id"]
+
+print(json.dumps({"created": created, "unchanged": unchanged, "label_to_id": label_to_id}))
+PYEOF
+)
+    # Pretty-print + extract the cloudflare tag id for the next steps.
+    echo "${TAG_RESULT}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("unchanged", s["unchanged"])
+'
+    PROWLARR_CLOUDFLARE_TAG_ID=$(echo "${TAG_RESULT}" | python3 -c "import json,sys; print(json.load(sys.stdin)['label_to_id'].get('cloudflare', ''))")
+fi
+
+# 12. Prowlarr: FlareSolverr indexer proxy.
+#
+# FlareSolverr is a headless-browser sidecar (own container) that
+# solves Cloudflare JS challenges and returns the decoded HTML.
+# Prowlarr's "indexer proxy" feature can route requests for any
+# tag-matched indexer through it — that's how the cloudflare-tagged
+# indexers in Step 13 actually reach their sites in production.
+#
+# The fixture stores the tag membership as `tags_by_label` (a list of
+# human-readable labels) so the file stays diff-friendly across
+# deploys. We translate label → id at apply time using Step 11's map.
+echo "Configuring Prowlarr FlareSolverr indexer proxy..."
+PROWLARR_PROXIES_FILE="$(dirname "$0")/data/prowlarr_indexerproxies.json"
+if [[ ! -f "${PROWLARR_PROXIES_FILE}" ]]; then
+    echo "  WARN: ${PROWLARR_PROXIES_FILE} not found — skipping. Proxy may already be configured manually; verify via web UI."
+else
+    PROXY_SUMMARY=$(python3 - "${PROWLARR_PROXIES_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
+import json, sys, urllib.request
+proxies_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:9696/api/v1"
+
+# Build a single label→id map. Right now only "cloudflare" is in
+# scope, but doing it as a dict keeps the path open for additional
+# tags without restructuring the fixture format.
+LABEL_TO_ID = {}
+if cloudflare_tag_id:
+    LABEL_TO_ID["cloudflare"] = int(cloudflare_tag_id)
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    # Reduce a Servarr-style fields[] array (each entry has name+value
+    # plus a pile of UI-only metadata) to a flat {name: value} dict.
+    # We only ever care about (name, value) for drift detection.
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def resolve_tags(desired):
+    # Translate fixture's `tags_by_label` to the live id list.
+    return sorted(LABEL_TO_ID[lbl] for lbl in desired.get("tags_by_label", []) if lbl in LABEL_TO_ID)
+
+def shape_payload(desired):
+    # Strip the diff-friendly `tags_by_label` key and replace with the
+    # API's id-based `tags`. Drop fixture-only `id` if any.
+    payload = {k: v for k, v in desired.items() if k not in ("tags_by_label", "id")}
+    payload["tags"] = resolve_tags(desired)
+    return payload
+
+def match(live, desired_payload):
+    # Compare the fields we own. Servarr adds server-side keys (id,
+    # supports*, etc.) that we ignore.
+    keys = ("name", "implementation", "configContract",
+            "onHealthIssue", "includeHealthWarnings")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    # Subset comparison: only verify the fields we specify — any
+    # server-injected extras are ignored.
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    for k, v in des_fd.items():
+        if live_fd.get(k) != v:
+            return False
+    return True
+
+with open(proxies_path) as f:
+    desired_proxies = json.load(f)
+
+live_proxies = http("GET", "/indexerproxy") or []
+live_by_name = {p["name"]: p for p in live_proxies}
+
+created, updated, unchanged = [], [], []
+for desired in desired_proxies:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/indexerproxy/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/indexerproxy", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+    echo "${PROXY_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+fi
+
+# 13. Prowlarr: indexers.
+#
+# Nine Cardigann-backed public-tracker definitions captured from the
+# reference Pi. Four are enabled by default (LimeTorrents, TPB,
+# TorrentDownload, YTS) — those are the ones the Media Browser
+# actively queries via Radarr+Prowlarr. The other five are kept
+# pre-configured but disabled so an operator can flip them on later
+# without re-discovering URLs / definitionFiles. The cloudflare-
+# tagged ones (Demonoid, EZTV, Internet Archive, Magnetz, Torrent
+# Downloads, TorrentDownload) route through Step 12's FlareSolverr.
+#
+# Match by name (server-assigned ids vary). We treat enable + tags +
+# fields as the "owned" fields; if any drift, PUT to reset. URL lists
+# (`indexerUrls`, `legacyUrls`) and capabilities aren't owned — those
+# come from the Cardigann definitionFile and are recomputed by
+# Prowlarr on every save. Comparing them would force pointless PUTs.
+echo "Configuring Prowlarr indexers..."
+PROWLARR_INDEXERS_FILE="$(dirname "$0")/data/prowlarr_indexers.json"
+if [[ ! -f "${PROWLARR_INDEXERS_FILE}" ]]; then
+    echo "  WARN: ${PROWLARR_INDEXERS_FILE} not found — skipping."
+else
+    INDEXER_SUMMARY=$(python3 - "${PROWLARR_INDEXERS_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
+import json, sys, urllib.request
+indexers_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:9696/api/v1"
+
+LABEL_TO_ID = {}
+if cloudflare_tag_id:
+    LABEL_TO_ID["cloudflare"] = int(cloudflare_tag_id)
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def resolve_tags(desired):
+    return sorted(LABEL_TO_ID[lbl] for lbl in desired.get("tags_by_label", []) if lbl in LABEL_TO_ID)
+
+def shape_payload(desired):
+    # Strip diff-friendly metadata (`tags_by_label`, fixture-only id,
+    # `added` timestamp) and replace with id-based `tags`.
+    payload = {k: v for k, v in desired.items()
+               if k not in ("tags_by_label", "id", "added")}
+    payload["tags"] = resolve_tags(desired)
+    return payload
+
+def match(live, desired_payload):
+    # Owned fields: name, implementation, configContract, definitionName,
+    # enable, priority, appProfileId, tags, and the fields[] map. Anything
+    # else (capabilities, indexerUrls, legacyUrls, language, encoding,
+    # description, supportsRss, etc.) comes from the Cardigann definition
+    # and is regenerated server-side — comparing it would cause needless
+    # churn since Prowlarr can mutate those between calls.
+    keys = ("name", "implementation", "configContract", "definitionName",
+            "enable", "priority", "appProfileId")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    # Subset comparison on fields[]: Prowlarr injects a pile of base/
+    # torrentBase settings (queryLimit, grabLimit, seedRatio, etc.)
+    # that aren't in the fixture and we don't want to fight over. We
+    # only verify every field WE specify matches the live value; any
+    # extras are server-managed defaults and ignored.
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    for k, v in des_fd.items():
+        if live_fd.get(k) != v:
+            return False
+    return True
+
+with open(indexers_path) as f:
+    desired_indexers = json.load(f)
+
+live_indexers = http("GET", "/indexer") or []
+live_by_name = {i["name"]: i for i in live_indexers}
+
+created, updated, unchanged = [], [], []
+for desired in desired_indexers:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/indexer/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/indexer", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+    echo "${INDEXER_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+fi
+
+# 14. Prowlarr → Radarr Apps integration.
+#
+# Prowlarr "applications" is the auto-sync that pushes indexer changes
+# to Radarr. Without this, every time we add/edit an indexer the
+# operator would have to mirror it manually in Radarr's settings.
+#
+# The fixture's `apiKey` field is sanitized to "********" (the same
+# masked value Prowlarr's GET /applications returns for security).
+# We inject the live RADARR_KEY at apply time, which is fine because:
+#   - On create, the real key is needed and goes through.
+#   - On a re-run, the GET response masks the key to "********" — we
+#     can't compare against our live key, so we just check non-secret
+#     fields (URLs, syncCategories, syncLevel) for drift. If those
+#     match, we no-op; if they don't, we PUT with the freshly-injected
+#     real key (which won't drift because we control RADARR_KEY).
+#
+# Wait/retry: on a fresh Pi this step runs ~60s after `docker compose
+# up`, which is usually enough for Radarr to be reachable, but we add
+# a short retry just in case the API is still warming up.
+echo "Configuring Prowlarr → Radarr Apps integration..."
+PROWLARR_APPS_FILE="$(dirname "$0")/data/prowlarr_applications.json"
+if [[ ! -f "${PROWLARR_APPS_FILE}" ]]; then
+    echo "  WARN: ${PROWLARR_APPS_FILE} not found — skipping."
+else
+    # Brief readiness check on Radarr (it's the API key consumer; if
+    # Radarr were down we couldn't even prove our key works). Doesn't
+    # block; we just give it a chance to finish its first-time init
+    # if this is a fresh Pi.
+    for i in {1..30}; do
+        if curl -fsS -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
+            http://localhost:7878/api/v3/system/status; then
+            break
+        fi
+        sleep 2
+    done
+    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+apps_path, prowlarr_key, radarr_key = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:9696/api/v1"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": prowlarr_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def inject_api_key(payload):
+    # The fixture has `value: "********"` for the apiKey field; replace
+    # with the live RADARR_KEY in-place. We mutate a deep-copied list
+    # so the source dict stays untouched.
+    new_fields = []
+    for f in payload.get("fields", []):
+        if f.get("name") == "apiKey":
+            f = dict(f)
+            f["value"] = radarr_key
+        new_fields.append(f)
+    payload = dict(payload)
+    payload["fields"] = new_fields
+    return payload
+
+def shape_payload(desired):
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    return inject_api_key(payload)
+
+def match(live, desired_payload):
+    # Owned fields: name, syncLevel, enable, implementation. For
+    # `fields[]` we compare every value EXCEPT `apiKey`, since the
+    # API masks apiKey to "********" on GET — we can't tell whether
+    # the live key matches our injected one. In practice that's fine:
+    # the only way the key drifts is if RADARR_KEY rotated, in which
+    # case we'd want to push the new one anyway, which Step 14 does
+    # not detect (acceptable trade-off — operator can re-create the
+    # app integration manually if they rotate keys).
+    keys = ("name", "syncLevel", "enable", "implementation", "configContract")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    # Drop apiKey from both before comparing — it's masked on GET.
+    live_fd.pop("apiKey", None)
+    des_fd.pop("apiKey", None)
+    # Subset comparison: Prowlarr 2.x adds server-injected fields like
+    # `syncRejectBlocklistedTorrentHashesWhileGrabbing` that aren't in
+    # the fixture. Only verify our specified fields match.
+    for k, v in des_fd.items():
+        if live_fd.get(k) != v:
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    return True
+
+with open(apps_path) as f:
+    desired_apps = json.load(f)
+
+live_apps = http("GET", "/applications") or []
+live_by_name = {a["name"]: a for a in live_apps}
+
+created, updated, unchanged = [], [], []
+for desired in desired_apps:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/applications/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/applications", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+    echo "${APPS_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+fi
+
+# 15. Radarr → qBittorrent download client.
+#
+# Radarr's grab pipeline: indexer search → magnet/.torrent URL →
+# hand off to a configured download client. The fixture wires the
+# qBittorrent container (reachable through Gluetun's network at
+# `gluetun:8080`) with category=radarr so all Radarr-grabbed torrents
+# land in their own qBit category and can be cleaned up
+# independently of the operator's personal torrents.
+#
+# Like Step 14 the fixture has a sanitized `password` field; we
+# inject the live ${QBIT_PW} (read from .env) at apply time. The
+# password is masked to "********" on subsequent GETs, so drift
+# detection ignores it (same trade-off as the apiKey in Step 14).
+echo "Configuring Radarr → qBittorrent download client..."
+RADARR_DLCLIENTS_FILE="$(dirname "$0")/data/radarr_downloadclients.json"
+if [[ ! -f "${RADARR_DLCLIENTS_FILE}" ]]; then
+    echo "  WARN: ${RADARR_DLCLIENTS_FILE} not found — skipping."
+else
+    QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+    if [[ -z "${QBIT_PW}" ]]; then
+        echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    else
+        DLCLIENT_SUMMARY=$(python3 - "${RADARR_DLCLIENTS_FILE}" "${RADARR_KEY}" "${QBIT_PW}" <<'PYEOF'
+import json, sys, urllib.request
+clients_path, api_key, qbit_pw = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:7878/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def inject_password(payload):
+    new_fields = []
+    for f in payload.get("fields", []):
+        if f.get("name") == "password":
+            f = dict(f)
+            f["value"] = qbit_pw
+        new_fields.append(f)
+    payload = dict(payload)
+    payload["fields"] = new_fields
+    return payload
+
+def shape_payload(desired):
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    return inject_password(payload)
+
+def match(live, desired_payload):
+    keys = ("name", "enable", "protocol", "priority", "implementation",
+            "configContract", "removeCompletedDownloads",
+            "removeFailedDownloads")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    # Drop the masked password from comparison (same logic as the
+    # apiKey in Step 14). Also drop fields the live response carries
+    # that aren't in the fixture (Radarr appends per-implementation
+    # advanced defaults like initialState, recentMoviePriority, etc.
+    # that are server-side managed and we don't want to fight over).
+    live_fd.pop("password", None)
+    des_fd.pop("password", None)
+    # Compare only the keys the fixture cares about; ignore any extras
+    # Radarr added on its own.
+    for k in des_fd:
+        if live_fd.get(k) != des_fd[k]:
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    return True
+
+with open(clients_path) as f:
+    desired_clients = json.load(f)
+
+live_clients = http("GET", "/downloadclient") or []
+live_by_name = {c["name"]: c for c in live_clients}
+
+created, updated, unchanged = [], [], []
+for desired in desired_clients:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/downloadclient/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/downloadclient", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+        echo "${DLCLIENT_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+    fi
+fi
+
+# 16. Radarr quality definitions (custom 720p/1080p size limits).
+#
+# Radarr ships with default size limits per quality (e.g. WEBDL-1080p
+# default maxSize≈400 MB/min). For a Pi 4 + small SSD kiosk that's
+# wasteful — the third layer of the quality filter (CLAUDE.md
+# "Quality configuration") tightens the budget to:
+#   720p qualities → maxSize 60 MB/min, preferredSize 25 MB/min
+#   1080p qualities → maxSize 100 MB/min, preferredSize 40 MB/min
+#
+# The fixture lists every quality (including SD + 4K + Remux) so
+# re-running the script also corrects values that may have drifted
+# from a UI-side edit. Quality.id is stable across Radarr versions,
+# so we match by quality.id (not quality.name, which has been
+# renamed across major versions in the past).
+echo "Configuring Radarr quality definitions..."
+RADARR_QUALITY_FILE="$(dirname "$0")/data/radarr_qualitydefinitions.json"
+if [[ ! -f "${RADARR_QUALITY_FILE}" ]]; then
+    echo "  WARN: ${RADARR_QUALITY_FILE} not found — skipping."
+else
+    QD_SUMMARY=$(python3 - "${RADARR_QUALITY_FILE}" "${RADARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+qd_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:7878/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+with open(qd_path) as f:
+    desired_qds = json.load(f)
+
+live_qds = http("GET", "/qualitydefinition") or []
+# Live response: each entry has top-level `id` (definition id) and
+# nested `quality.id` (quality id, stable across versions). The PUT
+# endpoint takes the top-level definition id, so we keep both.
+live_by_quality_id = {q["quality"]["id"]: q for q in live_qds}
+
+unchanged, updated, missing = [], [], []
+for desired in desired_qds:
+    qid = desired["quality"]["id"]
+    if qid not in live_by_quality_id:
+        # Should never happen — Radarr ships every built-in quality
+        # on first start. If it does, log it and skip rather than
+        # POST (the API doesn't support creating new quality defs).
+        missing.append(desired["quality"]["name"])
+        continue
+    live = live_by_quality_id[qid]
+    drift = (
+        live.get("minSize") != desired.get("minSize")
+        or live.get("maxSize") != desired.get("maxSize")
+        or live.get("preferredSize") != desired.get("preferredSize")
+    )
+    if not drift:
+        unchanged.append(desired["quality"]["name"])
+        continue
+    # PUT with the live entry as a base + the three size fields
+    # overwritten. We keep weight/title/quality intact so Radarr
+    # doesn't fight us on server-managed fields.
+    payload = dict(live)
+    payload["minSize"] = desired.get("minSize")
+    payload["maxSize"] = desired.get("maxSize")
+    payload["preferredSize"] = desired.get("preferredSize")
+    http("PUT", "/qualitydefinition/%d" % live["id"], payload)
+    updated.append(desired["quality"]["name"])
+
+print(json.dumps({"updated": updated, "unchanged": unchanged, "missing": missing}))
+PYEOF
+)
+    echo "${QD_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+# Quality definitions tend to be many (30+). Print a count summary
+# rather than spelling each one to keep output readable.
+def count(label, items):
+    if items:
+        print("  " + label + ": " + str(len(items)) + " (" + ", ".join(items[:3]) + ("..." if len(items) > 3 else "") + ")")
+count("updated  ", s["updated"])
+count("unchanged", s["unchanged"])
+count("missing  ", s["missing"])
+'
+fi
+
+# 17. qBittorrent: `radarr` category.
+#
+# Categories in qBit are just label-+-savePath pairs but they let us
+# segregate Radarr's torrents from anything else and apply per-
+# category cleanup later (the Confirm-Remove flow in the kiosk
+# walks Radarr history → asks qBit to delete every torrent ever
+# associated with the movie). The fixture leaves savePath empty —
+# qBit then defaults each torrent's location to the global
+# default-save-path, which lives on /downloads inside the container.
+#
+# qBit's web API needs cookie auth (no API key), so we log in once
+# into a temp cookie jar and reuse it for the createCategory call.
+# The createCategory endpoint returns 409 on duplicate name — our
+# idempotency check just fetches existing categories first and only
+# POSTs missing ones.
+echo "Configuring qBittorrent categories..."
+QBIT_CATS_FILE="$(dirname "$0")/data/qbit_categories.json"
+if [[ ! -f "${QBIT_CATS_FILE}" ]]; then
+    echo "  WARN: ${QBIT_CATS_FILE} not found — skipping."
+else
+    QBIT_PW="${QBIT_PW:-$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)}"
+    if [[ -z "${QBIT_PW}" ]]; then
+        echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    else
+        QBIT_COOKIE="/tmp/qbit-setup-$$.cookie"
+        # Login. SID cookie lives in $QBIT_COOKIE for downstream calls.
+        # qBit returns plain "Ok." on success, "Fails." on bad creds.
+        LOGIN_RESP=$(curl -fsS --connect-timeout 10 \
+            -X POST -d "username=admin&password=${QBIT_PW}" \
+            -c "${QBIT_COOKIE}" \
+            http://localhost:8080/api/v2/auth/login || echo "fail")
+        if [[ "${LOGIN_RESP}" != "Ok." ]]; then
+            echo "  WARN: qBittorrent login failed (response: ${LOGIN_RESP}); skipping category setup."
+            rm -f "${QBIT_COOKIE}"
+        else
+            QBIT_SUMMARY=$(python3 - "${QBIT_CATS_FILE}" "${QBIT_COOKIE}" <<'PYEOF'
+import json, sys, urllib.request, urllib.parse
+cats_path, cookie_path = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:8080/api/v2"
+
+# Load the SID cookie out of the curl jar (Netscape cookie format).
+# Format: domain<TAB>flag<TAB>path<TAB>secure<TAB>expiration<TAB>name<TAB>value
+# qBit sends the cookie HttpOnly which curl annotates by prefixing the
+# domain with `#HttpOnly_`. We split tab-fields on every line that has
+# enough columns rather than filtering "#"-prefixed lines (which
+# would skip the actual cookie row).
+sid = ""
+with open(cookie_path) as f:
+    for line in f:
+        if not line.strip() or line.startswith("# "):
+            continue
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 7 and parts[5] == "SID":
+            sid = parts[6]
+            break
+if not sid:
+    print(json.dumps({"error": "could not parse SID cookie"}))
+    sys.exit(0)
+
+def http(method, path, form=None):
+    headers = {"Cookie": "SID=" + sid}
+    data = None
+    if form is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        data = urllib.parse.urlencode(form).encode()
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return raw.decode() if raw else ""
+
+with open(cats_path) as f:
+    desired_cats = json.load(f)
+
+live_raw = http("GET", "/torrents/categories")
+live_cats = json.loads(live_raw) if live_raw.strip() else {}
+
+created, updated, unchanged = [], [], []
+for desired in desired_cats:
+    name = desired["name"]
+    save_path = desired.get("savePath", "")
+    if name in live_cats:
+        if (live_cats[name].get("savePath", "") or "") == save_path:
+            unchanged.append(name)
+        else:
+            http("POST", "/torrents/editCategory",
+                 {"category": name, "savePath": save_path})
+            updated.append(name)
+    else:
+        http("POST", "/torrents/createCategory",
+             {"category": name, "savePath": save_path})
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+            rm -f "${QBIT_COOKIE}"
+            echo "${QBIT_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+if s.get("error"):
+    print("  WARN: " + s["error"])
+else:
+    def show(label, items):
+        if items:
+            print("  " + label + ": " + ", ".join(items))
+    show("created  ", s["created"])
+    show("updated  ", s["updated"])
+    show("unchanged", s["unchanged"])
+'
+        fi
+    fi
+fi
+
 # 9. Print credentials to operator
 cat <<EOF
 
