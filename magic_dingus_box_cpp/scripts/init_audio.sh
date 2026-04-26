@@ -23,6 +23,27 @@ if [ "$(loginctl show-user magic --property=Linger --value 2>/dev/null)" != "yes
     sudo loginctl enable-linger magic
 fi
 
+# Suppress PulseAudio warnings for the unused HDMI controller. The Pi 4 exposes
+# two HDMI controllers via DT (vc4-hdmi-0, vc4-hdmi-1) but the kiosk only uses
+# HDMI0. The unused vc4-hdmi-1 has no audio profile, so on every kiosk start
+# PulseAudio's module-alsa-card fails to load it and logs:
+#   module-alsa-card.c: Failed to find a working profile.
+#   module.c: Failed to load module "module-alsa-card" (... platform-fef05700.hdmi ...)
+# We tell udev to mark this card with PULSE_IGNORE=1 so module-udev-detect
+# skips it. Idempotent install — only writes/triggers the rule when missing.
+UDEV_RULE=/etc/udev/rules.d/91-pulse-ignore-unused-hdmi.rules
+if [ ! -f "$UDEV_RULE" ]; then
+    echo "Installing udev rule to silence unused-HDMI PulseAudio warnings..."
+    sudo tee "$UDEV_RULE" > /dev/null <<'EORULE'
+# Mark the unused vc4-hdmi-1 ALSA card as PulseAudio-ignored on Pi 4 kiosk.
+# Without this rule, PulseAudio logs "Failed to find a working profile" on
+# every start because no sink is plugged into HDMI1.
+SUBSYSTEM=="sound", KERNEL=="card?", ATTR{id}=="vc4hdmi1", ENV{PULSE_IGNORE}="1"
+EORULE
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --subsystem-match=sound
+fi
+
 # Kill any existing PulseAudio and clean up stale socket
 echo "Cleaning up existing PulseAudio processes..."
 sudo killall pulseaudio 2>/dev/null || true
