@@ -61,12 +61,21 @@ for i, item in enumerate(items):
     # Video files live in data/media/. They may legitimately be absent
     # right after a fresh prep_golden_image (which clears media/), so
     # SKIP this test if the media directory is empty rather than fail.
+    #
+    # Path resolution: playlist YAML paths like "media/foo.mp4" are
+    # relative to the kiosk's DATA dir (cpp_root/data/), NOT the
+    # install root. This mirrors path_resolver.cpp's behavior — the
+    # kiosk tries the sibling media/ directory of the playlist dir
+    # (playlists live at data/playlists/, so the sibling media/
+    # resolves to data/playlists/../media/ = data/media/). cd into
+    # data/ before the existence check so the relative path "media/x"
+    # lands at data/media/x correctly.
     run pi_ssh "
         if [ ! -d $PI_INSTALL_ROOT/data/media ] || [ -z \"\$(ls -A $PI_INSTALL_ROOT/data/media 2>/dev/null)\" ]; then
             echo 'SKIP_REASON: data/media/ empty (post-prep golden state)'
             exit 77
         fi
-        cd $PI_INSTALL_ROOT
+        cd $PI_INSTALL_ROOT/data
         missing=0
         for f in $PI_PLAYLISTS_DIR/*.yaml $PI_PLAYLISTS_DIR/*.yml; do
             [ -f \"\$f\" ] || continue

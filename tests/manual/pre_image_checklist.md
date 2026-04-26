@@ -10,9 +10,9 @@ Run through this checklist before generating a golden image. Print or open on a 
 
 ## Phase 0 — Automated suite green
 
-- [ ] `./tests/run_all.sh` exit code 0 (no failures)
-- [ ] Any skipped tests are intentional (no controller absent etc.)
-- [ ] Any warnings reviewed and accepted
+- [x] `./tests/run_all.sh` exit code 0 (no failures) — *one test (#33 video path linkage) failed initially due to a path-resolution bug in the test itself; fixed in this session, now green*
+- [x] Any skipped tests are intentional (no controller absent etc.) — *9 skips: settings.json reference (no Pi build artifact locally), 3 joystick-absent tests, 7 RetroArch-launch tests skipped because joystick required to launch them*
+- [x] Any warnings reviewed and accepted — *none*
 
 ## Phase 1 — Hardware sanity (faceplate stack)
 
