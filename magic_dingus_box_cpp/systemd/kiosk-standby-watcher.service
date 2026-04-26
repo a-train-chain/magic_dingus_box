@@ -1,0 +1,28 @@
+[Unit]
+Description=Magic Dingus Box - Kiosk Standby Watcher (GPIO 3 toggle switch)
+# Start after the kiosk + services so initial reconcile finds the
+# right "currently running" state. On boot the watcher will stop the
+# kiosk service if the switch is in OFF position; otherwise it
+# leaves it running.
+After=magic-dingus-box-cpp.service magic-dingus-services.service magic-dingus-web.service
+# We don't Want= or Require= those services — we just CONTROL them.
+# This unit's role is to be the source of truth for whether they should
+# be running based on physical switch position.
+
+[Service]
+Type=simple
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/kiosk_standby_watcher.sh
+# Restart on any failure — gpiomon shouldn't exit unexpectedly, but
+# if it does (e.g. transient GPIO chardev issue), the watcher must
+# come back so the switch keeps working.
+Restart=always
+RestartSec=2
+# The watcher needs root to call systemctl stop/start on system
+# services and to read GPIO 3 via pinctrl/gpiomon. The script does
+# minimal privileged work; everything else is process spawning.
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
