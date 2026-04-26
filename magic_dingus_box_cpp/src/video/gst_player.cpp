@@ -53,11 +53,43 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
         }
     };
 
+    // Helper to disable a decoder by setting its rank to NONE so
+    // playbin skips it during auto-plugging. Used for known-broken
+    // hardware decoders that advertise support but fail at negotiation.
+    auto disable_decoder = [](const char* name, const char* reason) {
+        GstRegistry* registry = gst_registry_get();
+        GstPluginFeature* feature = gst_registry_lookup_feature(registry, name);
+        if (feature) {
+            gst_plugin_feature_set_rank(feature, GST_RANK_NONE);
+            LOG_INFO("Disabled decoder '{}' ({})", name, reason);
+            gst_object_unref(feature);
+        }
+    };
+
     // Prefer hardware accelerated decoders when available
     promote_decoder("v4l2h264dec", "V4L2 H.264");
     promote_decoder("v4l2h265dec", "V4L2 H.265");
     promote_decoder("v4l2vp8dec", "V4L2 VP8");
     promote_decoder("v4l2vp9dec", "V4L2 VP9");
+
+    // Pi 4's V4L2 stateless H.265 decoder (gst-plugins-bad >= 1.20)
+    // is broken on the current kernel/firmware combination: it
+    // advertises HEVC support, gets picked by playbin's auto-plugger
+    // (primary rank), then fails at pixel-format negotiation with
+    // "Unsupported pixel format" — and playbin gives up rather than
+    // falling back to a working decoder. Symptom is "state change to
+    // PLAYING failed" on every HEVC file. Disabling it here forces
+    // playbin to use avdec_h265 (libav, software-decoded) which
+    // works fine for the 1080p HEVC bitrates we see in practice
+    // (~3 Mbps, well under what an aarch64 Pi 4 core can handle).
+    //
+    // Tradeoff: we lose hardware decode for HEVC content. For the
+    // kiosk's typical 720p/1080p Bluray content this is fine —
+    // softdec on Pi 4 for an 8-bit Main-profile 1080p HEVC stream
+    // uses ~30-50% of one core, well within budget. If/when the
+    // V4L2 driver is fixed upstream we can remove this line.
+    disable_decoder("v4l2slh265dec",
+                    "Pi 4 V4L2 stateless HEVC: pixel-format negotiation broken");
 
     // Create playbin with RAII wrapper
     auto playbin = make_element("playbin", "playbin");
