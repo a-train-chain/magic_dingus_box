@@ -7,6 +7,8 @@
 #include <thread>
 #include <vector>
 
+namespace media_browser { class QbittorrentClient; }
+
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 
@@ -54,7 +56,14 @@ namespace media_browser::ui {
 //     second confirm binding lands.
 class QueueScreen : public MbScreen {
 public:
-    explicit QueueScreen(RadarrClient& radarr);
+    // qbit is optional — pass nullptr to fall back to Radarr-cached
+    // progress (useful for tests / dev machines without qBit).
+    // When provided, QueueScreen overlays qBit's real-time progress
+    // onto Radarr's queue items by matching downloadId → qBit hash,
+    // eliminating the "frozen percent" gap caused by Radarr's 30-60s
+    // internal poll cadence against qBit.
+    explicit QueueScreen(RadarrClient& radarr,
+                         QbittorrentClient* qbit = nullptr);
     ~QueueScreen();
 
     void enter() override;
@@ -89,7 +98,8 @@ private:
     // Cancel the focused row on the Radarr side, then refresh().
     void do_cancel_focused();
 
-    RadarrClient& radarr_;
+    RadarrClient&      radarr_;
+    QbittorrentClient* qbit_ = nullptr;
 
     std::vector<QueueItem> queue_;
 

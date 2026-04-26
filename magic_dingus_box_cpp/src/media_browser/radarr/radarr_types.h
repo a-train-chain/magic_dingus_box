@@ -45,6 +45,11 @@ struct QueueItem {
     int64_t sizeleft_bytes = 0;
     std::string state;           // "queued", "downloading", "completed", "failed"
     int eta_seconds = 0;
+    // Radarr's downloadId for this queue item — uppercase hex string
+    // matching the qBit info_hash. Used by QueueScreen to merge live
+    // qBit progress data over Radarr's stale snapshot. Empty when the
+    // download client doesn't expose a hash (rare; mostly Usenet).
+    std::string download_id;
 };
 
 struct QualityProfile {

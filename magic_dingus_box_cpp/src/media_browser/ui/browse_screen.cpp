@@ -161,16 +161,28 @@ void BrowseScreen::enter() {
         loaded_ = true;
     }
 
-    // Cache library + quality profiles once so BTN2 quick-add doesn't
-    // refetch on every press. Refreshed after a successful add.
-    if (services_ok_ && !library_cached_) {
+    // Always re-fetch the library on (re-)entry so the "in library"
+    // cache reflects any adds/removes that happened on Detail since
+    // we were last visible. Without this, removing a movie via Detail
+    // → Confirm Remove leaves a stale entry in library_tmdb_ids_, and
+    // the user gets "Already in library" toasts when re-adding the
+    // same movie. Same cost (one Radarr GET, ~200ms) and same
+    // pattern LibraryScreen::enter() already uses.
+    //
+    // Quality profiles are cached separately because they don't change
+    // when adds/removes happen — only when the user reconfigures
+    // quality profiles in Radarr's settings UI, which is rare enough
+    // that we accept staleness. Refresh once on first entry.
+    if (services_ok_) {
         auto lib = radarr_.get_library();
         library_tmdb_ids_.clear();
         for (const auto& m : lib) {
             if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
         }
-        quality_profiles_ = radarr_.get_quality_profiles();
-        library_cached_ = true;
+        if (!library_cached_) {
+            quality_profiles_ = radarr_.get_quality_profiles();
+            library_cached_ = true;
+        }
     }
 }
 

@@ -141,13 +141,17 @@ void SearchScreen::enter() {
     keyboard_.open("", "Search Movies",
                    /*on_enter=*/nullptr, /*on_cancel=*/nullptr);
 
-    // Cache library + profiles for BTN2 quick-add, once per screen enter.
+    // Always re-fetch the library on (re-)entry — same reasoning as
+    // BrowseScreen::enter(). Without this, a movie removed via Detail
+    // still shows up as "in library" in search results and BTN2 add
+    // gets blocked with "Already in library." Quality profiles are
+    // cached separately because they don't change on adds/removes.
+    auto lib = radarr_.get_library();
+    library_tmdb_ids_.clear();
+    for (const auto& m : lib) {
+        if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
+    }
     if (!library_cached_) {
-        auto lib = radarr_.get_library();
-        library_tmdb_ids_.clear();
-        for (const auto& m : lib) {
-            if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
-        }
         quality_profiles_ = radarr_.get_quality_profiles();
         library_cached_ = true;
     }

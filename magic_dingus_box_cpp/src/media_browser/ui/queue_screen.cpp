@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -186,7 +187,8 @@ std::string format_bytes(int64_t b) {
 
 }  // namespace
 
-QueueScreen::QueueScreen(RadarrClient& radarr) : radarr_(radarr) {}
+QueueScreen::QueueScreen(RadarrClient& radarr, QbittorrentClient* qbit)
+    : radarr_(radarr), qbit_(qbit) {}
 
 QueueScreen::~QueueScreen() {
     // Wait for any in-flight worker before destruction so we don't
@@ -263,6 +265,56 @@ void QueueScreen::run_refresh() {
         if (m.has_file) continue;
         if (active_movie_ids.count(m.radarr_id) > 0) continue;
         r.awaiting.push_back(std::move(m));
+    }
+
+    // Live-data overlay: pull current per-torrent stats from qBit
+    // directly and merge them into the queue items by hash. Radarr
+    // caches qBit's data on a 30-60s internal poll cycle, which makes
+    // the kiosk's progress bar appear "frozen" between Radarr refreshes;
+    // going direct gives us per-second updates. We keep Radarr's
+    // identity fields (title, movie_id, queue id, poster) and only
+    // override the live-changing telemetry (progress, dlspeed, peers,
+    // seeds, eta, sizeleft, state).
+    if (qbit_) {
+        auto qbit_map = qbit_->get_torrents_by_hash();
+        if (!qbit_map.empty()) {
+            for (auto& q : r.queue) {
+                if (q.download_id.empty()) continue;
+                // Radarr emits uppercase hash; qBit normalizes to
+                // lowercase. Convert to match.
+                std::string key = q.download_id;
+                std::transform(key.begin(), key.end(), key.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                auto it = qbit_map.find(key);
+                if (it == qbit_map.end()) continue;
+                const auto& qt = it->second;
+                q.progress           = qt.progress;
+                q.download_rate_bps  = qt.dlspeed;
+                q.upload_rate_bps    = qt.upspeed;
+                q.peers              = qt.num_leechs;
+                q.seeds              = qt.num_seeds;
+                q.size_bytes         = qt.size;
+                q.sizeleft_bytes     = qt.size - qt.downloaded;
+                q.eta_seconds        = qt.eta_seconds;
+                // Translate qBit's state names to the Radarr-style
+                // single-word vocabulary the renderer expects.
+                if (qt.state == "downloading" || qt.state == "stalledDL"
+                    || qt.state == "metaDL" || qt.state == "queuedDL"
+                    || qt.state == "checkingDL" || qt.state == "allocating") {
+                    q.state = qt.state == "downloading" ? "downloading"
+                            : qt.state == "stalledDL"   ? "stalled"
+                            : "queued";
+                } else if (qt.state == "uploading" || qt.state == "pausedUP"
+                           || qt.state == "stalledUP" || qt.state == "queuedUP"
+                           || qt.state == "checkingUP" || qt.state == "forcedUP") {
+                    q.state = "completed";
+                } else if (qt.state == "error" || qt.state == "missingFiles") {
+                    q.state = "failed";
+                } else if (qt.state == "pausedDL") {
+                    q.state = "paused";
+                }
+            }
+        }
     }
 
     r.error = r.queue.empty() ? radarr_.last_error() : std::string{};

@@ -11,6 +11,7 @@
 #include "ui/toast.h"
 #include "platform/sequence_detector.h"
 #include "media_browser/prowlarr/prowlarr_client.h"
+#include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/radarr/radarr_mock.h"
 #include "media_browser/tmdb_client.h"
@@ -573,12 +574,36 @@ int main(int /* argc */, char* /* argv */[]) {
         }
     }
 
+    // qBittorrent client — used by QueueScreen to overlay live
+    // download progress over Radarr's stale-cached queue snapshot.
+    // qBit always runs on localhost:8080 in our docker-compose setup;
+    // credentials come from MDB_QBIT_USER / MDB_QBIT_PASS env vars,
+    // or fall back to the docker-compose default (admin/adminadmin).
+    auto qbit_owned = std::make_unique<media_browser::QbittorrentClient>(
+        []() {
+            media_browser::QbittorrentClient::Config cfg;
+            if (const char* u = std::getenv("MDB_QBIT_USER"); u && *u) {
+                cfg.username = u;
+            }
+            if (const char* p = std::getenv("MDB_QBIT_PASS"); p && *p) {
+                cfg.password = p;
+            }
+            if (const char* url = std::getenv("MDB_QBIT_BASE_URL");
+                url && *url) {
+                cfg.base_url = url;
+            }
+            return cfg;
+        }());
+    std::cout << "[media_browser] qBittorrent client enabled "
+              << "(base_url=http://localhost:8080)" << std::endl;
+
     // Six screens — dispatcher owns one instance of each.
     media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get());
-    media_browser::ui::QueueScreen      mb_queue(radarr);
+    media_browser::ui::QueueScreen      mb_queue(radarr,
+                                                  qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state);
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox

@@ -136,6 +136,7 @@ std::vector<QueueItem> RadarrParsers::parse_queue(const std::string& json) {
         q.size_bytes = r.get("size", 0).asInt64();
         q.sizeleft_bytes = r.get("sizeleft", 0).asInt64();
         q.state = r.get("status", "").asString();
+        q.download_id = r.get("downloadId", "").asString();
         if (q.size_bytes > 0) {
             q.progress = static_cast<double>(q.size_bytes - q.sizeleft_bytes)
                          / static_cast<double>(q.size_bytes);
