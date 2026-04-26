@@ -197,6 +197,42 @@ def error_response(code: str, message: str, status: int = 400, details: Any = No
     return jsonify(response), status
 
 
+# ===== MEDIA BROWSER VISIBILITY GATE =====
+#
+# The kiosk has a "secret sequence" (BTN1+BTN3 chord → BTN2 × 3 → rotary click)
+# that flips media_browser_unlocked = true in settings.json. The Content
+# Manager's Media Browser tab — and every /admin/media-browser/* endpoint —
+# stays hidden / 403 until that flag is true. Default state on a fresh Pi is
+# locked, so ordinary users never see the feature exists.
+
+MEDIA_BROWSER_SETTINGS_PATH = "/opt/magic_dingus_box/config/settings.json"
+
+
+def _media_browser_unlocked() -> bool:
+    """Return True iff the kiosk's persisted media_browser_unlocked flag is set.
+
+    The flag lives at playback.media_browser_unlocked in
+    /opt/magic_dingus_box/config/settings.json. Any error (file missing,
+    malformed JSON, key missing) falls through to False — failure-closed by
+    design so a corrupted settings file can't accidentally expose the feature.
+    """
+    try:
+        with open(MEDIA_BROWSER_SETTINGS_PATH) as f:
+            settings = json.load(f)
+        return bool(settings.get("playback", {}).get("media_browser_unlocked", False))
+    except Exception:
+        return False
+
+
+def _media_browser_locked_response():
+    """Standard 403 response used by every guarded /admin/media-browser/* route."""
+    return error_response(
+        "media_browser_locked",
+        "Media Browser is currently locked",
+        status=403,
+    )
+
+
 # CSRF Token Storage (in-memory with expiration)
 # In production, consider using Redis or session storage
 _csrf_tokens: dict[str, float] = {}
@@ -2178,12 +2214,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
         env = _read_env_file(path)
         return bool(env.get("WIREGUARD_PRIVATE_KEY", "").strip())
 
+    @app.get("/admin/media-browser/visibility")
+    def media_browser_visibility():  # type: ignore[no-redef]
+        """Public — return whether the Media Browser tab should be rendered.
+
+        Always 200, never errors. The frontend uses this on page init to
+        decide whether to render the tab nav button + section at all. All
+        OTHER /admin/media-browser/* routes additionally enforce the same
+        check server-side and return 403 when locked.
+        """
+        return success_response(data={"visible": _media_browser_unlocked()})
+
     @app.get("/admin/media-browser/status")
     def media_browser_status():  # type: ignore[no-redef]
         """Return current Media Browser configuration + service health.
 
         Drives the 3-state UI: Not configured / Configuring / Configured.
         """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
         env_present = _env_has_wireguard_key(SERVICES_ENV)
         containers = _docker_ps_table()
         services_running = any(
@@ -2239,6 +2288,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         ('file' field) or as pasted text in the 'config_text' form field.
         Returns a job_id; clients poll /admin/media-browser/setup-status/<id>.
         """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
         if not SETUP_SERVICES_SCRIPT.exists():
             return error_response(
                 "setup_script_missing",
@@ -2345,6 +2396,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         success with status='unknown' rather than 404 so the frontend can fall
         back to the generic /admin/media-browser/status endpoint.
         """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
         job = media_browser_jobs.get(job_id)
         if not job:
             return success_response(data={
@@ -2374,6 +2427,383 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "started_at": job["started_at"],
             "elapsed_sec": int(time.time() - job["started_ts"]),
         })
+
+    @app.get("/admin/media-browser/credentials")
+    def media_browser_credentials():  # type: ignore[no-redef]
+        """Return Radarr / Prowlarr API keys + qBit admin password.
+
+        Operators use these to SSH-tunnel into the Pi and admin the services
+        directly (Radarr at :7878, Prowlarr at :9696, qBit at :8080).
+
+        Lazy-loaded by the frontend — only fetched when the operator opens
+        the "Show credentials" expander, never on routine status polls, to
+        avoid leaking secrets into background traffic.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+
+        env = _read_env_file(SERVICES_ENV)
+        radarr_key = env.get("RADARR_API_KEY", "").strip()
+        prowlarr_key = env.get("PROWLARR_API_KEY", "").strip()
+        qbit_password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
+
+        # Treat unset / placeholder values as "not ready". setup_services.sh
+        # writes __WILL_BE_SET_AFTER_FIRST_START__ initially and then patches
+        # in the real keys once Radarr+Prowlarr have generated them.
+        def _is_placeholder(value: str) -> bool:
+            return (
+                not value
+                or value.startswith("__WILL_BE_SET_AFTER_FIRST_START__")
+                or value.startswith("__")
+            )
+
+        if _is_placeholder(radarr_key) or _is_placeholder(prowlarr_key) or _is_placeholder(qbit_password):
+            return error_response(
+                "credentials_not_ready",
+                "Setup not yet complete",
+                status=400,
+            )
+
+        return success_response(data={
+            "radarr_api_key": radarr_key,
+            "prowlarr_api_key": prowlarr_key,
+            "qbittorrent_admin_username": env.get("QBITTORRENT_ADMIN_USERNAME", "admin"),
+            "qbittorrent_admin_password": qbit_password,
+        })
+
+    def _radarr_library_count(env: dict) -> int:
+        """Count movies in Radarr's library. Returns -1 on failure."""
+        api_key = env.get("RADARR_API_KEY", "").strip()
+        if not api_key or api_key.startswith("__"):
+            return -1
+        try:
+            result = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-H", f"X-Api-Key: {api_key}",
+                 "http://localhost:7878/api/v3/movie"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return -1
+            payload = json.loads(result.stdout)
+            return len(payload) if isinstance(payload, list) else -1
+        except Exception:
+            return -1
+
+    def _radarr_queue_summary(env: dict) -> dict:
+        """Return {count, active_dl_mbps}. Returns {-1, 0.0} on failure."""
+        api_key = env.get("RADARR_API_KEY", "").strip()
+        if not api_key or api_key.startswith("__"):
+            return {"count": -1, "active_dl_mbps": 0.0}
+        try:
+            result = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-H", f"X-Api-Key: {api_key}",
+                 "http://localhost:7878/api/v3/queue?pageSize=50"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return {"count": -1, "active_dl_mbps": 0.0}
+            payload = json.loads(result.stdout)
+            records = payload.get("records", []) if isinstance(payload, dict) else []
+            # Radarr reports speed in bytes/sec under varying keys depending on
+            # version — try the common ones, default to 0.
+            total_bps = 0.0
+            for r in records:
+                for k in ("downloadRate", "downloadSpeed", "speed"):
+                    if k in r and isinstance(r[k], (int, float)):
+                        total_bps += float(r[k])
+                        break
+            mbps = round((total_bps * 8) / 1_000_000, 2)
+            return {"count": len(records), "active_dl_mbps": mbps}
+        except Exception:
+            return {"count": -1, "active_dl_mbps": 0.0}
+
+    def _qbit_torrent_summary(env: dict) -> dict:
+        """Return {active, seeding} torrent counts. Returns {-1, -1} on failure."""
+        username = env.get("QBITTORRENT_ADMIN_USERNAME", "admin")
+        password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
+        if not password or password.startswith("__"):
+            return {"active": -1, "seeding": -1}
+        cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
+        cookie_jar.close()
+        try:
+            login = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-c", cookie_jar.name,
+                 "-d", f"username={username}&password={password}",
+                 "http://localhost:8080/api/v2/auth/login"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if login.returncode != 0 or "Ok." not in (login.stdout or ""):
+                return {"active": -1, "seeding": -1}
+            info = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-b", cookie_jar.name,
+                 "http://localhost:8080/api/v2/torrents/info"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if info.returncode != 0 or not info.stdout.strip():
+                return {"active": -1, "seeding": -1}
+            torrents = json.loads(info.stdout)
+            if not isinstance(torrents, list):
+                return {"active": -1, "seeding": -1}
+            seeding_states = {"uploading", "stalledUP", "queuedUP", "forcedUP", "checkingUP"}
+            seeding = sum(1 for t in torrents if t.get("state") in seeding_states)
+            return {"active": len(torrents), "seeding": seeding}
+        except Exception:
+            return {"active": -1, "seeding": -1}
+        finally:
+            try:
+                os.unlink(cookie_jar.name)
+            except Exception:
+                pass
+
+    def _qbit_listen_port(env: dict) -> int:
+        """Return qBit's currently-configured listen_port, or -1 on failure."""
+        username = env.get("QBITTORRENT_ADMIN_USERNAME", "admin")
+        password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
+        if not password or password.startswith("__"):
+            return -1
+        cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
+        cookie_jar.close()
+        try:
+            login = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-c", cookie_jar.name,
+                 "-d", f"username={username}&password={password}",
+                 "http://localhost:8080/api/v2/auth/login"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if login.returncode != 0 or "Ok." not in (login.stdout or ""):
+                return -1
+            prefs = subprocess.run(
+                ["curl", "-sS", "--max-time", "5",
+                 "-b", cookie_jar.name,
+                 "http://localhost:8080/api/v2/app/preferences"],
+                capture_output=True, text=True, timeout=6,
+            )
+            if prefs.returncode != 0 or not prefs.stdout.strip():
+                return -1
+            payload = json.loads(prefs.stdout)
+            return int(payload.get("listen_port", -1))
+        except Exception:
+            return -1
+        finally:
+            try:
+                os.unlink(cookie_jar.name)
+            except Exception:
+                pass
+
+    def _gluetun_forwarded_port() -> int:
+        """Return Gluetun's NAT-PMP forwarded port, 0 if unavailable, -1 on failure."""
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "mdb_gluetun", "wget", "-qO-",
+                 "http://localhost:8000/v1/openvpn/portforwarded"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                # /v1/openvpn/portforwarded is the canonical endpoint; older
+                # gluetun builds expose /v1/portforward instead. Try that as
+                # a fallback before giving up.
+                fallback = subprocess.run(
+                    ["docker", "exec", "mdb_gluetun", "wget", "-qO-",
+                     "http://localhost:8000/v1/portforward"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if fallback.returncode != 0 or not fallback.stdout.strip():
+                    return -1
+                payload = json.loads(fallback.stdout)
+            else:
+                payload = json.loads(result.stdout)
+            return int(payload.get("port", 0))
+        except Exception:
+            return -1
+
+    @app.get("/admin/media-browser/health-summary")
+    def media_browser_health_summary():  # type: ignore[no-redef]
+        """Aggregate one-shot health snapshot for the State C dashboard.
+
+        Manual-refresh only — no auto-poll on the frontend. Each external
+        call has a 5-sec timeout and is wrapped in try/except; any failing
+        field returns -1 / "unavailable" without breaking the others.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+
+        env = _read_env_file(SERVICES_ENV)
+        library_count = _radarr_library_count(env)
+        queue = _radarr_queue_summary(env)
+        qbit = _qbit_torrent_summary(env)
+        forwarded_port = _gluetun_forwarded_port()
+        qbit_listen = _qbit_listen_port(env)
+
+        if forwarded_port == -1:
+            port_status = "unavailable"
+        elif forwarded_port == 0:
+            port_status = "unavailable"
+        elif qbit_listen == -1:
+            port_status = "unavailable"
+        elif forwarded_port == qbit_listen:
+            port_status = "synced"
+        else:
+            port_status = "drift"
+
+        return success_response(data={
+            "library_count": library_count,
+            "queue_count": queue["count"],
+            "queue_active_dl_mbps": queue["active_dl_mbps"],
+            "qbit_active_torrents": qbit["active"],
+            "qbit_seeding_torrents": qbit["seeding"],
+            "vpn_forwarded_port": forwarded_port if forwarded_port > 0 else 0,
+            "vpn_port_status": port_status,
+        })
+
+    @app.post("/admin/media-browser/restart")
+    @require_csrf
+    def media_browser_restart():  # type: ignore[no-redef]
+        """Restart the magic-dingus-services systemd unit (~30 sec).
+
+        Runs `sudo -n systemctl restart magic-dingus-services.service` —
+        same path setup_services.sh uses, so it relies on the same NOPASSWD
+        sudoers rule.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+
+        try:
+            sudo_check = subprocess.run(
+                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
+            )
+            if sudo_check.returncode != 0:
+                return error_response(
+                    "sudo_required",
+                    "magic user must have NOPASSWD sudo configured",
+                    status=500,
+                )
+        except Exception:
+            return error_response(
+                "sudo_required",
+                "magic user must have NOPASSWD sudo configured",
+                status=500,
+            )
+
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "restart", "magic-dingus-services.service"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                return error_response(
+                    "restart_failed",
+                    (result.stderr or result.stdout or "systemctl restart failed").strip(),
+                    status=500,
+                )
+            return success_response(message="Services restarted")
+        except subprocess.TimeoutExpired:
+            return error_response("timeout", "Restart timed out after 120 seconds", status=504)
+        except Exception as e:
+            return error_response("restart_failed", str(e), status=500)
+
+    @app.post("/admin/media-browser/reset")
+    @require_csrf
+    def media_browser_reset():  # type: ignore[no-redef]
+        """Tear down the docker stack + wipe configuration. Movies on the SSD
+        library are NOT touched; only Radarr's metadata + service config is.
+
+        Requires confirmation token in JSON body to prevent accidental clicks
+        in dev tools / curl. After this completes, /status returns
+        configured=false → frontend transitions back to State A.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "RESET":
+            return error_response(
+                "confirmation_required",
+                'Reset requires {"confirm": "RESET"} in request body',
+                status=400,
+            )
+
+        try:
+            sudo_check = subprocess.run(
+                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
+            )
+            if sudo_check.returncode != 0:
+                return error_response(
+                    "sudo_required",
+                    "magic user must have NOPASSWD sudo configured",
+                    status=500,
+                )
+        except Exception:
+            return error_response(
+                "sudo_required",
+                "magic user must have NOPASSWD sudo configured",
+                status=500,
+            )
+
+        steps_completed = []
+
+        # 1. docker compose down — stop + remove containers + networks
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "docker", "compose", "down", "--remove-orphans"],
+                cwd=str(SERVICES_DIR),
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                # Non-fatal — proceed with file cleanup anyway so a stuck
+                # docker daemon can't strand a half-reset state.
+                steps_completed.append(
+                    f"compose_down_failed:{(result.stderr or result.stdout or '').strip()[:200]}"
+                )
+            else:
+                steps_completed.append("compose_down")
+        except Exception as e:
+            steps_completed.append(f"compose_down_exception:{e}")
+
+        # 2. Remove .env (drops VPN credentials + API keys)
+        try:
+            if SERVICES_ENV.exists():
+                SERVICES_ENV.unlink()
+            steps_completed.append("env_removed")
+        except Exception as e:
+            return error_response(
+                "reset_failed",
+                f"Could not remove {SERVICES_ENV}: {e}",
+                status=500,
+                details={"steps": steps_completed},
+            )
+
+        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/flaresolverr)
+        config_dirs_root = SERVICES_DIR / "config"
+        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "flaresolverr"]
+        for name in targets:
+            target = config_dirs_root / name
+            if not target.exists():
+                continue
+            try:
+                # Use sudo for cleanup since service containers run as a
+                # different uid and may have written root-owned state.
+                rm_result = subprocess.run(
+                    ["sudo", "-n", "find", str(target), "-mindepth", "1", "-delete"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if rm_result.returncode != 0:
+                    steps_completed.append(
+                        f"wipe_{name}_failed:{(rm_result.stderr or '').strip()[:120]}"
+                    )
+                else:
+                    steps_completed.append(f"wipe_{name}")
+            except Exception as e:
+                steps_completed.append(f"wipe_{name}_exception:{e}")
+
+        return success_response(
+            data={"steps": steps_completed},
+            message="Media Browser reset",
+        )
 
     # ===== SERVE WEB INTERFACE =====
 

@@ -169,7 +169,16 @@ let csrfToken = null;  // CSRF token for state-changing requests
 let globalVideoUsageMap = {};  // Track which videos are in which playlists
 
 // Sync legacy globals with AppState for backwards compatibility
-AppState.on('deviceChanged', (device) => { currentDevice = device; });
+AppState.on('deviceChanged', (device) => {
+    currentDevice = device;
+    // Re-evaluate Media Browser tab visibility for the newly-connected device.
+    // The tab + bottom-nav buttons are hidden by default in index.html and
+    // only revealed when /admin/media-browser/visibility returns visible:true,
+    // which the kiosk's secret-sequence unlock toggles.
+    if (device) {
+        checkMediaBrowserVisibility().catch(e => console.warn('MB visibility check failed:', e));
+    }
+});
 AppState.on('devicesUpdated', (devices) => { discoveredDevices = devices; });
 AppState.on('videosUpdated', (videos) => { availableVideos = videos; });
 AppState.on('romsUpdated', (roms) => { availableROMs = roms; });
@@ -5323,6 +5332,22 @@ function _renderMediaBrowserStatus(data) {
     // Configured — render State C
     _mbShowState('configured');
 
+    // Make sure the credentials expander + reset modal are wired (DOM may not
+    // have existed at DOMContentLoaded time on slow page loads).
+    _wireMediaBrowserCredentialsExpander();
+    _wireMediaBrowserResetModal();
+
+    // Reset health summary panel on each State C entry — operator must
+    // press Refresh to populate it, by design (no auto-poll).
+    const summaryEl = document.getElementById('mbHealthSummary');
+    if (summaryEl) {
+        summaryEl.innerHTML = '<span class="loading">Click Refresh to load…</span>';
+    }
+    // Collapse + reset credentials so they don't leak across device switches
+    const credExpander = document.getElementById('mbCredentialsExpander');
+    if (credExpander) credExpander.open = false;
+    mbCredentialsLoaded = false;
+
     const titleEl = document.getElementById('mbConfiguredTitle');
     if (titleEl) {
         if (data.services_running) {
@@ -5594,6 +5619,418 @@ function reconfigureMediaBrowser() {
     _mbShowState('notconfigured');
     _setupMediaBrowserDropZone();
 }
+
+// ===== MEDIA BROWSER VISIBILITY GATE =====
+//
+// The Media Browser tab is hidden by default in index.html (display: none on
+// the tab nav button + bottom-nav button + tab section). It's only revealed
+// when /admin/media-browser/visibility returns visible:true, which mirrors the
+// kiosk's persisted media_browser_unlocked flag set via the secret sequence.
+// The backend ALSO enforces this server-side — every other /admin/media-browser/*
+// endpoint returns 403 when the flag is false — so this hide is purely UX
+// polish to keep the feature invisible to users-not-in-the-know.
+
+async function checkMediaBrowserVisibility() {
+    if (!currentDevice) return false;
+
+    let visible = false;
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/media-browser/visibility`);
+        const data = await response.json();
+        visible = !!(data && data.ok && data.data && data.data.visible === true);
+    } catch (e) {
+        console.warn('Media Browser visibility check failed (treating as locked):', e);
+        visible = false;
+    }
+
+    const tabBtn = document.getElementById('mbTabNavBtn');
+    const bottomNavBtn = document.getElementById('mbBottomNavBtn');
+    const tabSection = document.getElementById('mediabrowser');
+
+    if (visible) {
+        if (tabBtn) tabBtn.style.display = '';
+        if (bottomNavBtn) bottomNavBtn.style.display = '';
+        if (tabSection) tabSection.style.display = '';
+    } else {
+        if (tabBtn) tabBtn.style.display = 'none';
+        if (bottomNavBtn) bottomNavBtn.style.display = 'none';
+        if (tabSection) {
+            tabSection.style.display = 'none';
+            tabSection.classList.remove('active');
+        }
+        // If the user happened to be on the MB tab when the device disconnected
+        // / locked, bounce them back to Videos.
+        if (tabBtn && tabBtn.classList.contains('active')) {
+            const videosTabBtn = document.querySelector('.tab[data-tab="videos"]');
+            if (videosTabBtn) videosTabBtn.click();
+        }
+    }
+
+    return visible;
+}
+
+// ===== MEDIA BROWSER STATE C ENRICHMENT =====
+//
+// Health summary, credentials expander, restart, reset — all gated by the
+// same visibility check. Frontend lazy-fetches credentials only when the
+// expander is opened (so creds don't leak into routine traffic) and the
+// health summary is manual-refresh only.
+
+let mbCredentialsLoaded = false;     // cache flag — re-fetch on each open
+let mbResetModalWired = false;
+let mbCredentialsExpanderWired = false;
+
+async function refreshMediaBrowserHealthSummary() {
+    if (!currentDevice) return;
+    const target = document.getElementById('mbHealthSummary');
+    const button = document.getElementById('mbHealthRefreshBtn');
+    if (!target) return;
+
+    target.innerHTML = '<span class="loading">Loading…</span>';
+    if (button) button.disabled = true;
+
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/media-browser/health-summary`);
+        target.innerHTML = _renderHealthSummaryRows(data);
+    } catch (e) {
+        console.error('Health summary fetch failed:', e);
+        target.innerHTML = `<span class="loading" style="color: var(--error);">Failed to load: ${escapeHtml(e.message || String(e))}</span>`;
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+function _renderHealthSummaryRows(d) {
+    const fmt = (v, fallback = '—') => (v === -1 || v === null || v === undefined) ? fallback : v;
+
+    // Library
+    const libRow = `
+        <div class="health-row">
+            <span class="health-label">Library</span>
+            <span class="health-value">${escapeHtml(String(fmt(d.library_count, 'unavailable')))}${d.library_count >= 0 ? ' movies' : ''}</span>
+        </div>`;
+
+    // Queue (active downloads + speed)
+    let queueText = 'unavailable';
+    if (d.queue_count >= 0) {
+        const speedSuffix = d.queue_active_dl_mbps > 0 ? ` (${d.queue_active_dl_mbps.toFixed(1)} Mbps)` : '';
+        queueText = `${d.queue_count} active${speedSuffix}`;
+    }
+    const queueRow = `
+        <div class="health-row">
+            <span class="health-label">Queue</span>
+            <span class="health-value">${escapeHtml(queueText)}</span>
+        </div>`;
+
+    // qBittorrent torrents
+    let qbitText = 'unavailable';
+    if (d.qbit_active_torrents >= 0) {
+        qbitText = `${d.qbit_active_torrents} torrents`;
+        if (d.qbit_seeding_torrents >= 0) qbitText += ` (${d.qbit_seeding_torrents} seeding)`;
+    }
+    const qbitRow = `
+        <div class="health-row">
+            <span class="health-label">qBittorrent</span>
+            <span class="health-value">${escapeHtml(qbitText)}</span>
+        </div>`;
+
+    // VPN port
+    let portColor = 'var(--text-primary)';
+    let portText = 'unavailable';
+    if (d.vpn_port_status === 'synced') {
+        portColor = 'var(--success)';
+        portText = `${d.vpn_forwarded_port} ✓ synced`;
+    } else if (d.vpn_port_status === 'drift') {
+        portColor = 'var(--accent)';
+        portText = `${d.vpn_forwarded_port} ⚠ drift`;
+    } else {
+        portColor = 'var(--error)';
+        portText = 'unavailable';
+    }
+    const portRow = `
+        <div class="health-row">
+            <span class="health-label">VPN port</span>
+            <span class="health-value" style="color: ${portColor};">${escapeHtml(portText)}</span>
+        </div>`;
+
+    return libRow + queueRow + qbitRow + portRow;
+}
+
+// ----- Credentials expander (lazy-loaded) -----
+
+function _wireMediaBrowserCredentialsExpander() {
+    if (mbCredentialsExpanderWired) return;
+    const expander = document.getElementById('mbCredentialsExpander');
+    if (!expander) return;
+    expander.addEventListener('toggle', () => {
+        if (expander.open && !mbCredentialsLoaded) {
+            _loadMediaBrowserCredentials();
+        }
+    });
+    mbCredentialsExpanderWired = true;
+}
+
+async function _loadMediaBrowserCredentials() {
+    if (!currentDevice) return;
+    const body = document.getElementById('mbCredentialsBody');
+    if (!body) return;
+
+    body.innerHTML = '<span class="loading">Loading credentials…</span>';
+
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/media-browser/credentials`);
+        const result = await response.json();
+        if (!result.ok) {
+            const msg = result.error?.code === 'credentials_not_ready'
+                ? 'Setup not yet complete — credentials not yet available.'
+                : (result.error?.message || 'Failed to load credentials');
+            body.innerHTML = `<span class="loading" style="color: var(--accent);">${escapeHtml(msg)}</span>`;
+            return;
+        }
+        const data = result.data || {};
+        body.innerHTML = _renderCredentialsHTML(data);
+        // Wire up Show + Copy buttons after they're in the DOM
+        body.querySelectorAll('[data-mb-toggle]').forEach(btn => {
+            btn.addEventListener('click', () => _toggleCredentialReveal(btn));
+        });
+        body.querySelectorAll('[data-mb-copy]').forEach(btn => {
+            btn.addEventListener('click', () => _copyCredentialValue(btn));
+        });
+        mbCredentialsLoaded = true;
+    } catch (e) {
+        console.error('Credentials load failed:', e);
+        body.innerHTML = `<span class="loading" style="color: var(--error);">Failed to load: ${escapeHtml(e.message || String(e))}</span>`;
+    }
+}
+
+function _renderCredentialsHTML(d) {
+    // Each value is masked with a placeholder; the real value lives in
+    // data-mb-value on the row so [Show] / [Copy] can read it without
+    // putting it in the rendered DOM until the operator asks.
+    const row = (label, url, value, idSuffix, showCopyOnly = false) => {
+        const safeValue = String(value || '');
+        return `
+        <div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 4px;">
+            <div style="font-weight: 600; color: var(--accent2); margin-bottom: 0.25rem;">${escapeHtml(label)}</div>
+            ${url ? `<div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><code>${escapeHtml(url)}</code></div>` : ''}
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace;">
+                <span id="mbCred${idSuffix}Display" style="flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${'•'.repeat(Math.min(20, Math.max(8, safeValue.length)))}</span>
+                ${showCopyOnly ? '' : `<button class="btn-secondary small" data-mb-toggle="${idSuffix}" data-mb-value="${escapeHtml(safeValue)}" data-mb-revealed="0">👁 Show</button>`}
+                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(safeValue)}">📋 Copy</button>
+            </div>
+        </div>`;
+    };
+
+    const username = d.qbittorrent_admin_username || 'admin';
+    return [
+        row('Radarr', 'http://localhost:7878  (via SSH tunnel)', d.radarr_api_key, 'Radarr'),
+        row('Prowlarr', 'http://localhost:9696  (via SSH tunnel)', d.prowlarr_api_key, 'Prowlarr'),
+        // qBit username is non-secret — show it directly
+        `<div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 4px;">
+            <div style="font-weight: 600; color: var(--accent2); margin-bottom: 0.25rem;">qBittorrent</div>
+            <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><code>http://localhost:8080  (via SSH tunnel)</code></div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace; margin-bottom: 0.5rem;">
+                <span style="flex: 1 1 200px;">Username: <strong>${escapeHtml(username)}</strong></span>
+                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(username)}">📋 Copy</button>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace;">
+                <span style="flex: 1 1 200px;">Password: <span id="mbCredQbitPwDisplay">${'•'.repeat(Math.min(20, Math.max(8, (d.qbittorrent_admin_password || '').length)))}</span></span>
+                <button class="btn-secondary small" data-mb-toggle="QbitPw" data-mb-value="${escapeHtml(d.qbittorrent_admin_password || '')}" data-mb-revealed="0">👁 Show</button>
+                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(d.qbittorrent_admin_password || '')}">📋 Copy</button>
+            </div>
+        </div>`,
+    ].join('');
+}
+
+function _toggleCredentialReveal(btn) {
+    const idSuffix = btn.dataset.mbToggle;
+    const display = document.getElementById(`mbCred${idSuffix}Display`);
+    const revealed = btn.dataset.mbRevealed === '1';
+    if (!display) return;
+    if (revealed) {
+        const len = (btn.dataset.mbValue || '').length;
+        display.textContent = '•'.repeat(Math.min(20, Math.max(8, len)));
+        btn.textContent = '👁 Show';
+        btn.dataset.mbRevealed = '0';
+    } else {
+        display.textContent = btn.dataset.mbValue || '';
+        btn.textContent = '🙈 Hide';
+        btn.dataset.mbRevealed = '1';
+    }
+}
+
+async function _copyCredentialValue(btn) {
+    const value = btn.dataset.mbValue || '';
+    if (!value) return;
+    try {
+        await navigator.clipboard.writeText(value);
+    } catch (e) {
+        // Fallback for browsers without clipboard API (rare in CM context)
+        const tmp = document.createElement('textarea');
+        tmp.value = value;
+        document.body.appendChild(tmp);
+        tmp.select();
+        try { document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(tmp);
+    }
+    const original = btn.textContent;
+    btn.textContent = '✓ Copied';
+    btn.disabled = true;
+    setTimeout(() => {
+        btn.textContent = original;
+        btn.disabled = false;
+    }, 1200);
+}
+
+// ----- Restart -----
+
+async function restartMediaBrowserServices() {
+    if (!currentDevice) return;
+    const button = document.getElementById('mbRestartBtn');
+    const status = document.getElementById('mbActionStatus');
+    if (!button) return;
+
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Restarting…';
+    if (status) {
+        status.style.display = 'block';
+        status.style.color = 'var(--text-secondary)';
+        status.textContent = 'Restarting services (this can take ~30 seconds)…';
+    }
+
+    await fetchCsrfToken();
+
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/media-browser/restart`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': csrfToken || '' },
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            throw new Error(result.error?.message || 'Restart failed');
+        }
+        if (status) {
+            status.style.color = 'var(--success)';
+            status.textContent = '✓ Services restarted';
+        }
+        showNotification('Services restarted', 'success');
+        // Wait a beat, then re-fetch /status so the container table reflects
+        // the new "Up 0 minutes" / "starting" states.
+        setTimeout(() => refreshMediaBrowserStatus(), 2000);
+    } catch (e) {
+        console.error('Restart failed:', e);
+        if (status) {
+            status.style.color = 'var(--error)';
+            status.textContent = `Restart failed: ${e.message || e}`;
+        }
+        showNotification(`Restart failed: ${e.message || e}`, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
+    }
+}
+
+// ----- Reset (with confirmation modal) -----
+
+function openMediaBrowserResetModal() {
+    _wireMediaBrowserResetModal();
+    const modal = document.getElementById('mbResetModal');
+    const input = document.getElementById('mbResetConfirmInput');
+    const confirmBtn = document.getElementById('mbResetConfirmBtn');
+    if (!modal) return;
+    if (input) input.value = '';
+    if (confirmBtn) confirmBtn.disabled = true;
+    modal.classList.add('active');
+    if (input) setTimeout(() => input.focus(), 50);
+}
+
+function closeMediaBrowserResetModal() {
+    const modal = document.getElementById('mbResetModal');
+    if (modal) modal.classList.remove('active');
+}
+
+function _wireMediaBrowserResetModal() {
+    if (mbResetModalWired) return;
+    const cancelBtn = document.getElementById('mbResetCancelBtn');
+    const confirmBtn = document.getElementById('mbResetConfirmBtn');
+    const input = document.getElementById('mbResetConfirmInput');
+    if (cancelBtn) cancelBtn.addEventListener('click', closeMediaBrowserResetModal);
+    if (input) {
+        input.addEventListener('input', () => {
+            if (confirmBtn) confirmBtn.disabled = (input.value.trim().toUpperCase() !== 'RESET');
+        });
+    }
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', async () => {
+            await _confirmMediaBrowserReset();
+        });
+    }
+    mbResetModalWired = true;
+}
+
+async function _confirmMediaBrowserReset() {
+    if (!currentDevice) return;
+    const confirmBtn = document.getElementById('mbResetConfirmBtn');
+    const cancelBtn = document.getElementById('mbResetCancelBtn');
+    const status = document.getElementById('mbActionStatus');
+
+    if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Resetting…';
+    }
+    if (cancelBtn) cancelBtn.disabled = true;
+
+    await fetchCsrfToken();
+
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/media-browser/reset`, {
+            method: 'POST',
+            headers: {
+                'X-CSRF-Token': csrfToken || '',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ confirm: 'RESET' }),
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            throw new Error(result.error?.message || 'Reset failed');
+        }
+        showNotification('Media Browser reset', 'success');
+        if (status) {
+            status.style.display = 'block';
+            status.style.color = 'var(--success)';
+            status.textContent = '✓ Reset complete — returning to setup screen';
+        }
+        closeMediaBrowserResetModal();
+        // Force a fresh status fetch so the frontend transitions back to
+        // State A (drop-zone). mbCredentialsLoaded reset so the next setup
+        // doesn't show stale creds.
+        mbCredentialsLoaded = false;
+        mbForceSetupView = false;
+        setTimeout(() => refreshMediaBrowserStatus(), 800);
+    } catch (e) {
+        console.error('Reset failed:', e);
+        showNotification(`Reset failed: ${e.message || e}`, 'error');
+        if (status) {
+            status.style.display = 'block';
+            status.style.color = 'var(--error)';
+            status.textContent = `Reset failed: ${e.message || e}`;
+        }
+    } finally {
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = 'Confirm Reset';
+        }
+        if (cancelBtn) cancelBtn.disabled = false;
+    }
+}
+
+// Wire State C interactions when DOM is ready (idempotent — uses internal flags)
+document.addEventListener('DOMContentLoaded', () => {
+    _wireMediaBrowserCredentialsExpander();
+    _wireMediaBrowserResetModal();
+});
 
 // Add event listeners for "Add Empty Slot" buttons and filters
 document.addEventListener('DOMContentLoaded', () => {

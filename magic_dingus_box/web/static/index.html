@@ -86,7 +86,7 @@
         <nav class="tabs" id="topTabs">
             <button class="tab active" data-tab="videos">📹 Videos & Playlists</button>
             <button class="tab" data-tab="roms">🎮 ROMs & Games</button>
-            <button class="tab" data-tab="mediabrowser">🎬 Media Browser</button>
+            <button class="tab" data-tab="mediabrowser" id="mbTabNavBtn" style="display: none;">🎬 Media Browser</button>
             <button class="tab" data-tab="settings">⚙️ Settings</button>
         </nav>
 
@@ -376,8 +376,8 @@
             </div>
         </section>
 
-        <!-- Media Browser Tab -->
-        <section id="mediabrowser" class="tab-content">
+        <!-- Media Browser Tab (hidden by default; revealed by checkMediaBrowserVisibility()) -->
+        <section id="mediabrowser" class="tab-content" style="display: none;">
             <div class="view-header">
                 <h3>Media Browser</h3>
                 <button class="btn-secondary small" onclick="refreshMediaBrowserStatus()">Refresh</button>
@@ -462,17 +462,73 @@
                     <h4 style="margin: 0.75rem 0 0.5rem 0; color: var(--accent2);">Services</h4>
                     <div id="mbContainerTable" class="health-info"></div>
 
-                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
-                        <p class="settings-description" style="font-size: 0.8rem;">
-                            Need to swap VPN credentials or change provider?
-                        </p>
+                    <!-- System Health summary (Radarr library / queue / qBit / VPN port) -->
+                    <div style="margin-top: 1.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h4 style="margin: 0; color: var(--accent2);">System Health</h4>
+                            <button class="btn-secondary small" onclick="refreshMediaBrowserHealthSummary()" id="mbHealthRefreshBtn" title="Refresh health summary">↻ Refresh</button>
+                        </div>
+                        <div id="mbHealthSummary" class="health-info">
+                            <span class="loading">Click Refresh to load…</span>
+                        </div>
+                    </div>
+
+                    <!-- Credentials expander (lazy-loaded; never auto-fetched) -->
+                    <details id="mbCredentialsExpander" style="margin-top: 1.5rem;">
+                        <summary style="cursor: pointer; color: var(--accent2); font-weight: 600; padding: 0.5rem 0;">
+                            🔐 Service Credentials
+                        </summary>
+                        <div style="padding: 0.75rem 0;">
+                            <p class="settings-description" style="color: var(--accent); font-size: 0.85rem;">
+                                ⚠ Save these somewhere safe — they grant admin access to the services.
+                            </p>
+                            <div id="mbCredentialsBody">
+                                <span class="loading">Loading credentials…</span>
+                            </div>
+                        </div>
+                    </details>
+
+                    <!-- Restart + Reset destructive actions -->
+                    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color); display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button class="btn-secondary small" id="mbRestartBtn" onclick="restartMediaBrowserServices()">
+                            ↻ Restart Services
+                        </button>
                         <button class="btn-secondary small" onclick="reconfigureMediaBrowser()">
-                            Reconfigure
+                            ⚙ Reconfigure
+                        </button>
+                        <button class="btn-secondary small" id="mbResetBtn" onclick="openMediaBrowserResetModal()" style="color: var(--error); border-color: var(--error);">
+                            ⚠ Reset Media Browser
                         </button>
                     </div>
+                    <div id="mbActionStatus" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
                 </div>
             </div>
         </section>
+
+        <!-- Media Browser Reset confirmation modal -->
+        <div id="mbResetModal" class="modal">
+            <div class="modal-content">
+                <h3>⚠ Reset Media Browser?</h3>
+                <p>
+                    This will stop all services, wipe API keys + configuration. Movies on the SSD library
+                    will <strong>NOT</strong> be deleted, but Radarr will lose track of them. You'll need
+                    to provide a fresh WireGuard config to re-activate.
+                </p>
+                <p style="margin-top: 1rem;">
+                    Type <strong>RESET</strong> to confirm:
+                </p>
+                <input type="text" id="mbResetConfirmInput" placeholder="Type RESET"
+                    style="width: 100%; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; font-family: monospace; margin-top: 0.5rem;"
+                    autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
+                <div class="modal-actions" style="margin-top: 1rem;">
+                    <button id="mbResetCancelBtn" type="button" class="btn-secondary">Cancel</button>
+                    <button id="mbResetConfirmBtn" type="button" class="btn-primary" disabled
+                        style="background: var(--error); border-color: var(--error);">
+                        Confirm Reset
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <!-- Settings Tab -->
         <section id="settings" class="tab-content">
@@ -571,7 +627,7 @@
             <span class="nav-icon">🎮</span>
             <span>Games</span>
         </button>
-        <button class="bottom-nav-item" data-tab="mediabrowser">
+        <button class="bottom-nav-item" data-tab="mediabrowser" id="mbBottomNavBtn" style="display: none;">
             <span class="nav-icon">🎬</span>
             <span>Movies</span>
         </button>
@@ -593,7 +649,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=49"></script>
+    <script src="/static/manager.js?v=50"></script>
 
 </body>
 
