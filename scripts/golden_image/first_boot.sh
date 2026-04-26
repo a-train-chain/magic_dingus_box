@@ -237,6 +237,35 @@ else
     log "[6/7] services/ not present; nothing to clean (Pi without Media Browser)"
 fi
 
+# Reset media_browser_unlocked in settings.json. The kiosk has a built-in
+# "secret sequence" that gates the entire Media Browser feature visibility
+# (BTN1+BTN3 chord → BTN2 × 3 → rotary click). When the source Pi was
+# being used to build the golden image, that flag was likely flipped to
+# true and persisted. Cloned Pis would inherit "unlocked" state and show
+# the Media Browser chip — defeating the "users won't know the feature
+# exists" UX intent. Reset the flag here so cloned Pis start locked.
+SETTINGS_PATH="${INSTALL_DIR}/config/settings.json"
+if [[ -f "$SETTINGS_PATH" ]] && command -v python3 &>/dev/null; then
+    python3 -c "
+import json, sys
+try:
+    with open('$SETTINGS_PATH') as f:
+        s = json.load(f)
+    pb = s.get('playback', {})
+    if pb.get('media_browser_unlocked', False):
+        pb['media_browser_unlocked'] = False
+        s['playback'] = pb
+        with open('$SETTINGS_PATH', 'w') as f:
+            json.dump(s, f, indent=2)
+        print('reset media_browser_unlocked → false')
+    else:
+        print('media_browser_unlocked already false (or absent)')
+except Exception as e:
+    print(f'could not reset: {e}', file=sys.stderr)
+" 2>&1 | sed 's/^/    /' || true
+    log "[6/7] Reset media_browser_unlocked flag (cloned Pi starts locked)"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)
 # ---------------------------------------------------------------------------
