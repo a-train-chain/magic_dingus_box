@@ -681,12 +681,25 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
             // Percentage — right-aligned next to the bar, in the fill
             // color so the user's eye associates the number with the
-            // progress hue.
+            // progress hue. One decimal place ("3.8%") rather than
+            // integer ("4%"): pieces in a multi-GB torrent are 4-8 MB
+            // each = ~0.05% per piece. Integer rounding made progress
+            // appear to "jump" from 1% to 3% because 5+ pieces would
+            // complete between display updates. Tenths give the user
+            // continuous visual feedback that things are moving.
             int pct_size = th.font_small_size;
             int pct_baseline = r.mb_text_baseline(pct_size);
             char pct_buf[16];
-            snprintf(pct_buf, sizeof(pct_buf), "%d%%",
-                     static_cast<int>(pct * 100.0 + 0.5));
+            // Special-case 100% (no decimal — "100.0%" is overkill) and
+            // 0% (don't show "0.0%" while a torrent is queued, just "0%")
+            double pct100 = pct * 100.0;
+            if (pct100 >= 99.95) {
+                snprintf(pct_buf, sizeof(pct_buf), "100%%");
+            } else if (pct100 < 0.05) {
+                snprintf(pct_buf, sizeof(pct_buf), "0%%");
+            } else {
+                snprintf(pct_buf, sizeof(pct_buf), "%.1f%%", pct100);
+            }
             std::string pct_text = pct_buf;
             int pct_text_w = r.mb_text_width(pct_text, pct_size);
             // Right-align the percentage inside its reserved label slot
