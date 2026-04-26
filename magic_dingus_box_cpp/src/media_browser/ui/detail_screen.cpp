@@ -222,6 +222,28 @@ void DetailScreen::enter() {
     remove_pending_ = false;
     banner_.clear();
     focus_ = 0;
+
+    // Skip the refetch when we're re-entering the SAME movie's detail
+    // screen with already-loaded data (e.g. user just exited playback
+    // and is bouncing back here, or popped Settings). The TMDB call is
+    // ~6s over the VPN and frequently times out under load — making the
+    // user wait through "Loading..." just to land back on identical
+    // content is the worst UX in the app.
+    //
+    // needs_refresh_ is set ONLY by set_tmdb_id() when the id actually
+    // changes (header line 89-94), so this is safe — every legitimate
+    // movie-change still triggers a fresh fetch. do_retry() and the
+    // post-add path call fetch() directly, bypassing this short-circuit
+    // when they explicitly want a reload.
+    const bool have_loaded_data = (mode_ != Mode::Loading
+                                && mode_ != Mode::Error
+                                && mode_ != Mode::NoTmdb);
+    if (!needs_refresh_ && have_loaded_data) {
+        spdlog::info("[DetailScreen] enter: reusing cached data for tmdb_id={}",
+                     tmdb_id_);
+        return;
+    }
+
     needs_refresh_ = true;
     mode_ = Mode::Loading;
     fetch();

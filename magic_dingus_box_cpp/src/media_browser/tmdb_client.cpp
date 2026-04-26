@@ -81,13 +81,19 @@ int TmdbClient::extract_year(const std::string& date) {
 }
 
 std::string TmdbClient::http_get(const std::string& url) {
-    // Up to 2 attempts with backoff. Observed in production: TMDB calls
-    // through ProtonVPN's NL exit occasionally fail TLS handshake with
-    // CURLE_SSL_CONNECT_ERROR (35) — typically a transient VPN-egress
-    // issue or Cloudflare rate-limit on the exit IP. A single retry
-    // 250ms later almost always succeeds without the user ever seeing
-    // the "Nothing here yet" empty state.
-    constexpr int kMaxAttempts = 2;
+    // Up to 3 attempts with backoff. Observed in production:
+    //   1. TMDB calls through ProtonVPN's NL exit occasionally fail TLS
+    //      handshake with CURLE_SSL_CONNECT_ERROR (35) — typically a
+    //      transient VPN-egress issue or Cloudflare rate-limit on the
+    //      exit IP.
+    //   2. Under concurrent artwork-cache pressure (a Browse page can
+    //      enqueue 18+ poster downloads while DetailScreen also fires a
+    //      JSON fetch), the JSON call can stall behind in-flight image
+    //      transfers and exceed the prior 10s timeout — which surfaced
+    //      as "couldn't fetch movie info" toasts after exiting playback.
+    // A 250ms first retry handles the SSL flake; a 1s second retry
+    // gives the connection time to drain after artwork bursts.
+    constexpr int kMaxAttempts = 3;
     std::string body;
     long http_code = 0;
     CURLcode rc = CURLE_OK;
@@ -120,9 +126,12 @@ std::string TmdbClient::http_get(const std::string& url) {
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
         // Separate connect-timeout from total-timeout so a slow first
         // packet (TLS handshake) is bounded independently of the
-        // overall budget. 5s is generous for TMDB's CDN.
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
+        // overall budget. 8s connect handles a slow VPN-tunnel TLS
+        // handshake; 25s total gives the request room to complete even
+        // when concurrent artwork transfers are saturating the link
+        // (the prior 10s budget was tripping under that load).
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        25L);
         curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
 
         rc = curl_easy_perform(curl);
@@ -136,7 +145,11 @@ std::string TmdbClient::http_get(const std::string& url) {
                          attempt + 1,
                          rc != CURLE_OK ? curl_easy_strerror(rc)
                                         : ("HTTP " + std::to_string(http_code)).c_str());
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            // Backoff: 250ms after first failure (handles SSL/TLS flake);
+            // 1000ms after second failure (lets the link drain if it was
+            // congested by concurrent transfers).
+            const int backoff_ms = (attempt == 0) ? 250 : 1000;
+            std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
         }
     }
 
