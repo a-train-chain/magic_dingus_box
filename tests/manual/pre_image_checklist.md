@@ -178,8 +178,120 @@ Verify the drag-handle + drop indicator work on **both** playlist editors:
 - [ ] Same title + artist input editing fidelity
 - [ ] Same ▲ / ▼ and ✕ buttons work
 
+## Phase 10 — Media Browser (movie discovery + playback)
+
+The kiosk's Media Browser sub-mode talks to a Docker stack (Radarr / Prowlarr / qBittorrent / Gluetun / FlareSolverr) for movie discovery + downloading + playback. **Skip this entire phase if you intentionally don't ship the Media Browser feature on this image.**
+
+### Browse screen (9-col 2-row poster grid)
+- [ ] Enter Media Browser → BrowseScreen comes up **instantly** (async TMDB fetch — no 6 sec freeze)
+- [ ] Grid renders **2 full rows of posters** (18 visible)
+- [ ] Posters are ~119×178 px, clearly identifiable
+- [ ] Only the **focused poster** has a gold border + bright title; other 17 titles dimmed (alpha 0.55)
+- [ ] Rotate / D-pad navigation through the grid is smooth
+- [ ] Switch chips (Popular → Now Playing → Top Rated → Upcoming) — each loads a fresh grid in 1-7 sec; "Loading..." appears immediately during the wait
+
+### Pagination + dedupe
+- [ ] Initial page 1 lands first (~20 movies), then page 2 silently appends a few seconds later (~40 total)
+- [ ] Scroll cursor down past 2nd row — "Loading more..." appears in steel-blue at the bottom
+- [ ] New posters appear underneath (reaches 60-100 movies max per category)
+- [ ] No exact duplicate posters anywhere in the grid (dedupe by tmdb_id)
+- [ ] Switching to a different category mid-scroll resets cleanly (no stale results bleed in)
+
+### Detail screen (async + cache reuse)
+- [ ] Tap a poster → DetailScreen shows "Loading..." instantly (no UI freeze)
+- [ ] Title / synopsis / runtime fill in 1-7 sec
+- [ ] Press BTN4 (back) to return to Browse, then re-tap **same** poster → **opens instantly** (cache reused — no second fetch)
+- [ ] Tap a different poster → fresh fetch with "Loading..." (different tmdb_id triggers refresh)
+- [ ] Mid-fetch, hit BTN4 to back out → no crash, no stale data later
+
+### Search screen
+- [ ] From home strip, navigate to Search chip
+- [ ] Type a query via virtual keyboard (or external keyboard)
+- [ ] After ~500 ms of typing pause, "Searching..." appears, then results land 1-5 sec later
+- [ ] No UI freeze while typing
+- [ ] Type rapidly to invalidate previous query — only the latest results show
+- [ ] Add-to-library button is **gated** until library cache loads (first entry to Search shows "Loading library..." briefly)
+
+### Add to library
+- [ ] On a movie not in library: BTN2 (quick-add) → toast: "Added to library"
+- [ ] Movie appears in Radarr; download starts within ~30 sec
+- [ ] Indexer search runs across the configured set (TPB, YTS, LimeTorrents, TorrentDownload — verify in Prowlarr's log: `docker logs mdb_prowlarr --since 1m`)
+- [ ] **Custom Format scoring works**: HEVC releases rejected with "x265/HEVC 1080p+ is not wanted" (check Radarr's Interactive Search for the movie if available)
+
+### Queue screen
+- [ ] Active downloads appear in Queue with **live progress** (% updates every ~3 sec)
+- [ ] Pulsing green dot on actively-downloading items
+- [ ] MB/s counter updates in real time
+- [ ] Completed downloads disappear from Queue + appear in Library
+
+### Detail → Play → back
+- [ ] On a movie WITH file: BTN1 (Play) → PlaybackScreen
+- [ ] Movie starts playing within ~3 sec
+- [ ] Rotary encoder seeks (slow turn ≈ 5s, fast turn ≈ 120s)
+- [ ] L/R triggers ±10 sec
+- [ ] C-stick ±5 sec
+- [ ] Press BTN4 to exit playback → returns to **same** DetailScreen instantly (no re-fetch, no "Loading...")
+
+### Confirm Remove (4-step orphan-proof)
+- [ ] On a movie in library, navigate to Remove → "Confirm Remove?" prompt
+- [ ] Confirm → Toast cycles through: "Cancelling queue items" → "Removing torrents" → "Removing from Radarr" → "Done"
+- [ ] Movie disappears from library on Pi (`ls /mnt/ssd/library/` no longer shows it)
+- [ ] qBit no longer has the torrent (`docker exec mdb_qbittorrent ...` if curious)
+- [ ] No orphan files left behind
+
+### Family-safe filter (porn block)
+- [ ] Search a benign term like "deep throat" — surface legitimate films (e.g., Deep Throat 1972) but no porn-studio results
+- [ ] Family-friendly: TMDB lists exclude `adult: true` entries
+
+## Phase 11 — Pre-clone golden-image readiness
+
+Before running `prepare_for_cloning.sh` on this Pi, verify the cloned image will reproduce the source's state correctly.
+
+### Codified fixtures present
+```bash
+ssh PI 'ls -la /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/data/'
+```
+- [ ] `prowlarr_indexers.json` (9 entries)
+- [ ] `prowlarr_tags.json` (1 entry: cloudflare)
+- [ ] `prowlarr_indexerproxies.json` (1 entry: FlareSolverr)
+- [ ] `prowlarr_applications.json` (1 entry: Radarr)
+- [ ] `radarr_custom_formats.json` (6 entries)
+- [ ] `radarr_downloadclients.json` (1 entry: qBittorrent)
+- [ ] `radarr_qualitydefinitions.json` (30 entries)
+- [ ] `qbit_categories.json` (1 entry: radarr)
+
+### setup_services.sh idempotency
+- [ ] Extract Steps 11-17 from setup_services.sh into a standalone test script and run on Pi
+- [ ] All steps report "unchanged" (live state already matches fixtures)
+- [ ] Manually break ONE thing (e.g., `curl -X PUT ... disable an indexer`), re-run — drift is corrected
+- [ ] Re-run a third time — clean again
+
+### Live clone tooling round-trip (DESTRUCTIVE — kills services briefly)
+**Skip if you're going straight to the real clone.** This validates that `prepare_for_cloning.sh` and `restore_after_cloning.sh` cleanly cycle without disrupting state.
+
+```bash
+# From Mac, with the Pi running:
+./scripts/golden_image/clone_live_sd.sh --dry-run
+```
+- [ ] Script runs prepare → skips dd → runs restore
+- [ ] Source Pi services come back up
+- [ ] Library still on `/mnt/ssd/library/` (untouched)
+- [ ] device_info.json restored (hostname intact)
+- [ ] `magic-first-boot.service` is back to `disabled` state on source
+- [ ] No "in_progress" marker file left in `/var/lib/magic-dingus-box/cloning_backup/`
+
+### Storage check
+- [ ] Mac has at least 2× the SD card size free in `~/` (or wherever you'll output the .img.gz)
+- [ ] Pi's `/mnt/ssd/` library content is **whatever you want it to be** before cloning. The SSD doesn't go on the SD card image, but if you're going to share library state across Pis, set that up separately.
+
 ## Sign-off
 
 All Phases 0-7 complete and green: ____________________ (your initials)
 
-Image creation cleared. Run `prepare_golden_image.sh` next.
+Phase 10 (Media Browser) green: ____________________ (or N/A — no MB on this image)
+
+Phase 11 (clone readiness) green: ____________________
+
+Image creation cleared. Choose:
+- **Live clone (preserves source state)**: `./scripts/golden_image/clone_live_sd.sh`
+- **Destructive prep (resets source to defaults)**: `sudo ./scripts/golden_image/prepare_golden_image.sh` then `./scripts/golden_image/create_image.sh`

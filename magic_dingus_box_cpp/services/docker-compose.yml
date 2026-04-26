@@ -97,10 +97,23 @@ services:
       - ./config/gluetun:/gluetun
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "https://ifconfig.me"]
+      # Hit gluetun's own control server at /v1/publicip/ip rather than
+      # an external IP-check service. Two reasons:
+      #   1. ifconfig.me / api.ipify.org / etc. occasionally serve Cloudflare
+      #      challenge pages to ProtonVPN exit IPs, causing the healthcheck
+      #      to flap. When flapping, qBittorrent (which has
+      #      depends_on: gluetun: condition: service_healthy) refuses to
+      #      start, and `systemctl start magic-dingus-services` fails.
+      #   2. /v1/publicip/ip is gluetun's internal self-report of "I have a
+      #      working VPN tunnel and can resolve outbound traffic" — exactly
+      #      what we actually care about, with no third-party flakiness.
+      # Endpoint returns JSON with public_ip, country, etc.; non-empty 200
+      # response means the tunnel is up.
+      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "http://localhost:8000/v1/publicip/ip"]
       interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:5.0.3

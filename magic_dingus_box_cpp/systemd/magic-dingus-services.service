@@ -4,6 +4,19 @@ Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 
+# Skip starting the Docker stack on Pis where the Media Browser hasn't
+# been provisioned yet. .env contains the WireGuard private key + auto-
+# generated API keys; without it Gluetun fails (no VPN credentials),
+# qBittorrent fails (depends on Gluetun's network), and the unit ends
+# up in a noisy retry loop. ConditionPathExists makes the unit cleanly
+# skip with status "condition failed" — no error spam, no wasted CPU.
+#
+# When the operator provisions the Media Browser via the Content Manager
+# UI (drops in WireGuard config), .env is created and `systemctl start
+# magic-dingus-services` brings the stack up. From then on, every boot
+# starts services normally.
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes
