@@ -48,6 +48,17 @@ public:
     virtual std::vector<QueueItem> get_queue();
     virtual bool cancel_queue_item(int queue_id);
 
+    // Returns the distinct downloadId values (qBit info_hash) from
+    // every "grabbed" event in this movie's Radarr history. Used by
+    // DetailScreen::do_remove_confirm() to find torrents that may
+    // still be seeding in qBittorrent for a movie the user is
+    // deleting — the active-queue cancel path only catches downloads
+    // currently in progress; finished+seeding torrents don't appear
+    // there. Empty vector on error or when the movie has no history.
+    // Hashes are returned in lowercase for direct comparison with
+    // QbittorrentClient (which normalizes to lowercase internally).
+    virtual std::vector<std::string> get_movie_download_hashes(int movie_id);
+
     // Profiles
     virtual std::vector<QualityProfile> get_quality_profiles();
     virtual std::vector<RootFolder> get_root_folders();

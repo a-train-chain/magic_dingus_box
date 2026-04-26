@@ -20,6 +20,7 @@ public:
     bool trigger_search(int radarr_id) override;
     std::vector<QueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
+    std::vector<std::string> get_movie_download_hashes(int movie_id) override;
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
 

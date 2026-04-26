@@ -74,6 +74,20 @@ public:
     // hash for O(1) lookup against Radarr's downloadId field.
     std::unordered_map<std::string, QbitTorrent> get_torrents_by_hash();
 
+    // Delete a torrent from qBittorrent by info_hash. When delete_files
+    // is true, the partial-or-completed download files on disk are
+    // also removed (qBit's "Delete torrent and files" action). Used by
+    // DetailScreen::do_remove_confirm() to purge orphan torrents that
+    // a movie's Radarr-side remove wouldn't catch — specifically
+    // torrents that finished downloading and are now seeding (no
+    // longer in Radarr's active queue, but still pinning disk +
+    // upload bandwidth).
+    //
+    // Hash matching is case-insensitive — the caller can pass the
+    // value straight from Radarr's downloadId without normalizing.
+    // No-op (returns true) if no torrent with that hash exists.
+    virtual bool delete_torrent(const std::string& hash, bool delete_files);
+
     // Diagnostics
     const std::string& last_error() const { return last_error_; }
 

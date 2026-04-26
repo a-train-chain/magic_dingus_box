@@ -284,6 +284,40 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
     return out;
 }
 
+bool QbittorrentClient::delete_torrent(const std::string& hash,
+                                        bool delete_files) {
+    // Lazy-login if needed.
+    {
+        std::lock_guard<std::mutex> lk(cookie_mtx_);
+        if (sid_cookie_.empty()) {
+            if (!login_locked()) return false;
+        }
+    }
+
+    // qBit's /api/v2/torrents/delete takes a comma-separated list of
+    // hashes; we send a single one. Lowercase the input so the API
+    // matches qBit's internal storage convention.
+    std::string lower_hash = hash;
+    std::transform(lower_hash.begin(), lower_hash.end(), lower_hash.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    std::string body = "hashes=" + lower_hash
+                     + "&deleteFiles=" + (delete_files ? "true" : "false");
+    std::string resp = http_post("/api/v2/torrents/delete", body);
+
+    // qBit returns 200 with empty body on success, even when the hash
+    // doesn't exist (no-op). last_error_ is set by http_post if the
+    // call itself failed (network, 4xx, etc.).
+    if (!last_error_.empty()) {
+        spdlog::warn("[qbit] delete_torrent({}) failed: {}",
+                     lower_hash, last_error_);
+        return false;
+    }
+    spdlog::info("[qbit] delete_torrent({}, files={})",
+                 lower_hash, delete_files);
+    return true;
+}
+
 std::unordered_map<std::string, QbitTorrent>
 QbittorrentClient::get_torrents_by_hash() {
     auto list = get_torrents();

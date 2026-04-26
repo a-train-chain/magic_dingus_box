@@ -601,7 +601,8 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
-                                                  prowlarr_owned.get());
+                                                  prowlarr_owned.get(),
+                                                  qbit_owned.get());
     media_browser::ui::QueueScreen      mb_queue(radarr,
                                                   qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr);

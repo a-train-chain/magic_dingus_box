@@ -91,6 +91,13 @@ bool RadarrMockClient::cancel_queue_item(int id) {
     queue_.erase(it, queue_.end());
     return removed;
 }
+std::vector<std::string>
+RadarrMockClient::get_movie_download_hashes(int /*movie_id*/) {
+    // No history in the mock — DetailScreen tests that exercise the
+    // remove flow don't need any historical hashes; the live HTTP
+    // client's behavior is tested separately via the test_cli harness.
+    return {};
+}
 std::vector<QualityProfile> RadarrMockClient::get_quality_profiles() { return profiles_; }
 std::vector<RootFolder> RadarrMockClient::get_root_folders() {
     RootFolder rf; rf.id = 1; rf.path = "/library/Movies"; rf.free_space_bytes = 500'000'000'000;

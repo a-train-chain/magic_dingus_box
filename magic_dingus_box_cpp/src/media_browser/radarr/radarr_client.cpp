@@ -5,6 +5,7 @@
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <sstream>
@@ -263,6 +264,64 @@ bool RadarrClient::cancel_queue_item(int queue_id) {
     http_delete("/api/v3/queue/" + std::to_string(queue_id)
                 + "?removeFromClient=true&blocklist=false");
     return last_error_.empty();
+}
+
+std::vector<std::string>
+RadarrClient::get_movie_download_hashes(int movie_id) {
+    // Radarr's /api/v3/history endpoint takes movieId as a filter and
+    // returns events newest-first. We pull a generous pageSize because
+    // grabbed/imported/failed events for a single movie can pile up
+    // when the user re-grabs (e.g. cancelled the wrong release once
+    // and re-added). 50 entries covers any realistic re-grab chain.
+    auto resp = http_get("/api/v3/history?movieId="
+                         + std::to_string(movie_id)
+                         + "&pageSize=50");
+    if (resp.empty()) return {};
+
+    // Parse manually rather than going through RadarrParsers — we only
+    // need one specific field (downloadId) and the history shape is
+    // not used elsewhere, so adding a HistoryEntry type to radarr_types
+    // would be over-engineering. The body is a paged result with
+    // {records: [...], page, totalRecords}.
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(resp);
+    if (!Json::parseFromStream(rb, is, &root, &err)) {
+        last_error_ = "history parse error";
+        spdlog::warn("[radarr] history parse failed for movie {}: {}",
+                     movie_id, err);
+        return {};
+    }
+    const Json::Value* records = nullptr;
+    if (root.isObject() && root.isMember("records")) {
+        records = &root["records"];
+    } else if (root.isArray()) {
+        // Older Radarr versions return a bare array.
+        records = &root;
+    }
+    if (!records || !records->isArray()) return {};
+
+    // Collect distinct hashes; preserve insertion order so the most-
+    // recent grab gets cleaned up first (small UX win — qBit's delete
+    // is essentially synchronous from our perspective so this is
+    // mostly cosmetic in the spdlog output).
+    std::vector<std::string> out;
+    out.reserve(4);  // realistically 1-2 per movie
+    for (const auto& r : *records) {
+        if (!r.isObject()) continue;
+        std::string id = r.get("downloadId", "").asString();
+        if (id.empty()) continue;
+        // Lowercase normalize — Radarr emits uppercase hex, qBit hash
+        // comparison is case-insensitive in practice but we match
+        // QbittorrentClient's lowercase storage convention.
+        std::transform(id.begin(), id.end(), id.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (std::find(out.begin(), out.end(), id) == out.end()) {
+            out.push_back(std::move(id));
+        }
+    }
+    return out;
 }
 
 std::vector<QualityProfile> RadarrClient::get_quality_profiles() {

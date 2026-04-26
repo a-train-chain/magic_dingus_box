@@ -13,6 +13,7 @@
 namespace media_browser { class RadarrClient; }
 namespace media_browser { class TmdbClient; }
 namespace media_browser { class ProwlarrClient; }
+namespace media_browser { class QbittorrentClient; }
 
 namespace media_browser::ui {
 
@@ -64,8 +65,16 @@ public:
     // prowlarr is optional — pass nullptr when Prowlarr is unconfigured
     // or in unit tests. The screen still renders and library actions
     // still work; only the AVAILABILITY readout is suppressed.
+    //
+    // qbit is optional — pass nullptr in tests / dev machines without
+    // a qBittorrent instance. When provided, the Confirm Remove flow
+    // also purges any torrents qBit has for this movie (whether
+    // active or finished+seeding) so the disk doesn't accumulate
+    // orphan files. Without it, the existing "cancel queue items"
+    // path still runs, but won't catch finished torrents.
     DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
-                 ProwlarrClient* prowlarr = nullptr);
+                 ProwlarrClient* prowlarr = nullptr,
+                 QbittorrentClient* qbit = nullptr);
 
     // Set the tmdb_id of the movie the detail screen should display. The
     // dispatcher in main.cpp calls this just before transitioning to this
@@ -166,6 +175,7 @@ private:
     RadarrClient& radarr_;
     TmdbClient& tmdb_;
     ProwlarrClient* prowlarr_ = nullptr;
+    QbittorrentClient* qbit_ = nullptr;
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
 

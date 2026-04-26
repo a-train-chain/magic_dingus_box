@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "ui/renderer.h"
@@ -209,8 +210,9 @@ std::string join_with_bullet(const std::vector<std::string>& items) {
 }  // namespace
 
 DetailScreen::DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
-                           ProwlarrClient* prowlarr)
-    : radarr_(radarr), tmdb_(tmdb), prowlarr_(prowlarr) {
+                           ProwlarrClient* prowlarr,
+                           QbittorrentClient* qbit)
+    : radarr_(radarr), tmdb_(tmdb), prowlarr_(prowlarr), qbit_(qbit) {
     mode_ = Mode::Loading;
     rebuild_buttons();
 }
@@ -529,22 +531,30 @@ Screen DetailScreen::do_remove_confirm() {
         return Screen::Detail;
     }
 
-    // Three-step cleanup, in this order so each step's prerequisite has
+    // Four-step cleanup, in this order so each step's prerequisite has
     // happened before it runs:
     //
     //  1. Cancel any in-flight Radarr queue items for this movie. Each
     //     cancel uses removeFromClient=true, which tells Radarr to send
-    //     qBittorrent the delete-with-files command. Without this step
-    //     a Remove on a still-downloading or just-finished movie leaves
-    //     the torrent stuck in qBit forever (orphaned), eating disk and
-    //     upload bandwidth.
+    //     qBittorrent the delete-with-files command. This catches
+    //     downloads in progress (state=downloading/queued).
     //
-    //  2. Remove the movie record itself from Radarr's library, with
+    //  2. Purge any remaining qBit torrents associated with this movie
+    //     by walking Radarr's history. Step 1 only covers items in the
+    //     active queue — finished+seeding torrents (state=uploading on
+    //     qBit, no longer in Radarr's queue) slip through. Without this
+    //     step, removing a movie that has already been imported leaves
+    //     its torrent seeding forever, pinning disk + upload bandwidth
+    //     with no Radarr record to clean it up. We discovered this in
+    //     production: a HEVC release we cancelled and re-grabbed left
+    //     a 2.58 GB orphan that survived multiple Detail-Remove cycles.
+    //
+    //  3. Remove the movie record itself from Radarr's library, with
     //     delete_files=true so the imported copy in /library is also
-    //     cleaned up. Step 1 covers the qBit-side artifacts; step 2
+    //     cleaned up. Steps 1-2 cover the qBit-side artifacts; step 3
     //     covers Radarr's side and the host's library disk.
     //
-    //  3. Navigate back to the library view (the screen the user
+    //  4. Navigate back to the library view (the screen the user
     //     conceptually came from when they decided to remove).
     int radarr_id = movie_->radarr_id;
     int cancelled = 0;
@@ -567,20 +577,38 @@ Screen DetailScreen::do_remove_confirm() {
                      "before removing movie {}", cancelled, radarr_id);
     }
 
-    // If any queue cancel failed, do NOT proceed to remove the Radarr
-    // record. Removing the movie while a torrent is still in qBit
-    // creates the orphaned-torrent state we built this code to prevent
-    // — qBit keeps seeding the partial download forever, eating disk
-    // and upload bandwidth with no Radarr record to clean it up.
-    // Surface the failure to the user so they can retry, fix the qBit
-    // connection, or remove the Radarr record manually via the web UI
-    // once they've cleaned up qBit.
+    // If any queue cancel failed, do NOT proceed. Same reasoning as
+    // before: orphan-torrent state is worse than a "remove failed"
+    // toast. User can fix qBit connectivity and retry.
     if (cancel_failed > 0) {
         show_banner("Cancel failed for " + std::to_string(cancel_failed)
                     + " in-flight torrent(s). Movie not removed; "
                       "check qBittorrent connectivity and retry.");
         rebuild_buttons();
         return Screen::Detail;
+    }
+
+    // Step 2: history-walk + qBit delete for any historical torrent
+    // hashes Radarr remembers for this movie. This is the new path
+    // that catches finished+seeding torrents step 1 can't see. We
+    // collect every distinct downloadId from grabbed/imported events
+    // (typically 1-2 hashes per movie, more if the user re-grabbed)
+    // and ask qBit to remove each with deleteFiles=true. qBit's
+    // delete is a no-op when the hash isn't present, so this is safe
+    // to call even when the cleanup already happened via step 1.
+    if (qbit_) {
+        auto hashes = radarr_.get_movie_download_hashes(radarr_id);
+        int purged = 0;
+        for (const auto& h : hashes) {
+            if (qbit_->delete_torrent(h, /*delete_files=*/true)) {
+                ++purged;
+            }
+        }
+        if (!hashes.empty()) {
+            spdlog::info("[detail] purged {} of {} historical qBit "
+                         "torrent(s) for movie {}",
+                         purged, hashes.size(), radarr_id);
+        }
     }
 
     bool ok = radarr_.remove_movie(radarr_id, /*delete_files=*/true);
