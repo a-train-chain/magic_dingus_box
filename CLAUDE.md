@@ -178,9 +178,58 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - Rollback support if update fails
 - Triggered via web admin `/api/update/*` endpoints
 
+## Media Browser (Movie Playback + Downloads)
+
+The Media Browser is a sub-mode of the kiosk that provides movie discovery, downloads, and playback through a Radarr / Prowlarr / qBittorrent / Gluetun stack. Architecture summary:
+
+### Data flow
+
+- TMDB → BrowseScreen / SearchScreen (movie discovery)
+- Radarr → DetailScreen (library state, queue management)
+- Prowlarr → AVAILABILITY readout on Detail (release-search seeders, async background thread)
+- qBittorrent → QueueScreen live overlay (real-time progress; Radarr's queue cache is 30-60s stale)
+- Gluetun → VPN tunnel for all torrent traffic with NAT-PMP port forwarding
+- GStreamer playbin → PlaybackScreen (hardware H.264 decode preferred, software HEVC fallback)
+
+### Playback hardware notes
+
+- `v4l2h264dec` (Pi 4 hardware H.264) is rank-promoted and used by default
+- `v4l2slh265dec` (Pi 4 hardware HEVC) is **disabled** — has a pixel-format negotiation bug on this kernel; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile)
+- AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
+- Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
+
+### Quality configuration (3-layer enforcement)
+
+1. **Quality profile "Any"** — only allows 720p/1080p HDTV/WEB/Bluray (no SD, no 4K, no Remux)
+2. **Custom Format scoring** (sums vs `minFormatScore = -200`):
+   - AV1: -1000 / Remux: -500 / HEVC 1080p+: -250 / HDR: -200 (all rejected)
+   - x264: +50 / Trusted groups (YIFY/GalaxyRG/RARBG/SURGE): +30 (preferred)
+3. **Quality definition size limits**: 720p ≤60 MB/min, 1080p ≤100 MB/min
+
+Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, hardware-decoded smoothly.
+
+### Family-safe filter (R-rated kept, porn blocked, 3 layers)
+
+1. **TMDB request-side**: `include_adult=false` on all list endpoints
+2. **TMDB parser-side**: drops entries with `adult: true`; `parse_movie_detail` returns `nullopt` for adult IDs
+3. **Prowlarr search-side**: restricted to Newznab Movies categories (2000-2080); `kAdultMarkers` regex filter on result titles drops porn-studio watermarks (`brazzers`, `bangbros`, `naughty america`, `evil angel`, `kink.com`, `pornhub`, `blacked.com`, `vixen.com`, `xxx parody`, `pornstar`, etc.). Bare anatomical terms intentionally excluded so legitimate films like "Deep Throat (1972)" and "Sex and the City" still surface.
+
+### Confirm Remove flow (4-step orphan-proof cleanup)
+
+1. Cancel any active Radarr queue items for the movie
+2. Walk Radarr history → ask qBit to delete every torrent ever associated with the movie (catches finished+seeding torrents that step 1 misses)
+3. `Radarr.remove_movie(deleteFiles=true)` — removes movie record + library file
+4. Return to Library
+
+### Service operations
+
+- **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects.
+- **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
+- **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload, Magnetz. Cloudflare-protected indexers need the `cloudflare` tag mapped to FlareSolverr.
+
 ## Additional Documentation
 
-Extensive docs in `magic_dingus_box_cpp/docs/`:
+Extensive docs in `magic_dingus_box_cpp/docs/` (note: `docs/` is gitignored — these live on the Pi locally and are reference material, not tracked in the repo):
 - `ARCHITECTURE.md` - System design
 - `DISPLAY_MODES_USAGE.md` - CRT/Modern TV modes
 - `RETROARCH_INTEGRATION.md` - Emulator setup
@@ -189,3 +238,4 @@ Extensive docs in `magic_dingus_box_cpp/docs/`:
 - `PLAYLIST_FORMAT.md` - Playlist YAML schema
 - `GAME_CONTROLS.md` - Input mapping details
 - `USB_CONNECTION_GUIDE.md` - USB Ethernet Gadget setup
+- `MEDIA_BROWSER_PLAYBACK_AND_DOWNLOADS.md` - Deep dive on the Media Browser pipeline (full architecture, scoring tables, quality definitions, network topology, migration notes)
