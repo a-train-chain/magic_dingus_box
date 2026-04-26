@@ -80,11 +80,13 @@ private:
 
     static constexpr int kNumContentCategories = 5;  // Popular..Filter
     static constexpr int kNumCategories = 9;
-    // 5-column grid: lets the user see 5 posters per row instead of 4 so
-    // more of the catalogue is visible at a glance. Cell width is computed
-    // dynamically in render() from the column count + available width, so
-    // this is the only knob that needs to change.
-    static constexpr int kGridCols = 5;
+    // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
+    // (~119×178 px each) inside the available grid height of 532 px, with
+    // 45 px breathing room before the bottom bar. 18 posters visible per
+    // page = 3.6× the catalogue density of the prior 5-col layout. Cell
+    // width is computed dynamically in render() from the column count +
+    // available width, so this is the only knob that needs to change.
+    static constexpr int kGridCols = 9;
 
     static bool is_nav_chip(Category cat) {
         return static_cast<int>(cat) >= kNumContentCategories;

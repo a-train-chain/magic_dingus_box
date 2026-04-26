@@ -97,7 +97,11 @@ constexpr float kGridPaddingTop   = 18.0f;
 constexpr float kCellPaddingY     = 18.0f;
 constexpr float kCellGap          = 18.0f;    // horizontal gap between cells
 constexpr float kPosterAspect     = 1.5f;     // 2:3 portrait — TMDB poster aspect
-constexpr float kLabelAreaH       = 56.0f;    // title + year area below poster
+// 42 px label area: at 9-col density the prior 56 px chunk consumed 31% of
+// poster height and felt visually heavy. Trimming to 42 (≈24% of the new
+// 178 px poster height) keeps title + year readable without the label
+// dominating each cell.
+constexpr float kLabelAreaH       = 42.0f;    // title + year area below poster
 constexpr float kPosterBorderW    = 2.0f;
 
 // Hard-coded sort-by options. Keep small — TMDB supports more sorts but
@@ -1054,11 +1058,14 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                dot_w, dot_w, th.highlight1, 1.0f);
             }
 
-            // Title + year in the label area below the poster. Cream
-            // (fg) for the title, dim for the year — same hierarchy as
-            // DetailScreen's title/meta line. The narrower cell at 5
-            // columns means longer titles will truncate sooner; the
-            // existing truncate_to_width helper handles that.
+            // Title + year in the label area below the poster.
+            //
+            // Visual-weight strategy: at 9-col density we draw 18 titles
+            // per page; if every label is full-bright the grid screams.
+            // Quiet the UNFOCUSED labels (alpha 0.55) so they recede into
+            // the page; the focused cell's title pops in accent color at
+            // full alpha. Net effect: the eye lands on the focused movie
+            // immediately, the rest are legible-on-glance support.
             int title_size = th.font_medium_size;
             int title_baseline = r.mb_text_baseline(title_size);
             std::string title = truncate_to_width(
@@ -1067,8 +1074,9 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float title_y = cell_y + poster_h + 8.0f
                           + static_cast<float>(title_baseline);
             ::ui::Color title_color = focused ? th.accent : th.fg;
+            float title_alpha = focused ? 1.0f : 0.55f;
             r.mb_draw_text(title, cell_x, title_y, title_size, title_color,
-                           focused ? 1.0f : 0.9f);
+                           title_alpha);
 
             if (m.year > 0) {
                 std::string year = std::to_string(m.year);
@@ -1076,7 +1084,9 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 int year_baseline = r.mb_text_baseline(year_size);
                 float year_y = title_y + static_cast<float>(year_size) * 0.9f
                              + static_cast<float>(year_baseline) * 0.2f;
-                r.mb_draw_text(year, cell_x, year_y, year_size, th.dim, 0.9f);
+                float year_alpha = focused ? 0.9f : 0.5f;
+                r.mb_draw_text(year, cell_x, year_y, year_size, th.dim,
+                               year_alpha);
             }
         }
     }
