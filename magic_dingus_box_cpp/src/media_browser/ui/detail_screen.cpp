@@ -228,18 +228,23 @@ void DetailScreen::enter() {
 }
 
 void DetailScreen::fetch() {
+    // Async dispatch: clear visible state immediately so the user sees
+    // the right empty state for the new movie (not stale data from the
+    // previous one), set Mode::Loading so render() shows the spinner,
+    // bump the generation counter, then spawn a worker. The worker
+    // does the slow TMDB + Radarr calls off the render thread; the
+    // result is drained by apply_pending_detail() in a future update()
+    // tick. The TMDB call alone takes 6+ seconds over the VPN — running
+    // it sync froze the kiosk UI for 7-15s every poster tap.
+    //
+    // (See ProwlarrClient::search_async — it bumps its own generation
+    // counter so a stale in-flight Prowlarr search can't pin
+    // state==Searching when fetch() runs again. The Prowlarr search is
+    // re-kicked from apply_pending_detail() once the TMDB result is in.)
     needs_refresh_ = false;
     movie_.reset();
     tmdb_detail_.reset();
     banner_.clear();
-
-    // (See ProwlarrClient::search_async — it now bumps a generation
-    // counter so a stale in-flight search can't pin state==Searching
-    // when fetch() runs again. No explicit cancel needed here; the next
-    // search_async call below will happily start a new search even if
-    // a worker is still completing the previous one. Old worker's
-    // results will be discarded because their generation no longer
-    // matches.)
 
     if (tmdb_id_ == 0) {
         mode_ = Mode::NoTmdb;
@@ -247,64 +252,144 @@ void DetailScreen::fetch() {
         return;
     }
 
-    // 1) TMDB metadata — the primary source. Always try this first. We used
-    // to route through radarr_.lookup() (Radarr's SkyHook proxy to TMDB)
-    // but SkyHook on api.radarr.video has flaky transient 503s, which
-    // bricked the entire Detail screen even when Radarr itself was healthy.
-    auto detail = tmdb_.get_movie(tmdb_id_);
-    if (!detail) {
+    mode_ = Mode::Loading;
+    rebuild_buttons();
+    const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
+    spdlog::info("[DetailScreen] fetch: tmdb_id={} (gen={})",
+                 tmdb_id_, my_gen);
+    tmdb_workers_.emplace_back(&DetailScreen::run_fetch, this,
+                               my_gen, tmdb_id_);
+}
+
+void DetailScreen::run_fetch(uint64_t gen, int tmdb_id) {
+    // Captured-by-value: do the slow HTTP here. If the user backs out
+    // or retries before this returns, tmdb_current_gen_ will bump and
+    // our publish will be silently discarded. Each gen-check between
+    // calls is an early bail so we don't waste subsequent calls on a
+    // result nobody's going to consume.
+    DetailFetchResult r;
+
+    // 1) TMDB metadata — the primary source. We used to route through
+    // radarr_.lookup() (Radarr's SkyHook proxy to TMDB) but SkyHook on
+    // api.radarr.video has flaky transient 503s, which bricked the
+    // entire Detail screen even when Radarr itself was healthy.
+    r.detail = tmdb_.get_movie(tmdb_id);
+    r.detail_ok = r.detail.has_value();
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[DetailScreen] gen={} stale after TMDB; discarding",
+                     gen);
+        return;
+    }
+
+    // 2) Radarr library state — best-effort. If Radarr is unreachable
+    // we still render the Detail screen with TMDB metadata; only the
+    // mutating actions degrade (Add fails with a toast, etc.). The
+    // last_error() check matches the original sync path's heuristic:
+    // empty library + clean error == legitimately empty, not a failure.
+    r.library = radarr_.get_library();
+    r.radarr_library_error = radarr_.last_error();
+    r.library_ok = r.library.empty() ? r.radarr_library_error.empty() : true;
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[DetailScreen] gen={} stale after Radarr library; discarding",
+                     gen);
+        return;
+    }
+
+    // 3) Quality profiles — needed for Add. Cheap; only fetched when
+    // library reachability looked OK.
+    if (r.library_ok) {
+        r.profiles = radarr_.get_quality_profiles();
+        r.profiles_ok = true;
+    }
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[DetailScreen] gen={} stale after Radarr profiles; discarding",
+                     gen);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        // Recheck under the lock — apply_pending_detail() is the only
+        // other reader of tmdb_pending_, and we don't want to clobber a
+        // newer worker's published result.
+        if (gen != tmdb_current_gen_.load()) return;
+        tmdb_pending_ = std::move(r);
+    }
+    tmdb_result_ready_.store(true);
+}
+
+void DetailScreen::apply_pending_detail() {
+    if (!tmdb_result_ready_.load()) return;
+    DetailFetchResult incoming;
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        incoming = std::move(tmdb_pending_);
+    }
+    tmdb_result_ready_.store(false);
+
+    // Drain into live state. Order mirrors the original sync fetch so
+    // the eventual rebuild_buttons() sees a consistent mode_.
+    if (!incoming.detail_ok) {
         // TMDB itself failed — rare. Show an error with Retry.
         mode_ = Mode::Error;
         rebuild_buttons();
+        spdlog::info("[DetailScreen] applied pending: TMDB failure");
         return;
     }
-    tmdb_detail_ = *detail;
-
-    // 2) Radarr library state — optional. If Radarr is unreachable we still
-    // render the Detail screen with TMDB metadata; only the action buttons
-    // become best-effort (Add will fail with a toast, etc.).
-    auto library = radarr_.get_library();
-    bool library_ok = library.empty() ? radarr_.last_error().empty() : true;
+    tmdb_detail_ = std::move(incoming.detail);
 
     const Movie* found = nullptr;
-    if (library_ok) {
-        for (const auto& m : library) {
+    if (incoming.library_ok) {
+        for (const auto& m : incoming.library) {
             if (m.tmdb_id == tmdb_id_) { found = &m; break; }
         }
     }
 
     if (found) {
         movie_ = *found;
-        mode_ = found->has_file ? Mode::InLibraryWithFile : Mode::InLibraryNoFile;
+        mode_ = found->has_file ? Mode::InLibraryWithFile
+                                : Mode::InLibraryNoFile;
     } else {
         mode_ = Mode::NotInLibrary;
     }
 
-    // Best-effort fetch of quality profiles — needed for Add. Cheap; safe
-    // to call even when not strictly required.
-    if (library_ok) {
-        profiles_ = radarr_.get_quality_profiles();
+    if (incoming.profiles_ok) {
+        profiles_ = std::move(incoming.profiles);
     }
 
-    // If Radarr was unreachable, surface a non-blocking banner so the user
-    // knows mutating actions may fail.
-    if (!library_ok) {
+    if (!incoming.library_ok) {
         show_banner("Radarr service offline — adding to library may fail");
     }
 
-    // Kick off a Prowlarr availability check for movies the user could
-    // still add. We skip when the movie is already in library (the
-    // queue/library screens cover progress visibility) and when the
-    // mode is an error/loading variant (no point searching for a movie
-    // we don't have metadata for). The search runs on a background
-    // thread; render() polls the result each frame and updates the
-    // AVAILABILITY readout when it lands.
+    // Kick off the Prowlarr availability check now that TMDB metadata
+    // is in. We skip when the movie is already in library (the queue/
+    // library screens cover progress visibility) and when the mode is
+    // an error/loading variant (no point searching for a movie we
+    // don't have metadata for). The search runs on a separate
+    // background thread inside ProwlarrClient; render() polls its
+    // result each frame.
     if (prowlarr_ && mode_ == Mode::NotInLibrary && tmdb_detail_.has_value()) {
         const auto& d = *tmdb_detail_;
         prowlarr_->search_async(d.title, d.year);
     }
 
     rebuild_buttons();
+    spdlog::info("[DetailScreen] applied pending: mode={} title='{}'",
+                 static_cast<int>(mode_),
+                 tmdb_detail_.has_value() ? tmdb_detail_->title : "");
+}
+
+DetailScreen::~DetailScreen() {
+    // Bump gen so any in-flight worker sees its result is stale and
+    // bails before publishing. Then join all tracked workers so we
+    // don't have a thread holding references to *this after the
+    // screen is destroyed. Each worker is bounded by libcurl's ~10s
+    // timeout, so worst-case shutdown wait is ~10s; in practice
+    // workers complete in 1-7s.
+    tmdb_current_gen_.fetch_add(1);
+    for (auto& t : tmdb_workers_) {
+        if (t.joinable()) t.join();
+    }
 }
 
 void DetailScreen::rebuild_buttons() {
@@ -341,6 +426,10 @@ void DetailScreen::rebuild_buttons() {
 }
 
 void DetailScreen::update() {
+    // Drain a finished async fetch result first so the rest of update()
+    // (timer expiry, banner clear) sees the right mode_ for this frame.
+    apply_pending_detail();
+
     auto now = std::chrono::steady_clock::now();
     if (remove_pending_) {
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(

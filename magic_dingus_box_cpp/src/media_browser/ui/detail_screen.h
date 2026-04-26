@@ -1,8 +1,12 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "media_browser/prowlarr/prowlarr_client.h"
@@ -75,6 +79,7 @@ public:
     DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
                  ProwlarrClient* prowlarr = nullptr,
                  QbittorrentClient* qbit = nullptr);
+    ~DetailScreen();
 
     // Set the tmdb_id of the movie the detail screen should display. The
     // dispatcher in main.cpp calls this just before transitioning to this
@@ -148,11 +153,44 @@ private:
     // it falls outside the new range.
     void rebuild_buttons();
 
-    // TMDB-first metadata fetch. Populates tmdb_detail_, then resolves
-    // tmdb_id_ against the Radarr library to set movie_/mode_. Quality
-    // profiles are fetched best-effort. If Radarr is unreachable the screen
-    // still displays full TMDB metadata; only library actions degrade.
+    // TMDB-first metadata fetch. Async dispatch: spawns a worker that
+    // does the slow TMDB + Radarr HTTP calls off the render thread, then
+    // returns immediately. Results are drained by apply_pending_detail()
+    // in update() on a future tick. While the worker is in flight, mode_
+    // stays Mode::Loading and buttons_ is empty so SELECT no-ops cleanly.
+    //
+    // The TMDB call alone takes 6+ seconds over the VPN tunnel; before
+    // this was async, every poster tap froze the entire kiosk UI for
+    // 7-15 seconds. Mirrors BrowseScreen's async pattern (commit 8849b77).
     void fetch();
+
+    // Bundled output of run_fetch(). Each `*_ok` flag distinguishes
+    // "fetch failed" from "no result yet" so apply_pending_detail() can
+    // decide whether to enter Mode::Error or fall back gracefully on a
+    // best-effort field (Radarr unreachable still shows TMDB metadata).
+    struct DetailFetchResult {
+        std::optional<TmdbMovieDetail> detail;
+        std::vector<Movie>             library;
+        std::vector<QualityProfile>    profiles;
+        // Captured from radarr_.last_error() at the time get_library()
+        // returned an empty list. Mirrors the sync path's reachability
+        // heuristic (empty + clean error == empty library, not failure).
+        std::string                    radarr_library_error;
+        bool detail_ok   = false;
+        bool library_ok  = false;
+        bool profiles_ok = false;
+    };
+
+    // Worker entry — runs the synchronous TMDB + Radarr calls off-thread.
+    // Captures gen at spawn; if a newer fetch starts before this one
+    // returns, the result is silently discarded.
+    void run_fetch(uint64_t gen, int tmdb_id);
+
+    // Drain a completed worker's result into live state (movie_,
+    // tmdb_detail_, profiles_, mode_, buttons_) and kick off the
+    // Prowlarr availability search. Cheap atomic load most frames; only
+    // takes the lock when a result is ready to consume.
+    void apply_pending_detail();
 
     // Helpers that run on SELECT. Each returns the next Screen (often the
     // current one = Screen::Detail).
@@ -211,6 +249,30 @@ private:
     std::string banner_;
     std::chrono::steady_clock::time_point banner_at_{};
     static constexpr int kBannerMs = 2000;
+
+    // --- Async TMDB + Radarr fetch state ---------------------------------
+    // The TMDB get_movie() call takes 6+ seconds when egressing through
+    // the VPN, plus another ~1s for radarr_.get_library() and (first
+    // time) ~1s for get_quality_profiles(). Run synchronously this
+    // froze the entire kiosk UI for 7-15s every time the user tapped a
+    // poster. Worker thread does the HTTP off the render thread; render()
+    // shows Mode::Loading until apply_pending_detail() drains the result
+    // on a future update() tick.
+    //
+    // Generation counter pattern (same as BrowseScreen / ProwlarrClient):
+    // each call to fetch() bumps tmdb_current_gen_; the worker captures
+    // gen at spawn time and only publishes its result if tmdb_current_gen_
+    // still matches. This lets a rapid screen-swap or retry pre-empt a
+    // stale worker without blocking the UI on join. Older workers run to
+    // completion in the background and silently drop their results.
+    std::atomic<uint64_t> tmdb_current_gen_{0};
+    std::mutex            tmdb_result_mtx_;
+    DetailFetchResult     tmdb_pending_;
+    std::atomic<bool>     tmdb_result_ready_{false};
+    // All worker threads spawned during this screen's lifetime. Joined
+    // in the destructor so a worker mid-CURL doesn't outlive the
+    // DetailScreen and segfault when it tries to publish.
+    std::vector<std::thread> tmdb_workers_;
 };
 
 }  // namespace media_browser::ui
