@@ -142,19 +142,23 @@ void Controller::update_state(AppState& state) {
         return;
     }
     
-    state.position = get_position();
-    state.duration = get_duration();
+    state.update_playback_state(get_position(), get_duration());
     state.paused = is_paused();
-    
+
+    // Snapshot for the rest of this frame so we don't repeatedly take the lock
+    // and so we operate on a consistent (position, duration) pair.
+    const double cur_position = state.get_position();
+    const double cur_duration = state.get_duration();
+
     // Check if video is actually playing (mpv might report playing even before duration is available)
     bool mpv_playing = is_playing();
-    
+
     // Only set video_active to true if a file is actually loaded (duration > 0)
     // AND either it's playing or has a position > 0
     // During playlist switches, allow video_active to become true when new video loads
     // but prevent it from being set to false prematurely
     bool was_active = state.video_active;
-    bool should_be_active = (state.duration > 0.0) && (mpv_playing || (state.position > 0.0));
+    bool should_be_active = (cur_duration > 0.0) && (mpv_playing || (cur_position > 0.0));
     
     if (state.is_switching_playlist) {
         // During switch: only allow video_active to become true (new video loaded)
@@ -170,10 +174,10 @@ void Controller::update_state(AppState& state) {
     
     // Check if video has ended (for auto-advancing to next item in playlist)
     bool video_ended = false;
-    if (state.video_active && state.duration > 0.0) {
+    if (state.video_active && cur_duration > 0.0) {
         // Check if we're at or past the end (with small tolerance for rounding)
         // Also check if mpv reports end-of-file
-        if (state.position >= state.duration - 0.5) {
+        if (cur_position >= cur_duration - 0.5) {
             video_ended = true;
         }
     }
@@ -202,20 +206,20 @@ void Controller::update_state(AppState& state) {
                    set_volume(100.0);
                    state.original_volume = get_volume();
                }
-               std::cout << "Video playback started: duration=" << state.duration << "s, volume=" << state.original_volume << "%" << std::endl;
-               
+               std::cout << "Video playback started: duration=" << cur_duration << "s, volume=" << state.original_volume << "%" << std::endl;
+
                // Mark intro as ready when video actually starts playing
                if (state.showing_intro_video && !state.intro_ready) {
                    state.intro_ready = true;
                    std::cout << "Intro video is now ready (first frame playing)" << std::endl;
                }
-        
+
         // Reset advance flags when a new video starts (detected by duration change)
         // This allows auto-advance to work for the new video
-        if (state.duration > 0.0 && state.duration != state.last_advanced_duration) {
+        if (cur_duration > 0.0 && cur_duration != state.last_advanced_duration) {
             // New video has loaded - reset advance tracking
             state.last_advanced_item_index = -1;
-            state.last_advanced_duration = state.duration;
+            state.last_advanced_duration = cur_duration;
         }
 
         // Clear playlist switching flag when new video is active

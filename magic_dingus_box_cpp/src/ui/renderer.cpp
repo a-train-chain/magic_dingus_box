@@ -1877,8 +1877,10 @@ void Renderer::render_footer(const app::AppState& state, float text_alpha, bool 
                 }
                 
                 // Line 3: Video progress (elapsed / duration)
-                if (state.duration > 0) {
-                    std::string progress_text = format_time(state.position) + " / " + format_time(state.duration);
+                const double footer_duration = state.get_duration();
+                if (footer_duration > 0) {
+                    const double footer_position = state.get_position();
+                    std::string progress_text = format_time(footer_position) + " / " + format_time(footer_duration);
                     float progress_baseline = footer_baseline + (item.artist.empty() ? 18.0f : 36.0f);
                     int progress_width = body_font_manager_->get_text_width(progress_text, theme_->font_small_size);
                     float progress_x = static_cast<float>(width_) - progress_width - 80.0f;
@@ -1899,10 +1901,12 @@ void Renderer::render_footer(const app::AppState& state, float text_alpha, bool 
     }
     
     // Time display below status (elapsed / duration)
-    if (state.position > 0 || state.duration > 0) {
-        std::string time_text = format_time(state.position);
-        if (state.duration > 0) {
-            time_text += " / " + format_time(state.duration);
+    const double time_position = state.get_position();
+    const double time_duration = state.get_duration();
+    if (time_position > 0 || time_duration > 0) {
+        std::string time_text = format_time(time_position);
+        if (time_duration > 0) {
+            time_text += " / " + format_time(time_duration);
         }
         int time_width = body_font_manager_->get_text_width(time_text);
         float time_x = static_cast<float>(width_) - time_width - 80.0f;
@@ -2137,8 +2141,8 @@ void Renderer::render_seek_bar(const app::AppState& state) {
     }
     if (alpha <= 0.0f) return;
 
-    double position = state.position;
-    double duration = state.duration;
+    double position = state.get_position();
+    double duration = state.get_duration();
     if (duration <= 0.0) return;
 
     float progress = static_cast<float>(position / duration);

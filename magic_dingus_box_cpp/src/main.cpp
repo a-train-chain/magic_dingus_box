@@ -2201,21 +2201,23 @@ int main(int /* argc */, char* /* argv */[]) {
         
         // Handle intro video completion
         // When intro video ends, fade it out first, then fade in the UI
-        if (state.showing_intro_video && state.video_active && state.duration > 0.0) {
+        if (state.showing_intro_video && state.video_active && state.get_duration() > 0.0) {
+            const double intro_position = state.get_position();
+            const double intro_duration = state.get_duration();
             // Update LED dance animation during intro video
             // Use video position as elapsed time (in milliseconds)
-            gpio.update_intro_animation(static_cast<uint64_t>(state.position * 1000));
+            gpio.update_intro_animation(static_cast<uint64_t>(intro_position * 1000));
             // Check if intro video has ended
             // Use multiple conditions to ensure reliable detection
             bool video_ended = false;
 
             // Primary check: position near end (tight margin so video plays fully)
-            if (state.position >= state.duration - 0.05) {
+            if (intro_position >= intro_duration - 0.05) {
                 video_ended = true;
             }
 
             // Fallback check: if video stopped playing but we're still showing intro
-            if (!controller.is_playing() && state.duration > 0.0 && state.position > 0.0) {
+            if (!controller.is_playing() && intro_duration > 0.0 && intro_position > 0.0) {
                 video_ended = true;
             }
 
@@ -2281,8 +2283,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 
                 // Force video_active to false immediately (don't wait for update_state)
                 state.video_active = false;
-                state.duration = 0.0;
-                state.position = 0.0;
+                state.update_playback_state(0.0, 0.0);
                 state.current_playlist_index = -1;
                 state.current_item_index = -1;
                 
@@ -2315,9 +2316,14 @@ int main(int /* argc */, char* /* argv */[]) {
         
         // Auto-advance to next item in playlist when current video ends
         if (state.video_active && state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+            // Snapshot the (position, duration) pair so the whole advance
+            // decision sees a consistent view rather than reading the
+            // mutex-protected fields multiple times.
+            const double adv_position = state.get_position();
+            const double adv_duration = state.get_duration();
             // Check if video has ended (position >= duration with small tolerance)
             // Only advance once per item (check that we haven't already advanced from this item)
-            if (state.duration > 0.0 && state.position >= state.duration - 0.5) {
+            if (adv_duration > 0.0 && adv_position >= adv_duration - 0.5) {
                 // Video has ended - advance to next item
                 // Only advance if we haven't already advanced from this item
                 // Check that we haven't already advanced from this specific item index
@@ -2337,10 +2343,10 @@ int main(int /* argc */, char* /* argv */[]) {
 
                 if (can_advance) {
                     std::cout << "Auto-advancing from item " << state.current_item_index
-                              << " at position " << state.position << "/" << state.duration << std::endl;
+                              << " at position " << adv_position << "/" << adv_duration << std::endl;
                     // Set flag BEFORE calling load_next_item to prevent race conditions
                     state.last_advanced_item_index = state.current_item_index;
-                    state.last_advanced_duration = state.duration;
+                    state.last_advanced_duration = adv_duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
                         // Save current position to shuffle history before auto-advancing
@@ -2351,7 +2357,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     } else {
                         controller.load_next_item(state, playlist_directory);
                     }
-                } else if (state.position >= state.duration - 0.5) {
+                } else if (adv_position >= adv_duration - 0.5) {
                     if (!state.master_shuffle_active) {
                         std::cout << "NOT auto-advancing: item=" << state.current_item_index
                                   << ", last_advanced=" << state.last_advanced_item_index
@@ -2362,7 +2368,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Reset the flags when video is playing normally (not at end)
                 // Reset unconditionally when we're well away from the end
                 // This allows auto-advance to work even after manual navigation
-                if (state.position < state.duration - 1.0) {
+                if (adv_position < adv_duration - 1.0) {
                     state.last_advanced_item_index = -1;
                     state.last_advanced_duration = 0.0;
                     // Master Shuffle stays active - only exits when user selects a different playlist

@@ -156,10 +156,6 @@ public:
         duration_ = dur;
     }
 
-    // Legacy accessors for backwards compatibility (direct access still available for single-threaded use)
-    double position = 0.0;  // Deprecated: use get_position()/set_position()
-    double duration = 0.0;  // Deprecated: use get_duration()/set_duration()
-
     bool loop;
     bool playlist_loop;  // Whether to loop back to start of playlist when finished
     bool shuffle;        // Whether to play videos in random order
@@ -380,8 +376,6 @@ public:
           current_item_index(-1),
           last_advanced_item_index(-1),
           last_advanced_duration(0.0),
-          position(0.0),
-          duration(0.0),
           loop(false),
           playlist_loop(true),
           shuffle(false),
