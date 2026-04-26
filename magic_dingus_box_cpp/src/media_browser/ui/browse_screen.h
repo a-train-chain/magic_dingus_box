@@ -1,7 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -42,9 +45,11 @@ namespace media_browser::ui {
 class BrowseScreen : public MbScreen {
 public:
     BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb);
+    ~BrowseScreen();
 
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
+    void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
     // tmdb_id of the poster most recently selected by the user. Consumed by
@@ -85,8 +90,21 @@ private:
         return static_cast<int>(cat) >= kNumContentCategories;
     }
 
+    // Public load entry point. Spawns a background thread that does
+    // the (slow, ~6s) TMDB fetch off the render thread; render() can
+    // continue to draw in its existing Loading state until update()
+    // drains the worker's pending result on a future tick. Idempotent
+    // when called repeatedly with the same cat — generation counter
+    // handles rapid category-flip without serializing on join.
     void load_category(Category cat);
     void reload_filter_results();
+    // Worker entry — runs the synchronous TMDB call off-thread.
+    void run_load_category(uint64_t gen, Category cat);
+    void run_reload_filter(uint64_t gen, DiscoverFilter filter);
+    // Drains pending result from any completed worker into movies_.
+    // Cheap (atomic load most frames); only takes the mutex when a
+    // result is ready to consume.
+    void apply_pending();
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
     // Cycle the current filter_row_'s value by `delta` (+1 / -1 typical).
@@ -121,6 +139,32 @@ private:
     // Set when handle_input() wants the dispatcher to transition to Search
     // (via the top-strip Search category). Cleared on the next enter().
     bool want_search_screen_ = false;
+
+    // --- Async TMDB fetch state ------------------------------------
+    // The TMDB API takes 6+ seconds per call when egressing through
+    // the VPN tunnel — that latency was visible as a screen freeze
+    // every time the user entered Browse or switched categories. The
+    // worker thread does the HTTP call off the render thread; render()
+    // shows Loading state until apply_pending() drains the result on
+    // a future update() tick.
+    //
+    // Generation counter pattern (same as ProwlarrClient): each call
+    // to load_category bumps current_gen_; the worker captures gen at
+    // spawn time and only publishes its result if current_gen_ still
+    // matches. This lets a rapid category flip pre-empt a stale
+    // worker without blocking the UI on join. Older workers run to
+    // completion in the background and silently drop their results.
+    std::atomic<uint64_t> tmdb_current_gen_{0};
+    std::mutex            tmdb_result_mtx_;
+    // Pending result from a worker whose gen matches current_gen_.
+    // result_ready_ is the fast atomic check update() uses to skip
+    // the lock on every frame when no new result is in flight.
+    std::vector<TmdbSearchHit> tmdb_pending_movies_;
+    std::atomic<bool>          tmdb_result_ready_{false};
+    // All worker threads spawned during this screen's lifetime.
+    // Joined in the destructor so a worker mid-CURL doesn't outlive
+    // the BrowseScreen and segfault on result publication.
+    std::vector<std::thread>   tmdb_workers_;
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;

@@ -266,25 +266,109 @@ void BrowseScreen::ensure_genres_loaded() {
 }
 
 void BrowseScreen::load_category(Category cat) {
+    // Async dispatch: clear the visible grid immediately (so the user
+    // sees the right empty state for the new category, not stale
+    // posters from the previous one), set loading_ so render shows
+    // the Loading mode, then spawn a worker. The worker calls the
+    // appropriate TMDB endpoint off the render thread — that call
+    // takes 6+ seconds over the VPN tunnel, which is what was
+    // freezing the screen.
     movies_.clear();
     grid_cursor_ = 0;
     scroll_row_ = 0;
-    if (is_nav_chip(cat)) return;
+    if (is_nav_chip(cat)) {
+        loading_ = false;
+        return;
+    }
+    if (cat == Category::Filter) {
+        // Filter category needs genres loaded for the picker. Do this
+        // sync because it's only ~200ms and only fires the first
+        // time the user enters the Filter category.
+        ensure_genres_loaded();
+    }
     loading_ = true;
-    spdlog::info("[BrowseScreen] load_category: {}", label_for_category(cat));
+    const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
+    spdlog::info("[BrowseScreen] load_category: {} (gen={})",
+                 label_for_category(cat), my_gen);
+    tmdb_workers_.emplace_back(&BrowseScreen::run_load_category, this,
+                               my_gen, cat);
+}
+
+void BrowseScreen::run_load_category(uint64_t gen, Category cat) {
+    // Captured-by-value: do the slow TMDB call here. If the user
+    // switches categories before this returns, current_gen_ will
+    // bump and our publish will be silently discarded.
+    std::vector<TmdbSearchHit> result;
     switch (cat) {
-        case Category::Popular:    movies_ = tmdb_.get_popular();     break;
-        case Category::NowPlaying: movies_ = tmdb_.get_now_playing(); break;
-        case Category::TopRated:   movies_ = tmdb_.get_top_rated();   break;
-        case Category::Upcoming:   movies_ = tmdb_.get_upcoming();    break;
-        case Category::Filter:
-            ensure_genres_loaded();
-            movies_ = tmdb_.discover(current_filter_);
-            break;
+        case Category::Popular:    result = tmdb_.get_popular();     break;
+        case Category::NowPlaying: result = tmdb_.get_now_playing(); break;
+        case Category::TopRated:   result = tmdb_.get_top_rated();   break;
+        case Category::Upcoming:   result = tmdb_.get_upcoming();    break;
+        case Category::Filter:     result = tmdb_.discover(current_filter_); break;
         default: break;
     }
+
+    // Stale-check: bail without publishing if a newer load_category
+    // has been requested. The new request's worker will write the
+    // current result; we'd just clobber its in-flight state.
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[BrowseScreen] gen={} stale at publish (current={}); discarding",
+                     gen, tmdb_current_gen_.load());
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        if (gen != tmdb_current_gen_.load()) return;  // re-check under lock
+        tmdb_pending_movies_ = std::move(result);
+    }
+    tmdb_result_ready_.store(true);
+}
+
+void BrowseScreen::reload_filter_results() {
+    current_filter_.sort_by = kSortOptions[current_sort_index_].value;
+    movies_.clear();
+    grid_cursor_ = 0;
+    scroll_row_ = 0;
+    loading_ = true;
+    const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
+    spdlog::info(
+        "[BrowseScreen] discover (async, gen={}): genre_id={} year={} sort_by={}",
+        my_gen, current_filter_.genre_id.value_or(-1),
+        current_filter_.year.value_or(-1),
+        current_filter_.sort_by);
+    // Pass filter by value — current_filter_ might mutate while the
+    // worker is in flight if the user keeps cycling values.
+    tmdb_workers_.emplace_back(&BrowseScreen::run_reload_filter, this,
+                               my_gen, current_filter_);
+}
+
+void BrowseScreen::run_reload_filter(uint64_t gen, DiscoverFilter filter) {
+    auto result = tmdb_.discover(filter);
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[BrowseScreen] discover gen={} stale; discarding", gen);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        if (gen != tmdb_current_gen_.load()) return;
+        tmdb_pending_movies_ = std::move(result);
+    }
+    tmdb_result_ready_.store(true);
+}
+
+void BrowseScreen::apply_pending() {
+    if (!tmdb_result_ready_.load()) return;
+    std::vector<TmdbSearchHit> incoming;
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        incoming = std::move(tmdb_pending_movies_);
+    }
+    tmdb_result_ready_.store(false);
+    movies_ = std::move(incoming);
     loading_ = false;
-    spdlog::info("[BrowseScreen] load_category done: {} results",
+    grid_cursor_ = 0;
+    scroll_row_ = 0;
+    spdlog::info("[BrowseScreen] applied pending result: {} movies",
                  movies_.size());
     if (!movies_.empty()) {
         const auto& m = movies_.front();
@@ -294,19 +378,21 @@ void BrowseScreen::load_category(Category cat) {
     }
 }
 
-void BrowseScreen::reload_filter_results() {
-    current_filter_.sort_by = kSortOptions[current_sort_index_].value;
-    loading_ = true;
-    movies_ = tmdb_.discover(current_filter_);
-    loading_ = false;
-    grid_cursor_ = 0;
-    scroll_row_ = 0;
-    spdlog::info(
-        "[BrowseScreen] discover: genre_id={} year={} sort_by={} -> {} results",
-        current_filter_.genre_id.value_or(-1),
-        current_filter_.year.value_or(-1),
-        current_filter_.sort_by,
-        movies_.size());
+void BrowseScreen::update() {
+    apply_pending();
+}
+
+BrowseScreen::~BrowseScreen() {
+    // Bump gen so any in-flight worker sees its result is stale and
+    // bails before publishing. Then join all tracked workers so we
+    // don't have a thread holding references to *this after the
+    // screen is destroyed. Each worker is bounded by TmdbClient's
+    // 10s curl timeout, so worst-case shutdown wait is ~10s; in
+    // practice workers complete in 1-7s.
+    tmdb_current_gen_.fetch_add(1);
+    for (auto& t : tmdb_workers_) {
+        if (t.joinable()) t.join();
+    }
 }
 
 void BrowseScreen::cycle_filter_value(int delta) {
