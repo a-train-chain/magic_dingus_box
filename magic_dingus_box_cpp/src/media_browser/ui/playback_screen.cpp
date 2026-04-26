@@ -167,10 +167,21 @@ Screen PlaybackScreen::handle_input(
             continue;
         }
 
-        // Velocity-curve rotary seek — exact same formula as main.cpp:1758.
+        // Velocity-curve rotary seek — same shape as the main UI's
+        // playlist scrub (main.cpp:1903), but with the max-seek
+        // constant scaled up because movies are ~10x longer than the
+        // typical playlist video. The playlist formula gives 5s slow
+        // → 30s fast (a visible 4% jump on a 12-min video); on a
+        // 2hr movie that same 30s is only 0.4% of the runtime, which
+        // feels like nothing. Bumping the curve to 5s slow → 120s
+        // (~2 min) fast restores the same proportional travel: about
+        // 1-2% of total runtime per fast click, suitable for chapter-
+        // skipping while preserving precise small scrubs at slow
+        // velocities (the velocity² factor means low-velocity ticks
+        // still produce ~5-10s seeks, same as the playlist).
         if (e.action == platform::InputAction::ROTATE && e.delta != 0) {
             double velocity = static_cast<double>(e.velocity);
-            double seek_seconds = 5.0 + 25.0 * (velocity * velocity);
+            double seek_seconds = 5.0 + 115.0 * (velocity * velocity);
             controller_.seek(seek_seconds * e.delta);
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
