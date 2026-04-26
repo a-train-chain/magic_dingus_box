@@ -38,7 +38,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The first-boot service file lives alongside other systemd units in the repo
 SYSTEMD_SRC="${SCRIPT_DIR}/../../systemd/magic-first-boot.service"
 
-# Game playlists to KEEP (anything not on this list gets removed)
+# Game playlists that always ship in the golden image. These are the
+# canonical RetroArch playlists wired to the cores installed by
+# scripts/install_cores.sh.
 GAME_PLAYLISTS=(
     arcade.yaml
     atari_7800.yaml
@@ -49,11 +51,25 @@ GAME_PLAYLISTS=(
     snes.yaml
 )
 
-# Video/music playlists to REMOVE explicitly
-VIDEO_PLAYLISTS=(
+# Personal/test playlists to REMOVE explicitly (legacy from when the
+# kiosk first ran on this Pi). New "default" video/music playlists
+# uploaded via the Content Manager get NEW filenames and are preserved
+# automatically by the whitelist logic in Step 2 — they don't need to
+# be added here.
+LEGACY_PLAYLISTS=(
     danny_gatton.yaml
     wes_montgomery.yaml
     paul_franklin.yaml
+)
+
+# Default video/music playlists that ship with the golden image.
+# Add filenames here as you upload them via the Content Manager.
+# The check in Step 2 doesn't actively keep these — it's just for
+# the verification block at the end so the script confirms expected
+# defaults are present.
+EXPECTED_DEFAULT_PLAYLISTS=(
+    # e.g. "kids_movies.yaml"
+    # e.g. "kiosk_demo.yaml"
 )
 
 # ---------------------------------------------------------------------------
@@ -128,21 +144,25 @@ echo ""
 echo -e "${GREEN}${BOLD}KEEPING:${NC}"
 echo -e "  ${GREEN}+${NC} Game ROMs              ${DIM}${DATA_DIR}/roms/${NC}"
 echo -e "  ${GREEN}+${NC} Game playlists         ${DIM}${DATA_DIR}/playlists/ (${#GAME_PLAYLISTS[@]} game playlists)${NC}"
+echo -e "  ${GREEN}+${NC} Default video/music    ${DIM}${DATA_DIR}/playlists/ (any non-legacy YAML)${NC}"
 echo -e "  ${GREEN}+${NC} Game thumbnails        ${DIM}${DATA_DIR}/thumbnails/${NC}"
 echo -e "  ${GREEN}+${NC} Intro video            ${DIM}${DATA_DIR}/intro/${NC}"
 echo -e "  ${GREEN}+${NC} Compiled binary        ${DIM}${CPP_DIR}/build/magic_dingus_box_cpp${NC}"
 echo -e "  ${GREEN}+${NC} RetroArch cores        ${DIM}${RETROARCH_DIR}/cores/${NC}"
 echo -e "  ${GREEN}+${NC} BIOS files             ${DIM}${RETROARCH_DIR}/system/${NC}"
+echo -e "  ${GREEN}+${NC} Media Browser fixtures ${DIM}${CPP_DIR}/scripts/data/*.json (CFs, indexers, integrations)${NC}"
 echo -e "  ${GREEN}+${NC} Installed packages     ${DIM}(all system packages and config)${NC}"
 echo ""
 
 echo -e "${RED}${BOLD}REMOVING:${NC}"
-echo -e "  ${RED}-${NC} Video/music playlists  ${DIM}(${VIDEO_PLAYLISTS[*]})${NC}"
+echo -e "  ${RED}-${NC} Legacy playlists       ${DIM}(${LEGACY_PLAYLISTS[*]})${NC}"
 echo -e "  ${RED}-${NC} User media             ${DIM}${DATA_DIR}/media/*, ${INSTALL_DIR}/dev_data/${NC}"
 echo -e "  ${RED}-${NC} Device identity        ${DIM}device_info.json (anywhere under ${INSTALL_DIR})${NC}"
 echo -e "  ${RED}-${NC} Game saves             ${DIM}${DATA_DIR}/saves/*, ${DATA_DIR}/states/*${NC}"
 echo -e "  ${RED}-${NC} Settings               ${DIM}${CONFIG_DIR}/settings.json${NC}"
 echo -e "  ${RED}-${NC} SSH host keys          ${DIM}/etc/ssh/ssh_host_*${NC}"
+echo -e "  ${RED}-${NC} WiFi connections       ${DIM}NetworkManager 802-11-wireless profiles${NC}"
+echo -e "  ${RED}-${NC} Media Browser state    ${DIM}services/.env, services/config/{radarr,prowlarr,qbittorrent,gluetun,flaresolverr}/*${NC}"
 echo -e "  ${RED}-${NC} Logs                   ${DIM}journal, app log, retroarch launcher log${NC}"
 echo -e "  ${RED}-${NC} Bash history           ${DIM}magic + root users${NC}"
 echo ""
@@ -179,11 +199,11 @@ sleep 1
 # ---------------------------------------------------------------------------
 # Step 2: Remove video/music playlists
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}[2/9] Removing video/music playlists...${NC}"
+echo -e "${CYAN}[2/9] Removing legacy video/music playlists...${NC}"
 
 playlist_dir="${DATA_DIR}/playlists"
 removed_count=0
-for pl in "${VIDEO_PLAYLISTS[@]}"; do
+for pl in "${LEGACY_PLAYLISTS[@]}"; do
     if [[ -f "${playlist_dir}/${pl}" ]]; then
         rm -f "${playlist_dir}/${pl}"
         echo -e "  ${RED}Removed${NC} ${pl}"
@@ -193,10 +213,15 @@ for pl in "${VIDEO_PLAYLISTS[@]}"; do
     fi
 done
 
-# Safety: warn about any remaining non-game playlists
+# Inventory remaining playlists. Game playlists are expected. Default
+# video/music playlists (uploaded via Content Manager to seed the
+# golden image with example content) are also expected — they show up
+# as INFO entries below so the operator sees what's shipping.
+preserved_count=0
 for f in "${playlist_dir}"/*.yaml; do
     [[ -f "$f" ]] || continue
     basename_f="$(basename "$f")"
+
     is_game=false
     for gp in "${GAME_PLAYLISTS[@]}"; do
         if [[ "$basename_f" == "$gp" ]]; then
@@ -204,11 +229,29 @@ for f in "${playlist_dir}"/*.yaml; do
             break
         fi
     done
-    if [[ "$is_game" == false ]]; then
-        echo -e "  ${YELLOW}Warning: Unknown playlist remains: ${basename_f}${NC}"
+    if [[ "$is_game" == true ]]; then
+        continue
     fi
+
+    is_legacy=false
+    for lp in "${LEGACY_PLAYLISTS[@]}"; do
+        if [[ "$basename_f" == "$lp" ]]; then
+            is_legacy=true
+            break
+        fi
+    done
+    if [[ "$is_legacy" == true ]]; then
+        # Already removed above; if it's still here something's wrong.
+        echo -e "  ${YELLOW}Warning: legacy playlist still present after removal: ${basename_f}${NC}"
+        continue
+    fi
+
+    # Anything else is a default/example playlist that ships with the
+    # image. List it for transparency.
+    echo -e "  ${GREEN}Preserved${NC} ${basename_f} ${DIM}(ships in golden image)${NC}"
+    ((preserved_count++)) || true
 done
-echo -e "  ${GREEN}Done${NC} (removed ${removed_count} playlist(s))"
+echo -e "  ${GREEN}Done${NC} (removed ${removed_count} legacy, preserved ${preserved_count} default)"
 
 # ---------------------------------------------------------------------------
 # Step 3: Remove user media and dev data
@@ -385,9 +428,83 @@ if [[ -d "${MAGIC_HOME}/.config/pulse" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Step 11: Install first-boot service
+# Step 11: Clean Media Browser services state
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}[11/12] Installing first-boot service...${NC}"
+# The Media Browser stack (Radarr / Prowlarr / qBittorrent / Gluetun /
+# FlareSolverr) accumulates per-device state that must NOT ship in the
+# golden image:
+#   - .env: WireGuard private key (per-Pi VPN credential — sharing it
+#     across cloned Pis would either prevent simultaneous connections or
+#     violate ProtonVPN's multi-device policy), auto-generated qBit
+#     password, auto-generated Radarr/Prowlarr API keys (every cloned
+#     Pi would have identical keys; security risk).
+#   - config/radarr/*: Movie library (which films user added, history,
+#     queue), download client settings, plus the per-instance API key in
+#     config.xml.
+#   - config/prowlarr/*: per-instance API key, indexer sync history,
+#     application connection (which embeds the per-Pi Radarr API key).
+#   - config/qbittorrent/*: active torrents, fastresume files, auth
+#     cookies, session state.
+#   - config/gluetun/*: WireGuard runtime state (resolved server, etc).
+#   - config/flaresolverr/*: ephemeral browser session state (if any).
+#
+# On first boot of a cloned Pi, the operator (via Content Manager UI or
+# setup_services.sh on Pi) provides a fresh WG config and runs the
+# bootstrap. setup_services.sh then idempotently re-creates the entire
+# stack from codified fixtures (custom formats, quality profiles,
+# indexers, app integrations, download client config) — so the cloned
+# Pi reaches the EXACT same configuration state as the source Pi, just
+# with fresh per-device credentials and an empty library.
+echo -e "${CYAN}[11/13] Cleaning Media Browser services state...${NC}"
+
+services_dir="${INSTALL_DIR}/services"
+if [[ -d "$services_dir" ]]; then
+    # Stop the Docker stack cleanly (idempotent — succeeds if not running).
+    if [[ -f "${services_dir}/docker-compose.yml" ]]; then
+        if command -v docker &>/dev/null; then
+            (cd "$services_dir" && docker compose down 2>&1 | sed 's/^/    /' || true)
+            echo -e "  ${GREEN}Stopped${NC} Media Browser Docker stack"
+        else
+            echo -e "  ${DIM}Docker not installed; skipping compose down${NC}"
+        fi
+    else
+        echo -e "  ${DIM}docker-compose.yml not found; nothing to stop${NC}"
+    fi
+
+    # Wipe the .env (WG creds, API keys, qBit password).
+    if [[ -f "${services_dir}/.env" ]]; then
+        rm -f "${services_dir}/.env"
+        echo -e "  ${RED}Removed${NC} services/.env (WG creds + API keys)"
+    else
+        echo -e "  ${DIM}services/.env not present${NC}"
+    fi
+
+    # Wipe per-service config dirs. Each service regenerates fresh state
+    # on next start. The directories themselves are kept (mounted by
+    # docker-compose); only their contents are removed.
+    for svc in radarr prowlarr qbittorrent gluetun flaresolverr; do
+        cfg_dir="${services_dir}/config/${svc}"
+        if [[ -d "$cfg_dir" ]]; then
+            file_count=$(find "$cfg_dir" -mindepth 1 2>/dev/null | wc -l)
+            find "$cfg_dir" -mindepth 1 -delete 2>/dev/null || true
+            echo -e "  ${RED}Cleared${NC} services/config/${svc}/ (${file_count} entries)"
+        else
+            echo -e "  ${DIM}services/config/${svc}/ not present${NC}"
+        fi
+    done
+else
+    echo -e "  ${DIM}services/ directory not present (Media Browser not deployed on this Pi)${NC}"
+fi
+
+# Note: /mnt/ssd/ contains downloaded movies + active torrent payloads
+# but is on a SEPARATE physical disk that is NOT part of the SD card
+# image. We don't touch it here — the SSD is swapped or wiped per-Pi
+# independently of the SD card golden image.
+
+# ---------------------------------------------------------------------------
+# Step 12: Install first-boot service
+# ---------------------------------------------------------------------------
+echo -e "${CYAN}[12/13] Installing first-boot service...${NC}"
 
 if [[ -f "$SYSTEMD_SRC" ]]; then
     cp "$SYSTEMD_SRC" /etc/systemd/system/magic-first-boot.service
@@ -400,9 +517,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 12: Verification
+# Step 13: Verification
 # ---------------------------------------------------------------------------
-echo -e "${CYAN}[12/12] Running verification checks...${NC}"
+echo -e "${CYAN}[13/13] Running verification checks...${NC}"
 echo ""
 
 pass=0
@@ -527,6 +644,42 @@ if [[ -f "${MAGIC_HOME}/.ssh/authorized_keys" ]] && [[ -s "${MAGIC_HOME}/.ssh/au
     check_pass "SSH authorized_keys preserved for remote access"
 else
     check_fail "SSH authorized_keys missing (remote access will not work)"
+fi
+
+# Media Browser state wiped (per-Pi credentials & library state must NOT
+# ship in the golden image — see Step 11 for full rationale).
+mb_services_dir="${INSTALL_DIR}/services"
+if [[ -d "$mb_services_dir" ]]; then
+    if [[ -f "${mb_services_dir}/.env" ]]; then
+        check_fail "services/.env still present (would leak WG creds + API keys to every clone)"
+    else
+        check_pass "services/.env removed (per-Pi creds will be regenerated on first boot)"
+    fi
+
+    mb_state_remaining=0
+    for svc in radarr prowlarr qbittorrent gluetun flaresolverr; do
+        cfg_dir="${mb_services_dir}/config/${svc}"
+        if [[ -d "$cfg_dir" ]] && [[ -n "$(find "$cfg_dir" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+            ((mb_state_remaining++)) || true
+        fi
+    done
+    if [[ "$mb_state_remaining" -eq 0 ]]; then
+        check_pass "Media Browser service config dirs cleaned"
+    else
+        check_fail "Media Browser service config dirs still contain state (${mb_state_remaining} services)"
+    fi
+
+    # Codified fixtures must be present so first-boot setup_services.sh
+    # can rebuild the stack to match the source Pi's exact configuration.
+    cpp_data_dir="${CPP_DIR}/scripts/data"
+    if [[ -d "$cpp_data_dir" ]] && [[ -f "${cpp_data_dir}/radarr_custom_formats.json" ]]; then
+        fixture_count=$(find "$cpp_data_dir" -name '*.json' -type f 2>/dev/null | wc -l)
+        check_pass "Media Browser config fixtures bundled (${fixture_count} JSON files in scripts/data/)"
+    else
+        check_fail "Media Browser config fixtures missing — cloned Pis won't bootstrap correctly"
+    fi
+else
+    echo -e "  ${DIM}skip  Media Browser checks (services/ not present on this Pi)${NC}"
 fi
 
 echo ""
