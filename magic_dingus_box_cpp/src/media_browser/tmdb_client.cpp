@@ -4,7 +4,9 @@
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <sstream>
+#include <thread>
 
 namespace media_browser {
 
@@ -79,27 +81,68 @@ int TmdbClient::extract_year(const std::string& date) {
 }
 
 std::string TmdbClient::http_get(const std::string& url) {
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        last_error_ = "curl init failed";
-        return {};
-    }
+    // Up to 2 attempts with backoff. Observed in production: TMDB calls
+    // through ProtonVPN's NL exit occasionally fail TLS handshake with
+    // CURLE_SSL_CONNECT_ERROR (35) — typically a transient VPN-egress
+    // issue or Cloudflare rate-limit on the exit IP. A single retry
+    // 250ms later almost always succeeds without the user ever seeing
+    // the "Nothing here yet" empty state.
+    constexpr int kMaxAttempts = 2;
     std::string body;
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "MagicDingusBox/1.0");
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
+    CURLcode rc = CURLE_OK;
+
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            last_error_ = "curl init failed";
+            return {};
+        }
+        body.clear();
+        http_code = 0;
+
+        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT,      "MagicDingusBox/1.0");
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        // Force HTTP/1.1 — we observed TMDB's CDN occasionally negotiating
+        // HTTP/2 and then failing the stream over the VPN tunnel (SSL
+        // connect errors mid-handshake). HTTP/1.1 is rock-solid through
+        // Gluetun's WireGuard interface and the keepalive savings of
+        // HTTP/2 are irrelevant here (one HTTP request per movie open).
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                         CURL_HTTP_VERSION_1_1);
+        // Required when called from non-main threads (libcurl uses
+        // SIGALRM in its DNS resolver otherwise — would crash the
+        // future async path with a SIGSEGV in the signal handler).
+        // Harmless on the main thread; future-proofs the call site.
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+        // Separate connect-timeout from total-timeout so a slow first
+        // packet (TLS handshake) is bounded independently of the
+        // overall budget. 5s is generous for TMDB's CDN.
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        10L);
+        curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
+
+        rc = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_easy_cleanup(curl);
+
+        if (rc == CURLE_OK && http_code < 500) break;  // success or 4xx (don't retry)
+
+        if (attempt + 1 < kMaxAttempts) {
+            spdlog::warn("[media_browser] TMDB HTTP attempt {} failed ({}), retrying",
+                         attempt + 1,
+                         rc != CURLE_OK ? curl_easy_strerror(rc)
+                                        : ("HTTP " + std::to_string(http_code)).c_str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    }
 
     if (rc != CURLE_OK) {
         last_error_ = curl_easy_strerror(rc);
-        spdlog::error("[media_browser] TMDB HTTP failed: {}", last_error_);
+        spdlog::error("[media_browser] TMDB HTTP failed after retries: {}", last_error_);
         return {};
     }
     if (http_code >= 400) {
