@@ -142,6 +142,169 @@ if [[ -n "${ANY_PROFILE}" ]]; then
         || echo "  WARN: failed to update 'Any' profile language; verify via web UI"
 fi
 
+# 10. Codify Radarr Custom Formats + Any-profile score map.
+#
+# The kiosk's Pi 4 hardware can only smoothly decode H.264 in the
+# 720p-1080p range. Anything else (AV1, HEVC at 1080p, HDR, Remux)
+# either has no hardware decoder or blows the size budget. We enforce
+# the codec/quality choice with a 3-layer filter and the middle layer
+# is a Custom Format score map applied to the "Any" quality profile:
+# every grab must net at least minFormatScore=-200 across the six
+# formats below.
+#
+# These formats and scores were originally crafted by hand in the
+# Radarr UI, which left them at risk of silent drift — we caught HEVC
+# scoring slipping from -250 to -100 in production, which let HEVC
+# files slip through the score floor and get downloaded. Codifying the
+# spec in scripts/data/radarr_custom_formats.json + reapplying it on
+# every setup run eliminates that whole class of drift.
+#
+# Match-by-name (NOT by id): the JSON file's "id" is just a hint for
+# humans diffing changes. Radarr assigns ids server-side and they can
+# vary across deploys, so the script always looks up the live id by
+# matching the CF "name" field.
+#
+# Idempotency: a CF with matching name+specifications is left alone;
+# a CF with the right name but stale specifications gets PUT'd; a
+# missing CF gets POSTed. The Any profile's formatItems are only PUT
+# back when at least one score (or minFormatScore) actually drifted.
+echo "Configuring Radarr Custom Formats + 'Any' profile score map..."
+CF_DATA_FILE="$(dirname "$0")/data/radarr_custom_formats.json"
+if [[ ! -f "${CF_DATA_FILE}" ]]; then
+    echo "  WARN: ${CF_DATA_FILE} not found — skipping. Custom Formats may already be configured manually; verify via web UI."
+else
+    # Run the full GET → match → POST/PUT for each CF, then PATCH the
+    # Any profile's formatItems, all in one python heredoc so we can
+    # share state (the live CF list, name→id map, drift counters)
+    # without round-tripping through bash variables.
+    CF_SUMMARY=$(python3 - "${CF_DATA_FILE}" "${RADARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request, urllib.error
+
+cf_data_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:7878/api/v3"
+
+# Desired Any-profile score map. Keep this in lockstep with the
+# CLAUDE.md "Quality configuration" section — it's the source of truth
+# the script enforces, mirrored on disk for human review.
+SCORE_MAP = {
+    "AV1 codec (UNWATCHABLE on Pi 4)": -1000,
+    "x265/HEVC 1080p+":                -250,
+    "HDR / Dolby Vision":              -200,
+    "Remux / Raw-HD":                  -500,
+    "x264 codec (BONUS)":               50,
+    "Trusted small-release groups":     30,
+}
+MIN_FORMAT_SCORE = -200
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def cf_specs_match(live, desired):
+    # We compare only the fields we care about (name, regex value,
+    # negate, required, includeCustomFormatWhenRenaming). Radarr adds
+    # server-side fields like "id" we must ignore.
+    if live.get("name") != desired.get("name"): return False
+    if live.get("includeCustomFormatWhenRenaming") != desired.get("includeCustomFormatWhenRenaming"): return False
+    ls, ds = live.get("specifications", []), desired.get("specifications", [])
+    if len(ls) != len(ds): return False
+    for a, b in zip(ls, ds):
+        if a.get("name") != b.get("name"): return False
+        if a.get("implementation") != b.get("implementation"): return False
+        if bool(a.get("negate")) != bool(b.get("negate")): return False
+        if bool(a.get("required")) != bool(b.get("required")): return False
+        # Compare regex value (the only field that ever drifts).
+        av = next((f.get("value") for f in a.get("fields", []) if f.get("name") == "value"), None)
+        bv = next((f.get("value") for f in b.get("fields", []) if f.get("name") == "value"), None)
+        if av != bv: return False
+    return True
+
+with open(cf_data_path) as f:
+    desired_cfs = json.load(f)
+
+live_cfs = http("GET", "/customformat")
+live_by_name = {c["name"]: c for c in live_cfs}
+
+created, updated, unchanged = [], [], []
+name_to_id = {}
+
+for desired in desired_cfs:
+    name = desired["name"]
+    # Strip the spec-file's "id" so it doesn't conflict with whatever
+    # Radarr assigns server-side.
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    if name in live_by_name:
+        live = live_by_name[name]
+        if cf_specs_match(live, payload):
+            unchanged.append(name)
+            name_to_id[name] = live["id"]
+        else:
+            payload["id"] = live["id"]
+            result = http("PUT", "/customformat/%d" % live["id"], payload)
+            updated.append(name)
+            name_to_id[name] = result["id"]
+    else:
+        result = http("POST", "/customformat", payload)
+        created.append(name)
+        name_to_id[name] = result["id"]
+
+# Now reconcile the Any profile's formatItems. Radarr exposes one
+# formatItems entry per CF (auto-synced); we just adjust scores.
+profiles = http("GET", "/qualityprofile")
+any_profile = next((p for p in profiles if p["name"] == "Any"), None)
+profile_changed = False
+score_changes = []
+
+if any_profile is None:
+    print("WARN: 'Any' profile missing; cannot apply score map", file=sys.stderr)
+else:
+    if any_profile.get("minFormatScore") != MIN_FORMAT_SCORE:
+        any_profile["minFormatScore"] = MIN_FORMAT_SCORE
+        profile_changed = True
+        score_changes.append("minFormatScore=%d" % MIN_FORMAT_SCORE)
+    for fi in any_profile.get("formatItems", []):
+        fname = fi.get("name")
+        if fname in SCORE_MAP:
+            want = SCORE_MAP[fname]
+            if fi.get("score") != want:
+                fi["score"] = want
+                profile_changed = True
+                score_changes.append("%s=%+d" % (fname, want))
+    if profile_changed:
+        http("PUT", "/qualityprofile/%d" % any_profile["id"], any_profile)
+
+print(json.dumps({
+    "created": created,
+    "updated": updated,
+    "unchanged": unchanged,
+    "profile_changed": profile_changed,
+    "score_changes": score_changes,
+}))
+PYEOF
+)
+    # Pretty-print the summary for the operator. The python block emits
+    # a single JSON line on stdout; we feed it back via stdin to avoid
+    # any shell-quoting issues with embedded double quotes.
+    printf '%s' "${CF_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+if s["profile_changed"]:
+    print("  ✓ Any profile score map updated: " + ", ".join(s["score_changes"]))
+else:
+    print("  ✓ Any profile score map already matches desired state")
+'
+fi
+
 # 9. Print credentials to operator
 cat <<EOF
 
