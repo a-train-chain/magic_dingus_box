@@ -558,6 +558,8 @@ function initializeEventListeners() {
         } else if (tabId === 'settings') {
             // Update mobile settings view with current device info
             updateMobileSettingsView();
+        } else if (tabId === 'mediabrowser') {
+            refreshMediaBrowserStatus();
         }
     }
 
@@ -5249,6 +5251,348 @@ async function rollbackUpdate() {
 
     if (checkBtn) checkBtn.disabled = false;
     if (rollbackBtn) rollbackBtn.disabled = false;
+}
+
+// ===== MEDIA BROWSER (RADARR/PROWLARR/QBIT/GLUETUN) =====
+//
+// Three UI states (driven by GET /admin/media-browser/status):
+//   A. Not configured   → drop-zone for WireGuard .conf
+//   B. Configuring      → live tail of setup_services.sh stdout
+//   C. Configured       → VPN exit IP + container table + Reconfigure
+//
+// Mirrors the OTA-update job pattern: POST returns a job_id, frontend polls
+// /admin/media-browser/setup-status/<job_id> every 2 sec.
+
+let mbPollHandle = null;        // setInterval id for status polling
+let mbSetupPollHandle = null;   // setInterval id for setup-status polling
+let mbForceSetupView = false;   // true when user clicked Reconfigure
+let mbConfigPayload = null;     // {file: File} or {text: string}
+let mbActiveJobId = null;
+let mbSetupStartTs = null;
+
+function _mbShowState(stateName) {
+    const ids = ['mbLoadingState', 'mbStateNotConfigured', 'mbStateConfiguring', 'mbStateConfigured'];
+    const targetId = {
+        loading: 'mbLoadingState',
+        notconfigured: 'mbStateNotConfigured',
+        configuring: 'mbStateConfiguring',
+        configured: 'mbStateConfigured',
+    }[stateName];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = (id === targetId) ? 'block' : 'none';
+    });
+}
+
+async function refreshMediaBrowserStatus() {
+    if (!currentDevice) {
+        _mbShowState('loading');
+        const loading = document.getElementById('mbLoadingState');
+        if (loading) loading.querySelector('.section-body').innerHTML = '<span class="loading">Connect to a device first.</span>';
+        return;
+    }
+
+    // If a setup poll is in progress, stay in configuring view
+    if (mbSetupPollHandle !== null) {
+        return;
+    }
+
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/media-browser/status`);
+        _renderMediaBrowserStatus(data);
+    } catch (e) {
+        console.error('Media Browser status fetch failed:', e);
+        _mbShowState('loading');
+        const loading = document.getElementById('mbLoadingState');
+        if (loading) loading.querySelector('.section-body').innerHTML =
+            `<span class="loading" style="color: var(--error);">Failed to fetch status: ${escapeHtml(e.message || String(e))}</span>`;
+    }
+}
+
+function _renderMediaBrowserStatus(data) {
+    // Reset config error if drop-zone is being shown
+    const errorEl = document.getElementById('mbConfigError');
+    if (errorEl) errorEl.style.display = 'none';
+
+    if (!data.configured || mbForceSetupView) {
+        _mbShowState('notconfigured');
+        _setupMediaBrowserDropZone();
+        return;
+    }
+
+    // Configured — render State C
+    _mbShowState('configured');
+
+    const titleEl = document.getElementById('mbConfiguredTitle');
+    if (titleEl) {
+        if (data.services_running) {
+            titleEl.textContent = '✓ Media Browser Healthy';
+            titleEl.style.color = 'var(--success)';
+        } else {
+            titleEl.textContent = '⚠ Configured but services not running';
+            titleEl.style.color = 'var(--accent)';
+        }
+    }
+
+    // VPN info
+    const vpnEl = document.getElementById('mbVpnInfo');
+    if (vpnEl) {
+        if (data.vpn_exit_ip) {
+            vpnEl.innerHTML = `
+                <div class="health-row">
+                    <span class="health-label">VPN exit IP</span>
+                    <span class="health-value">${escapeHtml(data.vpn_exit_ip)}</span>
+                </div>
+                <div class="health-row">
+                    <span class="health-label">VPN country</span>
+                    <span class="health-value">${escapeHtml(data.vpn_country || '—')}</span>
+                </div>`;
+        } else if (data.services_running) {
+            vpnEl.innerHTML = `
+                <div class="health-row">
+                    <span class="health-label">VPN exit IP</span>
+                    <span class="health-value" style="color: var(--accent);">Tunnel reported no exit IP yet</span>
+                </div>`;
+        } else {
+            vpnEl.innerHTML = `
+                <div class="health-row">
+                    <span class="health-label">VPN status</span>
+                    <span class="health-value" style="color: var(--accent);">Services not running</span>
+                </div>`;
+        }
+    }
+
+    // Container table
+    const tableEl = document.getElementById('mbContainerTable');
+    if (tableEl) {
+        const rows = (data.containers || []).map(c => {
+            const isUp = (c.status || '').toLowerCase().startsWith('up');
+            const color = isUp ? 'var(--success)' : 'var(--error)';
+            return `
+                <div class="health-row">
+                    <span class="health-label">${escapeHtml(c.name)}</span>
+                    <span class="health-value" style="color: ${color};">${escapeHtml(c.status)}</span>
+                </div>`;
+        }).join('');
+        tableEl.innerHTML = rows || '<span class="loading">No containers found</span>';
+    }
+}
+
+function _setupMediaBrowserDropZone() {
+    const fileInput = document.getElementById('mbConfigFile');
+    const textArea = document.getElementById('mbConfigText');
+    const dropZone = document.getElementById('mbDropZone');
+    const dropLabel = document.getElementById('mbDropLabel');
+    const button = document.getElementById('mbConfigureBtn');
+    const errorEl = document.getElementById('mbConfigError');
+
+    if (!fileInput || !button) return;
+
+    // Idempotency guard — bail if we've already wired listeners up
+    if (dropZone && dropZone.dataset.wired === '1') return;
+    if (dropZone) dropZone.dataset.wired = '1';
+
+    const updateButtonState = () => {
+        const haveFile = fileInput.files && fileInput.files.length > 0;
+        const haveText = textArea && textArea.value.trim().length > 0;
+        button.disabled = !(haveFile || haveText);
+        if (haveFile) {
+            mbConfigPayload = { file: fileInput.files[0] };
+            if (dropLabel) dropLabel.textContent = `📄 ${fileInput.files[0].name}`;
+        } else if (haveText) {
+            mbConfigPayload = { text: textArea.value };
+        } else {
+            mbConfigPayload = null;
+        }
+    };
+
+    fileInput.addEventListener('change', () => {
+        if (errorEl) errorEl.style.display = 'none';
+        if (textArea) textArea.value = '';  // file wins
+        updateButtonState();
+    });
+
+    if (textArea) {
+        textArea.addEventListener('input', () => {
+            if (errorEl) errorEl.style.display = 'none';
+            if (textArea.value.trim()) {
+                fileInput.value = '';
+                if (dropLabel) dropLabel.textContent = 'Drop a .conf file here, or click to pick';
+            }
+            updateButtonState();
+        });
+    }
+
+    if (dropZone) {
+        ['dragenter', 'dragover'].forEach(ev => dropZone.addEventListener(ev, e => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.style.borderColor = 'var(--accent)';
+        }));
+        ['dragleave', 'drop'].forEach(ev => dropZone.addEventListener(ev, e => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropZone.style.borderColor = '';
+        }));
+        dropZone.addEventListener('drop', e => {
+            const files = e.dataTransfer && e.dataTransfer.files;
+            if (files && files.length > 0) {
+                fileInput.files = files;
+                fileInput.dispatchEvent(new Event('change'));
+            }
+        });
+    }
+}
+
+async function configureMediaBrowser() {
+    if (!currentDevice) {
+        showNotification('Not connected to a device', 'error');
+        return;
+    }
+    if (!mbConfigPayload) {
+        showNotification('Drop a WireGuard .conf or paste config text first', 'warning');
+        return;
+    }
+
+    const button = document.getElementById('mbConfigureBtn');
+    const errorEl = document.getElementById('mbConfigError');
+    if (button) button.disabled = true;
+    if (errorEl) errorEl.style.display = 'none';
+
+    // Make sure we have a fresh CSRF token
+    await fetchCsrfToken();
+
+    const formData = new FormData();
+    if (mbConfigPayload.file) {
+        formData.append('file', mbConfigPayload.file);
+    } else if (mbConfigPayload.text) {
+        formData.append('config_text', mbConfigPayload.text);
+    }
+
+    try {
+        const response = await fetch(`${currentDevice.url}/admin/media-browser/setup`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': csrfToken || '' },
+            body: formData,
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            throw new Error(result.error?.message || 'Setup failed');
+        }
+        mbActiveJobId = result.data.job_id;
+        mbSetupStartTs = Date.now();
+        mbForceSetupView = false;
+        _mbShowState('configuring');
+        _startSetupPolling();
+    } catch (e) {
+        console.error('Media Browser setup failed:', e);
+        if (errorEl) {
+            errorEl.style.display = 'block';
+            errorEl.textContent = e.message || String(e);
+        }
+        if (button) button.disabled = false;
+    }
+}
+
+function _startSetupPolling() {
+    if (mbSetupPollHandle !== null) {
+        clearInterval(mbSetupPollHandle);
+    }
+    const tick = async () => {
+        if (!currentDevice || !mbActiveJobId) return;
+        try {
+            const data = await apiGet(`${currentDevice.url}/admin/media-browser/setup-status/${mbActiveJobId}`);
+            _renderSetupStatus(data);
+            if (data.status === 'success' || data.status === 'failed' || data.status === 'unknown') {
+                clearInterval(mbSetupPollHandle);
+                mbSetupPollHandle = null;
+                if (data.status === 'success') {
+                    showNotification('Media Browser configured successfully!', 'success');
+                    mbActiveJobId = null;
+                    setTimeout(() => refreshMediaBrowserStatus(), 1500);
+                } else if (data.status === 'failed') {
+                    _onSetupFailed(data);
+                } else {
+                    // status=unknown (server restart cleared the job) — fall back
+                    mbActiveJobId = null;
+                    refreshMediaBrowserStatus();
+                }
+            }
+        } catch (e) {
+            console.warn('Setup status poll failed (will retry):', e);
+        }
+    };
+    // Kick off an immediate tick so the UI doesn't sit blank for 2 sec, then poll
+    tick();
+    mbSetupPollHandle = setInterval(tick, 2000);
+}
+
+function _renderSetupStatus(data) {
+    const labelEl = document.getElementById('mbConfiguringLabel');
+    const progressEl = document.getElementById('mbConfiguringProgress');
+    const elapsedEl = document.getElementById('mbConfiguringElapsed');
+    const logEl = document.getElementById('mbLogTail');
+    const statusBox = document.getElementById('mbConfiguringStatus');
+
+    const elapsed = data.elapsed_sec || 0;
+    if (elapsedEl) elapsedEl.textContent = `Elapsed: ${elapsed}s`;
+
+    // Pull the most recent stdout line as the live label, fall back to "Working..."
+    const lines = data.log_lines || [];
+    const latest = lines.length ? lines[lines.length - 1] : '';
+    if (labelEl) labelEl.textContent = latest.trim() || `Working… (${elapsed}s)`;
+
+    // Crude progress bar — setup_services.sh runs ~90 sec; cap at 95% while
+    // running so the bar doesn't claim done before the script actually exits.
+    if (progressEl) {
+        let pct = Math.min(95, Math.round((elapsed / 90) * 95));
+        if (data.status === 'success') pct = 100;
+        if (data.status === 'failed')  pct = 100;
+        progressEl.style.width = `${pct}%`;
+    }
+
+    if (logEl) {
+        logEl.textContent = lines.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    if (statusBox) {
+        statusBox.classList.remove('complete', 'error');
+        if (data.status === 'success') statusBox.classList.add('complete');
+        if (data.status === 'failed')  statusBox.classList.add('error');
+    }
+}
+
+function _onSetupFailed(data) {
+    mbForceSetupView = true;
+    mbActiveJobId = null;
+    const tail = (data.log_lines || []).slice(-5).join('\n');
+    showNotification(`Media Browser setup failed (exit ${data.exit_code}). See log for details.`, 'error', 8000);
+
+    // Render State A again with the failure surfaced as an inline error
+    _mbShowState('notconfigured');
+    _setupMediaBrowserDropZone();
+    const errorEl = document.getElementById('mbConfigError');
+    if (errorEl) {
+        errorEl.style.display = 'block';
+        errorEl.innerHTML = `<strong>Setup failed (exit ${escapeHtml(String(data.exit_code))})</strong><br><pre style="margin-top: 0.5rem; font-size: 0.75rem; white-space: pre-wrap;">${escapeHtml(tail)}</pre>`;
+    }
+    const button = document.getElementById('mbConfigureBtn');
+    if (button) button.disabled = false;
+}
+
+function reconfigureMediaBrowser() {
+    if (!confirm('Reconfigure Media Browser? Existing services will be torn down and re-created with the new VPN credentials.')) {
+        return;
+    }
+    mbForceSetupView = true;
+    mbActiveJobId = null;
+    if (mbSetupPollHandle !== null) {
+        clearInterval(mbSetupPollHandle);
+        mbSetupPollHandle = null;
+    }
+    _mbShowState('notconfigured');
+    _setupMediaBrowserDropZone();
 }
 
 // Add event listeners for "Add Empty Slot" buttons and filters

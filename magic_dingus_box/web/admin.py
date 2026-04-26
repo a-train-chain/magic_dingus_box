@@ -1999,6 +1999,382 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
 
+    # ===== MEDIA BROWSER (RADARR/PROWLARR/QBIT/GLUETUN) SETUP =====
+    #
+    # Provisions the Media Browser docker stack on a fresh Pi. Operator drops a
+    # WireGuard .conf from the ProtonVPN dashboard into the Content Manager UI;
+    # we parse out the 4 vars Gluetun needs, write them into
+    # /opt/magic_dingus_box/services/.env (preserving any non-WG vars), then
+    # invoke setup_services.sh as a background job and stream its stdout for
+    # the frontend to tail.
+
+    SERVICES_DIR = data_dir.parent.parent / "services"
+    SERVICES_ENV = SERVICES_DIR / ".env"
+    SETUP_SERVICES_SCRIPT = data_dir.parent / "scripts" / "setup_services.sh"
+
+    EXPECTED_CONTAINERS = [
+        "mdb_gluetun",
+        "mdb_radarr",
+        "mdb_prowlarr",
+        "mdb_qbittorrent",
+        "mdb_flaresolverr",
+    ]
+
+    # Track media-browser setup jobs (in-memory, cleared on restart)
+    media_browser_jobs: dict = {}
+    _MB_LOG_BUFFER_LIMIT = 500  # keep at most this many lines per job
+    _MB_LOG_TAIL_LINES = 30     # return this many lines on each status poll
+
+    def _parse_wireguard_config(text: str) -> dict:
+        """Parse a WireGuard .conf file into the 4 vars Gluetun needs.
+
+        Returns a dict with keys:
+          WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES,
+          WIREGUARD_PUBLIC_KEY,  WIREGUARD_ENDPOINT_IP
+        Raises ValueError on missing/malformed fields.
+        """
+        section = None
+        interface: dict = {}
+        peer: dict = {}
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip().lower()
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if section == "interface":
+                interface[key] = value
+            elif section == "peer":
+                peer[key] = value
+
+        missing = []
+        if "PrivateKey" not in interface:
+            missing.append("[Interface] PrivateKey")
+        if "Address" not in interface:
+            missing.append("[Interface] Address")
+        if "PublicKey" not in peer:
+            missing.append("[Peer] PublicKey")
+        if "Endpoint" not in peer:
+            missing.append("[Peer] Endpoint")
+        if missing:
+            raise ValueError(f"Missing required fields: {', '.join(missing)}")
+
+        endpoint = peer["Endpoint"]
+        # Endpoint format: "host:port" — split off the port. Handle bracketed
+        # IPv6 like "[2001:db8::1]:51820" defensively.
+        if endpoint.startswith("["):
+            endpoint_ip = endpoint[1:].split("]", 1)[0]
+        else:
+            endpoint_ip = endpoint.rsplit(":", 1)[0]
+        if not endpoint_ip:
+            raise ValueError("Could not parse host from [Peer] Endpoint")
+
+        return {
+            "WIREGUARD_PRIVATE_KEY": interface["PrivateKey"],
+            "WIREGUARD_ADDRESSES": interface["Address"],
+            "WIREGUARD_PUBLIC_KEY": peer["PublicKey"],
+            "WIREGUARD_ENDPOINT_IP": endpoint_ip,
+        }
+
+    def _read_env_file(path: Path) -> dict:
+        """Parse a KEY=VALUE .env file into a dict. Returns {} if missing."""
+        if not path.exists():
+            return {}
+        result = {}
+        try:
+            for raw in path.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                result[key.strip()] = value.strip()
+        except Exception:
+            return {}
+        return result
+
+    def _write_env_file(path: Path, env: dict) -> None:
+        """Write a dict back to a .env file with chmod 600. Creates parent dir."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a tempfile in the same dir, then atomic rename, so a crash
+        # mid-write can't leave a partial .env.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        lines = [f"{k}={v}" for k, v in env.items()]
+        tmp.write_text("\n".join(lines) + "\n")
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        tmp.replace(path)
+
+    def _detect_timezone() -> str:
+        """Best-effort host timezone detection; falls back to UTC."""
+        try:
+            result = subprocess.run(
+                ["timedatectl", "show", "-p", "Timezone", "--value"],
+                capture_output=True, text=True, timeout=5,
+            )
+            tz = result.stdout.strip()
+            if tz:
+                return tz
+        except Exception:
+            pass
+        return "UTC"
+
+    def _docker_ps_table() -> list[dict]:
+        """Return [{name, status}] for the expected media-browser containers."""
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return [{"name": n, "status": "unknown"} for n in EXPECTED_CONTAINERS]
+            running = {}
+            for line in result.stdout.splitlines():
+                parts = line.split("\t", 1)
+                if len(parts) == 2:
+                    running[parts[0].strip()] = parts[1].strip()
+            return [
+                {"name": n, "status": running.get(n, "not found")}
+                for n in EXPECTED_CONTAINERS
+            ]
+        except Exception:
+            return [{"name": n, "status": "unknown"} for n in EXPECTED_CONTAINERS]
+
+    def _vpn_exit_info() -> dict:
+        """Hit gluetun's local control server for current exit IP + country.
+
+        Gluetun's control server listens on port 8000 INSIDE the container and
+        is not (by default) exposed on the host, so we have to shell into the
+        container with `docker exec`. Returns empty strings when gluetun isn't
+        running or anything goes wrong — never raises.
+        """
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "mdb_gluetun", "wget", "-qO-",
+                 "http://localhost:8000/v1/publicip/ip"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                return {"vpn_exit_ip": "", "vpn_country": ""}
+            payload = json.loads(result.stdout)
+            return {
+                "vpn_exit_ip": payload.get("public_ip", "") or "",
+                "vpn_country": payload.get("country", "") or "",
+            }
+        except Exception:
+            return {"vpn_exit_ip": "", "vpn_country": ""}
+
+    def _env_has_wireguard_key(path: Path) -> bool:
+        """True iff .env exists AND has a non-empty WIREGUARD_PRIVATE_KEY=."""
+        env = _read_env_file(path)
+        return bool(env.get("WIREGUARD_PRIVATE_KEY", "").strip())
+
+    @app.get("/admin/media-browser/status")
+    def media_browser_status():  # type: ignore[no-redef]
+        """Return current Media Browser configuration + service health.
+
+        Drives the 3-state UI: Not configured / Configuring / Configured.
+        """
+        env_present = _env_has_wireguard_key(SERVICES_ENV)
+        containers = _docker_ps_table()
+        services_running = any(
+            c["status"].lower().startswith("up")
+            for c in containers
+        )
+        vpn = _vpn_exit_info() if services_running else {"vpn_exit_ip": "", "vpn_country": ""}
+
+        return success_response(data={
+            "configured": env_present,
+            "env_present": env_present,
+            "services_running": services_running,
+            "containers": containers,
+            "vpn_exit_ip": vpn["vpn_exit_ip"],
+            "vpn_country": vpn["vpn_country"],
+        })
+
+    def _run_media_browser_setup_job(job_id: str):
+        """Background thread: stream setup_services.sh output into the job buffer."""
+        job = media_browser_jobs[job_id]
+        try:
+            process = subprocess.Popen(
+                ["sudo", "-n", str(SETUP_SERVICES_SCRIPT)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+            job["process"] = process
+
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                buf = job["log"]
+                buf.append(line)
+                if len(buf) > _MB_LOG_BUFFER_LIMIT:
+                    del buf[: len(buf) - _MB_LOG_BUFFER_LIMIT]
+
+            process.wait()
+            job["exit_code"] = process.returncode
+            job["status"] = "success" if process.returncode == 0 else "failed"
+        except Exception as e:
+            job["log"].append(f"[admin.py] setup job crashed: {e}")
+            job["status"] = "failed"
+            job["exit_code"] = -1
+
+    @app.post("/admin/media-browser/setup")
+    @require_csrf
+    def media_browser_setup():  # type: ignore[no-redef]
+        """Configure VPN credentials + run setup_services.sh.
+
+        Accepts the WireGuard config either as a multipart .conf file upload
+        ('file' field) or as pasted text in the 'config_text' form field.
+        Returns a job_id; clients poll /admin/media-browser/setup-status/<id>.
+        """
+        if not SETUP_SERVICES_SCRIPT.exists():
+            return error_response(
+                "setup_script_missing",
+                f"setup_services.sh not found at {SETUP_SERVICES_SCRIPT}",
+                status=500,
+            )
+
+        # Pull config text from upload or form field
+        config_text = ""
+        if "file" in request.files and request.files["file"].filename:
+            try:
+                config_text = request.files["file"].read().decode("utf-8", errors="replace")
+            except Exception as e:
+                return error_response("invalid_wireguard_config",
+                                      f"Could not read uploaded file: {e}", status=400)
+        else:
+            config_text = (request.form.get("config_text") or "").strip()
+
+        if not config_text:
+            return error_response(
+                "invalid_wireguard_config",
+                "No WireGuard config provided (expected .conf file upload or 'config_text' form field)",
+                status=400,
+            )
+
+        try:
+            wg = _parse_wireguard_config(config_text)
+        except ValueError as e:
+            return error_response("invalid_wireguard_config",
+                                  f"Could not parse WireGuard config: {e}", status=400)
+
+        # Quick NOPASSWD sudo precheck so we fail fast with a clear error
+        # rather than silently spawning a process that hangs on a password prompt.
+        try:
+            sudo_check = subprocess.run(
+                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
+            )
+            if sudo_check.returncode != 0:
+                return error_response(
+                    "sudo_required",
+                    "magic user must have NOPASSWD sudo configured",
+                    status=500,
+                )
+        except Exception:
+            return error_response(
+                "sudo_required",
+                "magic user must have NOPASSWD sudo configured",
+                status=500,
+            )
+
+        # Merge WG vars + sensible defaults into existing .env
+        env = _read_env_file(SERVICES_ENV)
+        env.update(wg)
+
+        country = (request.form.get("country") or "").strip() or "Netherlands"
+        defaults = {
+            "VPN_SERVICE_PROVIDER": "protonvpn",
+            "VPN_TYPE": "wireguard",
+            "VPN_PORT_FORWARDING": "on",
+            "VPN_COUNTRIES": country,
+            "STORAGE_ROOT": "/mnt/ssd",
+            "PUID": "1000",
+            "PGID": "1000",
+            "TZ": _detect_timezone(),
+        }
+        for key, value in defaults.items():
+            if not env.get(key):
+                env[key] = value
+
+        try:
+            _write_env_file(SERVICES_ENV, env)
+        except Exception as e:
+            return error_response(
+                "env_write_failed",
+                f"Could not write {SERVICES_ENV}: {e}",
+                status=500,
+            )
+
+        # Start the long-running setup script in a background thread
+        job_id = str(uuid.uuid4())
+        media_browser_jobs[job_id] = {
+            "status": "running",
+            "exit_code": None,
+            "log": [],
+            "started_at": datetime.now().isoformat(),
+            "started_ts": time.time(),
+            "process": None,
+        }
+        thread = threading.Thread(
+            target=_run_media_browser_setup_job, args=(job_id,), daemon=True
+        )
+        thread.start()
+
+        return success_response(
+            data={"job_id": job_id},
+            message="Media Browser setup started",
+        )
+
+    @app.get("/admin/media-browser/setup-status/<job_id>")
+    def media_browser_setup_status(job_id):  # type: ignore[no-redef]
+        """Return last N log lines + status for a setup job.
+
+        On unknown job_id (e.g. server restart cleared in-memory state), returns
+        success with status='unknown' rather than 404 so the frontend can fall
+        back to the generic /admin/media-browser/status endpoint.
+        """
+        job = media_browser_jobs.get(job_id)
+        if not job:
+            return success_response(data={
+                "status": "unknown",
+                "log_lines": [],
+                "exit_code": None,
+                "started_at": None,
+                "elapsed_sec": 0,
+            })
+
+        # If the background thread hasn't yet observed a finished process,
+        # poll the Popen handle defensively to keep status fresh.
+        process = job.get("process")
+        if job["status"] == "running" and process is not None:
+            rc = process.poll()
+            if rc is not None:
+                job["exit_code"] = rc
+                job["status"] = "success" if rc == 0 else "failed"
+
+        log = job["log"]
+        tail = log[-_MB_LOG_TAIL_LINES:] if len(log) > _MB_LOG_TAIL_LINES else list(log)
+
+        return success_response(data={
+            "status": job["status"],
+            "log_lines": tail,
+            "exit_code": job["exit_code"],
+            "started_at": job["started_at"],
+            "elapsed_sec": int(time.time() - job["started_ts"]),
+        })
+
     # ===== SERVE WEB INTERFACE =====
 
     @app.get("/")
