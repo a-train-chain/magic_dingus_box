@@ -1,6 +1,7 @@
 #include "media_browser/ui/queue_screen.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <sstream>
@@ -187,26 +188,46 @@ std::string format_bytes(int64_t b) {
 
 QueueScreen::QueueScreen(RadarrClient& radarr) : radarr_(radarr) {}
 
+QueueScreen::~QueueScreen() {
+    // Wait for any in-flight worker before destruction so we don't
+    // leave a thread holding references to a dying QueueScreen.
+    if (worker_.joinable()) worker_.join();
+}
+
 void QueueScreen::enter() {
     cursor_ = 0;
     scroll_row_ = 0;
     cancel_pending_ = false;
     cancel_pending_queue_id_ = 0;
-    refresh();
+    // Async — no UI block on entry. The screen renders immediately
+    // (showing whatever stale state we had from last visit, or a
+    // "Loading..." centered if first ever visit), and apply_pending()
+    // drops the new data in on a future update() tick when the worker
+    // finishes (~50-500 ms typical, up to 5s if Radarr is slow).
+    refresh_async();
 }
 
-void QueueScreen::refresh() {
+void QueueScreen::refresh_async() {
+    // Atomic CAS — only one worker thread runs at a time. If a previous
+    // refresh is still in flight, we no-op; the next update() tick
+    // will trigger another check after this one publishes.
+    bool expected = false;
+    if (!refresh_in_flight_.compare_exchange_strong(expected, true)) {
+        return;
+    }
     refreshing_ = true;
-    // get_queue() is synchronous in the current client. If it becomes
-    // async, refreshing_ will naturally stay true until completion.
-    queue_ = radarr_.get_queue();
 
-    // Build the "awaiting release" list from monitored library movies
-    // that don't have a file yet and aren't in the active queue. We
-    // de-dup against queue_ via movie_id (Radarr's queue items carry
-    // their movie_id reference).
-    std::unordered_set<int> active_movie_ids;
-    for (const auto& q : queue_) active_movie_ids.insert(q.movie_id);
+    // Join any prior worker that finished but wasn't yet reaped. This
+    // is fast (the thread has already exited) and bounds our worker
+    // accumulation at one.
+    if (worker_.joinable()) worker_.join();
+
+    worker_ = std::thread(&QueueScreen::run_refresh, this);
+}
+
+void QueueScreen::run_refresh() {
+    PendingResult r;
+    r.queue = radarr_.get_queue();
 
     // Fetch library once. We use it for two things:
     //   1. The "awaiting release" list (monitored, no file, not in queue).
@@ -225,10 +246,10 @@ void QueueScreen::refresh() {
         }
     }
 
-    // Patch poster_url on queue items that came back without one (which
-    // is all of them currently — Radarr's queue endpoint doesn't carry
-    // movie images).
-    for (auto& q : queue_) {
+    // Patch poster_url on queue items that came back without one.
+    std::unordered_set<int> active_movie_ids;
+    for (auto& q : r.queue) {
+        active_movie_ids.insert(q.movie_id);
         if (q.poster_url.empty()) {
             auto it = id_to_poster.find(q.movie_id);
             if (it != id_to_poster.end()) q.poster_url = it->second;
@@ -237,19 +258,43 @@ void QueueScreen::refresh() {
 
     // Build "awaiting release" list — monitored library movies that
     // don't have a file yet and aren't already in the active queue.
-    awaiting_.clear();
     for (auto& m : library) {
         if (!m.monitored) continue;
         if (m.has_file) continue;
         if (active_movie_ids.count(m.radarr_id) > 0) continue;
-        awaiting_.push_back(std::move(m));
+        r.awaiting.push_back(std::move(m));
     }
 
-    refreshing_ = false;
-    last_refresh_at_ = std::chrono::steady_clock::now();
-    last_error_ = queue_.empty() ? radarr_.last_error() : std::string{};
+    r.error = r.queue.empty() ? radarr_.last_error() : std::string{};
 
-    // Clamp cursor to valid range.
+    // Publish under the mutex; result_ready_ is the atomic flag the
+    // main thread polls each frame. Cleared by apply_pending() when
+    // the result is consumed.
+    {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        pending_ = std::move(r);
+    }
+    result_ready_.store(true);
+    refresh_in_flight_.store(false);
+}
+
+void QueueScreen::apply_pending() {
+    if (!result_ready_.load()) return;
+
+    PendingResult r;
+    {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        r = std::move(pending_);
+    }
+    result_ready_.store(false);
+
+    queue_ = std::move(r.queue);
+    awaiting_ = std::move(r.awaiting);
+    last_error_ = std::move(r.error);
+    last_refresh_at_ = std::chrono::steady_clock::now();
+    refreshing_ = false;
+
+    // Clamp cursor to valid range now that we have new data.
     int n = static_cast<int>(queue_.size());
     if (cursor_ >= n) cursor_ = std::max(0, n - 1);
     if (cursor_ < 0) cursor_ = 0;
@@ -268,6 +313,10 @@ void QueueScreen::refresh() {
 }
 
 void QueueScreen::update() {
+    // Drain any worker result into the live state. Cheap — it's an
+    // atomic load most frames, only takes the mutex when result is ready.
+    apply_pending();
+
     auto now = std::chrono::steady_clock::now();
 
     // Expire a stale cancel confirmation.
@@ -280,11 +329,13 @@ void QueueScreen::update() {
         }
     }
 
-    // Periodic refresh.
+    // Trigger a refresh every kRefreshIntervalMs. refresh_async() is
+    // a no-op if a worker is already running, so this won't pile up
+    // requests during a slow Radarr response.
     auto since_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - last_refresh_at_).count();
     if (since_ms >= kRefreshIntervalMs) {
-        refresh();
+        refresh_async();
     }
 }
 
@@ -296,8 +347,8 @@ void QueueScreen::do_cancel_focused() {
     cancel_pending_ = false;
     cancel_pending_queue_id_ = 0;
     // Force an immediate refresh so the row disappears without the user
-    // waiting on the 2s poll.
-    refresh();
+    // waiting on the 2s poll. Async — UI thread doesn't block.
+    refresh_async();
 }
 
 Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events) {
@@ -595,16 +646,47 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float mid_right = row_x + row_w - kRowInnerPadding - right_slot_w;
             float mid_max_w = std::max(40.0f, mid_right - mid_x);
 
+            // Live-activity dot on actively-downloading rows. Pulses
+            // alpha 0.4 → 1.0 on a 500ms cycle (same heartbeat as the
+            // focused-row marker and the home-menu cursor blink). The
+            // pulse is the "heartbeat" signal — even when speed is
+            // steady and percent is moving slowly, the dot keeps
+            // breathing so the user can see at a glance that the
+            // download is alive vs stalled.
+            //
+            // The phase is derived from a smooth sin curve rather than
+            // a binary on/off blink — that's harder to mistake for a
+            // visual artifact and reads more clearly as "alive."
+            const bool is_active_dl = (q.state == "downloading"
+                                       && q.download_rate_bps > 0);
+            float dot_inset_x = 0.0f;
+            if (is_active_dl) {
+                // sin-based smooth pulse, period = 1.2s
+                double phase = (epoch_ms % 1200) / 1200.0;
+                float pulse = 0.4f + 0.6f *
+                    static_cast<float>(0.5 + 0.5 * std::sin(
+                        phase * 2.0 * 3.14159265358979));
+                const float dot_d = 8.0f;
+                const float dot_x = poster_x + kPosterW + kRowInnerPadding;
+                const float dot_y = ry + kRowInnerPadding
+                                  + (static_cast<float>(th.font_medium_size) / 2.0f)
+                                  - dot_d / 2.0f;
+                r.mb_fill_rect(dot_x, dot_y, dot_d, dot_d,
+                               th.highlight1, pulse);  // green when active
+                dot_inset_x = dot_d + 8.0f;  // shift title to make room
+            }
+
             // Title — body font, fg cream, prominent.
             int title_size = th.font_medium_size;
             int title_baseline = r.mb_text_baseline(title_size);
             std::string title_str =
                 q.title.empty() ? std::string("Untitled") : q.title;
-            title_str = truncate_to_width(r, title_str, title_size, mid_max_w);
+            title_str = truncate_to_width(r, title_str, title_size,
+                                          mid_max_w - dot_inset_x);
             float title_y = ry + kRowInnerPadding
                           + static_cast<float>(title_baseline);
-            r.mb_draw_text(title_str, mid_x, title_y, title_size, th.fg,
-                           focused ? 1.0f : 0.92f);
+            r.mb_draw_text(title_str, mid_x + dot_inset_x, title_y, title_size,
+                           th.fg, focused ? 1.0f : 0.92f);
 
             // Sub-line — "Downloading · 1.2 MB/s · 18 peers · ETA 12m 05s"
             // in dim cream small-font, separated by middle-dot bullets.
@@ -613,33 +695,32 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int sub_baseline = r.mb_text_baseline(sub_size);
             std::ostringstream ss;
             ss << titlecase_state(q.state);
-            if (q.download_rate_bps > 0) {
-                ss << "  \xE2\x80\xA2  " << format_rate(q.download_rate_bps);
-            }
-            // Combine peers + seeds into one cluster — both are useful
-            // signal (peers = total swarm size, seeds = full-copy
-            // sources) and showing them together makes weak swarms
-            // obvious at a glance: "2 peers · 0 seeds" reads instantly
-            // as "this might stall" without doing math.
-            if (q.peers > 0 || q.seeds > 0) {
-                ss << "  \xE2\x80\xA2  " << q.peers
-                   << " peer" << (q.peers == 1 ? "" : "s")
-                   << " / " << q.seeds
-                   << " seed" << (q.seeds == 1 ? "" : "s");
-            }
-            if (q.eta_seconds > 0) {
-                ss << "  \xE2\x80\xA2  ETA " << format_eta(q.eta_seconds);
-            }
-            // Downloaded / total readout — surfaces how big the file is
-            // and how much is already on disk, complementing the
-            // percentage. Computed from sizeleft (Radarr's queue API
-            // gives us this directly so we don't have to derive it from
-            // progress * total which loses precision near 0% or 100%).
+            // Downloaded/total goes FIRST (after state) so it remains
+            // visible even if the row gets truncated. On every refresh
+            // tick this string changes — the most reliable "this is
+            // alive" signal in the row, even more so than percentage
+            // (which only ticks every ~0.5% = ~10MB). Computed from
+            // sizeleft so we get exact bytes, not rounded-from-progress.
             if (q.size_bytes > 0) {
                 int64_t left  = std::max<int64_t>(0, q.sizeleft_bytes);
                 int64_t down  = std::max<int64_t>(0, q.size_bytes - left);
                 ss << "  \xE2\x80\xA2  " << format_bytes(down)
                    << " / " << format_bytes(q.size_bytes);
+            }
+            if (q.download_rate_bps > 0) {
+                ss << "  \xE2\x80\xA2  " << format_rate(q.download_rate_bps);
+            }
+            if (q.eta_seconds > 0) {
+                ss << "  \xE2\x80\xA2  ETA " << format_eta(q.eta_seconds);
+            }
+            // Peers/seeds last — least critical, OK to truncate. Combined
+            // into one cluster ("2 peers / 0 seeds") makes weak swarms
+            // obvious at a glance.
+            if (q.peers > 0 || q.seeds > 0) {
+                ss << "  \xE2\x80\xA2  " << q.peers
+                   << " peer" << (q.peers == 1 ? "" : "s")
+                   << " / " << q.seeds
+                   << " seed" << (q.seeds == 1 ? "" : "s");
             }
             std::string sub_line = truncate_to_width(r, ss.str(),
                                                      sub_size, mid_max_w);
