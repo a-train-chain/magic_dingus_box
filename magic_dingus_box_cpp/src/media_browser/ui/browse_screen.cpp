@@ -273,13 +273,20 @@ void BrowseScreen::load_category(Category cat) {
     // Async dispatch: clear the visible grid immediately (so the user
     // sees the right empty state for the new category, not stale
     // posters from the previous one), set loading_ so render shows
-    // the Loading mode, then spawn a worker. The worker calls the
-    // appropriate TMDB endpoint off the render thread — that call
-    // takes 6+ seconds over the VPN tunnel, which is what was
-    // freezing the screen.
+    // the Loading mode, then spawn a page-1 worker. Page 2 will be
+    // prefetched automatically when page 1 lands; pages 3+ load on
+    // demand as the cursor approaches the loaded end.
+    //
+    // The worker calls the appropriate TMDB endpoint off the render
+    // thread — that call takes 6+ seconds over the VPN tunnel, which
+    // is what was freezing the screen.
     movies_.clear();
     grid_cursor_ = 0;
     scroll_row_ = 0;
+    next_page_to_fetch_ = 1;
+    more_available_ = true;
+    fetching_more_ = false;
+    loaded_tmdb_ids_.clear();
     if (is_nav_chip(cat)) {
         loading_ = false;
         return;
@@ -291,39 +298,61 @@ void BrowseScreen::load_category(Category cat) {
         ensure_genres_loaded();
     }
     loading_ = true;
-    const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
+    // Bump the generation so any in-flight workers from a previous
+    // category drop their results when they finish. The new worker
+    // captures this gen via spawn_page_worker.
+    tmdb_current_gen_.fetch_add(1);
     spdlog::info("[BrowseScreen] load_category: {} (gen={})",
-                 label_for_category(cat), my_gen);
-    tmdb_workers_.emplace_back(&BrowseScreen::run_load_category, this,
-                               my_gen, cat);
+                 label_for_category(cat), tmdb_current_gen_.load());
+    spawn_page_worker(cat, /*page=*/1);
 }
 
-void BrowseScreen::run_load_category(uint64_t gen, Category cat) {
+void BrowseScreen::spawn_page_worker(Category cat, int page) {
+    fetching_more_ = true;
+    next_page_to_fetch_ = page + 1;
+    const uint64_t gen = tmdb_current_gen_.load();
+    if (cat == Category::Filter) {
+        // Filter goes through discover(); branch on category here so
+        // load_category(Filter) and scroll-driven follow-up pages both
+        // hit the right endpoint. Pass filter by value to avoid races
+        // with the user mutating current_filter_ while we fetch.
+        tmdb_workers_.emplace_back(&BrowseScreen::run_reload_filter_page,
+                                   this, gen, current_filter_, page);
+    } else {
+        tmdb_workers_.emplace_back(&BrowseScreen::run_load_page,
+                                   this, gen, cat, page);
+    }
+}
+
+void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
     // Captured-by-value: do the slow TMDB call here. If the user
     // switches categories before this returns, current_gen_ will
     // bump and our publish will be silently discarded.
     std::vector<TmdbSearchHit> result;
     switch (cat) {
-        case Category::Popular:    result = tmdb_.get_popular();     break;
-        case Category::NowPlaying: result = tmdb_.get_now_playing(); break;
-        case Category::TopRated:   result = tmdb_.get_top_rated();   break;
-        case Category::Upcoming:   result = tmdb_.get_upcoming();    break;
-        case Category::Filter:     result = tmdb_.discover(current_filter_); break;
+        case Category::Popular:    result = tmdb_.get_popular(page);     break;
+        case Category::NowPlaying: result = tmdb_.get_now_playing(page); break;
+        case Category::TopRated:   result = tmdb_.get_top_rated(page);   break;
+        case Category::Upcoming:   result = tmdb_.get_upcoming(page);    break;
         default: break;
     }
+
+    // Heuristic for "no more pages": TMDB returns 20/page; the family-
+    // safe filter trims a few. < 5 means we've effectively run out.
+    const bool no_more = result.size() < 5;
 
     // Stale-check: bail without publishing if a newer load_category
     // has been requested. The new request's worker will write the
     // current result; we'd just clobber its in-flight state.
     if (gen != tmdb_current_gen_.load()) {
-        spdlog::info("[BrowseScreen] gen={} stale at publish (current={}); discarding",
-                     gen, tmdb_current_gen_.load());
+        spdlog::info("[BrowseScreen] page={} gen={} stale at publish (current={}); discarding",
+                     page, gen, tmdb_current_gen_.load());
         return;
     }
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
         if (gen != tmdb_current_gen_.load()) return;  // re-check under lock
-        tmdb_pending_movies_ = std::move(result);
+        tmdb_pending_pages_.push_back({std::move(result), page, no_more});
     }
     tmdb_result_ready_.store(true);
 }
@@ -333,57 +362,124 @@ void BrowseScreen::reload_filter_results() {
     movies_.clear();
     grid_cursor_ = 0;
     scroll_row_ = 0;
+    next_page_to_fetch_ = 1;
+    more_available_ = true;
+    fetching_more_ = false;
+    loaded_tmdb_ids_.clear();
     loading_ = true;
-    const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
+    tmdb_current_gen_.fetch_add(1);
     spdlog::info(
         "[BrowseScreen] discover (async, gen={}): genre_id={} year={} sort_by={}",
-        my_gen, current_filter_.genre_id.value_or(-1),
+        tmdb_current_gen_.load(),
+        current_filter_.genre_id.value_or(-1),
         current_filter_.year.value_or(-1),
         current_filter_.sort_by);
-    // Pass filter by value — current_filter_ might mutate while the
-    // worker is in flight if the user keeps cycling values.
-    tmdb_workers_.emplace_back(&BrowseScreen::run_reload_filter, this,
-                               my_gen, current_filter_);
+    spawn_page_worker(Category::Filter, /*page=*/1);
 }
 
-void BrowseScreen::run_reload_filter(uint64_t gen, DiscoverFilter filter) {
-    auto result = tmdb_.discover(filter);
+void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
+                                          int page) {
+    auto result = tmdb_.discover(filter, page);
+    const bool no_more = result.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
-        spdlog::info("[BrowseScreen] discover gen={} stale; discarding", gen);
+        spdlog::info("[BrowseScreen] discover page={} gen={} stale; discarding",
+                     page, gen);
         return;
     }
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
         if (gen != tmdb_current_gen_.load()) return;
-        tmdb_pending_movies_ = std::move(result);
+        tmdb_pending_pages_.push_back({std::move(result), page, no_more});
     }
     tmdb_result_ready_.store(true);
 }
 
 void BrowseScreen::apply_pending() {
-    if (!tmdb_result_ready_.load()) return;
-    std::vector<TmdbSearchHit> incoming;
+    if (!tmdb_result_ready_.exchange(false)) return;
+    std::vector<PendingPage> drained;
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
-        incoming = std::move(tmdb_pending_movies_);
+        drained = std::move(tmdb_pending_pages_);
     }
-    tmdb_result_ready_.store(false);
-    movies_ = std::move(incoming);
-    loading_ = false;
-    grid_cursor_ = 0;
-    scroll_row_ = 0;
-    spdlog::info("[BrowseScreen] applied pending result: {} movies",
-                 movies_.size());
-    if (!movies_.empty()) {
-        const auto& m = movies_.front();
-        spdlog::info("[BrowseScreen] first result: tmdb_id={} title='{}' poster_url='{}'",
-                     m.tmdb_id, m.title,
-                     m.poster_path.empty() ? "(EMPTY)" : m.poster_path.substr(0, 80));
+    // Drain in page order so a fast page-2 publish that beats page 1
+    // (unlikely but possible if pages 1 and 2 race) still produces
+    // correct movies_ ordering.
+    std::sort(drained.begin(), drained.end(),
+              [](const PendingPage& a, const PendingPage& b) {
+                  return a.page < b.page;
+              });
+    for (auto& pp : drained) {
+        // Page 1 is the canonical replacement — wipe state and rebuild
+        // the seen-set from scratch. Pages > 1 append, skipping any
+        // tmdb_id already loaded so TMDB's occasional cross-page
+        // duplicates (same movie listed on page 1 AND page 2 when its
+        // list shifts mid-fetch) don't produce duplicate poster tiles.
+        size_t added = 0, dups = 0;
+        if (pp.page == 1) {
+            movies_.clear();
+            loaded_tmdb_ids_.clear();
+            movies_.reserve(pp.movies.size());
+            for (auto& m : pp.movies) {
+                if (loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                    movies_.push_back(std::move(m));
+                    ++added;
+                } else {
+                    ++dups;
+                }
+            }
+            grid_cursor_ = 0;
+            scroll_row_ = 0;
+        } else {
+            movies_.reserve(movies_.size() + pp.movies.size());
+            for (auto& m : pp.movies) {
+                if (loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                    movies_.push_back(std::move(m));
+                    ++added;
+                } else {
+                    ++dups;
+                }
+            }
+        }
+        if (pp.no_more) more_available_ = false;
+        spdlog::info("[BrowseScreen] applied page {}: +{} movies, {} dup(s) "
+                     "skipped (total {})",
+                     pp.page, added, dups, movies_.size());
     }
+    if (!drained.empty()) {
+        loading_ = false;
+        fetching_more_ = false;
+    }
+}
+
+void BrowseScreen::maybe_load_more_pages() {
+    // Don't fetch while another fetch is in flight, or after we've
+    // confirmed end-of-list, or for nav chips, or while still in the
+    // initial loading state. Hard-cap at kMaxLoadedPages.
+    if (fetching_more_ || loading_) return;
+    if (!more_available_) return;
+    if (is_nav_chip(category_)) return;
+    if (next_page_to_fetch_ > kMaxLoadedPages) return;
+
+    // Auto-prefetch page 2 immediately after page 1 lands so the user
+    // has a full second screen ready before they scroll. After that,
+    // trigger when the focused row is within 1 row of the loaded end.
+    const int rows_loaded = movies_.empty()
+        ? 0
+        : (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
+    const int cursor_row = grid_cursor_ / kGridCols;
+    const bool prefetch_page2 = (next_page_to_fetch_ == 2);
+    const bool near_end = (rows_loaded > 0) && (cursor_row >= rows_loaded - 1);
+    if (!prefetch_page2 && !near_end) return;
+
+    spdlog::info("[BrowseScreen] auto-fetching page {} ({})",
+                 next_page_to_fetch_,
+                 prefetch_page2 ? "page-2 prefetch" : "scroll-driven");
+    spawn_page_worker(category_, next_page_to_fetch_);
 }
 
 void BrowseScreen::update() {
     apply_pending();
+    maybe_load_more_pages();
 }
 
 BrowseScreen::~BrowseScreen() {
@@ -1095,7 +1191,23 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Centered dim text, no background bar — matches DetailScreen's
     // footer exactly. The bar/fill style of the old footer fought the
     // outline-only chrome elsewhere on the screen.
+    //
+    // When a follow-up page is in flight (prefetch or scroll-driven),
+    // a small "Loading more…" indicator is drawn ABOVE the controls
+    // hint so the user knows new posters are about to appear without
+    // them having to wonder why the grid feels short.
     {
+        if (fetching_more_ && !movies_.empty()) {
+            const std::string more_msg = "Loading more...";
+            int ms = th.font_small_size;
+            int mb = r.mb_text_baseline(ms);
+            int mw = r.mb_text_width(more_msg, ms);
+            float mx = (w - static_cast<float>(mw)) / 2.0f;
+            float my = h - 12.0f - static_cast<float>(ms) * 2.4f
+                     + static_cast<float>(mb);
+            r.mb_draw_text(more_msg, mx, my, ms, th.accent2, 0.85f);
+        }
+
         std::string hint;
         if (focus_ == Focus::FilterPanel) {
             hint = "Rotate: change value   RCLICK: next control   "

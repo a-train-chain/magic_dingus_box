@@ -101,11 +101,23 @@ private:
     void load_category(Category cat);
     void reload_filter_results();
     // Worker entry — runs the synchronous TMDB call off-thread.
-    void run_load_category(uint64_t gen, Category cat);
-    void run_reload_filter(uint64_t gen, DiscoverFilter filter);
-    // Drains pending result from any completed worker into movies_.
-    // Cheap (atomic load most frames); only takes the mutex when a
-    // result is ready to consume.
+    // Each spawned worker fetches ONE page; multiple page workers may be
+    // in flight concurrently for the same category load (page 1 + a
+    // prefetched page 2 + a scroll-driven page 3 etc.). Results are
+    // tagged with their page number so apply_pending() can replace on
+    // page 1 / append on page > 1.
+    void run_load_page(uint64_t gen, Category cat, int page);
+    void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page);
+    // Spawn a fresh worker for the given category + page under the
+    // current generation. Sets fetching_more_ before returning.
+    void spawn_page_worker(Category cat, int page);
+    // After apply_pending() drains a result, decide whether to spawn
+    // the next page worker. Called from update() each frame; cheap
+    // when no fetch is needed (a few atomic loads + arithmetic).
+    void maybe_load_more_pages();
+    // Drains pending results from any completed workers into movies_.
+    // Cheap (atomic load most frames); only takes the mutex when at
+    // least one result is ready to consume.
     void apply_pending();
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
@@ -158,15 +170,45 @@ private:
     // completion in the background and silently drop their results.
     std::atomic<uint64_t> tmdb_current_gen_{0};
     std::mutex            tmdb_result_mtx_;
-    // Pending result from a worker whose gen matches current_gen_.
+    // Pending results from workers whose gen matches current_gen_.
+    // Each entry is one fetched page tagged with its page number, so
+    // multiple in-flight workers can publish concurrently without
+    // overwriting each other; apply_pending() drains the queue and
+    // replaces (page == 1) or appends (page > 1).
+    struct PendingPage {
+        std::vector<TmdbSearchHit> movies;
+        int  page;       // 1, 2, 3, ...
+        bool no_more;    // true if this fetch indicates we hit the end of the list
+    };
+    std::vector<PendingPage>   tmdb_pending_pages_;
     // result_ready_ is the fast atomic check update() uses to skip
     // the lock on every frame when no new result is in flight.
-    std::vector<TmdbSearchHit> tmdb_pending_movies_;
     std::atomic<bool>          tmdb_result_ready_{false};
     // All worker threads spawned during this screen's lifetime.
     // Joined in the destructor so a worker mid-CURL doesn't outlive
     // the BrowseScreen and segfault on result publication.
     std::vector<std::thread>   tmdb_workers_;
+
+    // --- Pagination state (per-category) ---------------------------
+    // The active category accumulates pages as the user scrolls. State
+    // resets on category switch. TMDB returns 20 results per page; with
+    // 9-col 2-row layout (18 visible per page) we prefetch page 2 after
+    // page 1 lands so the user has a full second screen ready, then
+    // fetch additional pages on-demand as the cursor approaches the
+    // loaded end.
+    int  next_page_to_fetch_ = 1;     // Next un-fetched page (1-based).
+    bool more_available_     = true;  // False once a fetch returns near-empty.
+    bool fetching_more_      = false; // A page worker is currently in flight.
+    // Hard cap on accumulated movies — protects against unbounded growth
+    // if a user somehow scrolls past 100 results in one session. TMDB
+    // categories have 500+ pages but the user's appetite doesn't.
+    static constexpr int kMaxLoadedPages = 5;  // 5 pages × 20 = ~100 movies.
+    // Set of tmdb_ids already in movies_, so subsequent pages that overlap
+    // with prior ones (TMDB occasionally re-emits the same movie across
+    // page boundaries when its list shifts mid-fetch) don't get duplicate
+    // tiles in the grid. Different cuts of the same movie have distinct
+    // tmdb_ids, so this is exact-duplicate suppression only.
+    std::unordered_set<int> loaded_tmdb_ids_;
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;
