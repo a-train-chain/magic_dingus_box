@@ -107,6 +107,38 @@ else
     echo "  WARN: HD-1080p profile not found in Radarr response. Verify via web UI."
 fi
 
+# 9. Set quality profile "Any" language to "Original" (auto-adapts per
+# movie) instead of the default English-only. The English-only setting
+# rejects multilingual releases that include English audio because
+# Radarr's title parser detects the FIRST language tag in the release
+# title — for new theatrical releases that often comes back as Spanish
+# / French / Italian. "Original" auto-adapts: each movie gets matched
+# against its own original language. Multilingual releases satisfy
+# both because they pass at least one language match.
+#
+# This is the live config we hit in production with Mario Galaxy 2026
+# — every release from a 14-result search was rejected with "English
+# is wanted, but found Spanish" until the profile was relaxed.
+echo "Setting 'Any' quality profile language to 'Original' (auto-adapts per movie)..."
+ANY_PROFILE=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
+    http://localhost:7878/api/v3/qualityprofile 2>/dev/null \
+    | python3 -c "import sys,json
+ps = json.load(sys.stdin)
+p = next((p for p in ps if p['name']=='Any'), None)
+if p:
+    p['language'] = {'id':-2, 'name':'Original'}
+    print(json.dumps(p))
+else:
+    print('')")
+if [[ -n "${ANY_PROFILE}" ]]; then
+    PROFILE_ID=$(echo "${ANY_PROFILE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+    curl -fsS -X PUT -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+        -d "${ANY_PROFILE}" \
+        "http://localhost:7878/api/v3/qualityprofile/${PROFILE_ID}" >/dev/null \
+        && echo "  ✓ 'Any' profile language set to Original" \
+        || echo "  WARN: failed to update 'Any' profile language; verify via web UI"
+fi
+
 # 9. Print credentials to operator
 cat <<EOF
 

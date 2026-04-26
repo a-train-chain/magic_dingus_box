@@ -202,9 +202,21 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
 
     // Mutate the bits we own. Pick the first registered root folder so
     // we don't have to hardcode a path that might not exist on every
-    // install. minimumAvailability=released is the right default for a
-    // movie that the user is actively choosing — they want it once it's
-    // out, not blocked behind announcement-only state.
+    // install.
+    //
+    // minimumAvailability=announced — let Radarr search/grab the moment
+    // a release surfaces, regardless of TMDB's release-status string.
+    // The original "released" default left users staring at "Awaiting
+    // Release" forever for movies still in their theatrical window
+    // (TMDB doesn't flip status to Released until digital/physical
+    // home release dates land, which can lag theatrical by months —
+    // verified in production with The Super Mario Galaxy Movie 2026).
+    // The kiosk's quality scoring already filters out junk releases
+    // (telesync, CAM, low-seeder, oversized) so flipping to
+    // "announced" doesn't degrade the grab quality — it just
+    // unblocks the search gate. Users who add a movie are
+    // intentionally requesting it; they'd rather have a Webrip
+    // grabbed today than wait three months for a Bluray.
     auto roots = get_root_folders();
     if (roots.empty()) {
         last_error_ = "No root folder configured in Radarr";
@@ -214,7 +226,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     movie["qualityProfileId"]    = quality_profile_id;
     movie["rootFolderPath"]      = roots.front().path;
     movie["monitored"]           = monitor;
-    movie["minimumAvailability"] = "released";
+    movie["minimumAvailability"] = "announced";
     Json::Value addOptions;
     addOptions["searchForMovie"] = monitor;
     addOptions["monitor"]        = "movieOnly";

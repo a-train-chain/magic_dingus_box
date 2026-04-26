@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstring>
 #include <sstream>
+#include <strings.h>  // strncasecmp (POSIX, case-insensitive header match)
 
 namespace media_browser {
 
@@ -26,8 +27,14 @@ size_t header_cb(char* buffer, size_t size, size_t nitems,
                  std::string* out_set_cookie) {
     const size_t n = size * nitems;
     static const char kKey[] = "Set-Cookie:";
+    // CASE-INSENSITIVE compare — qBittorrent emits the header as
+    // "set-cookie:" (lowercase) and HTTP headers are case-insensitive
+    // per RFC 7230. The original strncmp here was case-sensitive,
+    // which silently broke every login (header was never matched →
+    // SID cookie never captured → "no SID cookie returned" warning
+    // on every kiosk request → entire qBit live-overlay path dead).
     if (n > sizeof(kKey) - 1
-        && std::strncmp(buffer, kKey, sizeof(kKey) - 1) == 0) {
+        && strncasecmp(buffer, kKey, sizeof(kKey) - 1) == 0) {
         // Trim leading space after "Set-Cookie:"
         size_t start = sizeof(kKey) - 1;
         while (start < n && (buffer[start] == ' ' || buffer[start] == '\t')) {
