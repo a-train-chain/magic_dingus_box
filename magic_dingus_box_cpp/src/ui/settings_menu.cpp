@@ -374,11 +374,33 @@ MenuSection SettingsMenuManager::select_current() {
 }
 
 void SettingsMenuManager::enter_submenu(MenuSection section) {
+    // IDEMPOTENT RE-ENTRY: when called with the same section we're
+    // already in, preserve transient state (selected_index_,
+    // scroll_offset_, wifi_disconnect_confirm_) instead of resetting
+    // it to defaults. This matters because main.cpp calls
+    //   enter_submenu(WIFI)
+    // immediately after the user presses SELECT on a WIFI-section
+    // action item (like Disconnect), as part of the standard
+    //   `case WIFI: enter_submenu(WIFI)`
+    // dispatch in the menu's SELECT handler. Without this guard, a
+    // user pressing "Disconnect" would have the action lambda flip
+    // wifi_disconnect_confirm_ to true → rebuild submenu (showing
+    // "Confirm Disconnect?") → main.cpp re-runs enter_submenu(WIFI)
+    // which silently resets the flag back to false and snaps the
+    // selection to item 0. The Confirm prompt would render for one
+    // frame and then revert; the user could never reach the actual
+    // forget_network() call. Same trap applied to any future submenu
+    // action that needs to manage transient confirm-style state.
+    const bool reentering = (current_submenu_ == section);
+    const int preserved_index  = reentering ? selected_index_  : 0;
+    const int preserved_scroll = reentering ? scroll_offset_   : 0;
+
     current_submenu_ = section;
-    selected_index_ = 0;
-    scroll_offset_ = 0;
-    wifi_disconnect_confirm_ = false;
-    
+    if (!reentering) {
+        // Fresh entry: reset all transient flags.
+        wifi_disconnect_confirm_ = false;
+    }
+
     if (section == MenuSection::VIDEO_GAMES) {
         submenu_items_ = build_games_submenu();
     } else if (section == MenuSection::DISPLAY) {
@@ -394,6 +416,12 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
     } else if (section == MenuSection::INFO) {
         submenu_items_ = build_info_submenu();
     }
+
+    // Restore index + scroll, clamped to the (possibly newly-rebuilt)
+    // item count.
+    const int max_idx = std::max(0, static_cast<int>(submenu_items_.size()) - 1);
+    selected_index_ = std::min(preserved_index,  max_idx);
+    scroll_offset_  = std::min(preserved_scroll, max_idx);
 }
 
 void SettingsMenuManager::exit_submenu() {
