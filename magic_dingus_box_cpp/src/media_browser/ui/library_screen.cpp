@@ -59,7 +59,6 @@ constexpr float kGridTop         = 144.0f;
 constexpr float kCellGapX        = 20.0f;
 constexpr float kCellGapY        = 24.0f;
 constexpr float kLabelAreaH      = 52.0f;     // title + year below the poster
-constexpr float kPosterBorderW   = 2.0f;
 constexpr float kPosterFocusW    = 3.0f;      // focused gold outline thickness
 
 // Status dot in the top-right corner of each poster. Drawn as a small
@@ -593,13 +592,20 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                      cell_x, cell_y, poster_w, poster_h,
                                      tint, 1.0f);
 
-                // 2px gold border by default; 3px gold border when
-                // focused. Both pure-outline — no fill — matching the
-                // home-menu border-and-text aesthetic.
-                float border_w = focused ? kPosterFocusW : kPosterBorderW;
-                float border_alpha = focused ? 1.0f : 0.85f;
-                r.mb_stroke_rect(cell_x, cell_y, poster_w, poster_h,
-                                 border_w, th.accent, border_alpha);
+                // Gold border ONLY on the focused poster — matches the
+                // BrowseScreen pattern, which is the canonical "unframed
+                // contact sheet" look for poster grids in the Media
+                // Browser. Previously Library drew a 2px gold border on
+                // EVERY cell (0.85 alpha) plus a 3px border on focus.
+                // The result was visual clutter — every poster looked
+                // selected, and the focus indicator had to fight that
+                // noise to stand out. With borders gated on focus, the
+                // grid reads cleanly and the eye lands on the focused
+                // cell instantly.
+                if (focused) {
+                    r.mb_stroke_rect(cell_x, cell_y, poster_w, poster_h,
+                                     kPosterFocusW, th.accent, 1.0f);
+                }
 
                 // Status corner dot — green / gold / red. Drawn as a
                 // small filled square with a 2px dark halo so it stays
@@ -618,45 +624,28 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                th.bg, 0.9f);
                 r.mb_fill_rect(dx, dy, dot_size, dot_size, dot_color, 1.0f);
 
-                // Title + year beneath the poster. Body font, cream on
-                // dim — same hierarchy as detail's metadata column.
+                // Title beneath the poster — left-aligned to the cell,
+                // truncated to the cell width. Mirrors BrowseScreen's
+                // pattern exactly. Was previously centered with a
+                // marker-zone reservation on the right and a blinking
+                // ◂ cursor inside that zone — both removed because the
+                // focused-only border + accent-color title already
+                // communicate "this is the selected one" plenty
+                // clearly. Less chrome, cleaner read.
                 //
-                // Marker-zone pattern: we still TRUNCATE the title to
-                // `poster_w - kMarkerZoneW` so a long title can never
-                // crowd or overflow into the focus cursor, but we CENTER
-                // the (possibly-truncated) title in the FULL poster
-                // width. The cursor will sit at the right edge over (or
-                // near) empty space because most titles are shorter than
-                // the truncation budget anyway.
+                // Title color/alpha: focused = accent (gold) at 1.0,
+                // unfocused = fg (cream) at 0.55. Same as Browse.
                 int t_size = th.font_medium_size;
                 int t_baseline = r.mb_text_baseline(t_size);
-                std::string title = m.title.empty() ? "Untitled" : m.title;
-                float title_max_w = poster_w - kMarkerZoneW;
-                std::string drawn_title =
-                    truncate_to_width(r, title, t_size, title_max_w);
-                float drawn_title_px = static_cast<float>(
-                    r.mb_text_width(drawn_title, t_size));
-                float title_x =
-                    cell_x + (poster_w - drawn_title_px) / 2.0f;
+                std::string title = truncate_to_width(
+                    r, m.title.empty() ? "Untitled" : m.title,
+                    t_size, poster_w);
                 float t_y = cell_y + poster_h + 10.0f
                           + static_cast<float>(t_baseline);
-                r.mb_draw_text(drawn_title, title_x, t_y, t_size, th.fg,
-                               focused ? 1.0f : 0.9f);
-
-                // Blinking ◂ centered inside the reserved marker zone
-                // at the right edge of the title baseline. Same color
-                // (accent2) and 500ms cycle as the chip-strip cursor
-                // and the home-menu playlist cursor.
-                if (focused && blink_on) {
-                    float marker_size = static_cast<float>(t_size) * 0.40f;
-                    float marker_cx = cell_x + poster_w - kMarkerZoneW * 0.5f;
-                    float marker_cy = t_y - static_cast<float>(t_size) / 3.0f;
-                    r.mb_fill_triangle(
-                        marker_cx,                       marker_cy - marker_size,
-                        marker_cx,                       marker_cy + marker_size,
-                        marker_cx - marker_size * 1.2f,  marker_cy,
-                        th.accent2, 1.0f);
-                }
+                ::ui::Color title_color = focused ? th.accent : th.fg;
+                float title_alpha = focused ? 1.0f : 0.55f;
+                r.mb_draw_text(title, cell_x, t_y, t_size,
+                               title_color, title_alpha);
 
                 if (m.year > 0) {
                     int y_size = th.font_small_size;

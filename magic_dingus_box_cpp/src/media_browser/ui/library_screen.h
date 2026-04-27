@@ -66,11 +66,15 @@ private:
     enum class Focus { FilterStrip, PosterGrid };
 
     static constexpr int kNumFilters = 4;
-    // 5-column poster grid: prioritises seeing more movies on screen at once
-    // over per-poster size. With kPaddingX=32 and kCellGapX=20 on a 1280-wide
-    // target, each cell ends up ~227px wide (poster ~227x340 at 2:3) which
-    // still reads cleanly as artwork without dominating the grid.
-    static constexpr int kGridCols = 5;
+    // 9-column poster grid — matches BrowseScreen's density so the two
+    // screens feel like the same UI. Was 5 columns originally, which
+    // looked correct in isolation but visibly didn't match Browse when
+    // operators flipped between the two. With 9 columns + 2 visible
+    // rows, you see 18 posters at once, same as Browse. On a 1280-wide
+    // target with kPaddingX=32 and kCellGapX=20, each cell ends up
+    // ~119px wide (poster ~119x178 at 2:3) — small but still legible
+    // as artwork.
+    static constexpr int kGridCols = 9;
 
     // Categorises a library entry into the three dot-color buckets used
     // by the grid state indicator and the MissingUpgrades filter logic.
