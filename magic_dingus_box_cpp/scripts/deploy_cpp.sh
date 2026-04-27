@@ -171,6 +171,33 @@ rsync -avz \
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh" 2>/dev/null || true
 echo "  ✓ VERSION file and update script synced"
 
+# Step 1.57: Sync golden_image clone tooling.
+#
+# These scripts live at /opt/magic_dingus_box/scripts/golden_image/ on
+# the Pi (NOT under magic_dingus_box_cpp/), and Step 1's rsync is
+# scoped to magic_dingus_box_cpp/, so without this dedicated step they
+# silently drift.
+#
+# Pre-image clone bug landed because of this exact gap: first_boot.sh
+# evolved in the repo (added the 7th step that wipes services/.env +
+# resets media_browser_unlocked on cloned Pis) but the deployed copy
+# stayed on its original 6-step version. Cloning would have leaked
+# the source's WireGuard private key, ProtonVPN credentials, and
+# media_browser unlock state to every clone.
+#
+# rsync everything in the dir (CLONING.md doc + Mac-side
+# clone_live_sd.sh harmlessly come along for the ride; --delete keeps
+# the dir authoritative against the repo).
+echo "Step 1.57: Syncing golden_image clone scripts..."
+ssh "${PI_HOST}" "mkdir -p ${PI_DIR}/scripts/golden_image" 2>/dev/null || true
+rsync -avz \
+    --delete \
+    --exclude '.DS_Store' \
+    "${CPP_DIR}/../scripts/golden_image/" \
+    "${PI_HOST}:${PI_DIR}/scripts/golden_image/"
+ssh "${PI_HOST}" "chmod +x ${PI_DIR}/scripts/golden_image/*.sh" 2>/dev/null || true
+echo "  ✓ Golden image scripts synced"
+
 # Step 1.6: Install Web UI Service
 echo "Step 1.6: Installing Web UI Service..."
 rsync -avz \
