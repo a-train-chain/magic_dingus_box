@@ -1,0 +1,28 @@
+[Unit]
+Description=Magic Dingus Box - port 80 redirect to Content Manager
+After=network.target magic-dingus-web.service
+# Don't strictly require magic-dingus-web — the redirect server itself
+# is independent; it just emits 302s. If the Content Manager happens to
+# be down, the redirect still goes to :5000 and the browser shows
+# "unable to connect", which is not worse than typing :5000 directly.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/content_manager_redirect.py
+Restart=on-failure
+RestartSec=5
+User=magic
+# Bind to port 80 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Hardening: this service only does HTTP redirects, no filesystem or
+# device access needed.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

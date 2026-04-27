@@ -65,6 +65,24 @@ else
     echo "  ⚠ ${USB_DNSMASQ_CONF} not found — skipping dnsmasq config"
 fi
 
+# Content Manager port-80 redirect: tiny Python service that 302s any
+# request from port 80 to port 5000 (where Flask actually listens).
+# Lets the operator type `magicpi.local` (or `10.55.0.1`, or the Pi's
+# Wi-Fi IP) without remembering the port number — landing on the
+# Content Manager directly.
+REDIRECT_UNIT_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)/systemd/content-manager-redirect.service"
+if [[ -f "$REDIRECT_UNIT_SRC" ]]; then
+    echo "Installing content-manager-redirect service..."
+    sudo cp "$REDIRECT_UNIT_SRC" /etc/systemd/system/content-manager-redirect.service
+    sudo chmod 644 /etc/systemd/system/content-manager-redirect.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable content-manager-redirect.service
+    sudo systemctl restart content-manager-redirect.service
+    echo "  ✓ port-80 → :5000 redirect running"
+else
+    echo "  ⚠ ${REDIRECT_UNIT_SRC} not found — skipping redirect service"
+fi
+
 if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."
     sudo apt install -y \
