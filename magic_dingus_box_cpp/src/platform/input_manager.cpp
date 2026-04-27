@@ -599,23 +599,23 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
     // button range (BTN_TRIGGER..BTN_BASE6 = 288..299):
     //   288 Triangle / 289 Circle / 290 Cross / 291 Square
     //   292 L1 / 293 R1 / 294 L2 / 295 R2 / 296 Select / 297 Start
-    // Natural PS-style mapping onto the kiosk's existing actions.
     //
-    // Cross is the SELECT button (matches PlayStation OS conventions in
-    // the Americas — Cross = confirm, Square = options/menu). Some users
-    // initially had this swapped to match Sony's older Japan-region
-    // convention; the operator preference for this kiosk is the standard
-    // Americas mapping where Cross = ENTER.
+    // Operator preference for the Magic Dingus Box kiosk:
+    //   Cross   → SELECT         (confirm — Americas PlayStation convention)
+    //   Circle  → SETTINGS_MENU  (open kiosk settings)
+    //   Square  → unassigned (free to remap later)
+    //   Triangle → PLAY_PAUSE
+    //   L1 / R1  → PREV / NEXT
 
     switch (code) {
         case 304:  // BTN_SOUTH (standard A button)
         case 306:  // A button (N64)
         case 316:  // START
-        case 290:  // Cross (PS pad, joystick button 2 — ENTER, Americas convention)
+        case 290:  // Cross (PS pad, joystick button 2 — ENTER)
         case 297:  // Start (PS pad)
             return InputAction::SELECT;
         case 305:  // BTN_EAST (B button)
-        case 291:  // Square (PS pad, joystick button 3 — MENU)
+        case 289:  // Circle (PS pad, joystick button 1 — MENU)
             return InputAction::SETTINGS_MENU;
         case 310:  // Z
         case 288:  // Triangle (PS pad)
