@@ -37,24 +37,54 @@ void WifiManager::scan_networks_async() {
         std::cout << "WifiManager: Scan already in progress" << std::endl;
         return;
     }
-    
+
     std::cout << "WifiManager: Starting async scan..." << std::endl;
     is_scanning_ = true;
     std::thread([this]() {
+        // Two-phase scan. The previous single-call form
+        //   `nmcli dev wifi list --rescan yes`
+        // was supposed to trigger a rescan AND block until results were
+        // ready, but on this Pi 4 + Pi OS Bookworm + NetworkManager 1.42
+        // it returns cached results immediately and the rescan happens
+        // in the background — so the kiosk only ever saw networks
+        // already in nmcli's cache (typically just the currently-connected
+        // SSID). Symptom: "Scan Networks" shows 1 entry instead of 10+.
+        //
+        // Fix: explicit `rescan` command (which kicks off the scan and
+        // returns once it has been scheduled), then a brief wait for
+        // the scan to complete, then a plain `list` to read the fresh
+        // results. 4s is the empirically-reliable wait on a Pi 4 with
+        // the bcm43436 chip; some scans complete in 2s but tail
+        // outliers can take 3.5s, so 4s gives margin without making the
+        // UI feel laggy.
+        //
+        // sudo on the rescan is required by the policykit config on
+        // recent Pi OS (the magic user can't request a rescan without
+        // it). The list command does NOT need sudo.
+
+        // Phase 1: trigger rescan
+        std::string rescan_out = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "rescan"});
+        if (!rescan_out.empty()) {
+            std::cout << "WifiManager: rescan: " << rescan_out << std::endl;
+        }
+
+        // Phase 2: wait for scan to complete
+        std::this_thread::sleep_for(std::chrono::seconds(4));
+
+        // Phase 3: read fresh results
         std::string output = exec_command_argv({"nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
-                                                "dev", "wifi", "list", "--rescan", "yes"});
-        
+                                                "dev", "wifi", "list"});
+
         std::cout << "WifiManager: Scan complete. Output length: " << output.length() << std::endl;
-        // std::cout << "Raw output: " << output << std::endl; // Uncomment if needed, might be spammy
-        
+
         auto networks = parse_nmcli_scan_output(output);
         std::cout << "WifiManager: Parsed " << networks.size() << " networks." << std::endl;
-        
+
         {
             std::lock_guard<std::mutex> lock(scan_mutex_);
             scan_results_ = networks;
         }
-        
+
         is_scanning_ = false;
         std::cout << "WifiManager: is_scanning_ set to false" << std::endl;
     }).detach();
@@ -209,8 +239,42 @@ std::string WifiManager::get_connection_error() {
 }
 
 bool WifiManager::forget_network(const std::string& ssid) {
-    std::string output = exec_command_argv({"sudo", "nmcli", "connection", "delete", ssid});
-    return (output.find("successfully") != std::string::npos);
+    // Two-step disconnect+forget. The previous single `connection delete`
+    // is supposed to do both (kick the active connection AND remove the
+    // saved profile), but if it silently fails (e.g. a stale connection
+    // profile, a typo in SSID, polkit denial) the user sees nothing
+    // happen on screen. Splitting the steps lets us:
+    //   1. Cleanly disconnect first (network drops immediately — visible
+    //      to the user)
+    //   2. Then delete the profile (so it doesn't auto-reconnect)
+    // ...and log each step's output so the journal shows what actually
+    // happened. Both steps are best-effort; if "down" fails (e.g. wasn't
+    // active) the "delete" still runs, which is the desired end state.
+    std::cout << "WifiManager: forget_network('" << ssid << "')" << std::endl;
+    if (ssid.empty()) {
+        std::cout << "WifiManager: empty SSID — nothing to forget" << std::endl;
+        return false;
+    }
+
+    // Step 1: bring the connection down (best-effort; harmless if it
+    // wasn't active to begin with — `connection down` on an inactive
+    // connection just prints a warning, doesn't error fatally).
+    std::string down_out = exec_command_argv({"sudo", "nmcli", "connection", "down", ssid});
+    std::cout << "WifiManager: 'down' result: " << (down_out.empty() ? "<empty>" : down_out) << std::endl;
+
+    // Step 2: delete the saved profile so NetworkManager doesn't
+    // auto-reconnect on the next sweep.
+    std::string del_out = exec_command_argv({"sudo", "nmcli", "connection", "delete", ssid});
+    std::cout << "WifiManager: 'delete' result: " << (del_out.empty() ? "<empty>" : del_out) << std::endl;
+
+    // Success heuristic: "successfully deleted" appears in the delete
+    // output on success. Localized environments may print differently;
+    // accept a non-empty output without an "Error:" prefix as success.
+    bool deleted = (del_out.find("successfully") != std::string::npos)
+                || (!del_out.empty() && del_out.find("Error:") == std::string::npos
+                                     && del_out.find("error:") == std::string::npos);
+    std::cout << "WifiManager: forget_network → " << (deleted ? "OK" : "FAILED") << std::endl;
+    return deleted;
 }
 
 std::string WifiManager::exec_command_argv(const std::vector<std::string>& args, int timeout_seconds) {
