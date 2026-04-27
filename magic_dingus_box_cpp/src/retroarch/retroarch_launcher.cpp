@@ -725,6 +725,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "sort_savestates_by_content_enable = \"true\"\n";
             script_file << "savestate_auto_save = \"true\"\n";
             script_file << "savestate_auto_load = \"true\"\n";
+            // Without these RA's auto-save state silently no-ops: with no global retroarch.cfg the default libretro_info_path points to a non-existent dir, core_info_list ends up empty, savestate_support_level reads 0, and command_event_save_auto_state early-returns at the support check.
+            script_file << "libretro_info_path = \"/usr/share/libretro/info\"\n";
+            script_file << "core_info_savestate_bypass = \"true\"\n";
             
             // Video config (driver, resolution, viewport, sync)
             write_video_config(script_file, opts);
