@@ -264,6 +264,39 @@ except Exception as e:
     print(f'could not reset: {e}', file=sys.stderr)
 " 2>&1 | sed 's/^/    /' || true
     log "[6/7] Reset media_browser_unlocked flag (cloned Pi starts locked)"
+
+    # Step 6c: Wipe inherited WiFi credentials.
+    #
+    # The source Pi was provisioned with the operator's home WiFi
+    # password (stored at /etc/NetworkManager/system-connections/
+    # *.nmconnection — readable only by root, but it IS persisted to
+    # the SD card and would be inherited by every clone). Whoever
+    # flashes this image onto a fresh Pi shouldn't auto-connect to
+    # the source operator's home network — both for privacy and
+    # because the credential won't even work in their location.
+    #
+    # The kiosk has a built-in Wi-Fi setup UI (Settings → Wi-Fi →
+    # Scan Networks → on-screen keyboard for passwords), so the
+    # cloned Pi's first-time operator can join their own network in
+    # ~30 seconds without ever needing SSH or HDMI keyboard.
+    #
+    # We delete the connection profile files; NetworkManager picks
+    # up the change automatically on its next reload. No need to
+    # restart NM here — Pi will boot, NM will start, find no saved
+    # profiles, sit idle until the operator sets one up.
+    NM_DIR="/etc/NetworkManager/system-connections"
+    if [[ -d "$NM_DIR" ]]; then
+        # Count what we're about to wipe (for the log).
+        nm_count=$(find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" \
+                       -type f 2>/dev/null | wc -l)
+        if [[ "$nm_count" -gt 0 ]]; then
+            find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" -type f \
+                 -delete 2>/dev/null || true
+            log "[6/7] Wiped $nm_count inherited WiFi profile(s) from $NM_DIR"
+        else
+            log "[6/7] No WiFi profiles to wipe (already clean)"
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
