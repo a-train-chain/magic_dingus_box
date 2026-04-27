@@ -731,6 +731,81 @@ show("unchanged", s["unchanged"])
 '
 fi
 
+# 14b. Radarr: minimum-seeders threshold per indexer.
+#
+# Filters out dead-swarm releases at search time. Without this,
+# Radarr happily grabs releases from old (10-30+ year) movies whose
+# trackers still report cached "9 seeders exist" but no peer is
+# actually online — qBit then sits in `metaDL` forever. Symptom is
+# a download that hangs at 0% with 0 connected peers despite the
+# torrent metadata claiming a healthy swarm.
+#
+# We set minimumSeeders=5 on every Radarr indexer (the indexer
+# objects on Radarr's side, populated by the Apps-integration sync
+# in Step 14). At search time, indexers that return releases with
+# fewer than 5 reported seeders never even reach Radarr's scoring
+# pass, so the operator never gets a "stalled" download from a
+# dead swarm.
+#
+# 5 is a deliberately conservative floor: high enough to weed out
+# graveyard torrents, low enough that legitimate niche releases
+# (foreign films, documentaries, just-released indie movies) still
+# pass. We don't compete on "fastest possible" downloads — we just
+# refuse to start ones that won't progress.
+#
+# Idempotent: PUT only when the live value differs from 5. Default
+# Radarr value when an indexer is first synced from Prowlarr is 1
+# (effectively no filter), so on a fresh setup every indexer gets
+# bumped on first run and stays at 5 thereafter.
+echo "Configuring Radarr indexer minimum_seeders threshold..."
+SEEDER_SUMMARY=$(python3 - "${RADARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+api_key = sys.argv[1]
+BASE = "http://localhost:7878/api/v3"
+TARGET = 5
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+result = {"updated": [], "unchanged": [], "skipped_disabled": []}
+for ix in http("GET", "/indexer") or []:
+    name = ix.get("name", "?")
+    if not (ix["enableRss"] or ix["enableAutomaticSearch"] or ix["enableInteractiveSearch"]):
+        result["skipped_disabled"].append(name)
+        continue
+    bumped = False
+    for fld in ix.get("fields", []):
+        if fld["name"] == "minimumSeeders":
+            old = fld.get("value")
+            if old != TARGET:
+                fld["value"] = TARGET
+                bumped = True
+            break
+    if bumped:
+        http("PUT", "/indexer/%d?forceSave=true" % ix["id"], ix)
+        result["updated"].append(name)
+    else:
+        result["unchanged"].append(name)
+
+print(json.dumps(result))
+PYEOF
+)
+echo "${SEEDER_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("updated to min=5  ", s["updated"])
+show("already at 5      ", s["unchanged"])
+show("skipped (disabled)", s["skipped_disabled"])
+'
+
 # 15. Radarr → qBittorrent download client.
 #
 # Radarr's grab pipeline: indexer search → magnet/.torrent URL →
