@@ -1404,10 +1404,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
         ]
         
-        # Only apply audio normalization if requested (default: OFF)
-        # This allows pre-normalized videos to skip the loudnorm filter
+        # Audio normalization via FFmpeg's loudnorm filter (EBU R128).
+        # Matches the Retro Ripper companion tool's settings exactly so a
+        # video uploaded directly via the Content Manager sounds the same
+        # as one ripped externally and dropped in:
+        #   I=-16  → integrated loudness target -16 LUFS (YouTube-like;
+        #            warmer/louder than the -23 LUFS broadcast standard
+        #            we used to default to here)
+        #   TP=-1  → max true peak -1 dBTP (small headroom for resampler
+        #            ringing; matches Retro Ripper)
+        #   LRA=11 → loudness range 11 LU (allows reasonable dynamics
+        #            instead of squashing to 7 LU)
+        # Reference: retro_ripper/config/config.py:AUDIO_TARGET_LUFS,
+        # AUDIO_TRUE_PEAK, AUDIO_LOUDNESS_RANGE.
         if normalize_audio:
-            ffmpeg_cmd.extend(['-af', 'loudnorm=I=-23:LRA=7:tp=-2'])  # EBU R128 normalization
+            ffmpeg_cmd.extend(['-af', 'loudnorm=I=-16:TP=-1:LRA=11'])
         
         ffmpeg_cmd.extend([
             '-c:v', 'libx264',
@@ -1501,6 +1512,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         f = request.files["file"]
         resolution = request.form.get("resolution", "crt")
+        # `normalize_audio` arrives as the string "true"/"false" (FormData
+        # POST). Coerce to bool. Default ON because phone-uploaded clips
+        # almost always have inconsistent levels — we'd rather opt-out
+        # than opt-in for the typical user flow.
+        normalize_audio = (request.form.get("normalize_audio", "true").lower()
+                           == "true")
 
         if resolution not in TRANSCODE_RESOLUTIONS:
             return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
@@ -1538,10 +1555,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
             'output_filename': output_name,
         }
 
-        # Start transcoding in background thread
+        # Start transcoding in background thread. Pass normalize_audio
+        # through — without this, the upload UI's "Normalize audio
+        # volume" checkbox was being silently ignored because the
+        # request handler dropped the form field on the floor.
         thread = threading.Thread(
             target=run_transcode_job,
-            args=(job_id, temp_input, output_path, resolution)
+            args=(job_id, temp_input, output_path, resolution, normalize_audio)
         )
         thread.daemon = True
         thread.start()
@@ -1641,6 +1661,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         f = request.files["file"]
         resolution = request.form.get("resolution", "crt")
+        # See upload_and_transcode for normalize_audio default rationale.
+        # Default ON here too so a phone upload of an already-720p clip
+        # still gets its audio levels fixed even when the video itself
+        # doesn't need re-encoding.
+        normalize_audio = (request.form.get("normalize_audio", "true").lower()
+                           == "true")
 
         if resolution not in TRANSCODE_RESOLUTIONS:
             return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
@@ -1658,6 +1684,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         # Probe the video
         probe_result = probe_video(temp_input, resolution)
+
+        # If the video is already at target resolution+codec but the
+        # user wants audio normalized, we can't take the "direct copy"
+        # shortcut — flip needs_transcode on so the loudnorm pass
+        # runs. The transcode is fast in this case (still has to
+        # re-encode video but the loudnorm filter can be heavy on
+        # long clips, so this is the right tradeoff).
+        if normalize_audio and not probe_result['needs_transcode']:
+            probe_result['needs_transcode'] = True
+            probe_result['reason'] = (
+                'Audio normalization requested — re-encoding to apply '
+                'loudnorm filter even though video already matches target.'
+            )
 
         if not probe_result['needs_transcode']:
             # Already compatible - move directly to media folder
@@ -1708,10 +1747,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 'output_filename': output_name,
             }
 
-            # Start transcoding in background thread
+            # Start transcoding in background thread. normalize_audio
+            # propagates from the form here as well — without this the
+            # loudnorm filter never fires regardless of UI checkbox.
             thread = threading.Thread(
                 target=run_transcode_job,
-                args=(job_id, temp_input, output_path, resolution)
+                args=(job_id, temp_input, output_path, resolution, normalize_audio)
             )
             thread.daemon = True
             thread.start()
