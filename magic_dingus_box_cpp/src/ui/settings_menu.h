@@ -112,6 +112,11 @@ private:
     bool was_scanning_;
     bool was_connecting_;
     bool wifi_disconnect_confirm_ = false;
+    // INFO submenu auto-refresh — the Content Manager page shows USB vs.
+    // Wi-Fi URL based on which interface has carrier. We rebuild it
+    // periodically while it's open so the QR code reflects state changes
+    // (e.g., user unplugs the USB-C cable while sitting on this screen).
+    std::chrono::steady_clock::time_point last_info_refresh_{};
     
     MenuSection current_submenu_;
     std::vector<MenuItem> menu_items_;

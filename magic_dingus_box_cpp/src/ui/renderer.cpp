@@ -702,20 +702,29 @@ void Renderer::render(const app::AppState& state) {
         
         // Render QR code when Info submenu is active
         if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO) {
-            // Use the prioritized URL from app state
-            std::string qr_url = state.content_manager_url;
+            // Compute qr_url + qr_label from the gated usb_url/wifi_url
+            // fields directly, NOT from content_manager_url. Both are
+            // updated by build_info_submenu in the same pass, but if a
+            // stale content_manager_url is ever left over from a prior
+            // state (e.g., the user was previously plugged in via USB,
+            // unplugged, and the auto-refresh rebuild hadn't yet run
+            // when this frame rendered), reading that field could
+            // disagree with state.usb_url and produce the bug where
+            // the QR encodes one network but the label below it
+            // claims the other.
+            //
+            // build_info_submenu now sets state.usb_url to "" when no
+            // USB carrier is present, so a non-empty state.usb_url
+            // means USB is genuinely active and preferred. Otherwise
+            // fall back to state.wifi_url.
+            std::string qr_url;
             std::string qr_label;
-            
-            if (!qr_url.empty()) {
-                // Determine label by comparing to the URLs the settings
-                // menu computed. Avoids hardcoding any specific IP — the
-                // QR works whether the gadget service uses 10.55.0.1,
-                // 192.168.7.1, or anything else.
-                if (!state.usb_url.empty() && qr_url == state.usb_url) {
-                    qr_label = "USB Connection (Preferred)";
-                } else {
-                    qr_label = "Wi-Fi Connection";
-                }
+            if (!state.usb_url.empty()) {
+                qr_url = state.usb_url;
+                qr_label = "USB Connection (Preferred)";
+            } else if (!state.wifi_url.empty()) {
+                qr_url = state.wifi_url;
+                qr_label = "Wi-Fi Connection";
             }
             
             if (!qr_url.empty()) {

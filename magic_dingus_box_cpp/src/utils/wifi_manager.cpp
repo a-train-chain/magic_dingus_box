@@ -9,6 +9,10 @@
 #include <poll.h>
 #include <signal.h>
 #include <chrono>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <cstring>
 
 namespace utils {
 
@@ -240,14 +244,39 @@ std::string WifiManager::get_current_ssid() {
 }
 
 std::string WifiManager::get_ip_address() {
-    std::string output = exec_command_argv({"hostname", "-I"});
-    output.erase(std::remove(output.begin(), output.end(), '\n'), output.end());
-    // Take first token (first IP address)
-    size_t space = output.find(' ');
-    if (space != std::string::npos) {
-        output = output.substr(0, space);
+    // Read wlan0's IPv4 address specifically.
+    //
+    // The previous implementation called `hostname -I` and took the
+    // FIRST token. That's wrong on a Pi with the USB-Gadget service
+    // running: `hostname -I` orders IPs by interface index, and usb0
+    // (index 3, statically assigned 10.55.0.1) consistently appears
+    // BEFORE wlan0 (index 4). So the "Wi-Fi IP" came back as the USB
+    // gadget IP, which then got baked into the Content Manager QR
+    // code — sending phones to a 10.55.0.1 URL they couldn't reach.
+    //
+    // Walk getifaddrs and pick wlan0's IPv4 address directly. No
+    // fallback to other interfaces — if wlan0 isn't there or has no
+    // address, return empty and let the caller treat it as "Wi-Fi
+    // not connected" rather than silently substitute some unrelated
+    // interface.
+    struct ifaddrs* ifap = nullptr;
+    if (getifaddrs(&ifap) == -1) {
+        return "";
     }
-    return output;
+    std::string ip;
+    for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (std::strcmp(ifa->ifa_name, "wlan0") != 0) continue;
+        char buf[INET_ADDRSTRLEN] = {0};
+        auto* sin = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) {
+            ip = buf;
+        }
+        break;
+    }
+    freeifaddrs(ifap);
+    return ip;
 }
 
 bool WifiManager::is_connected() {

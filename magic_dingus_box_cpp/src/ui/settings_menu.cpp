@@ -61,6 +61,26 @@ void SettingsMenuManager::update() {
         was_scanning_ = is_scanning;
     }
 
+    // Refresh the Content Manager (INFO) submenu when its connection state
+    // could have changed. Without this, the QR + label freeze on whatever
+    // they read at the moment the user navigated INTO the submenu — so if
+    // a USB cable was plugged in then unplugged while the user was looking
+    // at the screen, the QR would keep encoding the now-unreachable
+    // 10.55.0.1 URL until the user re-enters the submenu.
+    //
+    // Refresh once per second (not per frame) is fine — build_info_submenu
+    // is cheap (a couple of getifaddrs + nmcli queries) and the QR + URL
+    // update is the only visible side effect.
+    if (current_submenu_ == MenuSection::INFO) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_info_refresh_ >= std::chrono::seconds(1)) {
+            last_info_refresh_ = now;
+            // Just rebuild — preserves selected_index via the idempotent
+            // enter_submenu() path (commit dc0459c).
+            rebuild_current_submenu();
+        }
+    }
+
     // Track connection state edges (across all submenus, not just WIFI/WIFI_NETWORKS).
     // Fires Toasts on both START and END so the operator gets immediate
     // feedback regardless of which submenu they happen to be looking at
@@ -694,10 +714,21 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
         }
     }
 
-    // Update app state
+    // Update app state.
+    //
+    // CRITICAL: gate usb_url on usb_active (carrier present), not just
+    // on usb_ip being non-empty. usb-gadget-network.service assigns
+    // 10.55.0.1/24 to usb0 unconditionally at boot, so usb_ip is
+    // ALWAYS "10.55.0.1" on this hardware, even when no cable is
+    // plugged in. Without this gate, the renderer's QR-label logic
+    // (which compares the displayed URL against state.usb_url) gets
+    // a perpetually-truthy state.usb_url and mis-labels the QR as
+    // "USB Connection (Preferred)" even on a Wi-Fi-only screen.
     if (app_state_) {
-        app_state_->usb_url = !usb_ip.empty() ? ("http://" + usb_ip + ":5000") : "";
-        app_state_->wifi_url = wifi_active ? ("http://" + wifi.get_ip_address() + ":5000") : "";
+        app_state_->usb_url = (usb_active && !usb_ip.empty())
+            ? ("http://" + usb_ip + ":5000") : "";
+        app_state_->wifi_url = wifi_active
+            ? ("http://" + wifi.get_ip_address() + ":5000") : "";
         app_state_->content_manager_url = primary_url;
     }
     
