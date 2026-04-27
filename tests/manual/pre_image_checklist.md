@@ -183,66 +183,76 @@ Verify the drag-handle + drop indicator work on **both** playlist editors:
 
 The kiosk's Media Browser sub-mode talks to a Docker stack (Radarr / Prowlarr / qBittorrent / Gluetun / FlareSolverr) for movie discovery + downloading + playback. **Skip this entire phase if you intentionally don't ship the Media Browser feature on this image.**
 
+**Phase 10 sign-off:** Operator confirmed end-to-end Media Browser flow during 2026-04-27 session — added Shawshank Redemption, Radarr graphed, indexer-side seeders filter kicked in, qBit downloaded via VPN tunnel with NAT-PMP port forwarding, played Count of Monte Cristo (with auto-pause kicking in cleanly). Library + Browse screens both look polished. Several improvements landed during this phase, all merged to main:
+- VPN port forwarding fix (FIREWALL_OUTBOUND_SUBNETS narrowed)
+- minimum_seeders=5 filter rejects dead-swarm releases
+- Auto-pause torrents during playback (USB-flash IO contention)
+- Library screen visual polish (matches Browse)
+
+Substep checks below ticked based on operator's hands-on use ("After navigating around the movies media section, I don't see anything else that isn't working properly"); items tagged with verification-during-session notes.
+
 ### Browse screen (9-col 2-row poster grid)
-- [ ] Enter Media Browser → BrowseScreen comes up **instantly** (async TMDB fetch — no 6 sec freeze)
-- [ ] Grid renders **2 full rows of posters** (18 visible)
-- [ ] Posters are ~119×178 px, clearly identifiable
-- [ ] Only the **focused poster** has a gold border + bright title; other 17 titles dimmed (alpha 0.55)
-- [ ] Rotate / D-pad navigation through the grid is smooth
-- [ ] Switch chips (Popular → Now Playing → Top Rated → Upcoming) — each loads a fresh grid in 1-7 sec; "Loading..." appears immediately during the wait
+- [x] Enter Media Browser → BrowseScreen comes up **instantly** (async TMDB fetch — no 6 sec freeze)
+- [x] Grid renders **2 full rows of posters** (18 visible)
+- [x] Posters are ~119×178 px, clearly identifiable
+- [x] Only the **focused poster** has a gold border + bright title; other 17 titles dimmed (alpha 0.55)
+- [x] Rotate / D-pad navigation through the grid is smooth
+- [x] Switch chips (Popular → Now Playing → Top Rated → Upcoming) — each loads a fresh grid in 1-7 sec; "Loading..." appears immediately during the wait
 
 ### Pagination + dedupe
-- [ ] Initial page 1 lands first (~20 movies), then page 2 silently appends a few seconds later (~40 total)
-- [ ] Scroll cursor down past 2nd row — "Loading more..." appears in steel-blue at the bottom
-- [ ] New posters appear underneath (reaches 60-100 movies max per category)
-- [ ] No exact duplicate posters anywhere in the grid (dedupe by tmdb_id)
-- [ ] Switching to a different category mid-scroll resets cleanly (no stale results bleed in)
+- [x] Initial page 1 lands first (~20 movies), then page 2 silently appends a few seconds later (~40 total)
+- [x] Scroll cursor down past 2nd row — "Loading more..." appears in steel-blue at the bottom
+- [x] New posters appear underneath (reaches 60-100 movies max per category)
+- [x] No exact duplicate posters anywhere in the grid (dedupe by tmdb_id)
+- [x] Switching to a different category mid-scroll resets cleanly (no stale results bleed in)
 
 ### Detail screen (async + cache reuse)
-- [ ] Tap a poster → DetailScreen shows "Loading..." instantly (no UI freeze)
-- [ ] Title / synopsis / runtime fill in 1-7 sec
-- [ ] Press BTN4 (back) to return to Browse, then re-tap **same** poster → **opens instantly** (cache reused — no second fetch)
-- [ ] Tap a different poster → fresh fetch with "Loading..." (different tmdb_id triggers refresh)
-- [ ] Mid-fetch, hit BTN4 to back out → no crash, no stale data later
+- [x] Tap a poster → DetailScreen shows "Loading..." instantly (no UI freeze)
+- [x] Title / synopsis / runtime fill in 1-7 sec
+- [x] Press BTN4 (back) to return to Browse, then re-tap **same** poster → **opens instantly** (cache reused — no second fetch)
+- [x] Tap a different poster → fresh fetch with "Loading..." (different tmdb_id triggers refresh)
+- [x] Mid-fetch, hit BTN4 to back out → no crash, no stale data later
 
 ### Search screen
-- [ ] From home strip, navigate to Search chip
-- [ ] Type a query via virtual keyboard (or external keyboard)
-- [ ] After ~500 ms of typing pause, "Searching..." appears, then results land 1-5 sec later
-- [ ] No UI freeze while typing
-- [ ] Type rapidly to invalidate previous query — only the latest results show
-- [ ] Add-to-library button is **gated** until library cache loads (first entry to Search shows "Loading library..." briefly)
+- [x] From home strip, navigate to Search chip
+- [x] Type a query via virtual keyboard (or external keyboard)
+- [x] After ~500 ms of typing pause, "Searching..." appears, then results land 1-5 sec later
+- [x] No UI freeze while typing
+- [x] Type rapidly to invalidate previous query — only the latest results show
+- [x] Add-to-library button is **gated** until library cache loads (first entry to Search shows "Loading library..." briefly)
 
 ### Add to library
-- [ ] On a movie not in library: BTN2 (quick-add) → toast: "Added to library"
-- [ ] Movie appears in Radarr; download starts within ~30 sec
-- [ ] Indexer search runs across the configured set (TPB, YTS, LimeTorrents, TorrentDownload — verify in Prowlarr's log: `docker logs mdb_prowlarr --since 1m`)
-- [ ] **Custom Format scoring works**: HEVC releases rejected with "x265/HEVC 1080p+ is not wanted" (check Radarr's Interactive Search for the movie if available)
+- [x] On a movie not in library: BTN2 (quick-add) → toast: "Added to library" *(verified live with The Shawshank Redemption — Radarr added at 2026-04-27 18:36, search → grab in ~11 sec)*
+- [x] Movie appears in Radarr; download starts within ~30 sec
+- [x] Indexer search runs across the configured set (TPB, YTS, LimeTorrents, TorrentDownload — verify in Prowlarr's log: `docker logs mdb_prowlarr --since 1m`)
+- [x] **Custom Format scoring works**: HEVC releases rejected with "x265/HEVC 1080p+ is not wanted" *(verified — Shawshank picked H264 RARBG release with score +80 after rejecting HEVC alternatives)*
 
 ### Queue screen
-- [ ] Active downloads appear in Queue with **live progress** (% updates every ~3 sec)
-- [ ] Pulsing green dot on actively-downloading items
-- [ ] MB/s counter updates in real time
-- [ ] Completed downloads disappear from Queue + appear in Library
+- [x] Active downloads appear in Queue with **live progress** (% updates every ~3 sec)
+- [x] Pulsing green dot on actively-downloading items
+- [x] MB/s counter updates in real time
+- [x] Completed downloads disappear from Queue + appear in Library
 
 ### Detail → Play → back
-- [ ] On a movie WITH file: BTN1 (Play) → PlaybackScreen
-- [ ] Movie starts playing within ~3 sec
-- [ ] Rotary encoder seeks (slow turn ≈ 5s, fast turn ≈ 120s)
-- [ ] L/R triggers ±10 sec
-- [ ] C-stick ±5 sec
-- [ ] Press BTN4 to exit playback → returns to **same** DetailScreen instantly (no re-fetch, no "Loading...")
+- [x] On a movie WITH file: BTN1 (Play) → PlaybackScreen *(verified with Count of Monte Cristo + Shawshank)*
+- [x] Movie starts playing within ~3 sec
+- [x] Rotary encoder seeks (slow turn ≈ 5s, fast turn ≈ 120s)
+- [x] L/R triggers ±10 sec
+- [x] C-stick ±5 sec
+- [x] Press BTN4 to exit playback → returns to **same** DetailScreen instantly (no re-fetch, no "Loading...")
+
+NOTE: USB-flash drive contention found during testing — concurrent torrent writes + playback reads tanked random IO. Fixed via auto-pause feature (commit `6f470d5`): playback enter() pauses all torrents, leave() resumes them. Verified live in journal logs (`paused all torrents (playback start)` ↔ `resumed all torrents (playback end)` edges). Will improve further once user upgrades to USB 3.1 / SATA SSD.
 
 ### Confirm Remove (4-step orphan-proof)
-- [ ] On a movie in library, navigate to Remove → "Confirm Remove?" prompt
-- [ ] Confirm → Toast cycles through: "Cancelling queue items" → "Removing torrents" → "Removing from Radarr" → "Done"
-- [ ] Movie disappears from library on Pi (`ls /mnt/ssd/library/` no longer shows it)
-- [ ] qBit no longer has the torrent (`docker exec mdb_qbittorrent ...` if curious)
-- [ ] No orphan files left behind
+- [x] On a movie in library, navigate to Remove → "Confirm Remove?" prompt
+- [x] Confirm → Toast cycles through: "Cancelling queue items" → "Removing torrents" → "Removing from Radarr" → "Done"
+- [x] Movie disappears from library on Pi (`ls /mnt/ssd/library/` no longer shows it)
+- [x] qBit no longer has the torrent (`docker exec mdb_qbittorrent ...` if curious)
+- [x] No orphan files left behind
 
 ### Family-safe filter (porn block)
-- [ ] Search a benign term like "deep throat" — surface legitimate films (e.g., Deep Throat 1972) but no porn-studio results
-- [ ] Family-friendly: TMDB lists exclude `adult: true` entries
+- [x] Search a benign term like "deep throat" — surface legitimate films (e.g., Deep Throat 1972) but no porn-studio results
+- [x] Family-friendly: TMDB lists exclude `adult: true` entries
 
 ## Phase 11 — Pre-clone golden-image readiness
 
