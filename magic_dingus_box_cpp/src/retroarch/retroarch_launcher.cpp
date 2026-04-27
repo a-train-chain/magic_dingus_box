@@ -747,6 +747,17 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# CRITICAL: Ensure player 1 controller is enabled and working\n";
             script_file << "input_player1_joypad_index = \"0\"\n";
             script_file << "input_player1_enable = \"true\"\n";
+            // Player 2 setup mirrors player 1 — same analog mode + bind_defaults
+            // policy, but tied to joypad index 1. Without these explicit lines
+            // RetroArch leaves player 2 unbound (no autoconfig is present;
+            // we deleted that file to force manual mappings) and a 2nd
+            // identical PS-pad shows up in /dev/input/js1 but generates no
+            // input events the core can see. Per-core button mappings for
+            // player 2 are emitted alongside player 1 below.
+            script_file << "input_player2_analog_dpad_mode = \"0\"\n";
+            script_file << "input_player2_bind_defaults = \"false\"\n";
+            script_file << "input_player2_joypad_index = \"1\"\n";
+            script_file << "input_player2_enable = \"true\"\n";
             script_file << "# Default mappings removed to prevent conflict with core-specific overrides\n";
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
@@ -870,6 +881,50 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "input_player1_down_axis = \"" << map.down_axis << "\"\n";
             script_file << "input_player1_left_axis = \"" << map.left_axis << "\"\n";
             script_file << "input_player1_right_axis = \"" << map.right_axis << "\"\n";
+
+            // 5b. Mirror the same mapping for player 2 — assumes the
+            // 2nd controller (joypad index 1) is the same physical kind
+            // as P1. In our hardware that's always true (kiosk ships
+            // with two identical PS-style pads). Without these mirrored
+            // bindings RetroArch's per-core remap covers only player 1
+            // and the 2nd pad shows up in /dev/input/js1 but produces
+            // no in-game effect — symptom: P2 character sits motionless
+            // in 2-player Twisted Metal / Tony Hawk / Doom split-screen.
+            //
+            // Hotkeys (5+ below) intentionally stay player-1-only so
+            // both controllers don't fight over RA menu toggle.
+            script_file << "input_player2_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
+            script_file << "input_player2_b_btn = \"" << map.b_btn << "\"\n";
+            script_file << "input_player2_y_btn = \"" << map.y_btn << "\"\n";
+            script_file << "input_player2_select_btn = \"" << map.select_btn << "\"\n";
+            script_file << "input_player2_start_btn = \"" << map.start_btn << "\"\n";
+            script_file << "input_player2_up_btn = \"" << map.up_btn << "\"\n";
+            script_file << "input_player2_down_btn = \"" << map.down_btn << "\"\n";
+            script_file << "input_player2_left_btn = \"" << map.left_btn << "\"\n";
+            script_file << "input_player2_right_btn = \"" << map.right_btn << "\"\n";
+            script_file << "input_player2_a_btn = \"" << map.a_btn << "\"\n";
+            script_file << "input_player2_x_btn = \"" << map.x_btn << "\"\n";
+            script_file << "input_player2_l_btn = \"" << map.l_btn << "\"\n";
+            script_file << "input_player2_r_btn = \"" << map.r_btn << "\"\n";
+            script_file << "input_player2_l2_btn = \"" << map.l2_btn << "\"\n";
+            script_file << "input_player2_r2_btn = \"" << map.r2_btn << "\"\n";
+            script_file << "input_player2_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
+            script_file << "input_player2_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
+            script_file << "input_player2_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
+            script_file << "input_player2_l_y_minus_axis = \"" << map.l_y_minus << "\"\n";
+            script_file << "input_player2_up_axis = \"" << map.up_axis << "\"\n";
+            script_file << "input_player2_down_axis = \"" << map.down_axis << "\"\n";
+            script_file << "input_player2_left_axis = \"" << map.left_axis << "\"\n";
+            script_file << "input_player2_right_axis = \"" << map.right_axis << "\"\n";
+
+            // 5c. PCSX-rearmed needs the per-pad type set for both pads.
+            // Without pad2type, the second controller is treated as
+            // disconnected by the PS1 BIOS — multiplayer games like
+            // Twisted Metal won't see a 2nd player even if RetroArch
+            // is reading js1 events.
+            if (!map.core_option_pad_type.empty()) {
+                script_file << "pcsx_rearmed_pad2type = \"" << map.core_option_pad_type << "\"\n";
+            }
 
             // 6. Apply Core Options (if any)
             if (!map.core_option_pad_type.empty()) {
@@ -1178,6 +1233,17 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "# CRITICAL: Ensure player 1 controller is enabled and working\n";
             script_file << "input_player1_joypad_index = \"0\"\n";
             script_file << "input_player1_enable = \"true\"\n";
+            // Player 2 setup mirrors player 1 — same analog mode + bind_defaults
+            // policy, but tied to joypad index 1. Without these explicit lines
+            // RetroArch leaves player 2 unbound (no autoconfig is present;
+            // we deleted that file to force manual mappings) and a 2nd
+            // identical PS-pad shows up in /dev/input/js1 but generates no
+            // input events the core can see. Per-core button mappings for
+            // player 2 are emitted alongside player 1 below.
+            script_file << "input_player2_analog_dpad_mode = \"0\"\n";
+            script_file << "input_player2_bind_defaults = \"false\"\n";
+            script_file << "input_player2_joypad_index = \"1\"\n";
+            script_file << "input_player2_enable = \"true\"\n";
             script_file << "# Default mappings removed to prevent conflict with core-specific overrides\n";
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
