@@ -94,6 +94,32 @@ echo "  ✓ Connection successful"
 echo ""
 
 # Step 1: Sync code
+#
+# Per-system thumbnail directories (data/thumbnails/<system>/) are
+# populated EXTERNALLY — not from this worktree. Box art / screenshot
+# PNGs are sourced from the operator's local
+#   ~/Documents/.../Magic Dingus Box/Games For RetroArch/MDB Starting Roms/thumbnails/
+# folder (or libretro-thumbnails.git on demand) and rsync'd directly
+# to the Pi at provisioning time:
+#
+#   rsync -avz \
+#     "<local thumbnails folder>/" \
+#     magic@magicpi.local:/opt/magic_dingus_box/magic_dingus_box_cpp/data/thumbnails/
+#
+# The "P data/thumbnails/<system>" filters below tell rsync's --delete
+# pass to PROTECT those Pi-side directories — i.e., keep the box art
+# even though it doesn't exist in the deploy source. Without these
+# filters, every code deploy would wipe the operator's painstakingly-
+# curated thumbnail collection.
+#
+# When adding a new emulator system, ADD A FILTER LINE for it. Forgetting
+# is a silent foot-gun: the new system's thumbnails would disappear on
+# the next deploy and only the kiosk's thumbnail-load fallback (which
+# falls through to system-level art) would mask it visually.
+#
+# These thumbnails are also explicitly preserved by
+# scripts/golden_image/prepare_golden_image.sh (see KEEPING list there)
+# so cloned Pis inherit them via the SD-card image.
 echo "Step 1: Syncing code to ${PI_HOST}:${PI_DIR}/magic_dingus_box_cpp"
 rsync -avz \
     --delete \
