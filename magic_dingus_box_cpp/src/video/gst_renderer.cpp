@@ -468,7 +468,7 @@ void GstRenderer::render_quad() {
     int vp_y = 0;
     int vp_w = width_;
     int vp_h = height_;
-    
+
     if (letterbox_mode_) {
         // Calculate 4:3 content area centered in 16:9 frame
         // Height stays the same, width is adjusted
@@ -476,7 +476,7 @@ void GstRenderer::render_quad() {
         vp_w = height_ * 4 / 3;  // 4:3 aspect ratio
         vp_x = (width_ - vp_w) / 2;  // Center horizontally
         vp_y = 0;
-        
+
         // If the calculated width is larger than screen (e.g., 4:3 content on 4:3 screen)
         // then pillarbox based on width instead
         if (vp_w > static_cast<int>(width_)) {
@@ -485,6 +485,41 @@ void GstRenderer::render_quad() {
             vp_x = 0;
             vp_y = (height_ - vp_h) / 2;
         }
+    } else if (frame_width_ > 0 && frame_height_ > 0) {
+        // Default mode: preserve the source video's aspect ratio. Without
+        // this, anamorphic widescreen films (2.35:1, 2.39:1) get vertically
+        // stretched ~32% on a 16:9 screen — characters' faces look narrow
+        // and tall, which the operator noticed during testing.
+        //
+        // Math: compute source-aspect = frame_w / frame_h vs screen-aspect
+        // = width_ / height_. If source is WIDER than screen, the limiting
+        // dimension is width — fit width-to-screen and shrink height (black
+        // bars top + bottom = letterbox). If source is TALLER (or 4:3 on a
+        // 16:9 screen), the limiting dimension is height — fit height and
+        // shrink width (black bars left + right = pillarbox).
+        //
+        // Done in integer arithmetic to avoid float rounding around the
+        // exact-match case.
+        const int64_t src_aspect_num    = static_cast<int64_t>(frame_width_);
+        const int64_t src_aspect_den    = static_cast<int64_t>(frame_height_);
+        const int64_t screen_w          = static_cast<int64_t>(width_);
+        const int64_t screen_h          = static_cast<int64_t>(height_);
+        // src_w / src_h  vs  screen_w / screen_h
+        // → cross-multiply: src_w * screen_h  vs  screen_w * src_h
+        if (src_aspect_num * screen_h > screen_w * src_aspect_den) {
+            // Source wider than screen → letterbox (full width, black bars top+bottom)
+            vp_w = static_cast<int>(screen_w);
+            vp_h = static_cast<int>(screen_w * src_aspect_den / src_aspect_num);
+            vp_x = 0;
+            vp_y = (static_cast<int>(screen_h) - vp_h) / 2;
+        } else if (src_aspect_num * screen_h < screen_w * src_aspect_den) {
+            // Source taller than screen → pillarbox (full height, black bars left+right)
+            vp_h = static_cast<int>(screen_h);
+            vp_w = static_cast<int>(screen_h * src_aspect_num / src_aspect_den);
+            vp_x = (static_cast<int>(screen_w) - vp_w) / 2;
+            vp_y = 0;
+        }
+        // else: exact aspect match — vp = full screen as initialized.
     }
     
     glViewport(vp_x, vp_y, vp_w, vp_h);
