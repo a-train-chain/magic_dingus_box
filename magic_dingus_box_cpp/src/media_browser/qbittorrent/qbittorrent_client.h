@@ -88,6 +88,26 @@ public:
     // No-op (returns true) if no torrent with that hash exists.
     virtual bool delete_torrent(const std::string& hash, bool delete_files);
 
+    // Pause/resume ALL torrents — used by PlaybackScreen to halt
+    // disk-write contention during movie playback. The library lives
+    // on the same medium qBit writes torrent pieces to (typically a
+    // single USB flash drive on the Pi), so concurrent read+write
+    // hammers the drive's random-IO ceiling and makes playback hitch
+    // / scrubbing freeze. Pausing torrents during playback gives the
+    // GStreamer reader exclusive disk access.
+    //
+    // Tries qBit's modern /torrents/stop (5.x) first; falls back to
+    // /torrents/pause (legacy 4.x) if the modern endpoint 404s. We
+    // run an `Up` qBit (5.x via linuxserver.io image) but the
+    // fallback keeps this resilient against future container
+    // downgrades. Returns true if AT LEAST ONE endpoint succeeded.
+    //
+    // Best-effort: a failure here must NOT block playback — the
+    // user-visible operation is "play movie", not "manage torrents".
+    // Caller logs and proceeds either way.
+    virtual bool pause_all();
+    virtual bool resume_all();
+
     // Diagnostics
     const std::string& last_error() const { return last_error_; }
 

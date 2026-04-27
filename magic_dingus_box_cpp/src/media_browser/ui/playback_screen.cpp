@@ -4,6 +4,7 @@
 
 #include "app/app_state.h"
 #include "app/controller.h"
+#include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "platform/input_manager.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -12,8 +13,9 @@
 
 namespace media_browser::ui {
 
-PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state)
-    : controller_(controller), state_(state) {}
+PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state,
+                                QbittorrentClient* qbit)
+    : controller_(controller), state_(state), qbit_(qbit) {}
 
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
     movie_path_ = std::move(host_path);
@@ -23,6 +25,7 @@ void PlaybackScreen::set_movie(std::string host_path, std::string title) {
 void PlaybackScreen::enter() {
     exit_pending_ = false;
     deferred_toast_.clear();
+    qbit_was_paused_by_us_ = false;
     // Tracks state.video_active across update() ticks for end-of-stream
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
@@ -32,6 +35,26 @@ void PlaybackScreen::enter() {
         deferred_toast_ = "No movie file path";
         exit_pending_ = true;
         return;
+    }
+
+    // Pause torrents BEFORE loading the movie so the GStreamer
+    // demuxer's initial reads don't have to fight qBit's piece-write
+    // bursts for disk bandwidth. On USB-flash media (the typical Pi
+    // setup), concurrent random read+write tanks throughput to
+    // single-digit MB/s and makes scrubbing feel frozen. Pausing
+    // gives the playback reader exclusive disk access.
+    //
+    // Best-effort: a qBit failure here doesn't abort playback — we
+    // just log and continue with whatever performance the disk can
+    // give us. Same rationale as the controller_.load_file fallback
+    // path below.
+    if (qbit_ != nullptr) {
+        if (qbit_->pause_all()) {
+            qbit_was_paused_by_us_ = true;
+        } else {
+            spdlog::warn("[playback] qbit pause_all failed; "
+                         "playback may stutter on USB-flash media");
+        }
     }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
@@ -93,6 +116,17 @@ void PlaybackScreen::leave() {
     if (!deferred_toast_.empty()) {
         ::ui::Toast::show(deferred_toast_);
         deferred_toast_.clear();
+    }
+
+    // Resume torrents only if WE paused them — never resume a torrent
+    // the operator had manually stopped before entering playback. The
+    // qbit_was_paused_by_us_ flag is the consent record.
+    if (qbit_ != nullptr && qbit_was_paused_by_us_) {
+        if (!qbit_->resume_all()) {
+            spdlog::warn("[playback] qbit resume_all failed; "
+                         "operator may need to manually resume from web UI");
+        }
+        qbit_was_paused_by_us_ = false;
     }
 
     spdlog::info("[playback] left playback screen");

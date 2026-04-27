@@ -606,7 +606,8 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::QueueScreen      mb_queue(radarr,
                                                   qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr);
-    media_browser::ui::PlaybackScreen   mb_playback(controller, state);
+    media_browser::ui::PlaybackScreen   mb_playback(controller, state,
+                                                     qbit_owned.get());
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
     // triggers this callback AND returns Screen::Exit, so the dispatcher

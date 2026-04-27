@@ -325,6 +325,54 @@ bool QbittorrentClient::delete_torrent(const std::string& hash,
     return true;
 }
 
+// try_post_with_fallback: hit modern_path first; if it sets
+// last_error_ (transport failure or 4xx) try legacy_path. Returns
+// true if either call cleared the error. Defined as a private
+// member to access protected http_post.
+bool QbittorrentClient::pause_all() {
+    {
+        std::lock_guard<std::mutex> lk(cookie_mtx_);
+        if (sid_cookie_.empty()) {
+            if (!login_locked()) return false;
+        }
+    }
+    // hashes=all is qBit's documented "select all torrents" sentinel.
+    last_error_.clear();
+    http_post("/api/v2/torrents/stop", "hashes=all");  // qBit 5.x
+    if (!last_error_.empty()) {
+        // Fall back to legacy 4.x alias.
+        last_error_.clear();
+        http_post("/api/v2/torrents/pause", "hashes=all");
+    }
+    if (!last_error_.empty()) {
+        spdlog::warn("[qbit] pause_all failed: {}", last_error_);
+        return false;
+    }
+    spdlog::info("[qbit] paused all torrents (playback start)");
+    return true;
+}
+
+bool QbittorrentClient::resume_all() {
+    {
+        std::lock_guard<std::mutex> lk(cookie_mtx_);
+        if (sid_cookie_.empty()) {
+            if (!login_locked()) return false;
+        }
+    }
+    last_error_.clear();
+    http_post("/api/v2/torrents/start", "hashes=all");  // qBit 5.x
+    if (!last_error_.empty()) {
+        last_error_.clear();
+        http_post("/api/v2/torrents/resume", "hashes=all");  // qBit 4.x
+    }
+    if (!last_error_.empty()) {
+        spdlog::warn("[qbit] resume_all failed: {}", last_error_);
+        return false;
+    }
+    spdlog::info("[qbit] resumed all torrents (playback end)");
+    return true;
+}
+
 std::unordered_map<std::string, QbitTorrent>
 QbittorrentClient::get_torrents_by_hash() {
     auto list = get_torrents();

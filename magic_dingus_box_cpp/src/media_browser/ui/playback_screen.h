@@ -12,6 +12,7 @@ class Controller;
 struct AppState;
 }
 namespace ui { class Renderer; }
+namespace media_browser { class QbittorrentClient; }
 
 namespace media_browser::ui {
 
@@ -34,7 +35,14 @@ namespace media_browser::ui {
 //                                       deferred toast.
 class PlaybackScreen : public MbScreen {
 public:
-    PlaybackScreen(app::Controller& controller, app::AppState& state);
+    // qbit pointer is optional. When provided, enter()/leave()
+    // pause/resume all torrents to free disk IO for smooth playback —
+    // necessary on USB-flash media because concurrent torrent writes
+    // contend with GStreamer's reads and cause scrubbing freezes.
+    // When null, playback simply runs without managing qBit state
+    // (e.g., unit tests, devs running without the Docker stack).
+    PlaybackScreen(app::Controller& controller, app::AppState& state,
+                   QbittorrentClient* qbit = nullptr);
 
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
     // returning Screen::Playback. Last setter wins.
@@ -47,8 +55,15 @@ public:
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
 private:
-    app::Controller& controller_;
-    app::AppState&   state_;
+    app::Controller&   controller_;
+    app::AppState&     state_;
+    QbittorrentClient* qbit_ = nullptr;  // optional; pause/resume during playback
+
+    // Tracks whether enter() asked qBit to pause. leave() only resumes
+    // if pause actually succeeded — avoids accidentally starting
+    // torrents that the operator manually paused before entering
+    // playback (we'd be flipping their state without consent).
+    bool qbit_was_paused_by_us_ = false;
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path
