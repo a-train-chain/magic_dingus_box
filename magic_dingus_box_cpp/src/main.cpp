@@ -1857,8 +1857,14 @@ int main(int /* argc */, char* /* argv */[]) {
                     // Only allow navigation when UI is available
                     if (ui_available && !state.playlists.empty()) {
                         // Fixed max visible items (must match renderer's max_visible = 8)
-                        int max_visible = 8;
-                        
+                        // Use the on-screen row count the renderer published last
+                        // frame, not a hardcoded 8. Hardcoding 8 (sized for CRT)
+                        // forced scroll_offset to advance once the selection hit
+                        // index 8 even in Modern TV mode where 14 rows are
+                        // visible — the playlist would scroll prematurely and
+                        // pop the top row off-screen.
+                        int max_visible = std::max(1, state.playlist_max_visible);
+
                         // Move selection without wrapping (clamp at boundaries)
                         if (ev.delta > 0) {
                             // Moving down - don't go past last item

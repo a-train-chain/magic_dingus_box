@@ -17,6 +17,10 @@
 namespace ui {
 
 SettingsMenuManager::SettingsMenuManager(app::AppState* state)
+    // Init order MUST match the declaration order in the header
+    // (otherwise -Wreorder fires). The compiler initializes in
+    // declaration order regardless, so a mismatched init list is
+    // misleading at best and a use-before-init footgun at worst.
     : app_state_(state)
     , active_(false)
     , selected_index_(0)
@@ -24,14 +28,14 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
     , is_opening_(false)
     , is_closing_(false)
     , scroll_offset_(0)
+    , was_scanning_(false)
+    , was_connecting_(false)
     , current_submenu_(MenuSection::BACK)
     , game_browser_active_(false)
     , game_browser_selected_(0)
     , viewing_games_in_playlist_(false)
     , current_game_playlist_index_(0)
     , selected_game_in_playlist_(0)
-    , was_scanning_(false)
-    , was_connecting_(false)
 {
     // Main menu items
     menu_items_ = {
@@ -394,8 +398,12 @@ void SettingsMenuManager::navigate(int delta, int game_playlists_count, int game
         selected_index_ = max_items - 1;
     }
     
-    // Scrolling logic
-    const int max_visible_items = 7;
+    // Scrolling logic — use the renderer-published row count so we
+    // only scroll when the selection actually goes off-screen. With
+    // the previous hardcoded 7, Modern TV (which can show 9+ rows)
+    // would still scroll once selected_index reached 7, popping the
+    // top item out of view even though it was visibly fitting fine.
+    const int max_visible_items = max_visible_items_;
     if (selected_index_ < scroll_offset_) {
         scroll_offset_ = selected_index_;
     } else if (selected_index_ >= scroll_offset_ + max_visible_items) {

@@ -533,7 +533,7 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
     return true;
 }
 
-void Renderer::render(const app::AppState& state) {
+void Renderer::render(app::AppState& state) {
     // Debug logging removed for performance - only log errors
     
     // CRITICAL: Don't render UI at all when intro video is showing (even if not ready yet)
@@ -672,8 +672,33 @@ void Renderer::render(const app::AppState& state) {
         }
         float background_alpha = (state.video_active && state.ui_visible_when_playing) ? 0.5f : 1.0f;
         
-        // Render UI components
+        // Render UI components.
         render_title(text_alpha, state.video_active, state.ui_visible_when_playing);
+
+        // Publish the actual on-screen row count to state so
+        // main.cpp's input handler scrolls only when the selection
+        // really goes off-screen for the current viewport.
+        // Mirrors the math inside render_playlist_list — see the
+        // detailed comment block there for the derivation.
+        {
+            const int title_baseline_offset =
+                title_font_manager_->get_baseline_at_size(theme_->font_title_size);
+            const float title_baseline = 8.0f + title_baseline_offset;
+            const int title_line_height =
+                static_cast<int>(theme_->font_title_size * 1.2f);
+            const float header_baseline = title_baseline + title_line_height + 24.0f;
+            const int header_line_height =
+                static_cast<int>(theme_->font_heading_size * 1.2f);
+            const float start_y =
+                header_baseline + header_line_height + 4.0f + 40.0f;
+            const float bottom_reserve = 25.0f;
+            const float available_h =
+                static_cast<float>(height_) - start_y - bottom_reserve;
+            const int row_h = std::max(1, theme_->playlist_item_height);
+            state.playlist_max_visible =
+                std::max(8, static_cast<int>(available_h / row_h));
+        }
+
         render_playlist_list(state.playlists, state.selected_index, state.playlist_scroll_offset, state.video_active, state.ui_visible_when_playing, state.current_playlist_index);
         render_footer(state, text_alpha, state.video_active, state.ui_visible_when_playing);
         
@@ -1176,9 +1201,38 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
     // Increased spacing below header line (was 20.0f, now 40.0f)
     float start_y = header_baseline + header_line_height + 4.0f + 40.0f;
     
-    // Fixed max visible items for reliable layout on CRT native (640x480)
-    // 8 items fits well with proper spacing for scroll arrows
-    int max_visible = 8;
+    // Compute how many rows fit between start_y and the bottom of
+    // the screen.
+    //
+    // Was hardcoded `max_visible = 8`, sized for CRT native (640x480).
+    // In Modern TV the UI viewport is 4:3 within 16:9 (~960x720), so
+    // there's room for many more rows. With the old cap, the playlist
+    // visibly stopped ~2/3 down the screen even with 20 items.
+    //
+    // The playlist column lives on the LEFT side of the screen; the
+    // footer (status text, time, video info) is right-aligned and
+    // does not overlap, so we don't need to clear it. The only thing
+    // below the last visible row is the down-scroll arrow:
+    //
+    //   arrow_y      = last_row_bottom + arrow_margin/2  (≈ +6)
+    //   arrow_height = arrow_size * 1.2                  (≈ 7)
+    //   total tail   ≈ 13 px below last row
+    //
+    // Plus a small breathing-room margin so the arrow isn't flush
+    // against the screen edge. bottom_reserve = 13 (arrow) + 12
+    // (margin) = 25.
+    //
+    // Modern TV (720): (720 - 166 - 25) / 36 = 14 rows  → last bottom 670, 37px free.
+    // CRT (480):       (480 - 166 - 25) / 36 = 8 rows   → last bottom 454, 13px free.
+    //
+    // Floor at 8 stays as a safety net (CRT is already 8 by formula
+    // but a future tweak to start_y or font sizes could push it to 7
+    // and silently regress the established CRT layout — the floor
+    // protects against that).
+    const float bottom_reserve = 25.0f;  // down-arrow tail + breathing room
+    const float available_h = static_cast<float>(height_) - start_y - bottom_reserve;
+    const int row_h = std::max(1, theme_->playlist_item_height);
+    int max_visible = std::max(8, static_cast<int>(available_h / row_h));
     if (max_visible > static_cast<int>(playlists.size())) {
         max_visible = static_cast<int>(playlists.size());
     }
@@ -2045,7 +2099,28 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
     
     float start_y = underline_y + 30.0f;
     int item_height = 60;
-    int max_visible = 7;
+    // Compute visible row count from the actual viewport height.
+    // Was hardcoded to 7 (sized for CRT 640x480). In Modern TV mode
+    // the menu's 4:3 viewport is taller (720), so more items fit.
+    // Floor at 7 to preserve CRT's established layout.
+    //
+    // bottom_reserve = 30: just a small breathing-room margin from the
+    // bottom of the screen. We don't need to clear the controls-banner
+    // footer because the settings menu draws its own opaque bg quad
+    // over the right half of the screen, masking the banner there.
+    // With this value, Modern TV (720) fits 10 rows — enough to show
+    // every item in the Display submenu (Mode + Bezel + 7 CRT effects
+    // + Back) without scrolling. CRT (480) stays floored at 7.
+    const float settings_bottom_reserve = 30.0f;
+    const float settings_available_h =
+        static_cast<float>(height_) - start_y - settings_bottom_reserve;
+    int max_visible = std::max(
+        7, static_cast<int>(settings_available_h / static_cast<float>(item_height)));
+    // Publish back to the menu so move_selection() knows when it
+    // actually needs to scroll. Without this, the input handler used
+    // a hardcoded 7 and forced scroll_offset to 1 on row index 7+,
+    // chopping the top item off-screen even when all items fit.
+    menu->set_max_visible_items(max_visible);
     int scroll_offset = menu->get_scroll_offset();
     int selected_index = menu->get_selected_index();
     
@@ -2657,8 +2732,15 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
     } else {
         // Show game playlists (keep subtitle with game count)
         int item_height = 50;
-        int max_visible = 8;
         float start_y = content_start_y + 15.0f;
+        // Compute visible row count from the actual viewport height.
+        // Was hardcoded to 8 (CRT 640x480). Modern TV's UI viewport is
+        // ~960x720 — room for ~11 rows. Floor at 8 preserves CRT.
+        const float gp_bottom_reserve = 80.0f;
+        const float gp_available_h =
+            static_cast<float>(height_) - start_y - gp_bottom_reserve;
+        int max_visible = std::max(
+            8, static_cast<int>(gp_available_h / static_cast<float>(item_height)));
         int selected_playlist = menu->get_game_browser_selected();
 
         int total_items = static_cast<int>(game_playlists.size()) + 1; // +1 for Back

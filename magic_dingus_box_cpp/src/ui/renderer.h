@@ -48,8 +48,14 @@ public:
     // Set UI alpha (0.0 = fully transparent, 1.0 = fully opaque)
     void set_ui_alpha(float alpha) { ui_alpha_ = alpha; }
     
-    // Render UI overlay
-    void render(const app::AppState& state);
+    // Render UI overlay.
+    //
+    // Non-const because the renderer publishes back computed layout
+    // state (e.g., state.playlist_max_visible) so the input handler
+    // in main.cpp can scroll only when the selection actually goes
+    // off-screen for the current viewport size, instead of using a
+    // hardcoded CRT-tuned row count.
+    void render(app::AppState& state);
     
     // Render loading overlay
     void render_loading_overlay(const app::AppState& state);

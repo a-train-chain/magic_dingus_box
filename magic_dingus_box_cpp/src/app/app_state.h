@@ -407,6 +407,13 @@ public:
     std::string wifi_url;           // WiFi URL (e.g., http://10.0.0.151:5000)
     std::string usb_url;            // USB URL (always http://192.168.7.1:5000)
     std::string content_manager_url; // Currently displayed URL (changes based on menu selection)
+
+    // How many playlist rows the renderer is currently showing on screen.
+    // Computed per-frame in render_playlist_list from height_ + item_height
+    // and written here so main.cpp's input handler scrolls only when the
+    // selection actually goes off-screen. Default 8 matches the established
+    // CRT layout — the renderer overwrites this on every frame anyway.
+    int playlist_max_visible = 8;
     
     // Virtual Keyboard
     ui::VirtualKeyboard* keyboard = nullptr; // pointer to keyboard instance (owned by main/renderer or here?) 

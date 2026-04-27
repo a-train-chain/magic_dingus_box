@@ -86,6 +86,16 @@ public:
     // State accessors
     int get_selected_index() const { return selected_index_; }
     int get_scroll_offset() const { return scroll_offset_; }
+
+    // Renderer publishes the actual max-visible row count it's using
+    // (computed per-frame from height_ + item_height). Without this,
+    // move_selection() used a hardcoded 7 — sized for CRT — which
+    // forced scroll_offset to 1 the moment the user navigated to row
+    // index 7+ in Modern TV mode, even when the renderer could
+    // comfortably show all rows on screen. The result was visible as
+    // "select Back, top item disappears."
+    void set_max_visible_items(int n) { max_visible_items_ = std::max(1, n); }
+    int get_max_visible_items() const { return max_visible_items_; }
     MenuSection get_current_submenu() const { return current_submenu_; }
     bool is_game_browser_active() const { return game_browser_active_; }
     bool is_viewing_games_in_playlist() const { return viewing_games_in_playlist_; }
@@ -112,6 +122,9 @@ private:
     bool was_scanning_;
     bool was_connecting_;
     bool wifi_disconnect_confirm_ = false;
+    // Default to 7 (CRT layout); renderer overwrites this each frame
+    // once it knows the actual viewport height.
+    int max_visible_items_ = 7;
     // INFO submenu auto-refresh — the Content Manager page shows USB vs.
     // Wi-Fi URL based on which interface has carrier. We rebuild it
     // periodically while it's open so the QR code reflects state changes
