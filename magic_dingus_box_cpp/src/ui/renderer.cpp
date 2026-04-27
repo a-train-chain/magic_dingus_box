@@ -728,28 +728,55 @@ void Renderer::render(const app::AppState& state) {
                 float menu_items_end = 280.0f;  // Safe distance below menu items
                 float footer_start = static_cast<float>(height_) - 70.0f;
                 float available_space = footer_start - menu_items_end;
-                
+
                 // Center QR code + hint text in available space
                 float qr_size = 130.0f;  // Slightly optimized size
-                float qr_with_hint_height = qr_size + 50.0f;  // QR + padding + label + hint text
-                
+                // Layout below the QR:
+                //   25px padding
+                //   line 1: connection-type label (accent color)
+                //   20px line gap
+                //   line 2: "Scan with phone camera"
+                //   20px line gap
+                //   line 3: "or visit magicpi.local on any device" (highlight2)
+                // Total below the QR: ~85px, so qr_with_hint_height = qr + 85.
+                float qr_with_hint_height = qr_size + 85.0f;
+
                 float qr_y = menu_items_end + (available_space - qr_with_hint_height) / 2.0f;
                 float qr_x = menu_x + (static_cast<float>(menu_width) - qr_size) / 2.0f;
-                
+
                 render_qr_code(qr_url, qr_x, qr_y, qr_size, 1.0f);
-                
+
                 // Draw connection type label above hint
                 int label_width = body_font_manager_->get_text_width(qr_label, theme_->font_small_size);
                 float label_x = menu_x + (static_cast<float>(menu_width) - label_width) / 2.0f;
                 float label_y = qr_y + qr_size + 25.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
                 draw_text(qr_label, label_x, label_y, theme_->font_small_size, theme_->accent, false, 1.0f);
-                
+
                 // Draw helper text below label
                 std::string qr_hint = "Scan with phone camera";
                 int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
                 float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
                 float hint_y = label_y + 20.0f;
                 draw_text(qr_hint, hint_x, hint_y, theme_->font_small_size, theme_->fg, false, 1.0f);
+
+                // Draw typed-URL fallback below the QR hint. The hostname
+                // magicpi.local resolves via mDNS/Bonjour from any device on
+                // the same network (Wi-Fi OR USB-Gadget) — works on macOS,
+                // iOS, Linux, and Windows 10+ natively without configuring
+                // anything. This line gives the operator a fallback for the
+                // case where:
+                //   - phone is on the same Wi-Fi as the Pi but the QR is
+                //     showing a USB-only URL (would otherwise be unreachable)
+                //   - the user prefers typing to scanning
+                //   - they want to bookmark a stable URL that works
+                //     regardless of which interface is active
+                // Distinct color (highlight2) makes the URL pop visually
+                // since it's the actionable bit — eye is drawn to it.
+                std::string fallback_text = "or visit magicpi.local on any device";
+                int fallback_width = body_font_manager_->get_text_width(fallback_text, theme_->font_small_size);
+                float fallback_x = menu_x + (static_cast<float>(menu_width) - fallback_width) / 2.0f;
+                float fallback_y = hint_y + 20.0f;
+                draw_text(fallback_text, fallback_x, fallback_y, theme_->font_small_size, theme_->highlight2, false, 1.0f);
             }
         }
     }
