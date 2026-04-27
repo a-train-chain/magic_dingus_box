@@ -38,7 +38,32 @@ sudo apt install -y \
   gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly \
   gstreamer1.0-gl \
-  gstreamer1.0-libav
+  gstreamer1.0-libav \
+  dnsmasq
+
+# dnsmasq is the DHCP server for the USB-Gadget (usb0) interface.
+# Without it, an operator plugging in a Mac/PC via USB-C wouldn't get
+# an IP automatically — they'd have to manually configure 10.55.0.2/24.
+# With dnsmasq listening on usb0, the host receives 10.55.0.10+ and can
+# reach the Content Manager at http://10.55.0.1:5000 immediately.
+#
+# Config is shipped from this repo at scripts/data/dnsmasq-usb0.conf
+# and dropped into /etc/dnsmasq.d/ (additive — doesn't affect the base
+# /etc/dnsmasq.conf, which stays whatever Debian ships with). The
+# config restricts dnsmasq to listen ONLY on usb0 and disables the DNS
+# server (port=0) so it doesn't fight systemd-resolved on wlan0.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USB_DNSMASQ_CONF="${SCRIPT_DIR}/data/dnsmasq-usb0.conf"
+if [[ -f "$USB_DNSMASQ_CONF" ]]; then
+    echo "Configuring dnsmasq for USB-Gadget DHCP..."
+    sudo cp "$USB_DNSMASQ_CONF" /etc/dnsmasq.d/usb0.conf
+    sudo chmod 644 /etc/dnsmasq.d/usb0.conf
+    sudo systemctl enable dnsmasq.service
+    sudo systemctl restart dnsmasq.service
+    echo "  ✓ dnsmasq configured and running on usb0"
+else
+    echo "  ⚠ ${USB_DNSMASQ_CONF} not found — skipping dnsmasq config"
+fi
 
 if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."
