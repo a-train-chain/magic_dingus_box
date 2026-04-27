@@ -97,10 +97,17 @@ std::vector<WifiNetwork> WifiManager::get_scan_results() {
 
 void WifiManager::connect_async(const std::string& ssid, const std::string& password) {
     if (is_connecting_) return;
-    
+
+    // Capture the target SSID so the UI can render "Connecting to <SSID>..."
+    // immediately, before the worker thread even fires off nmcli. Cleared at
+    // the end of the worker (whether the connection succeeded or failed).
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        connecting_ssid_ = ssid;
+    }
     is_connecting_ = true;
     connection_result_ = ConnectionResult::IN_PROGRESS;
-    
+
     std::thread([this, ssid, password]() {
         // Clear previous error
         {
@@ -184,13 +191,28 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             }
         }
 
+        // Clear the target SSID — connection attempt is over (success or fail).
+        {
+            std::lock_guard<std::mutex> lock(error_mutex_);
+            connecting_ssid_.clear();
+        }
         is_connecting_ = false;
     }).detach();
+}
+
+std::string WifiManager::get_connecting_ssid() const {
+    // error_mutex_ is mutable so we can lock it from this const getter.
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return connecting_ssid_;
 }
 
 void WifiManager::reset_connection_state() {
     is_connecting_ = false;
     connection_result_ = ConnectionResult::SUCCESS; // Reset to benign state
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        connecting_ssid_.clear();
+    }
 }
 
 std::string WifiManager::get_current_ssid() {

@@ -1,4 +1,5 @@
 #include "settings_menu.h"
+#include "toast.h"
 #include "virtual_keyboard.h"
 #include "../utils/wifi_manager.h"
 #include <algorithm>
@@ -60,14 +61,50 @@ void SettingsMenuManager::update() {
         was_scanning_ = is_scanning;
     }
 
-    // Check for connection completion in both WIFI and WIFI_NETWORKS submenus
-    if (current_submenu_ == MenuSection::WIFI || current_submenu_ == MenuSection::WIFI_NETWORKS) {
-        bool is_connecting = utils::WifiManager::instance().is_connecting();
+    // Track connection state edges (across all submenus, not just WIFI/WIFI_NETWORKS).
+    // Fires Toasts on both START and END so the operator gets immediate
+    // feedback regardless of which submenu they happen to be looking at
+    // when the state changes (e.g. they navigated back to the parent
+    // Wi-Fi submenu while a connection was still in progress).
+    {
+        auto& wifi = utils::WifiManager::instance();
+        bool is_connecting = wifi.is_connecting();
+
+        // Edge: connect just STARTED (was idle, now connecting).
+        if (!was_connecting_ && is_connecting) {
+            std::string ssid = wifi.get_connecting_ssid();
+            ui::Toast::show("Connecting to " + (ssid.empty() ? std::string("Wi-Fi") : ssid) + "...");
+        }
+
+        // Edge: connect just FINISHED (was connecting, now idle).
         if (was_connecting_ && !is_connecting) {
             std::cout << "SettingsMenuManager: Connection finished, refreshing menu..." << std::endl;
-            // Connection finished, refresh to show updated status
-            rebuild_current_submenu();
+            // Toast the actual outcome so the operator sees a clear ✓ or
+            // ✗ even if they're not looking at the Wi-Fi submenu right
+            // this frame. The result enum was set by the worker thread
+            // before is_connecting_ flipped to false, so it's already
+            // populated by the time we read it here.
+            utils::ConnectionResult result = wifi.get_connection_result();
+            if (result == utils::ConnectionResult::SUCCESS) {
+                ui::Toast::show("Connected to " + wifi.get_current_ssid());
+            } else {
+                std::string err = wifi.get_connection_error();
+                ui::Toast::show(err.empty() ? std::string("Connection failed")
+                                            : ("Connection failed: " + err));
+            }
+            // Refresh whichever submenu we're in so the new state shows.
+            if (current_submenu_ == MenuSection::WIFI ||
+                current_submenu_ == MenuSection::WIFI_NETWORKS) {
+                rebuild_current_submenu();
+            }
         }
+
+        // Also: if we ARE in the Wi-Fi parent submenu while a connect is
+        // in progress, refresh once-per-second so the "Connecting to X..."
+        // line stays accurate even if SSID changes between frames (rare but
+        // possible if the operator queues a second attempt). This is also
+        // why we no longer gate the rebuild on the WIFI_NETWORKS-only check
+        // that was here before — both submenus need to reflect the state.
         was_connecting_ = is_connecting;
     }
 }
@@ -681,11 +718,31 @@ bool SettingsMenuManager::is_game_browser_back_selected() const {
 
 std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
     auto& wifi = utils::WifiManager::instance();
-    std::string status = wifi.is_connected() ? "Connected: " + wifi.get_current_ssid() : "Not Connected";
-    std::string ip = wifi.is_connected() ? wifi.get_ip_address() : "";
-    
+
+    // Status line — three possible states:
+    //   1. Connection in progress: "Connecting to <SSID>..." (overrides the
+    //      previous status). Without this, the operator pressed Enter on
+    //      the password prompt and saw nothing happen for ~5-10 sec until
+    //      the line silently flipped to "Connected" — felt like the kiosk
+    //      had hung. Now they get an immediate, clearly-named in-progress
+    //      indicator the moment connect_async() fires.
+    //   2. Connected: "Connected: <SSID>" + IP as the meta line.
+    //   3. Not connected: "Not Connected" + empty meta.
+    std::string status;
+    std::string meta;
+    if (wifi.is_connecting()) {
+        std::string target = wifi.get_connecting_ssid();
+        status = "Connecting to " + (target.empty() ? std::string("Wi-Fi") : target) + "...";
+        meta = "Verifying credentials...";
+    } else if (wifi.is_connected()) {
+        status = "Connected: " + wifi.get_current_ssid();
+        meta = wifi.get_ip_address();
+    } else {
+        status = "Not Connected";
+    }
+
     return {
-        MenuItem("Status: " + status, MenuSection::BACK, ip),
+        MenuItem("Status: " + status, MenuSection::BACK, meta),
         MenuItem("Scan Networks", MenuSection::WIFI_NETWORKS, "Find Wi-Fi",
                  [&]() {
                      utils::WifiManager::instance().scan_networks_async();

@@ -44,6 +44,11 @@ public:
     void connect_async(const std::string& ssid, const std::string& password);
     ConnectionResult get_connection_result() const { return connection_result_; }
     bool is_connecting() const { return is_connecting_; }
+    // SSID currently being connected to. Empty when no connect is in flight.
+    // Used by the settings menu to render "Connecting to <SSID>..." in both
+    // the parent Wi-Fi submenu and Toast notifications, instead of a generic
+    // "Connecting..." that lost the operator's selection context.
+    std::string get_connecting_ssid() const;
     void reset_connection_state();
 
     // Error details from last connection attempt
@@ -76,7 +81,13 @@ private:
     std::atomic<ConnectionResult> connection_result_;
 
     std::string connection_error_;
-    std::mutex error_mutex_;
+    // mutable: get_connecting_ssid() is logically const but locks this mutex.
+    mutable std::mutex error_mutex_;
+
+    // SSID being connected to (set at connect_async() entry, cleared after
+    // the worker thread publishes its result). Read concurrently from the
+    // render thread, so guarded by the same mutex as connection_error_.
+    std::string connecting_ssid_;
 };
 
 } // namespace utils
