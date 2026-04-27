@@ -62,6 +62,13 @@ private:
     // Current frame properties
     int frame_width_;
     int frame_height_;
+    // Pixel aspect ratio (PAR) of the source. Most modern video has PAR 1:1
+    // (square pixels), but DVDs, some broadcast captures, and certain MKV
+    // remuxes encode anamorphically (e.g. 720x480 with PAR 32:27 to display
+    // as 16:9). Display aspect = (frame_width * par_n) / (frame_height * par_d).
+    // Both default to 1 so square-pixel content works without explicit detect.
+    int frame_par_num_ = 1;
+    int frame_par_den_ = 1;
     int frame_format_; // 0=RGBA, 1=I420, 2=NV12
     
     bool gl_initialized_;

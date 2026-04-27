@@ -146,6 +146,8 @@ void GstRenderer::reset_gl() {
     frame_format_ = -1;
     frame_width_ = 0;
     frame_height_ = 0;
+    frame_par_num_ = 1;
+    frame_par_den_ = 1;
     textures_allocated_ = false;
     allocated_width_ = 0;
     allocated_height_ = 0;
@@ -313,6 +315,23 @@ void GstRenderer::upload_frame(GstSample* sample) {
     int w, h;
     gst_structure_get_int(s, "width", &w);
     gst_structure_get_int(s, "height", &h);
+
+    // Pixel aspect ratio. Most modern files don't include it (implies 1:1)
+    // or include 1/1 explicitly. DVDs and some broadcast captures use
+    // non-square pixels — gst_structure_get_fraction returns FALSE if the
+    // field is absent, in which case we keep the default 1:1.
+    int par_n = 1, par_d = 1;
+    gst_structure_get_fraction(s, "pixel-aspect-ratio", &par_n, &par_d);
+    if (par_n <= 0 || par_d <= 0) {
+        // Defensive: malformed PAR — fall back to square pixels.
+        par_n = 1;
+        par_d = 1;
+    }
+    if (par_n != frame_par_num_ || par_d != frame_par_den_) {
+        LOG_DEBUG("GstRenderer: pixel-aspect-ratio = {}:{}", par_n, par_d);
+    }
+    frame_par_num_ = par_n;
+    frame_par_den_ = par_d;
 
     // Get stride information for proper plane alignment
     int y_stride = w;
@@ -486,36 +505,63 @@ void GstRenderer::render_quad() {
             vp_y = (height_ - vp_h) / 2;
         }
     } else if (frame_width_ > 0 && frame_height_ > 0) {
-        // Default mode: preserve the source video's aspect ratio. Without
-        // this, anamorphic widescreen films (2.35:1, 2.39:1) get vertically
-        // stretched ~32% on a 16:9 screen — characters' faces look narrow
-        // and tall, which the operator noticed during testing.
+        // Default mode: preserve the source video's *display* aspect ratio.
+        // Two factors determine display aspect:
+        //   1. frame_width_ × frame_height_ — pixel grid dimensions
+        //   2. frame_par_num_ : frame_par_den_ — pixel-aspect-ratio
+        //      (most modern files have 1:1 = square pixels, but anamorphic
+        //      DVDs / broadcast captures use non-square e.g. 32:27)
         //
-        // Math: compute source-aspect = frame_w / frame_h vs screen-aspect
-        // = width_ / height_. If source is WIDER than screen, the limiting
-        // dimension is width — fit width-to-screen and shrink height (black
-        // bars top + bottom = letterbox). If source is TALLER (or 4:3 on a
-        // 16:9 screen), the limiting dimension is height — fit height and
-        // shrink width (black bars left + right = pillarbox).
+        // Display aspect = (frame_w × par_n) / (frame_h × par_d)
         //
-        // Done in integer arithmetic to avoid float rounding around the
-        // exact-match case.
-        const int64_t src_aspect_num    = static_cast<int64_t>(frame_width_);
-        const int64_t src_aspect_den    = static_cast<int64_t>(frame_height_);
-        const int64_t screen_w          = static_cast<int64_t>(width_);
-        const int64_t screen_h          = static_cast<int64_t>(height_);
-        // src_w / src_h  vs  screen_w / screen_h
-        // → cross-multiply: src_w * screen_h  vs  screen_w * src_h
-        if (src_aspect_num * screen_h > screen_w * src_aspect_den) {
+        // Compare to screen aspect = width_ / height_.
+        //   - Source wider than screen  → letterbox (full width, bars top + bottom)
+        //   - Source taller than screen → pillarbox (full height, bars left + right)
+        //   - Exact match               → fill screen
+        //
+        // Worked examples on a 1280×720 (16:9 = 1.78:1) screen:
+        //
+        //   4:3 classic film (1.33:1, e.g. 640×480 PAR 1:1):
+        //      vp = 960×720 centered, 160px bars left+right (pillarbox)
+        //   16:9 modern TV (1.78:1, e.g. 1920×1080 PAR 1:1):
+        //      vp = 1280×720 fill (exact match)
+        //   "Flat widescreen" 1.85:1 (e.g. 1920×1040):
+        //      vp = 1280×693, ~13px bars top+bottom
+        //   70mm Todd-AO 2.20:1 (e.g. 2001):
+        //      vp = 1280×582, ~69px bars top+bottom
+        //   Standard "Scope" 2.35:1 (e.g. Pulp Fiction):
+        //      vp = 1280×545, ~88px bars top+bottom
+        //   Modern Scope 2.39:1 (e.g. Mario Galaxy):
+        //      vp = 1280×536, ~92px bars top+bottom
+        //   Vintage CinemaScope 2.55:1 (e.g. The Robe 1953):
+        //      vp = 1280×502, ~109px bars top+bottom
+        //   Anamorphic NTSC DVD (720×480 with PAR 32:27, displays 16:9):
+        //      effective src = 720×32 : 480×27 = 23040 : 12960 = 1.78:1
+        //      vp = 1280×720 fill (correctly identified as 16:9 despite
+        //      stored at 720×480 = 1.5:1 raw)
+        //   Square 1:1 (e.g. some short-form social content, 1080×1080):
+        //      vp = 720×720 centered, 280px bars left+right
+        //   Vertical 9:16 portrait (e.g. phone-shot vertical video):
+        //      vp = 405×720 centered, 437px bars left+right
+        //
+        // All math in int64 to avoid overflow on hypothetical large
+        // sources, and integer-only to avoid float rounding around the
+        // exact-match boundary.
+        const int64_t src_w_eff = static_cast<int64_t>(frame_width_) * frame_par_num_;
+        const int64_t src_h_eff = static_cast<int64_t>(frame_height_) * frame_par_den_;
+        const int64_t screen_w  = static_cast<int64_t>(width_);
+        const int64_t screen_h  = static_cast<int64_t>(height_);
+        // Cross-multiply: (src_w_eff * screen_h) vs (screen_w * src_h_eff)
+        if (src_w_eff * screen_h > screen_w * src_h_eff) {
             // Source wider than screen → letterbox (full width, black bars top+bottom)
             vp_w = static_cast<int>(screen_w);
-            vp_h = static_cast<int>(screen_w * src_aspect_den / src_aspect_num);
+            vp_h = static_cast<int>(screen_w * src_h_eff / src_w_eff);
             vp_x = 0;
             vp_y = (static_cast<int>(screen_h) - vp_h) / 2;
-        } else if (src_aspect_num * screen_h < screen_w * src_aspect_den) {
+        } else if (src_w_eff * screen_h < screen_w * src_h_eff) {
             // Source taller than screen → pillarbox (full height, black bars left+right)
             vp_h = static_cast<int>(screen_h);
-            vp_w = static_cast<int>(screen_h * src_aspect_num / src_aspect_den);
+            vp_w = static_cast<int>(screen_h * src_w_eff / src_h_eff);
             vp_x = (static_cast<int>(screen_w) - vp_w) / 2;
             vp_y = 0;
         }

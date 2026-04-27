@@ -16,15 +16,16 @@ Run through this checklist before generating a golden image. Print or open on a 
 
 ## Phase 1 — Hardware sanity (faceplate stack)
 
-- [ ] Boot LED sequence plays on power-on
+- [x] Boot LED sequence plays on power-on
 - [~] Power switch triggers clean **kiosk-standby** *(was full poweroff; reimplemented this session via gpiomon-based watcher service. **OFF direction works** — confirmed rising-edge event fired correctly, services stopped cleanly, Pi remained running at idle. **ON direction (this Pi only) doesn't fire** — GPIO 3 stays HIGH despite physical toggle, indicating broken GND-side contact in switch hardware (worn contact, cracked solder, or loose wire). Software side is verified working; this Pi needs a physical switch repair before clone, but cloned Pis with working switches will get full behavior natively.)*
-- [ ] Cold boot reaches kiosk UI in under 30 seconds
-- [ ] Rotary encoder scrubs video (clockwise = forward, counter-clockwise = backward)
-- [ ] Rotary encoder is responsive (no missed detents)
-- [ ] **Rotary scrub — single slow click forward actually advances forward**, not backward (this was a real bug caused by `GST_SEEK_FLAG_KEY_UNIT`; fixed by switching to `GST_SEEK_FLAG_ACCURATE`)
-- [ ] Rotary scrub backward (slow) actually goes backward the same amount
-- [ ] Rotary scrub at speed (fast turn) advances further (velocity-sensitive scaling still works)
-- [ ] All face buttons fire kiosk actions (test at least 4)
+- [x] Cold boot reaches kiosk UI in under 30 seconds
+- [x] Rotary encoder scrubs video (clockwise = forward, counter-clockwise = backward)
+- [x] Rotary encoder is responsive (no missed detents)
+- [x] **Rotary scrub — single slow click forward actually advances forward**, not backward (this was a real bug caused by `GST_SEEK_FLAG_KEY_UNIT`; fixed by switching to `GST_SEEK_FLAG_ACCURATE`)
+- [x] Rotary scrub backward (slow) actually goes backward the same amount
+- [x] Rotary scrub at speed (fast turn) advances further (velocity-sensitive scaling still works)
+- [x] All face buttons fire kiosk actions (test at least 4)
+- [x] **Movie playback aspect ratio is correct** *(added during testing — operator noticed widescreen movies looked stretched. Fixed by gst_renderer.cpp now preserving source aspect ratio + reading pixel-aspect-ratio from GStreamer caps. Letterboxes 2.35:1 / 2.39:1 movies on 16:9 screen, pillarboxes 4:3 content, handles anamorphic DVDs correctly via PAR. Verified visually on Pulp Fiction.)*
 
 ## Phase 2 — Kiosk UI (with each controller in turn)
 
