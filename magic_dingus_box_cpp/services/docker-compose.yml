@@ -82,8 +82,26 @@ services:
       - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
       - SERVER_FEATURES=${SERVER_FEATURES:-}
       - VPN_PORT_FORWARDING=${VPN_PORT_FORWARDING:-on}
-      # Allow LAN + docker inter-container traffic through firewall:
-      - FIREWALL_OUTBOUND_SUBNETS=192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
+      # Allow LAN + docker inter-container traffic through firewall.
+      #
+      # CRITICAL: do NOT use the broad 10.0.0.0/8 here, even though it's
+      # the textbook "private RFC1918" subnet. ProtonVPN's WireGuard
+      # gateway lives at 10.2.0.1 — INSIDE 10.0.0.0/8 — so listing
+      # 10.0.0.0/8 as a LAN-bypass subnet makes Gluetun's iptables
+      # route NAT-PMP requests (UDP to 10.2.0.1:5351) out the LAN
+      # interface instead of through the WireGuard tunnel where the
+      # gateway actually lives. The requests then time out (`read udp
+      # ...:5351: i/o timeout` in gluetun logs), and the port
+      # forwarding service gives up after 9 retries. Result: VPN port
+      # status reads "unavailable" in the Content Manager dashboard,
+      # incoming peer connections fail, torrent speeds tank.
+      #
+      # Narrow each LAN to the specific subnet we actually use:
+      #   10.0.0.0/24    — typical home Wi-Fi (Pi gets 10.0.0.x)
+      #   10.55.0.0/24   — USB Gadget interface (usb0 = 10.55.0.1)
+      #   192.168.0.0/16 — alternative home Wi-Fi convention
+      #   172.16.0.0/12  — Docker inter-container bridges
+      - FIREWALL_OUTBOUND_SUBNETS=10.0.0.0/24,10.55.0.0/24,192.168.0.0/16,172.16.0.0/12
       - TZ=${TZ}
     ports:
       # qBittorrent web UI + peer ports are exposed via Gluetun.
