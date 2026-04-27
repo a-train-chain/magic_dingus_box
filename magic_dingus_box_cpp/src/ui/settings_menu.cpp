@@ -178,11 +178,53 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
 }
 
 void SettingsMenuManager::toggle() {
-    if (active_ || is_opening_) {
-        close();
-    } else {
+    // Menu closed (or being closed) → open it.
+    if (!active_ && !is_opening_) {
         open();
+        return;
     }
+
+    // Menu is open or opening. Treat the MENU button as "back one level"
+    // when the user has dived into sub-pages, and only as "close entirely"
+    // when they're at the top-level. This gives the operator a natural
+    // back-stack matching the nav depth they actually entered:
+    //
+    //   games inside a playlist   ← MENU →   playlist list
+    //   playlist list (game browser) ← MENU →   Video Games submenu
+    //   Wi-Fi networks list       ← MENU →   Wi-Fi submenu
+    //   any first-level submenu   ← MENU →   top-level menu
+    //   top-level menu            ← MENU →   closed
+    //
+    // The order of these checks matters — deeper states are tested first
+    // because some shallow states are also true at deeper depths
+    // (e.g. game_browser_active_ stays true while viewing_games_in_playlist_).
+
+    // Depth 4 (deepest): looking at the games inside a specific playlist.
+    if (game_browser_active_ && viewing_games_in_playlist_) {
+        exit_game_list();
+        return;
+    }
+
+    // Depth 3: in the game browser at the playlist-list level.
+    if (game_browser_active_) {
+        exit_game_browser();
+        return;
+    }
+
+    // Depth 3: Wi-Fi networks list (one level under the Wi-Fi submenu).
+    if (current_submenu_ == MenuSection::WIFI_NETWORKS) {
+        enter_submenu(MenuSection::WIFI);
+        return;
+    }
+
+    // Depth 2: any first-level submenu (Display, Audio, Wi-Fi, System, etc.).
+    if (current_submenu_ != MenuSection::BACK) {
+        exit_submenu();
+        return;
+    }
+
+    // Depth 1 (top-level): close the menu.
+    close();
 }
 
 void SettingsMenuManager::open() {
