@@ -604,7 +604,20 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
 #endif
 }
 
-// Helper to check interface status
+// Helper to check whether an interface is actually carrying traffic.
+//
+// Why both IPv4-assigned AND IFF_RUNNING checks: the `usb-gadget-network.service`
+// always assigns 10.55.0.1/24 to usb0 at boot, regardless of whether anything
+// is plugged into the USB-C port. So the previous check ("does usb0 have an
+// IPv4 address?") returned true unconditionally on every boot, making the
+// kiosk's Content Manager UI display "USB Connection (Active)" + a USB QR code
+// even with no cable connected — exactly the bug the operator hit.
+//
+// IFF_RUNNING is the right OS-level signal here: it tracks the carrier-detect
+// state, becoming true only when there's an actual link partner. For USB
+// gadget Ethernet that means a real USB cable terminating in a host that has
+// brought up its end of the connection. For wired Ethernet, an unplugged
+// cable similarly clears IFF_RUNNING.
 static bool is_interface_active(const char* iface_name) {
     struct ifaddrs *ifap, *ifa;
     if (getifaddrs(&ifap) == -1) return false;
@@ -614,8 +627,13 @@ static bool is_interface_active(const char* iface_name) {
         if (ifa->ifa_addr == NULL) continue;
         if (ifa->ifa_addr->sa_family == AF_INET) { // IPv4
             if (std::string(ifa->ifa_name) == iface_name) {
-                active = true;
-                break;
+                // Must have IPv4 assigned AND IFF_RUNNING (carrier present).
+                // Without IFF_RUNNING we'd false-positive on usb0's
+                // statically-assigned 10.55.0.1 when no cable is plugged in.
+                if ((ifa->ifa_flags & IFF_RUNNING) != 0) {
+                    active = true;
+                    break;
+                }
             }
         }
     }
