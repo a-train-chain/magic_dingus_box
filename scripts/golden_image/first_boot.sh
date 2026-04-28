@@ -145,6 +145,30 @@ DEVEOF
     SHORT_ID=$(echo "$DEVICE_UUID" | cut -c1-4)
     NEW_HOSTNAME="magicpi-${SHORT_ID}"
     hostnamectl set-hostname "$NEW_HOSTNAME"
+
+    # /etc/hosts has a `127.0.1.1 <old hostname>` line that systemd's
+    # nss-files lookup uses to map the local hostname back to a
+    # loopback address. We just changed the hostname in /etc/hostname,
+    # but if /etc/hosts still says `127.0.1.1 magicpi`, every `sudo`
+    # invocation prints
+    #   sudo: unable to resolve host magicpi-XXXX: Temporary failure
+    # and gets a small but visible delay while the resolver gives up.
+    # Cosmetic in isolation but accumulates across boot scripts and
+    # operator commands. Update /etc/hosts to match the new hostname.
+    #
+    # Use `sed -i` with a permissive pattern (any token after 127.0.1.1)
+    # so this works regardless of what hostname the source had baked
+    # in (`magicpi`, `magicpi-XXXX` from a re-clone, etc.). Append a
+    # fallback line if the file doesn't have a 127.0.1.1 entry at all.
+    if grep -qE '^127\.0\.1\.1\s+' /etc/hosts; then
+        sed -i -E "s/^(127\.0\.1\.1)\s+.*$/\1 ${NEW_HOSTNAME} ${NEW_HOSTNAME}/" \
+            /etc/hosts
+        log "[3/7] Updated /etc/hosts: 127.0.1.1 → ${NEW_HOSTNAME}"
+    else
+        echo "127.0.1.1 ${NEW_HOSTNAME} ${NEW_HOSTNAME}" >> /etc/hosts
+        log "[3/7] Appended 127.0.1.1 → ${NEW_HOSTNAME} to /etc/hosts (no prior entry)"
+    fi
+
     log "[3/7] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
 fi
 
