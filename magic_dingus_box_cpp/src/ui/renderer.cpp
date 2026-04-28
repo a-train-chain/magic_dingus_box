@@ -230,7 +230,21 @@ uniform vec2 screenSize;
 
 void main() {
     // Sample the underlying scene (video + UI composite from the FBO).
-    vec3 sceneRGB = texture(sceneTexture, vTexCoord).rgb;
+    //
+    // Y-flip the sample UV: the kiosk's 2D vertex shader applies
+    // `normalizedPos.y = -normalizedPos.y` so screen-space (0,0) is at
+    // top-left. When the kiosk renders into the scene FBO, geometry
+    // drawn at screen-top ends up at the TOP of the FBO texture in
+    // sample space. But OpenGL texture coordinates place (0,0) at the
+    // BOTTOM-left. The composite quad's vTexCoord goes 0→1 top→bottom
+    // (matching screen-space), so without the flip we'd sample the
+    // bottom of the FBO when displaying the top of the screen — the
+    // operator-visible symptom is "everything on the screen is upside
+    // down". One-line fix: invert the V coordinate at sample time.
+    // vTexCoord.y itself is left untouched because the per-pixel effect
+    // math (scanlines, glow vignette, bloom) wants screen-space Y, not
+    // texture-space Y.
+    vec3 sceneRGB = texture(sceneTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).rgb;
 
     // Replicate the legacy procedural-overlay shader's per-pixel
     // (srcRGB, srcAlpha) calculation exactly, so Phase 1 is visually
