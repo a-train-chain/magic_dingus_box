@@ -26,6 +26,19 @@ Visual quality release: a complete rewrite of the CRT effects shader pipeline wi
 ### Fixed (caught during the rewrite)
 - **`gst_renderer::render_quad()` was hard-binding `GL_FRAMEBUFFER, 0` mid-render** ("Ensure we are drawing to the default framebuffer"), which would have broken the Enhanced engine by clobbering the scene FBO and sending video to the default framebuffer where the composite would then overwrite it with a black FBO. Removed the explicit bind with a long-form comment so the bug can't be silently reintroduced. Caller now owns target-framebuffer selection.
 
+### Tuned
+- **Effect cycle now correctly reads Off → Low → Medium → High.** Previously the cycle values (`0.15`/`0.30`/`0.50`) and the label thresholds (`≤0.35` Low / `≤0.6` Medium / `>0.6` High) disagreed, so a fresh cycle showed `Off → Low (15%) → Low (30%) → Medium (50%)` and the operator never saw a "High" label. New cycle values are `0` / `0.25` / `0.50` / `0.75` (clean off / quarter / half / three-quarters); thresholds placed at midpoints (`0.05` / `0.375` / `0.625`) so cycle output always lands in its correct tier. Migration is gentle — operators on legacy `0.15`/`0.30`/`0.50` values read as the right tier today and step up to clean values on next click.
+- **Effect sublabels refreshed** to describe what the Enhanced engine actually does:
+  - Phosphor Glow: "Radial glow" → "Vignette + RGB convergence"
+  - Screen Bloom: "Bright glow" → "Phosphor halation"
+  - Color Warmth: "Temperature" → "Warm tone + gamma"
+  - Scanlines: "CRT lines" → "Horizontal CRT lines"
+  - RGB Mask: "RGB stripes" → "Subpixel R/G/B stripes"
+  - Interlacing: "Video lines" → "Alternate-line darken"
+  - Flicker: "Subtle pulse" → "Brightness wobble"
+  - CRT Engine: "v1.4.3 vs new pipeline" → "Classic / Enhanced"
+- Internal `CYCLE_PHOSPHOR_MASK` enum renamed to `CYCLE_RGB_MASK` to match the operator-visible "RGB Mask" label (the original name predated the v1.4.0 rename).
+
 ### Reversible
 A `v1.4.3-pre-crt-rework` git tag marks the pre-rework state. If the new shader is undesired:
 - Operator-level: flip "CRT Engine" back to Classic in Settings → Display.
