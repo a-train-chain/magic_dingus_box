@@ -5,6 +5,17 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-04-28
+
+Patch release with two CRT-TV display fixes caught during physical CRT-TV verification on the v1.4.1 Pi. Both bugs share the same root class — code that assumed the HDMI mode dims (1280×720) match the renderer's logical content viewport, when in CRT_NATIVE the kiosk uses a 640×480 logical space inside that 1280×720 framebuffer.
+
+### Fixed
+- **Pillarboxed video on CRT TV.** The aspect-ratio-preserving math in `GstRenderer::render_quad()` (added in v1.4.0 for Modern TV's Media Browser playback so 2.35:1 movies don't stretch vertically) was running in CRT_NATIVE mode too — its only gate was `letterbox_mode_=false`. Result: 4:3 transcoded videos got 160px pillar bars added on the Pi side, then the CRT TV's built-in HDMI→4:3 converter added ANOTHER round of bars at the receiving end, producing a window-boxed image with margins on all four sides. Added `GstRenderer::set_aspect_preserve(bool)` (defaults true so Modern TV behavior is unchanged); `main.cpp` flips it false in CRT_NATIVE so `render_quad` falls through to its original fill-the-framebuffer behavior. CRT TV now receives a fully-filled 1280×720 signal and its downstream converter handles aspect correction on the receiving end.
+- **Toast notifications rendered off-screen in CRT mode.** `Toast::render` was being called with `mode.width/height` (the raw HDMI mode dims, 1280×720), but the renderer's projection matrix is set up for the *content viewport* dims (640×480 in CRT, 960×720 in Modern TV when letterbox is active). The "Wi-Fi connected" panel computed its position as `(1280-480)/2 = 400` logical, then that 400 was interpreted in 640×480 space → projected to 62% from the left, ending up in the lower-right corner with the right side clipped off-screen. Added `Renderer::get_width()/get_height()` returning the active content-viewport dims; main.cpp passes those to `Toast::render` instead. Side benefit: also fixes a previously-unreported ~6% horizontal off-center in Modern TV's main-playlist letterboxed mode (Renderer at 960×720, caller was passing 1280×720).
+
+### Tooling
+- `clone_live_sd.sh` gained a `--yes / -y` flag for non-interactive runs. The `Continue with live clone? [y/N]` prompt's `read -r` doesn't reliably accept piped stdin in all environments, so harness-driven invocations would silently abort. The DRY_RUN path already had a parallel skip; this just adds a flag-driven bypass for the same pattern. Used during the v1.4.0/v1.4.1 cloning runs.
+
 ## [1.4.1] - 2026-04-27
 
 Patch release with two clone-quality fixes caught during the v1.4.0 image's first flash-test on a fresh Pi (`magicpi-9768`). No source-code refactors, no new features — just two papercuts that would have shipped to every operator otherwise.
