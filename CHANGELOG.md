@@ -5,6 +5,25 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-04-28
+
+Reverts the `first_boot.sh` Step 6e wipe that v1.5.2 introduced, after operator clarification that the **golden image is meant to ship fully-loaded**, not as a fresh-defaults starter image.
+
+### Reverted
+- **`first_boot.sh` no longer wipes `data/saves/`, `data/states/`, or `data/media/` on cloned Pis.** The Magic Dingus Box golden-image workflow ships a fully-curated showcase experience — the source operator's RetroArch saves, save states, and uploaded videos are part of the product the cloned Pi is meant to deliver. Every flashed Pi should boot into the same production-ready state the source Pi has, including:
+  - 4 curated video playlists (Sacred_Steel, Chill_Guitar_for_Good_Vibes, Obscure_Guitar_for_Ruining_Parties, The_Nostalgia_Channel)
+  - 31 .mp4 source videos (1.9 GB) referenced by those playlists
+  - 11 RetroArch SRAM saves across NES / SNES / PS1 / PCEngine
+  - All 161 ROMs, 150 thumbnails, 7 cores, all bezels, intro video
+- **Per-Pi state still wiped** by `first_boot.sh` (correct behavior — these MUST differ between physical units): `services/.env`, `services/config/*`, `media_browser_unlocked` flag, WiFi credentials, cloning-backup leftovers, device UUID + hostname.
+- If you need a "fresh defaults" image without operator content (e.g., for redistribution to other product lines), use the existing `prepare_golden_image.sh` script on the source Pi — that script intentionally wipes operator content with a clear destructive-action prompt.
+
+### Why this release
+v1.5.2 went the wrong direction on a product-philosophy decision: I assumed cloned Pis should arrive "clean" and the operator's library should not propagate. The operator clarified that the curated content (videos, custom playlists, gameplay saves) IS the product — the golden image is a showcase distribution mechanism, not a starter template. v1.5.3 restores that behavior. v1.5.2's release notes have been updated to mark it superseded.
+
+### OTA upgrade path
+Operators on v1.5.2 should OTA forward to v1.5.3 immediately if they intend to clone their Pi as a golden image. Operators on v1.5.0 or v1.5.1 will OTA directly to v1.5.3 (skipping v1.5.2) — the GitHub `/releases/latest` API returns v1.5.3 now. v1.5.0 OTA bug from `update.sh get_binary_url` is still present on Pis at v1.5.0; see v1.5.1 release notes for the manual recovery procedure.
+
 ## [1.5.2] - 2026-04-28
 
 Cloning hygiene patch. Extends `first_boot.sh` to wipe three more categories of operator-specific content from the cloned image so a fresh-flashed Pi doesn't inherit the source operator's gameplay state, save states, or uploaded videos.
