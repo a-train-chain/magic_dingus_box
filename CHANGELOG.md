@@ -5,6 +5,18 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-04-28
+
+OTA-path patch release. Caught while verifying the v1.4.2 update flow end-to-end. **Anyone updating from v1.0.x → v1.4.3 should upgrade through this version, NOT v1.4.2 directly** — v1.4.2's update.sh would wipe operator content that v1.4.3 properly preserves.
+
+### Fixed
+- **OTA update preserves operator content (`services/.env`, `services/config/*`, `data/thumbnails/*`).** The rsync `--exclude` lists in update.sh's backup, install, and rollback paths missed three paths that contain operator-specific state. Updating from v1.4.2 (or earlier) would silently wipe:
+  - `services/.env` — per-Pi WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr API keys, qBit admin password. Operator's Media Browser would die and they'd have to redo the entire WG-config drop + setup_services.sh flow.
+  - `services/config/{radarr,prowlarr,qbittorrent,gluetun,flaresolverr}/*` — per-Pi stack runtime state (Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime). Operator would lose every movie they've added.
+  - `data/thumbnails/*` — game cover art populated externally by `deploy_cpp.sh` from the operator's local thumbnails folder (gitignored, so the GitHub release tarball doesn't contain them). Operator would lose all 157 game cover images.
+- **`update.sh check` was silently failing.** Some shell + GitHub-payload combinations triggered a `SIGPIPE`-from-`head`-killing-upstream-`grep` cascade inside `check_update()` that the script's `set -euo pipefail` propagated as a fatal error, killing the function before its `cat << EOF` JSON output. The web admin's "Check for Updates" button received an unparseable error response. Relaxed `set -e/pipefail` inside `check_update()` only; the install path's strict mode stays in force so a mid-extract failure still triggers clean rollback.
+- **GitHub Releases for v1.4.0 and v1.4.1 were missing.** Both versions were tagged in git but never published as GitHub *Releases*, which is what `update.sh` actually queries (`/releases/latest`). An out-of-date Pi running v1.0.x to v1.3.0 would see "v1.3.0 is latest" (the last published Release) and never offer an update. v1.4.2 published a Release for the first time since v1.3.0; v1.4.3 continues that going forward.
+
 ## [1.4.2] - 2026-04-28
 
 Patch release with two CRT-TV display fixes caught during physical CRT-TV verification on the v1.4.1 Pi. Both bugs share the same root class — code that assumed the HDMI mode dims (1280×720) match the renderer's logical content viewport, when in CRT_NATIVE the kiosk uses a 640×480 logical space inside that 1280×720 framebuffer.
