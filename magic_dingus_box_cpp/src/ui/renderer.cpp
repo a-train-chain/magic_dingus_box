@@ -190,7 +190,7 @@ void main() {
 }
 )";
 
-// CRT Composite Fragment Shader (Phases 1-3 of enhanced pipeline)
+// CRT Composite Fragment Shader (Phases 1-4 of enhanced pipeline)
 //
 // This shader runs ONLY in the enhanced CRT pipeline. It samples the
 // scene texture (the offscreen FBO containing the kiosk video + UI
@@ -201,26 +201,31 @@ void main() {
 //   Phase 2: brightness-modulated Gaussian scanlines (replaces the
 //            naive sine-wave) AND Lottes-style aperture-grille
 //            subpixel mask (replaces the simple column-darkening).
-//            Both modulate sceneRGB directly — that's how a real CRT's
-//            beam and phosphor structure work — instead of being
-//            alpha-blended overlays.
 //   Phase 3: Color Warmth replaced with gamma boost (2.2→2.4 at full
-//            intensity, modeling the steeper electron-beam response
-//            curve real CRTs have versus sRGB displays) + a per-
-//            channel D65→warm-white temperature shift (modeling the
-//            color drift aged CRT phosphors develop). Both modulate
-//            sceneRGB rather than overlaying an orange film.
-//   Phase 4-5 (TBD): RGB convergence error and dual-Kawase halation.
-//            Until then glow/bloom/interlacing/flicker still use the
-//            Phase-1 alpha-blend overlay computation.
+//            intensity) + a per-channel D65→warm-white temperature
+//            shift. Both modulate sceneRGB rather than overlaying an
+//            orange film.
+//   Phase 4: Phosphor Glow upgraded — the existing vignette is now
+//            paired with RGB convergence error. The same slider that
+//            controls vignette darkening also controls how far the R
+//            and B subpixel beams misalign from G as you move toward
+//            the corners (quadratic radial falloff). At intensity 0
+//            both are no-ops; at high intensity you get visible color
+//            fringing toward the screen edges plus the corner
+//            darkening. Slider semantics still read as "phosphor
+//            edge effects get stronger" so existing operator mental
+//            model is preserved.
+//   Phase 5 (TBD): dual-Kawase halation/bloom. Until then bloom +
+//            interlacing + flicker still use Phase-1 alpha overlay.
 //
 // Physical apply order:
-//   1. Sample scene from FBO
+//   1. Sample scene from FBO (with optional convergence-offset RGB
+//      sub-samples, gated by glowIntensity)
 //   2. Color warmth (input signal coloration / phosphor aging)
-//   3. Scanlines (beam modulates display)
+//   3. Scanlines (electron beam modulates display)
 //   4. Mask (phosphor structure modulates display)
-//   5. Alpha-blend overlay (post-display surface effects: glow,
-//      bloom, interlacing, flicker)
+//   5. Alpha-blend overlay (post-display surface effects: vignette
+//      darkening, bloom, interlacing, flicker)
 static const char* crt_composite_fragment_shader_source = R"(
 #version 300 es
 precision mediump float;
@@ -269,7 +274,58 @@ void main() {
     // vTexCoord.y itself is left untouched because the per-pixel effect
     // math (scanlines, glow vignette, bloom) wants screen-space Y, not
     // texture-space Y.
-    vec3 sceneRGB = texture(sceneTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).rgb;
+    vec2 sample_uv_base = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
+
+    // ===== Phase 4: RGB convergence error (paired with Phosphor Glow) =====
+    //
+    // In a real CRT the three electron guns (R/G/B) must converge on
+    // the same target pixel. Edge-of-screen geometry is the hardest
+    // for the deflection coils to keep aligned, so the further from
+    // center a pixel is, the more the channels can drift apart. The
+    // visible result is subtle color fringing toward the corners.
+    //
+    // Implementation:
+    //   - Compute a centered radial direction in vTexCoord space.
+    //   - Magnitude grows quadratically with radial distance — so the
+    //     center is sharp and only the corners visibly misconverge.
+    //   - Sample R outward, B inward, G at the base UV. This pattern
+    //     matches the typical magnetic-misconvergence character of an
+    //     aged consumer CRT (R drifts out, B drifts in).
+    //   - Y component of the offset is flipped because radial_dir is
+    //     in vTexCoord space (top-down) but the sample UV is in
+    //     OpenGL texture space (bottom-up).
+    //
+    // Hijacks the Phosphor Glow slider because both phenomena are
+    // "phosphor / beam imperfections that get worse near the edges"
+    // — same mental model for the operator. At glowIntensity=0 we
+    // skip the extra samples entirely and pay only one texture fetch.
+    //
+    // Cost: 2 extra texture samples (only on the active branch).
+    // Pi 4 V3D handles ~6.7 GTexel/s; at 1280x720 = ~922k frags this
+    // adds ~0.3ms per frame. Cheap.
+    vec3 sceneRGB;
+    if (glowIntensity > 0.0) {
+        vec2 center = vTexCoord * 2.0 - 1.0;            // -1..+1
+        float radial = length(center);
+        vec2 radial_dir = (radial > 1e-4) ? center / radial : vec2(0.0);
+
+        // Quadratic falloff. At corners (radial≈√2) and full slider,
+        // max offset is ~0.005 in UV ≈ 6.4 px on a 1280-wide FBO —
+        // visible but not garish. Slider scales the strength linearly.
+        float conv_amt = radial * radial * glowIntensity * 0.005;
+
+        // Y flip in offset because radial_dir is top-down but sample
+        // space is bottom-up.
+        vec2 r_offset =  radial_dir * conv_amt * vec2(1.0, -1.0);
+        vec2 b_offset = -radial_dir * conv_amt * vec2(1.0, -1.0);
+
+        float r = texture(sceneTexture, sample_uv_base + r_offset).r;
+        float g = texture(sceneTexture, sample_uv_base).g;
+        float b = texture(sceneTexture, sample_uv_base + b_offset).b;
+        sceneRGB = vec3(r, g, b);
+    } else {
+        sceneRGB = texture(sceneTexture, sample_uv_base).rgb;
+    }
 
     // ===== Phase 3: Color Warmth — gamma boost + D65→warm temp shift =====
     //
