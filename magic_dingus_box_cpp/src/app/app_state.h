@@ -287,13 +287,29 @@ public:
         // Persisted in config/settings.json as display.enhanced_crt_enabled.
         bool enhanced_crt_enabled = false;
 
-        // Helper to cycle intensity: OFF -> Low (0.15) -> Medium (0.3) -> High (0.5) -> OFF
-        // Note: Different effects might need different scales, but this is a good baseline
+        // Helper to cycle intensity: OFF -> Low (0.25) -> Medium (0.50) -> High (0.75) -> OFF.
+        //
+        // The four steps are clean fractions (0, 1/4, 1/2, 3/4) so the
+        // mental model is "off / quarter / half / three-quarters". The
+        // shader's effects are designed to be subtle at 0.25, comfortable
+        // at 0.50, and clearly CRT-like at 0.75.
+        //
+        // Float-fuzz tolerances on each comparison absorb the noise that
+        // JSON deserialization introduces (e.g. 0.30 round-trips back as
+        // 0.30000001192092896) and also catch operators upgrading from
+        // older settings.json files with the previous 0.15/0.30/0.50
+        // cycle values — a few clicks rolls them onto the new clean
+        // values without leaving them stranded mid-tier.
+        //
+        // Pair this with intensity_to_label() in settings_menu.cpp; the
+        // label thresholds are placed at the midpoints between adjacent
+        // cycle values (0.05, 0.375, 0.625) so cycle output always lands
+        // in its correct bucket.
         void cycle_setting(float& setting) {
-            if (setting <= 0.0f) setting = 0.15f;
-            else if (setting <= 0.2f) setting = 0.30f;
-            else if (setting <= 0.4f) setting = 0.50f;
-            else setting = 0.0f;
+            if (setting <= 0.05f) setting = 0.25f;        // OFF (or near-zero)  → Low
+            else if (setting <= 0.32f) setting = 0.50f;  // ≤Low-ish (incl legacy 0.15/0.30) → Medium
+            else if (setting <= 0.55f) setting = 0.75f;  // ≤Medium-ish (incl legacy 0.50)   → High
+            else setting = 0.0f;                          // High (or above) → OFF
         }
         
         // Cycle display mode: CRT_NATIVE <-> MODERN_TV

@@ -32,7 +32,7 @@ enum class MenuSection {
     CYCLE_WARMTH,
     CYCLE_BLOOM,
     CYCLE_GLOW,
-    CYCLE_PHOSPHOR_MASK,
+    CYCLE_RGB_MASK,    // Renamed from CYCLE_PHOSPHOR_MASK to match the UI label "RGB Mask"
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
     TOGGLE_ENHANCED_CRT,   // Classic ↔ Enhanced CRT pipeline (Phase 1+ shader rework)

@@ -184,7 +184,7 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
     items.insert(items.end(), {
         MenuItem(std::string("CRT Engine: ") +
                      (settings.enhanced_crt_enabled ? "Enhanced" : "Classic"),
-                 MenuSection::TOGGLE_ENHANCED_CRT, "v1.4.3 vs new pipeline",
+                 MenuSection::TOGGLE_ENHANCED_CRT, "Classic / Enhanced",
                  [&]() {
                      settings.enhanced_crt_enabled = !settings.enhanced_crt_enabled;
                      rebuild_current_submenu();
@@ -192,59 +192,59 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                  }),
 
         MenuItem("Scanlines: " + intensity_to_label(settings.scanline_intensity),
-                 MenuSection::CYCLE_SCANLINES, "CRT lines",
+                 MenuSection::CYCLE_SCANLINES, "Horizontal CRT lines",
                  [&]() {
                      settings.cycle_setting(settings.scanline_intensity);
                      rebuild_current_submenu();
                      app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("Color Warmth: " + intensity_to_label(settings.warmth_intensity), 
-                 MenuSection::CYCLE_WARMTH, "Temperature",
-                 [&]() { 
-                     settings.cycle_setting(settings.warmth_intensity); 
+
+        MenuItem("Color Warmth: " + intensity_to_label(settings.warmth_intensity),
+                 MenuSection::CYCLE_WARMTH, "Warm tone + gamma",
+                 [&]() {
+                     settings.cycle_setting(settings.warmth_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("Phosphor Glow: " + intensity_to_label(settings.glow_intensity), 
-                 MenuSection::CYCLE_GLOW, "Radial glow",
-                 [&]() { 
-                     settings.cycle_setting(settings.glow_intensity); 
+
+        MenuItem("Phosphor Glow: " + intensity_to_label(settings.glow_intensity),
+                 MenuSection::CYCLE_GLOW, "Vignette + RGB convergence",
+                 [&]() {
+                     settings.cycle_setting(settings.glow_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("RGB Mask: " + intensity_to_label(settings.rgb_mask_intensity), 
-                 MenuSection::CYCLE_PHOSPHOR_MASK, "RGB stripes",
-                 [&]() { 
-                     settings.cycle_setting(settings.rgb_mask_intensity); 
+
+        MenuItem("RGB Mask: " + intensity_to_label(settings.rgb_mask_intensity),
+                 MenuSection::CYCLE_RGB_MASK, "Subpixel R/G/B stripes",
+                 [&]() {
+                     settings.cycle_setting(settings.rgb_mask_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("Screen Bloom: " + intensity_to_label(settings.bloom_intensity), 
-                 MenuSection::CYCLE_BLOOM, "Bright glow",
-                 [&]() { 
-                     settings.cycle_setting(settings.bloom_intensity); 
+
+        MenuItem("Screen Bloom: " + intensity_to_label(settings.bloom_intensity),
+                 MenuSection::CYCLE_BLOOM, "Phosphor halation",
+                 [&]() {
+                     settings.cycle_setting(settings.bloom_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("Interlacing: " + intensity_to_label(settings.interlacing_intensity), 
-                 MenuSection::CYCLE_INTERLACING, "Video lines",
-                 [&]() { 
-                     settings.cycle_setting(settings.interlacing_intensity); 
+
+        MenuItem("Interlacing: " + intensity_to_label(settings.interlacing_intensity),
+                 MenuSection::CYCLE_INTERLACING, "Alternate-line darken",
+                 [&]() {
+                     settings.cycle_setting(settings.interlacing_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
-                 
-        MenuItem("Flicker: " + intensity_to_label(settings.flicker_intensity), 
-                 MenuSection::CYCLE_FLICKER, "Subtle pulse",
-                 [&]() { 
-                     settings.cycle_setting(settings.flicker_intensity); 
+
+        MenuItem("Flicker: " + intensity_to_label(settings.flicker_intensity),
+                 MenuSection::CYCLE_FLICKER, "Brightness wobble",
+                 [&]() {
+                     settings.cycle_setting(settings.flicker_intensity);
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
                  
         MenuItem("Back", MenuSection::BACK)
@@ -772,11 +772,21 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
 }
 
 std::string SettingsMenuManager::intensity_to_label(float intensity) {
-    if (intensity <= 0.0f) {
+    // Threshold placement: midpoints between the four cycle_setting()
+    // values (0.0 / 0.25 / 0.50 / 0.75) — i.e. 0.125, 0.375, 0.625.
+    // Any cycle output lands cleanly inside its tier, and JSON-deserialized
+    // float fuzz (e.g. 0.30 returning as 0.30000001192092896) cannot push
+    // it into the wrong bucket.
+    //
+    // We use a small floor of 0.05 for OFF rather than `<= 0.0` so an
+    // operator who accidentally hand-edits a tiny non-zero value like
+    // 0.01 still reads as OFF (which matches what they'd visually see —
+    // sub-5% intensity is invisible across all 7 effects).
+    if (intensity < 0.05f) {
         return "OFF";
-    } else if (intensity <= 0.35f) {
+    } else if (intensity < 0.375f) {
         return "Low (" + std::to_string(static_cast<int>(intensity * 100)) + "%)";
-    } else if (intensity <= 0.6f) {
+    } else if (intensity < 0.625f) {
         return "Medium (" + std::to_string(static_cast<int>(intensity * 100)) + "%)";
     } else {
         return "High (" + std::to_string(static_cast<int>(intensity * 100)) + "%)";
