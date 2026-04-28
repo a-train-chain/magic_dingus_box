@@ -574,9 +574,20 @@ void GstRenderer::render_quad() {
     }
     
     glViewport(vp_x, vp_y, vp_w, vp_h);
-    
-    // Ensure we are drawing to the default framebuffer
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // NOTE: We deliberately do NOT bind the default framebuffer here.
+    // The caller chooses the target framebuffer:
+    //   - Legacy path: nothing has rebound the FB, so it's already 0.
+    //   - Enhanced CRT path (Renderer::begin_scene_fbo): the offscreen
+    //     scene FBO is bound, and we want video to render INTO it so
+    //     the composite pass can apply scanlines/mask/etc. to a frame
+    //     that contains the actual video content. Hard-binding 0 here
+    //     would silently break that — video would land on the default
+    //     FB which the composite then overwrites, and the operator
+    //     would see audio without picture.
+    // If a future caller passes garbage GL state, that's its bug to fix
+    // before invoking us.
+
     // Disable depth test to ensure we draw over everything (or background)
     glDisable(GL_DEPTH_TEST);
     
