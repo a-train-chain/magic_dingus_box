@@ -194,6 +194,25 @@ version_lt() {
 
 # Check for available updates from GitHub
 check_update() {
+    # Temporarily relax shell flags inside this function. The script's
+    # top-level `set -euo pipefail` is great for the install path
+    # (catches mid-extract failures so we rollback cleanly) but it's
+    # too aggressive for the metadata-parsing happy-path here. The
+    # function does a lot of `var=$(echo "$response" | grep -o ... |
+    # head -1 | sed ...)` chains; in some shell/GitHub-payload
+    # combinations a non-fatal pipe element exits non-zero (a SIGPIPE
+    # from `head` killing upstream `grep` after 1 line is the usual
+    # culprit) and the script silently dies before the `cat << EOF`
+    # JSON output, leaving the web admin's "Check for Updates" with
+    # no JSON body to parse → user sees "UPDATE_CHECK_FAILED" with
+    # only the [UPDATE] log lines as the error message.
+    #
+    # All the parsing below already handles empty results via
+    # `[ -z "$var" ]` checks and emits proper json_response error
+    # output, so disabling fast-fail here doesn't hide real problems.
+    set +e
+    set +o pipefail
+
     local current_version
     current_version=$(get_current_version)
 
@@ -379,11 +398,19 @@ install_update() {
     mkdir -p "$BACKUP_DIR"
     # Use --no-group --no-owner to avoid permission errors on group/owner changes
     # NOTE: We include build/ so rollback has a working binary
+    # NOTE: thumbnails/, services/.env, services/config/* are also
+    # excluded from backup because they're operator content that
+    # didn't change between install + rollback (preserved by the
+    # install rsync below); no point round-tripping them through
+    # backup. Saves significant disk space on a populated kiosk.
     rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
+        --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
+        --exclude 'services/.env' \
+        --exclude 'services/config/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || {
         json_response "false" "Failed to create backup"
         rm -rf "$TEMP_DIR"
@@ -402,22 +429,51 @@ install_update() {
 
     # Install new files while preserving user content
     #
-    # PRESERVED (user content - never overwritten):
+    # PRESERVED (user / per-Pi content - never overwritten):
     #   - data/media/*      - User-uploaded video files
     #   - data/roms/*       - User-uploaded ROM files
     #   - data/saves/*      - Game save files (SRAM per core)
     #   - data/states/*     - Save states (per core)
     #   - data/playlists/*  - User-created playlist YAML files
-    #   - data/device_info.json - Device configuration
-    #   - config/*          - User settings (settings.json, WiFi, etc.)
-    #   - build/*           - Local build artifacts
+    #   - data/thumbnails/* - Game cover art populated externally
+    #                          (deploy_cpp.sh syncs these from the
+    #                          operator's local thumbnails dir, NOT
+    #                          tracked in git, so the GitHub release
+    #                          tarball doesn't contain them; without
+    #                          this exclude the rsync --delete would
+    #                          wipe every thumbnail when the operator
+    #                          OTA-updates)
+    #   - data/device_info.json - Device identity (UUID, hostname)
+    #   - config/*          - User settings (settings.json, WiFi)
+    #   - services/.env     - Per-Pi Media Browser config (WireGuard
+    #                          private key, ProtonVPN credentials,
+    #                          auto-generated Radarr/Prowlarr API
+    #                          keys, qBit admin password). Wiping
+    #                          this on update would force operators
+    #                          to re-do the entire Media Browser
+    #                          setup flow from scratch (drop in WG
+    #                          config, wait 90 sec for setup_services,
+    #                          etc.) every time they updated.
+    #   - services/config/* - Per-Pi Media Browser stack state
+    #                          (Radarr library DB, Prowlarr indexer
+    #                          sync history, qBit fastresume + cookies,
+    #                          Gluetun VPN runtime state, FlareSolverr
+    #                          state). All of this is auto-generated
+    #                          by the Docker stack; not in git, but
+    #                          critical for the operator's working
+    #                          setup.
+    #   - build/*           - Local build artifacts (rebuilt fresh
+    #                          from updated sources below).
     #
     # UPDATED (system files - replaced with new version):
     #   - Source code (src/*)
-    #   - Scripts (scripts/*)
+    #   - Scripts (scripts/*) — incl. setup_services.sh, update.sh
+    #   - Bezel assets (assets/bezels/*)
     #   - System assets (assets/*, data/intro/*)
     #   - Documentation (docs/*)
     #   - Build configuration (CMakeLists.txt, etc.)
+    #   - services/docker-compose.yml — operator gets new VPN
+    #     firewall rules, port-sync timer changes, etc.
     #
     # Use --no-group --no-owner to avoid permission errors
     # Exit code 23 means "some files could not transfer attributes" which is OK
@@ -429,9 +485,12 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
+        --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
+        --exclude 'services/.env' \
+        --exclude 'services/config/*' \
         "$content_dir/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
 
     # Exit code 23 = some files couldn't transfer attrs (OK), 24 = vanished files (OK)
@@ -561,15 +620,28 @@ rollback_internal() {
     # Only stop C++ service - don't stop web service during rollback
     run_systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 
-    # Restore backup
+    # Restore backup. Same exclude list as the install rsync — the
+    # rollback should leave operator content alone, NOT roll it back
+    # to whatever was in the pre-update backup. Specifically:
+    #   - Anything under data/* that the install path preserved is
+    #     ALREADY current; restoring from backup would do nothing or
+    #     wipe newly-added content (e.g., a video the operator
+    #     uploaded between the failed install and this rollback).
+    #   - services/.env + services/config/* must be preserved through
+    #     rollback. Otherwise: install fails partway through →
+    #     rollback wipes VPN credentials → operator's Media Browser
+    #     dies even though the kiosk binary rolled back successfully.
     rsync -a --delete --no-group --no-owner \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
+        --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
+        --exclude 'services/.env' \
+        --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" || true
 
     # Explicitly restore VERSION file from backup
@@ -610,7 +682,9 @@ rollback() {
 
     json_progress "restoring" 30 "Restoring previous version..."
 
-    # Restore backup (preserve user data)
+    # Restore backup (preserve user data — same exclude list as
+    # install + internal rollback so user/per-Pi content is left
+    # alone in either direction).
     log "Restoring from backup..."
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
@@ -619,8 +693,11 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
+        --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
         --exclude 'config/*' \
+        --exclude 'services/.env' \
+        --exclude 'services/config/*' \
         "$BACKUP_DIR/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
 
     if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
