@@ -190,28 +190,37 @@ void main() {
 }
 )";
 
-// CRT Composite Fragment Shader (Phase 1 + Phase 2 enhanced pipeline)
+// CRT Composite Fragment Shader (Phases 1-3 of enhanced pipeline)
 //
 // This shader runs ONLY in the enhanced CRT pipeline. It samples the
 // scene texture (the offscreen FBO containing the kiosk video + UI
 // composite) and produces final pixels for the default framebuffer.
 //
 // Effects implemented so far:
-//   Phase 1: structural — sample-then-blend (visually equivalent to
-//            legacy at first; substrate for everything below).
+//   Phase 1: structural — sample-then-blend (substrate for the rest).
 //   Phase 2: brightness-modulated Gaussian scanlines (replaces the
 //            naive sine-wave) AND Lottes-style aperture-grille
 //            subpixel mask (replaces the simple column-darkening).
 //            Both modulate sceneRGB directly — that's how a real CRT's
 //            beam and phosphor structure work — instead of being
 //            alpha-blended overlays.
-//   Phase 3-5 (TBD): D65→warm color matrix, RGB convergence error,
-//            dual-Kawase halation. Until then warmth/glow/bloom/
-//            interlacing/flicker still use the Phase-1 alpha overlay.
+//   Phase 3: Color Warmth replaced with gamma boost (2.2→2.4 at full
+//            intensity, modeling the steeper electron-beam response
+//            curve real CRTs have versus sRGB displays) + a per-
+//            channel D65→warm-white temperature shift (modeling the
+//            color drift aged CRT phosphors develop). Both modulate
+//            sceneRGB rather than overlaying an orange film.
+//   Phase 4-5 (TBD): RGB convergence error and dual-Kawase halation.
+//            Until then glow/bloom/interlacing/flicker still use the
+//            Phase-1 alpha-blend overlay computation.
 //
-// Apply order matters: scanlines + mask multiply the scene FIRST
-// (modeling the CRT's display structure), THEN tints/glows/bloom are
-// alpha-blended on top (modeling screen-surface and aging).
+// Physical apply order:
+//   1. Sample scene from FBO
+//   2. Color warmth (input signal coloration / phosphor aging)
+//   3. Scanlines (beam modulates display)
+//   4. Mask (phosphor structure modulates display)
+//   5. Alpha-blend overlay (post-display surface effects: glow,
+//      bloom, interlacing, flicker)
 static const char* crt_composite_fragment_shader_source = R"(
 #version 300 es
 precision mediump float;
@@ -261,6 +270,47 @@ void main() {
     // math (scanlines, glow vignette, bloom) wants screen-space Y, not
     // texture-space Y.
     vec3 sceneRGB = texture(sceneTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).rgb;
+
+    // ===== Phase 3: Color Warmth — gamma boost + D65→warm temp shift =====
+    //
+    // Two physically-motivated adjustments are applied jointly under
+    // the single "Color Warmth" intensity slider, replacing the v1.4.3
+    // orange-tint alpha overlay (which crushed saturation and looked
+    // artificial against bright scene content).
+    //
+    // (a) Gamma boost. sRGB content is encoded for a 2.2-gamma display.
+    //     Real CRTs naturally produce light at ~2.4-2.5 gamma — the
+    //     mismatch is what gives a CRT its punchy, rich-blacks
+    //     character. To emulate this on a modern 2.2 display, we
+    //     re-encode the scene with the higher target gamma:
+    //         out = pow(in, target_gamma / 2.2)
+    //     At target 2.4 the exponent is 1.091, which crushes near-black
+    //     midtones meaningfully without clipping highlights. We lerp
+    //     the exponent toward 1.0 (identity, no boost) at intensity 0,
+    //     so the slider remains a clean OFF/ON control.
+    //
+    // (b) Temperature shift. D65 (~6500K) is the modern display white
+    //     point; aged consumer-grade CRTs drift warmer (5000K-5500K),
+    //     subtly attenuating the green and blue channels. Modeled as
+    //     a 3-component per-channel multiplier (cheaper than a full
+    //     3x3 matrix and avoids the hue-rotation artifacts a generic
+    //     matrix would introduce; warmth is a saturation-preserving
+    //     channel-balance shift, not a hue rotation).
+    //
+    // Cost: 1 pow + 1 mix per channel, ~6 ALU ops total; negligible.
+    if (warmthIntensity > 0.0) {
+        // (a) Gamma boost. mix(1.0, 1.091, intensity) = 1.0 at 0,
+        //     1.091 at 1.0. CRT target gamma 2.4 / sRGB source 2.2.
+        float gamma_exp = mix(1.0, 2.4 / 2.2, warmthIntensity);
+        sceneRGB = pow(sceneRGB, vec3(gamma_exp));
+
+        // (b) D65 → ~5000K. The classic warm-white attenuation
+        //     pattern for an aged tube. Slider lerps from neutral
+        //     (1, 1, 1) to warm (1.00, 0.92, 0.82).
+        vec3 warm_white = vec3(1.00, 0.92, 0.82);
+        vec3 warm_factor = mix(vec3(1.0), warm_white, warmthIntensity);
+        sceneRGB *= warm_factor;
+    }
 
     // ===== Phase 2a: Brightness-modulated Gaussian scanlines =====
     //
@@ -374,11 +424,11 @@ void main() {
     vec3 finalRGB = vec3(0.0);
     float finalAlpha = color.a;
 
-    // Warmth (orange tint) — tints the screen orangish like aged phosphors
-    if (warmthIntensity > 0.0) {
-        finalRGB += vec3(1.0, 0.6, 0.2) * warmthIntensity;
-        finalAlpha = max(finalAlpha, warmthIntensity * 0.2);
-    }
+    // (Warmth was here in Phase 1/2; promoted to a scene-multiplying
+    // gamma + temperature pass at the top of main() in Phase 3 because
+    // an alpha overlay can't model the steeper electron-beam gamma
+    // curve and ends up just dyeing the screen orange. See "Phase 3"
+    // block above.)
 
     // Bloom (center white glow — fake hotspot bloom)
     if (bloomIntensity > 0.0) {
