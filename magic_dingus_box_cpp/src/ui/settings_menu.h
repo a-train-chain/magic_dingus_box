@@ -35,6 +35,7 @@ enum class MenuSection {
     CYCLE_PHOSPHOR_MASK,
     CYCLE_INTERLACING,
     CYCLE_FLICKER,
+    TOGGLE_ENHANCED_CRT,   // Classic ↔ Enhanced CRT pipeline (Phase 1+ shader rework)
     DOWNLOAD_CORES
 #ifdef MEDIA_BROWSER_ENABLED
     ,

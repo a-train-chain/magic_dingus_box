@@ -174,14 +174,29 @@ std::vector<MenuItem> SettingsMenuManager::build_display_submenu() {
                  });
     }
     
-    // CRT effect settings (show for both modes, but mostly useful for CRT Native)
+    // CRT effect settings (show for both modes, but mostly useful for CRT Native).
+    // The "CRT Engine" toggle controls which shader implementation processes
+    // these effects: the v1.4.3 procedural alpha-overlay (Classic) or the
+    // physically-motivated FBO-based pipeline (Enhanced — Lottes mask,
+    // Gaussian scanlines, gamma+temp warmth, convergence error, halation).
+    // Both interpret the 7 intensity sliders below, so flipping the engine
+    // is a live A/B comparison without touching slider values.
     items.insert(items.end(), {
-        MenuItem("Scanlines: " + intensity_to_label(settings.scanline_intensity), 
-                 MenuSection::CYCLE_SCANLINES, "CRT lines", 
-                 [&]() { 
-                     settings.cycle_setting(settings.scanline_intensity); 
+        MenuItem(std::string("CRT Engine: ") +
+                     (settings.enhanced_crt_enabled ? "Enhanced" : "Classic"),
+                 MenuSection::TOGGLE_ENHANCED_CRT, "v1.4.3 vs new pipeline",
+                 [&]() {
+                     settings.enhanced_crt_enabled = !settings.enhanced_crt_enabled;
                      rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_); 
+                     app::SettingsPersistence::save_settings(*app_state_);
+                 }),
+
+        MenuItem("Scanlines: " + intensity_to_label(settings.scanline_intensity),
+                 MenuSection::CYCLE_SCANLINES, "CRT lines",
+                 [&]() {
+                     settings.cycle_setting(settings.scanline_intensity);
+                     rebuild_current_submenu();
+                     app::SettingsPersistence::save_settings(*app_state_);
                  }),
                  
         MenuItem("Color Warmth: " + intensity_to_label(settings.warmth_intensity), 
