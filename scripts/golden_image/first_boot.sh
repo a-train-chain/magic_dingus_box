@@ -321,6 +321,51 @@ except Exception as e:
             log "[6/7] No WiFi profiles to wipe (already clean)"
         fi
     fi
+
+    # Step 6d: Wipe inherited cloning-backup state.
+    #
+    # /var/lib/magic-dingus-box/cloning_backup/ is created by
+    # prepare_for_cloning.sh on the source Pi just before the dd snapshot.
+    # It contains:
+    #   - in_progress         (marker file — gates prepare_for_cloning's
+    #                          "is a clone already in flight?" check)
+    #   - hostname, hosts     (per-Pi identity to restore on the source
+    #                          after dd completes)
+    #   - device_info.json    (per-Pi identity restored on source)
+    #
+    # restore_after_cloning.sh deletes the MARKER on the source Pi but
+    # not the rest of the backup files, by design — the script's
+    # primary job is to put the source Pi back into normal state, and
+    # leaving the (now-stale) backup files around is harmless on the
+    # source.
+    #
+    # However the dd snapshot captures whatever is on disk DURING dd,
+    # which is mid-prepare — meaning the marker AND backup files are
+    # all baked into the cloned SD image. When the image flashes onto
+    # a fresh Pi, those leftover files travel with it. The marker in
+    # particular is poisonous: any future attempt to clone the new Pi
+    # (e.g., golden-image v2 from a customer's already-running box)
+    # bails out with "prepare-for-cloning marker already present" and
+    # the operator has to SSH in to manually clean it up.
+    #
+    # Wiping the entire cloning_backup/ here is safe because:
+    #   - On a fresh-flashed Pi, those files are leftovers from the
+    #     SOURCE's prepare/dd cycle — not anything the NEW Pi cares
+    #     about. The source's restore_after_cloning.sh has already
+    #     run by the time the operator flashes our image.
+    #   - The new Pi has its own fresh device identity (Step 3 above),
+    #     fresh hostname, fresh hosts entry. The backed-up "magicpi"
+    #     values aren't relevant.
+    BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
+    if [[ -d "$BACKUP_DIR" ]]; then
+        backup_count=$(find "$BACKUP_DIR" -mindepth 1 2>/dev/null | wc -l)
+        if [[ "$backup_count" -gt 0 ]]; then
+            find "$BACKUP_DIR" -mindepth 1 -delete 2>/dev/null || true
+            log "[6/7] Wiped $backup_count inherited cloning-backup file(s) from $BACKUP_DIR (prevents stale marker from blocking future re-clones)"
+        else
+            log "[6/7] cloning_backup/ already empty"
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
