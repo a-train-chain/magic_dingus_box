@@ -277,6 +277,28 @@ private:
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
     bool last_scanlines_enabled_ = true;
+
+    // Phase 5 — halation/bloom downsample chain. Two intermediate
+    // FBOs at 1/2 and 1/4 resolution feed a Kawase-style soft blur
+    // that the main composite shader samples to add wide-radius
+    // halation around bright pixels (modeling phosphor light bleed
+    // on a real CRT).
+    //
+    // Lifecycle:
+    //   - Lazily created on first use when bloomIntensity > 0.
+    //   - Skipped entirely (no FBOs allocated, no passes run) when
+    //     bloomIntensity == 0 — slider-OFF stays free.
+    //   - Recreated on resize_screen() and reset_gl() through the
+    //     same destroy/ensure pattern as the scene FBO.
+    uint32_t bloom_a_fbo_ = 0;          // half-res FBO (1/2 in each axis)
+    uint32_t bloom_a_tex_ = 0;
+    uint32_t bloom_b_fbo_ = 0;          // quarter-res FBO (1/4 in each axis)
+    uint32_t bloom_b_tex_ = 0;
+    uint32_t bloom_a_width_ = 0;
+    uint32_t bloom_a_height_ = 0;
+    uint32_t bloom_b_width_ = 0;
+    uint32_t bloom_b_height_ = 0;
+    uint32_t bloom_downsample_shader_program_ = 0;
     
     // Logo
     uint32_t logo_texture_id_;
@@ -345,6 +367,7 @@ private:
     bool compile_shaders();
     bool compile_crt_shader();             // Legacy procedural-overlay shader
     bool compile_crt_composite_shader();   // Enhanced scene-sampling shader
+    bool compile_bloom_downsample_shader();// Phase 5 Kawase-blur downsample
     uint32_t compile_shader(const std::string& source, uint32_t type);
 
     // Enhanced CRT pipeline helpers.
@@ -352,8 +375,13 @@ private:
     //     the current screen size. Sets scene_fbo_=0 on failure.
     //   destroy_scene_fbo: free FBO + color texture. Safe to call on
     //     an already-empty FBO. Used by cleanup() and reset_gl().
+    //   ensure_bloom_fbos / destroy_bloom_fbos: same pattern for the
+    //     1/2-res and 1/4-res halation downsample chain (Phase 5).
+    //     Only allocated when bloomIntensity > 0.
     void ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height);
     void destroy_scene_fbo();
+    void ensure_bloom_fbos(uint32_t base_w, uint32_t base_h);
+    void destroy_bloom_fbos();
 };
 
 } // namespace ui

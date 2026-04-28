@@ -190,7 +190,65 @@ void main() {
 }
 )";
 
-// CRT Composite Fragment Shader (Phases 1-4 of enhanced pipeline)
+// Bloom Downsample Fragment Shader (Phase 5 — halation chain)
+//
+// Used by the two downsample passes that build the half-res and
+// quarter-res halation textures sampled by the main composite. A
+// Kawase 5-tap pattern (center weight 4, four diagonals at 1.0 src
+// texels offset, sum / 8) gives a soft Gaussian-equivalent kernel at
+// minimum cost. The first pass (scene → bloom_a) gates contributions
+// by luma so only bright pixels feed the halation; the second pass
+// (bloom_a → bloom_b) runs ungated to broaden the spread.
+//
+// Why Kawase over a separable Gaussian: at this kernel size, Kawase
+// produces a near-identical result with 5 samples instead of the
+// 9-13 you'd want for a Gaussian of equivalent radius, and the
+// downsample-chain pattern naturally widens the effective radius
+// without needing a large per-pass kernel.
+static const char* bloom_downsample_fragment_shader_source = R"(
+#version 300 es
+precision mediump float;
+in vec2 vTexCoord;
+out vec4 fragColor;
+
+uniform sampler2D srcTexture;
+uniform vec2 srcTexelSize;     // 1.0 / src_dimensions, for Kawase offsets
+uniform float lumaThreshold;   // 0 = pass everything; >0 = soft luma gate
+
+const vec3 LUMA_NTSC = vec3(0.299, 0.587, 0.114);
+
+void main() {
+    // Same Y-flip rule as the main composite: srcTexture was rendered
+    // by the kiosk's screen-space (top-down) vertex shader, so screen
+    // top is at high texel-y. Sampling with vTexCoord directly would
+    // pull the bottom when displaying the top.
+    vec2 uv = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
+    vec2 d = srcTexelSize;
+
+    // Kawase 5-tap: center * 4 + four diagonals * 1, divide by 8.
+    // Diagonals at 1 src-texel offset = 0.5 dst-pixel offset for a
+    // 2:1 downsample, the canonical Bjørge dual-filter pattern.
+    vec3 c = texture(srcTexture, uv).rgb * 4.0;
+    c += texture(srcTexture, uv + vec2(-d.x, -d.y)).rgb;
+    c += texture(srcTexture, uv + vec2( d.x, -d.y)).rgb;
+    c += texture(srcTexture, uv + vec2(-d.x,  d.y)).rgb;
+    c += texture(srcTexture, uv + vec2( d.x,  d.y)).rgb;
+    c /= 8.0;
+
+    // Soft-knee luma threshold. smoothstep gives a gentle ramp from
+    // (threshold) to (threshold + 0.2) so we don't get hard edges
+    // around the bright/dark boundary in the bloom map.
+    if (lumaThreshold > 0.0) {
+        float luma = dot(c, LUMA_NTSC);
+        float w = smoothstep(lumaThreshold, lumaThreshold + 0.2, luma);
+        c *= w;
+    }
+
+    fragColor = vec4(c, 1.0);
+}
+)";
+
+// CRT Composite Fragment Shader (Phases 1-5 of enhanced pipeline)
 //
 // This shader runs ONLY in the enhanced CRT pipeline. It samples the
 // scene texture (the offscreen FBO containing the kiosk video + UI
@@ -206,17 +264,14 @@ void main() {
 //            shift. Both modulate sceneRGB rather than overlaying an
 //            orange film.
 //   Phase 4: Phosphor Glow upgraded — the existing vignette is now
-//            paired with RGB convergence error. The same slider that
-//            controls vignette darkening also controls how far the R
-//            and B subpixel beams misalign from G as you move toward
-//            the corners (quadratic radial falloff). At intensity 0
-//            both are no-ops; at high intensity you get visible color
-//            fringing toward the screen edges plus the corner
-//            darkening. Slider semantics still read as "phosphor
-//            edge effects get stronger" so existing operator mental
-//            model is preserved.
-//   Phase 5 (TBD): dual-Kawase halation/bloom. Until then bloom +
-//            interlacing + flicker still use Phase-1 alpha overlay.
+//            paired with RGB convergence error. Same slider drives
+//            both phenomena (radial-falloff edge imperfections).
+//   Phase 5: Screen Bloom replaced with luma-driven halation. Two
+//            offscreen downsample passes build a bright-only blurred
+//            texture (1/4 res); we screen-blend it back into the
+//            output here, modeling the way phosphor light bleeds
+//            into surrounding pixels around bright regions of a
+//            real CRT.
 //
 // Physical apply order:
 //   1. Sample scene from FBO (with optional convergence-offset RGB
@@ -225,7 +280,8 @@ void main() {
 //   3. Scanlines (electron beam modulates display)
 //   4. Mask (phosphor structure modulates display)
 //   5. Alpha-blend overlay (post-display surface effects: vignette
-//      darkening, bloom, interlacing, flicker)
+//      darkening, interlacing, flicker)
+//   6. Screen-blend halation/bloom (luma-driven phosphor light bleed)
 static const char* crt_composite_fragment_shader_source = R"(
 #version 300 es
 precision mediump float;
@@ -233,6 +289,10 @@ in vec2 vTexCoord;
 out vec4 fragColor;
 
 uniform sampler2D sceneTexture;
+uniform sampler2D bloomTexture;     // Phase 5 — quarter-res halation map.
+                                    // Sampled only when bloomIntensity > 0;
+                                    // C++ side ensures a valid texture is
+                                    // bound on unit 1 in that case.
 uniform float time;
 uniform float scanlineIntensity;
 uniform float warmthIntensity;
@@ -486,17 +546,37 @@ void main() {
     // curve and ends up just dyeing the screen orange. See "Phase 3"
     // block above.)
 
-    // Bloom (center white glow — fake hotspot bloom)
-    if (bloomIntensity > 0.0) {
-        vec2 uv = vTexCoord * 2.0 - 1.0;
-        float dist = length(uv);
-        float centerGlow = 1.0 - smoothstep(0.0, 1.0, dist);
-        finalRGB += vec3(1.0) * bloomIntensity * centerGlow * 0.2;
-        finalAlpha = max(finalAlpha, bloomIntensity * centerGlow * 0.1);
-    }
+    // (Center-white-glow "fake bloom" was here in Phase 1/2; replaced
+    // by luma-driven halation sampled from the bloomTexture below in
+    // Phase 5. The fake bloom couldn't react to scene content — it
+    // just lit the center of the screen white regardless of what was
+    // playing. Real CRT halation glows around bright regions wherever
+    // they are, which is what the bloom downsample chain produces.)
 
     // Inline the legacy alpha blend: src OVER scanline+mask-modulated scene.
     vec3 outRGB = finalRGB * finalAlpha + sceneRGB * (1.0 - finalAlpha);
+
+    // ===== Phase 5: Halation/bloom screen-blend =====
+    //
+    // The bloomTexture (quarter-res, prebuilt by two downsample passes
+    // before this composite runs) holds a soft Gaussian-equivalent
+    // blur of the scene's bright regions only. Screen-blend it into
+    // outRGB so highlights radiate phosphor light into surrounding
+    // pixels — the characteristic "halo around bright text on dark
+    // background" of an old TV.
+    //
+    // Screen blend formula: out = 1 - (1 - a)·(1 - b). Acts additive
+    // for dark a but saturates near 1.0, so highlights brighten and
+    // darks barely change without anyone going past 1.0 and clipping
+    // hard. Slider scales the bloom contribution linearly.
+    //
+    // Same Y-flip rule as scene sampling.
+    if (bloomIntensity > 0.0) {
+        vec3 bloomRGB = texture(bloomTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).rgb;
+        bloomRGB *= bloomIntensity;
+        outRGB = vec3(1.0) - (vec3(1.0) - outRGB) * (vec3(1.0) - bloomRGB);
+    }
+
     fragColor = vec4(outRGB, 1.0);
 }
 )";
@@ -543,6 +623,10 @@ void Renderer::reset_gl() {
         glDeleteProgram(crt_composite_shader_program_);
         crt_composite_shader_program_ = 0;
     }
+    if (bloom_downsample_shader_program_ != 0) {
+        glDeleteProgram(bloom_downsample_shader_program_);
+        bloom_downsample_shader_program_ = 0;
+    }
     if (vao_ != 0) {
         glDeleteVertexArrays(1, &vao_);
         vao_ = 0;
@@ -565,11 +649,13 @@ void Renderer::reset_gl() {
         thumbnail_texture_id_ = 0;
         current_thumbnail_path_.clear();
     }
-    // Tear down the scene FBO; it'll be lazily re-created on next
-    // begin_scene_fbo() call. RetroArch (or any external GL takeover)
-    // may have invalidated the framebuffer object handle along with
-    // shader programs, so we don't try to reuse it.
+    // Tear down the scene FBO and bloom chain; they'll be lazily
+    // re-created on next begin_scene_fbo() / first bloom-active frame
+    // respectively. RetroArch (or any external GL takeover) may have
+    // invalidated framebuffer object handles along with shader
+    // programs, so we don't try to reuse them.
     destroy_scene_fbo();
+    destroy_bloom_fbos();
     for (auto& pair : system_logo_cache_) {
         if (pair.second.texture_id != 0) {
             glDeleteTextures(1, &pair.second.texture_id);
@@ -601,6 +687,12 @@ void Renderer::reset_gl() {
     } else {
         std::cout << "UI Renderer: CRT composite shader recompiled, program_id="
                   << crt_composite_shader_program_ << std::endl;
+    }
+    if (!compile_bloom_downsample_shader()) {
+        std::cerr << "UI Renderer: Failed to re-compile bloom downsample shader after reset" << std::endl;
+    } else {
+        std::cout << "UI Renderer: Bloom downsample shader recompiled, program_id="
+                  << bloom_downsample_shader_program_ << std::endl;
     }
 
     // Re-create VAO/VBO
@@ -790,6 +882,15 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
         // shader still works for procedural overlays.
         std::cerr << "Warning: Failed to compile CRT composite shader; "
                      "enhanced CRT pipeline disabled" << std::endl;
+    }
+    if (!compile_bloom_downsample_shader()) {
+        // Also non-fatal — main composite will skip the bloom-sample
+        // path when bloomIntensity > 0 but the chain isn't available.
+        // (The composite shader itself doesn't crash on a missing
+        // bloomTexture; the bind happens only when intensity > 0
+        // AND the FBOs were successfully built.)
+        std::cerr << "Warning: Failed to compile bloom downsample shader; "
+                     "halation will be disabled" << std::endl;
     }
 
     // Load title font (Zen Dots) for title and heading
@@ -3398,10 +3499,225 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
     return true;
 }
 
+bool Renderer::compile_bloom_downsample_shader() {
+    uint32_t vertex_shader = compile_shader(vertex_shader_source, GL_VERTEX_SHADER);
+    uint32_t fragment_shader =
+        compile_shader(bloom_downsample_fragment_shader_source, GL_FRAGMENT_SHADER);
+
+    if (vertex_shader == 0 || fragment_shader == 0) {
+        return false;
+    }
+
+    bloom_downsample_shader_program_ = glCreateProgram();
+    glAttachShader(bloom_downsample_shader_program_, vertex_shader);
+    glAttachShader(bloom_downsample_shader_program_, fragment_shader);
+    glLinkProgram(bloom_downsample_shader_program_);
+
+    GLint success;
+    glGetProgramiv(bloom_downsample_shader_program_, GL_LINK_STATUS, &success);
+    if (!success) {
+        char info_log[512];
+        glGetProgramInfoLog(bloom_downsample_shader_program_, 512, nullptr, info_log);
+        std::cerr << "Bloom downsample shader linking failed: " << info_log << std::endl;
+        glDeleteProgram(bloom_downsample_shader_program_);
+        bloom_downsample_shader_program_ = 0;
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        return false;
+    }
+
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+    return true;
+}
+
+void Renderer::destroy_bloom_fbos() {
+    if (bloom_a_fbo_ != 0) {
+        glDeleteFramebuffers(1, &bloom_a_fbo_);
+        bloom_a_fbo_ = 0;
+    }
+    if (bloom_a_tex_ != 0) {
+        glDeleteTextures(1, &bloom_a_tex_);
+        bloom_a_tex_ = 0;
+    }
+    if (bloom_b_fbo_ != 0) {
+        glDeleteFramebuffers(1, &bloom_b_fbo_);
+        bloom_b_fbo_ = 0;
+    }
+    if (bloom_b_tex_ != 0) {
+        glDeleteTextures(1, &bloom_b_tex_);
+        bloom_b_tex_ = 0;
+    }
+    bloom_a_width_ = bloom_a_height_ = 0;
+    bloom_b_width_ = bloom_b_height_ = 0;
+}
+
+void Renderer::ensure_bloom_fbos(uint32_t base_w, uint32_t base_h) {
+    // Target sizes: 1/2 and 1/4 of the scene FBO. Round down so we
+    // don't wind up sampling past the source texture edges. Min 1px
+    // to avoid GL errors at degenerate sizes.
+    uint32_t a_w = (base_w >= 2) ? (base_w / 2) : 1;
+    uint32_t a_h = (base_h >= 2) ? (base_h / 2) : 1;
+    uint32_t b_w = (a_w >= 2) ? (a_w / 2) : 1;
+    uint32_t b_h = (a_h >= 2) ? (a_h / 2) : 1;
+
+    // Skip rebuild if dimensions unchanged and FBOs are alive.
+    if (bloom_a_fbo_ != 0 && bloom_b_fbo_ != 0 &&
+        bloom_a_width_ == a_w && bloom_a_height_ == a_h &&
+        bloom_b_width_ == b_w && bloom_b_height_ == b_h) {
+        return;
+    }
+
+    destroy_bloom_fbos();
+
+    auto build_fbo = [](uint32_t w, uint32_t h, uint32_t& out_fbo, uint32_t& out_tex) -> bool {
+        glGenFramebuffers(1, &out_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, out_fbo);
+
+        glGenTextures(1, &out_tex);
+        glBindTexture(GL_TEXTURE_2D, out_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                     static_cast<GLsizei>(w), static_cast<GLsizei>(h),
+                     0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        // Bilinear filter is what gives the bloom its smooth upsample
+        // when the main composite samples the quarter-res texture at
+        // arbitrary screen-space coords. Clamp-to-edge avoids halo
+        // smearing across the edge during corner sampling.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, out_tex, 0);
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return status == GL_FRAMEBUFFER_COMPLETE;
+    };
+
+    if (!build_fbo(a_w, a_h, bloom_a_fbo_, bloom_a_tex_)) {
+        std::cerr << "UI Renderer: bloom_a FBO incomplete; halation disabled" << std::endl;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        destroy_bloom_fbos();
+        return;
+    }
+    if (!build_fbo(b_w, b_h, bloom_b_fbo_, bloom_b_tex_)) {
+        std::cerr << "UI Renderer: bloom_b FBO incomplete; halation disabled" << std::endl;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        destroy_bloom_fbos();
+        return;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    bloom_a_width_ = a_w; bloom_a_height_ = a_h;
+    bloom_b_width_ = b_w; bloom_b_height_ = b_h;
+
+    std::cout << "UI Renderer: bloom FBOs created — a=" << a_w << "x" << a_h
+              << " (fbo=" << bloom_a_fbo_ << ", tex=" << bloom_a_tex_ << "), b="
+              << b_w << "x" << b_h << " (fbo=" << bloom_b_fbo_
+              << ", tex=" << bloom_b_tex_ << ")" << std::endl;
+}
+
+// Helper to render a fullscreen quad pass through the bloom downsample
+// shader. Caller has already bound the destination FBO, set viewport,
+// and bound the source texture on unit 0. We only set the per-pass
+// uniforms, upload the quad geometry, and draw.
+//
+// File-scope static so it's invisible outside this translation unit
+// and doesn't pollute the Renderer class header.
+namespace {
+void bloom_pass_draw(uint32_t shader_program,
+                     uint32_t vbo,
+                     uint32_t vao,
+                     uint32_t dst_w,
+                     uint32_t dst_h,
+                     uint32_t src_w,
+                     uint32_t src_h,
+                     float luma_threshold) {
+    glUseProgram(shader_program);
+
+    // Vertex shader screenSize maps screen-space coords to NDC; we set
+    // it to the destination FBO dims so position 0..dst_w × 0..dst_h
+    // covers the full target.
+    glUniform2f(glGetUniformLocation(shader_program, "screenSize"),
+                static_cast<float>(dst_w), static_cast<float>(dst_h));
+    glUniform2f(glGetUniformLocation(shader_program, "srcTexelSize"),
+                1.0f / static_cast<float>(src_w),
+                1.0f / static_cast<float>(src_h));
+    glUniform1f(glGetUniformLocation(shader_program, "lumaThreshold"),
+                luma_threshold);
+    glUniform1i(glGetUniformLocation(shader_program, "srcTexture"), 0);
+
+    float vertices[] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(dst_w), 0.0f, 1.0f, 0.0f,
+        static_cast<float>(dst_w), static_cast<float>(dst_h), 1.0f, 1.0f,
+
+        0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(dst_w), static_cast<float>(dst_h), 1.0f, 1.0f,
+        0.0f, static_cast<float>(dst_h), 0.0f, 1.0f
+    };
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}
+}  // namespace
+
 void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     if (!scene_fbo_active_) return;
     scene_fbo_active_ = false;
 
+    const auto& s = state.display_settings;
+
+    // ===== Phase 5: build the halation chain (bloom_a → bloom_b) =====
+    //
+    // Run iff bloomIntensity > 0 AND the bloom shader compiled.
+    // Each pass renders a fullscreen quad through the bloom downsample
+    // shader: scene→bloom_a (with luma threshold), bloom_a→bloom_b
+    // (no threshold). The composite below reads bloom_b as a softly-
+    // blurred bright-only halation map.
+    bool bloom_built = false;
+    if (s.bloom_intensity > 0.0f && bloom_downsample_shader_program_ != 0) {
+        ensure_bloom_fbos(scene_fbo_width_, scene_fbo_height_);
+        if (bloom_a_fbo_ != 0 && bloom_b_fbo_ != 0) {
+            // Pass 1: scene → bloom_a, with soft luma threshold (~0.7)
+            //         so only bright pixels feed the bloom.
+            glBindFramebuffer(GL_FRAMEBUFFER, bloom_a_fbo_);
+            glViewport(0, 0,
+                       static_cast<GLsizei>(bloom_a_width_),
+                       static_cast<GLsizei>(bloom_a_height_));
+            glDisable(GL_BLEND);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
+            bloom_pass_draw(bloom_downsample_shader_program_, vbo_, vao_,
+                            bloom_a_width_, bloom_a_height_,
+                            scene_fbo_width_, scene_fbo_height_,
+                            /*luma_threshold=*/0.70f);
+
+            // Pass 2: bloom_a → bloom_b, no threshold. Just a second
+            //         Kawase 5-tap that further softens / widens the
+            //         bloom radius.
+            glBindFramebuffer(GL_FRAMEBUFFER, bloom_b_fbo_);
+            glViewport(0, 0,
+                       static_cast<GLsizei>(bloom_b_width_),
+                       static_cast<GLsizei>(bloom_b_height_));
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, bloom_a_tex_);
+            bloom_pass_draw(bloom_downsample_shader_program_, vbo_, vao_,
+                            bloom_b_width_, bloom_b_height_,
+                            bloom_a_width_, bloom_a_height_,
+                            /*luma_threshold=*/0.0f);
+
+            bloom_built = true;
+        }
+    }
+
+    // ===== Main composite: scene_fbo (+ bloom_b) → default FB =====
+    //
     // Re-target the default framebuffer at full HDMI mode size. The
     // composite covers everything; bezel/toast follow on top.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3411,7 +3727,7 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
 
     glUseProgram(crt_composite_shader_program_);
 
-    // Uniform setup mirrors render_crt_effects, plus the scene texture.
+    // Uniform setup mirrors render_crt_effects, plus the scene + bloom textures.
     glUniform2f(glGetUniformLocation(crt_composite_shader_program_, "screenSize"),
                 static_cast<float>(original_width_),
                 static_cast<float>(original_height_));
@@ -3420,7 +3736,6 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     float time = std::chrono::duration<float>(now.time_since_epoch()).count();
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "time"), time);
 
-    const auto& s = state.display_settings;
     float effective_scanline_intensity =
         last_scanlines_enabled_ ? s.scanline_intensity : 0.0f;
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "scanlineIntensity"),
@@ -3431,8 +3746,13 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
                 s.glow_intensity);
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "rgbMaskIntensity"),
                 s.rgb_mask_intensity);
+    // Bloom intensity gates BOTH the bloom build above and the
+    // composite-side screen-blend. If the build failed (bloom_built
+    // false) we force the composite-side intensity to 0 so the
+    // shader's `if (bloomIntensity > 0.0)` branch doesn't try to
+    // sample a stale or unbound bloom texture.
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "bloomIntensity"),
-                s.bloom_intensity);
+                bloom_built ? s.bloom_intensity : 0.0f);
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "interlacingIntensity"),
                 s.interlacing_intensity);
     glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "flickerIntensity"),
@@ -3442,6 +3762,15 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
     glUniform1i(glGetUniformLocation(crt_composite_shader_program_, "sceneTexture"), 0);
+
+    // Bind the bloom (halation) texture on unit 1 if available; the
+    // shader only reads this when its bloomIntensity uniform > 0,
+    // which we've gated on bloom_built. When bloom is off we still
+    // bind unit 1 to texture 0 (no-op default) to keep the sampler
+    // valid on drivers that warn about unbound samplers.
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, bloom_built ? bloom_b_tex_ : 0u);
+    glUniform1i(glGetUniformLocation(crt_composite_shader_program_, "bloomTexture"), 1);
 
     // Composite is opaque (the shader inlines the OVER blend against
     // sceneRGB). Disabling blend avoids accidental further compositing
@@ -3470,7 +3799,12 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     // Restore the rest of the GL state subsequent overlay code expects:
     //   - default 2D shader bound (bezel/toast use it)
     //   - blending re-enabled with the standard alpha-blend func
-    //   - no texture pinned to unit 0
+    //   - no texture pinned to either active unit
+    //   - active texture unit returned to 0 (most overlay code assumes
+    //     unit 0 is current)
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -3579,7 +3913,12 @@ void Renderer::cleanup() {
         glDeleteProgram(crt_composite_shader_program_);
         crt_composite_shader_program_ = 0;
     }
+    if (bloom_downsample_shader_program_ != 0) {
+        glDeleteProgram(bloom_downsample_shader_program_);
+        bloom_downsample_shader_program_ = 0;
+    }
     destroy_scene_fbo();
+    destroy_bloom_fbos();
     if (vao_ != 0) {
         glDeleteVertexArrays(1, &vao_);
         vao_ = 0;
