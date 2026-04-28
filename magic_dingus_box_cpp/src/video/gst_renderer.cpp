@@ -504,8 +504,13 @@ void GstRenderer::render_quad() {
             vp_x = 0;
             vp_y = (height_ - vp_h) / 2;
         }
-    } else if (frame_width_ > 0 && frame_height_ > 0) {
-        // Default mode: preserve the source video's *display* aspect ratio.
+    } else if (aspect_preserve_ && frame_width_ > 0 && frame_height_ > 0) {
+        // Aspect-preserve mode: keep source video's *display* aspect ratio.
+        // Skipped entirely when aspect_preserve_=false (CRT_NATIVE), in which
+        // case we fall through to the default fill-the-screen behavior so the
+        // attached CRT TV's own 16:9→4:3 HDMI conversion handles aspect
+        // correction at its end.
+        //
         // Two factors determine display aspect:
         //   1. frame_width_ × frame_height_ — pixel grid dimensions
         //   2. frame_par_num_ : frame_par_den_ — pixel-aspect-ratio

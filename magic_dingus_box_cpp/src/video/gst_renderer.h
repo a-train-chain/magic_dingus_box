@@ -40,6 +40,29 @@ public:
     // Set letterbox mode for 4:3 content in 16:9 frame
     // When enabled, video renders to a centered 4:3 viewport
     void set_letterbox_mode(bool enabled);
+
+    // Toggle source-aspect-ratio preservation in render_quad's
+    // default (non-letterbox) path. When `true` (default), the
+    // renderer compares frame_w/h × PAR to width_/height_ and adds
+    // letterbox/pillar bars so the video keeps its true display
+    // aspect on the screen — necessary in Modern TV mode for Media
+    // Browser playback so a 2.35:1 movie doesn't get vertically
+    // stretched to fill the full 16:9 HDMI output.
+    //
+    // When `false`, the renderer skips that math and stretches the
+    // video to fill the entire framebuffer instead. This is what
+    // CRT_NATIVE mode wants: the Pi outputs 1280×720 HDMI to a CRT
+    // TV, and the TV's HDMI input does its own 16:9→4:3 conversion
+    // at the receiving end (typically by horizontal cropping or
+    // anamorphic squeeze). If the Pi pre-pillarboxes the 4:3 video
+    // INSIDE the 1280×720 frame, the CRT TV's downstream conversion
+    // then adds ANOTHER round of bars and the operator sees a tiny
+    // window-boxed image with margins on all four sides.
+    //
+    // Defaults to true so it doesn't break Modern TV's existing
+    // aspect-preserving behavior; main.cpp flips it to false when
+    // entering CRT_NATIVE mode.
+    void set_aspect_preserve(bool enabled) { aspect_preserve_ = enabled; }
     void set_screen_size(uint32_t width, uint32_t height) { width_ = width; height_ = height; }
     void set_swap_uv(bool enabled) { swap_uv_ = enabled; }
     
@@ -73,6 +96,7 @@ private:
     
     bool gl_initialized_;
     bool letterbox_mode_ = false;  // When true, render 4:3 centered
+    bool aspect_preserve_ = true;  // When false, stretch to fill (CRT_NATIVE behavior)
     bool swap_uv_ = false; // Swap U/V planes (fix for red video)
     bool frame_dirty_ = false;  // Set when new frame arrives from appsink
     bool textures_allocated_ = false;  // Track if textures have been allocated

@@ -2482,6 +2482,17 @@ int main(int /* argc */, char* /* argv */[]) {
             // Set letterbox mode based on display settings
             gst_renderer.set_letterbox_mode(letterbox_active);
 
+            // Aspect-preserve mode: enabled for Modern TV (so Media
+            // Browser's wide movies don't stretch vertically), disabled
+            // for CRT_NATIVE (the CRT TV's HDMI input does its own
+            // 16:9→4:3 conversion, so the Pi should send a fully-filled
+            // 1280×720 framebuffer; pre-pillarboxing on the Pi side
+            // produces a windowboxed image with margins on all four
+            // sides on the CRT — exactly the operator's complaint).
+            const bool crt_mode =
+                (state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+            gst_renderer.set_aspect_preserve(!crt_mode);
+
             // In Modern TV mode, set viewport to 4:3 content area for video
             if (letterbox_active) {
                 glViewport(content_x, content_y, content_w, content_h);
@@ -2569,11 +2580,24 @@ int main(int /* argc */, char* /* argv */[]) {
             ui_renderer.pump_artwork();
         }
 
-        // Render Media Browser toast overlay (fades in/out over 3s). Drawn
-        // last-in-UI so it sits above bezel and CRT effects. No-op when
-        // no toast is active.
+        // Render toast overlay (fades in/out over 3s). Drawn last-in-UI
+        // so it sits above bezel and CRT effects. No-op when no toast
+        // is active.
+        //
+        // Pass the renderer's CURRENT content-viewport dims (which
+        // can be 1280×720, 960×720 for Modern TV letterbox, or
+        // 640×480 for CRT_NATIVE) — NOT the raw HDMI mode dims.
+        // The renderer's projection matrix is set up for the content
+        // viewport, so a Toast computing its panel position from the
+        // HDMI dims would project past the visible logical area and
+        // clip to a corner of the screen. Operator-reported symptom
+        // in CRT mode: "Wi-Fi connected" panel appeared in the
+        // lower-right with only a corner visible because (1280-480)/2
+        // = 400 logical was being interpreted in 640×480 space.
         glViewport(0, 0, mode.width, mode.height);
-        ui::Toast::render(ui_renderer, mode.width, mode.height);
+        ui::Toast::render(ui_renderer,
+                          ui_renderer.get_width(),
+                          ui_renderer.get_height());
 #endif
 
         // Swap EGL buffers

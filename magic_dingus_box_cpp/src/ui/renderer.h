@@ -47,6 +47,19 @@ public:
     
     // Set UI alpha (0.0 = fully transparent, 1.0 = fully opaque)
     void set_ui_alpha(float alpha) { ui_alpha_ = alpha; }
+
+    // Current content viewport dimensions — the logical coordinate
+    // space the projection matrix is set up for. Differs from the
+    // HDMI mode size when set_content_viewport() has narrowed the
+    // visible area (e.g., 960×720 inside 1280×720 for Modern TV's
+    // 4:3 letterbox, or 640×480 for CRT_NATIVE). Overlay code
+    // (Toast, error banner, anything centered or coordinate-aware)
+    // should call these instead of using `mode.width/height`,
+    // otherwise the overlay's logical coordinates project past the
+    // visible area and the operator sees a partially-clipped panel
+    // in the corner of the screen.
+    int get_width() const { return static_cast<int>(width_); }
+    int get_height() const { return static_cast<int>(height_); }
     
     // Render UI overlay.
     //
