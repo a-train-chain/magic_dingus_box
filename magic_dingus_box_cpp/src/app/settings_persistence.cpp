@@ -43,6 +43,10 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     display["bloom_intensity"] = state.display_settings.bloom_intensity;
     display["interlacing_intensity"] = state.display_settings.interlacing_intensity;
     display["flicker_intensity"] = state.display_settings.flicker_intensity;
+    // Enhanced CRT pipeline opt-in (Phase 1+ shader rework).
+    // Persisted so operators can flip between classic and enhanced
+    // visuals once and have the choice survive reboots.
+    display["enhanced_crt_enabled"] = state.display_settings.enhanced_crt_enabled;
     root["display"] = display;
 
     // Playback settings
@@ -142,6 +146,11 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         state.display_settings.bloom_intensity = display.get("bloom_intensity", 0.0f).asFloat();
         state.display_settings.interlacing_intensity = display.get("interlacing_intensity", 0.0f).asFloat();
         state.display_settings.flicker_intensity = display.get("flicker_intensity", 0.0f).asFloat();
+        // Enhanced CRT pipeline opt-in. Default false so an operator
+        // upgrading from a settings.json that pre-dates this key keeps
+        // the classic procedural-overlay behavior with zero visible
+        // change until they explicitly turn it on.
+        state.display_settings.enhanced_crt_enabled = display.get("enhanced_crt_enabled", false).asBool();
     }
 
     // Load playback settings with safe defaults

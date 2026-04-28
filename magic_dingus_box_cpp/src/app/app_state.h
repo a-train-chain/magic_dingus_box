@@ -265,7 +265,28 @@ public:
         float bloom_intensity = 0.0f;         // 0.0 - 1.0
         float interlacing_intensity = 0.0f;   // 0.0 - 1.0
         float flicker_intensity = 0.0f;       // 0.0 - 1.0
-        
+
+        // Enhanced CRT pipeline opt-in flag.
+        //
+        // When true, the renderer redirects kiosk-side video+UI into an
+        // offscreen scene FBO and composites it back to the default
+        // framebuffer through a CRT shader that has direct read access
+        // to the scene pixels. This is the substrate for higher-fidelity
+        // effects (Lottes-style subpixel mask, brightness-modulated
+        // Gaussian scanlines, color-matrix warmth, convergence error,
+        // halation/bloom) that cannot be implemented as a procedural
+        // alpha-blended overlay.
+        //
+        // Default false: the legacy procedural-overlay path is used,
+        // which is bit-for-bit identical to the v1.4.3 behavior. This
+        // makes Phase 1 a zero-visible-change refactor — operators only
+        // see different visuals after they explicitly opt in. They can
+        // also flip back to the classic path live if the enhanced look
+        // doesn't suit their CRT.
+        //
+        // Persisted in config/settings.json as display.enhanced_crt_enabled.
+        bool enhanced_crt_enabled = false;
+
         // Helper to cycle intensity: OFF -> Low (0.15) -> Medium (0.3) -> High (0.5) -> OFF
         // Note: Different effects might need different scales, but this is a good baseline
         void cycle_setting(float& setting) {

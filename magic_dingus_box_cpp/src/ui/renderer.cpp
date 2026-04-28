@@ -190,6 +190,121 @@ void main() {
 }
 )";
 
+// CRT Composite Fragment Shader (Phase 1 — enhanced pipeline)
+//
+// This shader runs ONLY in the enhanced CRT pipeline. It samples the
+// scene texture (the offscreen FBO containing the kiosk video + UI
+// composite) and produces final pixels for the default framebuffer.
+//
+// PHASE 1 GOAL: produce visually identical output to the legacy
+// procedural-overlay shader (`crt_fragment_shader_source` above), so
+// flipping `enhanced_crt_enabled` between false/true is a structural
+// change with zero visible difference. The legacy shader was an
+// alpha-blended overlay drawn over an opaque framebuffer. With the
+// scene texture available we can replicate that exact result by
+// computing the same per-pixel (srcRGB, srcAlpha) tuple and inlining
+// the alpha-blend math:
+//     out = srcRGB * srcAlpha + sceneRGB * (1.0 - srcAlpha);
+// instead of relying on the GL blend pipeline (which would still
+// require us to re-draw the scene first; defeating the whole point).
+//
+// Phases 2+ replace this body with subpixel mask + Gaussian scanlines
+// + color matrix + convergence + halation. Keeping Phase 1 behavior-
+// equivalent gives us a clean A/B test substrate.
+static const char* crt_composite_fragment_shader_source = R"(
+#version 300 es
+precision mediump float;
+in vec2 vTexCoord;
+out vec4 fragColor;
+
+uniform sampler2D sceneTexture;
+uniform float time;
+uniform float scanlineIntensity;
+uniform float warmthIntensity;
+uniform float glowIntensity;
+uniform float rgbMaskIntensity;
+uniform float bloomIntensity;
+uniform float interlacingIntensity;
+uniform float flickerIntensity;
+uniform vec2 screenSize;
+
+void main() {
+    // Sample the underlying scene (video + UI composite from the FBO).
+    vec3 sceneRGB = texture(sceneTexture, vTexCoord).rgb;
+
+    // Replicate the legacy procedural-overlay shader's per-pixel
+    // (srcRGB, srcAlpha) calculation exactly, so Phase 1 is visually
+    // identical.
+    vec4 color = vec4(0.0, 0.0, 0.0, 0.0);
+
+    // 1. Scanlines (horizontal, dark lines)
+    if (scanlineIntensity > 0.0) {
+        float scanline = sin(vTexCoord.y * screenSize.y * 3.14159);
+        float line = 0.5 + 0.5 * scanline;
+        color = vec4(0.0, 0.0, 0.0, scanlineIntensity * (1.0 - line));
+    }
+
+    // 2. Interlacing (alternate-line darkening, time-flickered)
+    if (interlacingIntensity > 0.0) {
+        float odd = mod(gl_FragCoord.y, 2.0);
+        float flicker = mod(time * 30.0, 2.0);
+        if (abs(odd - flicker) < 0.5) {
+            color.a = max(color.a, interlacingIntensity * 0.5);
+        }
+    }
+
+    // 4. Phosphor Glow (vignette-style edge darkening)
+    if (glowIntensity > 0.0) {
+        vec2 uv = vTexCoord * 2.0 - 1.0;
+        float dist = length(uv);
+        float vignette = smoothstep(0.5, 1.5, dist);
+        color.a = max(color.a, glowIntensity * vignette);
+    }
+
+    // 6. Flicker (low-amplitude global wobble)
+    if (flickerIntensity > 0.0) {
+        float f = sin(time * 10.0) * sin(time * 23.0);
+        color.a = max(color.a, flickerIntensity * 0.1 * (f + 1.0));
+    }
+
+    vec3 finalRGB = vec3(0.0);
+    float finalAlpha = color.a;
+
+    // 5. Warmth (orange tint)
+    if (warmthIntensity > 0.0) {
+        finalRGB += vec3(1.0, 0.6, 0.2) * warmthIntensity;
+        finalAlpha = max(finalAlpha, warmthIntensity * 0.2);
+    }
+
+    // 7. Bloom (center white glow)
+    if (bloomIntensity > 0.0) {
+        vec2 uv = vTexCoord * 2.0 - 1.0;
+        float dist = length(uv);
+        float centerGlow = 1.0 - smoothstep(0.0, 1.0, dist);
+        finalRGB += vec3(1.0) * bloomIntensity * centerGlow * 0.2;
+        finalAlpha = max(finalAlpha, bloomIntensity * centerGlow * 0.1);
+    }
+
+    // 3. RGB Mask (subpixel-pattern darkening)
+    if (rgbMaskIntensity > 0.0) {
+        float m = mod(gl_FragCoord.x, 3.0);
+        float r = smoothstep(1.0, 0.0, abs(m - 0.0));
+        float g = smoothstep(1.0, 0.0, abs(m - 1.0));
+        float b = smoothstep(1.0, 0.0, abs(m - 2.0));
+        vec3 mask = vec3(r, g, b) * 0.5 + 0.5;
+        vec3 darkening = vec3(1.0) - mask;
+        finalRGB = mix(finalRGB, vec3(0.0), darkening * rgbMaskIntensity * 0.5);
+        finalAlpha = max(finalAlpha, rgbMaskIntensity * length(darkening) * 0.3);
+    }
+
+    // Inline the legacy alpha blend: src OVER scene.
+    // (We can't use the GL blend pipeline because the destination would
+    // be empty default-framebuffer pixels, not the scene.)
+    vec3 outRGB = finalRGB * finalAlpha + sceneRGB * (1.0 - finalAlpha);
+    fragColor = vec4(outRGB, 1.0);
+}
+)";
+
 Renderer::Renderer(uint32_t width, uint32_t height)
     : width_(width)
     , height_(height)
@@ -198,6 +313,7 @@ Renderer::Renderer(uint32_t width, uint32_t height)
     , ui_alpha_(1.0f)
     , shader_program_(0)
     , crt_shader_program_(0)
+    , crt_composite_shader_program_(0)
     , vao_(0)
     , vbo_(0)
     , logo_texture_id_(0)
@@ -227,6 +343,10 @@ void Renderer::reset_gl() {
         glDeleteProgram(crt_shader_program_);
         crt_shader_program_ = 0;
     }
+    if (crt_composite_shader_program_ != 0) {
+        glDeleteProgram(crt_composite_shader_program_);
+        crt_composite_shader_program_ = 0;
+    }
     if (vao_ != 0) {
         glDeleteVertexArrays(1, &vao_);
         vao_ = 0;
@@ -249,6 +369,11 @@ void Renderer::reset_gl() {
         thumbnail_texture_id_ = 0;
         current_thumbnail_path_.clear();
     }
+    // Tear down the scene FBO; it'll be lazily re-created on next
+    // begin_scene_fbo() call. RetroArch (or any external GL takeover)
+    // may have invalidated the framebuffer object handle along with
+    // shader programs, so we don't try to reuse it.
+    destroy_scene_fbo();
     for (auto& pair : system_logo_cache_) {
         if (pair.second.texture_id != 0) {
             glDeleteTextures(1, &pair.second.texture_id);
@@ -275,7 +400,13 @@ void Renderer::reset_gl() {
     } else {
         std::cout << "UI Renderer: CRT shader recompiled, program_id=" << crt_shader_program_ << std::endl;
     }
-    
+    if (!compile_crt_composite_shader()) {
+        std::cerr << "UI Renderer: Failed to re-compile CRT composite shader after reset" << std::endl;
+    } else {
+        std::cout << "UI Renderer: CRT composite shader recompiled, program_id="
+                  << crt_composite_shader_program_ << std::endl;
+    }
+
     // Re-create VAO/VBO
     glGenVertexArrays(1, &vao_);
     glGenBuffers(1, &vbo_);
@@ -457,7 +588,14 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
     if (!compile_crt_shader()) {
         std::cerr << "Warning: Failed to compile CRT shader, effects will be disabled" << std::endl;
     }
-    
+    if (!compile_crt_composite_shader()) {
+        // Non-fatal — falling back means enhanced_crt_enabled requests
+        // will silently behave like the legacy path. The legacy CRT
+        // shader still works for procedural overlays.
+        std::cerr << "Warning: Failed to compile CRT composite shader; "
+                     "enhanced CRT pipeline disabled" << std::endl;
+    }
+
     // Load title font (Zen Dots) for title and heading
     if (!title_font_manager_->load_font(title_font_path, theme_->font_title_size)) {
         std::cerr << "Warning: Failed to load title font, falling back to body font" << std::endl;
@@ -821,9 +959,14 @@ void Renderer::render(app::AppState& state) {
     }
         
     // Apply CRT effects (scanlines, warmth, glow, etc.)
-    // These are rendered as an overlay on top of everything
-    // Pass ui_overlay_alpha > 0.0f to enable/disable scanlines specifically
-    render_crt_effects(state, ui_overlay_alpha > 0.0f);
+    // These are rendered as an overlay on top of everything in the
+    // legacy path. In the enhanced path the call is a no-op
+    // (scene_fbo_active_) and the effects are deferred to
+    // end_scene_fbo_and_composite, which reads last_scanlines_enabled_
+    // because it runs OUTSIDE this function and doesn't see
+    // ui_overlay_alpha directly.
+    last_scanlines_enabled_ = (ui_overlay_alpha > 0.0f);
+    render_crt_effects(state, last_scanlines_enabled_);
     
     // Check for errors after rendering
     GLenum err = glGetError();
@@ -2876,16 +3019,16 @@ uint32_t Renderer::compile_shader(const std::string& source, uint32_t type) {
 bool Renderer::compile_crt_shader() {
     uint32_t vertex_shader = compile_shader(vertex_shader_source, GL_VERTEX_SHADER);
     uint32_t fragment_shader = compile_shader(crt_fragment_shader_source, GL_FRAGMENT_SHADER);
-    
+
     if (vertex_shader == 0 || fragment_shader == 0) {
         return false;
     }
-    
+
     crt_shader_program_ = glCreateProgram();
     glAttachShader(crt_shader_program_, vertex_shader);
     glAttachShader(crt_shader_program_, fragment_shader);
     glLinkProgram(crt_shader_program_);
-    
+
     GLint success;
     glGetProgramiv(crt_shader_program_, GL_LINK_STATUS, &success);
     if (!success) {
@@ -2894,16 +3037,260 @@ bool Renderer::compile_crt_shader() {
         std::cerr << "CRT Shader program linking failed: " << info_log << std::endl;
         return false;
     }
-    
+
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
-    
+
     return true;
+}
+
+bool Renderer::compile_crt_composite_shader() {
+    // Reuse the existing 2D vertex shader — the composite is a
+    // fullscreen quad with the same screen-space position layout.
+    uint32_t vertex_shader = compile_shader(vertex_shader_source, GL_VERTEX_SHADER);
+    uint32_t fragment_shader = compile_shader(crt_composite_fragment_shader_source, GL_FRAGMENT_SHADER);
+
+    if (vertex_shader == 0 || fragment_shader == 0) {
+        return false;
+    }
+
+    crt_composite_shader_program_ = glCreateProgram();
+    glAttachShader(crt_composite_shader_program_, vertex_shader);
+    glAttachShader(crt_composite_shader_program_, fragment_shader);
+    glLinkProgram(crt_composite_shader_program_);
+
+    GLint success;
+    glGetProgramiv(crt_composite_shader_program_, GL_LINK_STATUS, &success);
+    if (!success) {
+        char info_log[512];
+        glGetProgramInfoLog(crt_composite_shader_program_, 512, nullptr, info_log);
+        std::cerr << "CRT composite shader program linking failed: " << info_log << std::endl;
+        glDeleteProgram(crt_composite_shader_program_);
+        crt_composite_shader_program_ = 0;
+        glDeleteShader(vertex_shader);
+        glDeleteShader(fragment_shader);
+        return false;
+    }
+
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+    return true;
+}
+
+void Renderer::destroy_scene_fbo() {
+    if (scene_fbo_ != 0) {
+        glDeleteFramebuffers(1, &scene_fbo_);
+        scene_fbo_ = 0;
+    }
+    if (scene_color_tex_ != 0) {
+        glDeleteTextures(1, &scene_color_tex_);
+        scene_color_tex_ = 0;
+    }
+    scene_fbo_width_ = 0;
+    scene_fbo_height_ = 0;
+}
+
+void Renderer::ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height) {
+    // No-op if already at the right size.
+    if (scene_fbo_ != 0 &&
+        scene_fbo_width_ == fb_width &&
+        scene_fbo_height_ == fb_height) {
+        return;
+    }
+
+    // Size mismatch (display reconnect, mode change, first call) —
+    // tear down and rebuild. This is rare; the screen rarely resizes.
+    destroy_scene_fbo();
+
+    if (fb_width == 0 || fb_height == 0) {
+        return;  // Nothing sensible we can build at zero size.
+    }
+
+    glGenFramebuffers(1, &scene_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo_);
+
+    glGenTextures(1, &scene_color_tex_);
+    glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
+    // RGBA8 is the safe-everywhere format. The kiosk doesn't need HDR
+    // headroom — all source content is sRGB-encoded 8-bit. Linear
+    // filtering matters because the composite's sub-1px effects
+    // (Phase 4 convergence offsets) sample at non-integer coords.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                 static_cast<GLsizei>(fb_width),
+                 static_cast<GLsizei>(fb_height),
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, scene_color_tex_, 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "UI Renderer: scene FBO incomplete (status=0x"
+                  << std::hex << status << std::dec << "); enhanced CRT "
+                  << "pipeline disabled" << std::endl;
+        // Restore default framebuffer so subsequent draws still show.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        destroy_scene_fbo();
+        return;
+    }
+
+    scene_fbo_width_ = fb_width;
+    scene_fbo_height_ = fb_height;
+
+    // Leave the FBO bound — the typical caller (begin_scene_fbo) wants
+    // to draw into it next. Caller still has to set viewport. Keep
+    // the texture unbound so Sampler unit 0 isn't accidentally pinned
+    // to it during the scene render (we only want it bound during the
+    // composite pass).
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    std::cout << "UI Renderer: scene FBO created " << fb_width << "x" << fb_height
+              << " (fbo=" << scene_fbo_ << ", tex=" << scene_color_tex_ << ")"
+              << std::endl;
+}
+
+bool Renderer::begin_scene_fbo(const app::AppState& state) {
+    // Gate 1: feature flag must be on.
+    if (!state.display_settings.enhanced_crt_enabled) return false;
+
+    // Gate 2: composite shader must have compiled at startup.
+    if (crt_composite_shader_program_ == 0) return false;
+
+    // Gate 3: skip the Media Browser screen entirely. Its content is
+    // 16:9 (movie posters / movie playback) and intentionally outside
+    // the CRT-effects scope — same gating idea as the bezel skip in
+    // main.cpp.
+#ifdef MEDIA_BROWSER_ENABLED
+    if (state.current_screen == app::AppScreen::MediaBrowser) return false;
+#endif
+
+    // Gate 4: skip when no effects are active. There's no point paying
+    // the FBO indirection cost (~1ms on Pi 4) just to copy pixels
+    // straight through. This matches the early-out in
+    // render_crt_effects() and keeps the "all sliders off = direct
+    // draw" property of the legacy path.
+    const auto& s = state.display_settings;
+    bool any_effect_active = (s.scanline_intensity > 0.0f ||
+                              s.warmth_intensity > 0.0f ||
+                              s.glow_intensity > 0.0f ||
+                              s.rgb_mask_intensity > 0.0f ||
+                              s.bloom_intensity > 0.0f ||
+                              s.interlacing_intensity > 0.0f ||
+                              s.flicker_intensity > 0.0f);
+    if (!any_effect_active) return false;
+
+    // Gate 5: lazily create the FBO (or recreate at new size).
+    ensure_scene_fbo(original_width_, original_height_);
+    if (scene_fbo_ == 0) return false;  // Creation failed; fall back to legacy.
+
+    // Bind the FBO and clear it. Caller is expected to set its own
+    // viewport for any letterboxed UI/video draw — those calls now
+    // target our offscreen texture.
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo_);
+    glViewport(0, 0,
+               static_cast<GLsizei>(scene_fbo_width_),
+               static_cast<GLsizei>(scene_fbo_height_));
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    scene_fbo_active_ = true;
+    return true;
+}
+
+void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
+    if (!scene_fbo_active_) return;
+    scene_fbo_active_ = false;
+
+    // Re-target the default framebuffer at full HDMI mode size. The
+    // composite covers everything; bezel/toast follow on top.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0,
+               static_cast<GLsizei>(original_width_),
+               static_cast<GLsizei>(original_height_));
+
+    glUseProgram(crt_composite_shader_program_);
+
+    // Uniform setup mirrors render_crt_effects, plus the scene texture.
+    glUniform2f(glGetUniformLocation(crt_composite_shader_program_, "screenSize"),
+                static_cast<float>(original_width_),
+                static_cast<float>(original_height_));
+
+    auto now = std::chrono::steady_clock::now();
+    float time = std::chrono::duration<float>(now.time_since_epoch()).count();
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "time"), time);
+
+    const auto& s = state.display_settings;
+    float effective_scanline_intensity =
+        last_scanlines_enabled_ ? s.scanline_intensity : 0.0f;
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "scanlineIntensity"),
+                effective_scanline_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "warmthIntensity"),
+                s.warmth_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "glowIntensity"),
+                s.glow_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "rgbMaskIntensity"),
+                s.rgb_mask_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "bloomIntensity"),
+                s.bloom_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "interlacingIntensity"),
+                s.interlacing_intensity);
+    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "flickerIntensity"),
+                s.flicker_intensity);
+
+    // Bind the scene texture on unit 0 for sampling.
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
+    glUniform1i(glGetUniformLocation(crt_composite_shader_program_, "sceneTexture"), 0);
+
+    // Composite is opaque (the shader inlines the OVER blend against
+    // sceneRGB). Disabling blend avoids accidental further compositing
+    // against the default-FB clear color.
+    glDisable(GL_BLEND);
+
+    // Fullscreen quad over the default-FB extent. The vertex shader
+    // turns position/screenSize into NDC, so we use HDMI mode coords.
+    float vertices[] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(original_width_), 0.0f, 1.0f, 0.0f,
+        static_cast<float>(original_width_), static_cast<float>(original_height_), 1.0f, 1.0f,
+
+        0.0f, 0.0f, 0.0f, 0.0f,
+        static_cast<float>(original_width_), static_cast<float>(original_height_), 1.0f, 1.0f,
+        0.0f, static_cast<float>(original_height_), 0.0f, 1.0f
+    };
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+
+    // Restore the rest of the GL state subsequent overlay code expects:
+    //   - default 2D shader bound (bezel/toast use it)
+    //   - blending re-enabled with the standard alpha-blend func
+    //   - no texture pinned to unit 0
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(shader_program_);
 }
 
 void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_enabled) {
     if (crt_shader_program_ == 0) return;
-    
+
+    // Enhanced pipeline: skip the legacy procedural overlay. The same
+    // effects will be applied (with extra fidelity in Phases 2+) by
+    // end_scene_fbo_and_composite, which has access to the scene
+    // texture. Drawing the overlay here on top of the FBO would
+    // double-apply darkening/tinting once the composite runs.
+    if (scene_fbo_active_) return;
+
     // Check if any effects are active
     const auto& s = state.display_settings;
     if (s.scanline_intensity <= 0.0f && s.warmth_intensity <= 0.0f && 
@@ -2992,6 +3379,11 @@ void Renderer::cleanup() {
         glDeleteProgram(crt_shader_program_);
         crt_shader_program_ = 0;
     }
+    if (crt_composite_shader_program_ != 0) {
+        glDeleteProgram(crt_composite_shader_program_);
+        crt_composite_shader_program_ = 0;
+    }
+    destroy_scene_fbo();
     if (vao_ != 0) {
         glDeleteVertexArrays(1, &vao_);
         vao_ = 0;

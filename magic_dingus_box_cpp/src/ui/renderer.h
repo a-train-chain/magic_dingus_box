@@ -184,7 +184,41 @@ public:
     
     // Render CRT effects (scanlines, warmth, glow, etc.)
     // scanlines_enabled: if true, scanlines are rendered (based on settings), otherwise forced off
+    //
+    // In the legacy path this draws a procedural alpha-blended overlay.
+    // In the enhanced path (begin_scene_fbo returned true), this becomes a
+    // no-op — the effects are deferred to end_scene_fbo_and_composite
+    // where the shader has direct access to the scene texture.
     void render_crt_effects(const app::AppState& state, bool scanlines_enabled);
+
+    // ----- Enhanced CRT pipeline (Phase 1: render-to-FBO + composite) -----
+    //
+    // The enhanced pipeline routes the kiosk's video+UI into an offscreen
+    // RGBA8 texture (the "scene FBO"), then composites that texture back
+    // to the default framebuffer through a shader that can sample the
+    // scene pixels directly. This is the substrate for higher-fidelity
+    // CRT effects (Lottes mask, brightness-modulated scanlines, color
+    // matrix, halation) that are impossible to express as a procedural
+    // alpha-blend overlay because they need to react to the underlying
+    // pixel content.
+    //
+    // Lifecycle:
+    //   - begin_scene_fbo() — call after clearing the default framebuffer
+    //     and computing letterbox/viewport math, BEFORE video/UI render.
+    //     Returns true if it actually bound the FBO; the caller MUST then
+    //     call end_scene_fbo_and_composite() before the bezel/toast pass.
+    //     Returns false in any of these cases (then caller behaves
+    //     exactly like the legacy path):
+    //       * enhanced_crt_enabled flag is off in settings
+    //       * the Media Browser screen is active (its content is 16:9
+    //         and the CRT effects are intentionally main-UI only)
+    //       * all 7 effect intensities are 0 (no point paying FBO cost)
+    //       * FBO creation failed (e.g. driver out of memory)
+    //   - end_scene_fbo_and_composite() — call after ui_renderer.render(),
+    //     before bezel/toast. Pairs with begin_scene_fbo. Safe no-op when
+    //     begin_scene_fbo returned false.
+    bool begin_scene_fbo(const app::AppState& state);
+    void end_scene_fbo_and_composite(const app::AppState& state);
 
     // Render error overlay banner
     void render_error_overlay(const app::AppState& state);
@@ -219,9 +253,30 @@ private:
     
     // GL state
     uint32_t shader_program_;
-    uint32_t crt_shader_program_; // Shader for CRT effects
+    uint32_t crt_shader_program_;            // Legacy: procedural alpha-blend overlay
+    uint32_t crt_composite_shader_program_;  // Enhanced: samples scene FBO + applies effects
     uint32_t vao_;
     uint32_t vbo_;
+
+    // Enhanced CRT pipeline — offscreen scene FBO state.
+    //   scene_fbo_: GL framebuffer object name (0 when not yet created)
+    //   scene_color_tex_: RGBA8 color attachment texture
+    //   scene_fbo_width_/height_: cached creation size; if these don't
+    //     match original_width_/height_ when begin_scene_fbo runs, the
+    //     FBO is destroyed and recreated at the new size (handles
+    //     resize_screen() after display reconnect)
+    //   scene_fbo_active_: true between begin_scene_fbo and
+    //     end_scene_fbo_and_composite. Read by render_crt_effects() to
+    //     skip the legacy overlay pass while in enhanced mode.
+    //   last_scanlines_enabled_: stashed by Renderer::render() so the
+    //     deferred composite knows whether to draw scanlines (the
+    //     "scanlines only when UI overlay is visible" rule).
+    uint32_t scene_fbo_ = 0;
+    uint32_t scene_color_tex_ = 0;
+    uint32_t scene_fbo_width_ = 0;
+    uint32_t scene_fbo_height_ = 0;
+    bool scene_fbo_active_ = false;
+    bool last_scanlines_enabled_ = true;
     
     // Logo
     uint32_t logo_texture_id_;
@@ -288,8 +343,17 @@ private:
     
     // Shader compilation
     bool compile_shaders();
-    bool compile_crt_shader();
+    bool compile_crt_shader();             // Legacy procedural-overlay shader
+    bool compile_crt_composite_shader();   // Enhanced scene-sampling shader
     uint32_t compile_shader(const std::string& source, uint32_t type);
+
+    // Enhanced CRT pipeline helpers.
+    //   ensure_scene_fbo: lazily create or recreate the scene FBO at
+    //     the current screen size. Sets scene_fbo_=0 on failure.
+    //   destroy_scene_fbo: free FBO + color texture. Safe to call on
+    //     an already-empty FBO. Used by cleanup() and reset_gl().
+    void ensure_scene_fbo(uint32_t fb_width, uint32_t fb_height);
+    void destroy_scene_fbo();
 };
 
 } // namespace ui

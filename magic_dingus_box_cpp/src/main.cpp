@@ -2476,6 +2476,21 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
+        // Enhanced CRT pipeline (Phase 1+): redirect video+UI rendering
+        // into an offscreen scene FBO, then composite back to the
+        // default framebuffer through a shader that can sample the
+        // scene pixels. Returns true only when:
+        //   - display_settings.enhanced_crt_enabled is on,
+        //   - we're NOT on the Media Browser screen,
+        //   - at least one CRT effect intensity is > 0,
+        //   - and FBO creation succeeded.
+        // Otherwise falls back to direct-to-default-FB rendering for
+        // pixel-identical legacy behavior. The paired
+        // end_scene_fbo_and_composite() call is below, AFTER the UI
+        // render but BEFORE the bezel — the bezel and toast remain in
+        // their existing draw order and are unaffected by CRT effects.
+        bool scene_fbo_used = ui_renderer.begin_scene_fbo(state);
+
         // Render video - gst will fill the entire framebuffer, so no need to clear if video is ready
         // This handles both intro video and regular video playback
         if (should_render_video) {
@@ -2527,7 +2542,18 @@ int main(int /* argc */, char* /* argv */[]) {
                 ui_renderer.reset_content_viewport();
             }
         }
-        
+
+        // Pair to begin_scene_fbo above. If we were rendering into the
+        // offscreen scene FBO, this binds the default framebuffer back
+        // and composites the scene through the enhanced CRT shader
+        // (sampling-based effects). Safe no-op if begin_scene_fbo
+        // returned false. Must run BEFORE the bezel/toast/Media-Browser
+        // overlay draws below so they end up on top of the composite,
+        // exactly as they do in the legacy direct-to-default-FB path.
+        if (scene_fbo_used) {
+            ui_renderer.end_scene_fbo_and_composite(state);
+        }
+
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
         //
