@@ -75,6 +75,7 @@ docs/
 !README.md
 !CLAUDE.md
 !CHANGELOG.md
+!OTA_UPDATE_GUARANTEES.md
 !magic_dingus_box_cpp/README.md
 !tests/README.md
 !tests/**/*.md

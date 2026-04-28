@@ -11,6 +11,27 @@
 #   ./update.sh install <ver> <url> # Install specific version
 #   ./update.sh rollback           # Rollback to previous version
 #
+# ============================================================================
+# OPERATOR-CONTENT PRESERVATION CONTRACT — READ BEFORE EDITING THE rsync CALLS
+# ============================================================================
+# The four `rsync --exclude` lists in this file (backup, install, internal
+# rollback, user-initiated rollback) are the implementation of the contract
+# documented at /OTA_UPDATE_GUARANTEES.md (repo root).
+#
+# That doc enumerates every path operators rely on surviving an OTA update:
+# their videos, ROMs, saves, settings, Media Browser VPN credentials, etc.
+# Pre-v1.4.3 a missing exclude wiped operator's services/.env (VPN creds)
+# and services/config/* (Radarr library DB) on every update — a bug we
+# only caught during physical update-flow verification.
+#
+# When you add a new category of operator content anywhere under
+# INSTALL_DIR, you MUST:
+#   1. Add the exclude entry to ALL FOUR rsync invocations in this script.
+#      Inconsistency between them produces partial-update data loss.
+#   2. Update OTA_UPDATE_GUARANTEES.md's "preserved" table in the same
+#      commit so the contract stays in sync with the implementation.
+# ============================================================================
+#
 set -euo pipefail
 
 # Configuration
