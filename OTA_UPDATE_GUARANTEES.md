@@ -42,6 +42,15 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
 
+## v1.5.0 addition — the Enhanced CRT pipeline survives OTA cleanly
+
+v1.5.0 introduces an opt-in Enhanced CRT shader pipeline that lives entirely inside two existing kiosk source files (`magic_dingus_box_cpp/src/ui/renderer.{h,cpp}`) and one new flag in `config/settings.json` (`display.enhanced_crt_enabled`). The OTA contract for this is:
+
+- **Code** — fully shipped via the standard rsync of `magic_dingus_box_cpp/src/**`. No new build dependencies, no new asset files, no service-side changes. A v1.4.x Pi → v1.5.0 OTA gets the new shader code transparently and the on-Pi `cmake .. && make -j2` step inside `update.sh install` rebuilds the kiosk binary with it.
+- **Operator preference** — the `enhanced_crt_enabled` flag and all 7 effect intensities are persisted in `config/settings.json`, which is in update.sh's exclude list (see "What's PRESERVED — the contract" above, `config/*` row). So an operator who has flipped Enhanced ON keeps it on after OTA; an operator who left it OFF (the default) keeps the v1.4.3 procedural-overlay look until they choose to opt in.
+- **No new offscreen-state preservation needed** — the scene FBO (`scene_fbo_`) and bloom FBOs (`bloom_a_fbo_`, `bloom_b_fbo_`) are GPU-side resources lazily recreated on every kiosk start. They are not files on disk; nothing about OTA touches them. The `reset_gl()` path that handles RetroArch handoff also handles them correctly via `destroy_scene_fbo()` / `destroy_bloom_fbos()` followed by lazy reconstruction on the next active frame.
+- **Reversion is a settings flip, not a downgrade** — if the new look is unwanted, the operator toggles "CRT Engine: Classic" in Settings → Display, which sets `enhanced_crt_enabled = false` and restores byte-identical v1.4.3 rendering. No file restoration, no rebuild, no OTA rollback necessary. The `v1.4.3-pre-crt-rework` git tag is the absolute revert point if a hard rollback is ever needed at the source level.
+
 ## Specifically: things operators worry about
 
 | Question | Answer |
@@ -54,6 +63,7 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | "Will I lose my Radarr movie library?" | No, as of v1.4.3. `services/config/*` is preserved. Pre-v1.4.3 OTA would have wiped Radarr DB, Prowlarr indexer state, qBit history. |
 | "Will my game cover art disappear?" | No, as of v1.4.3. `data/thumbnails/{system}/*` per-system dirs are preserved. |
 | "Will my display settings (CRT vs Modern TV, bezel selection) reset?" | No. `config/*` is excluded. |
+| "Will my CRT Engine choice (Classic vs Enhanced) reset?" | No, as of v1.5.0. The `display.enhanced_crt_enabled` flag is part of `config/settings.json` and inherits the same `config/*` exclusion. Operators who opted into the Enhanced shader pipeline keep it across updates; operators on Classic stay on Classic. |
 | "Will my hostname change?" | No. `data/device_info.json` is excluded. |
 | "Will OTA push default videos onto my Pi?" | No. Default videos aren't in git, so the release tarball doesn't carry them. OTA literally cannot re-push them. |
 | "Will OTA modify my customized playlists?" | No. `data/playlists/*` is excluded — if you've edited a default playlist YAML, your edits stay. Side effect: you also won't get curator updates to default playlists via OTA — that's the deliberate trade-off. |

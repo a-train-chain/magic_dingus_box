@@ -5,6 +5,32 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-04-28
+
+Visual quality release: a complete rewrite of the CRT effects shader pipeline with five compounding upgrades, fully opt-in via a runtime "CRT Engine: Classic | Enhanced" toggle in Settings → Display. The Classic engine is bit-for-bit identical to v1.4.3, so an OTA from any earlier version produces zero visible change until the operator flips the toggle. Every effect was upgraded; the existing 7 sliders (Scanlines, Color Warmth, Phosphor Glow, RGB Mask, Screen Bloom, Interlacing, Flicker) now drive physically-motivated CRT physics rather than alpha-blended overlays.
+
+### Added
+- **Render-to-FBO substrate.** When the Enhanced engine is active, kiosk video + UI are routed into an offscreen RGBA8 FBO at HDMI mode size; a final composite shader reads that scene texture and produces final pixels. This is the precondition for every effect that reacts to scene content (which the v1.4.3 procedural overlay couldn't do at all).
+- **Lottes-style aperture-grille subpixel mask.** Replaces the v1.4.3 column-darkening with proper per-channel R/G/B subpixel attenuation (Trinitron stripes). A red object now actually paints the R subpixels along its column.
+- **Brightness-modulated Gaussian scanlines.** Beam width grows with luma (`σ = 0.30 + 0.15·L³`), so dark areas show crisp black gaps and bright areas show soft gaps where lines fade — the highlight-bloom-into-adjacent-lines character of a real CRT. Replaces the static sine-wave pattern.
+- **Color Warmth as gamma + temperature shift.** The slider now drives a gamma boost (2.2 → 2.4 at full intensity) plus a per-channel D65 → ~5000K temperature shift `(1.00, 0.92, 0.82)`. Punchy, deeper blacks; warm without dyeing the screen orange.
+- **RGB convergence error.** The Phosphor Glow slider now also drives quadratic-radial RGB beam misalignment — R drifts outward, B drifts inward, with offset growing toward the corners. Visible color fringing at the edges of the screen, just like an aged consumer CRT.
+- **Luma-driven halation/bloom.** The Screen Bloom slider now produces a real two-pass dual-Kawase downsample chain (1/2-res → 1/4-res, with luma threshold ~0.7 on the first pass) screen-blended back into the composite. White text on dark backgrounds glows; the previous "fake center hotspot" white glow that ignored content is gone.
+- **`CRT Engine: Classic | Enhanced` toggle** in Settings → Display. Live A/B comparison without touching slider values; persisted to `config/settings.json` as `display.enhanced_crt_enabled` and preserved across OTAs (in update.sh's `config/*` exclude list).
+
+### Performance
+- 60-second sustained-load measurement on Pi 4B with all 7 effects at MAX intensity + Enhanced engine + video playback running: V3D GPU stayed pegged at full 600 MHz throughout, SoC temperature ranged 62.3–64.2 °C (no rise across the run), `vcgencmd get_throttled` reported `0x0` at every 10-second sample point. Frame budget never approached 16.6 ms / frame at 1080p. Composite cost (FBO+shader) is estimated < 1 ms for Phases 1-4 active and ~1.5 ms additional when Phase 5 halation kicks in.
+- All bloom/scene FBOs are lazily allocated only when their gating slider is non-zero — slider-OFF stays at the same cost as the legacy path.
+- Cleanup paths (`reset_gl()` for RetroArch handoff, plus `cleanup()`) handle every new resource correctly. RetroArch launch/return cycles tested.
+
+### Fixed (caught during the rewrite)
+- **`gst_renderer::render_quad()` was hard-binding `GL_FRAMEBUFFER, 0` mid-render** ("Ensure we are drawing to the default framebuffer"), which would have broken the Enhanced engine by clobbering the scene FBO and sending video to the default framebuffer where the composite would then overwrite it with a black FBO. Removed the explicit bind with a long-form comment so the bug can't be silently reintroduced. Caller now owns target-framebuffer selection.
+
+### Reversible
+A `v1.4.3-pre-crt-rework` git tag marks the pre-rework state. If the new shader is undesired:
+- Operator-level: flip "CRT Engine" back to Classic in Settings → Display.
+- Source-level: `git checkout v1.4.3-pre-crt-rework -- magic_dingus_box_cpp/src/ui/renderer.{h,cpp}` and rebuild.
+
 ## [1.4.3] - 2026-04-28
 
 OTA-path patch release. Caught while verifying the v1.4.2 update flow end-to-end. **Anyone updating from v1.0.x → v1.4.3 should upgrade through this version, NOT v1.4.2 directly** — v1.4.2's update.sh would wipe operator content that v1.4.3 properly preserves.
