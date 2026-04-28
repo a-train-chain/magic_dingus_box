@@ -190,27 +190,28 @@ void main() {
 }
 )";
 
-// CRT Composite Fragment Shader (Phase 1 — enhanced pipeline)
+// CRT Composite Fragment Shader (Phase 1 + Phase 2 enhanced pipeline)
 //
 // This shader runs ONLY in the enhanced CRT pipeline. It samples the
 // scene texture (the offscreen FBO containing the kiosk video + UI
 // composite) and produces final pixels for the default framebuffer.
 //
-// PHASE 1 GOAL: produce visually identical output to the legacy
-// procedural-overlay shader (`crt_fragment_shader_source` above), so
-// flipping `enhanced_crt_enabled` between false/true is a structural
-// change with zero visible difference. The legacy shader was an
-// alpha-blended overlay drawn over an opaque framebuffer. With the
-// scene texture available we can replicate that exact result by
-// computing the same per-pixel (srcRGB, srcAlpha) tuple and inlining
-// the alpha-blend math:
-//     out = srcRGB * srcAlpha + sceneRGB * (1.0 - srcAlpha);
-// instead of relying on the GL blend pipeline (which would still
-// require us to re-draw the scene first; defeating the whole point).
+// Effects implemented so far:
+//   Phase 1: structural — sample-then-blend (visually equivalent to
+//            legacy at first; substrate for everything below).
+//   Phase 2: brightness-modulated Gaussian scanlines (replaces the
+//            naive sine-wave) AND Lottes-style aperture-grille
+//            subpixel mask (replaces the simple column-darkening).
+//            Both modulate sceneRGB directly — that's how a real CRT's
+//            beam and phosphor structure work — instead of being
+//            alpha-blended overlays.
+//   Phase 3-5 (TBD): D65→warm color matrix, RGB convergence error,
+//            dual-Kawase halation. Until then warmth/glow/bloom/
+//            interlacing/flicker still use the Phase-1 alpha overlay.
 //
-// Phases 2+ replace this body with subpixel mask + Gaussian scanlines
-// + color matrix + convergence + halation. Keeping Phase 1 behavior-
-// equivalent gives us a clean A/B test substrate.
+// Apply order matters: scanlines + mask multiply the scene FIRST
+// (modeling the CRT's display structure), THEN tints/glows/bloom are
+// alpha-blended on top (modeling screen-surface and aging).
 static const char* crt_composite_fragment_shader_source = R"(
 #version 300 es
 precision mediump float;
@@ -227,6 +228,21 @@ uniform float bloomIntensity;
 uniform float interlacingIntensity;
 uniform float flickerIntensity;
 uniform vec2 screenSize;
+
+// NTSC luma weights — used to brightness-modulate scanline beam width.
+// Bright pixels get a wider beam (line gaps less visible), dark pixels
+// get a narrow beam (gaps clearly visible). This is what gives real
+// CRTs that "highlight bloom into adjacent lines" character.
+const vec3 LUMA_NTSC = vec3(0.299, 0.587, 0.114);
+
+// Approximate NTSC active-scanline count. 240 lines is the historical
+// NTSC interlaced active region; on a 720p HDMI output that gives each
+// scanline ~3 vertical pixels (1.5 bright + 1.5 gap), which reads as
+// "scanlines" without aliasing on the operator's display. Hard-coded
+// rather than derived from screenSize so the look is mode-stable
+// (CRT_NATIVE 1280x720 vs. Modern TV 1280x720 letterboxed produce the
+// same scanline density).
+const float SCANLINE_COUNT = 240.0;
 
 void main() {
     // Sample the underlying scene (video + UI composite from the FBO).
@@ -246,28 +262,102 @@ void main() {
     // texture-space Y.
     vec3 sceneRGB = texture(sceneTexture, vec2(vTexCoord.x, 1.0 - vTexCoord.y)).rgb;
 
-    // Replicate the legacy procedural-overlay shader's per-pixel
-    // (srcRGB, srcAlpha) calculation exactly, so Phase 1 is visually
-    // identical.
-    vec4 color = vec4(0.0, 0.0, 0.0, 0.0);
-
-    // 1. Scanlines (horizontal, dark lines)
+    // ===== Phase 2a: Brightness-modulated Gaussian scanlines =====
+    //
+    // Real CRT scanlines are not uniform: the electron beam paints a
+    // line whose intensity falls off in a Gaussian envelope, and the
+    // beam *widens* as signal voltage (brightness) increases. So:
+    //   - Dark areas: narrow beam → wide black gaps → lines very visible
+    //   - Bright areas: wide beam → gaps fill in → lines fade
+    //
+    // Implementation:
+    //   1. Compute a per-fragment distance from the nearest scanline
+    //      center, in scanline-row units (range -0.5..+0.5).
+    //   2. Compute beam width modulated by luma. We use a baseline of
+    //      ~0.30 row units widening to ~0.45 in pure white (cubic
+    //      ramp keeps the fade subtle in midtones, dramatic in
+    //      highlights — matches real-beam I-V curves).
+    //   3. Gaussian weight = exp(-d²/(2σ²)). Centered = 1.0, falls off.
+    //   4. Modulate scene by weight → scanline-darkened scene.
+    //
+    // Intensity slider behavior:
+    //   intensity 0.0 → modulation = 1.0 everywhere (identity, no-op)
+    //   intensity 0.5 → gap brightness clamps to 0.5 (subtle)
+    //   intensity 1.0 → gap brightness goes to 0 (full black gaps)
+    //
+    // Cost: ~5 ALU ops per pixel; negligible on Pi 4 V3D at 720p.
     if (scanlineIntensity > 0.0) {
-        float scanline = sin(vTexCoord.y * screenSize.y * 3.14159);
-        float line = 0.5 + 0.5 * scanline;
-        color = vec4(0.0, 0.0, 0.0, scanlineIntensity * (1.0 - line));
+        float row_pos = vTexCoord.y * SCANLINE_COUNT;
+        float dist = fract(row_pos) - 0.5;            // -0.5..+0.5
+        float luma = dot(sceneRGB, LUMA_NTSC);        // 0..1
+        float beam_width = 0.30 + 0.15 * luma * luma * luma;
+        float gauss = exp(-(dist * dist) / (2.0 * beam_width * beam_width));
+        // Mix between (1 - intensity) at gap centers and 1.0 at line
+        // centers. At intensity 0.0, mix(1,1,gauss) = 1.0 → no effect.
+        float gap_brightness = 1.0 - scanlineIntensity;
+        float scanline_mod = mix(gap_brightness, 1.0, gauss);
+        sceneRGB *= scanline_mod;
     }
 
-    // 2. Interlacing (alternate-line darkening, time-flickered)
+    // ===== Phase 2b: Lottes-style aperture-grille subpixel mask =====
+    //
+    // A Trinitron-style aperture-grille mask: every column of HDMI
+    // pixels emits one of R/G/B at full strength while the other two
+    // channels are attenuated. This produces the characteristic
+    // vertical-stripe color-pattern of a real CRT, AND because we
+    // multiply the scene rather than darken it with an overlay, the
+    // colors at the subpixel are physically tied to what the scene
+    // contains (a red object actually paints the R subpixels, etc.).
+    //
+    // Implementation: take gl_FragCoord.x mod 3 to get a phase
+    // 0/1/2 → R/G/B subpixel column, attenuate the other two channels
+    // by `mask_dark`. The legacy shader did something similar but
+    // applied via overlay alpha and used smoothstep blending; this
+    // version is per-channel multiply, which is what a CRT's phosphor
+    // dots actually do.
+    //
+    // Intensity slider behavior:
+    //   intensity 0.0 → mask = (1,1,1) → no-op
+    //   intensity 0.5 → off-channel atten = 0.75 (subtle stripe)
+    //   intensity 1.0 → off-channel atten = 0.50 (classic Lottes)
+    //
+    // Cost: 1 mod, 1 if-else chain, 3 mults; trivial.
+    if (rgbMaskIntensity > 0.0) {
+        // 0.5 = Lottes default attenuation at full intensity. Slider
+        // scales linearly between identity (1.0) and full (0.5).
+        float mask_dark = 1.0 - 0.5 * rgbMaskIntensity;
+        float phase = mod(gl_FragCoord.x, 3.0);
+        vec3 mask;
+        if (phase < 1.0) {
+            mask = vec3(1.0, mask_dark, mask_dark);   // Red column
+        } else if (phase < 2.0) {
+            mask = vec3(mask_dark, 1.0, mask_dark);   // Green column
+        } else {
+            mask = vec3(mask_dark, mask_dark, 1.0);   // Blue column
+        }
+        sceneRGB *= mask;
+    }
+
+    // ===== Phase 1 effects (legacy alpha-blend overlay path) =====
+    //
+    // Warmth, glow vignette, bloom, interlacing, flicker still use the
+    // procedural-overlay computation: a (color, alpha) tuple is built
+    // up and then alpha-blended over the (now scanline+mask-modulated)
+    // sceneRGB. Phases 3-5 will replace these one at a time. Until
+    // then, the visual character of these effects matches v1.4.3 so
+    // operators can A/B compare with the classic path.
+    vec4 color = vec4(0.0);
+
+    // Interlacing (alternate-line darkening, time-flickered)
     if (interlacingIntensity > 0.0) {
         float odd = mod(gl_FragCoord.y, 2.0);
-        float flicker = mod(time * 30.0, 2.0);
-        if (abs(odd - flicker) < 0.5) {
+        float interlace_phase = mod(time * 30.0, 2.0);
+        if (abs(odd - interlace_phase) < 0.5) {
             color.a = max(color.a, interlacingIntensity * 0.5);
         }
     }
 
-    // 4. Phosphor Glow (vignette-style edge darkening)
+    // Phosphor Glow (vignette — edge darkening)
     if (glowIntensity > 0.0) {
         vec2 uv = vTexCoord * 2.0 - 1.0;
         float dist = length(uv);
@@ -275,7 +365,7 @@ void main() {
         color.a = max(color.a, glowIntensity * vignette);
     }
 
-    // 6. Flicker (low-amplitude global wobble)
+    // Flicker (low-amplitude global wobble)
     if (flickerIntensity > 0.0) {
         float f = sin(time * 10.0) * sin(time * 23.0);
         color.a = max(color.a, flickerIntensity * 0.1 * (f + 1.0));
@@ -284,13 +374,13 @@ void main() {
     vec3 finalRGB = vec3(0.0);
     float finalAlpha = color.a;
 
-    // 5. Warmth (orange tint)
+    // Warmth (orange tint) — tints the screen orangish like aged phosphors
     if (warmthIntensity > 0.0) {
         finalRGB += vec3(1.0, 0.6, 0.2) * warmthIntensity;
         finalAlpha = max(finalAlpha, warmthIntensity * 0.2);
     }
 
-    // 7. Bloom (center white glow)
+    // Bloom (center white glow — fake hotspot bloom)
     if (bloomIntensity > 0.0) {
         vec2 uv = vTexCoord * 2.0 - 1.0;
         float dist = length(uv);
@@ -299,21 +389,7 @@ void main() {
         finalAlpha = max(finalAlpha, bloomIntensity * centerGlow * 0.1);
     }
 
-    // 3. RGB Mask (subpixel-pattern darkening)
-    if (rgbMaskIntensity > 0.0) {
-        float m = mod(gl_FragCoord.x, 3.0);
-        float r = smoothstep(1.0, 0.0, abs(m - 0.0));
-        float g = smoothstep(1.0, 0.0, abs(m - 1.0));
-        float b = smoothstep(1.0, 0.0, abs(m - 2.0));
-        vec3 mask = vec3(r, g, b) * 0.5 + 0.5;
-        vec3 darkening = vec3(1.0) - mask;
-        finalRGB = mix(finalRGB, vec3(0.0), darkening * rgbMaskIntensity * 0.5);
-        finalAlpha = max(finalAlpha, rgbMaskIntensity * length(darkening) * 0.3);
-    }
-
-    // Inline the legacy alpha blend: src OVER scene.
-    // (We can't use the GL blend pipeline because the destination would
-    // be empty default-framebuffer pixels, not the scene.)
+    // Inline the legacy alpha blend: src OVER scanline+mask-modulated scene.
     vec3 outRGB = finalRGB * finalAlpha + sceneRGB * (1.0 - finalAlpha);
     fragColor = vec4(outRGB, 1.0);
 }
