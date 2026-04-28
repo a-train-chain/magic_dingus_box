@@ -24,10 +24,12 @@
 # Usage:
 #   ./clone_live_sd.sh                                 # uses defaults
 #   ./clone_live_sd.sh --pi magic@magicpi-abcd.local
+#   ./clone_live_sd.sh --pi magic@10.55.0.1            # over USB-Gadget (much faster than wifi)
 #   ./clone_live_sd.sh --output ~/Desktop/golden.img.gz
 #   ./clone_live_sd.sh --dry-run                       # walk-through, no dd
 #   ./clone_live_sd.sh --no-compress                   # skip gzip (faster, larger)
 #   ./clone_live_sd.sh --device /dev/mmcblk0           # if non-default
+#   ./clone_live_sd.sh --yes                           # skip the "Continue?" prompt
 #
 
 set -euo pipefail
@@ -40,6 +42,7 @@ PI_DEVICE="${PI_DEVICE:-/dev/mmcblk0}"
 OUTPUT_PATH="${HOME}/golden_image_$(date +%Y-%m-%d).img.gz"
 DRY_RUN=0
 COMPRESS=1
+SKIP_CONFIRM=0
 
 # ---------------------------------------------------------------------------
 # Colors
@@ -61,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --device)        PI_DEVICE="$2"; shift 2 ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --no-compress)   COMPRESS=0; shift ;;
+        --yes|-y)        SKIP_CONFIRM=1; shift ;;
         -h|--help)
             sed -n 's/^# //;s/^#$//;1,/^$/p' "$0" | head -50
             exit 0
@@ -199,15 +203,17 @@ echo -e "${DIM}Source Pi loses NO permanent data — services come back as if no
 echo -e "${DIM}happened. Library, downloads, settings, saves all intact.${NC}"
 echo
 
-if [[ $DRY_RUN -eq 0 ]]; then
+if [[ $DRY_RUN -eq 0 && $SKIP_CONFIRM -eq 0 ]]; then
     read -r -p "$(echo -e "${BOLD}Continue with live clone? [y/N] ${NC}")" confirm
     if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
         echo "Aborted."
         # Trap will run restore (no-op since we never ran prepare)
         exit 1
     fi
-else
+elif [[ $DRY_RUN -eq 1 ]]; then
     echo -e "${YELLOW}DRY RUN: skipping confirmation${NC}"
+else
+    echo -e "${YELLOW}--yes: skipping confirmation${NC}"
 fi
 
 # ---------------------------------------------------------------------------
