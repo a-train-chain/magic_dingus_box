@@ -102,29 +102,52 @@ start_services() {
 }
 
 reconcile_initial_state() {
-    # On watcher startup (boot or service restart), read the current
-    # GPIO state and align services to match.
+    # On watcher startup, read the current GPIO state for visibility.
+    # We do NOT stop services on a HIGH read at boot — only act on
+    # actual transitions during runtime (handled by the gpiomon event
+    # loop below).
+    #
+    # Why the asymmetry: HIGH is ambiguous. It can mean either
+    #   (a) switch wired and currently in OFF position, or
+    #   (b) no switch wired at all — line floats HIGH via the kernel's
+    #       default pull-up.
+    #
+    # The (b) case happens on every fresh clone of the golden image
+    # before the operator finishes faceplate assembly. Treating HIGH-
+    # at-boot as "switch OFF → stop services" leaves the cloned Pi
+    # with a black screen and a "Failed to start magic-dingus-box-
+    # cpp.service" line in the journal — the operator has no idea the
+    # box actually works fine; they just have no switch to flip.
+    #
+    # Transitions are unambiguous: a HIGH→LOW or LOW→HIGH event during
+    # runtime is a deliberate flip of a wired switch by the operator.
+    # gpiomon catches those reliably and fires start_services /
+    # stop_services accordingly. So the kiosk respects the switch
+    # whenever it's actually wired up — we just don't try to GUESS at
+    # boot when we can't tell wired-OFF from unwired-floating.
+    #
+    # LOW at boot is unambiguous (you can't read LOW without something
+    # actively pulling it down, which means a wired switch is closed
+    # = ON), so we still call start_services there. Idempotent — if
+    # the kiosk is already running we just wake the watcher without
+    # disturbing anything.
     local state
     state=$(read_gpio)
     log "Initial GPIO ${GPIO_PIN} state: ${state}"
     case "$state" in
         low)
-            # Switch is ON. Services should be running. Most boots
-            # take this path.
+            # Switch wired and ON (or someone is actively pulling
+            # GPIO 3 to ground). Make sure services are running.
+            log "  → start_services (switch ON, or runtime restart of watcher)"
             start_services
             ;;
-        high)
-            # Switch is OFF. Services should NOT run. The kiosk
-            # service may auto-start via its [Install] WantedBy=
-            # before we get here — stop it.
-            stop_services
-            ;;
-        *)
-            # Couldn't read GPIO. Default to safe behavior (services
-            # running). Better to have the kiosk up than to leave it
-            # standby because of a transient pinctrl glitch.
-            log "GPIO read failed at startup — defaulting to RUNNING"
-            start_services
+        high|*)
+            # Either: switch wired and OFF, switch not wired at all,
+            # or GPIO read failed. All three cases collapse to
+            # "leave services in their current state". The operator
+            # uses the physical switch to put the box in standby
+            # (LOW→HIGH transition fires stop_services).
+            log "  → no boot-time action (transitions handled by event loop)"
             ;;
     esac
 }
