@@ -5,6 +5,16 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-27
+
+Patch release with two clone-quality fixes caught during the v1.4.0 image's first flash-test on a fresh Pi (`magicpi-9768`). No source-code refactors, no new features — just two papercuts that would have shipped to every operator otherwise.
+
+### Fixed
+- **Cloned Pis without a wired faceplate boot to a dead kiosk** (`a4f3430`): the standby watcher's `reconcile_initial_state()` read GPIO 3 as HIGH and treated it as "switch in OFF position — stop services," killing the kiosk service ~1 second after it started. The HIGH read is ambiguous though — it can mean either "switch wired and OFF" OR "no switch wired at all and the line is floating via the kernel pull-up." The latter applies to every fresh clone before faceplate assembly, AND to anyone who flashes the image to a bare Pi 4 with no switch. Watcher now only acts on actual GPIO transitions during runtime; HIGH at boot is logged but ignored. LOW at boot still calls `start_services` (unambiguous — line is actively pulled to ground). Trade-off: an operator who power-cycles their box with the switch already in OFF position will see the kiosk briefly come up before they re-flip the switch off, but that's strictly better than "boot to a black screen with no recovery path."
+- **`first_boot.sh` now updates `/etc/hosts` to match the regenerated hostname** (`9c3cb9c`): cloud-init's `manage_etc_hosts=True` writes a `127.0.1.1 magicpi magicpi` line that systemd's NSS-files resolver uses for self-lookup. `first_boot.sh` Step 3 was already calling `hostnamectl set-hostname magicpi-XXXX` to give cloned Pis unique hostnames, but it wasn't touching `/etc/hosts`. The mismatch made every `sudo` (and many hostname-self-lookup code paths) emit `sudo: unable to resolve host magicpi-XXXX: Temporary failure in name resolution` and pay a small DNS-timeout delay. Cosmetic in isolation but accumulated across boot scripts and operator commands. Now sed-replaces the `127.0.1.1` line to match the new hostname; falls back to appending if no entry exists.
+
+Both fixes verified live on `magicpi-9768` during the v1.4.0 image's flash test before re-cloning to v1.4.1.
+
 ## [1.4.0] - 2026-04-27
 
 The "ready for the golden image" release. Closes out a long testing pass with end-to-end verification of every kiosk surface (controllers, all 7 emulator cores, bezel cycling, web admin, Media Browser pipeline) plus a stack of fixes uncovered along the way. Tagged at `1.4.0` because it ships several user-facing features (Media Browser auto-pause-on-playback, audio normalization in upload, 2-player support, tighter Library UI) on top of the bezel/PS-pad/overclock work that was already pending in the prior `[Unreleased]` block.
