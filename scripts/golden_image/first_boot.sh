@@ -366,6 +366,54 @@ except Exception as e:
             log "[6/7] cloning_backup/ already empty"
         fi
     fi
+
+    # Step 6e: Wipe inherited operator content from the source Pi.
+    #
+    # Anytime a working operator Pi is cloned for redistribution as a
+    # golden image, three categories of "live use" content tend to
+    # accumulate on it that the cloned Pi shouldn't inherit:
+    #
+    #   - data/saves/<core>/*.srm       — RetroArch SRAM saves. The
+    #                                      source operator's Zelda
+    #                                      character / Mario progress /
+    #                                      etc. carrying over to a
+    #                                      stranger's Pi is weird.
+    #   - data/states/<core>/*.state.auto — Auto-resume save states.
+    #                                      Same problem as saves.
+    #   - data/media/*.mp4 etc.         — Operator-uploaded videos
+    #                                      (see Content Manager Upload
+    #                                      flow). Often gigabytes of
+    #                                      operator-curated content
+    #                                      that has no business on a
+    #                                      stranger's Pi (and inflates
+    #                                      every flashed image by the
+    #                                      same amount since mp4
+    #                                      compresses poorly through
+    #                                      gzip).
+    #
+    # All three are excluded from the OTA preservation list (so they
+    # don't get clobbered by future updates on a real operator Pi),
+    # but that same OTA exclusion means we have to wipe them HERE on
+    # the cloned image — first_boot.sh is the only stage that can
+    # distinguish "fresh clone state" from "operator's working Pi".
+    #
+    # We wipe the CONTENTS but keep the directories themselves so
+    # RetroArch and the kiosk's media-upload code don't have to
+    # re-create them on first use.
+    # ($DATA_DIR is already defined at the top of this script as
+    #  ${CPP_DIR}/data; reuse it.)
+    for sub in saves states media; do
+        dir="${DATA_DIR}/${sub}"
+        if [[ -d "$dir" ]]; then
+            wipe_count=$(find "$dir" -mindepth 1 -type f 2>/dev/null | wc -l)
+            if [[ "$wipe_count" -gt 0 ]]; then
+                find "$dir" -mindepth 1 -delete 2>/dev/null || true
+                log "[6/7] Wiped $wipe_count inherited file(s) from data/${sub}/"
+            else
+                log "[6/7] data/${sub}/ already empty"
+            fi
+        fi
+    done
 fi
 
 # ---------------------------------------------------------------------------

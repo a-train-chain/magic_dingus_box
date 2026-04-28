@@ -5,6 +5,21 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-04-28
+
+Cloning hygiene patch. Extends `first_boot.sh` to wipe three more categories of operator-specific content from the cloned image so a fresh-flashed Pi doesn't inherit the source operator's gameplay state, save states, or uploaded videos.
+
+### Changed
+- **`first_boot.sh` Step 6e: wipe inherited operator-content directories on the cloned Pi.** Three new wipes, all on the cloned Pi only (the source Pi keeps its content):
+  - `data/saves/<core>/*.srm` — RetroArch SRAM saves. Source operator's Zelda character / Mario progress / etc. won't carry over to the next operator's Pi.
+  - `data/states/<core>/*.state.auto` — Auto-resume save states. Same fix.
+  - `data/media/*` — Operator-uploaded videos. Often gigabytes of operator-curated content (Content Manager → Upload flow) that has no business on a stranger's Pi and inflates every flashed image (mp4 compresses poorly through gzip).
+- The directories themselves are kept (only their contents are wiped), so RetroArch and the kiosk's media-upload path don't have to recreate them on first use.
+- All three paths remain in update.sh's OTA preservation list — they're still untouched by future OTAs on real operator Pis. `first_boot.sh` is the only stage that can distinguish "fresh clone state" from "operator's working Pi", which is the right place for this cleanup.
+
+### Why this release
+v1.5.1 closed the silent-OTA-exit bug. With OTA reliable, the next workflow gap is "I want to clone my working Pi as a starter image for new operators, but I don't want them to receive my saves/uploaded videos." Pre-v1.5.2, the workflow required manual stash-and-restore around `clone_live_sd.sh`. Post-v1.5.2, the source Pi keeps everything; flashed Pis automatically arrive clean.
+
 ## [1.5.1] - 2026-04-28
 
 OTA-path patch release. Fixes two bugs in `update.sh`'s `get_binary_url()` that caused **a silent mid-install exit on every v1.5.0 → next-version OTA**, leaving the kiosk in a non-running state. Discovered while testing the v1.4.0 → v1.5.0 OTA against a Pi with the full Media Browser stack — the rsync portion (and the operator-content preservation that the v1.4.3 release added) worked perfectly, but the script silently terminated before the rebuild + service-restart steps. **Anyone updating away from v1.5.0 should upgrade through this version.**
