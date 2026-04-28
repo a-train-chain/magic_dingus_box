@@ -5,6 +5,28 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-04-28
+
+OTA-path patch release. Fixes two bugs in `update.sh`'s `get_binary_url()` that caused **a silent mid-install exit on every v1.5.0 → next-version OTA**, leaving the kiosk in a non-running state. Discovered while testing the v1.4.0 → v1.5.0 OTA against a Pi with the full Media Browser stack — the rsync portion (and the operator-content preservation that the v1.4.3 release added) worked perfectly, but the script silently terminated before the rebuild + service-restart steps. **Anyone updating away from v1.5.0 should upgrade through this version.**
+
+### Fixed
+- **`update.sh install` no longer exits silently after the rsync stage.** Two compounding bugs in `get_binary_url()`:
+  - **Double-`v` URL.** Callers may pass either `v1.5.0` or `1.5.0`; the function unconditionally prepended `v` via `v${version}`, producing `/releases/tags/vv1.5.0` → 404 from GitHub.
+  - **`grep` no-match killed the script.** The `grep | head | sed` pipeline that extracts a binary asset URL exits with status 1 when `grep` finds zero matches (which is the *common* case — most v1.x.y releases ship source tarballs only, no pre-compiled binary asset). Under the script-level `set -euo pipefail`, that nonzero pipeline propagated and terminated the entire install. VERSION had already been rsync'd to the new value, but the rebuild + service-restart steps never ran. Operator-visible symptom: kiosk goes black after the update progress bar reached "checking_binary 35%" and never comes back; no error reported to the web admin's update job. Same family of bug as the v1.4.3 SIGPIPE fix in `check_update()` — the v1.4.3 fix didn't cover this second function.
+  - Fix: strip a single leading `v` at the function entry, and run the parse pipeline in a subshell with `set +e +o pipefail` so a no-match grep no longer kills the parent script. Subshell pattern (rather than `set +e` directly inside the function) is deliberate — it scopes the flag relaxation to `get_binary_url` only, so the install path's strict mode remains in force for the rest of the script and a rollback still triggers cleanly on any real install failure that occurs later.
+
+### Recovery for Pis stuck mid-OTA on v1.4.0 → v1.5.0
+
+If you ran v1.4.0/v1.4.1/v1.4.2 → v1.5.0 OTA before v1.5.1 was published and your kiosk is sitting at v1.5.0 VERSION but inactive, SSH in and finish what update.sh started:
+
+```bash
+cd /opt/magic_dingus_box/magic_dingus_box_cpp/build && cmake .. && make -j2 && \
+  sudo systemctl daemon-reload && \
+  sudo systemctl restart magic-dingus-box-cpp.service
+```
+
+Operator content (`services/.env`, `services/config/*`, ROMs, saves, settings) is intact — the rsync's exclude lists worked correctly; only the post-rsync rebuild step was missed.
+
 ## [1.5.0] - 2026-04-28
 
 Visual quality release: a complete rewrite of the CRT effects shader pipeline with five compounding upgrades, fully opt-in via a runtime "CRT Engine: Classic | Enhanced" toggle in Settings → Display. The Classic engine is bit-for-bit identical to v1.4.3, so an OTA from any earlier version produces zero visible change until the operator flips the toggle. Every effect was upgraded; the existing 7 sliders (Scanlines, Color Warmth, Phosphor Glow, RGB Mask, Screen Bloom, Interlacing, Flicker) now drive physically-motivated CRT physics rather than alpha-blended overlays.

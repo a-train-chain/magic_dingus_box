@@ -177,19 +177,53 @@ get_device_arch() {
     esac
 }
 
-# Check if pre-compiled binary exists for this release
+# Check if pre-compiled binary exists for this release.
+#
+# Returns a binary asset download URL on stdout, or empty string if no
+# matching pre-compiled binary is published for this version+arch (the
+# common case — most v1.x.y releases ship source tarballs only and the
+# install path falls through to compile-from-source).
+#
+# This function is in the install hot path. Two bugs in the v1.5.0
+# version of this code caused a silent mid-install exit that left the
+# kiosk non-running. Both fixed in v1.5.1:
+#
+#   1. Double-"v" URL bug. Callers may pass either "v1.5.0" or "1.5.0";
+#      the function unconditionally prepended "v" via `v${version}`,
+#      producing /releases/tags/vv1.5.0 → 404. Fix: strip a single
+#      leading "v" from the input before building the URL.
+#
+#   2. grep-no-match-kills-script. The grep|head|sed pipeline returns
+#      exit code 1 when grep finds no matches (which is the COMMON
+#      case — only releases with custom-attached binary assets have a
+#      browser_download_url ending in -arm64*.tar.gz; most don't).
+#      Under the script-level `set -euo pipefail`, that nonzero
+#      pipeline propagated up and silently terminated the entire
+#      install — VERSION had already been rsync'd to the new value,
+#      but the rebuild + service-restart steps never ran, leaving
+#      the kiosk inactive with no error reported to the caller.
+#      Fix: run the parse in a subshell with relaxed shell flags.
+#
+# The subshell pattern (rather than `set +e` directly inside the
+# function) is deliberate — it scopes the flag relaxation to this
+# function only, so the install path's strict mode remains in force
+# for the rest of the script and a rollback still triggers cleanly
+# on any real install failure that occurs later.
 get_binary_url() {
-    local version="$1"
+    local version="${1#v}"   # Strip optional leading "v" (bug #1 fix)
     local arch=$(get_device_arch)
 
-    local response
-    response=$(curl -s "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${version}" 2>/dev/null)
+    (
+        set +e +o pipefail   # Bug #2 fix: tolerate grep no-match
+        local response
+        response=$(curl -s "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/v${version}" 2>/dev/null)
+        [ -z "$response" ] && exit 0
 
-    [ -z "$response" ] && echo "" && return
-
-    # Find binary asset URL for this architecture
-    echo "$response" | grep -o "\"browser_download_url\": *\"[^\"]*-${arch}[^\"]*\.tar\.gz\"" | \
-        head -1 | sed 's/.*"\(http[^"]*\)".*/\1/'
+        echo "$response" \
+            | grep -o "\"browser_download_url\": *\"[^\"]*-${arch}[^\"]*\.tar\.gz\"" \
+            | head -1 \
+            | sed 's/.*"\(http[^"]*\)".*/\1/'
+    ) || true
 }
 
 # Get current installed version
