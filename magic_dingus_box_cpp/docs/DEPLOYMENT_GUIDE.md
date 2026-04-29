@@ -113,51 +113,70 @@ After ~30 seconds the kiosk starts on HDMI with all 149 games. Web manager avail
 
 ## Part 2: Creating the Golden Image (One Time)
 
-Once the master Pi is fully working and tested:
+Once the master Pi is fully working and tested.
 
-### Step 1: Prepare the Pi for Imaging
+### Recommended: live SD cloning (no SD removal)
 
-**SSH into the Pi:**
+Since v1.4.x the recommended flow clones the source Pi's SD card over SSH
+without ever physically removing it. The source Pi loses no permanent
+data and is only offline for ~1 minute total. See
+[`scripts/golden_image/CLONING.md`](../../scripts/golden_image/CLONING.md)
+for the full operator workflow; the short version:
+
+```bash
+# From your Mac, in the project directory:
+./scripts/golden_image/clone_live_sd.sh
+# Defaults to magic@magicpi.local → ~/golden_image_YYYY-MM-DD.img.gz
+
+# Or with explicit args:
+./scripts/golden_image/clone_live_sd.sh \
+    --pi magic@magicpi-abcd.local \
+    --output ~/Desktop/my-golden.img.gz
+```
+
+The script orchestrates:
+1. SSH connectivity + sudo NOPASSWD verification on the Pi
+2. SD-size + Mac-disk-space pre-flight (needs ~50% of card size compressed)
+3. `prepare_for_cloning.sh` on the Pi (stops kiosk, snapshots per-Pi
+   identity files, drops `in_progress` marker, syncs disks)
+4. `dd | gzip` over a single persistent SSH session (`pv` provides a
+   progress bar if installed)
+5. `restore_after_cloning.sh` on the Pi (restores identity files,
+   restarts the kiosk + Docker stack, removes the marker)
+
+A trap handler ensures step 5 fires even on Ctrl+C or network drop —
+the source Pi is never left in the half-prepared state.
+
+### Legacy: SD-removal + `create_image.sh`
+
+If you can't use the live-cloning flow (e.g., Pi is unreachable over
+network), the older manual path still works. **Stop the kiosk and run
+`prepare_golden_image.sh` first**, which intentionally wipes operator
+content with a destructive-action prompt — safe for redistribution
+images, NOT what you want for a customer-shipping golden image:
 
 ```bash
 ssh magic@magicpi.local
 sudo /opt/magic_dingus_box/scripts/golden_image/prepare_golden_image.sh
-```
-
-This script:
-- Keeps all 149 game ROMs, playlists, cores, BIOS, and the compiled binary
-- Removes video playlists, user media, device identity, saves, settings
-- Removes SSH host keys (regenerated per clone)
-- Installs the first-boot service for cloned units
-- Runs verification checks — review the output before proceeding
-
-```bash
 sudo shutdown -h now
 ```
 
-### Step 2: Create the Image
-
-Remove the SD card from the Pi and insert it into your Mac:
+Then remove the SD card and image it from your Mac:
 
 ```bash
 cd "/Users/alexanderchaney/Documents/🧠 Projects/magic_dingus_box_suite/magic_dingus_box "
 ./scripts/golden_image/create_image.sh
 ```
 
-The script will:
-1. Auto-detect the SD card (or prompt you to select it)
-2. Read the entire SD card via `dd` (takes 10-30 minutes)
-3. Compress it with gzip
+This auto-detects the SD card, reads it via `dd`, gzips the output.
+Press Ctrl+T during the dd to see progress. Add `--shrink` to also pass
+the image through PiShrink (requires Docker Desktop).
 
-Output: `magic_dingus_box_golden_v1.3.0_YYYYMMDD.img.gz` in the project root.
-
-**Optional:** Add `--shrink` flag to reduce image size via PiShrink (requires Docker Desktop):
-
-```bash
-./scripts/golden_image/create_image.sh --shrink
-```
-
-**Tip:** Press Ctrl+T during the `dd` operation to see progress.
+Note: `create_image.sh` produces an image of the **wiped** Pi —
+`prepare_golden_image.sh`'s wipe is part of that flow. Use the live
+cloning script instead if you want the **fully-loaded** golden image
+(operator's curated playlists, saves, ROMs, etc., all included for
+showcase distribution).
 
 ---
 

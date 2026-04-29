@@ -4,7 +4,7 @@ This document is a contract with operators: **what does an over-the-air (OTA) up
 
 It's also a contract with future contributors: **the rsync `--exclude` lists in [`magic_dingus_box_cpp/scripts/update.sh`](magic_dingus_box_cpp/scripts/update.sh) must continue to honor every entry in the "preserved" table below.** If you're editing those rsync calls, read this file first.
 
-The guarantees here apply to OTA updates from any prior version (v1.0.x / v1.1.0 / v1.2.0 / v1.3.0 / v1.4.x) to any subsequent version. They do NOT apply to a fresh SD-card flash from a golden image — that's a different code path (`first_boot.sh`).
+The guarantees here apply to OTA updates from any prior version (v1.0.x / v1.1.0 / v1.2.0 / v1.3.0 / v1.4.x / v1.5.x) to any subsequent version. They do NOT apply to a fresh SD-card flash from a golden image — that's a different code path (`first_boot.sh`).
 
 ## What gets UPDATED on every OTA
 
@@ -85,7 +85,7 @@ Adding a new "this should be preserved" path? Update **all four** lists. Inconsi
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 
-A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently v1.4.3 — and jump straight there. No multi-hop sequencing required.
+A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.5.3** — and jump straight there. No multi-hop sequencing required. (Note: the `[Unreleased]` section in `CHANGELOG.md` describes work that has merged to `main` but has not yet been cut as a release; that work is not yet visible to OTA-running Pis.)
 
 ## Testing the contract before shipping a new release
 

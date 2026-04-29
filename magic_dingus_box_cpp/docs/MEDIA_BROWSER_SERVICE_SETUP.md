@@ -1,17 +1,39 @@
 # Media Browser V2 — Service Setup Guide (Operator)
 
 This is a one-time setup guide for the kiosk operator. After completion,
-the companion services (Radarr + Prowlarr + qBittorrent) auto-start on
-every Pi boot.
+the companion services (Radarr + Prowlarr + qBittorrent + Gluetun + FlareSolverr)
+auto-start on every Pi boot.
 
-## Prerequisites
+> **🎯 Recommended path: Content Manager UI (no SSH required)**
+>
+> Since v1.5.0 the supported flow is fully UI-driven and never requires SSH:
+>
+> 1. Open the Content Manager: `http://magicpi-XXXX.local:5000`
+> 2. On the Pi, enter the kiosk's secret-sequence chord to unlock Media Browser
+>    visibility (BTN1+BTN3 chord → BTN2 ×3 → rotary click).
+> 3. Refresh the Content Manager — a **"Media Browser"** tab appears.
+> 4. Drop in your WireGuard `.conf` file from the ProtonVPN dashboard
+>    (**NAT-PMP must be enabled when generating it**).
+> 5. The backend writes `services/.env`, runs `setup_services.sh` in the
+>    background, and the frontend polls progress for ~90 seconds.
+> 6. When it returns "healthy", every Custom Format, indexer, app
+>    integration, and download client is already wired up from
+>    [`magic_dingus_box_cpp/scripts/data/`](../scripts/data/) fixtures —
+>    Radarr scoring rules, Prowlarr indexers (TPB, YTS, LimeTorrents,
+>    TorrentDownload + 5 disabled-but-pre-configured), FlareSolverr proxy
+>    binding, qBittorrent download category, and quality definitions.
+>
+> The rest of this document covers the **legacy manual flow** for power users,
+> debugging, and recovery scenarios where the UI path can't be used.
+
+## Prerequisites (manual flow)
 
 - Kiosk Pi running with Phase 1+ kiosk binary deployed
 - USB3 SSD mounted at `/mnt/ssd` (REQUIRED — do not skip)
 - Network connectivity
 - Sudo access on the Pi
 
-## One-time setup
+## Manual one-time setup
 
 1. **Deploy with --media-browser**
    On your Mac in the project directory:
@@ -24,59 +46,70 @@ every Pi boot.
    ssh magic@magicpi.local
    sudo /tmp/setup_services.sh
    ```
-   Save the printed credentials in a password manager.
+   The script is **idempotent** — safe to re-run if anything fails partway.
+   It generates random secrets in `/opt/magic_dingus_box/services/.env`,
+   starts the Docker stack, captures Radarr + Prowlarr API keys after
+   first boot, and writes them back to `.env`. Save the printed
+   credentials in a password manager.
 
-3. **Change qBittorrent admin password**
-   From your Mac, open an SSH tunnel (see "Fine print" section below):
-   ```bash
-   ssh -L 8080:localhost:8080 magic@magicpi.local
-   ```
-   Then browse to `http://localhost:8080`, log in with the printed
-   password, go to Tools → Options → Web UI → change password.
+3. **Drop in WireGuard config (PREFERRED — NAT-PMP-capable)**
+   The codified setup expects a WireGuard config from ProtonVPN with
+   NAT-PMP enabled. Place the file at
+   `/opt/magic_dingus_box/services/config/gluetun/wireguard/wg0.conf`
+   and ensure `services/.env` has `VPN_TYPE=wireguard` (the default).
+   `magic-dingus-services.service` will pick up the change on next restart.
 
-4. **Add a legal indexer in Prowlarr**
-   With an SSH tunnel open (`ssh -L 9696:localhost:9696 magic@magicpi.local`),
-   browse to `http://localhost:9696`. Go to Indexers → Add.
-   Example legal indexer:
-   - **Internet Archive** (via Jackett gateway) — public-domain films
-   - **LinuxTracker** — Linux ISOs for E2E testing
+4. **Verify Custom Formats + indexers were applied**
+   `setup_services.sh` runs the codified fixture scripts at the end:
+   - [`scripts/data/radarr-custom-formats.json`](../scripts/data/radarr-custom-formats.json) — H.264 prefer / HEVC reject / Remux reject / HDR reject scoring
+   - [`scripts/data/prowlarr-indexers.json`](../scripts/data/prowlarr-indexers.json) — TPB, YTS, LimeTorrents, TorrentDownload (CloudFlare-tagged)
+   - [`scripts/data/prowlarr-flaresolverr.json`](../scripts/data/prowlarr-flaresolverr.json) — proxy binding for `cloudflare`-tagged indexers
+   - [`scripts/data/prowlarr-apps.json`](../scripts/data/prowlarr-apps.json) — Radarr integration
+   - [`scripts/data/radarr-download-clients.json`](../scripts/data/radarr-download-clients.json) — qBittorrent client wiring
+   - [`scripts/data/radarr-quality-definitions.json`](../scripts/data/radarr-quality-definitions.json) — 720p ≤60 MB/min / 1080p ≤100 MB/min size caps
 
-5. **Connect Radarr to Prowlarr + qBittorrent**
-   Radarr usually auto-detects Prowlarr. Verify under
-   Settings → Indexers. If missing, add Prowlarr manually with its API key.
+   Re-running `setup_services.sh` is the way to re-apply these fixtures
+   if you've manually edited Radarr/Prowlarr state and want to reset.
 
-   Under Settings → Download Clients, add qBittorrent:
-   - Host: `qbittorrent` (container DNS name)
-   - Port: 8080
-   - Username: admin
-   - Password: (your new password)
-
-6. **Verify the default quality profile**
-   Radarr → Settings → Profiles. Confirm "HD-1080p" exists (Radarr ships
-   this built-in on every fresh install; the kiosk uses it by default for
-   new movie adds).
-
-## VPN setup (ProtonVPN + Gluetun)
+## VPN setup (ProtonVPN + Gluetun, WireGuard + NAT-PMP)
 
 qBittorrent traffic is routed through a Gluetun VPN container with kill-switch.
 If the VPN drops, no traffic leaves the container — your real IP never leaks.
 
-### Get ProtonVPN OpenVPN credentials
+**Use WireGuard, not OpenVPN.** OpenVPN works for the tunnel itself but
+cannot do NAT-PMP port forwarding, so incoming peer connections from the
+swarm can never reach qBittorrent and download speeds collapse to "leech-only"
+levels. WireGuard with NAT-PMP enabled is the only configuration the
+companion-services stack is tested with. The legacy OpenVPN env vars
+(`VPN_USERNAME` / `VPN_PASSWORD` / `VPN_COUNTRIES`) are unused on
+WireGuard configs.
 
-1. Sign up for the free tier at https://account.protonvpn.com/signup
-2. Log in to the web dashboard at https://account.protonvpn.com/account-password
-3. Scroll to **OpenVPN / IKEv2 username** — this username/password pair is
-   DIFFERENT from your account email/password. Use this pair (not your login).
+### Get ProtonVPN WireGuard config
 
-### Set credentials on the Pi
+1. Sign up at https://account.protonvpn.com/signup (paid plan recommended —
+   free tier blocks P2P/BitTorrent traffic regardless of protocol).
+2. Open the WireGuard configuration page in your dashboard.
+3. **Toggle "NAT-PMP / Port Forwarding" ON before generating** — this
+   setting is baked into the generated `.conf` and cannot be retroactively
+   added. If you forget, regenerate the config.
+4. Download the `.conf` file.
+
+### Set the config on the Pi (preferred: Content Manager UI)
+
+Drop the `.conf` into the **Media Browser** tab of the Content Manager.
+The backend writes it to `services/config/gluetun/wireguard/wg0.conf`,
+ensures `services/.env` has `VPN_TYPE=wireguard`, and restarts
+`magic-dingus-services.service`. ~90 seconds later: Gluetun reports
+healthy, and `qbit-port-sync.timer` (running once/minute) syncs
+qBittorrent's listen port to whatever Gluetun's NAT-PMP lease is currently
+forwarding.
+
+### Set the config on the Pi (manual)
 
 ```bash
 ssh magic@magicpi.local
-sudo -e /opt/magic_dingus_box/services/.env
-# Set these:
-#   VPN_USERNAME=your-openvpn-username
-#   VPN_PASSWORD=your-openvpn-password
-#   VPN_COUNTRIES=Netherlands   # free tier supports: Netherlands, Japan, United States
+sudo cp /path/to/your-wg0.conf /opt/magic_dingus_box/services/config/gluetun/wireguard/wg0.conf
+sudo chown magic:magic /opt/magic_dingus_box/services/config/gluetun/wireguard/wg0.conf
 sudo systemctl restart magic-dingus-services.service
 ```
 
