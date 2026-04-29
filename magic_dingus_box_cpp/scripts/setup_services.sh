@@ -53,7 +53,11 @@ echo "Creating storage layout at ${STORAGE_ROOT}..."
 # Movies subdirectory. The earlier setup created library/Movies/ which then sat
 # empty forever — drop it.
 sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,backups}
-sudo chown -R "$(whoami):$(whoami)" "${STORAGE_ROOT}"
+# This script runs via sudo, so $(whoami) is root. Use TARGET_USER (resolved
+# from $SUDO_USER above) so the storage tree ends up owned by the magic user
+# whose UID/GID the Docker containers run under (PUID/PGID in .env). Without
+# this, Radarr and qBittorrent get EACCES on every download write.
+sudo chown -R "${TARGET_USER}:${TARGET_USER}" "${STORAGE_ROOT}"
 
 # 3. Generate .env if missing
 if [ ! -f "${ENV_FILE}" ]; then

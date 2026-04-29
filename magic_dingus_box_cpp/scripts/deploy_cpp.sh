@@ -249,14 +249,24 @@ rsync -avz \
     "${CPP_DIR}/systemd/magic-dingus-box-cpp.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
+# Only restart the kiosk if the binary actually exists on the Pi —
+# otherwise the unit ends up "failed" and the operator has to manually
+# `systemctl reset-failed` before the next `--build` deploy can start it.
+# This was the most common first-deploy stumble: running deploy_cpp.sh
+# without --build before --build, leaving a phantom failed-state that
+# hid real failures from the next deploy.
 ssh "${PI_HOST}" bash <<EOF
 sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable magic-dingus-box-cpp.service
-# Restart if it's already running (or start if not)
-sudo systemctl restart magic-dingus-box-cpp.service
+if [ -x "${PI_DIR}/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
+    sudo systemctl restart magic-dingus-box-cpp.service
+    echo "  Restarted kiosk (binary present)"
+else
+    echo "  Skipping kiosk restart (binary not yet built — run with --build to compile)"
+fi
 EOF
-echo "  ✓ C++ App Service installed and started"
+echo "  ✓ C++ App Service installed"
 echo ""
 
 # Step 1.7b: Install CPU Performance Governor Service

@@ -5,6 +5,15 @@
 MAX_WAIT=10
 WAITED=0
 
+# Resolve the magic user's UID once. Pi OS's first-user creation flow puts
+# the operator at UID 1000 by default, but a Pi cloned from a distro that
+# created a `pi` user first (or any non-default install order) can land
+# `magic` at UID 1001+. Hardcoding 1000 in the runtime-dir paths used to
+# break audio silently in those cases — XDG_RUNTIME_DIR points nowhere,
+# PulseAudio fails to start, kiosk boots to black screen with no audio.
+MAGIC_UID="$(id -u magic)"
+RUNTIME_DIR="/run/user/${MAGIC_UID}"
+
 # Enable systemd linger for the magic user. Without linger, systemd-logind
 # tears down /run/user/$UID whenever there's no active login session for
 # the user — which on a headless kiosk is "always". The teardown happens
@@ -50,15 +59,15 @@ sudo killall pulseaudio 2>/dev/null || true
 sleep 1
 
 # Ensure XDG_RUNTIME_DIR exists (may not exist on cold boot before user login)
-if [ ! -d "/run/user/1000" ]; then
-    echo "Creating /run/user/1000..."
-    sudo mkdir -p /run/user/1000
-    sudo chown magic:magic /run/user/1000
-    sudo chmod 700 /run/user/1000
+if [ ! -d "${RUNTIME_DIR}" ]; then
+    echo "Creating ${RUNTIME_DIR}..."
+    sudo mkdir -p "${RUNTIME_DIR}"
+    sudo chown magic:magic "${RUNTIME_DIR}"
+    sudo chmod 700 "${RUNTIME_DIR}"
 fi
 
 # Remove stale PulseAudio socket to prevent "Address already in use"
-rm -f /run/user/1000/pulse/native /run/user/1000/pulse/pid 2>/dev/null
+rm -f "${RUNTIME_DIR}/pulse/native" "${RUNTIME_DIR}/pulse/pid" 2>/dev/null
 
 echo "Waiting for HDMI audio card..."
 

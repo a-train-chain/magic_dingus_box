@@ -77,7 +77,8 @@ sudo usermod -a -G video,input $USER
   - `settings_persistence` - YAML settings storage
   - `sample_mode` - Sample/demo mode for kiosk auto-play
 - **`retroarch/`** - Game emulation
-  - `retroarch_launcher` - DRM/KMS handoff, per-core controller mapping, config generation, process lifecycle
+  - `retroarch_launcher` - DRM/KMS handoff, config generation (incl. video config via `write_video_config()`), process lifecycle. Per-core button mappings live here in two helper variants — `get_mapping_n64_adapter()` (USB N64-style adapter) and `get_mapping_ps_style()` (PlayStation-style pads); the dispatch goes through `get_mapping(ControllerType, core_name)`.
+  - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum) so the launcher knows which mapping helper to call. Split out of `retroarch_launcher` in v1.4.0.
 - **`utils/`** - Utilities
   - `config` - Centralized path configuration (base paths, RetroArch paths, save dirs)
   - `path_resolver` - Asset path resolution
@@ -131,11 +132,15 @@ Python: Flask (for web admin only)
 
 ## Playlist Format
 
-YAML files in `data/playlists/`. Two item types:
-- `source_type: video` - Video playback (path to video file)
+YAML files in `data/playlists/`. Item types accepted by the loader:
+- `source_type: local` - Local video file (default when `source_type` is absent)
+- `source_type: video` - Legacy alias for `local`; still accepted by the playback dispatch
+- `source_type: youtube` - YouTube URL
 - `source_type: emulated_game` - RetroArch game (path to ROM, `emulator_core`, `emulator_system`)
 
-See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema.
+Prefer `local` when authoring — that's the canonical default and what `playlist_loader` produces when serializing. The schema is enforced inline in `magic_dingus_box_cpp/src/app/playlist_loader.cpp`; no JSON Schema file is tracked.
+
+See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 
 ## Controls
 

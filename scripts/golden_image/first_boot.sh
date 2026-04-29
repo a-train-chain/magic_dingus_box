@@ -288,102 +288,111 @@ except Exception as e:
     print(f'could not reset: {e}', file=sys.stderr)
 " 2>&1 | sed 's/^/    /' || true
     log "[6/7] Reset media_browser_unlocked flag (cloned Pi starts locked)"
-
-    # Step 6c: Wipe inherited WiFi credentials.
-    #
-    # The source Pi was provisioned with the operator's home WiFi
-    # password (stored at /etc/NetworkManager/system-connections/
-    # *.nmconnection — readable only by root, but it IS persisted to
-    # the SD card and would be inherited by every clone). Whoever
-    # flashes this image onto a fresh Pi shouldn't auto-connect to
-    # the source operator's home network — both for privacy and
-    # because the credential won't even work in their location.
-    #
-    # The kiosk has a built-in Wi-Fi setup UI (Settings → Wi-Fi →
-    # Scan Networks → on-screen keyboard for passwords), so the
-    # cloned Pi's first-time operator can join their own network in
-    # ~30 seconds without ever needing SSH or HDMI keyboard.
-    #
-    # We delete the connection profile files; NetworkManager picks
-    # up the change automatically on its next reload. No need to
-    # restart NM here — Pi will boot, NM will start, find no saved
-    # profiles, sit idle until the operator sets one up.
-    NM_DIR="/etc/NetworkManager/system-connections"
-    if [[ -d "$NM_DIR" ]]; then
-        # Count what we're about to wipe (for the log).
-        nm_count=$(find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" \
-                       -type f 2>/dev/null | wc -l)
-        if [[ "$nm_count" -gt 0 ]]; then
-            find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" -type f \
-                 -delete 2>/dev/null || true
-            log "[6/7] Wiped $nm_count inherited WiFi profile(s) from $NM_DIR"
-        else
-            log "[6/7] No WiFi profiles to wipe (already clean)"
-        fi
-    fi
-
-    # Step 6d: Wipe inherited cloning-backup state.
-    #
-    # /var/lib/magic-dingus-box/cloning_backup/ is created by
-    # prepare_for_cloning.sh on the source Pi just before the dd snapshot.
-    # It contains:
-    #   - in_progress         (marker file — gates prepare_for_cloning's
-    #                          "is a clone already in flight?" check)
-    #   - hostname, hosts     (per-Pi identity to restore on the source
-    #                          after dd completes)
-    #   - device_info.json    (per-Pi identity restored on source)
-    #
-    # restore_after_cloning.sh deletes the MARKER on the source Pi but
-    # not the rest of the backup files, by design — the script's
-    # primary job is to put the source Pi back into normal state, and
-    # leaving the (now-stale) backup files around is harmless on the
-    # source.
-    #
-    # However the dd snapshot captures whatever is on disk DURING dd,
-    # which is mid-prepare — meaning the marker AND backup files are
-    # all baked into the cloned SD image. When the image flashes onto
-    # a fresh Pi, those leftover files travel with it. The marker in
-    # particular is poisonous: any future attempt to clone the new Pi
-    # (e.g., golden-image v2 from a customer's already-running box)
-    # bails out with "prepare-for-cloning marker already present" and
-    # the operator has to SSH in to manually clean it up.
-    #
-    # Wiping the entire cloning_backup/ here is safe because:
-    #   - On a fresh-flashed Pi, those files are leftovers from the
-    #     SOURCE's prepare/dd cycle — not anything the NEW Pi cares
-    #     about. The source's restore_after_cloning.sh has already
-    #     run by the time the operator flashes our image.
-    #   - The new Pi has its own fresh device identity (Step 3 above),
-    #     fresh hostname, fresh hosts entry. The backed-up "magicpi"
-    #     values aren't relevant.
-    BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
-    if [[ -d "$BACKUP_DIR" ]]; then
-        backup_count=$(find "$BACKUP_DIR" -mindepth 1 2>/dev/null | wc -l)
-        if [[ "$backup_count" -gt 0 ]]; then
-            find "$BACKUP_DIR" -mindepth 1 -delete 2>/dev/null || true
-            log "[6/7] Wiped $backup_count inherited cloning-backup file(s) from $BACKUP_DIR (prevents stale marker from blocking future re-clones)"
-        else
-            log "[6/7] cloning_backup/ already empty"
-        fi
-    fi
-
-    # NOTE on data/saves, data/states, data/media:
-    #
-    # These three directories are deliberately PRESERVED on cloned
-    # Pis. The Magic Dingus Box golden-image workflow ships a fully-
-    # curated "showcase" experience — the source operator's RetroArch
-    # saves, save states, and uploaded videos are part of the product
-    # the cloned Pi is meant to deliver. Every flashed Pi should boot
-    # into the same production-ready state the source Pi has.
-    #
-    # (v1.5.2 introduced a wipe block here; v1.5.3 reverted it after
-    # operator clarification that the golden image is meant to ship
-    # fully-loaded, not as a fresh-defaults starter image. If you want
-    # the wipe behavior for a clean redistribution image, use
-    # `prepare_golden_image.sh` on the source before cloning instead —
-    # that script intentionally wipes operator content with a clear
-    # destructive-action prompt.)
 fi
+
+# Step 6c and 6d run UNCONDITIONALLY — they are the most important
+# anti-leak steps for cloned Pis (inherited WiFi credentials and the
+# stale cloning-backup marker that blocks future re-clones). Previously
+# they were nested inside the python3-availability guard for Step 6b,
+# which meant a Pi missing python3 (or with the settings file already
+# absent) silently inherited the source operator's WiFi password and
+# kept the stale clone marker. Both are now top-level so they always
+# run regardless of python3 / settings.json state.
+
+# Step 6c: Wipe inherited WiFi credentials.
+#
+# The source Pi was provisioned with the operator's home WiFi
+# password (stored at /etc/NetworkManager/system-connections/
+# *.nmconnection — readable only by root, but it IS persisted to
+# the SD card and would be inherited by every clone). Whoever
+# flashes this image onto a fresh Pi shouldn't auto-connect to
+# the source operator's home network — both for privacy and
+# because the credential won't even work in their location.
+#
+# The kiosk has a built-in Wi-Fi setup UI (Settings → Wi-Fi →
+# Scan Networks → on-screen keyboard for passwords), so the
+# cloned Pi's first-time operator can join their own network in
+# ~30 seconds without ever needing SSH or HDMI keyboard.
+#
+# We delete the connection profile files; NetworkManager picks
+# up the change automatically on its next reload. No need to
+# restart NM here — Pi will boot, NM will start, find no saved
+# profiles, sit idle until the operator sets one up.
+NM_DIR="/etc/NetworkManager/system-connections"
+if [[ -d "$NM_DIR" ]]; then
+    # Count what we're about to wipe (for the log).
+    nm_count=$(find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" \
+                   -type f 2>/dev/null | wc -l)
+    if [[ "$nm_count" -gt 0 ]]; then
+        find "$NM_DIR" -maxdepth 1 -name "*.nmconnection" -type f \
+             -delete 2>/dev/null || true
+        log "[6/7] Wiped $nm_count inherited WiFi profile(s) from $NM_DIR"
+    else
+        log "[6/7] No WiFi profiles to wipe (already clean)"
+    fi
+fi
+
+# Step 6d: Wipe inherited cloning-backup state.
+#
+# /var/lib/magic-dingus-box/cloning_backup/ is created by
+# prepare_for_cloning.sh on the source Pi just before the dd snapshot.
+# It contains:
+#   - in_progress         (marker file — gates prepare_for_cloning's
+#                          "is a clone already in flight?" check)
+#   - hostname, hosts     (per-Pi identity to restore on the source
+#                          after dd completes)
+#   - device_info.json    (per-Pi identity restored on source)
+#
+# restore_after_cloning.sh deletes the MARKER on the source Pi but
+# not the rest of the backup files, by design — the script's
+# primary job is to put the source Pi back into normal state, and
+# leaving the (now-stale) backup files around is harmless on the
+# source.
+#
+# However the dd snapshot captures whatever is on disk DURING dd,
+# which is mid-prepare — meaning the marker AND backup files are
+# all baked into the cloned SD image. When the image flashes onto
+# a fresh Pi, those leftover files travel with it. The marker in
+# particular is poisonous: any future attempt to clone the new Pi
+# (e.g., golden-image v2 from a customer's already-running box)
+# bails out with "prepare-for-cloning marker already present" and
+# the operator has to SSH in to manually clean it up.
+#
+# Wiping the entire cloning_backup/ here is safe because:
+#   - On a fresh-flashed Pi, those files are leftovers from the
+#     SOURCE's prepare/dd cycle — not anything the NEW Pi cares
+#     about. The source's restore_after_cloning.sh has already
+#     run by the time the operator flashes our image.
+#   - The new Pi has its own fresh device identity (Step 3 above),
+#     fresh hostname, fresh hosts entry. The backed-up "magicpi"
+#     values aren't relevant.
+BACKUP_DIR="/var/lib/magic-dingus-box/cloning_backup"
+if [[ -d "$BACKUP_DIR" ]]; then
+    backup_count=$(find "$BACKUP_DIR" -mindepth 1 2>/dev/null | wc -l)
+    if [[ "$backup_count" -gt 0 ]]; then
+        find "$BACKUP_DIR" -mindepth 1 -delete 2>/dev/null || true
+        log "[6/7] Wiped $backup_count inherited cloning-backup file(s) from $BACKUP_DIR (prevents stale marker from blocking future re-clones)"
+    else
+        log "[6/7] cloning_backup/ already empty"
+    fi
+fi
+
+# NOTE on data/saves, data/states, data/media:
+#
+# These three directories are deliberately PRESERVED on cloned
+# Pis. The Magic Dingus Box golden-image workflow ships a fully-
+# curated "showcase" experience — the source operator's RetroArch
+# saves, save states, and uploaded videos are part of the product
+# the cloned Pi is meant to deliver. Every flashed Pi should boot
+# into the same production-ready state the source Pi has.
+#
+# (v1.5.2 introduced a wipe block here; v1.5.3 reverted it after
+# operator clarification that the golden image is meant to ship
+# fully-loaded, not as a fresh-defaults starter image. If you want
+# the wipe behavior for a clean redistribution image, use
+# `prepare_golden_image.sh` on the source before cloning instead —
+# that script intentionally wipes operator content with a clear
+# destructive-action prompt.)
 
 # ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)

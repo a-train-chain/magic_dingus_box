@@ -310,6 +310,15 @@ void GstRenderer::upload_frame(GstSample* sample) {
     GstStructure* s = gst_caps_get_structure(caps, 0);
     const gchar* format_str = gst_structure_get_string(s, "format");
 
+    // gst_structure_get_string returns nullptr if the field is absent.
+    // Caps renegotiation mid-stream and passthrough elements can produce
+    // caps without a "format" field — passing nullptr to spdlog or strcmp
+    // below is a segfault. Skip the frame instead.
+    if (!format_str) {
+        LOG_WARN("GstRenderer: caps missing 'format' field; skipping frame");
+        return;
+    }
+
     LOG_DEBUG("GstRenderer: Processing frame format={}", format_str);
 
     int w, h;

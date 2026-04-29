@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <sstream>
 #include <vector>
 #include <deque>
 #include <cstdint>
@@ -20,11 +21,14 @@ enum class DisplayMode {
     MODERN_TV     // 4:3 centered with bezel overlay
 };
 
-// Audio output enumeration (Pi 4B supports HDMI and 3.5mm headphone jack)
+// Audio output enumeration (Pi 4B supports HDMI and 3.5mm headphone jack).
+// Routing happens via PulseAudio, NOT the old ALSA `amixer numid=3` method —
+// see apply_output() below. AUTO and HDMI both map to the HDMI sink today;
+// HEADPHONE maps to the bcm2835 mailbox (3.5mm jack) sink.
 enum class AudioOutput {
-    AUTO,       // Let system decide (amixer numid=3 value 0)
-    HDMI,       // HDMI audio output (amixer numid=3 value 2)
-    HEADPHONE   // 3.5mm headphone jack (amixer numid=3 value 1)
+    AUTO,       // PulseAudio default sink + active stream move (defaults to HDMI)
+    HDMI,       // alsa_output.platform-fef00700.hdmi.hdmi-stereo
+    HEADPHONE   // alsa_output.platform-fe00b840.mailbox.stereo-fallback
 };
 
 #ifdef MEDIA_BROWSER_ENABLED
@@ -354,7 +358,7 @@ public:
                 sink_name = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
             }
 
-            // Set default sink via fork/execvp
+            // Set default sink via fork/execlp.
             pid_t pid = fork();
             if (pid == 0) {
                 int devnull = open("/dev/null", O_WRONLY);
@@ -364,16 +368,56 @@ public:
             }
             if (pid > 0) { int s; waitpid(pid, &s, 0); }
 
-            // Move active streams - needs shell for pipeline, but sink_name is a hardcoded constant (not user input)
-            std::string move_streams = "for i in $(pactl list short sink-inputs 2>/dev/null | cut -f1); do pactl move-sink-input $i " + sink_name + " 2>/dev/null; done";
-            pid_t pid2 = fork();
-            if (pid2 == 0) {
+            // Move active streams to the new sink. Previously this used
+            // /bin/sh -c with sink_name interpolated into a pipeline — safe
+            // today (sink_name is a hardcoded constant) but a shell-injection
+            // landmine if sink_name ever becomes user-derived. Now: enumerate
+            // sink-input IDs via pactl with a pipe(2)-captured stdout, then
+            // execlp pactl move-sink-input directly per ID. No shell anywhere.
+            int pipefd[2];
+            if (pipe(pipefd) != 0) return;
+            pid_t list_pid = fork();
+            if (list_pid == 0) {
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
                 int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execl("/bin/sh", "sh", "-c", move_streams.c_str(), nullptr);
+                if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+                close(pipefd[1]);
+                execlp("pactl", "pactl", "list", "short", "sink-inputs", nullptr);
                 _exit(127);
             }
-            if (pid2 > 0) { int s; waitpid(pid2, &s, 0); }
+            close(pipefd[1]);
+            std::string list_out;
+            if (list_pid > 0) {
+                char buf[256];
+                ssize_t n;
+                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                    list_out.append(buf, static_cast<size_t>(n));
+                }
+                int s;
+                waitpid(list_pid, &s, 0);
+            }
+            close(pipefd[0]);
+
+            // Each line is "<id>\t<sink>\t..." — extract the leading numeric ID.
+            std::istringstream iss(list_out);
+            std::string line;
+            while (std::getline(iss, line)) {
+                std::string id;
+                for (char c : line) {
+                    if (c >= '0' && c <= '9') id += c;
+                    else break;
+                }
+                if (id.empty()) continue;
+                pid_t mv_pid = fork();
+                if (mv_pid == 0) {
+                    int devnull = open("/dev/null", O_WRONLY);
+                    if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+                    execlp("pactl", "pactl", "move-sink-input", id.c_str(), sink_name.c_str(), nullptr);
+                    _exit(127);
+                }
+                if (mv_pid > 0) { int s; waitpid(mv_pid, &s, 0); }
+            }
         }
         
         // Get volume offset label for display

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, request, send_file, send_from_directory
 
 
 # ===== SYSTEM MONITORING HELPERS =====
@@ -256,7 +256,14 @@ def _generate_csrf_token() -> str:
 
 
 def _validate_csrf_token(token: str | None) -> bool:
-    """Validate a CSRF token."""
+    """Validate a CSRF token.
+
+    Tokens expire after 1 hour but are NOT single-use — the frontend
+    fetches one token at app load and reuses it across all state-changing
+    requests for the session. Per-request rotation would require frontend
+    work to refetch before each request; for the LAN-only single-operator
+    kiosk threat model the expiry-based scheme is adequate.
+    """
     if not token:
         return False
     _cleanup_expired_tokens()
@@ -823,7 +830,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @app.get("/admin/playlists/<name>")
     def get_playlist(name):  # type: ignore[no-redef]
         """Get full playlist content for editing."""
-        p = playlists_dir / name
+        try:
+            safe_name = _sanitize_filename(name, allowed_extensions=['.yaml', '.yml'])
+        except ValueError as e:
+            return error_response("VALIDATION_ERROR", str(e))
+
+        p = playlists_dir / safe_name
+        # Containment check matching the DELETE handler — defends against any
+        # path-traversal that survived _sanitize_filename (symlinks, etc.).
+        p_resolved = p.resolve()
+        playlists_dir_resolved = playlists_dir.resolve()
+        if not str(p_resolved).startswith(str(playlists_dir_resolved)):
+            return error_response("VALIDATION_ERROR", "Invalid path")
+
         if not p.exists():
             return error_response("NOT_FOUND", f"Playlist '{name}' not found", status=404)
 
@@ -1225,7 +1244,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         if not safe_filename:
                             continue
 
-                        # Check declared size before extracting
+                        # Check declared size as a cheap pre-check, but DO NOT
+                        # rely on it — `info.file_size` is attacker-controlled
+                        # in a crafted ZIP and can be set to 0 to bypass the
+                        # quota. Real enforcement happens during streaming
+                        # below by counting bytes actually written.
                         info = zf.getinfo(media_file)
                         if total_extracted + info.file_size > MAX_EXTRACT_BYTES:
                             return error_response(
@@ -1244,11 +1267,39 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # Extract to media directory
                         media_dir.mkdir(parents=True, exist_ok=True)
 
-                        # Stream extraction to disk to avoid MemoryError on large files
-                        with zf.open(media_file) as src, open(output_path, 'wb') as dst:
-                            shutil.copyfileobj(src, dst)
+                        # Stream extraction with a hard byte cap. Aborts and
+                        # deletes the partial file if any single entry would
+                        # push us past MAX_EXTRACT_BYTES — defends against ZIP
+                        # bombs that lie in the central directory's file_size.
+                        actual_written = 0
+                        remaining = MAX_EXTRACT_BYTES - total_extracted
+                        try:
+                            with zf.open(media_file) as src, open(output_path, 'wb') as dst:
+                                while True:
+                                    chunk = src.read(64 * 1024)
+                                    if not chunk:
+                                        break
+                                    actual_written += len(chunk)
+                                    if actual_written > remaining:
+                                        dst.close()
+                                        try:
+                                            output_path.unlink()
+                                        except OSError:
+                                            pass
+                                        return error_response(
+                                            "VALIDATION_ERROR",
+                                            f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
+                                            status=413
+                                        )
+                                    dst.write(chunk)
+                        except Exception:
+                            try:
+                                output_path.unlink()
+                            except OSError:
+                                pass
+                            raise
 
-                        total_extracted += info.file_size
+                        total_extracted += actual_written
                         videos_imported += 1
 
                 # Update playlist paths to use sanitized filenames (matching what we saved)
@@ -1390,6 +1441,35 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
+
+    # TTL for completed/errored jobs in any of the three job dicts. Without
+    # eviction, a long-running kiosk that sees repeated upload/update/MB
+    # operations accumulates entries indefinitely. Pruned opportunistically
+    # at the start of each job-creating route — no background thread needed.
+    _JOB_RETENTION_SECONDS = 3600  # 1 hour after terminal state
+
+    def _prune_terminal_jobs(jobs_dict: dict) -> None:
+        """Remove jobs in a terminal state older than _JOB_RETENTION_SECONDS.
+
+        Uses the `_pruner_ts` field (numeric epoch, set at each job-creation
+        site for prune-tracking purposes; intentionally separate from the
+        existing user-facing `started_at` strings so we don't break their
+        ISO-8601 contract). Jobs without `_pruner_ts` are kept forever — by
+        design, since adding the field is opt-in at each call site."""
+        cutoff = time.time() - _JOB_RETENTION_SECONDS
+        terminal_states = {"complete", "completed", "error", "failed", "cancelled", "canceled"}
+        stale = []
+        for jid, job in jobs_dict.items():
+            if not isinstance(job, dict):
+                continue
+            status = str(job.get("status", "")).lower()
+            if status not in terminal_states:
+                continue
+            ts = job.get("_pruner_ts")
+            if isinstance(ts, (int, float)) and ts < cutoff:
+                stale.append(jid)
+        for jid in stale:
+            jobs_dict.pop(jid, None)
 
     def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False):
         """Background thread function to run FFmpeg transcoding."""
@@ -1546,13 +1626,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Save uploaded file
         f.save(str(temp_input))
 
-        # Initialize job
+        # Initialize job (prune stale terminal-state entries first)
+        _prune_terminal_jobs(transcode_jobs)
         transcode_jobs[job_id] = {
             'status': 'pending',
             'progress': 0,
             'message': 'Upload complete, starting transcode...',
             'output_path': None,
             'output_filename': output_name,
+            '_pruner_ts': time.time(),
         }
 
         # Start transcoding in background thread. Pass normalize_audio
@@ -1738,13 +1820,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 output_path = media_dir / output_name
                 counter += 1
 
-            # Initialize job
+            # Initialize job (prune stale terminal-state entries first)
+            _prune_terminal_jobs(transcode_jobs)
             transcode_jobs[job_id] = {
                 'status': 'pending',
                 'progress': 0,
                 'message': 'Starting transcode...',
                 'output_path': None,
                 'output_filename': output_name,
+                '_pruner_ts': time.time(),
             }
 
             # Start transcoding in background thread. normalize_audio
@@ -2002,7 +2086,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not download_url.startswith("https://github.com/") and not download_url.startswith("https://api.github.com/"):
             return error_response("VALIDATION_ERROR", "Invalid download URL (must be from GitHub)")
 
-        # Create job
+        # Create job (prune stale terminal-state entries first)
+        _prune_terminal_jobs(update_jobs)
         job_id = str(uuid.uuid4())
         update_jobs[job_id] = {
             'status': 'running',
@@ -2010,7 +2095,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             'progress': 0,
             'message': 'Starting update...',
             'version': version,
-            'new_version': None
+            'new_version': None,
+            '_pruner_ts': time.time(),
         }
 
         # Start update in background thread
@@ -2410,6 +2496,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             )
 
         # Start the long-running setup script in a background thread
+        # (prune stale terminal-state entries first)
+        _prune_terminal_jobs(media_browser_jobs)
         job_id = str(uuid.uuid4())
         media_browser_jobs[job_id] = {
             "status": "running",
@@ -2418,6 +2506,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "started_at": datetime.now().isoformat(),
             "started_ts": time.time(),
             "process": None,
+            "_pruner_ts": time.time(),
         }
         thread = threading.Thread(
             target=_run_media_browser_setup_job, args=(job_id,), daemon=True
@@ -2569,11 +2658,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
         cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
         cookie_jar.close()
         try:
+            # Pass credentials via stdin (-d @-) instead of argv to avoid
+            # leaking the password into /proc/<pid>/cmdline, where any local
+            # process can read it.
             login = subprocess.run(
                 ["curl", "-sS", "--max-time", "5",
                  "-c", cookie_jar.name,
-                 "-d", f"username={username}&password={password}",
+                 "-d", "@-",
                  "http://localhost:8080/api/v2/auth/login"],
+                input=f"username={username}&password={password}",
                 capture_output=True, text=True, timeout=6,
             )
             if login.returncode != 0 or "Ok." not in (login.stdout or ""):
@@ -2609,11 +2702,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
         cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
         cookie_jar.close()
         try:
+            # Credentials via stdin — see _qbit_torrent_summary for rationale.
             login = subprocess.run(
                 ["curl", "-sS", "--max-time", "5",
                  "-c", cookie_jar.name,
-                 "-d", f"username={username}&password={password}",
+                 "-d", "@-",
                  "http://localhost:8080/api/v2/auth/login"],
+                input=f"username={username}&password={password}",
                 capture_output=True, text=True, timeout=6,
             )
             if login.returncode != 0 or "Ok." not in (login.stdout or ""):
@@ -2857,9 +2952,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     @app.route("/static/<path:filename>")
     def serve_static(filename):  # type: ignore[no-redef]
-        """Serve static assets."""
+        """Serve static assets.
+
+        Use send_from_directory (not send_file with `static_dir / filename`)
+        so Flask's safe_join enforces containment — without it, a request
+        like /static/../../config/settings.json escapes the static dir and
+        discloses arbitrary process-readable files.
+        """
         static_dir = Path(__file__).parent / "static"
-        return send_file(static_dir / filename)
+        return send_from_directory(static_dir, filename)
 
     return app
 

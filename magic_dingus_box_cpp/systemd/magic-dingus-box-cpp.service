@@ -6,6 +6,11 @@ Wants=network-online.target sound.target
 Before=graphical.target lightdm.service
 # Don't require X11 - we bypass it entirely
 Conflicts=lightdm.service
+# Restart-rate limiting (these belong in [Unit], not [Service] — systemd
+# accepts them in [Service] silently in some versions but logs an
+# "Unknown key" warning on every daemon-reload).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
@@ -19,12 +24,18 @@ WorkingDirectory=/opt/magic_dingus_box/magic_dingus_box_cpp/build
 ExecStartPre=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/init_audio.sh
 ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp
 ExecStopPost=/usr/bin/pulseaudio --kill
-# Don't restart automatically - we handle restarts manually for RetroArch integration
-# Restart=on-failure
-# RestartSec=5
-# Give service time to start properly on boot
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# Restart policy:
+#   - on-failure: covers segfaults, asserts, and watchdog timeouts. RetroArch
+#     integration is unaffected — the kiosk waitpid()'s on RetroArch and
+#     returns through normal control flow, so a clean exit (status 0 / 75)
+#     is not a "failure" and won't trigger a restart loop.
+#   - WatchdogSec=10 is still the primary "frozen render loop" trigger; the
+#     watchdog timing out is itself classified as a failure, so restarting
+#     on-failure handles both cases with one rule.
+#   - StartLimitBurst caps how often we try (5 attempts in 5 minutes) so a
+#     repeatedly-crashing build doesn't churn forever.
+Restart=on-failure
+RestartSec=5
 # Standard output/error logging
 StandardOutput=journal
 StandardError=journal
@@ -37,7 +48,6 @@ KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5
 WatchdogSec=10
-Restart=on-watchdog
 
 [Install]
 # Start at multi-user target (before X11)

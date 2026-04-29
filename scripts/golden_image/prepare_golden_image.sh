@@ -572,9 +572,11 @@ else
     check_fail "PS1 BIOS missing: ${RETROARCH_DIR}/system/scph5501.bin"
 fi
 
-# Video playlists removed
+# Video playlists removed (the array is named LEGACY_PLAYLISTS — earlier
+# typo `VIDEO_PLAYLISTS` here expanded to empty so the loop never executed
+# and the check always reported PASS regardless of actual state).
 video_pl_remaining=0
-for pl in "${VIDEO_PLAYLISTS[@]}"; do
+for pl in "${LEGACY_PLAYLISTS[@]}"; do
     if [[ -f "${DATA_DIR}/playlists/${pl}" ]]; then
         ((video_pl_remaining++)) || true
     fi

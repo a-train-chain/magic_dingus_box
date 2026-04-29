@@ -151,7 +151,11 @@ services:
     restart: unless-stopped
 
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    # Pinned (matching this file's "all images pinned for reproducibility"
+    # invariant) — :latest would silently pull a new build on `docker
+    # compose pull` and could break Prowlarr's Cloudflare-bypass integration
+    # if the API changes between versions. Bump deliberately, in a commit.
+    image: ghcr.io/flaresolverr/flaresolverr:v3.4.6
     container_name: mdb_flaresolverr
     # Explicit DNS: see Radarr rationale above.
     dns:

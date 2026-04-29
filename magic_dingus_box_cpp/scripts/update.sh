@@ -111,11 +111,11 @@ run_build() {
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    if ! cmake .. > /dev/null 2>&2; then
+    if ! cmake .. > /dev/null 2>&1; then
         return 1
     fi
 
-    if ! make -j2 2>&2; then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
+    if ! make -j2 2>&1; then    # Reduced to prevent OOM on Pi 4B (1.5GB RAM)
         return 1
     fi
 

@@ -37,13 +37,18 @@ bool WifiManager::initialize() {
 }
 
 void WifiManager::scan_networks_async() {
-    if (is_scanning_) {
+    // Atomically claim the scanning slot. The previous check-then-set
+    // pattern (`if (is_scanning_) return; is_scanning_ = true;`) had a
+    // window where two rapid callers could both observe false and each
+    // spawn a detached thread, doubling up nmcli rescans and racing on
+    // scan_results_ writes.
+    bool expected = false;
+    if (!is_scanning_.compare_exchange_strong(expected, true)) {
         std::cout << "WifiManager: Scan already in progress" << std::endl;
         return;
     }
 
     std::cout << "WifiManager: Starting async scan..." << std::endl;
-    is_scanning_ = true;
     std::thread([this]() {
         // Two-phase scan. The previous single-call form
         //   `nmcli dev wifi list --rescan yes`
@@ -100,7 +105,9 @@ std::vector<WifiNetwork> WifiManager::get_scan_results() {
 }
 
 void WifiManager::connect_async(const std::string& ssid, const std::string& password) {
-    if (is_connecting_) return;
+    // Atomic claim — see scan_networks_async() for rationale on CAS.
+    bool expected = false;
+    if (!is_connecting_.compare_exchange_strong(expected, true)) return;
 
     // Capture the target SSID so the UI can render "Connecting to <SSID>..."
     // immediately, before the worker thread even fires off nmcli. Cleared at
@@ -109,7 +116,6 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
         std::lock_guard<std::mutex> lock(error_mutex_);
         connecting_ssid_ = ssid;
     }
-    is_connecting_ = true;
     connection_result_ = ConnectionResult::IN_PROGRESS;
 
     std::thread([this, ssid, password]() {

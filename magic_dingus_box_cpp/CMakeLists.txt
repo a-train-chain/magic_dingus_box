@@ -34,6 +34,16 @@ else()
 endif()
 option(BUILD_KIOSK "Build the kiosk executable (requires Linux kiosk deps)" ${BUILD_KIOSK_DEFAULT})
 
+# Declare ENABLE_MEDIA_BROWSER up here, BEFORE any source-list block uses it.
+# Previously this option() was declared near line 268 (next to the
+# MEDIA_BROWSER_SOURCES block) but the if(ENABLE_MEDIA_BROWSER) gates at
+# lines ~88, ~109, and ~146 fired earlier in CMake's parse-time evaluation.
+# Behavior was masked by CMake's cache (a -DENABLE_MEDIA_BROWSER=ON command
+# line stored a cache entry that survived re-runs), but a fresh cmake-gui
+# session or a clean cache silently dropped sequence_detector.cpp and
+# toast.cpp from the build even when the flag was set.
+option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
+
 if(BUILD_KIOSK)
     # DRM/KMS, GBM, EGL, OpenGL ES
     pkg_check_modules(DRM REQUIRED libdrm)
@@ -215,6 +225,16 @@ if(BUILD_KIOSK)
         -Wpedantic
     )
 
+    # Suppress -Wdangling-reference noise from spdlog/fmt (GCC 13+ flags
+    # internal arg_mapper template instantiations as having dangling refs
+    # — false positive in upstream code, drowns out 70+ lines per build
+    # and hides real warnings). This is GCC-only; Clang doesn't emit the
+    # warning. Apply at the kiosk-target level so it propagates to all
+    # spdlog usage without affecting our own code's warning visibility.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
+        target_compile_options(magic_dingus_box_cpp PRIVATE -Wno-dangling-reference)
+    endif()
+
     # Link filesystem library for GCC < 9 (std::filesystem is built-in for GCC 9+)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
         target_link_libraries(magic_dingus_box_cpp stdc++fs)
@@ -264,8 +284,10 @@ endif()
 # Media Browser feature (Phase 1+) — disabled by default.
 # When ON, builds libtorrent-backed movie/TV browser scaffolding
 # and a standalone test_media_browser executable.
+# Note: option() is declared at the top of the file (next to
+# BUILD_KIOSK) so the if(ENABLE_MEDIA_BROWSER) gates earlier in
+# the file see the flag. Don't move it back here.
 # ============================================================
-option(ENABLE_MEDIA_BROWSER "Build experimental Media Browser feature" OFF)
 
 if(ENABLE_MEDIA_BROWSER)
     message(STATUS "Media Browser: ENABLED")

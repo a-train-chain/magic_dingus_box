@@ -59,10 +59,25 @@ else
     exit 1
 fi
 
+# Three cases to handle correctly (the kernel only honors ONE
+# modules-load= parameter — appending a second silently shadows the first):
+#   1. Exact match already present (dwc2,g_ether) → no-op
+#   2. Some other modules-load= already present → merge our modules into it
+#   3. No modules-load= at all → insert one after rootwait
 if grep -q "modules-load=dwc2,g_ether" "$CMDLINE_TXT"; then
     echo "  ✓ modules-load already configured in cmdline.txt"
+elif grep -q "modules-load=" "$CMDLINE_TXT"; then
+    # Merge into existing parameter — sed's regex match captures the
+    # comma-separated list, then we append ours if missing.
+    if ! grep -q "modules-load=[^ ]*dwc2" "$CMDLINE_TXT"; then
+        sed -i 's/\(modules-load=[^ ]*\)/\1,dwc2/' "$CMDLINE_TXT"
+    fi
+    if ! grep -q "modules-load=[^ ]*g_ether" "$CMDLINE_TXT"; then
+        sed -i 's/\(modules-load=[^ ]*\)/\1,g_ether/' "$CMDLINE_TXT"
+    fi
+    echo "  ✓ Merged dwc2,g_ether into existing modules-load= parameter"
 else
-    # Add modules-load after rootwait
+    # Insert new parameter after rootwait
     sed -i 's/rootwait/rootwait modules-load=dwc2,g_ether/' "$CMDLINE_TXT"
     echo "  ✓ Added modules-load=dwc2,g_ether to cmdline.txt"
 fi
