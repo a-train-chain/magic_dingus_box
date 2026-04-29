@@ -25,6 +25,43 @@ namespace fs = std::filesystem;
 namespace retroarch {
 
 namespace {
+    // Escape a string for safe embedding inside a SINGLE-QUOTED shell context.
+    //
+    // Use this for any C++ value that ends up between single quotes in a
+    // shell command emitted by the launcher script — for example:
+    //
+    //   script_file << "echo 'Core: " << shell_sq_escape(core_name)
+    //               << "' >> /tmp/log\n";
+    //
+    // The result becomes literal '<value>' in the shell, with embedded single
+    // quotes correctly escaped via the canonical close-quote/escape/reopen
+    // pattern: ' → '\''. Backslashes, $, backticks, and double quotes survive
+    // unchanged because the surrounding single quotes prevent shell expansion.
+    //
+    // This is NOT needed for values written inside `cat > ... << 'EOF' ... EOF`
+    // heredoc bodies — the single-quoted delimiter makes those literal already.
+    // It IS needed anywhere a value is emitted in the launcher script outside
+    // a single-quoted heredoc: shell echo statements, `mkdir -p "$path"`,
+    // anywhere bash actually evaluates the line.
+    //
+    // INVARIANT: any C++ value embedded in shell context that could contain
+    // operator-controlled input (ROM titles, paths, custom names) MUST go
+    // through this helper. Values that are programmatic identifiers
+    // (core_name like "pcsx_rearmed_libretro", static map names) are safe in
+    // practice but routed through this helper anyway as defense-in-depth.
+    std::string shell_sq_escape(const std::string& s) {
+        std::string out;
+        out.reserve(s.size() + 8);
+        for (char c : s) {
+            if (c == '\'') {
+                out += "'\\''";
+            } else {
+                out += c;
+            }
+        }
+        return out;
+    }
+
     struct ControllerMapping {
         // Metadata
         std::string name = "Default";
@@ -579,10 +616,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "mkdir -p \"$HOME/.config/retroarch\"\n";
             script_file << "mkdir -p \"/tmp/empty_autoconfig\"\n";
             
-            // Create save directories
+            // Create save directories. Paths come from config::retroarch::*()
+            // which are programmatic but may contain spaces (e.g., MAGIC_DATA_DIR
+            // pointing under "magic_dingus_box /" with the trailing-space quirk).
+            // Single-quote-wrap with shell_sq_escape so the path is literal.
             script_file << "# Create save directories for game progress persistence\n";
-            script_file << "mkdir -p \"" << config::retroarch::get_saves_dir() << "\"\n";
-            script_file << "mkdir -p \"" << config::retroarch::get_states_dir() << "\"\n";
+            script_file << "mkdir -p '" << shell_sq_escape(config::retroarch::get_saves_dir()) << "'\n";
+            script_file << "mkdir -p '" << shell_sq_escape(config::retroarch::get_states_dir()) << "'\n";
             
             // No backup needed - using isolated temp config in /tmp
 
@@ -669,13 +709,16 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Service name already obtained above
 
             script_file << "echo \"$(date): Launcher: Starting RetroArch launcher script\" >> /tmp/retroarch_launcher.log\n";
-            script_file << "echo \"$(date): Launcher: Detected ALSA device: " << alsa_device << "\" >> /tmp/retroarch_launcher.log\n";
+            // Use printf with separate %s args to keep $(date) evaluating at run
+            // time while keeping alsa_device (and any other interpolated value)
+            // hermetically sealed against $/`/" expansion.
+            script_file << "printf '%s: Launcher: Detected ALSA device: %s\\n' \"$(date)\" '" << shell_sq_escape(alsa_device) << "' >> /tmp/retroarch_launcher.log\n";
             script_file << "echo \"$(date): Launcher: GStreamer cleanup completed\" >> /tmp/retroarch_launcher.log\n";
             script_file << "# Running in background of main service - DRM master already dropped\n";
             script_file << "echo 'Launcher: Preparing to launch RetroArch...'\n";
             script_file << "echo 'Launcher: DRM master access already dropped by main service, launching RetroArch...'\n";
             script_file << "echo 'Launcher: Creating RetroArch config...'\n";
-            script_file << "echo 'Launcher: ALSA device: " << alsa_device << "'\n";
+            script_file << "echo 'Launcher: ALSA device: " << shell_sq_escape(alsa_device) << "'\n";
             script_file << "echo 'Launcher: aplay -l output:' >> /tmp/retroarch_launcher.log\n";
             script_file << "aplay -l >> /tmp/retroarch_launcher.log 2>&1 || true\n";
             
@@ -842,13 +885,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "pause_nonactive = \"false\"\n";
             
             // Trojan Horse moved to after EOF
-            script_file << "echo 'Launcher: Core name is " << core_name << "' >> /tmp/retroarch_launcher.log\n";
-            
+            script_file << "echo 'Launcher: Core name is " << shell_sq_escape(core_name) << "' >> /tmp/retroarch_launcher.log\n";
+
             // 2. Dispatch to the per-controller mapping (controller_type detected earlier)
             ControllerMapping map = get_mapping(controller_type, core_name);
-            
+
+            // map.name is a hardcoded string in get_mapping_*() helpers, but
+            // route through shell_sq_escape anyway as defense-in-depth.
             script_file << "# === Controller Mapping: " << map.name << " ===\n";
-            script_file << "echo 'Launcher: Applying controller mapping for: " << map.name << "' >> /tmp/retroarch_launcher.log\n";
+            script_file << "echo 'Launcher: Applying controller mapping for: " << shell_sq_escape(map.name) << "' >> /tmp/retroarch_launcher.log\n";
             
             // 2. Apply Settings
             script_file << "input_player1_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
@@ -1207,12 +1252,14 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "#!/bin/bash\n";
             script_file << "set -e\n";  // Exit on any error
             script_file << "echo \"$(date): Downloader: Starting RetroArch downloader script\" >> /tmp/retroarch_launcher.log\n";
-            script_file << "echo \"$(date): Downloader: Detected ALSA device: " << alsa_device << "\" >> /tmp/retroarch_launcher.log\n";
+            // printf form keeps $(date) live while shell_sq_escape'ing the value.
+            // See the launcher path above for the full rationale.
+            script_file << "printf '%s: Downloader: Detected ALSA device: %s\\n' \"$(date)\" '" << shell_sq_escape(alsa_device) << "' >> /tmp/retroarch_launcher.log\n";
             script_file << "echo \"$(date): Downloader: GStreamer cleanup completed\" >> /tmp/retroarch_launcher.log\n";
             script_file << "echo 'Downloader: Waiting for main app cleanup...'\n";
             script_file << "sleep 3\n";  // Wait for main app to fully exit and clean up DRM resources
             script_file << "echo 'Downloader: Creating RetroArch config...'\n";
-            script_file << "echo 'Downloader: ALSA device: " << alsa_device << "'\n";
+            script_file << "echo 'Downloader: ALSA device: " << shell_sq_escape(alsa_device) << "'\n";
             script_file << "echo 'Downloader: aplay -l output:' >> /tmp/retroarch_launcher.log\n";
             script_file << "aplay -l >> /tmp/retroarch_launcher.log 2>&1 || true\n";
             script_file << "cat > /tmp/retroarch_launcher.cfg << 'EOF'\n";
