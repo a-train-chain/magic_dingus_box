@@ -63,8 +63,9 @@ private:
     std::atomic<double> duration_;
     std::atomic<double> position_;
     
-    // Bus watch
-    guint bus_watch_id_;
+    // Bus message dispatcher. Called from update_state()'s polling drain
+    // (NOT registered with gst_bus_add_watch — see gst_player.cpp::update_state
+    // for the rationale on why we poll instead of using GLib watches).
     static gboolean bus_call(GstBus* bus, GstMessage* msg, gpointer data);
 
     // Deferred decoder inspection (counts down frames after playback starts)

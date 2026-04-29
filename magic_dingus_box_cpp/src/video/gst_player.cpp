@@ -18,7 +18,6 @@ GstPlayer::GstPlayer()
     , is_paused_(false)
     , duration_(0.0)
     , position_(0.0)
-    , bus_watch_id_(0)
     , decoder_inspect_frames_(0)
 {
 }
@@ -209,12 +208,11 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     // Set the sink bin as playbin's video-sink (playbin takes ownership)
     g_object_set(G_OBJECT(playbin.get()), "video-sink", video_sink_bin.release(), nullptr);
 
-    // Add bus watch
-    auto bus = get_bus(playbin.get());
-    if (bus) {
-        bus_watch_id_ = gst_bus_add_watch(bus.get(), bus_call, this);
-        // bus is auto-released by RAII
-    }
+    // No gst_bus_add_watch — that requires a running GLib main loop, which
+    // the kiosk doesn't have. Bus messages (EOS / ERROR / state-changed /
+    // duration-changed / QoS) are drained from update_state() each frame
+    // via gst_bus_pop, then dispatched through bus_call(). See update_state()
+    // for the polling site and the rationale block there.
 
     // Transfer ownership to class members
     playbin_ = playbin.release();
@@ -547,6 +545,27 @@ double GstPlayer::get_volume() const {
 void GstPlayer::update_state() {
     if (!initialized_ || !pipeline_) return;
 
+    // Drain the GStreamer bus. Historically we used gst_bus_add_watch, which
+    // dispatches messages via the default GLib main context. The kiosk has
+    // no g_main_loop_run on the render thread, so the watch never fired and
+    // EOS / ERROR / state-changed / duration-changed messages were silently
+    // swallowed — symptoms included intro EOS callbacks not firing on the
+    // bus path (the controller compensated via position polling) and
+    // mid-playback errors logging nothing. Polling here every frame on the
+    // render thread delivers all the same messages without needing a main
+    // loop. The bus_call() handler is unchanged; it's just dispatched from
+    // a polling site now instead of GLib's watch system.
+    GstBus* bus = gst_element_get_bus(pipeline_);
+    if (bus) {
+        GstMessage* msg;
+        while ((msg = gst_bus_pop(bus)) != nullptr) {
+            // bus_call returns gboolean for GLib main-loop convention; ignored here.
+            (void)bus_call(bus, msg, this);
+            gst_message_unref(msg);
+        }
+        gst_object_unref(bus);
+    }
+
     // Poll current pipeline state (non-blocking to avoid stalling render loop)
     GstState current_state, pending_state;
     GstStateChangeReturn ret = gst_element_get_state(pipeline_, &current_state, &pending_state, 0);
@@ -653,10 +672,10 @@ void GstPlayer::set_audio_device(const std::string& pulse_device) {
 }
 
 void GstPlayer::cleanup() {
-    if (bus_watch_id_ > 0) {
-        g_source_remove(bus_watch_id_);
-        bus_watch_id_ = 0;
-    }
+    // No bus watch to remove — bus messages are now drained via polling
+    // in update_state(). When the render loop stops calling update_state(),
+    // any remaining bus messages will be dropped with the bus when the
+    // pipeline is set to GST_STATE_NULL below.
     if (pipeline_) {
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
