@@ -5,9 +5,20 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.4] - 2026-04-29
 
-Pre-1.6 hardening pass: a multi-domain audit of the merged-in v1.5.x feature work surfaced 28 findings; 23 were addressed in the initial hardening commit + deploy-fix, and a follow-up sweep tackled 4 of the 5 originally-deferred items (only #5 — the manager.js inline-onclick → data-attr refactor — remains, since it's a multi-day frontend hygiene project that deserves its own dedicated effort, likely alongside the upcoming Media Browser UI redesign).
+Pre-1.6 hardening release. A multi-domain audit of the merged-in v1.5.x feature work surfaced 28 findings; 23 were addressed in the initial hardening commit + deploy-fix, and a follow-up sweep tackled 4 of the 5 originally-deferred items (only #5 — the `manager.js` inline-onclick → data-attr refactor — remains, since it's a multi-day frontend hygiene project best done alongside the upcoming Media Browser UI redesign).
+
+### Why this release
+
+Before pivoting to the next feature cycle (Media Browser UI redesign + new playlist UX), v1.5.x got a thorough hygiene pass: every confirmed bug and security exposure that surfaced during the audit landed in main, with full Pi runtime smoke-tests after each change. v1.5.4 is the "shipping-clean baseline" before new feature work begins. No new user-facing functionality; pure correctness, security, and infrastructure hardening.
+
+### OTA upgrade path
+
+Operators on v1.5.x will OTA forward to v1.5.4 directly via the standard `update.sh` flow. The fix to `update.sh`'s build-error handling (the `2>&2` → `2>&1` typo) is in this release, so v1.5.4 is the **last release where a failed OTA build silently produces a black-screen Pi** — operators currently running v1.5.0–v1.5.3 will get diagnostic output on any future OTA build failure once they're on v1.5.4. Recovery from a black-screen Pi mid-OTA still requires manual SSH on the source version; v1.5.4 prevents the next occurrence rather than fixing already-broken Pis.
+
+The `setup_services.sh` chown fix is consequential for any operator provisioning Media Browser **on a fresh Pi for the first time** post-v1.5.4 — Docker container writes to `/mnt/ssd` actually work now. Operators with existing Media Browser stacks won't notice (their `/mnt/ssd` was set up before the bug bit; downloads have been working).
+
 
 ### Fixed — deferred-items follow-up sweep
 - **GStreamer bus messages are now actually delivered** ([`magic_dingus_box_cpp/src/video/gst_player.cpp`](magic_dingus_box_cpp/src/video/gst_player.cpp)). The previous `gst_bus_add_watch()` registration sat on the default GLib main context, but the kiosk has no `g_main_loop_run` anywhere — the watch never fired and EOS / ERROR / STATE_CHANGED / DURATION_CHANGED messages were silently swallowed. Replaced with a `gst_bus_pop()` drain loop inside `update_state()`, called every render-thread tick. The existing `bus_call()` handler is unchanged; it's just dispatched from a polling site instead of GLib's watch system. Mid-playback decoder errors now log diagnostic context, EOS callbacks fire on the bus path (in addition to the existing position-polling fallback), and future features that rely on bus-message delivery can be wired up cleanly. Removed the now-unused `bus_watch_id_` member and its constructor/cleanup references.
