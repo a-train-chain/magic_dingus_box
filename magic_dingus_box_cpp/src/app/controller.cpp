@@ -795,7 +795,15 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
             state.current_item_index = (state.current_item_index + 1) % playlist.items.size();
             if (state.current_item_index == old_index) break; // Wrapped around, give up
 
-            player_->stop();
+            // Defensive null guard. player_ is set at construction and not
+            // reassigned anywhere, but an emulated-game retry path can have
+            // already called player_->cleanup() (which flips initialized_=false
+            // inside GstPlayer). stop() handles !initialized_ as a no-op
+            // safely, but adding the explicit null check here prevents future
+            // refactors from introducing a null deref under the same name.
+            if (player_) {
+                player_->stop();
+            }
             auto retry = load_playlist_item(state, playlist, state.current_item_index, playlist_directory, nullptr);
             if (retry) {
                 found = true;
