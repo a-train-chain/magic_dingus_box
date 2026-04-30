@@ -151,7 +151,50 @@ LibraryScreen::FileState LibraryScreen::classify(const Movie& m) {
 // Construction / lifecycle
 // ---------------------------------------------------------------------------
 
-LibraryScreen::LibraryScreen(RadarrClient& radarr) : radarr_(radarr) {}
+LibraryScreen::LibraryScreen(RadarrClient& radarr, ::app::AppState& state)
+    : radarr_(radarr), state_(state) {}
+
+// ---------------------------------------------------------------------------
+// Slide-in overlay state machine (Task 4 of v1.6.x library-overlay plan).
+// Render + input wiring land in Tasks 5 + 6; for now these helpers exist so
+// the state machine ticks every frame and the open/close transitions are
+// callable from input handling once it's wired up.
+// ---------------------------------------------------------------------------
+
+void LibraryScreen::start_open_overlay() {
+    overlay_state_ = OverlayState::SlidingIn;
+    overlay_anim_started_at_ = std::chrono::steady_clock::now();
+    // Cursor lands on the currently-active sort row so a single A
+    // re-confirms the existing choice (zero-effort cancel).
+    using S = ::app::AppState::DisplaySettings::MbLibrarySort;
+    switch (state_.display_settings.mb_library_sort) {
+        case S::Recent: overlay_focus_row_ = 0; break;
+        case S::Title:  overlay_focus_row_ = 1; break;
+        case S::Year:   overlay_focus_row_ = 2; break;
+        case S::Size:   overlay_focus_row_ = 3; break;
+    }
+}
+
+void LibraryScreen::start_close_overlay() {
+    overlay_state_ = OverlayState::SlidingOut;
+    overlay_anim_started_at_ = std::chrono::steady_clock::now();
+}
+
+void LibraryScreen::tick_overlay_animation() {
+    if (overlay_state_ == OverlayState::Closed ||
+        overlay_state_ == OverlayState::Open) return;
+    const auto elapsed_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - overlay_anim_started_at_)
+        .count();
+    constexpr int kSlideInMs  = 200;
+    constexpr int kSlideOutMs = 150;
+    if (overlay_state_ == OverlayState::SlidingIn && elapsed_ms >= kSlideInMs) {
+        overlay_state_ = OverlayState::Open;
+    } else if (overlay_state_ == OverlayState::SlidingOut && elapsed_ms >= kSlideOutMs) {
+        overlay_state_ = OverlayState::Closed;
+    }
+}
 
 void LibraryScreen::enter() {
     // Always refresh on (re-)entry so the library list reflects any
@@ -335,6 +378,8 @@ std::string format_bytes(int64_t bytes) {
 }  // namespace
 
 void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
+    tick_overlay_animation();
+
     namespace chrome = ::media_browser::ui::chrome;
     const ::ui::Theme& th = r.mb_theme();
 

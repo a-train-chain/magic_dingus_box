@@ -1,7 +1,9 @@
 #pragma once
 
+#include <chrono>
 #include <vector>
 
+#include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 
@@ -49,7 +51,7 @@ namespace media_browser::ui {
 //     long-press still exits MB → MainMenu.
 class LibraryScreen : public MbScreen {
 public:
-    explicit LibraryScreen(RadarrClient& radarr);
+    LibraryScreen(RadarrClient& radarr, ::app::AppState& state);
 
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -95,6 +97,7 @@ private:
     static bool is_1080p_quality(const std::string& q);
 
     RadarrClient& radarr_;
+    ::app::AppState& state_;
 
     Filter filter_ = Filter::All;
     Focus focus_ = Focus::PosterGrid;
@@ -107,6 +110,44 @@ private:
     bool loaded_ = false;
 
     int selected_tmdb_id_ = 0;
+
+    // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px
+    // panel that slides in from the right edge on BTN4 press, holding
+    // stats + sort + filter controls. Closed = no overlay rendered;
+    // SlidingIn = animating from x=1280 → x=760 (200 ms ease-out);
+    // Open = stationary; SlidingOut = animating from x=760 → x=1280
+    // (150 ms ease-in). Input is captured by the panel during
+    // SlidingIn / Open / SlidingOut.
+    enum class OverlayState {
+        Closed     = 0,
+        SlidingIn  = 1,
+        Open       = 2,
+        SlidingOut = 3,
+    };
+    OverlayState overlay_state_ = OverlayState::Closed;
+
+    // Animation start time for the current slide. Used to compute the
+    // panel's current x-position via ease curves in render().
+    std::chrono::steady_clock::time_point overlay_anim_started_at_{};
+
+    // Cursor position inside the panel. The 8 focusable rows are
+    // indexed 0-7: Sort (Recent, Title, Year, Size) at 0-3, Filter
+    // (All, Unwatched, MissingFiles, RecentlyAdded) at 4-7.
+    int overlay_focus_row_ = 0;
+
+    // Number of focusable rows in the panel — kept as a constant so
+    // render and input-handling stay in lockstep.
+    static constexpr int kOverlayFocusableRows = 8;
+
+    // Open / close transitions. start_open_overlay() snaps to
+    // SlidingIn, sets the cursor to whichever row matches the
+    // currently-active sort, and timestamps the animation start.
+    // start_close_overlay() snaps to SlidingOut and timestamps;
+    // tick_overlay_animation() promotes SlidingIn → Open and
+    // SlidingOut → Closed when the animation duration has elapsed.
+    void start_open_overlay();
+    void start_close_overlay();
+    void tick_overlay_animation();
 };
 
 }  // namespace media_browser::ui
