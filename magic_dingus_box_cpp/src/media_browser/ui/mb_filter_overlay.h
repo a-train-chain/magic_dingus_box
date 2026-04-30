@@ -70,7 +70,7 @@ public:
     void render(::ui::Renderer& r, int screen_w, int screen_h);
 
     // Compute current panel left X (for slide animation).
-    int compute_panel_left_x(int screen_w) const;
+    int compute_panel_left_x() const;
 
 private:
     State state_ = State::Closed;

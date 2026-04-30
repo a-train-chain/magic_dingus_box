@@ -17,10 +17,6 @@ constexpr int kPanelBottomMarginPx = 100;
 constexpr int kRowHeightPx = 56;
 constexpr int kPaddingX = 24;
 
-// Panel width in pixels — mirrored from FilterOverlay::kPanelWidthPx for
-// use in anonymous-namespace helpers that can't see the private constant.
-constexpr int kPanelW = 380;
-
 // Cursor triangle geometry — matches the ▶ style used by LibraryScreen.
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
@@ -93,7 +89,7 @@ void FilterOverlay::tick() {
     }
 }
 
-int FilterOverlay::compute_panel_left_x(int /*screen_w*/) const {
+int FilterOverlay::compute_panel_left_x() const {
     using namespace std::chrono;
     if (state_ == State::Closed) return -kPanelWidthPx;
     if (state_ == State::Open)   return kPanelLeftMarginPx;
@@ -114,7 +110,7 @@ int FilterOverlay::compute_panel_left_x(int /*screen_w*/) const {
 
 bool FilterOverlay::on_rotate(int delta) {
     if (!is_input_active()) return false;
-    if (delta == 0) return true;
+    if (delta == 0) return false;
     int new_focus = focus_row_ + (delta > 0 ? 1 : -1);
     if (new_focus < 0) new_focus = 0;
     if (new_focus >= kFocusableRowCount) new_focus = kFocusableRowCount - 1;
@@ -166,9 +162,9 @@ void FilterOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     const auto& th = r.mb_theme();
 
-    const int panel_x = compute_panel_left_x(screen_w);
+    const int panel_x = compute_panel_left_x();
     const int panel_y = kPanelTopMarginPx;
-    const int panel_w = kPanelW;
+    const int panel_w = kPanelWidthPx;
     const int panel_h = screen_h - kPanelTopMarginPx - kPanelBottomMarginPx;
 
     const float fpx = static_cast<float>(panel_x);
@@ -264,7 +260,7 @@ void FilterOverlay::render_genre_row(::ui::Renderer& r, int x, int y) {
 
     constexpr int kChipPad = 6;
     constexpr int kChipH   = 22;
-    const int max_x = x + kPanelW - 2 * kPaddingX;
+    const int max_x = x + kPanelWidthPx - 2 * kPaddingX;
 
     int cx = x;
     int cy = y + 18;
