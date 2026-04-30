@@ -5,6 +5,27 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-04-29
+
+Marquee design-fidelity pass. After v1.6.0 landed, three high-visibility components diverged from the design file: poster cells were plain colored tints with no title overlay, DetailScreen action buttons used a single gold border for all buttons regardless of intent (the design has color-coded Ok/Warn/Action variants), and the Marquee Settings screen header didn't match the rest of the Marquee chrome. This release closes those gaps.
+
+### Added
+- **`chrome::draw_button(label, kind, focused)`** ([`mb_chrome.{h,cpp}`](magic_dingus_box_cpp/src/media_browser/ui/mb_chrome.h)) — the design's `.btn` component. Bordered (2 px) rect on `theme.bg` with the label and border rendered in the semantic kind color: `Ok` = green (`highlight1`), `Warn` = red (`highlight2`), `Action` = steel blue (`action`), `Neutral` = dim. 18 px mono label, 18 px horizontal padding, 10 px vertical. Focused buttons get the standard 2 px gold focus ring at +2 px offset.
+- **`chrome::draw_poster_card(...)`** — composed poster tile that draws as a designed object even before TMDB artwork loads: solid tint fill, top + bottom cream dash accents, ZenDots title overlay (crude word-wrap on whitespace for long titles), small year bottom-left, IN LIBRARY (green) or %-progress (red) badge inset top-left.
+- **LibraryScreen sort sub-tabs** — visual-only `Recent / Title / Year / Size` strip right-aligned on the stats line. `Recent` renders active (cream `fg`); others dim. Sort cycling still deferred per operator direction; these are stub labels until the cycling input is wired.
+
+### Changed
+- **DetailScreen action button row** ([`detail_screen.cpp`](magic_dingus_box_cpp/src/media_browser/ui/detail_screen.cpp)) now uses `chrome::draw_button` per-button with intent-mapped colors: Play / Add to Library = Ok (green), Search Releases / Search Again / Retry = Action (blue), Remove / Confirm Remove = Warn (red), More Info = Neutral. Buttons are pre-measured so the row centers horizontally with consistent 16 px gaps. The previous blinking ◂ focus marker was replaced with the standard 2 px gold focus ring for visual consistency with poster cells, settings rows, etc.
+- **BrowseScreen + LibraryScreen poster cells** swapped from `mb_draw_poster_or_tint` / `mb_fill_rect` placeholders to `chrome::draw_poster_card`. Each cell now carries the full Marquee styling regardless of artwork load state.
+- **Marquee Settings header + footer** ([`mb_settings_screen.cpp`](magic_dingus_box_cpp/src/media_browser/ui/mb_settings_screen.cpp)) — header replaced with `chrome::draw_screen_header("Settings", sub_info="Movies · Magic Dingus Box")` so it matches Browse / Library / Detail visually. Footer replaced with `chrome::draw_footer_hints({A=Change, BTN2=Refresh, BTN4=Back})`. The row body itself (label / value / cycling arrows / focused-row `bg_lift` fill) is NOT yet redesigned — see Deferred.
+
+### Deferred (still diverging from design)
+- **Settings row visual rewrite** — gold section headers with bottom rule, label-left/value-right rows with cycling arrow indicators (`‹ ›`), focused-row `bg_lift` fill + gold border. The current row rendering still works; it just doesn't match the design. Bigger rewrite touching the 12 `RowKind` cases.
+- **DetailScreen body layout** — the design's poster-left + content-right grid with backdrop hero behind a `bg-80` overlay. Current rendering keeps the existing single-column structure.
+- **SearchScreen keyboard styling** — bordered keys with consistent focus ring (currently uses the existing keyboard render).
+- **QueueScreen VPN status indicator** — right-aligned `VPN: gluetun · NL · 4 active` text in the header.
+- **PlaybackScreen HUD** — design's specific scrub-bar + time-triangle layout.
+
 ## [1.6.0] - 2026-04-29
 
 **Marquee design system** — full visual redesign of the Media Browser. The kiosk's main playlist UI, settings, RetroArch flow, and all other surfaces are deliberately untouched per operator direction; the new visual language is contained to the Movies feature and gives it a distinct identity from the rest of the kiosk.

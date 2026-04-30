@@ -85,7 +85,7 @@ Adding a new "this should be preserved" path? Update **all four** lists. Inconsi
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 
-A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.0** — and jump straight there. No multi-hop sequencing required.
+A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.1** — and jump straight there. No multi-hop sequencing required.
 
 ## Testing the contract before shipping a new release
 
