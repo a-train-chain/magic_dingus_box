@@ -47,6 +47,21 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     // Persisted so operators can flip between classic and enhanced
     // visuals once and have the choice survive reboots.
     display["enhanced_crt_enabled"] = state.display_settings.enhanced_crt_enabled;
+    // Media Browser wood-frame overlay during movie playback (v1.6.x).
+    // Default true — see app_state.h docstring for behavior details.
+    display["mb_playback_show_frame"] = state.display_settings.mb_playback_show_frame;
+    // Media Browser CRT overlay intensities — independent from the
+    // kiosk-side values above. Edited via MovieSettings → "CRT overlay"
+    // rows. Persisted with the same `mb_` key prefix so the JSON layout
+    // makes the dual-store relationship obvious to anyone inspecting
+    // settings.json by hand.
+    display["mb_scanline_intensity"]    = state.display_settings.mb_scanline_intensity;
+    display["mb_warmth_intensity"]      = state.display_settings.mb_warmth_intensity;
+    display["mb_glow_intensity"]        = state.display_settings.mb_glow_intensity;
+    display["mb_rgb_mask_intensity"]    = state.display_settings.mb_rgb_mask_intensity;
+    display["mb_bloom_intensity"]       = state.display_settings.mb_bloom_intensity;
+    display["mb_interlacing_intensity"] = state.display_settings.mb_interlacing_intensity;
+    display["mb_flicker_intensity"]     = state.display_settings.mb_flicker_intensity;
     root["display"] = display;
 
     // Playback settings
@@ -151,6 +166,43 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         // the classic procedural-overlay behavior with zero visible
         // change until they explicitly turn it on.
         state.display_settings.enhanced_crt_enabled = display.get("enhanced_crt_enabled", false).asBool();
+        // Media Browser wood-frame overlay during movie playback (v1.6.x).
+        // Default true so operators upgrading from a settings.json that
+        // pre-dates this key see the wood frame during playback by
+        // default (matches the Marquee design intent).
+        state.display_settings.mb_playback_show_frame =
+            display.get("mb_playback_show_frame", true).asBool();
+        // Media Browser CRT overlay intensities (v1.6.x). When the
+        // mb_* keys aren't present in settings.json (upgrade path),
+        // INHERIT the kiosk-side values that we just loaded above —
+        // so an operator upgrading from a build that didn't have a
+        // separate MB store sees no visual regression on their
+        // Marquee menus the first frame after install. New installs
+        // get 0.0 across the board (since the kiosk fields default
+        // to 0.0 too). Once the operator changes any MB intensity
+        // through the MovieSettings rows, the divergence is
+        // persisted on the next save_settings call.
+        state.display_settings.mb_scanline_intensity =
+            display.get("mb_scanline_intensity",
+                        state.display_settings.scanline_intensity).asFloat();
+        state.display_settings.mb_warmth_intensity =
+            display.get("mb_warmth_intensity",
+                        state.display_settings.warmth_intensity).asFloat();
+        state.display_settings.mb_glow_intensity =
+            display.get("mb_glow_intensity",
+                        state.display_settings.glow_intensity).asFloat();
+        state.display_settings.mb_rgb_mask_intensity =
+            display.get("mb_rgb_mask_intensity",
+                        state.display_settings.rgb_mask_intensity).asFloat();
+        state.display_settings.mb_bloom_intensity =
+            display.get("mb_bloom_intensity",
+                        state.display_settings.bloom_intensity).asFloat();
+        state.display_settings.mb_interlacing_intensity =
+            display.get("mb_interlacing_intensity",
+                        state.display_settings.interlacing_intensity).asFloat();
+        state.display_settings.mb_flicker_intensity =
+            display.get("mb_flicker_intensity",
+                        state.display_settings.flicker_intensity).asFloat();
     }
 
     // Load playback settings with safe defaults

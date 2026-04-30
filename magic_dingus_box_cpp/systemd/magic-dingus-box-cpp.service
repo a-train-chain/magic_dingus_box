@@ -43,6 +43,14 @@ StandardError=journal
 Environment=HOME=/home/magic
 Environment=DISPLAY=
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# API keys for Radarr / Prowlarr / qBittorrent are written to
+# services/.env by setup_services.sh (or copied from a clone source).
+# The kiosk binary reads RADARR_API_KEY / PROWLARR_API_KEY (with optional
+# MDB_-prefixed overrides) at startup. The leading `-` makes the
+# EnvironmentFile optional so unprovisioned Pis (no .env yet) still
+# boot the kiosk cleanly — the Media Browser just shows "key not
+# configured" banners for affected rows.
+EnvironmentFile=-/opt/magic_dingus_box/services/.env
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM

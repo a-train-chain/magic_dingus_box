@@ -614,6 +614,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // below naturally transitions back to MainMenu on the next input tick.
     media_browser::ui::MbSettingsScreen mb_mb_settings(
         radarr,
+        state,
         [&state]() {
             state.media_browser_unlocked = false;
             app::SettingsPersistence::save_settings(state);
@@ -2514,23 +2515,58 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
 #ifdef MEDIA_BROWSER_ENABLED
-            // Marquee playback: inset the video viewport by 30 px on each
-            // edge so the wood-frame overlay (which paints the outer 40 px
-            // of the canvas as cabinet art) doesn't crop important movie
-            // content. The 10 px gap between frame inner edge (40 px) and
-            // video edge (30 px inset = 30 px) intentionally creates a
-            // small overlap zone where the frame visually "covers" the
-            // outermost movie pixels — this looks like "screen behind
-            // wood" rather than "movie cropped flush against wood". The
-            // CRT shader pipeline is already gated off for MediaBrowser
-            // (see begin_scene_fbo's AppScreen check) so playback shows
-            // a clean unfiltered image.
+            // Marquee playback: tell gst_renderer to render INTO an
+            // inset rect that matches the wood-frame asset's edge
+            // thickness (40 px on every side). The video fills the
+            // canvas INSIDE the frame with no gap, no overlap — edges
+            // of the video sit flush with the inner edge of the
+            // cabinet art. Aspect-preserve / letterbox math runs
+            // WITHIN this rect so widescreen movies still letterbox
+            // correctly (Pulp Fiction's 2.39:1 → ~80 px black bars
+            // top+bottom inside the inset rect, all visible inside
+            // the wood frame).
+            //
+            // Setting inset directly on gst_renderer is what was
+            // missing before: a bare `glViewport()` call from main
+            // gets immediately overwritten by gst_renderer's own
+            // glViewport() at the end of render_quad(), which is why
+            // the earlier 30 px / 50 px attempts looked like nothing
+            // had changed.
+            //
+            // CRITICAL: clear the WHOLE framebuffer to black before
+            // render() so the ring of pixels between the wood frame's
+            // inner edge (x=40) and any letterbox bars don't keep
+            // stale content from the previous frame. The earlier-in-
+            // frame clear is gated on `!state.video_active`, which is
+            // false during active playback.
+            //
+            // Non-Marquee paths (intro video, playlist playback in the
+            // main kiosk) reset the inset to (0,0,0,0) which means
+            // "use the full screen" — legacy behavior preserved.
+            //
+            // CRT shader is already gated off for MediaBrowser (see
+            // begin_scene_fbo's AppScreen check) so playback shows a
+            // clean unfiltered image either way.
             if (state.current_screen == app::AppScreen::MediaBrowser &&
-                current_mb_screen == media_browser::ui::Screen::Playback) {
-                constexpr int kPlaybackInsetPx = 30;
-                glViewport(kPlaybackInsetPx, kPlaybackInsetPx,
-                           static_cast<GLsizei>(mode.width  - 2 * kPlaybackInsetPx),
-                           static_cast<GLsizei>(mode.height - 2 * kPlaybackInsetPx));
+                current_mb_screen == media_browser::ui::Screen::Playback &&
+                state.display_settings.mb_playback_show_frame) {
+                // Wood-frame overlay enabled for playback (operator
+                // setting in MovieSettings → Library → Wood frame
+                // during playback). Inset the video INSIDE the frame
+                // so the cabinet art doesn't crop the movie.
+                constexpr int kPlaybackInsetPx = 40;
+                gst_renderer.set_render_inset(
+                    kPlaybackInsetPx, kPlaybackInsetPx,
+                    static_cast<int>(mode.width)  - 2 * kPlaybackInsetPx,
+                    static_cast<int>(mode.height) - 2 * kPlaybackInsetPx);
+                glViewport(0, 0, mode.width, mode.height);
+                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+            } else {
+                // Either non-Marquee playback (intro / playlist) OR
+                // Marquee playback with wood frame toggled OFF —
+                // either way, render full-screen with no inset.
+                gst_renderer.set_render_inset(0, 0, 0, 0);
             }
 #endif
 
@@ -2624,7 +2660,71 @@ int main(int /* argc */, char* /* argv */[]) {
             // Must happen on the GL-owning main thread. Without this
             // call the background fetcher thread's decoded images would
             // never make it onto screen.
-            ui_renderer.pump_artwork();
+            //
+            // SKIP during Playback — texture allocation + GPU upload is
+            // the most expensive non-decode work in the per-frame budget,
+            // and there's no point loading new poster art for a screen
+            // the operator can't see anyway. This shaves CPU+GPU off the
+            // critical path during the GStreamer pipeline's first ~3
+            // seconds (where most QoS frame drops were happening) and
+            // prevents the Pi 4 from accumulating thermal headroom debt
+            // that would otherwise translate into mid-movie throttling.
+            // Pending fetches stay queued and resume the moment the
+            // operator exits playback back to a menu screen.
+            if (current_mb_screen != media_browser::ui::Screen::Playback) {
+                ui_renderer.pump_artwork();
+            }
+
+            // CRT effects overlay on Media Browser menu screens (Browse,
+            // Library, Search, Detail, Queue, Settings). Same legacy
+            // procedural overlay that wraps the kiosk main UI's playlist
+            // grid — gives the Marquee section the same nostalgic CRT
+            // look operators get on the home menu.
+            //
+            // SKIPPED during Playback so movies stay clean and unfiltered
+            // (operator direction). Also skipped if all MB CRT intensity
+            // values are 0 — render_crt_effects has its own any-active
+            // early-out, and we don't pay for the call.
+            //
+            // Wood frame draws AFTER this (next block) so the cabinet
+            // art always reads as foreground over the CRT haze.
+            //
+            // The Marquee CRT intensities live in
+            // state.display_settings.mb_* — independent from the kiosk
+            // values that drive the home-menu look. We swap the mb_*
+            // values into the kiosk fields just for this render call,
+            // then restore — so render_crt_effects (which reads the
+            // standard fields) renders the MB look without needing to
+            // know about the dual-store. Restoration is unconditional
+            // so the rest of the frame (and the home menu when the
+            // user pops out of MB) sees the original kiosk values.
+            if (current_mb_screen != media_browser::ui::Screen::Playback) {
+                auto& s = state.display_settings;
+                const float k_scan  = s.scanline_intensity;
+                const float k_warm  = s.warmth_intensity;
+                const float k_glow  = s.glow_intensity;
+                const float k_mask  = s.rgb_mask_intensity;
+                const float k_bloom = s.bloom_intensity;
+                const float k_inter = s.interlacing_intensity;
+                const float k_flick = s.flicker_intensity;
+                s.scanline_intensity    = s.mb_scanline_intensity;
+                s.warmth_intensity      = s.mb_warmth_intensity;
+                s.glow_intensity        = s.mb_glow_intensity;
+                s.rgb_mask_intensity    = s.mb_rgb_mask_intensity;
+                s.bloom_intensity       = s.mb_bloom_intensity;
+                s.interlacing_intensity = s.mb_interlacing_intensity;
+                s.flicker_intensity     = s.mb_flicker_intensity;
+
+                ui_renderer.render_crt_effects(state, /*scanlines_enabled=*/true);
+
+                s.scanline_intensity    = k_scan;
+                s.warmth_intensity      = k_warm;
+                s.glow_intensity        = k_glow;
+                s.rgb_mask_intensity    = k_mask;
+                s.bloom_intensity       = k_bloom;
+                s.interlacing_intensity = k_inter;
+                s.flicker_intensity     = k_flick;
+            }
 
             // Marquee wood-frame overlay — the "TV cabinet" that gives the
             // Media Browser its distinct visual identity from the rest of
@@ -2639,8 +2739,22 @@ int main(int /* argc */, char* /* argv */[]) {
             // load_bezel(). Calling it every frame is correct: it
             // re-uploads the texture after reset_gl() (e.g. RetroArch
             // return), and a static path tracker would defeat that.
-            ui_renderer.load_marquee_frame("marquee_frame.png");
-            ui_renderer.render_marquee_frame();
+            //
+            // Gated on the MovieSettings "Wood frame during playback"
+            // toggle for the Playback screen specifically. When that
+            // toggle is OFF and we're playing a movie, the frame is
+            // skipped so the video fills the whole framebuffer. Other
+            // MB screens (Browse, Library, Search, Detail, Settings,
+            // Queue) ALWAYS render the frame regardless of the toggle —
+            // it's only the playback experience that operators can
+            // choose to show full-screen.
+            const bool show_frame =
+                (current_mb_screen != media_browser::ui::Screen::Playback) ||
+                state.display_settings.mb_playback_show_frame;
+            if (show_frame) {
+                ui_renderer.load_marquee_frame("marquee_frame.png");
+                ui_renderer.render_marquee_frame();
+            }
         }
 
         // Render toast overlay (fades in/out over 3s). Drawn last-in-UI

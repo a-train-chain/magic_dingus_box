@@ -65,6 +65,27 @@ public:
     void set_aspect_preserve(bool enabled) { aspect_preserve_ = enabled; }
     void set_screen_size(uint32_t width, uint32_t height) { width_ = width; height_ = height; }
     void set_swap_uv(bool enabled) { swap_uv_ = enabled; }
+
+    // Inset rect — the sub-region of the default framebuffer the
+    // video should render INTO. width=0 / height=0 means "use the
+    // full canvas" (the default; resets back when leaving Marquee
+    // playback). When set, all of the existing letterbox /
+    // aspect-preserve / fill-to-edges math runs within this rect, so
+    // Pulp Fiction's 2.39:1 still letterboxes correctly inside the
+    // wood-frame's interior — it just letterboxes inside (40, 40,
+    // 1200, 640) instead of (0, 0, 1280, 720).
+    //
+    // Used by Media Browser playback to keep the movie INSIDE the
+    // 40 px wood-frame overlay. Caller must also clear the
+    // framebuffer to black before render() so the gap between the
+    // inset rect and any letterbox bars stays clean (the renderer
+    // only paints inside the inset).
+    void set_render_inset(int x, int y, int w, int h) {
+        render_inset_x_ = x;
+        render_inset_y_ = y;
+        render_inset_w_ = w;
+        render_inset_h_ = h;
+    }
     
     // Check if texture is ready
     bool is_ready() const { return gl_initialized_; }
@@ -75,7 +96,16 @@ private:
     
     uint32_t width_;
     uint32_t height_;
-    
+
+    // Inset rect — when render_inset_w_ > 0 AND render_inset_h_ > 0,
+    // the renderer treats this rect as its working canvas instead of
+    // the full (width_ × height_) framebuffer. Defaults to 0 (off) so
+    // legacy callers see no change. See set_render_inset() docstring.
+    int render_inset_x_ = 0;
+    int render_inset_y_ = 0;
+    int render_inset_w_ = 0;
+    int render_inset_h_ = 0;
+
     // OpenGL resources
     GLuint texture_ids_[3]; // Support up to 3 planes (Y, U, V)
     GLuint program_id_;

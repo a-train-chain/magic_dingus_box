@@ -549,26 +549,31 @@ void BrowseScreen::cycle_filter_value(int delta) {
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {
-    // Marquee 5-tab strip layout (in display order, left-to-right):
-    //   Popular · Now Playing · Top Rated · Library · Search
+    // Marquee 5-tab strip — content tabs left, transition tabs right.
+    // Display order, left-to-right:
+    //   Popular · Top Rated · Library · Search · Settings
     // BTN1 (PREV, yellow) walks left; BTN3 (NEXT, green) walks right;
-    // movement stops at the ends (no wrap). Library and Search tabs are
-    // transition-only — selecting them returns the corresponding Screen
-    // value to the dispatcher in main.cpp, which swaps the active screen.
+    // movement stops at the ends (no wrap). Library, Search, and Settings
+    // are transition-only — selecting them returns the corresponding
+    // Screen enum value to the dispatcher in main.cpp, which swaps the
+    // active screen. Now Playing was removed in v1.6.x — it overlapped
+    // almost completely with Popular on TMDB's data, so collapsing them
+    // removes a confusing-looking duplicate. Settings replaces it on the
+    // right end of the strip.
     static constexpr Category kVisibleTabs[] = {
         Category::Popular,
-        Category::NowPlaying,
         Category::TopRated,
         Category::Library,
         Category::Search,
+        Category::Settings,
     };
     constexpr int kNumVisibleTabs =
         static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
 
     // Reverse-lookup: where is category_ in the visible strip? Default to
     // 0 (Popular) if category_ holds a value that isn't a Marquee tab
-    // (e.g. legacy persistence from the pre-Marquee 9-chip layout —
-    // Filter, Upcoming, Queue, Settings).
+    // (e.g. legacy persistence from the pre-Marquee 9-chip layout, or
+    // NowPlaying from before v1.6.x).
     int strip_pos = 0;
     for (int i = 0; i < kNumVisibleTabs; ++i) {
         if (kVisibleTabs[i] == category_) { strip_pos = i; break; }
@@ -591,8 +596,9 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             if (strip_pos == 0) continue;
             const int new_pos = strip_pos - 1;
             const Category new_cat = kVisibleTabs[new_pos];
-            if (new_cat == Category::Library) return Screen::Library;
-            if (new_cat == Category::Search)  return Screen::Search;
+            if (new_cat == Category::Library)  return Screen::Library;
+            if (new_cat == Category::Search)   return Screen::Search;
+            if (new_cat == Category::Settings) return Screen::MovieSettings;
             category_ = new_cat;
             strip_pos = new_pos;
             load_category(category_);
@@ -605,8 +611,9 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             if (strip_pos >= kNumVisibleTabs - 1) continue;
             const int new_pos = strip_pos + 1;
             const Category new_cat = kVisibleTabs[new_pos];
-            if (new_cat == Category::Library) return Screen::Library;
-            if (new_cat == Category::Search)  return Screen::Search;
+            if (new_cat == Category::Library)  return Screen::Library;
+            if (new_cat == Category::Search)   return Screen::Search;
+            if (new_cat == Category::Settings) return Screen::MovieSettings;
             category_ = new_cat;
             strip_pos = new_pos;
             load_category(category_);
@@ -673,12 +680,13 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_background();
 
     // Same 5-tab strip the handler uses — keep the two in sync.
+    // v1.6.x: Now Playing dropped, Settings added at the right end.
     static constexpr Category kVisibleTabs[] = {
         Category::Popular,
-        Category::NowPlaying,
         Category::TopRated,
         Category::Library,
         Category::Search,
+        Category::Settings,
     };
     constexpr int kNumVisibleTabs =
         static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
@@ -736,15 +744,23 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- 9-column poster grid ---
-    constexpr int kCellGap     = 8;
-    constexpr int kRowGap      = 16;
-    constexpr int kVisibleRows = 2;
-    constexpr int kMetaH       = 14;   // Title · Year line (14px legibility floor under CRT)
-    constexpr int kMetaGap     = 4;
+    // Meta area below each poster fits 2 lines so long titles can wrap.
+    // Year was previously appended to the meta line; it now lives inside
+    // the poster card (bottom-right, on a semi-transparent dark pill via
+    // chrome::draw_poster_card), so the meta line shows only the title.
+    constexpr int kCellGap       = 8;
+    constexpr int kRowGap        = 22;   // bumped from 16 to give the
+                                         // 2-line meta area breathing
+                                         // room before the next row
+    constexpr int kVisibleRows   = 2;
+    constexpr int kMetaFontPx    = 14;   // 14 px legibility floor under CRT
+    constexpr int kMetaLineGap   = 2;
+    constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
+    constexpr int kMetaGap       = 4;    // poster-bottom → meta-top
     const int content_w = screen_w - 2 * chrome::kSafeInset_px;
     const int cell_w = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
     const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f); // 2:3 aspect
-    const int cell_h = poster_h + kMetaGap + kMetaH;
+    const int cell_h = poster_h + kMetaGap + kMetaTotalH;
     const int grid_top = content_top + chrome::kPad3;
     const int grid_left = chrome::kSafeInset_px;
 
@@ -779,19 +795,59 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 movie.title, movie.year,
-                tint, in_library, /*download_pct=*/-1);
+                tint, in_library, /*download_pct=*/-1,
+                // TmdbSearchHit names the URL field `poster_path` even
+                // though it's already a fully-resolved CDN URL (see
+                // tmdb_client.cpp resolve_poster_url). The artwork
+                // cache treats it as opaque, so the field-name mismatch
+                // is harmless here.
+                /*poster_url=*/movie.poster_path);
 
-            // Meta line below poster: "Title · Year"
-            std::string meta = movie.title;
-            if (movie.year > 0) {
-                meta += " \xc2\xb7 " + std::to_string(movie.year);  // " · "
+            // Meta line below poster: title only, wrapped to 2 lines
+            // when needed. Year now lives inside the poster card. If
+            // the title fits on one line, line 2 stays empty so the
+            // tile reads compact; if not, the longest leading word
+            // chunk that fits goes on line 1 and the remainder on
+            // line 2 (truncate-with-ellipsis if line 2 also overflows).
+            const std::string& title = movie.title;
+            const float max_w_f = static_cast<float>(cell_w);
+            std::string line1, line2;
+            if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                line1 = title;
+            } else {
+                // Walk forward through whitespace, keep the longest
+                // prefix that still fits in one line. Fallback: bisect
+                // by character if the title has no spaces.
+                size_t split = std::string::npos;
+                size_t pos = 0;
+                while (true) {
+                    size_t next = title.find(' ', pos + 1);
+                    if (next == std::string::npos) break;
+                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
+                            > max_w_f) break;
+                    split = next;
+                    pos = next;
+                }
+                if (split == std::string::npos) {
+                    line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                } else {
+                    line1 = title.substr(0, split);
+                    std::string remainder = title.substr(split + 1);
+                    line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                }
             }
-            const std::string trimmed =
-                truncate_to_width(r, meta, kMetaH, static_cast<float>(cell_w));
-            r.mb_draw_text(trimmed,
+            const int meta_top = y + poster_h + kMetaGap;
+            r.mb_draw_text(line1,
                            static_cast<float>(x),
-                           static_cast<float>(y + poster_h + kMetaGap + kMetaH),
-                           kMetaH, th.dim);
+                           static_cast<float>(meta_top + kMetaFontPx),
+                           kMetaFontPx, th.dim);
+            if (!line2.empty()) {
+                r.mb_draw_text(line2,
+                               static_cast<float>(x),
+                               static_cast<float>(meta_top + kMetaFontPx
+                                                  + kMetaLineGap + kMetaFontPx),
+                               kMetaFontPx, th.dim);
+            }
 
             // Focus ring on the cursor cell. 2 px gold, 2 px outside.
             if (idx == grid_cursor_) {

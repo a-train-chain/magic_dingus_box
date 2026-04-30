@@ -135,12 +135,20 @@ ButtonRect draw_button(::ui::Renderer& r, int x, int y,
 //
 // Caller still manages focus_ring drawing externally if needed (so it
 // can wrap the card OR an outer cell that includes the meta line).
+//
+// `poster_url` (optional) — when non-empty, the card renders the real
+// TMDB poster image via mb_draw_poster_or_tint, falling back to the
+// solid `tint` if the image hasn't loaded yet. When empty, the card
+// just draws the tint (back-compat). The artwork-cache is keyed by URL,
+// so the same URL on Browse / Search / Detail / Library all share one
+// fetched texture (no double download).
 void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
                       const std::string& title,
                       int year,
                       const ::ui::Color& tint,
                       bool in_library,
-                      int download_pct);  // -1 = not downloading
+                      int download_pct,             // -1 = not downloading
+                      const std::string& poster_url = "");
 
 // Top-of-screen header: a screen title on the left, an N-tab strip on
 // the right. `focused_on_tabs` toggles whether the active tab gets the

@@ -4,12 +4,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <string>
 
 #include <curl/curl.h>
 #include <json/json.h>
 
+#include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -28,14 +30,24 @@ namespace {
 // pixel-for-pixel so all three media-browser screens (Browse, Detail,
 // Settings) share the same chrome.
 
-constexpr float kPaddingX        = 32.0f;   // matches detail_screen.cpp
+// Horizontal safe-area inset. Matches mb_chrome::kSafeInset_px (60) so
+// the row label/value columns and the footer-hint row stay clear of the
+// 40 px wood-frame overlay that wraps every Marquee screen, with 20 px
+// breathing room between content and the inner edge of the frame.
+// Pre-v1.6.x this was 32, which let rows extend under the wood frame.
+constexpr float kPaddingX        = 60.0f;   // matches chrome::kSafeInset_px
 
-// Top "MOVIES • SETTINGS" header strip.
-constexpr float kHeaderBaselineY = 38.0f;   // baseline of header text
-constexpr float kHeaderRuleY     = 58.0f;   // 2px steel-blue rule
+// Top header strip is now drawn by chrome::draw_screen_header (the
+// Marquee 5-tab strip with "Settings" marked active). The legacy
+// kHeaderBaselineY / kHeaderRuleY constants were retired here as part
+// of the v1.6.x chrome unification — see search_screen.cpp for the
+// same migration pattern.
 
-// Settings list — top of the first row baseline, vertical spacing per row.
-constexpr float kListTopY        = 84.0f;   // first row label baseline lives here
+// Settings list — first row baseline. Anchored below the chrome header
+// (which ends at y = kSafeInset_px + kHeaderHeight_px = 120) with
+// generous breathing room so the rows don't crowd the tab strip.
+//   y = 60 (safe inset) + 60 (header band) + 40 (kPad5 breathing room)
+constexpr float kListTopY        = 160.0f;  // first row label baseline lives here
 constexpr float kRowHeight       = 44.0f;   // standard row pitch (label + value)
 constexpr float kRowGap          = 6.0f;    // small breathing gap between rows
 constexpr float kIndexerRowHeight = 26.0f;  // indexer sub-list row pitch
@@ -67,8 +79,9 @@ constexpr float kActionOutlineW  = 2.0f;
 // How long the placeholder banner stays on screen.
 constexpr std::chrono::milliseconds kBannerMs{2500};
 
-// Bottom hint footer offset from screen bottom.
-constexpr float kFooterPadY      = 12.0f;
+// Bottom-hint footer is now drawn by chrome::draw_footer_hints, which
+// owns its own offset-from-bottom math (anchored to the wood frame, not
+// the screen edge). The legacy kFooterPadY constant retired in v1.6.x.
 
 size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     auto* s = static_cast<std::string*>(ud);
@@ -111,18 +124,41 @@ std::string format_gb_short(int64_t bytes) {
     return std::string(buf);
 }
 
-// Draw the gold blinking ◂ cursor marker at `(tip_x, center_y)`. The triangle
-// points LEFT (toward the label edge), same orientation as the home-menu
-// playlist cursor and the DetailScreen action-button cursor.
+// Draw the gold blinking cursor marker at `(tip_x, center_y)`. By default
+// the triangle points LEFT — same orientation as the home-menu playlist
+// cursor and the DetailScreen action-button cursor — and is used for
+// markers that sit INSIDE a button on its right edge (so the tip points
+// inward toward the button label).
+//
+// When `point_right` is true, the geometry is mirrored: the triangle
+// points RIGHT, with its base on the left and tip on the right. This is
+// used for row-level markers that sit to the LEFT of the row's label
+// (so the tip visually "points at" the label text, like an arrowhead
+// indicating where focus is). Same horizontal footprint either way:
+// the triangle occupies [tip_x, tip_x + kMarkerW], so callers can pass
+// the same `tip_x` regardless of orientation.
 void draw_cursor_marker(::ui::Renderer& r,
                         float tip_x, float center_y,
-                        ::ui::Color color, float alpha) {
-    constexpr float kMarkerSize = 8.0f;  // half-height of the triangle
-    r.mb_fill_triangle(
-        tip_x + kMarkerSize * 1.2f, center_y - kMarkerSize,  // top-right
-        tip_x + kMarkerSize * 1.2f, center_y + kMarkerSize,  // bottom-right
-        tip_x,                       center_y,               // pointing tip (left)
-        color, alpha);
+                        ::ui::Color color, float alpha,
+                        bool point_right = false) {
+    constexpr float kMarkerSize = 8.0f;          // half-height of the triangle
+    constexpr float kMarkerW    = kMarkerSize * 1.2f;  // horizontal extent
+    if (point_right) {
+        // Base on the left edge, tip on the right (pointing → at text).
+        r.mb_fill_triangle(
+            tip_x,            center_y - kMarkerSize,  // top-left  (base)
+            tip_x,            center_y + kMarkerSize,  // bottom-left (base)
+            tip_x + kMarkerW, center_y,                // pointing tip (right)
+            color, alpha);
+    } else {
+        // Base on the right edge, tip on the left (pointing ← into a
+        // button or away from the row). Original orientation.
+        r.mb_fill_triangle(
+            tip_x + kMarkerW, center_y - kMarkerSize,  // top-right (base)
+            tip_x + kMarkerW, center_y + kMarkerSize,  // bottom-right (base)
+            tip_x,            center_y,                // pointing tip (left)
+            color, alpha);
+    }
 }
 
 }  // namespace
@@ -192,12 +228,56 @@ std::string MbSettingsScreen::format_free_space(int64_t free_bytes,
 // Construction / lifecycle
 // ---------------------------------------------------------------------------
 
+// Resolve the Prowlarr API key with the same 3-stage chain main.cpp
+// uses for both Radarr and Prowlarr:
+//   1. MDB_PROWLARR_API_KEY env var (kiosk override)
+//   2. PROWLARR_API_KEY env var (systemd EnvironmentFile, set by the
+//      v1.6.x systemd unit which loads /opt/magic_dingus_box/services/.env)
+//   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
+//      for unprovisioned Pis / dev workflows where the systemd env
+//      propagation isn't wired up yet)
+// Mirrors main.cpp's resolution exactly so operators don't need to keep
+// duplicate env entries in sync — and so the Settings screen's
+// "is the key configured?" check matches what the rest of the kiosk
+// actually sees at runtime.
+namespace {
+std::string read_env_file_key(const std::string& path,
+                              const std::string& key) {
+    std::ifstream f(path);
+    if (!f) return "";
+    std::string line;
+    const std::string prefix = key + "=";
+    while (std::getline(f, line)) {
+        if (line.rfind(prefix, 0) == 0) {
+            std::string v = line.substr(prefix.size());
+            while (!v.empty() &&
+                   (v.back() == '\n' || v.back() == '\r' || v.back() == ' '))
+                v.pop_back();
+            return v;
+        }
+    }
+    return "";
+}
+
+std::string resolve_prowlarr_key() {
+    std::string k = env_or_empty("MDB_PROWLARR_API_KEY");
+    if (!k.empty()) return k;
+    k = env_or_empty("PROWLARR_API_KEY");
+    if (!k.empty()) return k;
+    return read_env_file_key("/opt/magic_dingus_box/services/.env",
+                             "PROWLARR_API_KEY");
+}
+}  // namespace
+
 MbSettingsScreen::MbSettingsScreen(RadarrClient& radarr,
+                                   ::app::AppState& state,
                                    std::function<void()> on_hide_feature)
-    : radarr_(radarr), on_hide_feature_(std::move(on_hide_feature)) {
+    : radarr_(radarr),
+      state_(state),
+      on_hide_feature_(std::move(on_hide_feature)) {
     // Tag availability of the Prowlarr API key up front — used by the
     // Indexer row to show a "not configured" fallback message.
-    prowlarr_api_key_available_ = !env_or_empty("MDB_PROWLARR_API_KEY").empty();
+    prowlarr_api_key_available_ = !resolve_prowlarr_key().empty();
 }
 
 void MbSettingsScreen::enter() {
@@ -223,14 +303,35 @@ void MbSettingsScreen::build_rows() {
         rows_.push_back({k, std::move(label), h});
     };
 
-    add(RowKind::ServiceStatus,        "Services");
-    add(RowKind::QualityProfile,       "Quality profile");
+    // Section header height — gold ZenDots heading + 8 px gap above the
+    // first row in the section. Matches the Marquee design mockup where
+    // each section reads as a clear group with breathing room.
+    constexpr float kSectionHeaderH = 38.0f;
+
+    // ---- Library ----------------------------------------------------
+    // Quality + storage-related preferences. Top-of-list because these
+    // are the settings most operators touch on every fresh install.
+    add(RowKind::SectionHeader,        "Library", kSectionHeaderH);
+    add(RowKind::QualityProfile,       "Quality preference");
+    add(RowKind::AutoGrabOnAdd,        "Auto-grab on add");
+    add(RowKind::PlaybackShowFrame,    "Wood frame during playback");
+    add(RowKind::StoragePath,          "Storage path");
+    add(RowKind::RefreshLibrary,       "Refresh library");
+
+    // ---- Downloads --------------------------------------------------
+    // Per-download tuning + bulk actions on the active queue.
+    add(RowKind::SectionHeader,        "Downloads", kSectionHeaderH);
     add(RowKind::MinSeeders,           "Minimum seeders");
-    add(RowKind::StoragePath,          "Storage");
     add(RowKind::LowSpaceThresholdGb,  "Low-space pause threshold (GB)");
     add(RowKind::MaxConcurrentDownloads, "Max concurrent downloads");
+    add(RowKind::RetryAllFailed,       "Retry all failed downloads");
+    add(RowKind::PauseAllDownloads,    "Pause all downloads");
+    add(RowKind::ResumeAllDownloads,   "Resume all downloads");
 
-    // Indexer row expands to fit up to kIndexerMaxVisible rows of sub-list.
+    // ---- Sources ----------------------------------------------------
+    // Where Radarr looks for releases. Indexer row expands to fit up to
+    // kIndexerMaxVisible rows of its embedded sub-list.
+    add(RowKind::SectionHeader,        "Sources", kSectionHeaderH);
     int visible_indexers = std::min<int>(static_cast<int>(indexers_.size()),
                                          kIndexerMaxVisible);
     if (visible_indexers <= 0) visible_indexers = 1;  // room for "not configured"
@@ -238,13 +339,49 @@ void MbSettingsScreen::build_rows() {
         + static_cast<float>(visible_indexers) * kIndexerRowHeight;
     add(RowKind::IndexerToggles,       "Indexers", indexer_height);
 
-    add(RowKind::RetryAllFailed,       "Retry all failed downloads");
-    add(RowKind::PauseAllDownloads,    "Pause all downloads");
-    add(RowKind::ResumeAllDownloads,   "Resume all downloads");
+    // ---- CRT overlay ------------------------------------------------
+    // Independent CRT intensity stack for the Marquee menu screens —
+    // each row cycles OFF / Low / Medium / High on SELECT and writes
+    // back to state.display_settings.mb_<name>. The kiosk's home-menu
+    // CRT settings (in the main Settings menu) stay untouched, so
+    // operators can dial in different looks for the two contexts.
+    // Skipped during movie playback (operator direction).
+    add(RowKind::SectionHeader,        "CRT overlay", kSectionHeaderH);
+    add(RowKind::CrtScanlines,         "Scanlines");
+    add(RowKind::CrtWarmth,            "Warmth");
+    add(RowKind::CrtGlow,              "Glow");
+    add(RowKind::CrtRgbMask,           "RGB mask");
+    add(RowKind::CrtBloom,             "Bloom");
+    add(RowKind::CrtInterlacing,       "Interlacing");
+    add(RowKind::CrtFlicker,           "Flicker");
+
+    // ---- Diagnostics ------------------------------------------------
+    // Live service-health dots. SELECT re-pings (and BTN2 is a global
+    // refresh shortcut anywhere on this screen).
+    add(RowKind::SectionHeader,        "Diagnostics", kSectionHeaderH);
+    add(RowKind::ServiceStatus,        "Services");
+
+    // ---- Danger Zone ------------------------------------------------
+    // Hide-feature is destructive (re-locks the Media Browser back
+    // behind the secret-sequence unlock); it gets its own section so
+    // it doesn't mingle with everyday tuning.
+    add(RowKind::SectionHeader,        "Danger zone", kSectionHeaderH);
     add(RowKind::HideMovies,           "Hide Movies feature");
+
+    // ---- Footer fine-print -----------------------------------------
     add(RowKind::AdvancedUrlHint,      "Advanced", 36.0f);
 
+    // After rebuilding, push cursor onto a focusable row if it landed
+    // on a non-focusable one (SectionHeader / AdvancedUrlHint).
     cursor_ = std::clamp(cursor_, 0, static_cast<int>(rows_.size()) - 1);
+    int guard = static_cast<int>(rows_.size());
+    while (guard-- > 0 &&
+           (rows_[cursor_].kind == RowKind::SectionHeader ||
+            rows_[cursor_].kind == RowKind::AdvancedUrlHint)) {
+        if (cursor_ + 1 < static_cast<int>(rows_.size())) ++cursor_;
+        else if (cursor_ > 0) --cursor_;
+        else break;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +413,7 @@ void MbSettingsScreen::refresh_root_folders() {
 void MbSettingsScreen::refresh_indexers() {
     indexers_.clear();
     if (!prowlarr_api_key_available_) return;
-    const std::string api_key = env_or_empty("MDB_PROWLARR_API_KEY");
+    const std::string api_key = resolve_prowlarr_key();
     const std::string header  = "X-Api-Key: " + api_key;
     const std::string body    = http_get(
         "http://localhost:9696/api/v1/indexer", header);
@@ -337,6 +474,21 @@ Screen MbSettingsScreen::handle_input(
             return Screen::Browse;
         }
 
+        // BTN1 (PREV, yellow) — walk one tab left in the Marquee strip.
+        // v1.6.x strip order: Popular | Top Rated | Library | Search | Settings.
+        // Settings sits at index 4 (rightmost), so PREV always lands on
+        // Search at index 3.
+        if (e.action == platform::InputAction::PREV && e.pressed) {
+            return Screen::Search;
+        }
+
+        // BTN3 (NEXT, green) — would walk one tab right, but Settings is
+        // the rightmost tab — eat the event so it doesn't fall through.
+        // Same vocabulary as Search's NEXT dead-end pre-v1.6.x.
+        if (e.action == platform::InputAction::NEXT && e.pressed) {
+            continue;
+        }
+
         // BTN2 (PLAY_PAUSE): global "refresh service health" shortcut.
         // Cheap — pings the three services and updates the status dots.
         // Exposes a transient banner so the user sees what happened.
@@ -352,10 +504,42 @@ Screen MbSettingsScreen::handle_input(
             continue;
         }
 
-        // Vertical movement: move cursor between rows.
-        if (e.action == platform::InputAction::ROTATE_VERTICAL) {
+        // Row-kind classifiers — keep the navigation/edit/action vocabulary
+        // in one place so adding a new row only requires updating these
+        // and the build_rows() / render() switches.
+        auto is_non_focusable = [](RowKind k) {
+            return k == RowKind::SectionHeader ||
+                   k == RowKind::AdvancedUrlHint;
+        };
+        auto is_cyclable = [](RowKind k) {
+            // Rows whose value is adjusted by rotary CW/CCW once the row
+            // is "highlighted" (editing_=true). SELECT enters and exits
+            // the edit mode for these.
+            return k == RowKind::QualityProfile ||
+                   k == RowKind::MinSeeders ||
+                   k == RowKind::LowSpaceThresholdGb ||
+                   k == RowKind::MaxConcurrentDownloads;
+        };
+
+        // Vertical movement (D-pad UP/DOWN): always vertical row nav,
+        // and always exits editing mode if it was active. ROTATE_VERTICAL
+        // is the unambiguous "I want to leave this row" gesture.
+        const bool is_vertical_event =
+            (e.action == platform::InputAction::ROTATE_VERTICAL);
+        // ROTATE (rotary CW/CCW + D-pad LEFT/RIGHT) acts as vertical row
+        // nav when not editing, and as a value adjuster when editing.
+        // This is the v1.6.x "rotary walks rows by default; click to
+        // adjust" behavior the operator asked for — D-pad LEFT/RIGHT
+        // inherits the same dual mode for parity.
+        const bool is_rotate_nav =
+            (e.action == platform::InputAction::ROTATE && !editing_);
+
+        if (is_vertical_event || is_rotate_nav) {
             int delta = e.delta;
             if (delta == 0) continue;
+            // Any vertical-style movement leaves edit mode — cleaner than
+            // making the user click again to exit.
+            editing_ = false;
             int n = static_cast<int>(rows_.size());
             if (n == 0) continue;
 
@@ -377,20 +561,18 @@ Screen MbSettingsScreen::handle_input(
 
             cursor_ = std::clamp(cursor_ + delta, 0, n - 1);
 
-            // Skip any non-focusable row (currently only AdvancedUrlHint,
-            // which is read-only fine print). We step in the direction we
-            // were already moving — if the caller walked DOWN onto a
-            // non-focusable row we keep walking DOWN; if we hit the end
-            // we reverse. This keeps the cursor off non-focusable rows
-            // even if someone later inserts another row after them.
+            // Skip any non-focusable row (SectionHeader, AdvancedUrlHint).
+            // We step in the direction we were already moving — if the
+            // caller walked DOWN onto a non-focusable row we keep walking
+            // DOWN; if we hit the end we reverse. This keeps the cursor
+            // off non-focusable rows even if more get inserted later.
             {
                 int step = (delta > 0) ? +1 : -1;
                 // Bound the scan to n iterations so we can't infinite-loop
                 // if every row is marked non-focusable (shouldn't happen,
                 // but defensive).
                 int guard = n;
-                while (guard-- > 0 &&
-                       rows_[cursor_].kind == RowKind::AdvancedUrlHint) {
+                while (guard-- > 0 && is_non_focusable(rows_[cursor_].kind)) {
                     int candidate = cursor_ + step;
                     if (candidate < 0 || candidate >= n) {
                         // Fell off the end — reverse direction and keep
@@ -412,8 +594,10 @@ Screen MbSettingsScreen::handle_input(
             continue;
         }
 
-        // Horizontal movement: adjust the focused control.
-        if (e.action == platform::InputAction::ROTATE) {
+        // ROTATE while editing: adjust the focused row's value. Only
+        // cyclable rows have an editing mode; toggles flip inline on
+        // SELECT and don't enter edit mode at all.
+        if (e.action == platform::InputAction::ROTATE && editing_) {
             int delta = e.delta;
             if (delta == 0) continue;
             switch (rows_[cursor_].kind) {
@@ -421,7 +605,7 @@ Screen MbSettingsScreen::handle_input(
                     if (quality_profiles_.empty()) break;
                     int n = static_cast<int>(quality_profiles_.size());
                     quality_profile_idx_ =
-                        (quality_profile_idx_ + delta % n + n) % n;
+                        (((quality_profile_idx_ + delta) % n) + n) % n;
                     break;
                 }
                 case RowKind::MinSeeders:
@@ -437,13 +621,83 @@ Screen MbSettingsScreen::handle_input(
                         prefs_.max_concurrent_downloads + delta, 1, 5);
                     break;
                 default:
+                    // Non-cyclable rows shouldn't have entered editing —
+                    // belt-and-suspenders.
+                    editing_ = false;
                     break;
             }
             continue;
         }
 
-        // SELECT: toggle checkbox / fire button.
+        // SELECT (rotary click + gamepad A): commit/exit editing on
+        // cyclables, toggle on booleans, execute on actions.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
+            // Already editing? SELECT exits — value is committed by the
+            // ROTATE adjustments while editing was active.
+            if (editing_) {
+                editing_ = false;
+                continue;
+            }
+
+            // Cyclable rows: SELECT enters editing (next ROTATE adjusts).
+            if (is_cyclable(rows_[cursor_].kind)) {
+                // For QualityProfile, only enter editing if there's
+                // something to cycle through; otherwise show a banner.
+                if (rows_[cursor_].kind == RowKind::QualityProfile &&
+                    quality_profiles_.empty()) {
+                    show_banner("No Radarr quality profiles loaded");
+                    continue;
+                }
+                editing_ = true;
+                continue;
+            }
+
+            // Boolean toggles: flip inline, no edit mode needed.
+            if (rows_[cursor_].kind == RowKind::AutoGrabOnAdd) {
+                prefs_.auto_grab_on_add = !prefs_.auto_grab_on_add;
+                continue;
+            }
+            if (rows_[cursor_].kind == RowKind::PlaybackShowFrame) {
+                // Toggle THE persisted display setting (lives in
+                // state.display_settings.mb_playback_show_frame so the
+                // render path in main.cpp can read it directly). Save
+                // immediately so the choice survives reboots — same
+                // pattern enhanced_crt_enabled uses.
+                state_.display_settings.mb_playback_show_frame =
+                    !state_.display_settings.mb_playback_show_frame;
+                ::app::SettingsPersistence::save_settings(state_);
+                continue;
+            }
+
+            // CRT-overlay intensity rows: SELECT cycles OFF / Low /
+            // Medium / High via DisplaySettings::cycle_setting (the
+            // same helper the kiosk's main Display settings use).
+            // Each row writes back to the corresponding mb_<name>
+            // float and persists immediately so the choice survives
+            // reboots. Independent from the kiosk's intensities —
+            // adjusting "Scanlines" here only changes the Marquee
+            // menu look, not the home menu.
+            {
+                auto& s = state_.display_settings;
+                float* target = nullptr;
+                switch (rows_[cursor_].kind) {
+                    case RowKind::CrtScanlines:   target = &s.mb_scanline_intensity;    break;
+                    case RowKind::CrtWarmth:      target = &s.mb_warmth_intensity;      break;
+                    case RowKind::CrtGlow:        target = &s.mb_glow_intensity;        break;
+                    case RowKind::CrtRgbMask:     target = &s.mb_rgb_mask_intensity;    break;
+                    case RowKind::CrtBloom:       target = &s.mb_bloom_intensity;       break;
+                    case RowKind::CrtInterlacing: target = &s.mb_interlacing_intensity; break;
+                    case RowKind::CrtFlicker:     target = &s.mb_flicker_intensity;     break;
+                    default: break;
+                }
+                if (target) {
+                    s.cycle_setting(*target);
+                    ::app::SettingsPersistence::save_settings(state_);
+                    continue;
+                }
+            }
+
+            // Action / display rows: dispatch immediately.
             switch (rows_[cursor_].kind) {
                 case RowKind::ServiceStatus:
                     // SELECT on the services row re-checks them.
@@ -453,7 +707,7 @@ Screen MbSettingsScreen::handle_input(
                     if (!prowlarr_api_key_available_ || indexers_.empty()) {
                         show_banner(
                             "Prowlarr API key not configured — "
-                            "set MDB_PROWLARR_API_KEY");
+                            "set PROWLARR_API_KEY in services/.env");
                     } else if (indexer_cursor_ >= 0 &&
                                indexer_cursor_ < static_cast<int>(
                                    indexers_.size())) {
@@ -468,6 +722,10 @@ Screen MbSettingsScreen::handle_input(
                             "use Prowlarr web UI to persist");
                     }
                     break;
+                case RowKind::RefreshLibrary:
+                    show_banner("Library refresh not implemented in MVP — "
+                                "use Radarr web UI");
+                    break;
                 case RowKind::RetryAllFailed:
                     show_banner("Not implemented in MVP — use Radarr web UI");
                     break;
@@ -479,6 +737,8 @@ Screen MbSettingsScreen::handle_input(
                     trigger_hide_feature();
                     return Screen::Exit;
                 default:
+                    // SectionHeader / AdvancedUrlHint / StoragePath are
+                    // non-actionable; SELECT is a no-op.
                     break;
             }
             continue;
@@ -508,19 +768,44 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
     // --- Top header (Marquee design) ---------------------------------
-    // "Settings" title (left, ZenDots) + "Movies · Magic Dingus Box"
-    // sub-info (right, dim small). No bottom rule — the row dividers
-    // below provide the visual structure.
+    // "Settings" title (left, ZenDots) + the same 5-tab Marquee strip
+    // BrowseScreen / LibraryScreen / SearchScreen all render, with
+    // Settings marked active (gold border + gold label). Keeps visual
+    // continuity across the Marquee section so the user sees one
+    // consistent UI when walking BTN1/BTN3 across the strip.
+    //
+    // The previous "Movies · Magic Dingus Box" sub-info string is
+    // dropped — the active "Settings" tab in the strip is already the
+    // unambiguous "you are here" cue, and the sub-info would fight the
+    // tabs for header real estate.
     namespace chrome = ::media_browser::ui::chrome;
-    chrome::draw_screen_header(r, screen_w, "Settings",
-                               /*tabs=*/{}, /*focused_tab=*/-1,
-                               /*sub_info=*/"Movies · Magic Dingus Box");
+    {
+        // v1.6.x strip: Now Playing dropped, Settings added on the right.
+        // Settings sits at index 4 (rightmost). Labels must stay in sync
+        // with kVisibleTabs[] in browse_screen.cpp.
+        const std::vector<chrome::TabSpec> tabs = {
+            {"Popular",   chrome::TabState::Inactive},
+            {"Top Rated", chrome::TabState::Inactive},
+            {"Library",   chrome::TabState::Inactive},
+            {"Search",    chrome::TabState::Inactive},
+            {"Settings",  chrome::TabState::Active},
+        };
+        chrome::draw_screen_header(r, screen_w, "Settings",
+                                   tabs, /*focused_tab=*/-1);
+    }
 
     // --- Scroll window -----------------------------------------------
-    // List sits between the header rule and the bottom hint footer. We
-    // reserve ~26px at the bottom for the centered hint line.
+    // List sits between the chrome header (bottom = 120) and the chrome
+    // footer-hints row (drawn at y = screen_h - kFrameInset_px(40)
+    // - kPad3(16) = h-56, with the keyhint glyphs sitting above that
+    // baseline). We reserve enough at the bottom for the footer + the
+    // wood-frame inset so no row is clipped by either.
+    //   list_bottom = h - 40 (frame inset) - 30 (footer band) - 16 (pad)
+    //               = h - 86
+    // Pre-v1.6.x list_bottom was h-32 which let the last row render
+    // under the wood frame.
     float list_top    = kListTopY;
-    float list_bottom = h - 32.0f;          // leaves room for footer hint
+    float list_bottom = h - 86.0f;
     float list_h      = list_bottom - list_top;
 
     // Compute the y-position of each row in the logical (un-scrolled)
@@ -561,7 +846,11 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int sz = th.font_small_size;
             int tw = r.mb_text_width(msg, sz);
             float mx = w - kPaddingX - static_cast<float>(tw);
-            float my = kHeaderRuleY + 18.0f
+            // Sits in the gap between the chrome header (ends at y=120)
+            // and the first row (kListTopY=160). Anchored at y=130 so it
+            // reads as a transient sub-line below the title rather than
+            // overlapping the tab strip.
+            float my = 130.0f
                      + static_cast<float>(r.mb_text_baseline(sz));
             r.mb_draw_text(msg, mx, my, sz, th.accent, 0.95f);
         }
@@ -594,6 +883,28 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
         bool focused = (static_cast<int>(i) == cursor_);
 
+        // ---- Section headers --------------------------------------
+        // Gold ZenDots heading with a steel-blue underline rule. Owned
+        // visually by the rows below it — no value column, no marker,
+        // not focusable. Matches the Library / Network / Sources groups
+        // in the Marquee design mockup.
+        if (row.kind == RowKind::SectionHeader) {
+            constexpr int kSectionFontPx = 20;
+            const int sh_baseline = r.mb_text_baseline(kSectionFontPx);
+            // Heading sits ~10 px down from the section top, so the
+            // gap above it reads as separation from the previous group.
+            const float sh_y = y_top + 10.0f
+                             + static_cast<float>(sh_baseline);
+            r.mb_draw_title_text(row.label, row_x, sh_y,
+                                 kSectionFontPx, th.accent);
+            // Thin steel-blue rule sits at the section's bottom edge so
+            // it visually anchors the heading to the rows beneath.
+            const float rule_y = y_top + row.height - 1.0f;
+            r.mb_draw_line(row_x, rule_y, row_x + row_w, rule_y,
+                           1.0f, th.dim, 0.5f);
+            continue;
+        }
+
         // Label x is the same for every row; value column right-edge is
         // at row_x + row_w. We keep the label_x flush left (no inset)
         // because there's no row fill to inset against.
@@ -603,17 +914,37 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                       + static_cast<float>(baseline);
         float value_x_right = row_x + row_w;
 
-        // Focused-row decoration: blinking gold ◂ marker 18px left of
-        // the label baseline-vertical-center. We skip the marker for
-        // AdvancedUrlHint (non-focusable fine print) and for the
-        // HideMovies row (which uses its own red/orange marker variant
-        // to underline the destructive nature).
+        // ---- Edit-mode highlight ----------------------------------
+        // When the focused row is in editing mode, draw a 2 px gold
+        // rectangle around the whole row body — same vocabulary as the
+        // active-tab rectangle on the chrome strip. The user enters
+        // edit mode via SELECT on a cyclable row; ROTATE then adjusts
+        // the value, and another SELECT exits. Visual state mirrors the
+        // Marquee design mockup's gold-bordered "Quality preference"
+        // row.
+        if (focused && editing_) {
+            r.mb_stroke_rect(row_x - 6.0f, y_top + 2.0f,
+                             row_w + 12.0f, kRowHeight - 4.0f,
+                             2.0f, th.accent, 0.95f);
+        }
+
+        // Focused-row decoration: blinking gold ◂ marker 18 px left of
+        // the label baseline-vertical-center. Drawn only in NAVIGATION
+        // mode (not editing) — when editing, the gold border above is
+        // the unambiguous "you are here" cue and the marker would feel
+        // redundant. Also skipped for AdvancedUrlHint (non-focusable
+        // fine print) and HideMovies (uses a red/orange variant below
+        // to underline its destructive nature).
         ::ui::Color label_color = focused ? th.accent : th.fg;
-        if (focused && blink_on && row.kind != RowKind::AdvancedUrlHint
+        if (focused && blink_on && !editing_
+            && row.kind != RowKind::AdvancedUrlHint
             && row.kind != RowKind::HideMovies) {
+            // Row marker sits to the LEFT of the label and points RIGHT
+            // → at the label text (like an arrowhead indicating focus).
             draw_cursor_marker(r,
                                label_x - kCursorMarkerOffsetX, center_y,
-                               th.accent, 1.0f);
+                               th.accent, 1.0f,
+                               /*point_right=*/true);
         }
         if (row.kind != RowKind::AdvancedUrlHint) {
             r.mb_draw_text(row.label, label_x, label_y, label_sz,
@@ -701,6 +1032,100 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                    tx - 8.0f - static_cast<float>(lw),
                                    ly, small_sz, th.dim, 0.85f);
                 }
+                break;
+            }
+
+            case RowKind::AutoGrabOnAdd: {
+                // Boolean toggle. Renders "On" in green / "Off" in dim
+                // on the right, no ◀ ▶ hints (single-click toggle, no
+                // edit mode). Same value-column right-edge as cyclable
+                // rows so the column reads as a coherent vertical band.
+                const std::string val = prefs_.auto_grab_on_add ? "On" : "Off";
+                const ::ui::Color val_color = prefs_.auto_grab_on_add
+                    ? th.highlight1     // green
+                    : th.dim;
+                int tw = r.mb_text_width(val, value_sz);
+                r.mb_draw_text(val,
+                               value_x_right - static_cast<float>(tw),
+                               label_y, value_sz, val_color,
+                               focused ? 1.0f : 0.9f);
+                break;
+            }
+
+            case RowKind::PlaybackShowFrame: {
+                // Boolean toggle for the wood-frame overlay during
+                // movie playback. Reads / writes
+                // state.display_settings.mb_playback_show_frame (saved
+                // to config/settings.json on each toggle). Same On/Off
+                // visual treatment as AutoGrabOnAdd for consistency.
+                const bool on = state_.display_settings.mb_playback_show_frame;
+                const std::string val = on ? "On" : "Off";
+                const ::ui::Color val_color = on ? th.highlight1 : th.dim;
+                int tw = r.mb_text_width(val, value_sz);
+                r.mb_draw_text(val,
+                               value_x_right - static_cast<float>(tw),
+                               label_y, value_sz, val_color,
+                               focused ? 1.0f : 0.9f);
+                break;
+            }
+
+            case RowKind::CrtScanlines:
+            case RowKind::CrtWarmth:
+            case RowKind::CrtGlow:
+            case RowKind::CrtRgbMask:
+            case RowKind::CrtBloom:
+            case RowKind::CrtInterlacing:
+            case RowKind::CrtFlicker: {
+                // CRT intensity rows. Render OFF/Low/Medium/High based
+                // on the corresponding mb_*_intensity float. Same
+                // bucket boundaries the kiosk's Display settings use
+                // (matches DisplaySettings::cycle_setting threshold
+                // pattern: 0.05 / 0.32 / 0.55 / 0.75).
+                const auto& s = state_.display_settings;
+                float v = 0.0f;
+                switch (row.kind) {
+                    case RowKind::CrtScanlines:   v = s.mb_scanline_intensity;    break;
+                    case RowKind::CrtWarmth:      v = s.mb_warmth_intensity;      break;
+                    case RowKind::CrtGlow:        v = s.mb_glow_intensity;        break;
+                    case RowKind::CrtRgbMask:     v = s.mb_rgb_mask_intensity;    break;
+                    case RowKind::CrtBloom:       v = s.mb_bloom_intensity;       break;
+                    case RowKind::CrtInterlacing: v = s.mb_interlacing_intensity; break;
+                    case RowKind::CrtFlicker:     v = s.mb_flicker_intensity;     break;
+                    default: break;
+                }
+                const char* label =
+                    (v <= 0.05f)  ? "Off"
+                  : (v <= 0.32f)  ? "Low"
+                  : (v <= 0.55f)  ? "Medium"
+                                  : "High";
+                ::ui::Color val_color = (v <= 0.05f) ? th.dim : th.highlight1;
+                int tw = r.mb_text_width(label, value_sz);
+                r.mb_draw_text(label,
+                               value_x_right - static_cast<float>(tw),
+                               label_y, value_sz, val_color,
+                               focused ? 1.0f : 0.9f);
+                break;
+            }
+
+            case RowKind::RefreshLibrary: {
+                // Action row. Right side: a steel-blue "▶ rescans <path>"
+                // hint that doubles as a description of what the action
+                // will do. The arrow is the same U+25B6 glyph the rest
+                // of the Marquee design uses for "active control" cues.
+                std::string root = "/mnt/movies";
+                if (!root_folders_.empty() && !root_folders_[0].path.empty()) {
+                    root = root_folders_[0].path;
+                }
+                const std::string hint =
+                    std::string("\xE2\x96\xB6 rescans ") + root;
+                int tw = r.mb_text_width(hint, small_sz);
+                int sb = r.mb_text_baseline(small_sz);
+                float hy = center_y - (small_sz / 2.0f)
+                         + static_cast<float>(sb);
+                r.mb_draw_text(hint,
+                               value_x_right - static_cast<float>(tw),
+                               hy, small_sz, th.dim,
+                               focused ? 1.0f : 0.85f);
                 break;
             }
 
@@ -928,14 +1353,16 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     r.mb_draw_text(name_drawn, name_x, name_y, small_sz,
                                    name_color, sub_focused ? 1.0f : 0.9f);
 
-                    // Sub-cursor blinking ◂ marker, drawn just inside
-                    // the row's left edge. Smaller than the row marker
-                    // because we're at small font size here.
+                    // Sub-cursor blinking marker, drawn just inside the
+                    // row's left edge. Same right-pointing orientation
+                    // as the parent row marker so the tip arrows at
+                    // the indexer name text.
                     if (sub_focused && blink_on) {
                         draw_cursor_marker(
                             r,
                             label_x, sub_center_y,
-                            th.accent, 1.0f);
+                            th.accent, 1.0f,
+                            /*point_right=*/true);
                     }
                 }
                 break;
@@ -974,7 +1401,7 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     // for visual contrast against the gold border.
                     float marker_tip_x = btn_x + btn_w - 18.0f;
                     draw_cursor_marker(r, marker_tip_x, center_y,
-                                       th.accent2, 1.0f);
+                                       th.dim, 1.0f);
                 }
                 break;
             }
@@ -1030,38 +1457,35 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             }
         }
 
-        // --- Section dividers (drawn AFTER each row group's bottom) --
-        // We draw these at the bottom of specific rows so they don't
-        // get clipped when scrolled and so they sit BETWEEN logical
-        // groups rather than ON the row boundary itself.
-        //   - After ServiceStatus (separates "diagnostics" from "tunables")
-        //   - After MaxConcurrentDownloads (separates "tunables" from
-        //     "indexers")
-        //   - After IndexerToggles (separates "indexers" from "actions")
-        //   - Before HideMovies (red/orange — danger zone divider)
-        // The 0.6 alpha matches the muted divider feel — strong enough
-        // to read as a section break, soft enough to not compete with
-        // the steel-blue header rule.
-        float div_y = y_top + row.height + (kRowGap / 2.0f);
-        if (row.kind == RowKind::ServiceStatus) {
-            draw_section_divider(div_y, th.accent2, 0.6f);
-        } else if (row.kind == RowKind::MaxConcurrentDownloads) {
-            draw_section_divider(div_y, th.accent2, 0.6f);
-        } else if (row.kind == RowKind::IndexerToggles) {
-            draw_section_divider(div_y, th.accent2, 0.6f);
-        } else if (row.kind == RowKind::ResumeAllDownloads) {
-            // Danger-zone divider. Red/orange to telegraph that the next
-            // row (HideMovies) is destructive.
-            draw_section_divider(div_y, th.highlight2, 0.7f);
-        }
+        // Inter-group dividers retired in v1.6.x — SectionHeader rows
+        // (Library / Downloads / Sources / Diagnostics / Danger zone)
+        // now carry the visual separation. The draw_section_divider
+        // helper above stays declared in case future row kinds need
+        // ad-hoc dividers (e.g. a one-off rule above HideMovies for
+        // emphasis); right now nothing calls it.
+        (void)draw_section_divider;
     }
 
     // --- Footer hint (Marquee design) --------------------------------
-    chrome::draw_footer_hints(r, screen_w, screen_h, {
-        {"A",      "Change"},
-        {"BTN2",   "Refresh"},
-        {"BTN4",   "Back"},
-    });
+    // Hints differ by mode so the user always sees what the controls do
+    // RIGHT NOW. BTN1 surfaces the tab nav (Settings → Search). No BTN3
+    // hint — Settings is the rightmost tab and BTN3 is a dead-end here.
+    if (editing_) {
+        chrome::draw_footer_hints(r, screen_w, screen_h, {
+            {"Rotary", "Adjust"},
+            {"A",      "Save"},
+            {"Down",   "Cancel"},
+            {"BTN4",   "Back"},
+        });
+    } else {
+        chrome::draw_footer_hints(r, screen_w, screen_h, {
+            {"BTN1",   "Search"},
+            {"Rotary", "Nav"},
+            {"A",      "Edit"},
+            {"BTN2",   "Refresh"},
+            {"BTN4",   "Back"},
+        });
+    }
 
     // --- Transient banner (modal-style) ------------------------------
     // Identical treatment to DetailScreen's banner: dim-bg fill +

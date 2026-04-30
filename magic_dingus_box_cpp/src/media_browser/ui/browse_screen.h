@@ -19,24 +19,32 @@ class TmdbClient;
 
 namespace media_browser::ui {
 
-// Task 18 + Phase A/B (TMDB Discover overhaul): the Browse screen.
+// Task 18 + Phase A/B (TMDB Discover overhaul) + v1.6.x Marquee redesign:
+// the Browse screen.
 //
-// Layout:
-//   - Top strip (~72px): 9 chips split into two groups.
-//       - Content chips (5): Popular, Now Playing, Top Rated, Upcoming,
-//         Filter. Activating one reloads the poster grid. Active chip is
-//         drawn in the theme accent color; inactive content chips are
-//         dim.
-//       - A thin vertical divider separates the groups.
-//       - Nav chips (4): Search, Library, Queue, Settings. Activating
-//         any of them transitions to the corresponding Screen instead of
-//         reloading the grid. Nav chips are rendered in action/accent2
-//         color when unfocused to set them apart from content chips.
-//   - Filter panel (Phase B): rendered below the strip when Filter is
-//     the active content category. Exposes Genre, Year, Sort-By. Any
-//     change re-queries /discover/movie.
-//   - Main area: 4-column poster grid.
-//   - Bottom bar (~40px): control hints.
+// Layout (Marquee, post-v1.6.x):
+//   - Chrome header (~120px): "Popular" title (left, ZenDots) + 5-tab
+//     Marquee strip (right). Strip order, left-to-right:
+//       Popular | Top Rated | Library | Search | Settings
+//     - Popular and TopRated are content tabs — activating reloads the
+//       9-column poster grid from the corresponding TMDB endpoint.
+//     - Library, Search, and Settings are transition-only tabs —
+//       selecting them returns the corresponding Screen enum value to
+//       the dispatcher in main.cpp, which swaps the active screen.
+//     - Active tab gets a gold rectangle border + gold label; inactive
+//       tabs render in dim cream.
+//   - The legacy 9-chip "two-group" layout (Popular/NowPlaying/TopRated/
+//     Upcoming/Filter | Search/Library/Queue/Settings) was retired in
+//     v1.6.x. NowPlaying was dropped (overlapped Popular on TMDB data).
+//     Filter / Upcoming / Queue chips are no longer surfaced through the
+//     strip — Filter is deferred to a future Phase C; Queue is reachable
+//     via Browse → BTN3 dead-end (will revisit when Queue gets its own
+//     entry point). Settings was promoted to the strip's right end.
+//   - Main area: 9-column poster grid (2 visible rows of 2:3 cards).
+//     Posters use the shared chrome::draw_poster_card helper for the
+//     tinted-fill background, IN LIBRARY badge, and bottom-right year
+//     pill. Title text wraps to 2 lines below the card.
+//   - Bottom bar (~30px): control hints via chrome::draw_footer_hints.
 //
 // Data source (Phase A):
 //   TMDB Discover / category endpoints directly — not Radarr's

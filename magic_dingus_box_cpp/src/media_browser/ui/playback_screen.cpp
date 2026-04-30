@@ -257,7 +257,14 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float h = static_cast<float>(screen_h);
 
     // Title marquee — top-left, 3 seconds with linear fade-out over the
-    // last 500 ms. Matches Detail's "FEATURE PRESENTATION" header style.
+    // last 500 ms. Sits BELOW the 40 px wood-frame top band (which would
+    // otherwise hide the heading), with breathing room above the inset
+    // movie. Pre-v1.6.x this was at y=38 / rule y=58 — those put both
+    // baseline and rule UNDER the wood frame.
+    //   y_baseline = 40 (frame inner edge) + ~30 (heading height + pad) = 70
+    //   y_rule     = baseline + 20
+    // kPaddingX matches mb_chrome::kSafeInset_px so the heading lines up
+    // horizontally with every other Marquee screen's title.
     auto now = std::chrono::steady_clock::now();
     if (now < title_marquee_until_) {
         auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -270,14 +277,14 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (!movie_title_.empty()) {
             heading += " — " + movie_title_;
         }
-        const float kPaddingX = 32.0f;
-        const float kBaselineY = 38.0f;
+        const float kPaddingX  = 60.0f;   // matches chrome::kSafeInset_px
+        const float kBaselineY = 70.0f;   // below the 40 px wood top band
         r.mb_draw_title_text(heading, kPaddingX, kBaselineY,
-                             th.font_heading_size, th.accent2, alpha);
+                             th.font_heading_size, th.dim, alpha);
         // Underline beneath, just like Detail's header rule.
-        const float rule_y = 58.0f;
+        const float rule_y = 90.0f;       // 20 px under heading baseline
         r.mb_draw_line(kPaddingX, rule_y, w - kPaddingX, rule_y,
-                       2.0f, th.accent2, 0.95f * alpha);
+                       2.0f, th.dim, 0.95f * alpha);
     }
 
     // Match the main UI's playlist seek bar exactly — same colors,
@@ -289,14 +296,20 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // PlaybackScreen handle_input path already manages correctly.
     r.mb_render_seek_bar(state_);
 
-    // Persistent control hint — bottom-right, mirrors Media Browser footer.
+    // Persistent control hint — bottom-right. Positioned so the text
+    // sits ABOVE the 40 px wood-frame bottom band (which would otherwise
+    // clip it) AND above the seek bar at y=660 so the two don't crowd
+    // each other when the user scrubs. Pre-v1.6.x this was at
+    // y = h - 12, which put the baseline INSIDE the wood frame band.
+    //   ty (text top) = h - 40 (frame inner edge) - 16 (breathing) - sz
+    //                 = h - 56 - sz; baseline = ty + sz
     {
         std::string hint = "BTN4: stop   PLAY: pause   ROTATE: seek";
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         int tw = r.mb_text_width(hint, sz);
-        float tx = w - 32.0f - static_cast<float>(tw);
-        float ty = h - 12.0f - static_cast<float>(sz)
+        float tx = w - 60.0f - static_cast<float>(tw);
+        float ty = h - 56.0f
                  + static_cast<float>(baseline);
         r.mb_draw_text(hint, tx, ty, sz, th.dim, 0.7f);
     }

@@ -85,12 +85,13 @@ public:
 private:
     enum class Focus { Keyboard, Results };
 
-    // 5-column grid matches Browse / Library so the user sees more
-    // results at once. The keyboard still consumes the top ~40% of the
-    // screen, so typically only one row of posters is visible — that's
-    // expected; the lookup fetches more than 5 hits and the grid scrolls
-    // vertically through them.
-    static constexpr int kGridCols = 5;
+    // 9-column grid matches Browse / Library exactly — same cell width,
+    // same poster aspect, same chrome::draw_poster_card chrome — so all
+    // three Marquee grids read as one consistent vocabulary. The
+    // keyboard still consumes the top ~50% of the screen, so typically
+    // only one row of posters is visible at a time; the result list
+    // scrolls vertically when there are more than kGridCols hits.
+    static constexpr int kGridCols = 9;
     static constexpr int kDebounceMs = 400;
 
     void run_lookup_if_due();

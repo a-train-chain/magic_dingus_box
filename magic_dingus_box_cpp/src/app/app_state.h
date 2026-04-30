@@ -291,6 +291,48 @@ public:
         // Persisted in config/settings.json as display.enhanced_crt_enabled.
         bool enhanced_crt_enabled = false;
 
+        // Media Browser playback wood-frame toggle (v1.6.x).
+        //   true  — wood-frame overlay stays visible during movie playback,
+        //           and the video is inset 40 px on every side to fit
+        //           cleanly INSIDE the frame's interior.
+        //   false — wood-frame is hidden during playback and the movie
+        //           fills the whole 1280×720 framebuffer (the same look
+        //           operators saw before the Marquee redesign added the
+        //           wood-frame asset).
+        // Default true matches the visual intent of the Marquee design.
+        // The toggle row lives in MovieSettings → Library, alongside
+        // Quality preference / Auto-grab on add. Persisted in
+        // config/settings.json as display.mb_playback_show_frame.
+        bool mb_playback_show_frame = true;
+
+        // Media Browser CRT-overlay intensities — independent from the
+        // kiosk's main-menu values above. Each one mirrors the
+        // corresponding scanline/warmth/etc. field semantically and is
+        // written by the MB Settings → "CRT overlay" rows. Defaults are
+        // 0 so a brand-new Pi has zero overlay on the Marquee menus
+        // until the operator dials them in. On upgrade, settings_persistence
+        // load falls back to inheriting the kiosk values when the
+        // mb_* keys aren't present in settings.json yet — that way an
+        // upgrading operator doesn't see a sudden visual regression
+        // on their MB menus the first frame after install.
+        //
+        // CRT effects on MB menus go through the legacy procedural
+        // overlay path (render_crt_effects), called from main.cpp's
+        // MB render block AFTER the per-frame value-swap that
+        // temporarily aliases mb_* into the kiosk fields the
+        // renderer reads. The swap is per-frame, scoped, and
+        // restores the kiosk values right after render — so the
+        // home-menu UI never sees the MB values.
+        //
+        // Persisted in config/settings.json as display.mb_<name>.
+        float mb_scanline_intensity   = 0.0f;
+        float mb_warmth_intensity     = 0.0f;
+        float mb_glow_intensity       = 0.0f;
+        float mb_rgb_mask_intensity   = 0.0f;
+        float mb_bloom_intensity      = 0.0f;
+        float mb_interlacing_intensity = 0.0f;
+        float mb_flicker_intensity    = 0.0f;
+
         // Helper to cycle intensity: OFF -> Low (0.25) -> Medium (0.50) -> High (0.75) -> OFF.
         //
         // The four steps are clean fractions (0, 1/4, 1/2, 3/4) so the

@@ -145,7 +145,7 @@ ButtonRect draw_button(::ui::Renderer& r, int x, int y,
     switch (kind) {
         case ButtonKind::Ok:      color = th.highlight1; break;  // green
         case ButtonKind::Warn:    color = th.highlight2; break;  // red
-        case ButtonKind::Action:  color = th.action;     break;  // steel blue
+        case ButtonKind::Action:  color = th.dim;     break;  // steel blue
         case ButtonKind::Neutral:
         default:                  color = th.dim;        break;
     }
@@ -178,89 +178,83 @@ ButtonRect draw_button(::ui::Renderer& r, int x, int y,
 }
 
 // =====================================================================
-// Poster card — colored tint + title overlay + accents + badges
+// Poster card — colored tint background + status badges + year pill
 // =====================================================================
+// Renders a poster cell with minimal in-card chrome so real TMDB
+// artwork (when loaded later) isn't visually obscured by overlay
+// elements that don't fit. Only three things draw on top of the tint:
+//
+//   1. IN LIBRARY badge (top-left, green border)  — shows for owned
+//      movies. Mutually exclusive with #2.
+//   2. Download-progress badge (top-left, red border, "62%") — shows
+//      for movies actively downloading.
+//   3. Year pill (bottom-right) — small year label on a ~70%-opaque
+//      dark-bg backing rect so it stays readable regardless of the
+//      poster's underlying color (a full-bleed white poster like a
+//      faded "Drive" sleeve was previously eating the year text).
+//
+// The title is NOT rendered inside the card. Caller is responsible
+// for drawing the title BELOW the card in the cell's meta area —
+// this keeps the card itself uncluttered when real artwork loads.
 void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
-                      const std::string& title,
+                      const std::string& /*title*/,
                       int year,
                       const ::ui::Color& tint,
                       bool in_library,
-                      int download_pct) {
+                      int download_pct,
+                      const std::string& poster_url) {
     const auto& th = r.mb_theme();
 
-    // Solid tint fill — the dominant visual on the card.
-    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
-                   static_cast<float>(w), static_cast<float>(h),
-                   tint);
-
-    // Top dash accent (small horizontal line, ~30% of width, near the
-    // top edge with breathing room). Color is a lightened version of
-    // the tint approximated by the foreground cream — this matches the
-    // design's "small light line at top of poster" idiom.
-    const float dash_w = static_cast<float>(w) * 0.30f;
-    const float dash_y = static_cast<float>(y) + 16.0f;
-    const float dash_x = static_cast<float>(x) + 16.0f;
-    r.mb_draw_line(dash_x, dash_y,
-                   dash_x + dash_w, dash_y,
-                   2.0f, th.fg, 0.7f);
-
-    // Title overlay: ZenDots, ~24 px, drawn near the upper-third of the
-    // card. Word-wrap to 2 lines max (split on space if title is long).
-    constexpr int kTitleFontPx = 22;
-    const int title_x = x + 16;
-    int title_baseline = y + 16 + 18 + kTitleFontPx;  // dash_y + spacing + font
-
-    // Crude word wrap: split title at the space nearest the midpoint if
-    // it's longer than ~10 chars. Sufficient for the kiosk's poster
-    // density; the renderer doesn't yet have a measure-and-wrap helper.
-    std::string line1 = title;
-    std::string line2;
-    if (title.size() > 10) {
-        size_t mid = title.find(' ', title.size() / 2);
-        if (mid == std::string::npos) mid = title.rfind(' ');
-        if (mid != std::string::npos) {
-            line1 = title.substr(0, mid);
-            line2 = title.substr(mid + 1);
-        }
+    // Background — real TMDB image if `poster_url` is set (with tint as
+    // fallback while it's still loading from the artwork cache), or a
+    // solid tint fill if the caller has no URL. mb_draw_poster_or_tint
+    // is idempotent and side-effect-only-once: calling it every frame
+    // for the same URL is cheap, and the first call kicks off a
+    // background fetch that completes asynchronously.
+    if (!poster_url.empty()) {
+        r.mb_draw_poster_or_tint(poster_url,
+                                 static_cast<float>(x), static_cast<float>(y),
+                                 static_cast<float>(w), static_cast<float>(h),
+                                 tint, 1.0f);
+    } else {
+        r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                       static_cast<float>(w), static_cast<float>(h),
+                       tint);
     }
-    r.mb_draw_title_text(line1,
-                         static_cast<float>(title_x),
-                         static_cast<float>(title_baseline),
-                         kTitleFontPx, th.fg);
-    if (!line2.empty()) {
-        title_baseline += kTitleFontPx + 4;
-        r.mb_draw_title_text(line2,
-                             static_cast<float>(title_x),
-                             static_cast<float>(title_baseline),
-                             kTitleFontPx, th.fg);
-    }
-
-    // Year (bottom-left small label).
-    if (year > 0) {
-        char yr_buf[8];
-        std::snprintf(yr_buf, sizeof(yr_buf), "%d", year);
-        const int year_baseline = y + h - 16;
-        r.mb_draw_text(yr_buf,
-                       static_cast<float>(x + 16),
-                       static_cast<float>(year_baseline),
-                       12, th.fg, 0.85f);
-    }
-
-    // Bottom dash accent (matches top dash, smaller, at bottom-right
-    // corner). Visual breadcrumb that ties the card together.
-    const float bottom_dash_w = static_cast<float>(w) * 0.25f;
-    const float bottom_dash_y = static_cast<float>(y) + static_cast<float>(h) - 14.0f;
-    const float bottom_dash_x = static_cast<float>(x) + static_cast<float>(w)
-                              - 16.0f - bottom_dash_w;
-    r.mb_draw_line(bottom_dash_x, bottom_dash_y,
-                   bottom_dash_x + bottom_dash_w, bottom_dash_y,
-                   2.0f, th.fg, 0.7f);
 
     // Status badges (only one shows at a time per design).
     if (download_pct >= 0) {
         draw_dl_badge(r, x + kPad1, y + kPad1, download_pct);
     } else if (in_library) {
         draw_lib_badge(r, x + kPad1, y + kPad1);
+    }
+
+    // Year pill — bottom-right, with a semi-transparent dark backing
+    // rect so the year stays legible on any underlying poster color
+    // (white sleeves, bright tints, or photographic backdrops once
+    // real artwork loads in this slot).
+    if (year > 0) {
+        constexpr int kYearFontPx = 12;
+        constexpr int kYearPadX   = 6;
+        constexpr int kYearPadY   = 3;
+        char yr_buf[8];
+        std::snprintf(yr_buf, sizeof(yr_buf), "%d", year);
+        const std::string yr = yr_buf;
+        const int text_w = r.mb_text_width(yr, kYearFontPx);
+        const int box_w = text_w + 2 * kYearPadX;
+        const int box_h = kYearFontPx + 2 * kYearPadY;
+        const int box_x = x + w - kPad2 - box_w;
+        const int box_y = y + h - kPad2 - box_h;
+        // 70%-opaque theme.bg behind the year — dark plum-black,
+        // consistent with the rest of the chrome's color language.
+        r.mb_fill_rect(static_cast<float>(box_x), static_cast<float>(box_y),
+                       static_cast<float>(box_w), static_cast<float>(box_h),
+                       th.bg, 0.70f);
+        // Year text itself: cream fg at near-full opacity.
+        r.mb_draw_text(yr,
+                       static_cast<float>(box_x + kYearPadX),
+                       static_cast<float>(box_y + kYearPadY + kYearFontPx - 1),
+                       kYearFontPx, th.fg, 0.95f);
     }
 }
 
@@ -279,17 +273,41 @@ int tab_strip_total_width(::ui::Renderer& r, const std::vector<TabSpec>& tabs) {
     return total;
 }
 
-// Draw a single tab. Caller positions the rect; we draw label + state
-// styling. Active tab uses fg color; inactive uses dim. Focused tab
-// gets the gold focus ring around the tab's bounding box.
+// Draw a single tab. Caller positions the rect; we draw the active /
+// inactive state plus the optional focus ring.
+//
+// Active tab visual (per the Marquee design):
+//   - 2 px gold (accent) border drawn around the full tab bounding box
+//     — the "you are here" indicator the user sees at a glance.
+//   - Tab label rendered in gold (accent) too, so the active section
+//     reads as one cohesive gold-on-bg unit rather than a bordered
+//     block with text in a different color.
+//
+// Inactive tab: dim label, no border.
+//
+// Focused tab (only meaningful if tab navigation has its own focus
+// state — Marquee's BTN1/BTN3 grammar makes activation = focus, so
+// `focused` is effectively unused on Marquee screens but we keep the
+// focus-ring path for any future screen that wants the distinction).
 void draw_one_tab(::ui::Renderer& r,
                   int x, int y, int w, int h,
                   const TabSpec& tab,
                   bool focused) {
     const auto& th = r.mb_theme();
-    const ::ui::Color text_color = (tab.state == TabState::Active) ? th.fg : th.dim;
+    const bool is_active = (tab.state == TabState::Active);
+    const ::ui::Color text_color = is_active ? th.accent : th.dim;
 
-    // Label: ZenDots, vertically centered in the tab box.
+    // Active: gold border around the tab box.
+    if (is_active) {
+        r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                         static_cast<float>(w), static_cast<float>(h),
+                         static_cast<float>(kFocusBorder_px), th.accent);
+    }
+
+    // Label: ZenDots, vertically centered in the tab box. Same family
+    // the kiosk's main playlist UI uses for its title and section
+    // headers, so transitioning between Browse/Library and the home
+    // menu doesn't look like two different products.
     const int label_w = r.mb_title_text_width(tab.label, kTabFontPx);
     const int label_x = x + (w - label_w) / 2;
     // Approx ZenDots baseline: top + (h - font_px)/2 + font_px - small_descent.
@@ -299,7 +317,9 @@ void draw_one_tab(::ui::Renderer& r,
                          static_cast<float>(label_y),
                          kTabFontPx, text_color);
 
-    if (focused) {
+    if (focused && !is_active) {
+        // Focused-but-not-active is rare in Marquee (BTN1/3 promotes
+        // immediately) but we still draw a ring for completeness.
         draw_focus_ring(r, x, y, w, h);
     }
 }

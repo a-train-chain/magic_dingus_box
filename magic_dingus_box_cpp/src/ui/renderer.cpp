@@ -2202,9 +2202,15 @@ void Renderer::mb_fill_background() {
     // the brief transition window before the controller's stop()
     // actually flushes the pipeline). Without this, a 6% alpha gap let
     // the previous main-UI playlist video bleed through.
+    //
+    // Uses bg_lift (#2A232A) — the lifted off-bg from the Marquee
+    // palette — instead of the darker bg (#1F191F). Operator
+    // direction: the deeper black read as too cold/clinical for the
+    // Marquee menus; the lift gives a warmer, more cabinet-like base
+    // that the gold accents and chrome card tints sit better on.
     draw_quad(0.0f, 0.0f,
               static_cast<float>(width_), static_cast<float>(height_),
-              ui::Color(0, 0, 0, 255));
+              theme_->bg_lift);
 }
 
 void Renderer::mb_render_seek_bar(const app::AppState& state) {

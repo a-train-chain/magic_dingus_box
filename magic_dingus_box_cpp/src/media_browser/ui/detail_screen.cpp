@@ -32,24 +32,31 @@ namespace {
 //     border-and-text aesthetic instead of filled blocks
 //   - Blinking ◂ marker inside the focused action button (same 500ms cycle
 //     and color as the playlist-list selection cursor)
-constexpr float kPaddingX        = 32.0f;
+// Horizontal safe-area inset. Matches mb_chrome::kSafeInset_px (60) so
+// the poster, metadata column, section divider, action button row, and
+// footer all stay clear of the 40 px wood-frame overlay drawn around
+// every Marquee screen, with 20 px breathing room inside the frame.
+// Pre-v1.6.x this was 32, which let content extend under the wood frame.
+constexpr float kPaddingX        = 60.0f;     // matches chrome::kSafeInset_px
 constexpr float kPaddingY        = 18.0f;
 
-// Top "FEATURE PRESENTATION" header strip.
-constexpr float kHeaderBaselineY = 38.0f;     // baseline of header text
-constexpr float kHeaderRuleY     = 58.0f;     // Y of the 2px steel-blue rule
+// Top header strip is now drawn by chrome::draw_screen_header — the same
+// "title left, sub-info right" treatment Browse / Library / Search /
+// Settings use. The legacy kHeaderBaselineY / kHeaderRuleY constants
+// were retired in v1.6.x as part of the chrome unification.
 
-// Big poster — 320x480 (2:3) is roughly 2x the previous poster, large
-// enough to anchor the screen the way the playlist list anchors the home
-// menu without overwhelming the metadata column.
-constexpr float kPosterX         = 32.0f;
-constexpr float kPosterY         = 84.0f;
-constexpr float kPosterW         = 320.0f;
-constexpr float kPosterH         = 480.0f;
+// Big poster — slightly smaller than pre-v1.6.x (was 320×480) so the
+// whole layout fits between the chrome header (ends at y=120) and the
+// chrome footer-hint band (top-edge ~y=646 for 720p) without the action
+// row crowding either. 280×420 keeps the same 2:3 aspect.
+constexpr float kPosterX         = kPaddingX;
+constexpr float kPosterY         = 144.0f;    // chrome header (y=120) + 24 pad
+constexpr float kPosterW         = 280.0f;
+constexpr float kPosterH         = 420.0f;   // = kPosterW * 1.5 (2:3)
 constexpr float kPosterBorderW   = 2.0f;
 
 // Gap between poster and metadata column.
-constexpr float kColumnGap       = 32.0f;
+constexpr float kColumnGap       = 24.0f;
 
 // Genre chips.
 constexpr float kChipH           = 28.0f;
@@ -58,8 +65,14 @@ constexpr float kChipGap         = 10.0f;
 constexpr float kChipBorderW     = 2.0f;
 
 // Action row.
-constexpr float kSectionRuleY    = 588.0f;    // 2px steel-blue divider
-constexpr float kActionRowTop    = 608.0f;    // top of buttons
+//   Footer-hint band top edge = h - kFrameInset_px(40) - kPad3(16)
+//                              - keyhint_box_h(~18) ≈ h - 74 (= 646 @720p)
+//   Buttons end 12 px above that → bottom = h - 86 (= 634)
+//   Buttons are 52 px tall → top = h - 138 (= 582 @720p)
+//   Section divider sits 12 px above the button row → y = h - 150 (= 570 @720p)
+// Constants below are calibrated for 720p (the kiosk's only target).
+constexpr float kSectionRuleY    = 570.0f;    // 2px steel-blue divider
+constexpr float kActionRowTop    = 582.0f;    // top of buttons
 constexpr float kButtonW         = 260.0f;
 constexpr float kButtonH         = 52.0f;
 constexpr float kButtonGap       = 28.0f;
@@ -859,35 +872,42 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
     if (title.empty()) title = "Untitled";
 
-    // --- Top header bar: "FEATURE PRESENTATION" + back hint ---------
-    // This mirrors render_title()/render_playlist_list()'s pattern: a Zen
-    // Dots heading in steel-blue (accent2), underlined with a 2px rule.
+    // --- Top header bar (Marquee chrome) -----------------------------
+    // "Feature Presentation" title (left, ZenDots) + sub-info on the
+    // right showing the year + a back-hint, drawn via the same
+    // chrome::draw_screen_header helper Browse / Library / Search /
+    // Settings use. No tabs — Detail is a drill-down, not part of the
+    // main strip — so we pass an empty tab vector. The chrome header
+    // owns its own y-coords (baseline ~y=78, returns body_top_y=120),
+    // matching every other Marquee screen pixel-for-pixel.
+    //
+    // A 2 px steel-blue rule sits directly underneath at y = 120, the
+    // same idiom PlaybackScreen uses for its "NOW PLAYING — <title>"
+    // banner. Reads as a magazine-style header underline, anchoring
+    // the title without competing with the body content the way the
+    // old action-row divider did.
     {
-        const std::string heading = "FEATURE PRESENTATION";
-        int hd_size = th.font_heading_size;
-        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             hd_size, th.accent2, 1.0f);
-
-        // U+25C2 BLACK LEFT-POINTING SMALL TRIANGLE, encoded as a text glyph
-        // here is fine for the hint because the body font ships triangle
-        // arrows. (The action-button cursor still uses a primitive — that
-        // one needs guaranteed pixel-perfect rendering at small sizes.)
-        const std::string back_hint = "BTN4: back  (hold for home)";
-        int hint_size = th.font_small_size;
-        int hw = r.mb_text_width(back_hint, hint_size);
-        float hx = w - kPaddingX - static_cast<float>(hw);
-        // Align the hint baseline to the heading baseline so both sit on
-        // the same visual line, then nudge a couple of px lower so the
-        // smaller text reads as a subtitle rather than competing.
-        float hy = kHeaderBaselineY + 2.0f;
-        r.mb_draw_text(back_hint, hx, hy, hint_size, th.dim, 0.9f);
-
-        // Full-width 2px steel-blue rule beneath the header — same pattern
-        // as the home menu's title underline, but stretched edge-to-edge so
-        // it reads as a screen frame rather than a heading underline.
-        r.mb_draw_line(kPaddingX, kHeaderRuleY,
-                       w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.accent2, 0.95f);
+        namespace chrome = ::media_browser::ui::chrome;
+        // Build a compact sub-info: "1999 · BTN4 back" (or just back-hint
+        // if year is missing). Fits in the right side of the header band
+        // in 14 px dim mono — same treatment Queue uses for its sub-info.
+        std::string sub_info;
+        if (year > 0) {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%d  ·  BTN4 back", year);
+            sub_info = buf;
+        } else {
+            sub_info = "BTN4 back";
+        }
+        const int header_bottom = chrome::draw_screen_header(
+            r, screen_w, "Feature Presentation",
+            /*tabs=*/{}, /*focused_tab=*/-1,
+            sub_info);
+        // Header underline — full-width inside the safe area, 2 px
+        // steel-blue at high alpha (matches PlaybackScreen's title rule).
+        const float rule_y = static_cast<float>(header_bottom);
+        r.mb_draw_line(kPaddingX, rule_y, w - kPaddingX, rule_y,
+                       2.0f, th.dim, 0.95f);
     }
 
     // --- Big poster card (left column) -------------------------------
@@ -1089,7 +1109,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // dividers, sized to fit a single small-font line of body text.
         const float banner_h = static_cast<float>(sz) + 18.0f;
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
-                         2.0f, th.accent2, 0.9f);
+                         2.0f, th.dim, 0.9f);
         std::string txt =
             "MONITORED  \xE2\x80\xA2  Radarr re-checks indexers every "
             "30 minutes and will auto-download when seeders appear";
@@ -1097,7 +1117,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         r.mb_draw_text(drawn, col_x + 12.0f,
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
-                       sz, th.accent2, 0.95f);
+                       sz, th.dim, 0.95f);
         cursor_y += banner_h + 6.0f;
     }
 
@@ -1185,7 +1205,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int label_baseline = r.mb_text_baseline(label_size);
             cursor_y += static_cast<float>(label_baseline);
             r.mb_draw_text(label, col_x, cursor_y,
-                           label_size, th.accent2, 0.95f);
+                           label_size, th.dim, 0.95f);
             cursor_y += static_cast<float>(label_size) * 0.6f;
         }
         cursor_y += static_cast<float>(body_baseline);
@@ -1253,9 +1273,13 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Section divider above action row ----------------------------
-    r.mb_draw_line(kPaddingX, kSectionRuleY,
-                   w - kPaddingX, kSectionRuleY,
-                   2.0f, th.accent2, 0.85f);
+    // Retired in v1.6.x — the steel-blue rule moved up to sit directly
+    // under the "Feature Presentation" chrome header (matching
+    // PlaybackScreen's title-underline idiom). The action row no longer
+    // needs a separator from the body since the buttons themselves
+    // (color-coded bordered chrome::draw_button() calls) read as their
+    // own visual zone. kSectionRuleY is kept as a logical anchor for
+    // the content_bottom calculation in the body block above.
 
     // --- Action button row (Marquee design) --------------------------
     // Color-coded bordered buttons via chrome::draw_button():
@@ -1336,7 +1360,11 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float box_h = static_cast<float>(sz) + 2.0f * pad * 0.5f;
         float box_x = (w - box_w) / 2.0f;
         float box_y = kSectionRuleY - box_h - 12.0f;
-        if (box_y < kHeaderRuleY + 8.0f) box_y = kHeaderRuleY + 8.0f;
+        // Clamp upper bound to just below the chrome header band
+        // (header ends at y = kSafeInset + kHeaderHeight = 120) so the
+        // banner never overlaps the title strip.
+        constexpr float kBannerMinY = 128.0f;
+        if (box_y < kBannerMinY) box_y = kBannerMinY;
         r.mb_fill_rect(box_x, box_y, box_w, box_h, th.bg, 0.92f);
         r.mb_stroke_rect(box_x, box_y, box_w, box_h, 2.0f, th.accent, 1.0f);
         float tx = box_x + pad;

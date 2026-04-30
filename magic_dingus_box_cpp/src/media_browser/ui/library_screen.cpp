@@ -217,8 +217,8 @@ void LibraryScreen::rebuild_view() {
 // ---------------------------------------------------------------------------
 
 Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& events) {
-    // LibraryScreen sits at strip position 3 in the Marquee 5-tab strip:
-    //   Popular(0) · Now Playing(1) · Top Rated(2) · Library(3) · Search(4)
+    // LibraryScreen sits at strip position 2 in the Marquee 5-tab strip:
+    //   Popular(0) · Top Rated(1) · Library(2) · Search(3) · Settings(4)
     // BTN1 (PREV, yellow) returns to BrowseScreen — BrowseScreen retains
     // its category_ across transitions, so the user resumes on whatever
     // content tab they were on before navigating to Library (typically
@@ -333,11 +333,13 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Labels are hardcoded so LibraryScreen doesn't need to peek at
     // BrowseScreen's private Category enum. They must stay in sync with
     // kVisibleTabs[] in browse_screen.cpp.
+    // v1.6.x: Now Playing dropped (overlapped Popular), Settings added on
+    // the right end of the strip — so Library shifts from position 3 → 2.
     static constexpr const char* kTabLabels[] = {
-        "Popular", "Now Playing", "Top Rated", "Library", "Search",
+        "Popular", "Top Rated", "Library", "Search", "Settings",
     };
     constexpr int kNumVisibleTabs = 5;
-    constexpr int kLibraryStripPos = 3;
+    constexpr int kLibraryStripPos = 2;
 
     std::vector<chrome::TabSpec> tabs;
     tabs.reserve(kNumVisibleTabs);
@@ -373,33 +375,37 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    static_cast<float>(stats_y + 14),
                    14, th.dim);
 
-    // Sort sub-tabs (Recent / Title / Year / Size) — visual only for
-    // now; sort cycling is deferred per operator direction. Renders to
-    // the right of the stats line so the row stays compact.
+    // Sort sub-tabs (Recent / Title / Year / Size) — ZenDots, matching
+    // the font family used across the main playlist UI's section
+    // headers and the Marquee header tabs. Active sort gets the gold
+    // border + gold text via chrome::TabSpec rendered through the same
+    // tab helper so visual styling stays in lockstep with the main
+    // 5-tab strip above. Sort cycling is still deferred per operator
+    // direction; "Recent" hardcoded as active.
     {
         static constexpr const char* kSortLabels[] = {
             "Recent", "Title", "Year", "Size",
         };
         constexpr int kNumSorts = 4;
-        constexpr int kSortFontPx = 16;
+        constexpr int kSortFontPx = 18;
         constexpr int kSortGap = chrome::kPad4;
-        // Right-align inside the safe area, vertically aligned with the
-        // stats line baseline.
+        // Pre-measure each label's natural width (ZenDots) so we can
+        // right-align the strip inside the safe area.
         int total_w = 0;
         for (int i = 0; i < kNumSorts; ++i) {
-            total_w += r.mb_text_width(kSortLabels[i], kSortFontPx);
+            total_w += r.mb_title_text_width(kSortLabels[i], kSortFontPx);
             if (i + 1 < kNumSorts) total_w += kSortGap;
         }
         int x = screen_w - chrome::kSafeInset_px - total_w;
         const int sort_baseline = stats_y + 14;  // align to stats line
         for (int i = 0; i < kNumSorts; ++i) {
             const ::ui::Color color =
-                (i == 0) ? th.fg : th.dim;  // index 0 = Recent (active)
-            r.mb_draw_text(kSortLabels[i],
-                           static_cast<float>(x),
-                           static_cast<float>(sort_baseline),
-                           kSortFontPx, color);
-            x += r.mb_text_width(kSortLabels[i], kSortFontPx) + kSortGap;
+                (i == 0) ? th.accent : th.dim;   // active = gold, others dim
+            r.mb_draw_title_text(kSortLabels[i],
+                                 static_cast<float>(x),
+                                 static_cast<float>(sort_baseline),
+                                 kSortFontPx, color);
+            x += r.mb_title_text_width(kSortLabels[i], kSortFontPx) + kSortGap;
         }
     }
 
@@ -434,15 +440,20 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- 9-column poster grid ---
-    constexpr int kCellGap     = 8;
-    constexpr int kRowGap      = 16;
-    constexpr int kVisibleRows = 2;
-    constexpr int kMetaH       = 14;
-    constexpr int kMetaGap     = 4;
+    // Same layout as BrowseScreen: meta area fits 2 lines so long
+    // titles can wrap; year lives inside the poster card (bottom-right
+    // pill) so the meta line shows the title only.
+    constexpr int kCellGap       = 8;
+    constexpr int kRowGap        = 22;
+    constexpr int kVisibleRows   = 2;
+    constexpr int kMetaFontPx    = 14;
+    constexpr int kMetaLineGap   = 2;
+    constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx;
+    constexpr int kMetaGap       = 4;
     const int content_w = screen_w - 2 * chrome::kSafeInset_px;
     const int cell_w   = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
     const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f);
-    const int cell_h   = poster_h + kMetaGap + kMetaH;
+    const int cell_h   = poster_h + kMetaGap + kMetaTotalH;
     const int grid_top = stats_y + 14 + chrome::kPad3;
     const int grid_left = chrome::kSafeInset_px;
 
@@ -464,23 +475,77 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-            // Poster CARD via shared chrome helper — tint + title
-            // overlay + accent dashes + IN LIBRARY badge in one call.
+            // Poster CARD via shared chrome helper — real TMDB image
+            // when loaded, deterministic tint placeholder while it
+            // fetches, plus year pill + IN LIBRARY badge.
             const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 mv->title, mv->year,
-                tint, /*in_library=*/true, /*download_pct=*/-1);
+                tint, /*in_library=*/true, /*download_pct=*/-1,
+                /*poster_url=*/mv->poster_url);
 
-            // Meta line below: "Title · Year"
-            std::string meta = mv->title;
-            if (mv->year > 0) {
-                meta += " \xc2\xb7 " + std::to_string(mv->year);
+            // Meta line below poster: title only, wrapped to 2 lines
+            // when needed. Year now lives inside the poster card.
+            // Line 1 = longest leading word chunk that fits on one
+            // line; line 2 = remainder, truncated with ellipsis if it
+            // also overflows. Same logic BrowseScreen uses — kept
+            // inline (rather than factored into mb_chrome) because the
+            // truncation pattern depends on the renderer instance.
+            const std::string& title = mv->title;
+            const float max_w_f = static_cast<float>(cell_w);
+            std::string line1, line2;
+            if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                line1 = title;
+            } else {
+                size_t split = std::string::npos;
+                size_t pos = 0;
+                while (true) {
+                    size_t next = title.find(' ', pos + 1);
+                    if (next == std::string::npos) break;
+                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
+                            > max_w_f) break;
+                    split = next;
+                    pos = next;
+                }
+                if (split == std::string::npos) {
+                    // No space to break at — character-level truncate
+                    // with trailing ellipsis.
+                    std::string candidate = title;
+                    while (!candidate.empty()
+                           && r.mb_text_width(candidate + "...", kMetaFontPx)
+                              > max_w_f) {
+                        candidate.pop_back();
+                    }
+                    line1 = candidate.empty() ? title : (candidate + "...");
+                } else {
+                    line1 = title.substr(0, split);
+                    std::string rem = title.substr(split + 1);
+                    if (r.mb_text_width(rem, kMetaFontPx) <= max_w_f) {
+                        line2 = rem;
+                    } else {
+                        std::string candidate = rem;
+                        while (!candidate.empty()
+                               && r.mb_text_width(candidate + "...", kMetaFontPx)
+                                  > max_w_f) {
+                            candidate.pop_back();
+                        }
+                        line2 = candidate.empty() ? rem : (candidate + "...");
+                    }
+                }
             }
-            r.mb_draw_text(meta,
+            const int meta_top = y + poster_h + kMetaGap;
+            r.mb_draw_text(line1,
                            static_cast<float>(x),
-                           static_cast<float>(y + poster_h + kMetaGap + kMetaH),
-                           kMetaH, th.dim);
+                           static_cast<float>(meta_top + kMetaFontPx),
+                           kMetaFontPx, th.dim);
+            if (!line2.empty()) {
+                r.mb_draw_text(line2,
+                               static_cast<float>(x),
+                               static_cast<float>(meta_top + kMetaFontPx
+                                                  + kMetaLineGap + kMetaFontPx),
+                               kMetaFontPx, th.dim);
+            }
 
             if (idx == grid_cursor_) {
                 chrome::draw_focus_ring(r, x, y, cell_w, poster_h);

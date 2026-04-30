@@ -15,7 +15,7 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 | `magic_dingus_box_cpp/src/**` | Kiosk C++ source. Rebuilt on-Pi via `cmake .. && make -j2` after rsync. |
 | `magic_dingus_box_cpp/scripts/**` (incl. `update.sh`, `deploy_cpp.sh`, `setup_services.sh`, `kiosk_standby_watcher.sh`) | All shipping scripts. |
 | `scripts/golden_image/**` (`first_boot.sh`, `prepare_for_cloning.sh`, `restore_after_cloning.sh`) | Clone tooling. Updated on the Pi so future re-clones from a customer Pi (rare but supported) use current logic. |
-| `magic_dingus_box_cpp/assets/**` (bezels, fonts, logos) | Visual assets. Bezel updates flow through cleanly. |
+| `magic_dingus_box_cpp/assets/**` (bezels, fonts, logos, Marquee wood-frame) | Visual assets. Bezel updates and Marquee wood-frame revisions (`assets/marquee/marquee_frame.png`) flow through cleanly. |
 | `magic_dingus_box_cpp/data/intro/intro.30fps.mov` | Boot intro video. |
 | `magic_dingus_box_cpp/data/thumbnails/systems/*.png` | The 7 system-tile thumbnails (arcade/atari7800/genesis/nes/pcengine/ps1/snes). Per-system dirs (e.g. `data/thumbnails/arcade/`) are NOT updated — see preserved table. |
 | `magic_dingus_box_cpp/scripts/data/*.json` | Codified Radarr/Prowlarr/qBit fixtures. Future Media Browser re-provisioning uses current scoring rules, indexer URLs, etc. |
@@ -41,6 +41,21 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install. | CMake cache, object files, the kiosk binary. |
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
+
+## v1.6.2 addition — Marquee CRT-overlay store + wood-frame toggle survive OTA cleanly
+
+v1.6.2 adds an independent CRT-overlay intensity store for the Media Browser menu screens (separate from the kiosk's home-menu CRT settings) and a wood-frame visibility toggle for movie playback. The OTA contract for these is:
+
+- **New `display.mb_*` keys in `config/settings.json`**:
+  - `display.mb_playback_show_frame` (bool, default `true`) — controls whether the wood-frame overlay stays visible during playback.
+  - `display.mb_scanline_intensity` / `mb_warmth_intensity` / `mb_glow_intensity` / `mb_rgb_mask_intensity` / `mb_bloom_intensity` / `mb_interlacing_intensity` / `mb_flicker_intensity` (floats, 0.0–1.0) — the Marquee menu CRT overlay stack. Cycled OFF / Low / Medium / High via `MovieSettings → "CRT overlay"` rows.
+  - These all live under `config/*` which is in the `update.sh` rsync exclude list, so OTA preserves them across upgrades exactly like every other display setting.
+  - On the FIRST OTA where these keys are absent from the operator's existing `settings.json`, the kiosk's load path falls back to inheriting the corresponding home-menu values (so an operator with scanlines at 0.5 on their home menu sees scanlines at 0.5 on the Marquee menus the first frame after upgrade — no visual regression). After the operator changes any value through MovieSettings, the divergence persists.
+- **Code** — fully shipped via the standard rsync of `magic_dingus_box_cpp/src/**`. No new build dependencies. The `gst_renderer::set_render_inset()` API and the fill-width pillarbox elimination for Marquee playback are pure code; the on-Pi `cmake .. && make -j2` step inside `update.sh install` rebuilds the kiosk binary with them.
+- **Wood-frame asset replaced** — `magic_dingus_box_cpp/assets/marquee/marquee_frame.png` is updated to a polished mahogany variant. Flows through the standard `assets/**` rsync. Operators see the new frame on the next kiosk start after OTA.
+- **systemd unit gains an `EnvironmentFile=` line** — the kiosk unit (`magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service`) now declares `EnvironmentFile=-/opt/magic_dingus_box/services/.env` so the kiosk process inherits API keys from the codified Docker stack's `.env`. The `-` prefix makes the load optional, so unprovisioned Pis (no `services/.env` yet) still boot the kiosk cleanly. Propagated via the standard `systemd/**` rsync; `daemon-reload` runs as part of `update.sh install` so the new unit is in effect on the next service restart.
+- **No new offscreen-state preservation needed** — the Marquee CRT effects use the existing legacy procedural overlay path (`render_crt_effects`); they don't add any new GPU resources. The wood-frame texture is lazily reloaded by the existing `load_marquee_frame()` path, idempotent across OTA-rebuilds.
+- **Reversion is a settings flip, not a downgrade** — operators who don't want the new behaviors can turn off the wood frame during playback (`MovieSettings → Library → "Wood frame during playback" = Off`) and zero out the CRT overlay intensities. No file restoration, no rebuild, no OTA rollback necessary. The `v1.6.1` git tag remains the closest revert point if a hard rollback is ever needed at the source level.
 
 ## v1.5.0 addition — the Enhanced CRT pipeline survives OTA cleanly
 
@@ -85,7 +100,7 @@ Adding a new "this should be preserved" path? Update **all four** lists. Inconsi
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 
-A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.1** — and jump straight there. No multi-hop sequencing required.
+A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.2** — and jump straight there. No multi-hop sequencing required.
 
 ## Testing the contract before shipping a new release
 

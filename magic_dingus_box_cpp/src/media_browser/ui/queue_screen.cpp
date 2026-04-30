@@ -481,7 +481,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         const std::string heading = "DOWNLOAD QUEUE";
         int hd_size = th.font_heading_size;
         r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             hd_size, th.accent2, 1.0f);
+                             hd_size, th.dim, 1.0f);
 
         // Count chip ("3 downloads") — sits just to the right of the
         // heading, dim. Uses singular/plural so it reads naturally.
@@ -535,7 +535,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // user crosses between screens.
         r.mb_draw_line(kPaddingX, kHeaderRuleY,
                        w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.accent2, 0.95f);
+                       2.0f, th.dim, 0.95f);
     }
 
     // --- Footer hint (drawn early so we can reserve the bottom band) -
@@ -879,7 +879,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     marker_cx,                         marker_cy - marker_size,
                     marker_cx,                         marker_cy + marker_size,
                     marker_cx - marker_size * 1.2f,    marker_cy,
-                    th.accent2, 1.0f);
+                    th.dim, 1.0f);
             }
         }
 
@@ -917,10 +917,10 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const std::string heading = "AWAITING RELEASE";
             r.mb_draw_title_text(heading, row_x_a,
                                  section_y + static_cast<float>(hd_size),
-                                 hd_size, th.accent2, 1.0f);
+                                 hd_size, th.dim, 1.0f);
             float rule_y = section_y + static_cast<float>(hd_size) + 12.0f;
             r.mb_draw_line(row_x_a, rule_y, row_x_a + row_w_a, rule_y,
-                           2.0f, th.accent2, 0.85f);
+                           2.0f, th.dim, 0.85f);
             section_y = rule_y + 14.0f;
 
             // Sub-line explaining the state — dim cream small-font.

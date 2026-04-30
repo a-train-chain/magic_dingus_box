@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 
@@ -37,6 +38,7 @@ namespace media_browser::ui {
 class MbSettingsScreen : public MbScreen {
 public:
     MbSettingsScreen(RadarrClient& radarr,
+                     ::app::AppState& state,
                      std::function<void()> on_hide_feature);
 
     void enter() override;
@@ -45,16 +47,31 @@ public:
 
 private:
     enum class RowKind {
+        SectionHeader,            // Gold ZenDots heading + steel-blue rule.
         ServiceStatus,
         QualityProfile,
+        AutoGrabOnAdd,            // Toggle: add-to-library auto-fires Search.
+        PlaybackShowFrame,        // Toggle: show wood-frame overlay during playback.
         MinSeeders,
         StoragePath,
+        RefreshLibrary,           // Action: rescans Radarr's root folder.
         LowSpaceThresholdGb,
         MaxConcurrentDownloads,
         IndexerToggles,
         RetryAllFailed,
         PauseAllDownloads,
         ResumeAllDownloads,
+        // CRT-overlay intensity rows (v1.6.x). Each cycles through
+        // OFF / Low / Medium / High via DisplaySettings::cycle_setting,
+        // independently from the kiosk's main-menu CRT settings.
+        // Driven by state.display_settings.mb_<name>.
+        CrtScanlines,
+        CrtWarmth,
+        CrtGlow,
+        CrtRgbMask,
+        CrtBloom,
+        CrtInterlacing,
+        CrtFlicker,
         HideMovies,
         AdvancedUrlHint,
     };
@@ -81,6 +98,7 @@ private:
         int min_seeders = 2;
         int low_space_threshold_gb = 30;
         int max_concurrent_downloads = 3;
+        bool auto_grab_on_add = true;     // Add → auto-fires Radarr search.
     };
 
     // Prowlarr indexer, lightly parsed out of the `/api/v1/indexer` response.
@@ -114,11 +132,25 @@ private:
                                          int64_t total_bytes);
 
     RadarrClient& radarr_;
+    ::app::AppState& state_;     // For mb_playback_show_frame + persistence.
     std::function<void()> on_hide_feature_;
 
     std::vector<Row> rows_;
     int cursor_ = 0;          // Index into rows_ of the focused row.
     float scroll_y_ = 0.0f;   // Top of the visible list area (pixels).
+
+    // Two-mode rotary navigation (v1.6.x):
+    //   - editing_ = false: rotary CW/CCW walks rows vertically. SELECT
+    //     enters editing on cycle/slider rows, executes immediately on
+    //     action rows, toggles inline on boolean rows.
+    //   - editing_ = true:  rotary CW/CCW adjusts the focused row's
+    //     value. SELECT exits editing. Vertical D-pad movement also
+    //     exits editing.
+    // The focused row's visual treatment changes too: navigate-mode
+    // shows a gold ◂ marker + gold label; editing-mode draws a 2 px
+    // gold rectangle border around the whole row (matches the active-
+    // tab vocabulary on the chrome strip and the Marquee design mockup).
+    bool editing_ = false;
 
     ServiceHealth health_;
     LocalPrefs prefs_;

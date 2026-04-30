@@ -40,17 +40,24 @@ namespace {
 // existing visual style — that widget is shared with the kiosk main UI
 // and we deliberately avoid forking it here. The chrome around it, not
 // the keyboard itself, is what carries the retro look.
-constexpr float kPaddingX            = 32.0f;     // matches DetailScreen
+// Horizontal safe-area inset. Matches mb_chrome::kSafeInset_px so the
+// query box, keyboard, divider rule, and results grid all line up under
+// the same vertical margin the chrome header uses — and, critically,
+// stay clear of the 40px wood-frame overlay drawn around every Marquee
+// screen. With kFrameInset_px=40 from chrome.h, 60px here gives a 20px
+// breathing gap between content and the inner edge of the frame.
+constexpr float kPaddingX            = 60.0f;     // matches chrome::kSafeInset_px
 
-// Top header strip — same dimensions as DetailScreen so the rule sits
-// at exactly the same Y across screens (visual continuity when
-// transitioning).
-constexpr float kHeaderBaselineY     = 38.0f;
-constexpr float kHeaderRuleY         = 58.0f;
+// Top header strip is now drawn by chrome::draw_screen_header (Marquee
+// 5-tab strip + "Search" title). The screen anchors all body content
+// off the y-coord that helper returns. The legacy kHeaderBaselineY /
+// kHeaderRuleY constants were retired here as part of the v1.6.x
+// chrome unification — see browse_screen.cpp / library_screen.cpp for
+// the same migration pattern.
 
-// Query box just below the header strip. Outline-only (no fill), tall
+// Query box just below the chrome header. Outline-only (no fill), tall
 // enough to comfortably hold font_large_size (24px) text + a caret.
-constexpr float kQueryBoxMarginTop   = 18.0f;     // gap below header rule
+constexpr float kQueryBoxMarginTop   = 18.0f;     // gap below chrome header
 constexpr float kQueryBoxHeight      = 48.0f;
 constexpr float kQueryBoxBorderW     = 2.0f;
 constexpr float kQueryBoxPadX        = 16.0f;     // inner left/right padding
@@ -61,28 +68,20 @@ constexpr float kQueryBoxPadX        = 16.0f;     // inner left/right padding
 constexpr float kKbMarginTop         = 14.0f;     // gap below query box
 constexpr float kKbMarginBottom      = 14.0f;     // gap above section rule
 constexpr float kKeyGap              = 6.0f;
-constexpr float kTopFrac             = 0.40f;     // keyboard region ends here
+// Keyboard region ends here. Bumped from 0.40 → 0.50 in v1.6.x: the
+// Marquee chrome header pushes the query box ~60px lower, so the kb
+// region needs a corresponding shift down to keep ≥130px of vertical
+// space for the keys (4 rows). Keeps the results-grid footprint
+// unchanged for 720p — the empty-state message and 1-row poster strip
+// still fit cleanly above the footer.
+constexpr float kTopFrac             = 0.50f;     // keyboard region ends here
 
-// Results grid (smaller than BrowseScreen's 4-col layout — 3 columns
-// because the keyboard eats vertical real estate).
+// Results grid — 9 columns, matching BrowseScreen / LibraryScreen.
+// Cell width, poster height, and meta-area height are all computed at
+// render time from the safe-area width and chrome::draw_poster_card's
+// shared idiom; the only constant retained here is the gap above the
+// grid (between the steel-blue divider and the first row of cells).
 constexpr float kGridPaddingTop      = 18.0f;
-constexpr float kCellPadding         = 16.0f;
-constexpr float kPosterW             = 180.0f;
-constexpr float kPosterH             = 270.0f;
-constexpr float kLabelAreaH          = 48.0f;
-constexpr float kCellW               = kPosterW;
-constexpr float kCellH               = kPosterH + kLabelAreaH;
-constexpr float kFocusOutlineW       = 3.0f;      // matches DetailScreen poster
-constexpr float kPosterBorderW       = 2.0f;      // un-focused poster frame
-
-// Library chip (drawn over the focused-or-not poster's bottom-left).
-constexpr float kChipPadX            = 8.0f;
-constexpr float kChipH               = 20.0f;
-constexpr float kChipBorderW         = 2.0f;
-constexpr float kChipMargin          = 8.0f;      // inset from poster edges
-
-// Bottom hint sits this far above the screen bottom (no filled bar).
-constexpr float kHintMarginBottom    = 12.0f;
 
 // Backdrop poster tint — same deterministic Knuth hash used by Browse
 // and Detail, so a movie's placeholder color stays consistent across
@@ -367,6 +366,19 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
             return Screen::Browse;
         }
 
+        // BTN1 / PREV (yellow): walk one tab left in the Marquee strip.
+        // v1.6.x strip: Popular | Top Rated | Library | Search | Settings.
+        // Search is at index 3, so PREV always lands on Library.
+        if (e.action == platform::InputAction::PREV && e.pressed) {
+            return Screen::Library;
+        }
+
+        // BTN3 / NEXT (green): walk one tab right. Search is at index 3,
+        // so NEXT goes to Settings (index 4, rightmost tab in v1.6.x).
+        if (e.action == platform::InputAction::NEXT && e.pressed) {
+            return Screen::MovieSettings;
+        }
+
         // BTN2 (PLAY_PAUSE): quick-add focused result. No-op on keyboard.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             quick_add_focused();
@@ -504,60 +516,38 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
     // ---------------------------------------------------------------
-    // Top header strip: "SEARCH" + status (searching... / N results)
-    // Mirrors DetailScreen's "FEATURE PRESENTATION" idiom: Zen Dots
-    // heading in steel-blue (accent2), full-width 2px steel-blue rule
-    // beneath. The rule sits at exactly the same Y across screens so
-    // transitioning between Browse/Search/Detail feels continuous.
+    // Marquee header — "Search" title (left) + the same 5-tab strip
+    // BrowseScreen and LibraryScreen render, with "Search" marked active
+    // (gold border + gold label). Keeps visual continuity across the
+    // whole Marquee section so the user sees one consistent UI when
+    // walking BTN1/BTN3 across the strip.
+    //
+    // The previous "searching..." / "N results" status indicator that
+    // used to sit on the right is dropped — the keyboard + results
+    // body provide the same feedback (caret blink while typing, the
+    // result strip visibly populating below the keyboard once a query
+    // resolves). If we want to surface load state explicitly later we
+    // can put it as a small sub-line below the input box rather than
+    // fight the tab strip for header real estate.
     // ---------------------------------------------------------------
+    int body_top_y = 0;
     {
-        const std::string heading = "SEARCH";
-        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             th.font_heading_size, th.accent2, 1.0f);
-
-        // Right side: live status. While a Radarr lookup is in flight
-        // we show a soft "searching..." in accent (gold) — the in-flight
-        // signal is loud enough to notice but small enough not to fight
-        // the Zen Dots heading. Once results settle we swap to a dim
-        // "N result(s)" so the user gets a confirmation of how many
-        // posters are about to appear.
-        const int   status_size     = th.font_small_size;
-        std::string status_text;
-        ::ui::Color status_color    = th.dim;
-        float       status_alpha    = 0.85f;
-        if (lookup_loading_) {
-            status_text  = "searching...";
-            status_color = th.accent;
-            status_alpha = 0.95f;
-        } else if (lib_loading_ && !lib_loaded_) {
-            // Surface the in-flight library cache fetch so the user
-            // understands why "Already in library" / IN LIBRARY chips
-            // might be momentarily missing on first entry.
-            status_text  = "loading library...";
-            status_color = th.dim;
-            status_alpha = 0.85f;
-        } else if (!query_.empty() && !results_.empty()) {
-            int n = static_cast<int>(results_.size());
-            status_text = std::to_string(n)
-                        + (n == 1 ? " result" : " results");
-        }
-        if (!status_text.empty()) {
-            int sw = r.mb_text_width(status_text, status_size);
-            float sx = w - kPaddingX - static_cast<float>(sw);
-            // Align the status baseline a couple px lower than the
-            // heading so it reads as a subtitle, same trick used in
-            // DetailScreen's back-hint.
-            float sy = kHeaderBaselineY + 2.0f;
-            r.mb_draw_text(status_text, sx, sy, status_size,
-                           status_color, status_alpha);
-        }
-
-        // Full-width 2px steel-blue rule — screen frame, not heading
-        // underline. Identical to DetailScreen's header rule.
-        r.mb_draw_line(kPaddingX, kHeaderRuleY,
-                       w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.accent2, 0.95f);
+        namespace chrome = ::media_browser::ui::chrome;
+        // v1.6.x strip: Now Playing dropped, Settings added on the right.
+        // Search sits at index 3; Settings at 4 is the new rightmost tab.
+        const std::vector<chrome::TabSpec> tabs = {
+            {"Popular",   chrome::TabState::Inactive},
+            {"Top Rated", chrome::TabState::Inactive},
+            {"Library",   chrome::TabState::Inactive},
+            {"Search",    chrome::TabState::Active},
+            {"Settings",  chrome::TabState::Inactive},
+        };
+        body_top_y = chrome::draw_screen_header(
+            r, screen_w, "Search", tabs, /*focused_tab=*/-1);
     }
+    // blink_on may temporarily be unused if the body branches drop it
+    // (e.g., empty state without caret). Suppress -Wunused-variable.
+    (void)blink_on;
 
     // ---------------------------------------------------------------
     // Query box: 2px gold outline, no fill. ▶ prefix in steel-blue
@@ -568,7 +558,10 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // cursor in the app.
     // ---------------------------------------------------------------
     const float qb_x = kPaddingX;
-    const float qb_y = kHeaderRuleY + kQueryBoxMarginTop;
+    // Anchor below the chrome header (which already includes the tab strip
+    // and a section rule). body_top_y is the Y at which the chrome ends; a
+    // small inset breathes the query box off that rule.
+    const float qb_y = static_cast<float>(body_top_y) + kQueryBoxMarginTop;
     const float qb_w = w - 2.0f * kPaddingX;
     const float qb_h = kQueryBoxHeight;
 
@@ -587,7 +580,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // the "active text field" cue visible without over-using gold.
         const std::string prefix = "\xE2\x96\xB6 ";  // U+25B6 + space
         const float prefix_x = qb_x + kQueryBoxPadX;
-        r.mb_draw_text(prefix, prefix_x, text_y, qf, th.accent2, 0.95f);
+        r.mb_draw_text(prefix, prefix_x, text_y, qf, th.dim, 0.95f);
         const float prefix_w = static_cast<float>(
             r.mb_text_width(prefix, qf));
 
@@ -671,7 +664,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 // Preserve the keyboard's existing visual style: gold
                 // fill on the focused key, dim "action" fill on the
                 // rest, thin dim hairline border. Don't redesign.
-                const ::ui::Color& bg = is_selected ? th.accent : th.action;
+                const ::ui::Color& bg = is_selected ? th.accent : th.dim;
                 r.mb_fill_rect(kx, ky, col_w, row_h, bg,
                                kb_focused ? 0.95f : 0.45f);
                 r.mb_stroke_rect(kx, ky, col_w, row_h, 1.0f, th.dim, 0.5f);
@@ -706,18 +699,47 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float sep_y = h * kTopFrac;
     r.mb_draw_line(kPaddingX, sep_y,
                    w - kPaddingX, sep_y,
-                   2.0f, th.accent2, 0.85f);
+                   2.0f, th.dim, 0.85f);
 
     // ---------------------------------------------------------------
-    // Results grid (3 columns).
+    // Results grid — 9-column poster-card layout matching BrowseScreen
+    // and LibraryScreen exactly. Cell width is computed dynamically
+    // from the safe-area width and gap, so all three Marquee grids
+    // produce the same poster size at the same render resolution.
+    //
+    //   cell_w  = (content_w - (kGridCols-1) * kCellGap) / kGridCols
+    //   poster_h = cell_w * 1.5   (2:3 movie-poster aspect)
+    //   cell_h  = poster_h + kMetaGap + kMetaTotalH
+    //
+    // The keyboard takes the upper ~50% of the screen so typically only
+    // ONE row of posters is visible at a time. When more results exist,
+    // ROTATE_VERTICAL scrolls through them. The bottom of the grid is
+    // anchored above the chrome footer-hint band (h - 86 px) so the
+    // last row's title meta line never gets covered by the BTN1/A/etc
+    // hint chips.
     // ---------------------------------------------------------------
+    constexpr int kCellGap     = 8;
+    constexpr int kRowGap      = 22;   // matches BrowseScreen
+    constexpr int kMetaFontPx  = 14;   // 14 px legibility floor under CRT
+    constexpr int kMetaLineGap = 2;
+    constexpr int kMetaTotalH  = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
+    constexpr int kMetaGap     = 4;    // poster-bottom → meta-top
+
+    const int content_w = static_cast<int>(w) - 2 * static_cast<int>(kPaddingX);
+    const int cell_w    = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
+    const int poster_h  = static_cast<int>(static_cast<float>(cell_w) * 1.5f);
+    const int cell_h    = poster_h + kMetaGap + kMetaTotalH;
+
     const float grid_top    = sep_y + kGridPaddingTop;
-    const float grid_bottom = h - kHintMarginBottom
-                            - static_cast<float>(th.font_small_size) - 8.0f;
+    // Clears the chrome footer-hint band: footer baseline = h - 56,
+    // band height ≈ 30 — so 86 px from the bottom keeps the last
+    // visible meta line legibly above the hint chips (matches
+    // mb_settings_screen's list_bottom math).
+    const float grid_bottom = h - 86.0f;
     const float grid_h      = grid_bottom - grid_top;
 
     const int visible_rows = std::max(1,
-        static_cast<int>(grid_h / (kCellH + kCellPadding)));
+        static_cast<int>(grid_h / (cell_h + kRowGap)));
 
     if (focus_ == Focus::Results && !results_.empty()) {
         const int focused_row = grid_cursor_ / kGridCols;
@@ -730,11 +752,6 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int total_rows = results_.empty() ? 0
                          : (static_cast<int>(results_.size()) - 1) / kGridCols + 1;
     const int end_row = std::min(total_rows, scroll_row_ + visible_rows);
-
-    const float grid_interior_w = w - 2.0f * kPaddingX;
-    float col_gap = (grid_interior_w - kGridCols * kCellW)
-                  / std::max(1.0f, static_cast<float>(kGridCols - 1));
-    if (col_gap < kCellPadding) col_gap = kCellPadding;
 
     // ---- Empty / loading / no-match states --------------------------
     // Drop-fills are out — these are dim-text-only messages centered
@@ -777,109 +794,90 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // ---- Cells ------------------------------------------------------
+    // Same idiom as BrowseScreen: chrome::draw_poster_card draws the
+    // tinted background, the optional IN LIBRARY badge, and the year
+    // pill (semi-transparent dark backing on the bottom-right corner).
+    // Title text wraps to 2 lines below the poster — line 1 is the
+    // longest leading word-prefix that fits, line 2 is the truncated
+    // remainder. Year never appears on the meta line; it lives inside
+    // the card as a pill, so the meta region only shows the title.
+    namespace chrome = ::media_browser::ui::chrome;
+    const float grid_left = kPaddingX;
     for (int row = scroll_row_; row < end_row; ++row) {
         for (int col = 0; col < kGridCols; ++col) {
             const int idx = row * kGridCols + col;
             if (idx >= static_cast<int>(results_.size())) break;
             const auto& m = results_[idx];
 
-            const float cell_x = kPaddingX + col * (kCellW + col_gap);
-            const float cell_y = grid_top
-                               + (row - scroll_row_) * (kCellH + kCellPadding);
+            const int x = static_cast<int>(grid_left)
+                        + col * (cell_w + kCellGap);
+            const int y = static_cast<int>(grid_top)
+                        + (row - scroll_row_) * (cell_h + kRowGap);
 
-            // Poster — fit (preserve aspect) with the deterministic
-            // tint placeholder if no artwork is available yet. Same
-            // helper Browse/Detail use, so a movie's placeholder
-            // color is consistent across screens.
+            // Poster CARD: tint fill + IN LIBRARY badge + year pill in
+            // one shared helper. Real artwork can later overlay this
+            // (mb_draw_poster_or_tint) but the styled card alone reads
+            // as a designed slot even before TMDB images load.
             const ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-            r.mb_draw_poster_fit(m.poster_url,
-                                 cell_x, cell_y, kPosterW, kPosterH,
-                                 tint, 1.0f);
+            const bool in_library =
+                (m.tmdb_id > 0 &&
+                 library_tmdb_ids_.count(m.tmdb_id) > 0);
+            chrome::draw_poster_card(
+                r, x, y, cell_w, poster_h,
+                m.title, m.year,
+                tint, in_library, /*download_pct=*/-1,
+                /*poster_url=*/m.poster_url);
 
+            // Meta line below poster: title only, wrapped to 2 lines
+            // when needed. Same word-prefix-walking algorithm Browse
+            // uses, so titles render identically across both screens.
+            const std::string& title =
+                m.title.empty() ? std::string("Untitled") : m.title;
+            const float max_w_f = static_cast<float>(cell_w);
+            std::string line1, line2;
+            if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                line1 = title;
+            } else {
+                size_t split = std::string::npos;
+                size_t pos = 0;
+                while (true) {
+                    size_t next = title.find(' ', pos + 1);
+                    if (next == std::string::npos) break;
+                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
+                            > max_w_f) break;
+                    split = next;
+                    pos = next;
+                }
+                if (split == std::string::npos) {
+                    line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                } else {
+                    line1 = title.substr(0, split);
+                    std::string remainder = title.substr(split + 1);
+                    line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                }
+            }
+            const int meta_top = y + poster_h + kMetaGap;
+            r.mb_draw_text(line1,
+                           static_cast<float>(x),
+                           static_cast<float>(meta_top + kMetaFontPx),
+                           kMetaFontPx, th.dim);
+            if (!line2.empty()) {
+                r.mb_draw_text(line2,
+                               static_cast<float>(x),
+                               static_cast<float>(meta_top + kMetaFontPx
+                                                  + kMetaLineGap + kMetaFontPx),
+                               kMetaFontPx, th.dim);
+            }
+
+            // Focus ring on the cursor cell — 2 px gold, 2 px outside.
+            // Only when the user has navigated INTO the results region;
+            // while typing on the keyboard the highlight stays muted.
             const bool focused =
                 (focus_ == Focus::Results && idx == grid_cursor_);
-
-            // Frame: 2px gold for un-focused, 3px gold for focused.
-            // Same gold-frame "TV monitor" idiom Detail uses on its
-            // big poster — just thinner here because the cells are
-            // smaller and a heavy outline would dominate.
-            const float border_w = focused ? kFocusOutlineW : kPosterBorderW;
-            r.mb_stroke_rect(cell_x, cell_y, kPosterW, kPosterH,
-                             border_w, th.accent,
-                             focused ? 1.0f : 0.85f);
-
-            // Blinking ◂ marker at the bottom-right of the focused
-            // poster — same triangle primitive + 500ms cadence as
-            // DetailScreen's action-button cursor. Steel-blue color
-            // so it doesn't compete with the gold focus outline.
-            if (focused && blink_on) {
-                const float ms = static_cast<float>(th.font_medium_size) * 0.55f;
-                const float mcx = cell_x + kPosterW - 14.0f;
-                const float mcy = cell_y + kPosterH - 14.0f;
-                r.mb_fill_triangle(
-                    mcx,             mcy - ms,
-                    mcx,             mcy + ms,
-                    mcx - ms * 1.2f, mcy,
-                    th.accent2, 1.0f);
+            if (focused) {
+                chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
             }
-
-            // "IN LIBRARY" chip in the bottom-left of the poster —
-            // gold outline + accent text, same pattern as
-            // DetailScreen's genre chips. We draw a small bg fill
-            // here only because the chip overlays a poster image and
-            // would be unreadable against bright artwork otherwise;
-            // the bg color is th.bg at high alpha so it still reads
-            // as part of the same border-and-text vocabulary.
-            if (m.tmdb_id > 0 && library_tmdb_ids_.count(m.tmdb_id) > 0) {
-                const std::string chip_text = "IN LIBRARY";
-                const int   chip_font = th.font_small_size;
-                const int   chip_base = r.mb_text_baseline(chip_font);
-                const float chip_text_w = static_cast<float>(
-                    r.mb_text_width(chip_text, chip_font));
-                const float chip_w = chip_text_w + 2.0f * kChipPadX;
-                const float chip_x = cell_x + kChipMargin;
-                const float chip_y = cell_y + kPosterH
-                                   - kChipH - kChipMargin;
-
-                // Background pad — bg at high alpha so the chip is
-                // legible even over a bright poster. NOT a flat color
-                // block; it's just a readability backstop behind the
-                // outline-and-text idiom.
-                r.mb_fill_rect(chip_x, chip_y, chip_w, kChipH,
-                               th.bg, 0.85f);
-                r.mb_stroke_rect(chip_x, chip_y, chip_w, kChipH,
-                                 kChipBorderW, th.accent, 1.0f);
-                const float ctx = chip_x + kChipPadX;
-                const float cty = chip_y
-                                + (kChipH - static_cast<float>(chip_font)) / 2.0f
-                                + static_cast<float>(chip_base);
-                r.mb_draw_text(chip_text, ctx, cty,
-                               chip_font, th.accent, 1.0f);
-            }
-
-            // Title + year underneath — body font, fg for the title
-            // (full opacity when focused, 0.9 otherwise) and dim for
-            // the year. Truncated to cell width.
-            const int title_size = th.font_medium_size;
-            const int title_base = r.mb_text_baseline(title_size);
-            const std::string title = truncate_to_width(
-                r, m.title.empty() ? "Untitled" : m.title,
-                title_size, kCellW);
-            const float title_y = cell_y + kPosterH + 8.0f
-                                + static_cast<float>(title_base);
-            r.mb_draw_text(title, cell_x, title_y, title_size, th.fg,
-                           focused ? 1.0f : 0.9f);
-
-            if (m.year > 0) {
-                const std::string year = std::to_string(m.year);
-                const int year_size = th.font_small_size;
-                const int year_base = r.mb_text_baseline(year_size);
-                const float year_y = title_y
-                                   + static_cast<float>(title_size) * 0.6f
-                                   + static_cast<float>(year_base);
-                r.mb_draw_text(year, cell_x, year_y,
-                               year_size, th.dim, 0.85f);
-            }
+            (void)blink_on;  // Caret blink is the only blink Search uses now.
         }
     }
 
@@ -895,6 +893,8 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (focus_ == Focus::Keyboard) {
         ::media_browser::ui::chrome::draw_footer_hints(
             r, screen_w, screen_h, {
+                {"BTN1",   "Library"},
+                {"BTN3",   "Settings"},
                 {"Rotary", "Keys"},
                 {"BTN2",   "Type"},
                 {"Down",   "Results"},
@@ -903,6 +903,8 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     } else {
         ::media_browser::ui::chrome::draw_footer_hints(
             r, screen_w, screen_h, {
+                {"BTN1",   "Library"},
+                {"BTN3",   "Settings"},
                 {"Rotary", "Nav"},
                 {"A",      "Open"},
                 {"BTN2",   "Add"},

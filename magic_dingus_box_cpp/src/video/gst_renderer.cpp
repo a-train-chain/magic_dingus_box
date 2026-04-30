@@ -491,27 +491,44 @@ void GstRenderer::upload_frame(GstSample* sample) {
 void GstRenderer::render_quad() {
     if (program_id_ == 0) return;
 
+    // Working canvas — full screen by default, OR the explicit inset
+    // rect set via set_render_inset(). All letterbox / aspect-preserve
+    // math runs against canvas_w × canvas_h; the final glViewport call
+    // adds the inset's (x, y) offset so the video lands at the right
+    // position on screen. Marquee playback uses this to push the movie
+    // inside a 40 px wood-frame overlay without disturbing the legacy
+    // full-screen path used everywhere else (intro video, playlist
+    // playback in the main kiosk UI).
+    const bool inset_active =
+        (render_inset_w_ > 0 && render_inset_h_ > 0);
+    const int canvas_w = inset_active
+        ? render_inset_w_
+        : static_cast<int>(width_);
+    const int canvas_h = inset_active
+        ? render_inset_h_
+        : static_cast<int>(height_);
+
     // Calculate viewport based on letterbox mode
     int vp_x = 0;
     int vp_y = 0;
-    int vp_w = width_;
-    int vp_h = height_;
+    int vp_w = canvas_w;
+    int vp_h = canvas_h;
 
     if (letterbox_mode_) {
         // Calculate 4:3 content area centered in 16:9 frame
         // Height stays the same, width is adjusted
-        vp_h = height_;
-        vp_w = height_ * 4 / 3;  // 4:3 aspect ratio
-        vp_x = (width_ - vp_w) / 2;  // Center horizontally
+        vp_h = canvas_h;
+        vp_w = canvas_h * 4 / 3;  // 4:3 aspect ratio
+        vp_x = (canvas_w - vp_w) / 2;  // Center horizontally
         vp_y = 0;
 
         // If the calculated width is larger than screen (e.g., 4:3 content on 4:3 screen)
         // then pillarbox based on width instead
-        if (vp_w > static_cast<int>(width_)) {
-            vp_w = width_;
-            vp_h = width_ * 3 / 4;
+        if (vp_w > canvas_w) {
+            vp_w = canvas_w;
+            vp_h = canvas_w * 3 / 4;
             vp_x = 0;
-            vp_y = (height_ - vp_h) / 2;
+            vp_y = (canvas_h - vp_h) / 2;
         }
     } else if (aspect_preserve_ && frame_width_ > 0 && frame_height_ > 0) {
         // Aspect-preserve mode: keep source video's *display* aspect ratio.
@@ -563,8 +580,8 @@ void GstRenderer::render_quad() {
         // exact-match boundary.
         const int64_t src_w_eff = static_cast<int64_t>(frame_width_) * frame_par_num_;
         const int64_t src_h_eff = static_cast<int64_t>(frame_height_) * frame_par_den_;
-        const int64_t screen_w  = static_cast<int64_t>(width_);
-        const int64_t screen_h  = static_cast<int64_t>(height_);
+        const int64_t screen_w  = static_cast<int64_t>(canvas_w);
+        const int64_t screen_h  = static_cast<int64_t>(canvas_h);
         // Cross-multiply: (src_w_eff * screen_h) vs (screen_w * src_h_eff)
         if (src_w_eff * screen_h > screen_w * src_h_eff) {
             // Source wider than screen → letterbox (full width, black bars top+bottom)
@@ -573,16 +590,48 @@ void GstRenderer::render_quad() {
             vp_x = 0;
             vp_y = (static_cast<int>(screen_h) - vp_h) / 2;
         } else if (src_w_eff * screen_h < screen_w * src_h_eff) {
-            // Source taller than screen → pillarbox (full height, black bars left+right)
-            vp_h = static_cast<int>(screen_h);
-            vp_w = static_cast<int>(screen_h * src_w_eff / src_h_eff);
-            vp_x = (static_cast<int>(screen_w) - vp_w) / 2;
-            vp_y = 0;
+            // Source NARROWER than canvas — would normally pillarbox
+            // (full height, black bars left+right). When inset_active
+            // (Marquee playback inside the wood-frame cabinet) we
+            // instead fill WIDTH and let the height overflow above
+            // and below the inset rect: the wood-frame asset covers
+            // the overflow band cleanly, so the movie reads as
+            // completely filling the inside of the cabinet with no
+            // left/right black bars. Operator direction — Monte Cristo
+            // (1.78:1) was showing pillarbox bars inside the
+            // 1.875:1 inset canvas before this change.
+            //
+            // For 16:9 source in our 1200×640 inset canvas:
+            //   vp_w = 1200, vp_h = 1200×9/16 = 675
+            //   vp_y = (640−675)/2 = −17  ← intentionally negative
+            //   In screen coords (after +40 inset offset): video lives
+            //   at y = 23..698, with the 23..40 and 680..698 overlap
+            //   bands hidden behind the wood frame's top + bottom
+            //   strips. Zero visible bars on any edge.
+            //
+            // Legacy callers (intro video, playlist playback in the
+            // main kiosk UI) never pass inset_active=true, so the
+            // standard pillarbox path is preserved for them.
+            if (inset_active) {
+                vp_w = static_cast<int>(screen_w);
+                vp_h = static_cast<int>(screen_w * src_h_eff / src_w_eff);
+                vp_x = 0;
+                vp_y = (static_cast<int>(screen_h) - vp_h) / 2;
+            } else {
+                vp_h = static_cast<int>(screen_h);
+                vp_w = static_cast<int>(screen_h * src_w_eff / src_h_eff);
+                vp_x = (static_cast<int>(screen_w) - vp_w) / 2;
+                vp_y = 0;
+            }
         }
-        // else: exact aspect match — vp = full screen as initialized.
+        // else: exact aspect match — vp = full canvas as initialized.
     }
-    
-    glViewport(vp_x, vp_y, vp_w, vp_h);
+
+    // Apply the inset offset so the video lands at the right position.
+    // Without inset (the default), render_inset_x_/y_ are both 0 and
+    // this is a no-op — legacy callers see the same viewport as before.
+    glViewport(vp_x + render_inset_x_, vp_y + render_inset_y_,
+               vp_w, vp_h);
 
     // NOTE: We deliberately do NOT bind the default framebuffer here.
     // The caller chooses the target framebuffer:
