@@ -21,33 +21,21 @@ namespace media_browser::ui {
 
 namespace {
 
-// Retro home-menu-inspired layout (target 1280x720). The Queue screen is
-// the third member of the Browse / Detail / Queue trio, and it adopts the
-// same chrome as DetailScreen so the user feels they're inside one unified
-// kiosk surface as they cross between screens:
-//   - "DOWNLOAD QUEUE" header in the Zen Dots title font, steel-blue
-//     (accent2), with a full-width 2px steel-blue rule beneath.
-//   - Right side of the header carries a count + a "refreshing..." /
-//     "updated Ns ago" indicator, both in dim cream.
-//   - Body is a vertical list of borderless rows. Focused row gets a 3px
-//     gold outline (same idiom as the home menu's playlist cursor); the
-//     rest of the rows have NO chrome — pure background. A blinking ◂
-//     marker rides the right edge of the focused row, on the same 500ms
-//     phase as Detail's button cursor.
-//   - Progress bars are outline-only tracks with a colored fill (green
-//     for active, gold for paused/queued, red for failed) — borrowing the
-//     border-and-text idiom from the home menu's volume slider.
-//   - Footer is a centered, dim small-font hint, no background fill.
-//
-// Drop fills wherever possible: it's all borders and text, the way the
-// kiosk's other surfaces look.
+// QueueScreen owns body geometry only; the top-of-screen chrome (the
+// 6-tab Marquee strip + "Queue" title) is delegated to
+// `chrome::draw_screen_header`, which returns a `header_bottom` Y the body
+// anchors against. Below that we draw a count + refresh-status sub-line
+// in the dim-cream small-font idiom Library uses, then the body proper:
+//   - Active queue: borderless rows with a small poster, title + state /
+//     rate / ETA sub-line, and an outline-only progress bar (green for
+//     downloading, gold for queued/paused, red for failed). Focused row
+//     gets a 3px gold outline + blinking right-edge marker.
+//   - AWAITING RELEASE section below: monitored library entries with no
+//     file yet, separated from the queue by a steel-blue rule.
+//   - Footer hints come from `chrome::draw_footer_hints` so the bordered
+//     key glyphs match every other Marquee screen.
 
-// Outer padding and header geometry — kept identical to DetailScreen so
-// the header rule, footer hint, and side-padding align perfectly when the
-// user navigates between screens.
 constexpr float kPaddingX        = 32.0f;
-constexpr float kHeaderBaselineY = 38.0f;     // baseline of header text
-constexpr float kHeaderRuleY     = 58.0f;     // Y of the 2px steel-blue rule
 
 // Row geometry. 100px is tall enough for poster + 2 lines of metadata +
 // a progress bar without being so tall that fewer than ~5 rows fit on a
@@ -511,6 +499,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Count + refresh-status sub-line beneath the chrome header. Reads
     // as a status banner for the screen below the tab strip, in the same
     // dim-cream small-font idiom Library uses for its stats line.
+    // Anchored to chrome::kSafeInset_px so the left/right edges line up
+    // with the tab strip + title above (NOT kPaddingX, which is the
+    // body-row inset for the queue rows below).
     {
         std::ostringstream cs;
         int total = static_cast<int>(queue_.size() + awaiting_.size());
@@ -526,7 +517,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float sub_y = static_cast<float>(header_bottom)
                     + static_cast<float>(::media_browser::ui::chrome::kPad2)
                     + static_cast<float>(sub_baseline);
-        r.mb_draw_text(count_text, kPaddingX, sub_y, sub_size, th.dim, 0.85f);
+        const float sub_x_left =
+            static_cast<float>(::media_browser::ui::chrome::kSafeInset_px);
+        r.mb_draw_text(count_text, sub_x_left, sub_y, sub_size, th.dim, 0.85f);
 
         // Refresh indicator on the far right of the sub-line.
         std::string ind_text;
@@ -546,7 +539,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             ind_text = buf;
         }
         int ind_w = r.mb_text_width(ind_text, sub_size);
-        float ind_x = w - kPaddingX - static_cast<float>(ind_w);
+        const float sub_x_right = static_cast<float>(
+            screen_w - ::media_browser::ui::chrome::kSafeInset_px);
+        float ind_x = sub_x_right - static_cast<float>(ind_w);
         r.mb_draw_text(ind_text, ind_x, sub_y, sub_size, ind_color, ind_alpha);
     }
 
