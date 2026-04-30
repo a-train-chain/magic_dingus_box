@@ -342,9 +342,17 @@ void LibraryScreen::rebuild_view() {
     }
 
     // Clamp the grid cursor + scroll row to the new view's bounds.
+    // After a sort/filter change, the cursor may land far outside the
+    // new view's row range — clamp grid_cursor_ to [0, n-1] first, then
+    // ensure scroll_row_ keeps the cursor visible (i.e. scroll_row_ ≤
+    // cursor_row). Without the visibility clamp, an operator scrolled
+    // down before applying a filter that shrinks the view would see an
+    // empty grid until the next render's render-side clamp catches up.
     const int n = static_cast<int>(view_.size());
     if (grid_cursor_ >= n) grid_cursor_ = std::max(0, n - 1);
-    const int max_scroll_row = n / kGridCols;
+    const int cursor_row = (n == 0) ? 0 : grid_cursor_ / kGridCols;
+    if (scroll_row_ > cursor_row) scroll_row_ = cursor_row;
+    const int max_scroll_row = std::max(0, (n - 1) / kGridCols);
     if (scroll_row_ > max_scroll_row) scroll_row_ = max_scroll_row;
 }
 
