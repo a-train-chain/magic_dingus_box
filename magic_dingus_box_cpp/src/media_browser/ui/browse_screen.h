@@ -131,10 +131,12 @@ private:
     void ensure_genres_loaded();
     // Cycle the current filter_row_'s value by `delta` (+1 / -1 typical).
     void cycle_filter_value(int delta);
-    // BTN2 quick-add: lookup library cache + quality profiles, then
-    // radarr_.add_movie() for the focused poster. Surfaces a Toast on
-    // completion. Idempotent — no-op if movie is already in library.
-    void quick_add_focused();
+    // Retired in v1.6.x — was the BTN2 quick-add shortcut, replaced by
+    // the back-grammar remap. Preserved intentionally in case a future
+    // overlay or shortcut wants the same library-add flow without going
+    // through DetailScreen. Add to the new caller, then remove the
+    // [[maybe_unused]] when reactivating.
+    [[maybe_unused]] void quick_add_focused();
 
     static const char* label_for_category(Category cat);
 
@@ -228,7 +230,11 @@ private:
     // current_sort_index_ is the index into a static array in the .cpp.
     int current_sort_index_ = 0;
 
-    // --- BTN2 quick-add cache --------------------------------------
+    // --- Quick-add caches (preserved post-v1.6.x, see comment above) ---
+    // Quick-add cache: in-library tmdb_id set + quality profile cache.
+    // Pre-v1.6.x backed the BTN2 quick-add shortcut; preserved
+    // post-grammar-remap because the same caches drive the IN LIBRARY
+    // badge on poster cells and may back a future overlay shortcut.
     // Cached tmdb_ids already in the Radarr library, so quick-add doesn't
     // refetch the full library on every press. Populated on enter() and
     // refreshed after a successful add.

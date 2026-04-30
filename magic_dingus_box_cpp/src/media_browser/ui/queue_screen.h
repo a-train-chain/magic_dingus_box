@@ -42,7 +42,9 @@ namespace media_browser::ui {
 //     The button label flips to "Confirm Cancel" for kCancelPendingMs,
 //     and a second SELECT within that window calls cancel_queue_item().
 //     Any navigation or the 2s expiry clears the pending state.
-//   - SETTINGS_MENU: returns to Screen::Browse.
+//   - BTN2 (PLAY_PAUSE): back to Screen::Library. SETTINGS_MENU short-press
+//     is a no-op in v1.6.x; long-press exits MB → MainMenu via the input
+//     dispatcher.
 //
 // Error / empty states:
 //   - Queue empty and RadarrClient::last_error() non-empty  ->

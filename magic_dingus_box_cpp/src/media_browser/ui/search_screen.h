@@ -41,7 +41,9 @@ namespace media_browser::ui {
 //   pending result / worker pool:
 //     - lib_*  : one-shot library-cache fetch fired from enter() and
 //                refreshed after a successful add. Drives the
-//                "IN LIBRARY" overlay chips and gates BTN2 quick-add.
+//                "IN LIBRARY" overlay chips on result cells. Pre-v1.6.x
+//                also gated the BTN2 quick-add shortcut; quick-add
+//                itself is retired.
 //     - lookup_*: bouncy lookup fetch fired from run_lookup_if_due()
 //                whenever the typed query goes idle for kDebounceMs.
 //                Each new keystroke past the debounce bumps the gen so
@@ -65,8 +67,8 @@ namespace media_browser::ui {
 //   - SELECT on the keyboard is VirtualKeyboard::select() (types a
 //     character, backspaces, toggles caps, etc.). SELECT on a result
 //     stores its tmdb_id and transitions to Screen::Detail.
-//   - SETTINGS_MENU returns to Screen::Browse (back stack — not the
-//     kiosk main menu, unlike BrowseScreen which returns to Exit).
+//   - BTN2 (PLAY_PAUSE) returns to Screen::Browse — back to the previous
+//     Marquee tab. SETTINGS_MENU short-press is a no-op in v1.6.x.
 class SearchScreen : public MbScreen {
 public:
     explicit SearchScreen(RadarrClient& radarr);
@@ -95,9 +97,11 @@ private:
     static constexpr int kDebounceMs = 400;
 
     void run_lookup_if_due();
-    // BTN2 quick-add: only fires when Focus::Results — adds the focused
-    // result to the Radarr library (same behavior as BrowseScreen).
-    void quick_add_focused();
+    // Retired in v1.6.x — was the BTN2 quick-add shortcut on the
+    // results grid, replaced by the back-grammar remap. Preserved
+    // intentionally in case a future overlay or shortcut wants the
+    // same library-add flow without going through DetailScreen.
+    [[maybe_unused]] void quick_add_focused();
 
     // --- Async pipelines (lib_ + lookup_) -----------------------------
     // Library cache: one-shot fetch dispatched from enter() (and after a
@@ -140,12 +144,13 @@ private:
 
     int selected_tmdb_id_ = 0;
 
-    // --- BTN2 quick-add cache (same shape as BrowseScreen) ------------
+    // --- Quick-add caches (preserved post-v1.6.x, see comment above) ---
     std::unordered_set<int> library_tmdb_ids_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;   // True once profiles_ have been fetched.
     bool lib_loaded_     = false;   // True once the in-library set has populated
-                                    // at least once. Gates BTN2 quick-add.
+                                    // at least once. Used by the IN LIBRARY badge
+                                    // on result cells; pre-v1.6.x also gated quick-add.
 
     // --- Async lib_ pipeline ------------------------------------------
     // Library fetch was synchronous in enter() and blocked the render

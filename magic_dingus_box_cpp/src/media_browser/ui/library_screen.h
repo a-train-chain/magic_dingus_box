@@ -31,7 +31,9 @@ namespace media_browser::ui {
 //                               against a prefix match on "Bluray" / "WEBDL-1080p")
 //       * red    (highlight2):  monitored but has_file = false — no file yet
 //     The focused cell gets an accent-colored outline.
-//   - Bottom bar (~40px): "Select: Open details   LEFT/RIGHT: Filter   Menu: Back"
+//   - Bottom bar (~40px): "Select: Open details   LEFT/RIGHT: Filter   "
+//     BTN2 (red): back to Browse. BTN4 (black): opens the Library overlay
+//     (sort + filter + stats — wired in Task 5 of the v1.6.x library-overlay plan).
 //
 // Navigation:
 //   - LEFT / RIGHT (ROTATE) at top-strip level switches filter chip; in the
@@ -42,7 +44,9 @@ namespace media_browser::ui {
 //   - SELECT / ROTARY_CLICK on a grid cell stores that movie's tmdb_id and
 //     transitions to Screen::Detail (same handoff as BrowseScreen:
 //     dispatcher reads selected_tmdb_id() and forwards to DetailScreen).
-//   - SETTINGS_MENU / BTN4 returns to Screen::Browse.
+//   - BTN2 (PLAY_PAUSE): returns to Screen::Browse. BTN4 (SETTINGS_MENU)
+//     short-press: opens the Library slide-in overlay (Task 5 of v1.6.x);
+//     long-press still exits MB → MainMenu.
 class LibraryScreen : public MbScreen {
 public:
     explicit LibraryScreen(RadarrClient& radarr);

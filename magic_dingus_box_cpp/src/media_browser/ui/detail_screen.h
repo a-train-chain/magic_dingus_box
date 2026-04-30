@@ -27,7 +27,7 @@ namespace media_browser::ui {
 //   - Top 35%: fanart/backdrop (dim + slightly-darkened colored poster-tint
 //     placeholder until real image loading lands). Title + year + rating
 //     overlaid at the bottom-left with the accent color. Runtime right-aligned.
-//     "Press Menu to go back" hint in the top-right corner.
+//     Back hint in the chrome header (e.g. "BTN2 back") anchored top-right.
 //   - Middle 40%: overview/synopsis text, wrapped at ~60% of screen width,
 //     centered. Truncated to ~6 lines with trailing "...".
 //   - Bottom 25%: context-sensitive action button row. Buttons depend on
@@ -39,8 +39,10 @@ namespace media_browser::ui {
 // Interaction:
 //   - LEFT/RIGHT (or ROTATE):      step between action buttons
 //   - SELECT / ROTARY_CLICK:       activate focused button
-//   - SETTINGS_MENU / BTN4:        back to Browse (MVP back-stack; a real
-//                                  stack would track where we came from)
+//   - BTN2 (PLAY_PAUSE):           returns to origin_ (the screen that
+//                                  opened this Detail — Browse / Library /
+//                                  Search / Queue). BTN4 short-press is a
+//                                  no-op in v1.6.x.
 //
 // Action behavior:
 //   - [Add to Library]: picks HD-1080p quality profile (fallback to the
@@ -94,12 +96,11 @@ public:
     }
     int tmdb_id() const { return tmdb_id_; }
 
-    // Remember which screen we came from so BTN4 / SETTINGS_MENU returns
-    // there instead of always dumping the user back to Browse. main.cpp
-    // calls this on every transition INTO Detail, using the dispatcher's
-    // current_mb_screen at the moment of transition. Library → Detail →
-    // BTN4 should return to Library, Search → Detail → BTN4 should return
-    // to Search (preserving query + results), etc.
+    // Remember which screen we came from so BTN2 (back) returns there.
+    // Set by the dispatcher in main.cpp on every transition into Detail,
+    // using the dispatcher's current_mb_screen at the moment of transition.
+    // Library → Detail → BTN2 should return to Library, Search → Detail →
+    // BTN2 should return to Search (preserving query + results), etc.
     void set_origin(Screen s) { origin_ = s; }
     Screen origin() const { return origin_; }
 
@@ -217,7 +218,7 @@ private:
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
 
-    // Screen to return to on BTN4 / SETTINGS_MENU. Default Browse preserves
+    // Screen to return to on BTN2 (back). Default Browse preserves
     // legacy behavior for any callers that forget to set_origin().
     Screen origin_ = Screen::Browse;
 
