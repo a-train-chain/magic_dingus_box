@@ -360,10 +360,22 @@ void SearchScreen::update() {
 
 Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& events) {
     for (const auto& e : events) {
-        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
-        // No slide-in overlay on Search; long-press to exit MB still
-        // works via the input dispatcher's long-press branch.
+        // BTN4 (SETTINGS_MENU, black) — toggles focus between the virtual
+        // keyboard (top region) and the results grid (bottom region).
+        // No-op when there are no results so the user isn't confused by
+        // BTN4 appearing to do nothing meaningful.
+        // Long-press to exit MB still works via the input dispatcher's
+        // long-press branch (handled before handle_input is called).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            if (!results_.empty()) {
+                focus_ = (focus_ == Focus::Keyboard)
+                             ? Focus::Results
+                             : Focus::Keyboard;
+                if (focus_ == Focus::Results && grid_cursor_ < 0) {
+                    grid_cursor_ = 0;
+                    scroll_row_  = 0;
+                }
+            }
             continue;
         }
 
@@ -902,7 +914,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
             {mc::HintIcon::Btn2Red,     "Back"},
             {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::Btn4Black,   results_.empty() ? "\xE2\x80\x94" : "Grid"},
             {mc::HintIcon::RotaryNav,   "Keys"},
             {mc::HintIcon::RotaryPress, "Type"},
         });
@@ -911,7 +923,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
             {mc::HintIcon::Btn2Red,     "Back"},
             {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::Btn4Black,   "Keyboard"},
             {mc::HintIcon::RotaryNav,   "Posters"},
             {mc::HintIcon::RotaryPress, "Open"},
         });
