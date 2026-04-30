@@ -1,4 +1,5 @@
 #include "media_browser/ui/detail_screen.h"
+#include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -1317,17 +1318,16 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Bottom hint -------------------------------------------------
-    {
-        const std::string hint =
-            "Rotate: nav   RCLICK / BTN2: action   BTN4: back (hold for home)";
-        int sz = th.font_small_size;
-        int baseline = r.mb_text_baseline(sz);
-        int hw = r.mb_text_width(hint, sz);
-        float hx = (w - static_cast<float>(hw)) / 2.0f;
-        float hy = h - 12.0f - static_cast<float>(sz)
-                 + static_cast<float>(baseline);
-        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
-    }
+    // Marquee design: bordered-key glyphs + dim labels, drawn via the
+    // shared mb_chrome helper so all Marquee screens share the same
+    // footer style. Replaces the previous centered text hint.
+    ::media_browser::ui::chrome::draw_footer_hints(
+        r, screen_w, screen_h, {
+            {"Rotary", "Nav"},
+            {"A",      "Action"},
+            {"BTN2",   "Quick"},
+            {"BTN4",   "Back"},
+        });
 
     // --- Transient banner --------------------------------------------
     if (!banner_.empty()) {

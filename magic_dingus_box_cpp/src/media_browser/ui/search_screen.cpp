@@ -1,4 +1,5 @@
 #include "media_browser/ui/search_screen.h"
+#include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -889,19 +890,24 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // The hint text changes by focus region so the user always sees
     // the inputs that matter for what's currently active.
     // ---------------------------------------------------------------
-    {
-        const std::string hint =
-            (focus_ == Focus::Keyboard)
-                ? "Rotate: keyboard   BTN2: type   Down: results   BTN4: back"
-                : "Rotate: nav   RCLICK: open   BTN2: quick-add   BTN4: back";
-        const int sz       = th.font_small_size;
-        const int baseline = r.mb_text_baseline(sz);
-        const int hw       = r.mb_text_width(hint, sz);
-        const float hx     = (w - static_cast<float>(hw)) / 2.0f;
-        const float hy     = h - kHintMarginBottom
-                           - static_cast<float>(sz)
-                           + static_cast<float>(baseline);
-        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
+    // Marquee design: bordered-key glyphs via mb_chrome::draw_footer_hints,
+    // shared across all Marquee screens.
+    if (focus_ == Focus::Keyboard) {
+        ::media_browser::ui::chrome::draw_footer_hints(
+            r, screen_w, screen_h, {
+                {"Rotary", "Keys"},
+                {"BTN2",   "Type"},
+                {"Down",   "Results"},
+                {"BTN4",   "Back"},
+            });
+    } else {
+        ::media_browser::ui::chrome::draw_footer_hints(
+            r, screen_w, screen_h, {
+                {"Rotary", "Nav"},
+                {"A",      "Open"},
+                {"BTN2",   "Add"},
+                {"BTN4",   "Back"},
+            });
     }
 }
 

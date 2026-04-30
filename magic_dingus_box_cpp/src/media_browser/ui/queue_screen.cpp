@@ -1,4 +1,5 @@
 #include "media_browser/ui/queue_screen.h"
+#include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
 #include <cmath>
@@ -970,14 +971,29 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
-    // --- Footer hint (centered, dim) ---------------------------------
-    // Color goes red when a cancel is armed so the destructive intent is
-    // unmissable, otherwise stays dim cream like Detail's footer.
-    int hint_w_px = r.mb_text_width(hint, hint_size);
-    float hint_x = (w - static_cast<float>(hint_w_px)) / 2.0f;
-    r.mb_draw_text(hint, hint_x, hint_y, hint_size,
-                   cancel_pending_ ? th.highlight2 : th.dim,
-                   cancel_pending_ ? 0.95f : 0.85f);
+    // --- Footer hints (Marquee shared style) -------------------------
+    // The bordered-key glyphs from mb_chrome replace the previous
+    // centered text-only hint. Cancel-armed state still surfaces visually
+    // through the "Confirm" text in the rotary key's label.
+    if (cancel_pending_) {
+        ::media_browser::ui::chrome::draw_footer_hints(
+            r, screen_w, screen_h, {
+                {"A",      "Confirm Cancel"},
+                {"Rotary", "Nav"},
+                {"BTN4",   "Back"},
+            });
+    } else {
+        ::media_browser::ui::chrome::draw_footer_hints(
+            r, screen_w, screen_h, {
+                {"Rotary", "Nav"},
+                {"A",      "Cancel"},
+                {"BTN2",   "Cancel"},
+                {"BTN4",   "Back"},
+            });
+    }
+    (void)hint;
+    (void)hint_size;
+    (void)hint_y;
 }
 
 }  // namespace media_browser::ui

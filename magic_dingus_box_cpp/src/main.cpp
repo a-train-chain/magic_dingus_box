@@ -2512,7 +2512,28 @@ int main(int /* argc */, char* /* argv */[]) {
             if (letterbox_active) {
                 glViewport(content_x, content_y, content_w, content_h);
             }
-            
+
+#ifdef MEDIA_BROWSER_ENABLED
+            // Marquee playback: inset the video viewport by 30 px on each
+            // edge so the wood-frame overlay (which paints the outer 40 px
+            // of the canvas as cabinet art) doesn't crop important movie
+            // content. The 10 px gap between frame inner edge (40 px) and
+            // video edge (30 px inset = 30 px) intentionally creates a
+            // small overlap zone where the frame visually "covers" the
+            // outermost movie pixels — this looks like "screen behind
+            // wood" rather than "movie cropped flush against wood". The
+            // CRT shader pipeline is already gated off for MediaBrowser
+            // (see begin_scene_fbo's AppScreen check) so playback shows
+            // a clean unfiltered image.
+            if (state.current_screen == app::AppScreen::MediaBrowser &&
+                current_mb_screen == media_browser::ui::Screen::Playback) {
+                constexpr int kPlaybackInsetPx = 30;
+                glViewport(kPlaybackInsetPx, kPlaybackInsetPx,
+                           static_cast<GLsizei>(mode.width  - 2 * kPlaybackInsetPx),
+                           static_cast<GLsizei>(mode.height - 2 * kPlaybackInsetPx));
+            }
+#endif
+
             gst_renderer.render();
         }
         
