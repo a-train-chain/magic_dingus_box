@@ -1,4 +1,8 @@
 #include "media_browser/ui/library_screen.h"
+#include <filesystem>
+#include <system_error>
+#include <cstdio>
+#include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
 #include <chrono>
@@ -213,111 +217,70 @@ void LibraryScreen::rebuild_view() {
 // ---------------------------------------------------------------------------
 
 Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& events) {
+    // LibraryScreen sits at strip position 3 in the Marquee 5-tab strip:
+    //   Popular(0) · Now Playing(1) · Top Rated(2) · Library(3) · Search(4)
+    // BTN1 (PREV, yellow) returns to BrowseScreen — BrowseScreen retains
+    // its category_ across transitions, so the user resumes on whatever
+    // content tab they were on before navigating to Library (typically
+    // TopRated, the immediate left neighbour). BTN3 (NEXT, green)
+    // transitions to SearchScreen.
     for (const auto& e : events) {
-        // Always: Menu returns to Browse (back-stack MVP behavior —
-        // matches QueueScreen which also returns to Browse).
+        // BTN4 (SETTINGS_MENU, black) — back to kiosk main menu.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            return Screen::Exit;
+        }
+
+        // BTN1 (PREV, yellow) — previous tab. Library is at position 3,
+        // so PREV always returns to BrowseScreen.
+        if (e.action == platform::InputAction::PREV && e.pressed) {
             return Screen::Browse;
         }
 
-        // BTN2 (PLAY_PAUSE): "Play" for the focused movie. For now this
-        // transitions to DetailScreen; Task 24 will wire real playback.
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            if (focus_ != Focus::PosterGrid) continue;
-            if (view_.empty()) continue;
-            if (grid_cursor_ < 0 ||
-                grid_cursor_ >= static_cast<int>(view_.size())) continue;
-            selected_tmdb_id_ = view_[grid_cursor_]->tmdb_id;
-            return Screen::Detail;
+        // BTN3 (NEXT, green) — next tab. Library is at position 3,
+        // NEXT goes to Search at position 4.
+        if (e.action == platform::InputAction::NEXT && e.pressed) {
+            return Screen::Search;
         }
 
-        // Vertical movement — ROTATE_VERTICAL (dpad up/down).
-        if (e.action == platform::InputAction::ROTATE_VERTICAL) {
-            int delta = e.delta;
-            if (delta == 0) continue;
-            if (focus_ == Focus::FilterStrip) {
-                if (delta > 0) {
-                    // Drop into the grid at row 0.
-                    focus_ = Focus::PosterGrid;
-                    if (view_.empty()) {
-                        grid_cursor_ = 0;
-                    } else {
-                        grid_cursor_ = std::min(grid_cursor_,
-                                                static_cast<int>(view_.size()) - 1);
-                    }
-                    scroll_row_ = 0;
-                }
-                // Up from the strip is a no-op.
-            } else {
-                // In the grid. Up from the top row jumps to the strip.
-                int row = view_.empty() ? 0 : grid_cursor_ / kGridCols;
-                int col = view_.empty() ? 0 : grid_cursor_ % kGridCols;
-                if (delta < 0 && (row == 0 || view_.empty())) {
-                    focus_ = Focus::FilterStrip;
-                    filter_cursor_ = static_cast<int>(filter_);
-                } else if (!view_.empty()) {
-                    int new_row = row + (delta > 0 ? 1 : -1);
-                    int max_row = (static_cast<int>(view_.size()) - 1) / kGridCols;
-                    new_row = std::clamp(new_row, 0, max_row);
-                    int new_idx = new_row * kGridCols + col;
-                    if (new_idx < static_cast<int>(view_.size())) {
-                        grid_cursor_ = new_idx;
-                    } else {
-                        grid_cursor_ = static_cast<int>(view_.size()) - 1;
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Horizontal movement — ROTATE (dpad L/R and rotary wheel).
+        // ROTATE (rotary CW/CCW + D-pad LEFT/RIGHT) — walk one cell at
+        // a time, row-major.
         if (e.action == platform::InputAction::ROTATE) {
-            int delta = e.delta;
-            if (delta == 0) continue;
-            if (focus_ == Focus::FilterStrip) {
-                int old = filter_cursor_;
-                filter_cursor_ = std::clamp(filter_cursor_ + delta, 0,
-                                            kNumFilters - 1);
-                if (filter_cursor_ != old) {
-                    // Apply the filter change immediately so the user
-                    // sees the grid update without needing to confirm.
-                    filter_ = static_cast<Filter>(filter_cursor_);
-                    rebuild_view();
-                }
-            } else {
-                if (view_.empty()) continue;
-                int n = static_cast<int>(view_.size());
-                grid_cursor_ = std::clamp(grid_cursor_ + delta, 0, n - 1);
+            if (view_.empty()) continue;
+            const int n = static_cast<int>(view_.size());
+            grid_cursor_ = std::clamp(grid_cursor_ + e.delta, 0, n - 1);
+            continue;
+        }
+
+        // ROTATE_VERTICAL (D-pad UP/DOWN) — walk one row at a time.
+        if (e.action == platform::InputAction::ROTATE_VERTICAL) {
+            if (view_.empty()) continue;
+            const int row = grid_cursor_ / kGridCols;
+            const int col = grid_cursor_ % kGridCols;
+            const int max_row = (static_cast<int>(view_.size()) - 1) / kGridCols;
+            const int new_row = std::clamp(row + e.delta, 0, max_row);
+            const int new_idx = new_row * kGridCols + col;
+            if (new_idx < static_cast<int>(view_.size())) {
+                grid_cursor_ = new_idx;
+            } else if (!view_.empty()) {
+                grid_cursor_ = static_cast<int>(view_.size()) - 1;
             }
             continue;
         }
 
-        // Select — A button or rotary click.
+        // SELECT (rotary click + gamepad A) — open detail.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
-            if (focus_ == Focus::FilterStrip) {
-                // Top-strip SELECT confirms the filter + drops back to
-                // the grid. The horizontal handler already applied the
-                // change, so this is mostly a "done picking" gesture.
-                filter_ = static_cast<Filter>(filter_cursor_);
-                rebuild_view();
-                focus_ = Focus::PosterGrid;
-                continue;
-            }
-            if (!view_.empty() &&
-                grid_cursor_ >= 0 &&
+            if (!view_.empty() && grid_cursor_ >= 0 &&
                 grid_cursor_ < static_cast<int>(view_.size())) {
                 selected_tmdb_id_ = view_[grid_cursor_]->tmdb_id;
                 return Screen::Detail;
             }
-            continue;
         }
     }
 
-    // Keep scroll_row_ such that the grid cursor is visible. Upper bound
-    // is enforced in render() where we know visible_rows from the window
-    // height.
-    if (focus_ == Focus::PosterGrid && !view_.empty()) {
-        int row = grid_cursor_ / kGridCols;
+    // Keep cursor visible. Render uses 2 visible rows; clamp lower bound
+    // here, upper bound clamps in render once visible_rows is known.
+    if (!view_.empty()) {
+        const int row = grid_cursor_ / kGridCols;
         if (row < scroll_row_) scroll_row_ = row;
     }
 
@@ -328,352 +291,194 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
 // Rendering
 // ---------------------------------------------------------------------------
 
+namespace {
+// Format a byte count as a human-readable size string.
+// "0 B", "23 KB", "1.4 MB", "12.3 GB", etc.
+std::string format_bytes(int64_t bytes) {
+    if (bytes < 1024) {
+        return std::to_string(bytes) + " B";
+    }
+    constexpr double k = 1024.0;
+    constexpr double m = k * 1024.0;
+    constexpr double g = m * 1024.0;
+    const double f = static_cast<double>(bytes);
+    char buf[32];
+    if (bytes < 1024 * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f KB", f / k);
+    } else if (bytes < 1024 * 1024 * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f MB", f / m);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.1f GB", f / g);
+    }
+    return buf;
+}
+
+// Deterministic colored tint for a movie's tmdb_id, matching BrowseScreen.
+::ui::Color library_tint_for_tmdb(int tmdb_id) {
+    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;
+    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
+    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
+    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
+    return {r, g, b, 255};
+}
+}  // namespace
+
 void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
+    namespace chrome = ::media_browser::ui::chrome;
     const ::ui::Theme& th = r.mb_theme();
+
     r.mb_fill_background();
 
-    const float w = static_cast<float>(screen_w);
-    const float h = static_cast<float>(screen_h);
+    // --- 5-tab Marquee header (same strip BrowseScreen renders, Library active here) ---
+    // Labels are hardcoded so LibraryScreen doesn't need to peek at
+    // BrowseScreen's private Category enum. They must stay in sync with
+    // kVisibleTabs[] in browse_screen.cpp.
+    static constexpr const char* kTabLabels[] = {
+        "Popular", "Now Playing", "Top Rated", "Library", "Search",
+    };
+    constexpr int kNumVisibleTabs = 5;
+    constexpr int kLibraryStripPos = 3;
 
-    // 500ms blink cycle, sourced from epoch time so it stays in lockstep
-    // with the home-menu cursor and DetailScreen's action button — all
-    // three blinks visually breathe together when transitioning between
-    // screens.
-    auto epoch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-    const bool blink_on = (epoch_ms / 500) % 2 == 0;
+    std::vector<chrome::TabSpec> tabs;
+    tabs.reserve(kNumVisibleTabs);
+    for (int i = 0; i < kNumVisibleTabs; ++i) {
+        chrome::TabSpec t;
+        t.label = kTabLabels[i];
+        t.state = (i == kLibraryStripPos)
+                      ? chrome::TabState::Active
+                      : chrome::TabState::Inactive;
+        tabs.push_back(t);
+    }
+    const int content_top = chrome::draw_screen_header(
+        r, screen_w, "Library", tabs, /*focused_tab=*/-1);
 
-    // --- Top header bar: "LIBRARY" + (N movies) + back hint ----------
-    // Same idiom as DetailScreen's "FEATURE PRESENTATION" header: a Zen
-    // Dots heading in steel-blue (accent2), a dim count next to it, and
-    // a full-width 2px rule beneath. The rule reads as a screen frame,
-    // not a heading underline.
+    // --- Stats line: "N titles · X.X GB · Y.Y GB free" ---
+    int64_t used_bytes = 0;
+    for (const Movie& m : library_) {
+        if (m.has_file) used_bytes += m.file_size_bytes;
+    }
+    int64_t free_bytes = 0;
     {
-        const std::string heading = "LIBRARY";
-        int hd_size = th.font_heading_size;
-        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             hd_size, th.accent2, 1.0f);
-
-        // "(N movies)" count, dim, body font, baseline aligned with the
-        // heading. Sits immediately to the right of the title with a
-        // small gap so it reads as a subtitle.
-        int count_size = th.font_medium_size;
-        std::ostringstream cs;
-        size_t shown = view_.size();
-        cs << "(" << shown << (shown == 1 ? " movie" : " movies") << ")";
-        std::string count_text = cs.str();
-        int title_px = r.mb_title_text_width(heading, hd_size);
-        float count_x = kPaddingX + static_cast<float>(title_px) + 14.0f;
-        r.mb_draw_text(count_text, count_x, kHeaderBaselineY + 2.0f,
-                       count_size, th.dim, 0.9f);
-
-        // Right-aligned back hint, small + dim — same pattern as Detail.
-        const std::string back_hint = "BTN4: back";
-        int hint_size = th.font_small_size;
-        int hw = r.mb_text_width(back_hint, hint_size);
-        float hx = w - kPaddingX - static_cast<float>(hw);
-        r.mb_draw_text(back_hint, hx, kHeaderBaselineY + 2.0f,
-                       hint_size, th.dim, 0.9f);
-
-        // Full-width 2px steel-blue rule beneath the header.
-        r.mb_draw_line(kPaddingX, kHeaderRuleY,
-                       w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.accent2, 0.95f);
+        std::error_code ec;
+        auto info = std::filesystem::space("/mnt/ssd/library", ec);
+        if (!ec) free_bytes = static_cast<int64_t>(info.available);
     }
+    const std::string stats =
+        std::to_string(library_.size()) + " titles  ·  "
+        + format_bytes(used_bytes) + " used  ·  "
+        + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
+    const int stats_y = content_top + chrome::kPad2;
+    r.mb_draw_text(stats,
+                   static_cast<float>(chrome::kSafeInset_px),
+                   static_cast<float>(stats_y + 14),
+                   14, th.dim);
 
-    // --- Filter chip strip --------------------------------------------
-    // Outlined-only chips, no fill. Active chip: gold outline + gold
-    // text. Inactive chip: dim outline + dim text. Focused chip (when
-    // the strip has focus): thicker (3px) gold outline plus a blinking
-    // ◂ inside the right edge — same marker idiom as DetailScreen's
-    // action buttons and the home menu's playlist cursor.
-    //
-    // The strip only ever holds 4 fixed chips (All / Unwatched /
-    // Missing Upgrades / Recent), so there's a lot of horizontal slack
-    // on a 1280-wide screen. Rather than letting the chips cluster on
-    // the left, we measure the total natural width of all chips at
-    // their minimum gap and then redistribute any leftover slack into
-    // the inter-chip gaps. End result: the four chips spread evenly
-    // across the available width, filling the strip end-to-end.
-    {
-        int chip_size = th.font_small_size;
-        int chip_baseline = r.mb_text_baseline(chip_size);
-
-        // Natural width per chip = pad-left + label + pad-right + marker zone.
-        // The marker zone is reserved on EVERY chip (focused or not) so chip
-        // widths don't shift on focus changes — preventing a layout reflow
-        // every 500ms as the cursor blinks.
-        float chip_w[kNumFilters];
-        float total_chip_w = 0.0f;
-        for (int i = 0; i < kNumFilters; ++i) {
-            Filter f = static_cast<Filter>(i);
-            const char* label = label_for_filter(f);
-            float label_w = static_cast<float>(r.mb_text_width(label, chip_size));
-            chip_w[i] = label_w + 2.0f * kChipPadX + kMarkerZoneW;
-            total_chip_w += chip_w[i];
-        }
-
-        // Compute the inter-chip gap. Start at the minimum, then
-        // distribute any remaining slack across the (n-1) gaps. If the
-        // chips somehow overflow the strip (very long font / tiny
-        // screen), we fall back to the minimum gap and let them clip —
-        // legibility of the labels matters more than fitting.
-        const float strip_w = w - 2.0f * kPaddingX;
-        float gap = kChipMinGap;
-        if (kNumFilters > 1) {
-            float available_for_gaps = strip_w - total_chip_w;
-            float computed_gap = available_for_gaps
-                               / static_cast<float>(kNumFilters - 1);
-            if (computed_gap > gap) gap = computed_gap;
-        }
-
-        float chip_x = kPaddingX;
-        float chip_y = kStripTop;
-
-        // When focus is on the poster grid, fade the filter chips so the
-        // user can still see what their options are but knows their input
-        // affects posters, not the filter strip. The currently-active
-        // filter chip stays at full alpha — it's the breadcrumb that says
-        // "you're filtering by All".
-        const float kInactiveChipFade = 0.4f;
-        const bool grid_has_focus = (focus_ == Focus::PosterGrid);
-
-        for (int i = 0; i < kNumFilters; ++i) {
-            Filter f = static_cast<Filter>(i);
-            bool is_active  = (f == filter_);
-            bool is_focused = (focus_ == Focus::FilterStrip && i == filter_cursor_);
-
-            const char* label = label_for_filter(f);
-            float this_chip_w = chip_w[i];
-
-            // Border + text colors. Active = gold (accent), inactive = dim.
-            // Focused inherits whichever the chip already uses but with
-            // a thicker outline so the focus state still stands out on a
-            // chip that's already active.
-            ::ui::Color border_color = is_active ? th.accent : th.dim;
-            ::ui::Color label_color  = is_active ? th.accent : th.dim;
-            float border_thickness   = is_focused ? 3.0f : kChipBorderW;
-            float border_alpha       = is_focused ? 1.0f : (is_active ? 0.95f : 0.75f);
-            float label_alpha        = is_focused ? 1.0f : (is_active ? 1.0f : 0.85f);
-
-            // If the grid currently owns focus, de-emphasize every chip
-            // EXCEPT the active filter chip (the breadcrumb).
-            float fade = (grid_has_focus && !is_active) ? kInactiveChipFade : 1.0f;
-
-            r.mb_stroke_rect(chip_x, chip_y, this_chip_w, kChipH,
-                             border_thickness, border_color,
-                             border_alpha * fade);
-
-            // Center the label inside the FULL chip width. The chips are
-            // sized/spaced comfortably enough that label centering in the
-            // full body still leaves room near the right edge for the
-            // focus marker to sit over (or near) empty space — most chip
-            // labels are shorter than chip_w - 2*kChipPadX - kMarkerZoneW.
-            float label_px = static_cast<float>(r.mb_text_width(label, chip_size));
-            float lx = chip_x + (this_chip_w - label_px) / 2.0f;
-            float ly = chip_y + (kChipH - static_cast<float>(chip_size)) / 2.0f
-                     + static_cast<float>(chip_baseline);
-            r.mb_draw_text(label, lx, ly, chip_size, label_color,
-                           label_alpha * fade);
-
-            // Blinking ◂ centered inside the reserved marker zone. Only
-            // drawn when the strip itself has focus — when the grid has
-            // focus, the chip has no marker (faded chips signal "not
-            // currently navigable").
-            if (focus_ == Focus::FilterStrip && is_focused && blink_on) {
-                float marker_size = static_cast<float>(chip_size) * 0.45f;
-                float marker_cx = chip_x + this_chip_w - kMarkerZoneW * 0.5f;
-                float marker_cy = chip_y + kChipH / 2.0f;
-                r.mb_fill_triangle(
-                    marker_cx,                       marker_cy - marker_size,
-                    marker_cx,                       marker_cy + marker_size,
-                    marker_cx - marker_size * 1.2f,  marker_cy,
-                    th.accent2, 1.0f);
-            }
-
-            chip_x += this_chip_w + gap;
-        }
-
-        // Section divider beneath the strip — matches the kHeaderRuleY
-        // pattern, framing the chip row top-and-bottom so it reads as a
-        // distinct band from the grid below.
-        r.mb_draw_line(kPaddingX, kStripRuleY,
-                       w - kPaddingX, kStripRuleY,
-                       2.0f, th.accent2, 0.85f);
+    // --- Empty state ---
+    if (!loaded_) {
+        const std::string msg = "Loading library...";
+        const int tw = r.mb_text_width(msg, 18);
+        r.mb_draw_text(msg,
+                       static_cast<float>((screen_w - tw) / 2),
+                       static_cast<float>(screen_h / 2),
+                       18, th.dim);
+        chrome::draw_footer_hints(r, screen_w, screen_h, {
+            {"BTN1/3", "Tabs"},
+            {"BTN4",   "Home"},
+        });
+        return;
     }
-
-    // --- Poster grid --------------------------------------------------
-    // 5-column grid of posters (see kGridCols in library_screen.h).
-    // Each cell shows artwork (with a deterministic Knuth-hash tint
-    // fallback), a 2px gold border, a status corner dot (green/gold/red)
-    // in the top-right, and the movie title + year underneath. Focused
-    // cell gets a 3px gold outline plus a blinking ◂ to the right of
-    // its title (drawn inside a reserved "marker zone" so it never
-    // overlaps the last letter of the title).
-    const float grid_left   = kPaddingX;
-    const float grid_right  = w - kPaddingX;
-    const float grid_inner  = grid_right - grid_left;
-    const float grid_top    = kGridTop;
-    const float grid_bottom = h - kFooterReserve;
-
-    // Compute cell dimensions from the available width so the grid
-    // breathes with the screen. N cells + (N-1) gaps = grid_inner.
-    // Poster height is fixed at the standard 2:3 ratio of the cell width.
-    const float cell_w = (grid_inner - (kGridCols - 1) * kCellGapX)
-                       / static_cast<float>(kGridCols);
-    const float poster_w = cell_w;
-    const float poster_h = poster_w * 1.5f;             // 2:3 movie poster
-    const float cell_h = poster_h + kLabelAreaH;
-
-    // Scale the status corner dot with the cell width so it remains
-    // visually balanced as the grid widens or tightens. ~6% of the
-    // poster width tracks the original 14px dot at the previous 4-col
-    // ~285px cell width and stays legible at the new 5-col ~227px cell.
-    const float dot_size  = std::clamp(poster_w * 0.06f, 10.0f, kDotSize);
-    const float dot_inset = std::clamp(poster_w * 0.035f, 6.0f, kDotInset);
-
-    int visible_rows = std::max(1,
-        static_cast<int>((grid_bottom - grid_top) / (cell_h + kCellGapY)));
-
-    // Clamp scroll so the focused cell stays on screen.
-    if (focus_ == Focus::PosterGrid && !view_.empty()) {
-        int focused_row = grid_cursor_ / kGridCols;
-        if (focused_row < scroll_row_) scroll_row_ = focused_row;
-        if (focused_row >= scroll_row_ + visible_rows) {
-            scroll_row_ = focused_row - visible_rows + 1;
-        }
-    }
-
-    int total_rows = view_.empty() ? 0
-                   : (static_cast<int>(view_.size()) - 1) / kGridCols + 1;
-    int end_row = std::min(total_rows, scroll_row_ + visible_rows);
-
-    // Centered single-message states. Loading: accent (gold) so it
-    // reads as "active wait". Empty: dim so it reads as "no content".
-    // Same vocabulary as DetailScreen's Loading / NoTmdb states.
     if (view_.empty()) {
-        std::string msg;
-        ::ui::Color msg_color = th.dim;
-        if (!loaded_) {
-            msg = "Loading library...";
-            msg_color = th.accent;
-        } else if (library_.empty() && filter_ == Filter::All) {
-            msg = "Your library is empty. Add movies from Browse to build it.";
-        } else if (library_.empty()) {
-            msg = "No movies in library yet — add some from Browse";
-        } else {
-            msg = "No movies match this filter";
-        }
-        int msg_size = th.font_large_size;
-        int msg_w = r.mb_text_width(msg, msg_size);
-        float msg_x = (w - static_cast<float>(msg_w)) / 2.0f;
-        float msg_y = grid_top + (grid_bottom - grid_top) / 2.0f
-                    + static_cast<float>(r.mb_text_baseline(msg_size));
-        r.mb_draw_text(msg, msg_x, msg_y, msg_size, msg_color, 0.9f);
-    } else {
-        for (int row = scroll_row_; row < end_row; ++row) {
-            for (int col = 0; col < kGridCols; ++col) {
-                int idx = row * kGridCols + col;
-                if (idx >= static_cast<int>(view_.size())) break;
-                const Movie& m = *view_[idx];
+        const std::string msg = library_.empty()
+            ? "Library is empty — add movies from Browse"
+            : "No matches for the current filter";
+        const int tw = r.mb_text_width(msg, 18);
+        r.mb_draw_text(msg,
+                       static_cast<float>((screen_w - tw) / 2),
+                       static_cast<float>(screen_h / 2),
+                       18, th.dim);
+        chrome::draw_footer_hints(r, screen_w, screen_h, {
+            {"BTN1/3", "Tabs"},
+            {"BTN4",   "Home"},
+        });
+        return;
+    }
 
-                float cell_x = grid_left + col * (cell_w + kCellGapX);
-                float cell_y = grid_top + (row - scroll_row_) * (cell_h + kCellGapY);
+    // --- 9-column poster grid ---
+    constexpr int kCellGap     = 8;
+    constexpr int kRowGap      = 16;
+    constexpr int kVisibleRows = 2;
+    constexpr int kMetaH       = 14;
+    constexpr int kMetaGap     = 4;
+    const int content_w = screen_w - 2 * chrome::kSafeInset_px;
+    const int cell_w   = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
+    const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f);
+    const int cell_h   = poster_h + kMetaGap + kMetaH;
+    const int grid_top = stats_y + 14 + chrome::kPad3;
+    const int grid_left = chrome::kSafeInset_px;
 
-                bool focused = (focus_ == Focus::PosterGrid && idx == grid_cursor_);
+    const int cursor_row = grid_cursor_ / kGridCols;
+    if (cursor_row >= scroll_row_ + kVisibleRows) {
+        scroll_row_ = cursor_row - kVisibleRows + 1;
+    }
+    const int total_rows =
+        (static_cast<int>(view_.size()) + kGridCols - 1) / kGridCols;
+    const int last_visible_row =
+        std::min(scroll_row_ + kVisibleRows, total_rows);
 
-                // Poster artwork (or deterministic tint fallback). Same
-                // poster_fit semantics as Detail's hero poster — fill
-                // first, then overlay a 2px gold border so each cell
-                // reads as a TV-monitor frame.
-                ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
-                r.mb_draw_poster_fit(m.poster_url,
-                                     cell_x, cell_y, poster_w, poster_h,
-                                     tint, 1.0f);
+    for (int row = scroll_row_; row < last_visible_row; ++row) {
+        for (int col = 0; col < kGridCols; ++col) {
+            const int idx = row * kGridCols + col;
+            if (idx >= static_cast<int>(view_.size())) break;
+            const Movie* mv = view_[idx];
 
-                // Gold border ONLY on the focused poster — matches the
-                // BrowseScreen pattern, which is the canonical "unframed
-                // contact sheet" look for poster grids in the Media
-                // Browser. Previously Library drew a 2px gold border on
-                // EVERY cell (0.85 alpha) plus a 3px border on focus.
-                // The result was visual clutter — every poster looked
-                // selected, and the focus indicator had to fight that
-                // noise to stand out. With borders gated on focus, the
-                // grid reads cleanly and the eye lands on the focused
-                // cell instantly.
-                if (focused) {
-                    r.mb_stroke_rect(cell_x, cell_y, poster_w, poster_h,
-                                     kPosterFocusW, th.accent, 1.0f);
-                }
+            const int x = grid_left + col * (cell_w + kCellGap);
+            const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-                // Status corner dot — green / gold / red. Drawn as a
-                // small filled square with a 2px dark halo so it stays
-                // legible regardless of the underlying poster colors.
-                FileState state = classify(m);
-                ::ui::Color dot_color;
-                switch (state) {
-                    case FileState::HasGoodFile:      dot_color = th.highlight1; break; // green
-                    case FileState::UpgradeAvailable: dot_color = th.accent;     break; // gold
-                    case FileState::MissingFile:      dot_color = th.highlight2; break; // red
-                }
-                float dx = cell_x + poster_w - dot_inset - dot_size;
-                float dy = cell_y + dot_inset;
-                r.mb_fill_rect(dx - 2.0f, dy - 2.0f,
-                               dot_size + 4.0f, dot_size + 4.0f,
-                               th.bg, 0.9f);
-                r.mb_fill_rect(dx, dy, dot_size, dot_size, dot_color, 1.0f);
+            // Poster: tint placeholder (Radarr Movie struct doesn't carry
+            // a TMDB poster URL, so we use the deterministic tint always
+            // for now; a future enhancement could thread the artwork cache
+            // through Radarr-known images).
+            const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
+            r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                           static_cast<float>(cell_w), static_cast<float>(poster_h),
+                           tint);
 
-                // Title beneath the poster — left-aligned to the cell,
-                // truncated to the cell width. Mirrors BrowseScreen's
-                // pattern exactly. Was previously centered with a
-                // marker-zone reservation on the right and a blinking
-                // ◂ cursor inside that zone — both removed because the
-                // focused-only border + accent-color title already
-                // communicate "this is the selected one" plenty
-                // clearly. Less chrome, cleaner read.
-                //
-                // Title color/alpha: focused = accent (gold) at 1.0,
-                // unfocused = fg (cream) at 0.55. Same as Browse.
-                int t_size = th.font_medium_size;
-                int t_baseline = r.mb_text_baseline(t_size);
-                std::string title = truncate_to_width(
-                    r, m.title.empty() ? "Untitled" : m.title,
-                    t_size, poster_w);
-                float t_y = cell_y + poster_h + 10.0f
-                          + static_cast<float>(t_baseline);
-                ::ui::Color title_color = focused ? th.accent : th.fg;
-                float title_alpha = focused ? 1.0f : 0.55f;
-                r.mb_draw_text(title, cell_x, t_y, t_size,
-                               title_color, title_alpha);
+            // IN LIBRARY badge (everything in this view is in library, but
+            // showing it explicitly here keeps the visual language
+            // identical to BrowseScreen and signals the screen's identity).
+            chrome::draw_lib_badge(r, x + chrome::kPad1, y + chrome::kPad1);
 
-                if (m.year > 0) {
-                    int y_size = th.font_small_size;
-                    int y_baseline = r.mb_text_baseline(y_size);
-                    float y_y = t_y + static_cast<float>(t_size) * 0.4f
-                              + static_cast<float>(y_baseline);
-                    std::string year = std::to_string(m.year);
-                    r.mb_draw_text(year, cell_x, y_y, y_size, th.dim, 0.9f);
-                }
+            // Title-on-tint overlay (since we have no real artwork, render
+            // the title text inside the poster cell).
+            const std::string title_short = mv->title.substr(0, 24);
+            r.mb_draw_title_text(title_short,
+                                 static_cast<float>(x + chrome::kPad2),
+                                 static_cast<float>(y + poster_h / 2 + 6),
+                                 16, th.fg);
+
+            // Meta line below: "Title · Year"
+            std::string meta = mv->title;
+            if (mv->year > 0) {
+                meta += " \xc2\xb7 " + std::to_string(mv->year);
+            }
+            r.mb_draw_text(meta,
+                           static_cast<float>(x),
+                           static_cast<float>(y + poster_h + kMetaGap + kMetaH),
+                           kMetaH, th.dim);
+
+            if (idx == grid_cursor_) {
+                chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
             }
         }
     }
 
-    // --- Footer hint --------------------------------------------------
-    // Centered, dim, small body font — same placement and tone as
-    // DetailScreen's bottom hint so the chrome reads identically across
-    // the two screens.
-    {
-        const std::string hint =
-            "Rotate: nav   BTN2: select   BTN4: back";
-        int sz = th.font_small_size;
-        int baseline = r.mb_text_baseline(sz);
-        int hw = r.mb_text_width(hint, sz);
-        float hx = (w - static_cast<float>(hw)) / 2.0f;
-        float hy = h - kFooterMargin - static_cast<float>(sz)
-                 + static_cast<float>(baseline);
-        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
-    }
+    // --- Footer hints ---
+    chrome::draw_footer_hints(r, screen_w, screen_h, {
+        {"BTN1/3", "Tabs"},
+        {"Rotary", "Scroll"},
+        {"A",      "Open"},
+        {"BTN4",   "Home"},
+    });
 }
 
 }  // namespace media_browser::ui
