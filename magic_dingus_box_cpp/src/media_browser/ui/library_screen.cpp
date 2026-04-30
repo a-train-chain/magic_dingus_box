@@ -345,6 +345,18 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
                     0, kOverlayFocusableRows - 1);
                 continue;
             }
+            // D-pad UP / DOWN — also walks through the 8 focusable rows
+            // so the operator can use either rotary OR D-pad to move
+            // around the overlay. Without this clause the underlying
+            // grid's ROTATE_VERTICAL handler would silently mutate
+            // grid_cursor_ while the overlay is occluding the grid.
+            if (e.action == platform::InputAction::ROTATE_VERTICAL) {
+                if (e.delta == 0) continue;
+                overlay_focus_row_ = std::clamp(
+                    overlay_focus_row_ + e.delta,
+                    0, kOverlayFocusableRows - 1);
+                continue;
+            }
             // SELECT — wired in Task 6. For now, no-op.
             if (e.action == platform::InputAction::SELECT && e.pressed) {
                 continue;
