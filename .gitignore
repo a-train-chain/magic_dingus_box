@@ -75,14 +75,17 @@ docs/
 !README.md
 !CLAUDE.md
 !CHANGELOG.md
-# DO track design specs — they're versioned design history, not runtime
-# reference docs. Specs land in docs/superpowers/specs/ via the
-# superpowers brainstorming skill before each implementation cycle.
+# DO track design specs + implementation plans — they're versioned
+# design history, not runtime reference docs. Specs and plans land in
+# docs/superpowers/{specs,plans}/ via the superpowers brainstorming +
+# writing-plans skills before each implementation cycle.
 # (These re-includes go AFTER the *.md rule so they take effect over it.)
 !docs/
 !docs/superpowers/
 !docs/superpowers/specs/
 !docs/superpowers/specs/**.md
+!docs/superpowers/plans/
+!docs/superpowers/plans/**.md
 !OTA_UPDATE_GUARANTEES.md
 !magic_dingus_box_cpp/README.md
 !tests/README.md
