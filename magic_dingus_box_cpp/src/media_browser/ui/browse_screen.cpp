@@ -563,8 +563,9 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     static constexpr Category kVisibleTabs[] = {
         Category::Popular,
         Category::TopRated,
-        Category::Library,
         Category::Search,
+        Category::Library,
+        Category::Queue,
         Category::Settings,
     };
     constexpr int kNumVisibleTabs =
@@ -598,6 +599,7 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             const Category new_cat = kVisibleTabs[new_pos];
             if (new_cat == Category::Library)  return Screen::Library;
             if (new_cat == Category::Search)   return Screen::Search;
+            if (new_cat == Category::Queue)    return Screen::Queue;
             if (new_cat == Category::Settings) return Screen::MovieSettings;
             category_ = new_cat;
             strip_pos = new_pos;
@@ -613,6 +615,7 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             const Category new_cat = kVisibleTabs[new_pos];
             if (new_cat == Category::Library)  return Screen::Library;
             if (new_cat == Category::Search)   return Screen::Search;
+            if (new_cat == Category::Queue)    return Screen::Queue;
             if (new_cat == Category::Settings) return Screen::MovieSettings;
             category_ = new_cat;
             strip_pos = new_pos;
@@ -679,13 +682,15 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     r.mb_fill_background();
 
-    // Same 5-tab strip the handler uses — keep the two in sync.
-    // v1.6.x: Now Playing dropped, Settings added at the right end.
+    // Same 6-tab strip the handler uses — keep the two in sync.
+    // v1.6.x: Now Playing dropped; v1.6.x+: Queue inserted between Library
+    // and Settings, Search moved to the left of Library.
     static constexpr Category kVisibleTabs[] = {
         Category::Popular,
         Category::TopRated,
-        Category::Library,
         Category::Search,
+        Category::Library,
+        Category::Queue,
         Category::Settings,
     };
     constexpr int kNumVisibleTabs =

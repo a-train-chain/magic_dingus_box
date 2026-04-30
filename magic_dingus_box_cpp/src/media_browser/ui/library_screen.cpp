@@ -230,16 +230,17 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
             return Screen::Exit;
         }
 
-        // BTN1 (PREV, yellow) — previous tab. Library is at position 3,
-        // so PREV always returns to BrowseScreen.
+        // BTN1 (PREV, yellow) — previous tab. Library is at position 3 in
+        // the 6-tab strip (Popular | Top Rated | Search | Library | Queue
+        // | Settings), so PREV lands on Search at position 2.
         if (e.action == platform::InputAction::PREV && e.pressed) {
-            return Screen::Browse;
+            return Screen::Search;
         }
 
-        // BTN3 (NEXT, green) — next tab. Library is at position 3,
-        // NEXT goes to Search at position 4.
+        // BTN3 (NEXT, green) — next tab. Library is at position 3, NEXT
+        // goes to Queue at position 4.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
-            return Screen::Search;
+            return Screen::Queue;
         }
 
         // ROTATE (rotary CW/CCW + D-pad LEFT/RIGHT) — walk one cell at
@@ -336,10 +337,10 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // v1.6.x: Now Playing dropped (overlapped Popular), Settings added on
     // the right end of the strip — so Library shifts from position 3 → 2.
     static constexpr const char* kTabLabels[] = {
-        "Popular", "Top Rated", "Library", "Search", "Settings",
+        "Popular", "Top Rated", "Search", "Library", "Queue", "Settings",
     };
-    constexpr int kNumVisibleTabs = 5;
-    constexpr int kLibraryStripPos = 2;
+    constexpr int kNumVisibleTabs = 6;
+    constexpr int kLibraryStripPos = 3;
 
     std::vector<chrome::TabSpec> tabs;
     tabs.reserve(kNumVisibleTabs);

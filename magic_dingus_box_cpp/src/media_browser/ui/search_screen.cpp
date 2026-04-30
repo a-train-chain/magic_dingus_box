@@ -367,16 +367,18 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
         }
 
         // BTN1 / PREV (yellow): walk one tab left in the Marquee strip.
-        // v1.6.x strip: Popular | Top Rated | Library | Search | Settings.
-        // Search is at index 3, so PREV always lands on Library.
+        // v1.6.x 6-tab strip: Popular | Top Rated | Search | Library |
+        // Queue | Settings. Search is at index 2, so PREV walks back to
+        // Browse (which retains its category_ across transitions, so the
+        // user resumes on whichever content tab they were last on).
         if (e.action == platform::InputAction::PREV && e.pressed) {
-            return Screen::Library;
+            return Screen::Browse;
         }
 
-        // BTN3 / NEXT (green): walk one tab right. Search is at index 3,
-        // so NEXT goes to Settings (index 4, rightmost tab in v1.6.x).
+        // BTN3 / NEXT (green): walk one tab right. Search is at index 2,
+        // so NEXT goes to Library at index 3.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
-            return Screen::MovieSettings;
+            return Screen::Library;
         }
 
         // BTN2 (PLAY_PAUSE): quick-add focused result. No-op on keyboard.
@@ -538,8 +540,9 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         const std::vector<chrome::TabSpec> tabs = {
             {"Popular",   chrome::TabState::Inactive},
             {"Top Rated", chrome::TabState::Inactive},
-            {"Library",   chrome::TabState::Inactive},
             {"Search",    chrome::TabState::Active},
+            {"Library",   chrome::TabState::Inactive},
+            {"Queue",     chrome::TabState::Inactive},
             {"Settings",  chrome::TabState::Inactive},
         };
         body_top_y = chrome::draw_screen_header(

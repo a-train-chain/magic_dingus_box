@@ -475,11 +475,11 @@ Screen MbSettingsScreen::handle_input(
         }
 
         // BTN1 (PREV, yellow) — walk one tab left in the Marquee strip.
-        // v1.6.x strip order: Popular | Top Rated | Library | Search | Settings.
-        // Settings sits at index 4 (rightmost), so PREV always lands on
-        // Search at index 3.
+        // v1.6.x 6-tab strip: Popular | Top Rated | Search | Library |
+        // Queue | Settings. Settings sits at index 5 (rightmost), so PREV
+        // always lands on Queue at index 4.
         if (e.action == platform::InputAction::PREV && e.pressed) {
-            return Screen::Search;
+            return Screen::Queue;
         }
 
         // BTN3 (NEXT, green) — would walk one tab right, but Settings is
@@ -786,8 +786,9 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         const std::vector<chrome::TabSpec> tabs = {
             {"Popular",   chrome::TabState::Inactive},
             {"Top Rated", chrome::TabState::Inactive},
-            {"Library",   chrome::TabState::Inactive},
             {"Search",    chrome::TabState::Inactive},
+            {"Library",   chrome::TabState::Inactive},
+            {"Queue",     chrome::TabState::Inactive},
             {"Settings",  chrome::TabState::Active},
         };
         chrome::draw_screen_header(r, screen_w, "Settings",

@@ -410,6 +410,19 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
             return Screen::Browse;
         }
 
+        // BTN1 (PREV, yellow) — previous tab. Queue sits at index 4 in the
+        // 6-tab Marquee strip (Popular | Top Rated | Search | Library |
+        // Queue | Settings), so PREV walks to Library at index 3.
+        if (e.action == platform::InputAction::PREV && e.pressed) {
+            return Screen::Library;
+        }
+
+        // BTN3 (NEXT, green) — next tab. Queue is at index 4, NEXT goes
+        // to Settings at index 5 (rightmost).
+        if (e.action == platform::InputAction::NEXT && e.pressed) {
+            return Screen::MovieSettings;
+        }
+
         if (e.action == platform::InputAction::ROTATE_VERTICAL && e.delta != 0) {
             if (queue_.empty()) continue;
             int n = static_cast<int>(queue_.size());
@@ -472,42 +485,50 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                         .count();
     const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
-    // --- Top header bar: "DOWNLOAD QUEUE" + count + refresh status ----
-    // Same pattern as DetailScreen's header: a Zen Dots heading in
-    // steel-blue (accent2) followed by a full-width 2px steel-blue rule.
-    // The right side carries dim secondary information (count, refresh
-    // status), mirroring how Detail puts "BTN4: back" on the right.
+    // --- Marquee 6-tab header: "Queue" title (left) + tab strip (right) -
+    // Matches the chrome the other Marquee screens render so the user
+    // sees one consistent UI walking BTN1/BTN3 across the strip. The
+    // previous in-screen "DOWNLOAD QUEUE" + count + refresh-status block
+    // is collapsed into a sub-line drawn just below the chrome header,
+    // so the count + refresh affordance survives without competing with
+    // the tab strip for header real estate.
+    int header_bottom = 0;
     {
-        const std::string heading = "DOWNLOAD QUEUE";
-        int hd_size = th.font_heading_size;
-        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             hd_size, th.dim, 1.0f);
+        namespace chrome = ::media_browser::ui::chrome;
+        // 6-tab strip: Popular | Top Rated | Search | Library | Queue | Settings
+        const std::vector<chrome::TabSpec> tabs = {
+            {"Popular",   chrome::TabState::Inactive},
+            {"Top Rated", chrome::TabState::Inactive},
+            {"Search",    chrome::TabState::Inactive},
+            {"Library",   chrome::TabState::Inactive},
+            {"Queue",     chrome::TabState::Active},
+            {"Settings",  chrome::TabState::Inactive},
+        };
+        header_bottom = chrome::draw_screen_header(
+            r, screen_w, "Queue", tabs, /*focused_tab=*/-1);
+    }
 
-        // Count chip ("3 downloads") — sits just to the right of the
-        // heading, dim. Uses singular/plural so it reads naturally.
+    // Count + refresh-status sub-line beneath the chrome header. Reads
+    // as a status banner for the screen below the tab strip, in the same
+    // dim-cream small-font idiom Library uses for its stats line.
+    {
         std::ostringstream cs;
-        // Count includes both active downloads and awaiting-release movies
-        // so the user sees the full set Radarr is managing for them.
         int total = static_cast<int>(queue_.size() + awaiting_.size());
         if (total == 1) {
-            cs << "(1 monitored)";
+            cs << "1 monitored";
         } else {
-            cs << "(" << total << " monitored \xE2\x80\x94 " << queue_.size()
-               << " downloading, " << awaiting_.size() << " awaiting)";
+            cs << total << " monitored \xE2\x80\x94 " << queue_.size()
+               << " downloading, " << awaiting_.size() << " awaiting";
         }
         std::string count_text = cs.str();
-        int count_size = th.font_small_size;
-        int hd_w = r.mb_title_text_width(heading, hd_size);
-        float count_x = kPaddingX + static_cast<float>(hd_w) + 14.0f;
-        // Align the count baseline to the heading baseline so both ride
-        // the same line.
-        float count_y = kHeaderBaselineY + 2.0f;
-        r.mb_draw_text(count_text, count_x, count_y, count_size,
-                       th.dim, 0.85f);
+        int sub_size = th.font_small_size;
+        int sub_baseline = r.mb_text_baseline(sub_size);
+        float sub_y = static_cast<float>(header_bottom)
+                    + static_cast<float>(::media_browser::ui::chrome::kPad2)
+                    + static_cast<float>(sub_baseline);
+        r.mb_draw_text(count_text, kPaddingX, sub_y, sub_size, th.dim, 0.85f);
 
-        // Refresh indicator on the far right. "refreshing..." in green
-        // (highlight1) when in flight; "updated Ns ago" in dim cream
-        // otherwise. Same sub-line vertical position as the count.
+        // Refresh indicator on the far right of the sub-line.
         std::string ind_text;
         ::ui::Color ind_color = th.dim;
         float ind_alpha = 0.85f;
@@ -524,18 +545,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                      static_cast<long long>(secs));
             ind_text = buf;
         }
-        int ind_size = th.font_small_size;
-        int ind_w = r.mb_text_width(ind_text, ind_size);
+        int ind_w = r.mb_text_width(ind_text, sub_size);
         float ind_x = w - kPaddingX - static_cast<float>(ind_w);
-        float ind_y = kHeaderBaselineY + 2.0f;
-        r.mb_draw_text(ind_text, ind_x, ind_y, ind_size, ind_color, ind_alpha);
-
-        // Full-width 2px steel-blue rule beneath the header — IDENTICAL
-        // to DetailScreen so the chrome lines up pixel-for-pixel as the
-        // user crosses between screens.
-        r.mb_draw_line(kPaddingX, kHeaderRuleY,
-                       w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.dim, 0.95f);
+        r.mb_draw_text(ind_text, ind_x, sub_y, sub_size, ind_color, ind_alpha);
     }
 
     // --- Footer hint (drawn early so we can reserve the bottom band) -
@@ -557,9 +569,15 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // --- Centered states: empty queue / Radarr offline ---------------
     // Same mid-screen single-message pattern as Detail's Loading/NoTmdb
-    // states: large text vertically centered between header rule and
-    // footer band, with an optional dim sub-line for context.
-    const float body_top    = kHeaderRuleY + 16.0f;
+    // states: large text vertically centered between header band and
+    // footer band, with an optional dim sub-line for context. Body
+    // starts below the chrome header AND the count/refresh sub-line —
+    // header_bottom + kPad2 (gap above sub-line) + font_small_size
+    // (sub-line glyph height) + 16px breathing room.
+    const float body_top    = static_cast<float>(header_bottom)
+                            + static_cast<float>(::media_browser::ui::chrome::kPad2)
+                            + static_cast<float>(th.font_small_size)
+                            + 16.0f;
     const float body_bottom = footer_band_top;
     const float body_h      = body_bottom - body_top;
 
