@@ -468,10 +468,10 @@ void MbSettingsScreen::trigger_hide_feature() {
 Screen MbSettingsScreen::handle_input(
         const std::vector<platform::InputEvent>& events) {
     for (const auto& e : events) {
-        // Menu button always returns to Browse (spec: "SETTINGS_MENU/BTN4
-        // returns to Screen::Browse" — matches LibraryScreen / QueueScreen).
+        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
+        // No slide-in overlay on Settings.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            return Screen::Browse;
+            continue;
         }
 
         // BTN1 (PREV, yellow) — walk one tab left in the Marquee strip.
@@ -489,19 +489,13 @@ Screen MbSettingsScreen::handle_input(
             continue;
         }
 
-        // BTN2 (PLAY_PAUSE): global "refresh service health" shortcut.
-        // Cheap — pings the three services and updates the status dots.
-        // Exposes a transient banner so the user sees what happened.
+        // BTN2 (PLAY_PAUSE, red) — back. Settings is at the right end
+        // of the Marquee strip; back returns to Queue (the immediate
+        // PREV-tab neighbour). The Services row's SELECT (A) handler
+        // already does what the old BTN2 shortcut did (re-pings the
+        // 3 services).
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            refresh_service_health();
-            std::string msg = "Services: ";
-            msg += health_.radarr ? "Radarr ok" : "Radarr down";
-            msg += "  |  ";
-            msg += health_.prowlarr ? "Prowlarr ok" : "Prowlarr down";
-            msg += "  |  ";
-            msg += health_.qbittorrent ? "qBittorrent ok" : "qBittorrent down";
-            show_banner(msg);
-            continue;
+            return Screen::Queue;
         }
 
         // Row-kind classifiers — keep the navigation/edit/action vocabulary

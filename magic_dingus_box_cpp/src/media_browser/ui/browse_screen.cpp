@@ -581,14 +581,19 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     }
 
     for (const auto& e : events) {
-        // BTN4 (SETTINGS_MENU, black) — back to kiosk main menu.
-        if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+        // BTN2 (PLAY_PAUSE, red) — back. Browse is the top of the
+        // Marquee section, so back-from-Browse exits the Media Browser
+        // entirely. Same destination as the existing BTN4 long-press
+        // handled by the input dispatcher.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             return Screen::Exit;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — quick-add focused poster to library.
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            quick_add_focused();
+        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
+        // The slide-in overlay is Library-specific; on Browse there's
+        // nothing for BTN4 to do. Long-press still exits MB → MainMenu
+        // via the input dispatcher's long-press branch.
+        if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             continue;
         }
 

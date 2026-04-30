@@ -490,11 +490,10 @@ void DetailScreen::update() {
 
 Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& events) {
     for (const auto& e : events) {
+        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
+        // Back moved to BTN2.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            // Return to the screen that opened us (Browse / Search /
-            // Library / ...). main.cpp sets origin_ on every transition
-            // into Detail; default is Browse.
-            return origin_;
+            continue;
         }
 
         if (e.action == platform::InputAction::ROTATE && e.delta != 0) {
@@ -517,23 +516,12 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
             continue;
         }
 
-        // BTN2 (PLAY_PAUSE): activate the default (leftmost / primary)
-        // action for the current Mode. That's Add in NotInLibrary,
-        // Search Again in InLibraryNoFile, Play in InLibraryWithFile,
-        // Retry in Error. Same flow as selecting button index 0 — we
-        // snap focus_ there before delegating.
+        // BTN2 (PLAY_PAUSE, red) — back. Returns to whichever screen
+        // opened this Detail (Browse / Library / Search / Queue) via
+        // origin_, which the dispatcher sets on every transition into
+        // Detail.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            if (buttons_.empty()) continue;
-            focus_ = 0;
-            // Cancel any pending remove confirmation to avoid a surprise
-            // destructive fire from a different button.
-            if (remove_pending_) {
-                remove_pending_ = false;
-                rebuild_buttons();
-            }
-            Screen next = on_activate();
-            if (next != Screen::Detail) return next;
-            continue;
+            return origin_;
         }
     }
     return Screen::Detail;

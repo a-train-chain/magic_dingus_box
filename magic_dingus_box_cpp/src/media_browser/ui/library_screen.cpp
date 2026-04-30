@@ -225,9 +225,11 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
     // TopRated, the immediate left neighbour). BTN3 (NEXT, green)
     // transitions to SearchScreen.
     for (const auto& e : events) {
-        // BTN4 (SETTINGS_MENU, black) — back to kiosk main menu.
+        // BTN4 (SETTINGS_MENU, black) — opens the slide-in overlay.
+        // Wired in Task 5. For now: no-op short-press; long-press
+        // still exits MB via the input dispatcher.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            return Screen::Exit;
+            continue;
         }
 
         // BTN1 (PREV, yellow) — previous tab. Library is at position 3 in
@@ -241,6 +243,14 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
         // goes to Queue at position 4.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
             return Screen::Queue;
+        }
+
+        // BTN2 (PLAY_PAUSE, red) — back. Library's parent in the back
+        // stack is Browse; Browse retains its last-active content
+        // category so the operator returns to wherever they were
+        // (Popular / Top Rated) before opening Library.
+        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+            return Screen::Browse;
         }
 
         // ROTATE (rotary CW/CCW + D-pad LEFT/RIGHT) — walk one cell at

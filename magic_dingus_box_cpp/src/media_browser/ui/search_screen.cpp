@@ -360,10 +360,11 @@ void SearchScreen::update() {
 
 Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& events) {
     for (const auto& e : events) {
-        // BTN4 / Menu: back to Browse (back stack — NOT all the way out
-        // to the kiosk main menu; Browse handles that).
+        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
+        // No slide-in overlay on Search; long-press to exit MB still
+        // works via the input dispatcher's long-press branch.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
-            return Screen::Browse;
+            continue;
         }
 
         // BTN1 / PREV (yellow): walk one tab left in the Marquee strip.
@@ -381,10 +382,11 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
             return Screen::Library;
         }
 
-        // BTN2 (PLAY_PAUSE): quick-add focused result. No-op on keyboard.
+        // BTN2 (PLAY_PAUSE, red) — back. Returns to whatever Marquee
+        // tab the operator was on before navigating to Search (handled
+        // via Screen::Browse which retains its category_).
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            quick_add_focused();
-            continue;
+            return Screen::Browse;
         }
 
         // Horizontal nav: always to the keyboard regardless of focus —
