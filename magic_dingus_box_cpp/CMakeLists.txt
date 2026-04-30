@@ -171,6 +171,7 @@ if(BUILD_KIOSK)
             src/media_browser/ui/mb_settings_screen.cpp
             src/media_browser/ui/mb_chrome.cpp
             src/media_browser/ui/mb_filter_overlay.cpp
+            src/media_browser/ui/mb_exit_modal.cpp
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
