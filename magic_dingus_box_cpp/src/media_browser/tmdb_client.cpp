@@ -258,13 +258,15 @@ std::string TmdbClient::build_discover_url(const std::string& api_key,
         << "?api_key=" << url_encode(api_key)
         << "&include_adult=false"
         << "&language=en-US"
-        << "&page=" << page
-        << "&sort_by=" << url_encode(filter.sort_by);
+        << "&page=" << page;
+    if (!filter.sort_by.empty()) {
+        url << "&sort_by=" << url_encode(filter.sort_by);
+    }
 
     if (!filter.genre_ids.empty()) {
         url << "&with_genres=";
         for (size_t i = 0; i < filter.genre_ids.size(); ++i) {
-            if (i > 0) url << "%2C";  // URL-encoded comma
+            if (i > 0) url << "%7C";  // URL-encoded pipe → OR semantics (TMDB comma = AND)
             url << filter.genre_ids[i];
         }
     }

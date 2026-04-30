@@ -42,7 +42,7 @@ struct TmdbMovieDetail {
 
 // Inline filter used for /discover/movie queries.
 struct DiscoverFilter {
-    std::vector<int> genre_ids;                    // multi-select; OR'd via with_genres=28,12
+    std::vector<int> genre_ids;                    // multi-select with OR semantics (URL-emitted as with_genres=28|12 → films matching any genre)
     std::optional<int> primary_release_year_gte;   // formatted "YYYY-01-01" in URL
     std::optional<int> primary_release_year_lte;   // formatted "YYYY-12-31" in URL
     std::optional<float> vote_average_gte;
