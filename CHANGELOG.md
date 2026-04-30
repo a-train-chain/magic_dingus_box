@@ -5,6 +5,38 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-04-29
+
+**Marquee design system** — full visual redesign of the Media Browser. The kiosk's main playlist UI, settings, RetroArch flow, and all other surfaces are deliberately untouched per operator direction; the new visual language is contained to the Movies feature and gives it a distinct identity from the rest of the kiosk.
+
+### Added
+- **Wood-grain "TV cabinet" frame** ([`magic_dingus_box_cpp/assets/marquee/marquee_frame.png`](magic_dingus_box_cpp/assets/marquee/marquee_frame.png), [`renderer.cpp::render_marquee_frame`](magic_dingus_box_cpp/src/ui/renderer.cpp)). A 1280×720 RGBA overlay with transparent center and a polished mahogany frame painted on the outer ~40 px (mitered corners, beveled inner highlight). Drawn AFTER the Media Browser's content render and BEFORE toasts so the frame visually "covers" the outer pixels of the canvas, producing a clean inset content area without needing to rework the CRT shader's render region. Loaded once and re-uploaded after RetroArch's GL teardown via the existing `reset_gl()` cleanup path.
+- **Shared `mb_chrome` chrome library** ([`media_browser/ui/mb_chrome.{h,cpp}`](magic_dingus_box_cpp/src/media_browser/ui/mb_chrome.h)) — design tokens (kFrameInset_px=40, kSafeInset_px=60, kHeaderHeight_px=60, spacing scale 4/8/16/24/40, kFocusBorder_px=2), a TabSpec/TabState model, and primitives every Marquee screen composes from: `draw_screen_header()` (title + N-tab strip), `draw_footer_hints()` (bordered-key + dim-label pattern), `draw_focus_ring()` (2 px gold, +2 px offset, no glow/scale), `draw_lib_badge()` and `draw_dl_badge()` (IN LIBRARY / progress chips on poster cells).
+- **5-tab Marquee strip on Browse + Library**: Popular · Now Playing · Top Rated · Library · Search. Library and Search are transition-only; selecting them returns the corresponding `Screen` value to the dispatcher. BrowseScreen retains its `category_` across transitions so the user resumes wherever they were when stepping back from Library or Search.
+- **LibraryScreen stats line**: `<N> titles · X.X GB used · Y.Y GB free` (Movie file_size_bytes summed; free space from `std::filesystem::space("/mnt/ssd/library")`).
+- **`bg_lift` design token** (#2A232A) added to `theme.h`/`theme.cpp` — the Marquee design's only allowed off-bg fill, used for focused-row backgrounds and progress-bar troughs.
+
+### Changed
+- **Tab navigation grammar** ([`browse_screen.cpp`](magic_dingus_box_cpp/src/media_browser/ui/browse_screen.cpp), [`library_screen.cpp`](magic_dingus_box_cpp/src/media_browser/ui/library_screen.cpp)). BTN1 (yellow, `InputAction::PREV`) and BTN3 (green, `InputAction::NEXT`) now navigate horizontally between the 5 Marquee tabs (previously unused on these screens). Movement stops at the strip ends with no wrap. The rotary encoder + D-pad LEFT/RIGHT (`InputAction::ROTATE`) walks posters one cell at a time row-major; D-pad UP/DOWN (`InputAction::ROTATE_VERTICAL`) walks one row at a time. SELECT (rotary click + gamepad A) opens detail. BTN2 (red, `PLAY_PAUSE`) preserved as the quick-add shortcut on BrowseScreen. BTN4 (black, `SETTINGS_MENU`) preserved as back/exit.
+- **BrowseScreen** simplified from a 9-chip strip (Popular, Now Playing, Top Rated, Upcoming, Filter, Search, Library, Queue, Settings) to the 5-tab Marquee strip. The Filter and Upcoming code paths plus the `cycle_filter_value`/`ensure_genres_loaded`/`reload_filter_results`/`run_reload_filter_page` helpers remain in the file as dead code (cleanup deferred to a follow-up). 9-column poster grid with 2 visible rows; cell width derived dynamically from the safe area; per-cell IN LIBRARY badge and "Title · Year" meta line. File trimmed from 1232 → 832 lines.
+- **LibraryScreen** rewired to render the same 5-tab strip with the Library tab marked active, plus the stats line and a 9-column owned-only grid. BTN1 returns to BrowseScreen (which resumes wherever it was); BTN3 transitions to SearchScreen. File trimmed from 679 → 489 lines. Sort cycling (Recent / Title / Year / Size) deferred per operator direction — the existing All / Unwatched / MissingUpgrades / Recent filter logic stays in place for re-enabling later.
+- **Footer hints** on Detail, Search, and Queue screens now use the `mb_chrome::draw_footer_hints` bordered-key pattern. Function bodies, action button state machines (Detail's NotInLibrary/InLibraryNoFile/InLibraryWithFile modes + Confirm-Remove two-stage flow), virtual-keyboard nav grammar, and qBit cancel flow all preserved verbatim.
+
+### Fixed (functional)
+- **Movie viewport inset during Marquee playback** ([`main.cpp`](magic_dingus_box_cpp/src/main.cpp)). When `current_screen == MediaBrowser && current_mb_screen == Playback`, the gst_renderer viewport insets by 30 px on every edge so the wood-frame overlay doesn't crop important movie content. The 10 px gap between the frame's inner edge (40 px) and the video edge (30 px) deliberately produces a "screen behind wood" look rather than "movie cropped flush against wood". Other video-render paths (intro video, regular kiosk playlist video, RetroArch handoff) retain their fullscreen viewport — the inset is gated to Marquee playback only.
+
+### Notes for operators
+- **Existing kiosk surfaces unchanged.** The wood frame, new tokens, and 5-tab strip are gated to `AppScreen::MediaBrowser` only. Main playlist UI, settings menu, virtual keyboard, audio picker, RetroArch handoff, boot intro, and the web Content Manager all render exactly as they did in v1.5.4. The bezel selection feature (11 user-selectable PNGs in settings) still applies to those screens.
+- **CRT shader behavior in Marquee.** The Marquee screens never engage the CRT shader pipeline (the existing `begin_scene_fbo()` `AppScreen` gate ensures this), so movie playback inside Marquee shows a clean unfiltered image. Operators who have CRT effects enabled in settings continue to see them on the main playlist UI.
+- **Quick-add (BTN2 red) preserved on BrowseScreen.** The existing one-press add-focused-poster-to-library flow with HD-1080p quality profile selection and disk-space pre-flight is unchanged.
+- **Prowlarr availability readout on DetailScreen** preserved unchanged. The seeders / file size / source group line still appears under the meta strip when the movie is not yet in library.
+
+### Deferred (follow-ups)
+- LibraryScreen sort tabs (Recent / Title / Year / Size) — visual sub-strip not yet wired; defaults to All.
+- VPN status indicator in QueueScreen header (gluetun · NL · 4 active) — header text not yet wired.
+- Marquee EntryTile inside the main playlist UI — operator direction is to leave the playlist UI untouched. Marquee remains accessible via the existing Settings menu route.
+- Cleanup pass for dead code in BrowseScreen (Filter / Upcoming / cycle_filter_value / etc.) — left in place for now.
+
 ## [1.5.4] - 2026-04-29
 
 Pre-1.6 hardening release. A multi-domain audit of the merged-in v1.5.x feature work surfaced 28 findings; 23 were addressed in the initial hardening commit + deploy-fix, and a follow-up sweep tackled 4 of the 5 originally-deferred items (only #5 — the `manager.js` inline-onclick → data-attr refactor — remains, since it's a multi-day frontend hygiene project best done alongside the upcoming Media Browser UI redesign).
