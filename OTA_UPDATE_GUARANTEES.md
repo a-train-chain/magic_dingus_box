@@ -42,6 +42,19 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
 
+## v1.6.3 addition — Library overlay sort + filter survive OTA cleanly
+
+v1.6.3 adds two new persisted fields to `config/settings.json` that drive the new Library slide-in overlay's sort and filter dimensions:
+
+- **`display.mb_library_sort`** (string: `"recent"` / `"title"` / `"year"` / `"size"`) — the operator's chosen sort order for the Library grid. Defaults to `"recent"` on a fresh install.
+- **`display.mb_library_filter`** (string: `"all"` / `"unwatched"` / `"missing_files"` / `"recently_added"`) — the operator's chosen filter. Defaults to `"all"` on a fresh install.
+
+Both keys live under `config/*` which is in the `update.sh` rsync exclude list, so OTA preserves them across upgrades exactly like every other display setting. On the FIRST OTA where these keys are absent from the operator's existing `settings.json`, the load path uses the JSON `.get(key, default)` fallback to apply the canonical defaults (`"recent"` / `"all"`) — no visual regression for an operator upgrading from a build that pre-dates the keys.
+
+The `Unwatched` filter is a deliberate placeholder until watched-history tracking lands. Selecting it persists the choice but the kiosk's `LibraryScreen::rebuild_view()` treats it as a no-op (keeps all rows) until the watched-history feature lands. Operators who pick "Unwatched" today get the same view as "All" — when watched-history ships in a later release, the same setting will start filtering correctly without requiring the operator to re-pick.
+
+The new `Queue` tab + `BTN2 = back` input grammar are pure code changes (no new persisted state); they propagate via the standard `magic_dingus_box_cpp/src/**` rsync. The on-Pi `cmake .. && make -j2` step inside `update.sh install` rebuilds the kiosk binary with them. No new build dependencies, no new asset files, no service-side changes.
+
 ## v1.6.2 addition — Marquee CRT-overlay store + wood-frame toggle survive OTA cleanly
 
 v1.6.2 adds an independent CRT-overlay intensity store for the Media Browser menu screens (separate from the kiosk's home-menu CRT settings) and a wood-frame visibility toggle for movie playback. The OTA contract for these is:
@@ -100,7 +113,7 @@ Adding a new "this should be preserved" path? Update **all four** lists. Inconsi
 
 Releases for v1.0.0–v1.0.17 and v1.1.0–v1.3.0 are published. v1.4.0 and v1.4.1 are git tags only (intentional — they were stepping stones during the v1.4.x release cycle). v1.4.2 onwards: every patch tagged in git also gets a GitHub Release.
 
-A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.2** — and jump straight there. No multi-hop sequencing required.
+A Pi running an older version that runs OTA will see whatever is `/releases/latest` — currently **v1.6.3** — and jump straight there. No multi-hop sequencing required.
 
 ## Testing the contract before shipping a new release
 
