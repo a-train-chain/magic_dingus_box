@@ -8,8 +8,10 @@
 #include <unordered_set>
 #include <vector>
 
+#include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/mb_filter_overlay.h"
 #include "media_browser/ui/mb_screen.h"
 
 namespace media_browser {
@@ -52,7 +54,7 @@ namespace media_browser::ui {
 //   add-movie, queue. Clean separation.
 class BrowseScreen : public MbScreen {
 public:
-    BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb);
+    BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb, ::app::AppState& state);
     ~BrowseScreen();
 
     void enter() override;
@@ -108,6 +110,10 @@ private:
     // handles rapid category-flip without serializing on join.
     void load_category(Category cat);
     void reload_filter_results();
+    // Hybrid endpoint reload: uses /popular or /top_rated when no filters
+    // are active; switches to /discover/movie when any filter is set.
+    // Called from the FilterOverlay commit callback.
+    void reload_for_category();
     // Worker entry — runs the synchronous TMDB call off-thread.
     // Each spawned worker fetches ONE page; multiple page workers may be
     // in flight concurrently for the same category load (page 1 + a
@@ -142,6 +148,9 @@ private:
 
     RadarrClient& radarr_;
     TmdbClient& tmdb_;
+    ::app::AppState& state_;
+
+    FilterOverlay filter_overlay_;
 
     Category category_ = Category::Popular;
     Focus focus_ = Focus::PosterGrid;

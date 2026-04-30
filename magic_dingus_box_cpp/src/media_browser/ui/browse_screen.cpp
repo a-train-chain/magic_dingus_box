@@ -12,6 +12,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "ui/renderer.h"
@@ -147,10 +148,148 @@ int current_year_now() {
     return 1900 + lt->tm_year;
 }
 
+// ---------------------------------------------------------------------------
+// Filter overlay helpers (Task 4 of v1.6.4: hybrid endpoint switching)
+// ---------------------------------------------------------------------------
+
+using FilterTabKind = ::media_browser::ui::FilterTabKind;
+using FilterState   = ::media_browser::ui::FilterState;
+
+FilterState read_filter_state(const ::app::AppState::DisplaySettings& s, FilterTabKind tab) {
+    FilterState fs;
+    if (tab == FilterTabKind::Popular) {
+        fs.genre_mask = s.mb_popular_genre_mask;
+        fs.decade     = static_cast<int>(s.mb_popular_decade);
+        fs.min_rating = static_cast<int>(s.mb_popular_min_rating);
+        fs.runtime    = static_cast<int>(s.mb_popular_runtime);
+        fs.language   = static_cast<int>(s.mb_popular_language);
+        fs.sort       = static_cast<int>(s.mb_popular_sort);
+    } else {
+        fs.genre_mask = s.mb_toprated_genre_mask;
+        fs.decade     = static_cast<int>(s.mb_toprated_decade);
+        fs.min_rating = static_cast<int>(s.mb_toprated_min_rating);
+        fs.runtime    = static_cast<int>(s.mb_toprated_runtime);
+        fs.language   = static_cast<int>(s.mb_toprated_language);
+        fs.sort       = static_cast<int>(s.mb_toprated_sort);
+    }
+    return fs;
+}
+
+void write_filter_state(::app::AppState::DisplaySettings& s, FilterTabKind tab,
+                        const FilterState& fs) {
+    using DS = ::app::AppState::DisplaySettings;
+    if (tab == FilterTabKind::Popular) {
+        s.mb_popular_genre_mask = fs.genre_mask;
+        s.mb_popular_decade     = static_cast<DS::MbDecade>(fs.decade);
+        s.mb_popular_min_rating = static_cast<DS::MbMinRating>(fs.min_rating);
+        s.mb_popular_runtime    = static_cast<DS::MbRuntime>(fs.runtime);
+        s.mb_popular_language   = static_cast<DS::MbLanguage>(fs.language);
+        s.mb_popular_sort       = static_cast<DS::MbDiscoverSort>(fs.sort);
+    } else {
+        s.mb_toprated_genre_mask = fs.genre_mask;
+        s.mb_toprated_decade     = static_cast<DS::MbDecade>(fs.decade);
+        s.mb_toprated_min_rating = static_cast<DS::MbMinRating>(fs.min_rating);
+        s.mb_toprated_runtime    = static_cast<DS::MbRuntime>(fs.runtime);
+        s.mb_toprated_language   = static_cast<DS::MbLanguage>(fs.language);
+        s.mb_toprated_sort       = static_cast<DS::MbDiscoverSort>(fs.sort);
+    }
+}
+
+bool any_filter_active(const FilterState& fs, FilterTabKind tab) {
+    using DS = ::app::AppState::DisplaySettings;
+    if (fs.genre_mask != 0) return true;
+    if (fs.decade != 0)     return true;
+    if (fs.min_rating != 0) return true;
+    if (fs.runtime != 0)    return true;
+    if (fs.language != 0)   return true;
+    // Default sort differs per tab.
+    if (tab == FilterTabKind::Popular &&
+        fs.sort != static_cast<int>(DS::MbDiscoverSort::Popularity)) return true;
+    if (tab == FilterTabKind::TopRated &&
+        fs.sort != static_cast<int>(DS::MbDiscoverSort::TopRated))   return true;
+    return false;
+}
+
+::media_browser::DiscoverFilter build_discover_filter(const FilterState& fs,
+                                                      FilterTabKind tab) {
+    ::media_browser::DiscoverFilter df;
+
+    // Genre IDs from mask.
+    const auto& gids = ::media_browser::ui::filter_overlay_genre_ids();
+    for (int i = 0; i < static_cast<int>(gids.size()); ++i) {
+        if ((fs.genre_mask & (1u << i)) != 0) df.genre_ids.push_back(gids[i]);
+    }
+
+    // Decade → year range.
+    using D = ::app::AppState::DisplaySettings::MbDecade;
+    auto dec = static_cast<D>(fs.decade);
+    auto set_year_range = [&](int start, int end) {
+        df.primary_release_year_gte = start;
+        df.primary_release_year_lte = end;
+    };
+    switch (dec) {
+        case D::D2020s:  set_year_range(2020, 2029); break;
+        case D::D2010s:  set_year_range(2010, 2019); break;
+        case D::D2000s:  set_year_range(2000, 2009); break;
+        case D::D1990s:  set_year_range(1990, 1999); break;
+        case D::D1980s:  set_year_range(1980, 1989); break;
+        case D::D1970s:  set_year_range(1970, 1979); break;
+        case D::Classic: df.primary_release_year_lte = 1969; break;
+        case D::Any:     break;
+    }
+
+    // Min rating.
+    using R = ::app::AppState::DisplaySettings::MbMinRating;
+    auto rat = static_cast<R>(fs.min_rating);
+    if (rat == R::Six)   df.vote_average_gte = 6.0f;
+    if (rat == R::Seven) df.vote_average_gte = 7.0f;
+    if (rat == R::Eight) df.vote_average_gte = 8.0f;
+
+    // Runtime.
+    using T = ::app::AppState::DisplaySettings::MbRuntime;
+    auto rt = static_cast<T>(fs.runtime);
+    if (rt == T::Under90)      { df.with_runtime_lte = 89; }
+    if (rt == T::Range90To120) { df.with_runtime_gte = 90;  df.with_runtime_lte = 120; }
+    if (rt == T::Range2To3Hr)  { df.with_runtime_gte = 121; df.with_runtime_lte = 180; }
+    if (rt == T::Over3Hr)      { df.with_runtime_gte = 181; }
+
+    // Language.
+    using L = ::app::AppState::DisplaySettings::MbLanguage;
+    auto lang = static_cast<L>(fs.language);
+    auto set_lang = [&](const char* code) { df.with_original_language = std::string{code}; };
+    switch (lang) {
+        case L::English:  set_lang("en"); break;
+        case L::Japanese: set_lang("ja"); break;
+        case L::French:   set_lang("fr"); break;
+        case L::Spanish:  set_lang("es"); break;
+        case L::Korean:   set_lang("ko"); break;
+        case L::Italian:  set_lang("it"); break;
+        case L::German:   set_lang("de"); break;
+        case L::Hindi:    set_lang("hi"); break;
+        case L::Mandarin: set_lang("zh"); break;
+        case L::Any:      break;
+    }
+
+    // Sort + baseline vote_count gate.
+    using S = ::app::AppState::DisplaySettings::MbDiscoverSort;
+    auto sort = static_cast<S>(fs.sort);
+    switch (sort) {
+        case S::Popularity:    df.sort_by = "popularity.desc"; break;
+        case S::TopRated:      df.sort_by = "vote_average.desc"; break;
+        case S::MostVoted:     df.sort_by = "vote_count.desc"; break;
+        case S::RecentRelease: df.sort_by = "primary_release_date.desc"; break;
+    }
+    // Baseline vote_count gate matches what /popular and /top_rated bake in.
+    df.vote_count_gte = (tab == FilterTabKind::Popular) ? 200 : 300;
+
+    return df;
+}
+
 }  // namespace
 
-BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb)
-    : radarr_(radarr), tmdb_(tmdb) {}
+BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb,
+                           ::app::AppState& state)
+    : radarr_(radarr), tmdb_(tmdb), state_(state) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
@@ -379,6 +518,29 @@ void BrowseScreen::reload_filter_results() {
     spawn_page_worker(Category::Filter, /*page=*/1);
 }
 
+void BrowseScreen::reload_for_category() {
+    // Hybrid endpoint switching: when any filter is active use /discover/movie;
+    // otherwise fall back to the canonical /popular or /top_rated endpoint so
+    // the user sees TMDB's curated ranking when nothing is filtered.
+    if (category_ == Category::Popular || category_ == Category::TopRated) {
+        FilterTabKind tab = (category_ == Category::Popular)
+                            ? FilterTabKind::Popular
+                            : FilterTabKind::TopRated;
+        FilterState fs = read_filter_state(state_.display_settings, tab);
+        if (any_filter_active(fs, tab)) {
+            // Filter active → route through /discover/movie.
+            current_filter_ = build_discover_filter(fs, tab);
+            reload_filter_results();
+            return;
+        }
+        // No filter → use the curated endpoint.
+        load_category(category_);
+        return;
+    }
+    // For other categories just reload normally.
+    load_category(category_);
+}
+
 void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
                                           int page) {
     auto result = tmdb_.discover(filter, page);
@@ -480,6 +642,7 @@ void BrowseScreen::maybe_load_more_pages() {
 }
 
 void BrowseScreen::update() {
+    filter_overlay_.tick();
     apply_pending();
     maybe_load_more_pages();
 }
@@ -590,6 +753,37 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     }
 
     for (const auto& e : events) {
+        // ================================================================
+        // Overlay input capture: when filter_overlay_ is open/animating,
+        // it consumes ROTATE_VERTICAL / SELECT. BTN4 is handled as a
+        // toggle below (open/close). PLAY_PAUSE closes the overlay
+        // instead of exiting the screen while the overlay is visible.
+        // ================================================================
+        if (filter_overlay_.is_visible()) {
+            if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+                filter_overlay_.on_btn4_close();
+                continue;
+            }
+            if (e.action == platform::InputAction::ROTATE_VERTICAL) {
+                if (e.delta != 0) filter_overlay_.on_rotate(e.delta);
+                continue;
+            }
+            if (e.action == platform::InputAction::ROTATE) {
+                if (e.delta != 0) filter_overlay_.on_rotate(e.delta);
+                continue;
+            }
+            if (e.action == platform::InputAction::SELECT && e.pressed) {
+                filter_overlay_.on_select();
+                continue;
+            }
+            // Block BTN1/BTN3 while overlay is open so the user can't
+            // accidentally tab-jump while the panel is in view.
+            if (e.action == platform::InputAction::PREV ||
+                e.action == platform::InputAction::NEXT) {
+                continue;
+            }
+        }
+
         // BTN2 (PLAY_PAUSE, red) — back. Browse is the top of the
         // Marquee section, so back-from-Browse exits the Media Browser
         // entirely. Same destination as the existing BTN4 long-press
@@ -598,11 +792,25 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             return Screen::Exit;
         }
 
-        // BTN4 (SETTINGS_MENU, black) — short-press is a no-op in v1.6.x.
-        // The slide-in overlay is Library-specific; on Browse there's
-        // nothing for BTN4 to do. Long-press still exits MB → MainMenu
-        // via the input dispatcher's long-press branch.
+        // BTN4 (SETTINGS_MENU, black) — toggles the filter overlay on
+        // Popular + TopRated tabs. On other tabs it remains a no-op
+        // (long-press still exits MB → MainMenu via the dispatcher).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            if (filter_overlay_.is_visible()) {
+                filter_overlay_.on_btn4_close();
+            } else if (category_ == Category::Popular ||
+                       category_ == Category::TopRated) {
+                FilterTabKind tk = (category_ == Category::Popular)
+                                   ? FilterTabKind::Popular
+                                   : FilterTabKind::TopRated;
+                filter_overlay_.open(tk, read_filter_state(state_.display_settings, tk));
+                filter_overlay_.set_on_commit(
+                    [this](const FilterState& fs, FilterTabKind tk2) {
+                        write_filter_state(state_.display_settings, tk2, fs);
+                        ::app::SettingsPersistence::save_settings(state_);
+                        this->reload_for_category();
+                    });
+            }
             continue;
         }
 
@@ -739,12 +947,14 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        static_cast<float>(screen_h / 2),
                        18, c);
     };
+    const bool filter_available = (category_ == Category::Popular ||
+                                   category_ == Category::TopRated);
     auto draw_baseline_footer = [&]() {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
             {chrome::HintIcon::Btn2Red,     "Back"},
             {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn4Black,   filter_available ? "Filter" : "\xE2\x80\x94"},
             {chrome::HintIcon::RotaryNav,   "Posters"},
             {chrome::HintIcon::RotaryPress, "Open"},
         });
@@ -884,10 +1094,13 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
         {chrome::HintIcon::Btn2Red,     "Back"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-        {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+        {chrome::HintIcon::Btn4Black,   filter_available ? "Filter" : "\xE2\x80\x94"},
         {chrome::HintIcon::RotaryNav,   "Posters"},
         {chrome::HintIcon::RotaryPress, "Open"},
     });
+
+    // Render filter overlay on top of everything else (draws above the grid).
+    filter_overlay_.render(r, screen_w, screen_h);
 }
 
 }  // namespace media_browser::ui

@@ -598,7 +598,7 @@ int main(int /* argc */, char* /* argv */[]) {
               << "(base_url=http://localhost:8080)" << std::endl;
 
     // Six screens — dispatcher owns one instance of each.
-    media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb);
+    media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb, state);
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get(),
