@@ -333,6 +333,30 @@ public:
         float mb_interlacing_intensity = 0.0f;
         float mb_flicker_intensity    = 0.0f;
 
+        // Media Browser Library overlay (v1.6.x). Two enums + two
+        // fields capture the operator's chosen sort + filter for the
+        // Library grid. The slide-in overlay (BTN4 on LibraryScreen)
+        // writes these; LibraryScreen::rebuild_view() reads them on
+        // every entry to apply the chosen ordering / subset.
+        // Persisted to config/settings.json as
+        //   display.mb_library_sort   (string: "recent"/"title"/"year"/"size")
+        //   display.mb_library_filter (string: "all"/"unwatched"/"missing_files"/"recently_added")
+        // Defaults match what an operator sees on a fresh kiosk.
+        enum class MbLibrarySort {
+            Recent = 0,
+            Title  = 1,
+            Year   = 2,
+            Size   = 3,
+        };
+        enum class MbLibraryFilter {
+            All            = 0,
+            Unwatched      = 1,  // Placeholder until watched-history lands.
+            MissingFiles   = 2,
+            RecentlyAdded  = 3,
+        };
+        MbLibrarySort   mb_library_sort   = MbLibrarySort::Recent;
+        MbLibraryFilter mb_library_filter = MbLibraryFilter::All;
+
         // Helper to cycle intensity: OFF -> Low (0.25) -> Medium (0.50) -> High (0.75) -> OFF.
         //
         // The four steps are clean fractions (0, 1/4, 1/2, 3/4) so the

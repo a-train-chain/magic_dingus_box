@@ -8,6 +8,43 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+const char* mb_library_sort_to_string(app::AppState::DisplaySettings::MbLibrarySort s) {
+    using S = app::AppState::DisplaySettings::MbLibrarySort;
+    switch (s) {
+        case S::Recent: return "recent";
+        case S::Title:  return "title";
+        case S::Year:   return "year";
+        case S::Size:   return "size";
+    }
+    return "recent";
+}
+app::AppState::DisplaySettings::MbLibrarySort mb_library_sort_from_string(const std::string& s) {
+    using R = app::AppState::DisplaySettings::MbLibrarySort;
+    if (s == "title") return R::Title;
+    if (s == "year")  return R::Year;
+    if (s == "size")  return R::Size;
+    return R::Recent;  // Default for "recent" or any unknown value.
+}
+const char* mb_library_filter_to_string(app::AppState::DisplaySettings::MbLibraryFilter f) {
+    using F = app::AppState::DisplaySettings::MbLibraryFilter;
+    switch (f) {
+        case F::All:            return "all";
+        case F::Unwatched:      return "unwatched";
+        case F::MissingFiles:   return "missing_files";
+        case F::RecentlyAdded:  return "recently_added";
+    }
+    return "all";
+}
+app::AppState::DisplaySettings::MbLibraryFilter mb_library_filter_from_string(const std::string& s) {
+    using R = app::AppState::DisplaySettings::MbLibraryFilter;
+    if (s == "unwatched")      return R::Unwatched;
+    if (s == "missing_files")  return R::MissingFiles;
+    if (s == "recently_added") return R::RecentlyAdded;
+    return R::All;
+}
+}  // namespace
+
 namespace app {
 
 std::string SettingsPersistence::get_settings_path() {
@@ -62,6 +99,12 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     display["mb_bloom_intensity"]       = state.display_settings.mb_bloom_intensity;
     display["mb_interlacing_intensity"] = state.display_settings.mb_interlacing_intensity;
     display["mb_flicker_intensity"]     = state.display_settings.mb_flicker_intensity;
+    // Media Browser Library overlay sort + filter (v1.6.x). String
+    // enums for human-readable JSON.
+    display["mb_library_sort"]   = mb_library_sort_to_string(
+        state.display_settings.mb_library_sort);
+    display["mb_library_filter"] = mb_library_filter_to_string(
+        state.display_settings.mb_library_filter);
     root["display"] = display;
 
     // Playback settings
@@ -203,6 +246,14 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         state.display_settings.mb_flicker_intensity =
             display.get("mb_flicker_intensity",
                         state.display_settings.flicker_intensity).asFloat();
+        // Library overlay sort + filter — defaults are the same as the
+        // struct defaults (Recent / All) so an operator upgrading from
+        // pre-v1.6.x sees no visual change to their library on first
+        // launch.
+        state.display_settings.mb_library_sort = mb_library_sort_from_string(
+            display.get("mb_library_sort", "recent").asString());
+        state.display_settings.mb_library_filter = mb_library_filter_from_string(
+            display.get("mb_library_filter", "all").asString());
     }
 
     // Load playback settings with safe defaults
