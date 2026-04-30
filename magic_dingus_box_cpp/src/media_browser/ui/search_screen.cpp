@@ -895,26 +895,26 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // ---------------------------------------------------------------
     // Marquee design: bordered-key glyphs via mb_chrome::draw_footer_hints,
     // shared across all Marquee screens.
+    // Local namespace alias for brevity in the two-branch hint dispatch.
+    namespace mc = ::media_browser::ui::chrome;
     if (focus_ == Focus::Keyboard) {
-        ::media_browser::ui::chrome::draw_footer_hints(
-            r, screen_w, screen_h, {
-                {"BTN1",   "Library"},
-                {"BTN3",   "Settings"},
-                {"Rotary", "Keys"},
-                {"BTN2",   "Type"},
-                {"Down",   "Results"},
-                {"BTN4",   "Back"},
-            });
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Keys"},
+            {mc::HintIcon::RotaryPress, "Type"},
+        });
     } else {
-        ::media_browser::ui::chrome::draw_footer_hints(
-            r, screen_w, screen_h, {
-                {"BTN1",   "Library"},
-                {"BTN3",   "Settings"},
-                {"Rotary", "Nav"},
-                {"A",      "Open"},
-                {"BTN2",   "Add"},
-                {"BTN4",   "Back"},
-            });
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Posters"},
+            {mc::HintIcon::RotaryPress, "Open"},
+        });
     }
 }
 

@@ -610,39 +610,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    static_cast<float>(stats_y + 14),
                    14, th.dim);
 
-    // Sort sub-tabs (Recent / Title / Year / Size) — ZenDots, matching
-    // the font family used across the main playlist UI's section
-    // headers and the Marquee header tabs. Active sort gets the gold
-    // border + gold text via chrome::TabSpec rendered through the same
-    // tab helper so visual styling stays in lockstep with the main
-    // 5-tab strip above. Sort cycling is still deferred per operator
-    // direction; "Recent" hardcoded as active.
-    {
-        static constexpr const char* kSortLabels[] = {
-            "Recent", "Title", "Year", "Size",
-        };
-        constexpr int kNumSorts = 4;
-        constexpr int kSortFontPx = 18;
-        constexpr int kSortGap = chrome::kPad4;
-        // Pre-measure each label's natural width (ZenDots) so we can
-        // right-align the strip inside the safe area.
-        int total_w = 0;
-        for (int i = 0; i < kNumSorts; ++i) {
-            total_w += r.mb_title_text_width(kSortLabels[i], kSortFontPx);
-            if (i + 1 < kNumSorts) total_w += kSortGap;
-        }
-        int x = screen_w - chrome::kSafeInset_px - total_w;
-        const int sort_baseline = stats_y + 14;  // align to stats line
-        for (int i = 0; i < kNumSorts; ++i) {
-            const ::ui::Color color =
-                (i == 0) ? th.accent : th.dim;   // active = gold, others dim
-            r.mb_draw_title_text(kSortLabels[i],
-                                 static_cast<float>(x),
-                                 static_cast<float>(sort_baseline),
-                                 kSortFontPx, color);
-            x += r.mb_title_text_width(kSortLabels[i], kSortFontPx) + kSortGap;
-        }
-    }
+    // Legacy sort sub-tab strip (Recent / Title / Year / Size) was
+    // dropped in v1.6.4 — the slide-in overlay (BTN4) is the canonical
+    // place to switch sort + filter now, and the active selection is
+    // surfaced by the small "Sort: … · Filter: …" indicator drawn at
+    // the bottom-left of the body, just above the chrome footer hints.
 
     // --- Empty state ---
     if (!loaded_) {
@@ -653,8 +625,12 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        static_cast<float>(screen_h / 2),
                        18, th.dim);
         chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {"BTN1/3", "Tabs"},
-            {"BTN4",   "Home"},
+            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {chrome::HintIcon::Btn4Black,   "Filter"},
+            {chrome::HintIcon::RotaryNav,   "Posters"},
+            {chrome::HintIcon::RotaryPress, "Open"},
         });
         return;
     }
@@ -668,8 +644,12 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        static_cast<float>(screen_h / 2),
                        18, th.dim);
         chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {"BTN1/3", "Tabs"},
-            {"BTN4",   "Home"},
+            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {chrome::HintIcon::Btn4Black,   "Filter"},
+            {chrome::HintIcon::RotaryNav,   "Posters"},
+            {chrome::HintIcon::RotaryPress, "Open"},
         });
         return;
     }
@@ -788,12 +768,49 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
+    // --- Active filter indicator (bottom-left of body, above footer) ---
+    // Replaces the legacy sort sub-tab strip — surfaces what's currently
+    // in effect from the slide-in overlay so the operator never has to
+    // open the panel just to check.
+    {
+        using S = ::app::AppState::DisplaySettings::MbLibrarySort;
+        using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
+        const char* sort_label = "Recent";
+        switch (state_.display_settings.mb_library_sort) {
+            case S::Recent: sort_label = "Recent"; break;
+            case S::Title:  sort_label = "Title";  break;
+            case S::Year:   sort_label = "Year";   break;
+            case S::Size:   sort_label = "Size";   break;
+        }
+        const char* filter_label = "All";
+        switch (state_.display_settings.mb_library_filter) {
+            case F::All:           filter_label = "All";              break;
+            case F::Unwatched:     filter_label = "Unwatched (soon)"; break;
+            case F::MissingFiles:  filter_label = "Missing files";    break;
+            case F::RecentlyAdded: filter_label = "Recently added";   break;
+        }
+        std::string indicator = std::string("Sort: ") + sort_label
+                              + "  \xC2\xB7  Filter: " + filter_label;
+        // Sit ~24 px above the footer-hint baseline so we don't crash
+        // into the icons when long filter labels render. The chrome
+        // footer baseline = screen_h - kFrameInset_px - kPad3 = h-64;
+        // putting our line at h-64-24 = h-88 keeps a clean gap.
+        const int indicator_y = screen_h - chrome::kFrameInset_px
+                              - chrome::kPad3 - 24;
+        r.mb_draw_text(indicator,
+                       static_cast<float>(chrome::kSafeInset_px),
+                       static_cast<float>(indicator_y),
+                       th.font_small_size, th.dim);
+    }
+
     // --- Footer hints ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
-        {"BTN1/3", "Tabs"},
-        {"Rotary", "Scroll"},
-        {"A",      "Open"},
-        {"BTN4",   "Home"},
+        {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+        {chrome::HintIcon::Btn2Red,     "Back"},
+        {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+        {chrome::HintIcon::Btn4Black,   "Filter"},
+        {chrome::HintIcon::RotaryNav,   "Posters"},
+        {chrome::HintIcon::RotaryPress, "Open"},
     });
 
     // ============================================================
@@ -815,6 +832,12 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         r.mb_fill_rect(fpanel_x, fpanel_y, 2.0f, fpanel_h, th.accent);
         // Top edge: 1 px dim rule for closure with chrome header band.
         r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, 1.0f, th.dim);
+        // Bottom edge: 2 px gold rule (matches the left edge so the
+        // panel reads as a top + left + bottom framed card; the right
+        // edge sits flush against the wood-frame inner edge so no
+        // border is needed there).
+        r.mb_fill_rect(fpanel_x, fpanel_y + fpanel_h - 2.0f,
+                       fpanel_w, 2.0f, th.accent);
 
         // Panel content x — inset from left rule by panel inner pad.
         const int content_x = panel_x + kOverlayPanelInnerPadX;
@@ -968,11 +991,19 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
 
         // ---- Footer hint inside the panel ----
+        // Match the chrome footer's icon vocabulary so the operator
+        // sees the same visual language inside the overlay. Six-input
+        // row, but constrained to the panel's content_x so it never
+        // bleeds outside the gold-framed area.
         const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
-        r.mb_draw_text("BTN4 close   A select   Rotary nav",
-                       static_cast<float>(content_x),
-                       static_cast<float>(hint_y),
-                       12, th.dim);
+        chrome::draw_hint_row(r, content_x, hint_y, {
+            {chrome::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn2Red,     "Close"},
+            {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn4Black,   "Close"},
+            {chrome::HintIcon::RotaryNav,   "Rows"},
+            {chrome::HintIcon::RotaryPress, "Apply"},
+        });
     }
 }
 

@@ -732,8 +732,12 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     };
     auto draw_baseline_footer = [&]() {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {"BTN1/3", "Tabs"},
-            {"BTN4",   "Home"},
+            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {chrome::HintIcon::RotaryNav,   "Posters"},
+            {chrome::HintIcon::RotaryPress, "Open"},
         });
     };
 
@@ -868,11 +872,12 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // --- Footer hints ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
-        {"BTN1/3", "Tabs"},
-        {"Rotary", "Scroll"},
-        {"A",      "Open"},
-        {"BTN2",   "Add"},
-        {"BTN4",   "Home"},
+        {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+        {chrome::HintIcon::Btn2Red,     "Back"},
+        {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+        {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+        {chrome::HintIcon::RotaryNav,   "Posters"},
+        {chrome::HintIcon::RotaryPress, "Open"},
     });
 }
 

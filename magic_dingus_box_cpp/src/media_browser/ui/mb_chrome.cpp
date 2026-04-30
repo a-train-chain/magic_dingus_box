@@ -4,6 +4,7 @@
 #include "ui/theme.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -117,16 +118,142 @@ int draw_keyhint(::ui::Renderer& r, int x, int y_baseline,
     return (action_x + action_w + kKeyHintGap_px) - x;
 }
 
+// =====================================================================
+// Icon-based footer hints (v1.6.4+)
+// =====================================================================
+namespace {
+
+constexpr int kHintIconSize     = 14;   // Square / glyph dimension
+constexpr int kHintIconLabelGap = 6;    // Gap between icon and label
+constexpr int kHintRowGap       = kPad4; // Gap between consecutive hints
+constexpr int kHintFontPx       = 14;
+// Steel-blue used for the BTN4 ring; theme.action is the canonical
+// Marquee steel blue.
+inline ::ui::Color btn4_ring_color(const ::ui::Theme& th) { return th.action; }
+
+// Draws a small filled regular octagon centered at (cx, cy) with bounding
+// dimension `size` (== diameter of inscribed circle). Used as a stand-in
+// for a true filled circle since the renderer doesn't expose mb_fill_circle
+// — visually indistinguishable at 14 px on the kiosk display.
+void draw_filled_octagon(::ui::Renderer& r, float cx, float cy, float size,
+                         const ::ui::Color& color, float alpha = 1.0f) {
+    const float radius = size * 0.5f;
+    // 8 points around a unit circle, at angles 22.5° + i*45° so the
+    // octagon presents a flat top edge (looks more like a knob than
+    // a diamond rotated 22.5°).
+    constexpr int kSides = 8;
+    constexpr float kPi = 3.14159265358979323846f;
+    float px[kSides], py[kSides];
+    for (int i = 0; i < kSides; ++i) {
+        const float a = (kPi / kSides) + (2.0f * kPi * static_cast<float>(i)
+                                          / static_cast<float>(kSides));
+        px[i] = cx + radius * cosf(a);
+        py[i] = cy + radius * sinf(a);
+    }
+    // Fan triangulation from vertex 0.
+    for (int i = 1; i + 1 < kSides; ++i) {
+        r.mb_fill_triangle(px[0], py[0],
+                           px[i], py[i],
+                           px[i + 1], py[i + 1],
+                           color, alpha);
+    }
+}
+
+// Draw one hint icon. (x, y) is the top-left of the icon's 14 px box.
+// `dimmed` is true when the input is a no-op on the current screen —
+// the icon then renders at ~30% alpha so the absence reads correctly.
+void draw_hint_icon(::ui::Renderer& r, int x, int y, HintIcon icon, bool dimmed) {
+    const auto& th = r.mb_theme();
+    const float alpha = dimmed ? 0.30f : 1.0f;
+    const float fx = static_cast<float>(x);
+    const float fy = static_cast<float>(y);
+    const float fs = static_cast<float>(kHintIconSize);
+    const float cx = fx + fs * 0.5f;
+    const float cy = fy + fs * 0.5f;
+
+    switch (icon) {
+        case HintIcon::Btn1Yellow:
+            // No literal yellow in the palette; gold (accent) is the
+            // closest hue and matches the rest of the chrome's
+            // gold-accent vocabulary.
+            r.mb_fill_rect(fx, fy, fs, fs, th.accent, alpha);
+            break;
+        case HintIcon::Btn2Red:
+            r.mb_fill_rect(fx, fy, fs, fs, th.highlight2, alpha);
+            break;
+        case HintIcon::Btn3Green:
+            r.mb_fill_rect(fx, fy, fs, fs, th.highlight1, alpha);
+            break;
+        case HintIcon::Btn4Black:
+            // Black face + 1 px steel-blue ring. The fill needs a
+            // visible color for the dimmed state too, so we use bg
+            // (matches the kiosk background) and rely on the ring
+            // for shape.
+            r.mb_fill_rect(fx, fy, fs, fs, th.bg, alpha);
+            r.mb_stroke_rect(fx, fy, fs, fs, 1.0f, btn4_ring_color(th), alpha);
+            break;
+        case HintIcon::RotaryNav: {
+            // Gray octagonal "knob" + a small notch at the top edge.
+            draw_filled_octagon(r, cx, cy, fs, th.dim, alpha);
+            // Notch: 2 px wide, 4 px tall vertical bar drawn in bg
+            // from the top of the knob toward the center.
+            const float notch_w = 2.0f;
+            const float notch_h = 4.0f;
+            r.mb_fill_rect(cx - notch_w * 0.5f,
+                           fy + 1.0f,
+                           notch_w, notch_h,
+                           th.bg, alpha);
+            break;
+        }
+        case HintIcon::RotaryPress: {
+            // Same knob; center dot instead of a notch.
+            draw_filled_octagon(r, cx, cy, fs, th.dim, alpha);
+            const float dot = 3.0f;
+            r.mb_fill_rect(cx - dot * 0.5f, cy - dot * 0.5f,
+                           dot, dot, th.bg, alpha);
+            break;
+        }
+    }
+}
+
+// Single icon-style hint: icon + label. Returns the consumed width.
+int draw_one_icon_hint(::ui::Renderer& r, int x, int y_baseline,
+                       const Hint& h) {
+    const auto& th = r.mb_theme();
+    const bool noop = h.action.empty() || h.action == "—";
+    // Icon top so its vertical center sits roughly on the cap-height of
+    // the label baseline. With 14 px font + 14 px icon, the icon's top
+    // ≈ baseline - font_px + 1.
+    const int icon_top = y_baseline - kHintFontPx + 1;
+    draw_hint_icon(r, x, icon_top, h.icon, noop);
+    const int label_x = x + kHintIconSize + kHintIconLabelGap;
+    const ::ui::Color label_color = th.dim;
+    const float label_alpha = noop ? 0.45f : 1.0f;
+    r.mb_draw_text(h.action,
+                   static_cast<float>(label_x),
+                   static_cast<float>(y_baseline),
+                   kHintFontPx, label_color, label_alpha);
+    const int label_w = r.mb_text_width(h.action, kHintFontPx);
+    return (label_x + label_w + kHintRowGap) - x;
+}
+
+}  // namespace
+
+void draw_hint_row(::ui::Renderer& r, int x_start, int y_baseline,
+                   const std::vector<Hint>& hints) {
+    int x = x_start;
+    for (const auto& h : hints) {
+        x += draw_one_icon_hint(r, x, y_baseline, h);
+    }
+}
+
 void draw_footer_hints(::ui::Renderer& r,
                        int /*screen_w*/, int screen_h,
                        const std::vector<Hint>& hints) {
     const int x_start = kSafeInset_px;
     // Footer baseline sits ~10 px above the wood frame's inner edge.
     const int y_baseline = screen_h - kFrameInset_px - kPad3;
-    int x = x_start;
-    for (const auto& h : hints) {
-        x += draw_keyhint(r, x, y_baseline, h.key, h.action);
-    }
+    draw_hint_row(r, x_start, y_baseline, hints);
 }
 
 // =====================================================================

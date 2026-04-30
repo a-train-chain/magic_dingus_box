@@ -1467,18 +1467,21 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // hint — Settings is the rightmost tab and BTN3 is a dead-end here.
     if (editing_) {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {"Rotary", "Adjust"},
-            {"A",      "Save"},
-            {"Down",   "Cancel"},
-            {"BTN4",   "Back"},
+            {chrome::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn2Red,     "Cancel"},
+            {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {chrome::HintIcon::RotaryNav,   "Adjust"},
+            {chrome::HintIcon::RotaryPress, "Save"},
         });
     } else {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {"BTN1",   "Search"},
-            {"Rotary", "Nav"},
-            {"A",      "Edit"},
-            {"BTN2",   "Refresh"},
-            {"BTN4",   "Back"},
+            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {chrome::HintIcon::RotaryNav,   "Rows"},
+            {chrome::HintIcon::RotaryPress, "Edit"},
         });
     }
 

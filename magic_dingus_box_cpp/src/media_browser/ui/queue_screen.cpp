@@ -987,21 +987,25 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // The bordered-key glyphs from mb_chrome replace the previous
     // centered text-only hint. Cancel-armed state still surfaces visually
     // through the "Confirm" text in the rotary key's label.
+    namespace mc = ::media_browser::ui::chrome;
     if (cancel_pending_) {
-        ::media_browser::ui::chrome::draw_footer_hints(
-            r, screen_w, screen_h, {
-                {"A",      "Confirm Cancel"},
-                {"Rotary", "Nav"},
-                {"BTN4",   "Back"},
-            });
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Queue"},
+            {mc::HintIcon::RotaryPress, "Confirm"},
+        });
     } else {
-        ::media_browser::ui::chrome::draw_footer_hints(
-            r, screen_w, screen_h, {
-                {"Rotary", "Nav"},
-                {"A",      "Cancel"},
-                {"BTN2",   "Cancel"},
-                {"BTN4",   "Back"},
-            });
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
+            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Queue"},
+            {mc::HintIcon::RotaryPress, "Detail"},
+        });
     }
     (void)hint;
     (void)hint_size;

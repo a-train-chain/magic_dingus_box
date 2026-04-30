@@ -1330,13 +1330,17 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Marquee design: bordered-key glyphs + dim labels, drawn via the
     // shared mb_chrome helper so all Marquee screens share the same
     // footer style. Replaces the previous centered text hint.
-    ::media_browser::ui::chrome::draw_footer_hints(
-        r, screen_w, screen_h, {
-            {"Rotary", "Nav"},
-            {"A",      "Action"},
-            {"BTN2",   "Quick"},
-            {"BTN4",   "Back"},
+    {
+        namespace mc = ::media_browser::ui::chrome;
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
+            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn3Green,   "\xE2\x80\x94"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Buttons"},
+            {mc::HintIcon::RotaryPress, "Activate"},
         });
+    }
 
     // --- Transient banner --------------------------------------------
     if (!banner_.empty()) {

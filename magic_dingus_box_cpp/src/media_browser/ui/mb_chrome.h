@@ -87,16 +87,54 @@ ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y, int percent_0_to_99);
 
 // Bordered-key footer hint, e.g. `[A] Open`. Returns the total width
 // the hint consumed (key box + space + label + trailing margin).
+//
+// Retained for legacy / non-Marquee callers. Marquee screens should
+// use the icon-based draw_footer_hints helper below instead.
 int draw_keyhint(::ui::Renderer& r, int x, int y_baseline,
                  const std::string& key,
                  const std::string& action);
 
-// Convenience: draws a row of keyhints at the screen's footer band,
-// left-aligned starting at `kSafeInset_px` from the screen's left edge.
-struct Hint { std::string key; std::string action; };
+// ---- Footer hints (icon-based, v1.6.4+) ----
+//
+// Every Marquee screen surfaces ALL 6 inputs at the bottom of the
+// frame so the operator never has to remember which buttons matter
+// here. Inputs that have no meaning on the current screen render
+// dimmed (icon at ~30% alpha + dim "—" label) so the absence reads
+// as "this button does nothing here," not "I forgot to put it in."
+//
+// The icons are rendered as small square swatches in the BTN's own
+// LED color (yellow / red / green / black-with-blue-ring) and a
+// gray knob glyph for the rotary, so a glance at the footer mirrors
+// what the operator's hands are looking at on the cabinet.
+enum class HintIcon {
+    Btn1Yellow,    // BTN1 — yellow square (gold accent stand-in for now)
+    Btn2Red,       // BTN2 — red square (theme.highlight2)
+    Btn3Green,     // BTN3 — green square (theme.highlight1)
+    Btn4Black,     // BTN4 — black square + thin steel-blue ring
+    RotaryNav,     // Rotary twist — gray octagon (≈ knob) with a notch
+    RotaryPress,   // Rotary press — gray knob with a small center dot
+};
+
+struct Hint {
+    HintIcon icon;
+    std::string action;  // Short label, e.g. "Tab ←", "Back", or "—" for no-op.
+};
+
+// Draws a row of input-icon hints at the screen's footer band, left-
+// aligned starting at `kSafeInset_px` from the screen's left edge.
+// Hints with action == "—" (or empty) render the icon at ~30% alpha
+// and the label dimmed, so the row tells the user at a glance which
+// inputs are live for this screen.
 void draw_footer_hints(::ui::Renderer& r,
                        int screen_w, int screen_h,
                        const std::vector<Hint>& hints);
+
+// Same icon-based row, but anchored at an explicit (x, y_baseline)
+// instead of the screen-wide footer band — used by the LibraryScreen
+// slide-in overlay so the in-panel hint matches the chrome footer's
+// visual style without leaking outside the panel's clip rect.
+void draw_hint_row(::ui::Renderer& r, int x, int y_baseline,
+                   const std::vector<Hint>& hints);
 
 // Bordered action button — the design's `.btn` component. Mono 18 px
 // label centered inside a 2 px bordered rect; border + label color

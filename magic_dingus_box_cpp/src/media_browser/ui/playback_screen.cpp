@@ -5,6 +5,7 @@
 #include "app/app_state.h"
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
+#include "media_browser/ui/mb_chrome.h"
 #include "platform/input_manager.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -296,23 +297,23 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // PlaybackScreen handle_input path already manages correctly.
     r.mb_render_seek_bar(state_);
 
-    // Persistent control hint — bottom-right. Positioned so the text
-    // sits ABOVE the 40 px wood-frame bottom band (which would otherwise
-    // clip it) AND above the seek bar at y=660 so the two don't crowd
-    // each other when the user scrubs. Pre-v1.6.x this was at
-    // y = h - 12, which put the baseline INSIDE the wood frame band.
-    //   ty (text top) = h - 40 (frame inner edge) - 16 (breathing) - sz
-    //                 = h - 56 - sz; baseline = ty + sz
+    // Persistent control hint — full chrome footer (six-input icon row),
+    // matching every other Marquee screen. Replaces the previous bottom-
+    // right text-only hint. Sits above the 40 px wood-frame bottom band
+    // (the chrome helper anchors at screen_h - kFrameInset_px - kPad3).
     {
-        std::string hint = "BTN4: stop   PLAY: pause   ROTATE: seek";
-        int sz = th.font_small_size;
-        int baseline = r.mb_text_baseline(sz);
-        int tw = r.mb_text_width(hint, sz);
-        float tx = w - 60.0f - static_cast<float>(tw);
-        float ty = h - 56.0f
-                 + static_cast<float>(baseline);
-        r.mb_draw_text(hint, tx, ty, sz, th.dim, 0.7f);
+        namespace mc = ::media_browser::ui::chrome;
+        mc::draw_footer_hints(r, screen_w, screen_h, {
+            {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
+            {mc::HintIcon::Btn2Red,     "Pause"},
+            {mc::HintIcon::Btn3Green,   "+10s"},
+            {mc::HintIcon::Btn4Black,   "Stop"},
+            {mc::HintIcon::RotaryNav,   "Seek"},
+            {mc::HintIcon::RotaryPress, "\xE2\x80\x94"},
+        });
     }
+    (void)w;
+    (void)h;
 }
 
 }  // namespace media_browser::ui
