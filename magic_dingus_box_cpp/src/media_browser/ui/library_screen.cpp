@@ -373,6 +373,36 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    static_cast<float>(stats_y + 14),
                    14, th.dim);
 
+    // Sort sub-tabs (Recent / Title / Year / Size) — visual only for
+    // now; sort cycling is deferred per operator direction. Renders to
+    // the right of the stats line so the row stays compact.
+    {
+        static constexpr const char* kSortLabels[] = {
+            "Recent", "Title", "Year", "Size",
+        };
+        constexpr int kNumSorts = 4;
+        constexpr int kSortFontPx = 16;
+        constexpr int kSortGap = chrome::kPad4;
+        // Right-align inside the safe area, vertically aligned with the
+        // stats line baseline.
+        int total_w = 0;
+        for (int i = 0; i < kNumSorts; ++i) {
+            total_w += r.mb_text_width(kSortLabels[i], kSortFontPx);
+            if (i + 1 < kNumSorts) total_w += kSortGap;
+        }
+        int x = screen_w - chrome::kSafeInset_px - total_w;
+        const int sort_baseline = stats_y + 14;  // align to stats line
+        for (int i = 0; i < kNumSorts; ++i) {
+            const ::ui::Color color =
+                (i == 0) ? th.fg : th.dim;  // index 0 = Recent (active)
+            r.mb_draw_text(kSortLabels[i],
+                           static_cast<float>(x),
+                           static_cast<float>(sort_baseline),
+                           kSortFontPx, color);
+            x += r.mb_text_width(kSortLabels[i], kSortFontPx) + kSortGap;
+        }
+    }
+
     // --- Empty state ---
     if (!loaded_) {
         const std::string msg = "Loading library...";
@@ -434,27 +464,13 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-            // Poster: tint placeholder (Radarr Movie struct doesn't carry
-            // a TMDB poster URL, so we use the deterministic tint always
-            // for now; a future enhancement could thread the artwork cache
-            // through Radarr-known images).
+            // Poster CARD via shared chrome helper — tint + title
+            // overlay + accent dashes + IN LIBRARY badge in one call.
             const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
-            r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
-                           static_cast<float>(cell_w), static_cast<float>(poster_h),
-                           tint);
-
-            // IN LIBRARY badge (everything in this view is in library, but
-            // showing it explicitly here keeps the visual language
-            // identical to BrowseScreen and signals the screen's identity).
-            chrome::draw_lib_badge(r, x + chrome::kPad1, y + chrome::kPad1);
-
-            // Title-on-tint overlay (since we have no real artwork, render
-            // the title text inside the poster cell).
-            const std::string title_short = mv->title.substr(0, 24);
-            r.mb_draw_title_text(title_short,
-                                 static_cast<float>(x + chrome::kPad2),
-                                 static_cast<float>(y + poster_h / 2 + 6),
-                                 16, th.fg);
+            chrome::draw_poster_card(
+                r, x, y, cell_w, poster_h,
+                mv->title, mv->year,
+                tint, /*in_library=*/true, /*download_pct=*/-1);
 
             // Meta line below: "Title · Year"
             std::string meta = mv->title;

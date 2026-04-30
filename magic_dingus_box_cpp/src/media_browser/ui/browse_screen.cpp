@@ -768,20 +768,18 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-            // Poster: real artwork via the artwork cache once fetched, else
-            // a deterministic colored tint so the slot is still anchored.
-            // (poster_path is already a full URL per TmdbSearchHit semantics.)
+            // Poster CARD: draws the colored tint plus title overlay, year,
+            // top/bottom accent dashes, and IN LIBRARY badge — all the
+            // Marquee design elements that make the slot read as a
+            // designed object even before TMDB artwork loads. When real
+            // artwork is later available, mb_draw_poster_or_tint can
+            // overlay on top; for now the styled card IS the visual.
             const ::ui::Color tint = poster_tint_for_tmdb(movie.tmdb_id);
-            r.mb_draw_poster_or_tint(
-                movie.poster_path,
-                static_cast<float>(x), static_cast<float>(y),
-                static_cast<float>(cell_w), static_cast<float>(poster_h),
-                tint);
-
-            // IN LIBRARY badge (top-left of poster) for already-owned movies.
-            if (library_tmdb_ids_.count(movie.tmdb_id) > 0) {
-                chrome::draw_lib_badge(r, x + chrome::kPad1, y + chrome::kPad1);
-            }
+            const bool in_library = library_tmdb_ids_.count(movie.tmdb_id) > 0;
+            chrome::draw_poster_card(
+                r, x, y, cell_w, poster_h,
+                movie.title, movie.year,
+                tint, in_library, /*download_pct=*/-1);
 
             // Meta line below poster: "Title · Year"
             std::string meta = movie.title;

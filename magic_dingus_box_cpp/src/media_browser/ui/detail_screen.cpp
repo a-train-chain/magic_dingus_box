@@ -1257,63 +1257,60 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    w - kPaddingX, kSectionRuleY,
                    2.0f, th.accent2, 0.85f);
 
-    // --- Action button row -------------------------------------------
-    // Outlined-only buttons (no fill). Focused button: thicker gold outline,
-    // text in accent (gold), and a blinking ◂ marker inside the right edge —
-    // same blink+marker pattern as the home menu's playlist cursor.
+    // --- Action button row (Marquee design) --------------------------
+    // Color-coded bordered buttons via chrome::draw_button():
+    //   Play / Add to Library  → Ok (green)
+    //   Search Releases / Search Again / Retry → Action (steel blue)
+    //   Remove / Confirm Remove → Warn (red)
+    //   More Info → Neutral (dim)
+    // Focused button gets the standard 2 px gold focus ring at +2 px
+    // offset (same as poster cells, settings rows, etc.).
     if (!buttons_.empty()) {
-        int nb = static_cast<int>(buttons_.size());
-        float row_w = static_cast<float>(nb) * kButtonW
-                    + static_cast<float>(nb - 1) * kButtonGap;
-        float row_x = (w - row_w) / 2.0f;
-        float row_y = kActionRowTop;
+        namespace chrome = ::media_browser::ui::chrome;
 
-        int lbl_size = th.font_medium_size;
-        int lbl_baseline = r.mb_text_baseline(lbl_size);
+        // Pre-measure each button's width so we can right-align or
+        // center the row. chrome::draw_button measures internally; here
+        // we approximate with mb_text_width + the same padding.
+        constexpr int kBtnFontPx  = 18;
+        constexpr int kBtnPadX    = 18;
+        constexpr int kBtnGap     = 16;
+        std::vector<int> widths;
+        widths.reserve(buttons_.size());
+        int total_w = 0;
+        for (size_t i = 0; i < buttons_.size(); ++i) {
+            const int tw = r.mb_text_width(buttons_[i].label, kBtnFontPx);
+            widths.push_back(tw + 2 * kBtnPadX);
+            total_w += widths.back();
+        }
+        total_w += static_cast<int>(buttons_.size() - 1) * kBtnGap;
 
-        for (int i = 0; i < nb; ++i) {
+        int x_cursor = static_cast<int>((w - static_cast<float>(total_w)) / 2.0f);
+        const int row_y = static_cast<int>(kActionRowTop);
+
+        for (size_t i = 0; i < buttons_.size(); ++i) {
             const auto& btn = buttons_[i];
-            float bx = row_x + i * (kButtonW + kButtonGap);
-            float by = row_y;
-            bool focused = (i == focus_);
-
-            // Confirm-remove uses warning color; everything else stays gold.
-            ::ui::Color border_color = (btn.action == Action::ConfirmRemove)
-                                           ? th.highlight2
-                                           : th.accent;
-            float thickness = focused ? (kButtonOutlineW + 1.0f)
-                                       : kButtonOutlineW;
-            r.mb_stroke_rect(bx, by, kButtonW, kButtonH,
-                             thickness, border_color,
-                             focused ? 1.0f : 0.75f);
-
-            // Label centered in the FULL button width. The button is now
-            // wide enough (260px) that even long labels like "Confirm
-            // Remove" leave clear space on the right for the blinking ◂
-            // cursor sitting in the reserved marker zone — the cursor
-            // never visually crowds the text in practice.
-            int tw = r.mb_text_width(btn.label, lbl_size);
-            float tx = bx + (kButtonW - static_cast<float>(tw)) / 2.0f;
-            float ty = by + (kButtonH / 2.0f)
-                     - static_cast<float>(lbl_size) / 2.0f
-                     + static_cast<float>(lbl_baseline);
-            ::ui::Color text_color = focused ? border_color : th.fg;
-            r.mb_draw_text(btn.label, tx, ty, lbl_size, text_color,
-                           focused ? 1.0f : 0.85f);
-
-            // Blinking ◂ marker centered in the reserved right-edge zone.
-            if (focused && blink_on) {
-                float marker_size = static_cast<float>(lbl_size) * 0.45f;
-                float marker_cx = bx + kButtonW - kButtonMarkerW * 0.5f;
-                float marker_cy = by + kButtonH / 2.0f;
-                // Triangle pointing LEFT — toward the label, matching the
-                // home-menu cursor orientation.
-                r.mb_fill_triangle(
-                    marker_cx,                marker_cy - marker_size,
-                    marker_cx,                marker_cy + marker_size,
-                    marker_cx - marker_size * 1.2f, marker_cy,
-                    th.accent2, 1.0f);
+            chrome::ButtonKind kind = chrome::ButtonKind::Neutral;
+            switch (btn.action) {
+                case Action::Play:
+                case Action::AddToLibrary:
+                    kind = chrome::ButtonKind::Ok;
+                    break;
+                case Action::SearchAgain:
+                case Action::Retry:
+                    kind = chrome::ButtonKind::Action;
+                    break;
+                case Action::Remove:
+                case Action::ConfirmRemove:
+                    kind = chrome::ButtonKind::Warn;
+                    break;
+                case Action::MoreInfo:
+                default:
+                    kind = chrome::ButtonKind::Neutral;
+                    break;
             }
+            const bool focused = (static_cast<int>(i) == focus_);
+            chrome::draw_button(r, x_cursor, row_y, btn.label, kind, focused);
+            x_cursor += widths[i] + kBtnGap;
         }
     }
 

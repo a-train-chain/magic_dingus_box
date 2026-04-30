@@ -1,4 +1,5 @@
 #include "media_browser/ui/mb_settings_screen.h"
+#include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -506,35 +507,14 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                         .count();
     const bool blink_on = (epoch_ms / 500) % 2 == 0;
 
-    // --- Top header strip: "MOVIES • SETTINGS" + back hint -----------
-    // Mirrors detail_screen.cpp's "FEATURE PRESENTATION" header: a Zen
-    // Dots heading in steel-blue (accent2), a small dim "BTN4: back" hint
-    // on the right, and a full-width 2px steel-blue rule at y=58 that
-    // visually frames the screen the same way the home menu's title rule
-    // does. Both screens share these exact metrics so the chrome doesn't
-    // jump between transitions.
-    {
-        const std::string heading = "MOVIES \xE2\x80\xA2 SETTINGS";  // U+2022 bullet
-        int hd_size = th.font_heading_size;
-        r.mb_draw_title_text(heading, kPaddingX, kHeaderBaselineY,
-                             hd_size, th.accent2, 1.0f);
-
-        // Right-side hint. Body font (not Zen Dots) so it reads as a
-        // status sub-label rather than competing with the heading.
-        const std::string back_hint = "BTN4: back   BTN2: refresh";
-        int hint_size = th.font_small_size;
-        int hw = r.mb_text_width(back_hint, hint_size);
-        float hx = w - kPaddingX - static_cast<float>(hw);
-        float hy = kHeaderBaselineY + 2.0f;  // nudge ~2px below heading baseline
-        r.mb_draw_text(back_hint, hx, hy, hint_size, th.dim, 0.9f);
-
-        // Full-width 2px steel-blue rule beneath the header — matches the
-        // home menu's title underline pattern but stretched edge-to-edge
-        // so it reads as a screen frame.
-        r.mb_draw_line(kPaddingX, kHeaderRuleY,
-                       w - kPaddingX, kHeaderRuleY,
-                       2.0f, th.accent2, 0.95f);
-    }
+    // --- Top header (Marquee design) ---------------------------------
+    // "Settings" title (left, ZenDots) + "Movies · Magic Dingus Box"
+    // sub-info (right, dim small). No bottom rule — the row dividers
+    // below provide the visual structure.
+    namespace chrome = ::media_browser::ui::chrome;
+    chrome::draw_screen_header(r, screen_w, "Settings",
+                               /*tabs=*/{}, /*focused_tab=*/-1,
+                               /*sub_info=*/"Movies · Magic Dingus Box");
 
     // --- Scroll window -----------------------------------------------
     // List sits between the header rule and the bottom hint footer. We
@@ -1076,20 +1056,12 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
-    // --- Footer hint -------------------------------------------------
-    // Centered, dim, font_small. Same idiom as DetailScreen's bottom
-    // hint — one shared visual cue across both screens.
-    {
-        const std::string hint =
-            "Rotate: nav   BTN2: change / refresh   BTN4: back";
-        int sz = th.font_small_size;
-        int hb = r.mb_text_baseline(sz);
-        int tw = r.mb_text_width(hint, sz);
-        float hx = (w - static_cast<float>(tw)) / 2.0f;
-        float hy = h - kFooterPadY - static_cast<float>(sz)
-                 + static_cast<float>(hb);
-        r.mb_draw_text(hint, hx, hy, sz, th.dim, 0.85f);
-    }
+    // --- Footer hint (Marquee design) --------------------------------
+    chrome::draw_footer_hints(r, screen_w, screen_h, {
+        {"A",      "Change"},
+        {"BTN2",   "Refresh"},
+        {"BTN4",   "Back"},
+    });
 
     // --- Transient banner (modal-style) ------------------------------
     // Identical treatment to DetailScreen's banner: dim-bg fill +

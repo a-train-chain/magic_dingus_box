@@ -130,6 +130,141 @@ void draw_footer_hints(::ui::Renderer& r,
 }
 
 // =====================================================================
+// Bordered action button — the design's .btn component
+// =====================================================================
+ButtonRect draw_button(::ui::Renderer& r, int x, int y,
+                       const std::string& label,
+                       ButtonKind kind,
+                       bool focused) {
+    constexpr int kBtnFontPx = 18;
+    constexpr int kBtnPadX   = 18;
+    constexpr int kBtnPadY   = 10;
+
+    const auto& th = r.mb_theme();
+    ::ui::Color color;
+    switch (kind) {
+        case ButtonKind::Ok:      color = th.highlight1; break;  // green
+        case ButtonKind::Warn:    color = th.highlight2; break;  // red
+        case ButtonKind::Action:  color = th.action;     break;  // steel blue
+        case ButtonKind::Neutral:
+        default:                  color = th.dim;        break;
+    }
+
+    const int tw = r.mb_text_width(label, kBtnFontPx);
+    const int w  = tw + 2 * kBtnPadX;
+    const int h  = kBtnFontPx + 2 * kBtnPadY;
+
+    // Background: solid theme bg (matches the design's .btn fill).
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(w), static_cast<float>(h),
+                   th.bg);
+    // Border: 2 px in the kind color.
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(w), static_cast<float>(h),
+                     static_cast<float>(kFocusBorder_px), color);
+    // Label: matching color, vertically centered.
+    const int label_x = x + kBtnPadX;
+    const int label_baseline = y + kBtnPadY + kBtnFontPx - 2;
+    r.mb_draw_text(label,
+                   static_cast<float>(label_x),
+                   static_cast<float>(label_baseline),
+                   kBtnFontPx, color);
+
+    if (focused) {
+        draw_focus_ring(r, x, y, w, h);
+    }
+
+    return {x, y, w, h};
+}
+
+// =====================================================================
+// Poster card — colored tint + title overlay + accents + badges
+// =====================================================================
+void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
+                      const std::string& title,
+                      int year,
+                      const ::ui::Color& tint,
+                      bool in_library,
+                      int download_pct) {
+    const auto& th = r.mb_theme();
+
+    // Solid tint fill — the dominant visual on the card.
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(w), static_cast<float>(h),
+                   tint);
+
+    // Top dash accent (small horizontal line, ~30% of width, near the
+    // top edge with breathing room). Color is a lightened version of
+    // the tint approximated by the foreground cream — this matches the
+    // design's "small light line at top of poster" idiom.
+    const float dash_w = static_cast<float>(w) * 0.30f;
+    const float dash_y = static_cast<float>(y) + 16.0f;
+    const float dash_x = static_cast<float>(x) + 16.0f;
+    r.mb_draw_line(dash_x, dash_y,
+                   dash_x + dash_w, dash_y,
+                   2.0f, th.fg, 0.7f);
+
+    // Title overlay: ZenDots, ~24 px, drawn near the upper-third of the
+    // card. Word-wrap to 2 lines max (split on space if title is long).
+    constexpr int kTitleFontPx = 22;
+    const int title_x = x + 16;
+    int title_baseline = y + 16 + 18 + kTitleFontPx;  // dash_y + spacing + font
+
+    // Crude word wrap: split title at the space nearest the midpoint if
+    // it's longer than ~10 chars. Sufficient for the kiosk's poster
+    // density; the renderer doesn't yet have a measure-and-wrap helper.
+    std::string line1 = title;
+    std::string line2;
+    if (title.size() > 10) {
+        size_t mid = title.find(' ', title.size() / 2);
+        if (mid == std::string::npos) mid = title.rfind(' ');
+        if (mid != std::string::npos) {
+            line1 = title.substr(0, mid);
+            line2 = title.substr(mid + 1);
+        }
+    }
+    r.mb_draw_title_text(line1,
+                         static_cast<float>(title_x),
+                         static_cast<float>(title_baseline),
+                         kTitleFontPx, th.fg);
+    if (!line2.empty()) {
+        title_baseline += kTitleFontPx + 4;
+        r.mb_draw_title_text(line2,
+                             static_cast<float>(title_x),
+                             static_cast<float>(title_baseline),
+                             kTitleFontPx, th.fg);
+    }
+
+    // Year (bottom-left small label).
+    if (year > 0) {
+        char yr_buf[8];
+        std::snprintf(yr_buf, sizeof(yr_buf), "%d", year);
+        const int year_baseline = y + h - 16;
+        r.mb_draw_text(yr_buf,
+                       static_cast<float>(x + 16),
+                       static_cast<float>(year_baseline),
+                       12, th.fg, 0.85f);
+    }
+
+    // Bottom dash accent (matches top dash, smaller, at bottom-right
+    // corner). Visual breadcrumb that ties the card together.
+    const float bottom_dash_w = static_cast<float>(w) * 0.25f;
+    const float bottom_dash_y = static_cast<float>(y) + static_cast<float>(h) - 14.0f;
+    const float bottom_dash_x = static_cast<float>(x) + static_cast<float>(w)
+                              - 16.0f - bottom_dash_w;
+    r.mb_draw_line(bottom_dash_x, bottom_dash_y,
+                   bottom_dash_x + bottom_dash_w, bottom_dash_y,
+                   2.0f, th.fg, 0.7f);
+
+    // Status badges (only one shows at a time per design).
+    if (download_pct >= 0) {
+        draw_dl_badge(r, x + kPad1, y + kPad1, download_pct);
+    } else if (in_library) {
+        draw_lib_badge(r, x + kPad1, y + kPad1);
+    }
+}
+
+// =====================================================================
 // Header (title + tab strip)
 // =====================================================================
 namespace {

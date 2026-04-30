@@ -18,7 +18,9 @@
 #include <string>
 #include <vector>
 
-namespace ui { class Renderer; class Theme; }
+#include "ui/theme.h"  // for ui::Color (passed by const& to draw_poster_card)
+
+namespace ui { class Renderer; }
 
 namespace media_browser::ui::chrome {
 
@@ -95,6 +97,50 @@ struct Hint { std::string key; std::string action; };
 void draw_footer_hints(::ui::Renderer& r,
                        int screen_w, int screen_h,
                        const std::vector<Hint>& hints);
+
+// Bordered action button — the design's `.btn` component. Mono 18 px
+// label centered inside a 2 px bordered rect; border + label color
+// derive from `kind`. Fill stays at theme.bg (no fill block) so the
+// button reads as a chrome accent rather than a solid block. Focused
+// buttons get the standard 2 px gold focus ring at +2 px offset.
+//
+// Sizing: caller provides x/y; the function measures the label, returns
+// the button's full rect (so callers can lay out a row of buttons by
+// chaining ButtonRect::w + a gap). Padding is 10 px vertical, 18 px
+// horizontal — matches the design's .btn style block.
+enum class ButtonKind {
+    Neutral,  // dim border + fg label — fallback / "More info" style
+    Ok,       // success (green) — Play, Add to Library
+    Warn,     // hot (red) — Remove, Cancel
+    Action,   // action (steel blue) — Search Releases, links
+};
+
+struct ButtonRect { int x, y, w, h; };
+
+ButtonRect draw_button(::ui::Renderer& r, int x, int y,
+                       const std::string& label,
+                       ButtonKind kind = ButtonKind::Neutral,
+                       bool focused = false);
+
+// Renders a styled poster "card" matching the Marquee design's poster
+// tile: solid colored fill (the tint), top + bottom dash accents in a
+// lighter shade, the movie title rendered LARGE inside the card with
+// a small year at the bottom-left. Optional IN LIBRARY badge (top-
+// left) and downloading-progress badge are drawn over the card.
+//
+// This replaces the plain `mb_draw_poster_or_tint` placeholder with
+// something that reads as a designed object even before the real TMDB
+// poster art has loaded — at 9-col density the title-on-tint card is
+// what you see for ~1 second per movie on cold load.
+//
+// Caller still manages focus_ring drawing externally if needed (so it
+// can wrap the card OR an outer cell that includes the meta line).
+void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
+                      const std::string& title,
+                      int year,
+                      const ::ui::Color& tint,
+                      bool in_library,
+                      int download_pct);  // -1 = not downloading
 
 // Top-of-screen header: a screen title on the left, an N-tab strip on
 // the right. `focused_on_tabs` toggles whether the active tab gets the
