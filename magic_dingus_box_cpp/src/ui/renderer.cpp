@@ -644,6 +644,11 @@ void Renderer::reset_gl() {
         bezel_texture_id_ = 0;
         current_bezel_path_.clear();
     }
+    if (marquee_frame_texture_id_ != 0) {
+        glDeleteTextures(1, &marquee_frame_texture_id_);
+        marquee_frame_texture_id_ = 0;
+        marquee_frame_loaded_path_.clear();
+    }
     if (thumbnail_texture_id_ != 0) {
         glDeleteTextures(1, &thumbnail_texture_id_);
         thumbnail_texture_id_ = 0;
@@ -836,7 +841,113 @@ void Renderer::render_bezel() {
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
-    
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// =====================================================================
+// Marquee "TV cabinet" frame
+// =====================================================================
+// Renders the wood-frame overlay used ONLY on Marquee (Media Browser)
+// screens. Contract:
+//
+//   - Asset is a single 1280×720 PNG with TRANSPARENT CENTER and an
+//     opaque ~40 px wood frame painted along all four edges (mitered
+//     corners, beveled inner highlight). Identical render path to the
+//     existing bezel: one full-screen textured quad with alpha blending.
+//   - The 40 px is baked into the PNG art — the renderer doesn't need
+//     to know the thickness; it just lays the whole image at 1280×720.
+//   - Layout code in later Marquee screens treats `kFrameInsetPx = 40`
+//     as the safe-area inset (plus an extra ~20 px breathing room
+//     between the frame's inner edge and content).
+//   - Drawn on top of all Marquee content (after MB screen render,
+//     before toast) so the frame visually "covers" the outer pixels
+//     of the CRT-processed output, producing the design's inset-CRT
+//     effect without needing a real CRT-region change.
+//
+// Why GL_CLAMP_TO_EDGE (not GL_REPEAT): the asset is a complete frame
+// at native canvas size; we draw it 1:1 across the full screen, never
+// outside [0,1] UV. Repeat mode would still work but clamping is the
+// correct semantic for a non-tiled overlay.
+bool Renderer::load_marquee_frame(const std::string& path) {
+    if (path == marquee_frame_loaded_path_ && marquee_frame_texture_id_ != 0) {
+        return true;
+    }
+    if (marquee_frame_texture_id_ != 0) {
+        glDeleteTextures(1, &marquee_frame_texture_id_);
+        marquee_frame_texture_id_ = 0;
+    }
+    marquee_frame_loaded_path_ = path;
+    if (path.empty()) {
+        return true;
+    }
+
+    std::vector<std::string> candidates = {
+        "../assets/marquee/" + path,
+        "assets/marquee/" + path,
+        config::get_assets_path() + "/marquee/" + path,
+    };
+
+    unsigned char* data = nullptr;
+    int channels = 0;
+    for (const auto& p : candidates) {
+        data = stbi_load(p.c_str(), &marquee_frame_tile_w_, &marquee_frame_tile_h_, &channels, 4);
+        if (data) {
+            std::cout << "Loaded Marquee frame overlay: " << p
+                      << " (" << marquee_frame_tile_w_ << "x" << marquee_frame_tile_h_ << ")" << std::endl;
+            break;
+        }
+    }
+    if (!data) {
+        std::cerr << "Failed to load Marquee frame overlay: " << path << std::endl;
+        return false;
+    }
+
+    glGenTextures(1, &marquee_frame_texture_id_);
+    glBindTexture(GL_TEXTURE_2D, marquee_frame_texture_id_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 marquee_frame_tile_w_, marquee_frame_tile_h_, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, data);
+    stbi_image_free(data);
+    return true;
+}
+
+void Renderer::render_marquee_frame() {
+    if (marquee_frame_texture_id_ == 0) return;
+
+    glUseProgram(shader_program_);
+
+    // Full-screen overlay using ORIGINAL dimensions, not the (possibly
+    // letterboxed) content viewport — the frame is a fixed cabinet that
+    // owns the whole HDMI canvas.
+    const float screen_w = static_cast<float>(original_width_);
+    const float screen_h = static_cast<float>(original_height_);
+    glUniform2f(glGetUniformLocation(shader_program_, "screenSize"), screen_w, screen_h);
+    glUniform4f(glGetUniformLocation(shader_program_, "color"), 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBindTexture(GL_TEXTURE_2D, marquee_frame_texture_id_);
+
+    float vertices[] = {
+        0.0f,     0.0f,     0.0f, 0.0f,
+        screen_w, 0.0f,     1.0f, 0.0f,
+        0.0f,     screen_h, 0.0f, 1.0f,
+        screen_w, screen_h, 1.0f, 1.0f,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -3934,6 +4045,10 @@ void Renderer::cleanup() {
     if (bezel_texture_id_ != 0) {
         glDeleteTextures(1, &bezel_texture_id_);
         bezel_texture_id_ = 0;
+    }
+    if (marquee_frame_texture_id_ != 0) {
+        glDeleteTextures(1, &marquee_frame_texture_id_);
+        marquee_frame_texture_id_ = 0;
     }
     if (thumbnail_texture_id_ != 0) {
         glDeleteTextures(1, &thumbnail_texture_id_);

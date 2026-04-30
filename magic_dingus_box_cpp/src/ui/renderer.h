@@ -233,6 +233,18 @@ public:
     // Bezel management for Modern TV mode
     bool load_bezel(const std::string& path);  // Load bezel texture from file
     void render_bezel();  // Render bezel overlay (fullscreen)
+
+    // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
+    // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
+    // surfaces (main playlist, settings, RetroArch handoff) keep their
+    // existing bezel — see the bezel_allowed gate in main.cpp render loop.
+    //
+    // load_marquee_frame() loads the tile texture once with GL_REPEAT wrap
+    // mode so render_marquee_frame() can tile it across the four border
+    // strips by overshooting UV coordinates beyond [0, 1].
+    bool load_marquee_frame(const std::string& path);
+    void render_marquee_frame();
+    bool has_marquee_frame() const { return marquee_frame_texture_id_ != 0; }
     
     // Set content viewport dimensions for Modern TV mode (4:3 pillarboxing)
     // This affects the projection matrix used for rendering
@@ -307,6 +319,10 @@ private:
     
     // Bezel overlay
     uint32_t bezel_texture_id_ = 0;
+    uint32_t marquee_frame_texture_id_ = 0;
+    std::string marquee_frame_loaded_path_;
+    int marquee_frame_tile_w_ = 0;
+    int marquee_frame_tile_h_ = 0;
     int bezel_width_ = 0;
     int bezel_height_ = 0;
     std::string current_bezel_path_;

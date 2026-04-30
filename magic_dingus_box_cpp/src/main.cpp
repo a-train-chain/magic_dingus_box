@@ -2604,6 +2604,22 @@ int main(int /* argc */, char* /* argv */[]) {
             // call the background fetcher thread's decoded images would
             // never make it onto screen.
             ui_renderer.pump_artwork();
+
+            // Marquee wood-frame overlay — the "TV cabinet" that gives the
+            // Media Browser its distinct visual identity from the rest of
+            // the kiosk. Drawn ON TOP of MB content (after pump_artwork)
+            // so the frame visually covers the outer pixels of any
+            // CRT-processed output, producing the design's inset-CRT
+            // effect without needing a real CRT region change. Toasts
+            // still render on top of the frame (intentional — toast text
+            // must always be readable).
+            //
+            // load_marquee_frame() dedupes by path internally, like
+            // load_bezel(). Calling it every frame is correct: it
+            // re-uploads the texture after reset_gl() (e.g. RetroArch
+            // return), and a static path tracker would defeat that.
+            ui_renderer.load_marquee_frame("marquee_frame.png");
+            ui_renderer.render_marquee_frame();
         }
 
         // Render toast overlay (fades in/out over 3s). Drawn last-in-UI

@@ -4,6 +4,7 @@ namespace ui {
 
 Theme::Theme()
     : bg(31, 25, 31)              // #1F191F
+    , bg_lift(42, 35, 42)         // #2A232A — Marquee off-bg fill (only allowed lift)
     , fg(242, 228, 217)           // #F2E4D9
     , highlight1(102, 221, 122)    // #66DD7A
     , highlight2(234, 58, 39)      // #EA3A27
@@ -11,7 +12,7 @@ Theme::Theme()
     , action(88, 132, 177)        // #5884B1
     , accent(highlight3)           // Alias
     , accent2(action)              // Alias
-    , dim(150, 140, 135)           // ~60% of fg
+    , dim(150, 140, 135)           // ~60% of fg, #968B85
     , font_title_size(32)
     , font_heading_size(22)
     , font_large_size(24)

@@ -18,14 +18,18 @@ public:
     
     // Colors (matching Python Theme class)
     Color bg;           // Background: #1F191F
+    Color bg_lift;      // Off-bg fill (+10% lift): #2A232A. Introduced with the Marquee
+                        // design system for focused-row backgrounds, progress-bar
+                        // troughs, etc. The ONLY allowed off-bg fill — don't add
+                        // ad-hoc midtones outside this token.
     Color fg;           // Text: #F2E4D9
-    Color highlight1;   // Green: #66DD7A
-    Color highlight2;   // Red/orange: #EA3A27
-    Color highlight3;   // Gold: #F5BF42
-    Color action;       // Steel blue: #5884B1
-    Color accent;       // Alias for highlight3
+    Color highlight1;   // Green: #66DD7A — alias `success` in Marquee tokens
+    Color highlight2;   // Red/orange: #EA3A27 — alias `hot` in Marquee tokens
+    Color highlight3;   // Gold: #F5BF42 — alias `accent` in Marquee tokens
+    Color action;       // Steel blue: #5884B1 (only cool color allowed)
+    Color accent;       // Alias for highlight3 (gold; focus, highlight)
     Color accent2;      // Alias for action
-    Color dim;          // Dim text: ~60% of fg
+    Color dim;          // Dim text: ~60% of fg, #968B85
     
     // Font sizes (matching Python Theme)
     int font_title_size;
