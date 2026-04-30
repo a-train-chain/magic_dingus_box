@@ -498,7 +498,6 @@ void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
 }
 
 void BrowseScreen::reload_filter_results() {
-    current_filter_.sort_by = kSortOptions[current_sort_index_].value;
     movies_.clear();
     grid_cursor_ = 0;
     scroll_row_ = 0;
@@ -713,6 +712,7 @@ void BrowseScreen::cycle_filter_value(int delta) {
             if (n <= 0) return;
             current_sort_index_ =
                 ((current_sort_index_ + delta) % n + n) % n;
+            current_filter_.sort_by = kSortOptions[current_sort_index_].value;
             break;
         }
         default: return;
