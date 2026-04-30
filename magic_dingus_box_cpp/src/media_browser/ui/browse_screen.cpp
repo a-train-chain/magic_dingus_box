@@ -370,10 +370,11 @@ void BrowseScreen::reload_filter_results() {
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
     spdlog::info(
-        "[BrowseScreen] discover (async, gen={}): genre_id={} year={} sort_by={}",
+        "[BrowseScreen] discover (async, gen={}): genre_ids.size={} year_gte={} year_lte={} sort_by={}",
         tmdb_current_gen_.load(),
-        current_filter_.genre_id.value_or(-1),
-        current_filter_.year.value_or(-1),
+        current_filter_.genre_ids.size(),
+        current_filter_.primary_release_year_gte.value_or(-1),
+        current_filter_.primary_release_year_lte.value_or(-1),
         current_filter_.sort_by);
     spawn_page_worker(Category::Filter, /*page=*/1);
 }
@@ -503,21 +504,21 @@ void BrowseScreen::cycle_filter_value(int delta) {
     if (delta == 0) return;
     switch (filter_row_) {
         case FilterRow::Genre: {
-            // Ordering: "Any" (id=-1) then genres_ in order.
+            // Ordering: "Any" (no selection) then genres_ in order.
             // Build a flat cycle list of size 1 + genres_.size().
             int n = 1 + static_cast<int>(genres_.size());
             if (n <= 0) return;
-            // Find current index.
+            // Find current index — single-select: use first genre_id if any.
             int idx = 0;
-            if (current_filter_.genre_id.has_value()) {
-                int gid = *current_filter_.genre_id;
+            if (!current_filter_.genre_ids.empty()) {
+                int gid = current_filter_.genre_ids[0];
                 for (size_t i = 0; i < genres_.size(); ++i) {
                     if (genres_[i].id == gid) { idx = 1 + static_cast<int>(i); break; }
                 }
             }
             idx = ((idx + delta) % n + n) % n;
-            if (idx == 0) current_filter_.genre_id.reset();
-            else current_filter_.genre_id = genres_[idx - 1].id;
+            if (idx == 0) current_filter_.genre_ids.clear();
+            else current_filter_.genre_ids = { genres_[idx - 1].id };
             break;
         }
         case FilterRow::Year: {
@@ -526,14 +527,22 @@ void BrowseScreen::cycle_filter_value(int delta) {
             const int hi = current_year_now();
             int n = 1 + (hi - lo + 1);
             if (n <= 0) return;
+            // Use gte as the representative value; lte tracks it identically
+            // (exact-year filter: gte == lte).
             int idx = 0;
-            if (current_filter_.year.has_value()) {
-                int y = *current_filter_.year;
+            if (current_filter_.primary_release_year_gte.has_value()) {
+                int y = *current_filter_.primary_release_year_gte;
                 if (y >= lo && y <= hi) idx = 1 + (y - lo);
             }
             idx = ((idx + delta) % n + n) % n;
-            if (idx == 0) current_filter_.year.reset();
-            else current_filter_.year = lo + (idx - 1);
+            if (idx == 0) {
+                current_filter_.primary_release_year_gte.reset();
+                current_filter_.primary_release_year_lte.reset();
+            } else {
+                int y = lo + (idx - 1);
+                current_filter_.primary_release_year_gte = y;
+                current_filter_.primary_release_year_lte = y;
+            }
             break;
         }
         case FilterRow::SortBy: {

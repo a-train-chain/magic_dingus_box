@@ -238,21 +238,56 @@ std::vector<TmdbSearchHit> TmdbClient::get_upcoming(int page) {
     return parse_list_response(body);
 }
 
+std::vector<TmdbSearchHit> TmdbClient::get_similar(int tmdb_id, int page) {
+    std::ostringstream url;
+    url << kApiBase << "/movie/" << tmdb_id << "/similar"
+        << "?api_key=" << url_encode(api_key_)
+        << "&language=en-US"
+        << "&include_adult=false"
+        << "&page=" << page;
+    auto body = http_get(url.str());
+    if (body.empty()) return {};
+    return parse_list_response(body);
+}
+
 std::string TmdbClient::build_discover_url(const std::string& api_key,
                                            const DiscoverFilter& filter,
                                            int page) {
     std::ostringstream url;
-    url << kApiBase << "/discover/movie?api_key=" << api_key
+    url << "https://api.themoviedb.org/3/discover/movie"
+        << "?api_key=" << url_encode(api_key)
+        << "&include_adult=false"
+        << "&language=en-US"
         << "&page=" << page
-        << "&include_adult=false";
-    if (!filter.sort_by.empty()) {
-        url << "&sort_by=" << filter.sort_by;
+        << "&sort_by=" << url_encode(filter.sort_by);
+
+    if (!filter.genre_ids.empty()) {
+        url << "&with_genres=";
+        for (size_t i = 0; i < filter.genre_ids.size(); ++i) {
+            if (i > 0) url << "%2C";  // URL-encoded comma
+            url << filter.genre_ids[i];
+        }
     }
-    if (filter.genre_id.has_value()) {
-        url << "&with_genres=" << *filter.genre_id;
+    if (filter.primary_release_year_gte) {
+        url << "&primary_release_date.gte=" << *filter.primary_release_year_gte << "-01-01";
     }
-    if (filter.year.has_value()) {
-        url << "&primary_release_year=" << *filter.year;
+    if (filter.primary_release_year_lte) {
+        url << "&primary_release_date.lte=" << *filter.primary_release_year_lte << "-12-31";
+    }
+    if (filter.vote_average_gte) {
+        url << "&vote_average.gte=" << *filter.vote_average_gte;
+    }
+    if (filter.vote_count_gte) {
+        url << "&vote_count.gte=" << *filter.vote_count_gte;
+    }
+    if (filter.with_runtime_gte) {
+        url << "&with_runtime.gte=" << *filter.with_runtime_gte;
+    }
+    if (filter.with_runtime_lte) {
+        url << "&with_runtime.lte=" << *filter.with_runtime_lte;
+    }
+    if (filter.with_original_language) {
+        url << "&with_original_language=" << url_encode(*filter.with_original_language);
     }
     return url.str();
 }

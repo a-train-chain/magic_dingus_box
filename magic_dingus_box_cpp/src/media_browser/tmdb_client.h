@@ -40,10 +40,16 @@ struct TmdbMovieDetail {
     std::vector<std::string> directors;  // Names from credits.crew where job=="Director".
 };
 
-// Inline genre/year filter used for /discover/movie queries.
+// Inline filter used for /discover/movie queries.
 struct DiscoverFilter {
-    std::optional<int> genre_id;   // TMDB genre id (e.g. 28 = Action)
-    std::optional<int> year;       // 4-digit year (primary_release_year)
+    std::vector<int> genre_ids;                    // multi-select; OR'd via with_genres=28,12
+    std::optional<int> primary_release_year_gte;   // formatted "YYYY-01-01" in URL
+    std::optional<int> primary_release_year_lte;   // formatted "YYYY-12-31" in URL
+    std::optional<float> vote_average_gte;
+    std::optional<int> vote_count_gte;
+    std::optional<int> with_runtime_gte;
+    std::optional<int> with_runtime_lte;
+    std::optional<std::string> with_original_language;  // ISO 639-1
     std::string sort_by = "popularity.desc";
 };
 
@@ -74,6 +80,9 @@ public:
 
     // Discover (free-form filter).
     std::vector<TmdbSearchHit> discover(const DiscoverFilter& filter, int page = 1);
+
+    // Similar movies (by id) — used by Marquee playback overlay.
+    std::vector<TmdbSearchHit> get_similar(int tmdb_id, int page = 1);
 
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
