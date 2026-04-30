@@ -357,6 +357,75 @@ public:
         MbLibrarySort   mb_library_sort   = MbLibrarySort::Recent;
         MbLibraryFilter mb_library_filter = MbLibraryFilter::All;
 
+        // Media Browser Discover tab filters (Popular + TopRated).
+        // Persisted to config/settings.json under the display.mb_popular_*
+        // and display.mb_toprated_* keys. Defaults represent "no filter
+        // applied" — a fresh kiosk shows unfiltered Popular/TopRated results
+        // exactly as TMDB returns them. The filter overlay (BrowseScreen)
+        // writes these fields; BrowseScreen::fetch_page() reads them to
+        // build the TMDB query parameters on every page load.
+        enum class MbDecade : uint8_t {
+            Any     = 0,
+            D2020s  = 1,
+            D2010s  = 2,
+            D2000s  = 3,
+            D1990s  = 4,
+            D1980s  = 5,
+            D1970s  = 6,
+            Classic = 7,  // pre-1970
+        };
+
+        enum class MbMinRating : uint8_t {
+            Any   = 0,
+            Six   = 1,
+            Seven = 2,
+            Eight = 3,
+        };
+
+        enum class MbRuntime : uint8_t {
+            Any          = 0,
+            Under90      = 1,
+            Range90To120 = 2,
+            Range2To3Hr  = 3,
+            Over3Hr      = 4,
+        };
+
+        enum class MbLanguage : uint8_t {
+            Any      = 0,
+            English  = 1,
+            Japanese = 2,
+            French   = 3,
+            Spanish  = 4,
+            Korean   = 5,
+            Italian  = 6,
+            German   = 7,
+            Hindi    = 8,
+            Mandarin = 9,
+        };
+
+        enum class MbDiscoverSort : uint8_t {
+            Popularity     = 0,
+            TopRated       = 1,
+            MostVoted      = 2,
+            RecentRelease  = 3,
+        };
+
+        // Popular tab filters
+        uint32_t       mb_popular_genre_mask  = 0;
+        MbDecade       mb_popular_decade      = MbDecade::Any;
+        MbMinRating    mb_popular_min_rating  = MbMinRating::Any;
+        MbRuntime      mb_popular_runtime     = MbRuntime::Any;
+        MbLanguage     mb_popular_language    = MbLanguage::Any;
+        MbDiscoverSort mb_popular_sort        = MbDiscoverSort::Popularity;
+
+        // TopRated tab filters
+        uint32_t       mb_toprated_genre_mask  = 0;
+        MbDecade       mb_toprated_decade      = MbDecade::Any;
+        MbMinRating    mb_toprated_min_rating  = MbMinRating::Any;
+        MbRuntime      mb_toprated_runtime     = MbRuntime::Any;
+        MbLanguage     mb_toprated_language    = MbLanguage::Any;
+        MbDiscoverSort mb_toprated_sort        = MbDiscoverSort::TopRated;
+
         // Helper to cycle intensity: OFF -> Low (0.25) -> Medium (0.50) -> High (0.75) -> OFF.
         //
         // The four steps are clean fractions (0, 1/4, 1/2, 3/4) so the
