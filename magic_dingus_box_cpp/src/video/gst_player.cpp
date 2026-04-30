@@ -329,8 +329,38 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             gst_message_parse_qos_stats(msg, &format, &processed, &dropped);
             gst_message_parse_qos_values(msg, &jitter, &proportion, &quality);
 
-            if (dropped > 0) {
-                LOG_WARN("QoS: Dropped frames: {}, Jitter: {}", dropped, jitter);
+            // Rate-limit QoS-drop warnings so file switches don't spam the
+            // log. GStreamer emits one QOS message per "late" frame and each
+            // one carries the RUNNING TOTAL of dropped frames in the
+            // session, so without rate-limiting a playlist auto-advance
+            // produces 5000-10000 log lines all in the same millisecond
+            // (the new file's clock interprets every old timestamp as
+            // "in the past" and dumps them as drops).
+            //
+            // Strategy:
+            //   - Only log when the delta since the last logged value is
+            //     >= 30 frames (~1 second @ 30 fps). Real cold-start
+            //     drops accumulate slowly enough to surface; pipeline
+            //     rebasing bursts collapse into 1-2 lines instead of
+            //     thousands.
+            //   - AND only log at most once per 500 ms wall clock. Belt
+            //     and suspenders against any other GStreamer behavior
+            //     that wants to emit messages at full pipeline tick rate.
+            constexpr guint64 kDropDeltaThreshold = 30;
+            constexpr int kMinIntervalMs = 500;
+            const auto now = std::chrono::steady_clock::now();
+            const auto since_last_ms = std::chrono::duration_cast<
+                std::chrono::milliseconds>(
+                    now - player->last_qos_log_time_).count();
+            const guint64 delta = (dropped > player->last_qos_logged_dropped_)
+                ? (dropped - player->last_qos_logged_dropped_)
+                : 0;
+            if (delta >= kDropDeltaThreshold &&
+                since_last_ms >= kMinIntervalMs) {
+                LOG_WARN("QoS: Dropped frames: {} (+{} since last), Jitter: {}",
+                         dropped, delta, jitter);
+                player->last_qos_logged_dropped_ = dropped;
+                player->last_qos_log_time_ = now;
             }
             break;
         }
@@ -346,6 +376,15 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
 
     stop();
     decoder_inspected_ = false;  // Re-inspect decoder for new media
+
+    // Reset the QoS rate-limiter — the new file's pipeline starts with
+    // a fresh dropped-frames counter (running total starts at 0), so
+    // any "dropped" reading after this is genuinely from the new media.
+    // Without this reset, a transient cold-start drop on the new file
+    // would be hidden if the previous file's last-logged dropped count
+    // was already higher.
+    last_qos_logged_dropped_ = 0;
+    last_qos_log_time_ = std::chrono::steady_clock::time_point{};
 
     std::string uri = "file://" + path;
     // Handle absolute paths

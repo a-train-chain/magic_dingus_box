@@ -72,6 +72,13 @@ private:
     int decoder_inspect_frames_;
     bool decoder_inspected_ = false;  // Guard to run decoder inspection only once per pipeline
 
+    // QoS warning rate-limiter state (v1.6.x). GStreamer emits one QOS
+    // bus message per late frame, each carrying the running total. Without
+    // rate-limiting, a playlist auto-advance produced 5000-10000 log lines
+    // in a single millisecond. See bus_call() for the throttle logic.
+    guint64 last_qos_logged_dropped_ = 0;
+    std::chrono::steady_clock::time_point last_qos_log_time_{};
+
     // EOS callback
     std::function<void()> eos_callback_;
 
