@@ -139,6 +139,13 @@ private:
     // render and input-handling stay in lockstep.
     static constexpr int kOverlayFocusableRows = 8;
 
+    // Slide-in / slide-out animation durations in ms. Used by both
+    // tick_overlay_animation() (state-machine promotion) and render()
+    // (panel x-position computation). Keep them adjacent here so a
+    // future tweak to one location can't drift from the other.
+    static constexpr int kOverlaySlideInMs  = 200;
+    static constexpr int kOverlaySlideOutMs = 150;
+
     // Open / close transitions. start_open_overlay() snaps to
     // SlidingIn, sets the cursor to whichever row matches the
     // currently-active sort, and timestamps the animation start.
@@ -148,6 +155,13 @@ private:
     void start_open_overlay();
     void start_close_overlay();
     void tick_overlay_animation();
+
+    // Compute the panel's current left x-coord based on overlay state +
+    // elapsed animation time. Returns kOverlayPanelClosedX when the
+    // panel is in Closed state (rendered off-screen). Used by render()
+    // to animate the panel's slide.
+    static int compute_overlay_left_x(OverlayState state,
+                                      std::chrono::steady_clock::time_point anim_started);
 };
 
 }  // namespace media_browser::ui

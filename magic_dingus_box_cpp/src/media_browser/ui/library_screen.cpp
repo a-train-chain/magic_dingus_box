@@ -98,6 +98,35 @@ std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
     return ellipsis;
 }
 
+// Slide-in overlay (v1.6.x).
+//   Panel sits flush with the wood-frame's right inner edge (x=1240).
+//   Width 480 px → left edge at x=760 when fully open.
+//   Vertical extent: y=120 (chrome header bottom) → y=634 (chrome
+//   footer hint band top), 514 px tall.
+constexpr int kOverlayPanelW         = 480;
+constexpr int kOverlayPanelOpenX     = 760;     // Left edge when fully open
+constexpr int kOverlayPanelClosedX   = 1280;    // Left edge when fully closed (off-screen right)
+constexpr int kOverlayPanelTopY      = 120;
+constexpr int kOverlayPanelBottomY   = 634;
+constexpr int kOverlayPanelH         = kOverlayPanelBottomY - kOverlayPanelTopY;
+constexpr int kOverlayPanelInnerPadX = 24;
+constexpr int kOverlayPanelInnerPadY = 16;
+
+// Block layout inside the panel — three logical sections, top to bottom.
+constexpr int kOverlaySectionGap     = 18;   // Vertical gap between section blocks
+constexpr int kOverlayRowHeight      = 32;   // Per row in Sort + Filter sections
+constexpr int kOverlaySectionHeaderH = 28;   // Gold ZenDots heading + gap
+
+// Ease curve for the slide-in animation. Cubic ease-out: 1 - (1-t)^3.
+inline float ease_out_cubic(float t) {
+    const float u = 1.0f - t;
+    return 1.0f - u * u * u;
+}
+// Ease-in for slide-out: t^3.
+inline float ease_in_cubic(float t) {
+    return t * t * t;
+}
+
 // True if the case-insensitive prefix of `s` matches `prefix`. Used by
 // the file-state classifier (preserved verbatim from the previous
 // revision — quality-string parsing is data-model logic, not visual).
@@ -187,13 +216,36 @@ void LibraryScreen::tick_overlay_animation() {
         std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - overlay_anim_started_at_)
         .count();
-    constexpr int kSlideInMs  = 200;
-    constexpr int kSlideOutMs = 150;
-    if (overlay_state_ == OverlayState::SlidingIn && elapsed_ms >= kSlideInMs) {
+    if (overlay_state_ == OverlayState::SlidingIn && elapsed_ms >= kOverlaySlideInMs) {
         overlay_state_ = OverlayState::Open;
-    } else if (overlay_state_ == OverlayState::SlidingOut && elapsed_ms >= kSlideOutMs) {
+    } else if (overlay_state_ == OverlayState::SlidingOut && elapsed_ms >= kOverlaySlideOutMs) {
         overlay_state_ = OverlayState::Closed;
     }
+}
+
+int LibraryScreen::compute_overlay_left_x(
+        OverlayState state,
+        std::chrono::steady_clock::time_point anim_started) {
+    if (state == OverlayState::Closed)  return kOverlayPanelClosedX;
+    if (state == OverlayState::Open)    return kOverlayPanelOpenX;
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(now - anim_started).count();
+    if (state == OverlayState::SlidingIn) {
+        const float t = std::min(1.0f,
+            static_cast<float>(elapsed_ms) / static_cast<float>(kOverlaySlideInMs));
+        const float eased = ease_out_cubic(t);
+        return static_cast<int>(
+            kOverlayPanelClosedX + eased *
+                (kOverlayPanelOpenX - kOverlayPanelClosedX));
+    }
+    // SlidingOut.
+    const float t = std::min(1.0f,
+        static_cast<float>(elapsed_ms) / static_cast<float>(kOverlaySlideOutMs));
+    const float eased = ease_in_cubic(t);
+    return static_cast<int>(
+        kOverlayPanelOpenX + eased *
+            (kOverlayPanelClosedX - kOverlayPanelOpenX));
 }
 
 void LibraryScreen::enter() {
@@ -268,10 +320,55 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
     // TopRated, the immediate left neighbour). BTN3 (NEXT, green)
     // transitions to SearchScreen.
     for (const auto& e : events) {
-        // BTN4 (SETTINGS_MENU, black) — opens the slide-in overlay.
-        // Wired in Task 5. For now: no-op short-press; long-press
-        // still exits MB via the input dispatcher.
+        // ============================================================
+        // Overlay input capture: when the overlay is open or animating,
+        // it consumes ROTATE / SELECT / PLAY_PAUSE / SETTINGS_MENU
+        // inputs. The underlying grid does NOT see these events while
+        // the panel is visible. SETTINGS_MENU is handled separately
+        // below as a toggle (open/close).
+        // ============================================================
+        const bool overlay_active = (overlay_state_ != OverlayState::Closed);
+        if (overlay_active) {
+            // BTN2 (PLAY_PAUSE, red) — back closes the overlay.
+            if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+                if (overlay_state_ == OverlayState::Open ||
+                    overlay_state_ == OverlayState::SlidingIn) {
+                    start_close_overlay();
+                }
+                continue;
+            }
+            // Rotary CW/CCW — walk through the 8 focusable rows.
+            if (e.action == platform::InputAction::ROTATE) {
+                if (e.delta == 0) continue;
+                overlay_focus_row_ = std::clamp(
+                    overlay_focus_row_ + e.delta,
+                    0, kOverlayFocusableRows - 1);
+                continue;
+            }
+            // SELECT — wired in Task 6. For now, no-op.
+            if (e.action == platform::InputAction::SELECT && e.pressed) {
+                continue;
+            }
+            // BTN1 / BTN3 are no-ops while overlay is open (prevents
+            // tab-jumping the underlying grid).
+            if (e.action == platform::InputAction::PREV ||
+                e.action == platform::InputAction::NEXT) {
+                continue;
+            }
+            // SETTINGS_MENU is handled by the toggle branch below; let
+            // it through.
+        }
+
+        // BTN4 (SETTINGS_MENU, black) — toggles the slide-in overlay.
+        // Re-pressing closes it. While SlidingIn or SlidingOut, ignore —
+        // operator will wait ~200 ms for the animation to settle. Prevents
+        // mid-animation state thrash.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            if (overlay_state_ == OverlayState::Closed) {
+                start_open_overlay();
+            } else if (overlay_state_ == OverlayState::Open) {
+                start_close_overlay();
+            }
             continue;
         }
 
@@ -616,6 +713,185 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         {"A",      "Open"},
         {"BTN4",   "Home"},
     });
+
+    // ============================================================
+    // Slide-in overlay (v1.6.x)
+    // ============================================================
+    if (overlay_state_ != OverlayState::Closed) {
+        const auto& th = r.mb_theme();
+
+        const int panel_x = compute_overlay_left_x(
+            overlay_state_, overlay_anim_started_at_);
+        const float fpanel_x = static_cast<float>(panel_x);
+        const float fpanel_y = static_cast<float>(kOverlayPanelTopY);
+        const float fpanel_w = static_cast<float>(kOverlayPanelW);
+        const float fpanel_h = static_cast<float>(kOverlayPanelH);
+
+        // Panel background — bg_lift, fully opaque.
+        r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, fpanel_h, th.bg_lift);
+        // Left edge: 2 px gold rule.
+        r.mb_fill_rect(fpanel_x, fpanel_y, 2.0f, fpanel_h, th.accent);
+        // Top edge: 1 px dim rule for closure with chrome header band.
+        r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, 1.0f, th.dim);
+
+        // Panel content x — inset from left rule by panel inner pad.
+        const int content_x = panel_x + kOverlayPanelInnerPadX;
+
+        // ---- Stats block ----
+        // Gold ZenDots heading: "LIBRARY"
+        constexpr int kPanelTitleFontPx = 22;
+        const int title_baseline = kOverlayPanelTopY + kOverlayPanelInnerPadY +
+                                   kPanelTitleFontPx - 2;
+        r.mb_draw_title_text("LIBRARY",
+                             static_cast<float>(content_x),
+                             static_cast<float>(title_baseline),
+                             kPanelTitleFontPx, th.accent);
+
+        // Three stat lines in cream body font, 14 px each.
+        constexpr int kStatFontPx = 14;
+        const int stat_y0 = title_baseline + 24;
+        char buf_titles[64], buf_used[64], buf_free[64];
+        std::snprintf(buf_titles, sizeof(buf_titles), "%zu titles",
+                      library_.size());
+        // Reuse the format_bytes helper already in library_screen.cpp.
+        int64_t used_bytes_ov = 0;
+        for (const Movie& m : library_) {
+            if (m.has_file) used_bytes_ov += m.file_size_bytes;
+        }
+        std::snprintf(buf_used, sizeof(buf_used), "%s used",
+                      format_bytes(used_bytes_ov).c_str());
+        int64_t free_bytes_ov = 0;
+        {
+            std::error_code ec;
+            auto info = std::filesystem::space("/mnt/ssd/library", ec);
+            if (!ec) free_bytes_ov = static_cast<int64_t>(info.available);
+        }
+        std::snprintf(buf_free, sizeof(buf_free), "%s free",
+                      free_bytes_ov > 0 ? format_bytes(free_bytes_ov).c_str() : "—");
+
+        r.mb_draw_text(buf_titles,
+                       static_cast<float>(content_x),
+                       static_cast<float>(stat_y0),
+                       kStatFontPx, th.fg);
+        r.mb_draw_text(buf_used,
+                       static_cast<float>(content_x),
+                       static_cast<float>(stat_y0 + 18),
+                       kStatFontPx, th.fg);
+        r.mb_draw_text(buf_free,
+                       static_cast<float>(content_x),
+                       static_cast<float>(stat_y0 + 36),
+                       kStatFontPx, th.fg);
+
+        // 1 px dim divider under stats.
+        const int divider1_y = stat_y0 + 56;
+        r.mb_draw_line(static_cast<float>(content_x),
+                       static_cast<float>(divider1_y),
+                       static_cast<float>(panel_x + kOverlayPanelW - kOverlayPanelInnerPadX),
+                       static_cast<float>(divider1_y),
+                       1.0f, th.dim, 0.5f);
+
+        // ---- Sort by section ----
+        constexpr int kSectionHeadingFontPx = 14;
+        constexpr int kRowFontPx = 16;
+        const int sort_heading_y = divider1_y + kOverlaySectionGap;
+        r.mb_draw_title_text("SORT BY",
+                             static_cast<float>(content_x),
+                             static_cast<float>(sort_heading_y),
+                             kSectionHeadingFontPx, th.accent);
+
+        struct Row { const char* label; bool is_active; bool is_focused; };
+        using S = ::app::AppState::DisplaySettings::MbLibrarySort;
+        const S active_sort = state_.display_settings.mb_library_sort;
+        const Row sort_rows[4] = {
+            {"Recent", active_sort == S::Recent, overlay_focus_row_ == 0},
+            {"Title",  active_sort == S::Title,  overlay_focus_row_ == 1},
+            {"Year",   active_sort == S::Year,   overlay_focus_row_ == 2},
+            {"Size",   active_sort == S::Size,   overlay_focus_row_ == 3},
+        };
+
+        const int sort_rows_y0 = sort_heading_y + kOverlaySectionHeaderH;
+        for (int i = 0; i < 4; ++i) {
+            const int row_y = sort_rows_y0 + i * kOverlayRowHeight;
+            const ::ui::Color label_color =
+                (sort_rows[i].is_active || sort_rows[i].is_focused)
+                    ? th.accent : th.dim;
+            // Focused row gets a blinking gold ▶ marker 18 px to the
+            // left of the label x. Reuses the same draw-cursor-marker
+            // pattern from MbSettingsScreen (right-pointing variant).
+            if (sort_rows[i].is_focused) {
+                const float marker_x = static_cast<float>(content_x);
+                const float marker_cy = static_cast<float>(row_y + kOverlayRowHeight / 2);
+                constexpr float kMarkerHalfH = 6.0f;
+                constexpr float kMarkerW = 7.2f;
+                r.mb_fill_triangle(
+                    marker_x,           marker_cy - kMarkerHalfH,
+                    marker_x,           marker_cy + kMarkerHalfH,
+                    marker_x + kMarkerW, marker_cy,
+                    th.accent, 1.0f);
+            }
+            r.mb_draw_text(sort_rows[i].label,
+                           static_cast<float>(content_x + 18),
+                           static_cast<float>(row_y + kOverlayRowHeight - 10),
+                           kRowFontPx, label_color);
+        }
+
+        // 1 px divider under sort.
+        const int divider2_y = sort_rows_y0 + 4 * kOverlayRowHeight + 6;
+        r.mb_draw_line(static_cast<float>(content_x),
+                       static_cast<float>(divider2_y),
+                       static_cast<float>(panel_x + kOverlayPanelW - kOverlayPanelInnerPadX),
+                       static_cast<float>(divider2_y),
+                       1.0f, th.dim, 0.5f);
+
+        // ---- Filter section ----
+        const int filter_heading_y = divider2_y + kOverlaySectionGap;
+        r.mb_draw_title_text("FILTER",
+                             static_cast<float>(content_x),
+                             static_cast<float>(filter_heading_y),
+                             kSectionHeadingFontPx, th.accent);
+
+        using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
+        const F active_filter = state_.display_settings.mb_library_filter;
+        struct FilterRow { const char* label; bool is_active; bool is_focused; bool is_soon; };
+        const FilterRow filter_rows[4] = {
+            {"All",            active_filter == F::All,            overlay_focus_row_ == 4, false},
+            {"Unwatched",      active_filter == F::Unwatched,      overlay_focus_row_ == 5, true},
+            {"Missing files",  active_filter == F::MissingFiles,   overlay_focus_row_ == 6, false},
+            {"Recently added", active_filter == F::RecentlyAdded,  overlay_focus_row_ == 7, false},
+        };
+        const int filter_rows_y0 = filter_heading_y + kOverlaySectionHeaderH;
+        for (int i = 0; i < 4; ++i) {
+            const int row_y = filter_rows_y0 + i * kOverlayRowHeight;
+            const ::ui::Color label_color =
+                filter_rows[i].is_soon ? th.dim
+              : (filter_rows[i].is_active || filter_rows[i].is_focused) ? th.accent
+              : th.dim;
+            if (filter_rows[i].is_focused) {
+                const float marker_x = static_cast<float>(content_x);
+                const float marker_cy = static_cast<float>(row_y + kOverlayRowHeight / 2);
+                constexpr float kMarkerHalfH = 6.0f;
+                constexpr float kMarkerW = 7.2f;
+                r.mb_fill_triangle(
+                    marker_x,           marker_cy - kMarkerHalfH,
+                    marker_x,           marker_cy + kMarkerHalfH,
+                    marker_x + kMarkerW, marker_cy,
+                    th.accent, 1.0f);
+            }
+            std::string label = filter_rows[i].label;
+            if (filter_rows[i].is_soon) label += "  (soon)";
+            r.mb_draw_text(label,
+                           static_cast<float>(content_x + 18),
+                           static_cast<float>(row_y + kOverlayRowHeight - 10),
+                           kRowFontPx, label_color);
+        }
+
+        // ---- Footer hint inside the panel ----
+        const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
+        r.mb_draw_text("BTN4 close   A select   Rotary nav",
+                       static_cast<float>(content_x),
+                       static_cast<float>(hint_y),
+                       12, th.dim);
+    }
 }
 
 }  // namespace media_browser::ui
