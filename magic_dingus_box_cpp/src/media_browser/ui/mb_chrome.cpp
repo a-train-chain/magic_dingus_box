@@ -1,0 +1,228 @@
+#include "media_browser/ui/mb_chrome.h"
+
+#include "ui/renderer.h"
+#include "ui/theme.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <string>
+
+namespace media_browser::ui::chrome {
+
+namespace {
+// Layout constants used inside this translation unit only — kept private
+// so screens depend on the public draw_* helpers, not the magic numbers.
+constexpr int kKeyHintFontPx     = 14;
+constexpr int kKeyHintBoxPadX    = 6;
+constexpr int kKeyHintBoxPadY    = 1;
+constexpr int kKeyHintGap_px     = kPad5;     // Gap between consecutive hints
+constexpr int kKeyHintLabelGap   = 6;          // Gap between the [key] and its action label
+constexpr int kBadgeFontPx       = 12;
+constexpr int kBadgePadX         = 6;
+constexpr int kBadgePadY         = 2;
+constexpr int kTabFontPx         = 24;          // ZenDots section size
+constexpr int kTabHorizPad       = kPad3;       // Inside-tab horizontal padding
+constexpr int kTabVertPad        = kPad2;       // Inside-tab vertical padding
+constexpr int kTabGap            = kPad4;       // Gap between adjacent tabs
+constexpr int kTitleFontPx       = 32;          // ZenDots screen title
+}  // namespace
+
+// =====================================================================
+// Focus ring
+// =====================================================================
+void draw_focus_ring(::ui::Renderer& r, int x, int y, int w, int h) {
+    const auto& th = r.mb_theme();
+    const float fx = static_cast<float>(x - kFocusOffset_px);
+    const float fy = static_cast<float>(y - kFocusOffset_px);
+    const float fw = static_cast<float>(w + 2 * kFocusOffset_px);
+    const float fh = static_cast<float>(h + 2 * kFocusOffset_px);
+    r.mb_stroke_rect(fx, fy, fw, fh, static_cast<float>(kFocusBorder_px), th.accent);
+}
+
+// =====================================================================
+// Badges (top-left of poster cells)
+// =====================================================================
+ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y) {
+    const auto& th = r.mb_theme();
+    const std::string label = "IN LIBRARY";
+    const int text_w = r.mb_text_width(label, kBadgeFontPx);
+    const int box_w  = text_w + 2 * kBadgePadX;
+    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    // Solid bg fill so the chip stays readable over any poster art.
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(box_w), static_cast<float>(box_h),
+                   th.bg);
+    // Green border = "in library" success state.
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(box_w), static_cast<float>(box_h),
+                     static_cast<float>(kFocusBorder_px), th.highlight1);
+    // Text baseline ≈ box_top + box_h - kBadgePadY - descent.
+    // Approximate baseline at top + font_px (close enough for our font).
+    r.mb_draw_text(label,
+                   static_cast<float>(x + kBadgePadX),
+                   static_cast<float>(y + kBadgePadY + kBadgeFontPx - 2),
+                   kBadgeFontPx, th.highlight1);
+    return {x, y, box_w, box_h};
+}
+
+ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y, int percent_0_to_99) {
+    const auto& th = r.mb_theme();
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%d%%", std::clamp(percent_0_to_99, 0, 99));
+    const std::string label = buf;
+    const int text_w = r.mb_text_width(label, kBadgeFontPx);
+    const int box_w  = text_w + 2 * kBadgePadX;
+    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(box_w), static_cast<float>(box_h),
+                   th.bg);
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(box_w), static_cast<float>(box_h),
+                     static_cast<float>(kFocusBorder_px), th.highlight2);
+    r.mb_draw_text(label,
+                   static_cast<float>(x + kBadgePadX),
+                   static_cast<float>(y + kBadgePadY + kBadgeFontPx - 2),
+                   kBadgeFontPx, th.highlight2);
+    return {x, y, box_w, box_h};
+}
+
+// =====================================================================
+// Footer keyhints
+// =====================================================================
+int draw_keyhint(::ui::Renderer& r, int x, int y_baseline,
+                 const std::string& key,
+                 const std::string& action) {
+    const auto& th = r.mb_theme();
+
+    // [KEY] box: bordered, white text inside.
+    const int key_text_w = r.mb_text_width(key, kKeyHintFontPx);
+    const int box_w = key_text_w + 2 * kKeyHintBoxPadX;
+    const int box_h = kKeyHintFontPx + 2 * kKeyHintBoxPadY + 2;  // +2 for visual breathing
+    const int box_y = y_baseline - kKeyHintFontPx - kKeyHintBoxPadY + 1;
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(box_y),
+                     static_cast<float>(box_w), static_cast<float>(box_h),
+                     static_cast<float>(kFocusBorder_px), th.dim);
+    r.mb_draw_text(key,
+                   static_cast<float>(x + kKeyHintBoxPadX),
+                   static_cast<float>(y_baseline),
+                   kKeyHintFontPx, th.fg);
+
+    // Action label, dim-colored.
+    const int action_x = x + box_w + kKeyHintLabelGap;
+    r.mb_draw_text(action,
+                   static_cast<float>(action_x),
+                   static_cast<float>(y_baseline),
+                   kKeyHintFontPx, th.dim);
+    const int action_w = r.mb_text_width(action, kKeyHintFontPx);
+    return (action_x + action_w + kKeyHintGap_px) - x;
+}
+
+void draw_footer_hints(::ui::Renderer& r,
+                       int /*screen_w*/, int screen_h,
+                       const std::vector<Hint>& hints) {
+    const int x_start = kSafeInset_px;
+    // Footer baseline sits ~10 px above the wood frame's inner edge.
+    const int y_baseline = screen_h - kFrameInset_px - kPad3;
+    int x = x_start;
+    for (const auto& h : hints) {
+        x += draw_keyhint(r, x, y_baseline, h.key, h.action);
+    }
+}
+
+// =====================================================================
+// Header (title + tab strip)
+// =====================================================================
+namespace {
+// Compute total width of a tab-strip layout so we can right-align it.
+int tab_strip_total_width(::ui::Renderer& r, const std::vector<TabSpec>& tabs) {
+    int total = 0;
+    for (size_t i = 0; i < tabs.size(); ++i) {
+        const int label_w = r.mb_title_text_width(tabs[i].label, kTabFontPx);
+        total += label_w + 2 * kTabHorizPad;
+        if (i + 1 < tabs.size()) total += kTabGap;
+    }
+    return total;
+}
+
+// Draw a single tab. Caller positions the rect; we draw label + state
+// styling. Active tab uses fg color; inactive uses dim. Focused tab
+// gets the gold focus ring around the tab's bounding box.
+void draw_one_tab(::ui::Renderer& r,
+                  int x, int y, int w, int h,
+                  const TabSpec& tab,
+                  bool focused) {
+    const auto& th = r.mb_theme();
+    const ::ui::Color text_color = (tab.state == TabState::Active) ? th.fg : th.dim;
+
+    // Label: ZenDots, vertically centered in the tab box.
+    const int label_w = r.mb_title_text_width(tab.label, kTabFontPx);
+    const int label_x = x + (w - label_w) / 2;
+    // Approx ZenDots baseline: top + (h - font_px)/2 + font_px - small_descent.
+    const int label_y = y + (h + kTabFontPx) / 2 - 4;
+    r.mb_draw_title_text(tab.label,
+                         static_cast<float>(label_x),
+                         static_cast<float>(label_y),
+                         kTabFontPx, text_color);
+
+    if (focused) {
+        draw_focus_ring(r, x, y, w, h);
+    }
+}
+}  // namespace
+
+int draw_screen_header(::ui::Renderer& r,
+                       int screen_w,
+                       const std::string& title,
+                       const std::vector<TabSpec>& tabs,
+                       int focused_tab_index,
+                       const std::string& sub_info) {
+    const auto& th = r.mb_theme();
+    const int header_top = kSafeInset_px;
+    const int header_h   = kHeaderHeight_px;
+
+    // --- Title (left) ---
+    const int title_x = kSafeInset_px;
+    // ZenDots baseline approximation — tweak to match the title in the
+    // playlist UI which already lives at the same vertical position.
+    const int title_baseline = header_top + kTitleFontPx - 4;
+    if (!title.empty()) {
+        r.mb_draw_title_text(title,
+                             static_cast<float>(title_x),
+                             static_cast<float>(title_baseline),
+                             kTitleFontPx, th.fg);
+    }
+
+    // --- Tab strip (right) OR sub-info text ---
+    if (!tabs.empty()) {
+        const int strip_w = tab_strip_total_width(r, tabs);
+        // Right-align inside the safe area.
+        const int strip_right = screen_w - kSafeInset_px;
+        int x = strip_right - strip_w;
+        // Vertically center each tab on the header band so it lines up
+        // with the title's optical center.
+        const int tab_h = kTabFontPx + 2 * kTabVertPad;
+        const int tab_y = header_top + (header_h - tab_h) / 2 - 2;
+        for (size_t i = 0; i < tabs.size(); ++i) {
+            const int label_w = r.mb_title_text_width(tabs[i].label, kTabFontPx);
+            const int tab_w   = label_w + 2 * kTabHorizPad;
+            const bool focused = (static_cast<int>(i) == focused_tab_index);
+            draw_one_tab(r, x, tab_y, tab_w, tab_h, tabs[i], focused);
+            x += tab_w + kTabGap;
+        }
+    } else if (!sub_info.empty()) {
+        // Right-aligned monospace info string (used by Queue / Detail).
+        constexpr int sub_font = 14;
+        const int sw = r.mb_text_width(sub_info, sub_font);
+        const int sx = screen_w - kSafeInset_px - sw;
+        const int sy = header_top + kTitleFontPx - 8;
+        r.mb_draw_text(sub_info,
+                       static_cast<float>(sx),
+                       static_cast<float>(sy),
+                       sub_font, th.dim);
+    }
+
+    // Return y-coord where content can start drawing below the header band.
+    return header_top + header_h;
+}
+
+}  // namespace media_browser::ui::chrome
