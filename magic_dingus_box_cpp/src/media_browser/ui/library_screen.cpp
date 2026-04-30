@@ -7,9 +7,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <sstream>
 #include <string>
+#include <strings.h>  // strcasecmp
 
+#include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -266,45 +269,83 @@ void LibraryScreen::rebuild_view() {
     view_.clear();
     view_.reserve(library_.size());
 
-    for (const auto& m : library_) {
-        switch (filter_) {
-            case Filter::All:
-                view_.push_back(&m);
+    // ---- Filter pass ----
+    // Driven by display_settings.mb_library_filter (the v1.6.x persisted
+    // overlay choice), NOT the legacy Filter enum member filter_ which
+    // is now dead config. The legacy enum stays in the header for any
+    // ABI compat we haven't audited but does not influence the view.
+    using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
+    const F filter = state_.display_settings.mb_library_filter;
+    // "Recently added" cutoff: 30 days ago, formatted as an ISO-8601
+    // string so we can compare lexicographically against Movie.added_at
+    // (which Radarr emits as ISO-8601, e.g. "2024-12-31T08:15:42Z").
+    // ISO-8601 strings sort chronologically as plain strings — no
+    // parsing required.
+    std::string thirty_days_ago_iso;
+    {
+        const auto now = std::chrono::system_clock::now();
+        const auto cutoff = now - std::chrono::hours(24 * 30);
+        const std::time_t tt = std::chrono::system_clock::to_time_t(cutoff);
+        std::tm tm_utc{};
+        gmtime_r(&tt, &tm_utc);
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+        thirty_days_ago_iso = buf;
+    }
+    for (const Movie& m : library_) {
+        bool keep = true;
+        switch (filter) {
+            case F::All:
+                keep = true;
                 break;
-            case Filter::Unwatched:
-                // MVP-scope: we don't track "watched" state anywhere yet,
-                // so this collapses to "has_file == true" (i.e., the
-                // films you could watch right now). Swap this for a real
-                // watched-state lookup when view tracking lands.
-                if (m.has_file) view_.push_back(&m);
+            case F::Unwatched:
+                // Placeholder: kiosk doesn't track watched-history yet.
+                // Accept all rows so the operator sees something while
+                // the (soon) feature is in development. Will switch to
+                // `keep = !m.watched;` once Movie.watched lands.
+                keep = true;
                 break;
-            case Filter::MissingUpgrades:
-                if (m.has_file && !is_1080p_quality(m.file_quality)) {
-                    view_.push_back(&m);
-                }
+            case F::MissingFiles:
+                keep = !m.has_file;
                 break;
-            case Filter::Recent:
-                view_.push_back(&m);
+            case F::RecentlyAdded:
+                // Movie.added_at is a Radarr ISO-8601 string. Empty
+                // strings (which Radarr should never emit but we guard
+                // anyway) compare less-than the cutoff and are dropped.
+                keep = (!m.added_at.empty() && m.added_at >= thirty_days_ago_iso);
                 break;
         }
+        if (keep) view_.push_back(&m);
     }
 
-    if (filter_ == Filter::Recent) {
-        // Sort by added_at descending. ISO-8601 timestamps sort
-        // lexicographically in chronological order, so plain string
-        // comparison is fine — no need to parse the date.
-        std::sort(view_.begin(), view_.end(),
-                  [](const Movie* a, const Movie* b) {
-                      return a->added_at > b->added_at;
-                  });
+    // ---- Sort pass ----
+    using S = ::app::AppState::DisplaySettings::MbLibrarySort;
+    const S sort = state_.display_settings.mb_library_sort;
+    auto cmp_recent = [](const Movie* a, const Movie* b) {
+        return a->added_at > b->added_at;  // newest first (ISO-8601 lex sort)
+    };
+    auto cmp_title = [](const Movie* a, const Movie* b) {
+        return ::strcasecmp(a->title.c_str(), b->title.c_str()) < 0;
+    };
+    auto cmp_year = [](const Movie* a, const Movie* b) {
+        if (a->year != b->year) return a->year > b->year;  // newest first
+        return ::strcasecmp(a->title.c_str(), b->title.c_str()) < 0;
+    };
+    auto cmp_size = [](const Movie* a, const Movie* b) {
+        return a->file_size_bytes > b->file_size_bytes;  // largest first
+    };
+    switch (sort) {
+        case S::Recent: std::sort(view_.begin(), view_.end(), cmp_recent); break;
+        case S::Title:  std::sort(view_.begin(), view_.end(), cmp_title);  break;
+        case S::Year:   std::sort(view_.begin(), view_.end(), cmp_year);   break;
+        case S::Size:   std::sort(view_.begin(), view_.end(), cmp_size);   break;
     }
 
-    // Reset cursor/scroll if the filter shrank the view under them.
-    int n = static_cast<int>(view_.size());
+    // Clamp the grid cursor + scroll row to the new view's bounds.
+    const int n = static_cast<int>(view_.size());
     if (grid_cursor_ >= n) grid_cursor_ = std::max(0, n - 1);
-    if (grid_cursor_ < 0) grid_cursor_ = 0;
-    int cursor_row = n == 0 ? 0 : grid_cursor_ / kGridCols;
-    if (scroll_row_ > cursor_row) scroll_row_ = cursor_row;
+    const int max_scroll_row = n / kGridCols;
+    if (scroll_row_ > max_scroll_row) scroll_row_ = max_scroll_row;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,8 +398,29 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
                     0, kOverlayFocusableRows - 1);
                 continue;
             }
-            // SELECT — wired in Task 6. For now, no-op.
+            // SELECT — apply sort/filter, persist, close overlay.
             if (e.action == platform::InputAction::SELECT && e.pressed) {
+                if (overlay_state_ != OverlayState::Open) continue;
+                // Map focused row → sort or filter mutation.
+                using S = ::app::AppState::DisplaySettings::MbLibrarySort;
+                using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
+                bool changed = false;
+                switch (overlay_focus_row_) {
+                    case 0: state_.display_settings.mb_library_sort = S::Recent;        changed = true; break;
+                    case 1: state_.display_settings.mb_library_sort = S::Title;         changed = true; break;
+                    case 2: state_.display_settings.mb_library_sort = S::Year;          changed = true; break;
+                    case 3: state_.display_settings.mb_library_sort = S::Size;          changed = true; break;
+                    case 4: state_.display_settings.mb_library_filter = F::All;           changed = true; break;
+                    case 5: /* Unwatched is a placeholder — accept the click but render the row as "(soon)"; no real filter wired yet. */
+                            state_.display_settings.mb_library_filter = F::Unwatched;    changed = true; break;
+                    case 6: state_.display_settings.mb_library_filter = F::MissingFiles;  changed = true; break;
+                    case 7: state_.display_settings.mb_library_filter = F::RecentlyAdded; changed = true; break;
+                }
+                if (changed) {
+                    ::app::SettingsPersistence::save_settings(state_);
+                    rebuild_view();
+                    start_close_overlay();
+                }
                 continue;
             }
             // BTN1 / BTN3 are no-ops while overlay is open (prevents
