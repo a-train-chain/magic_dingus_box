@@ -154,11 +154,9 @@ Screen PlaybackScreen::handle_input(
             return Screen::Detail;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — note: in v1.6.4+ this event is
-        // intercepted globally by the exit modal in main.cpp before
-        // it reaches handle_input, so the block below is unreachable
-        // while the MB is active. Kept to document the pre-v1.6.4
-        // toggle-pause semantic for future reference.
+        // BTN2 (PLAY_PAUSE, red) = toggle play/pause during MB playback.
+        // main.cpp's global exit-modal intercept exempts Screen::Playback
+        // so this handler stays reachable while a movie is playing.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             controller_.toggle_pause();
             continue;

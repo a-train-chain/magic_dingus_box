@@ -1465,7 +1465,8 @@ int main(int /* argc */, char* /* argv */[]) {
                             default:
                                 break;
                         }
-                    } else if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+                    } else if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed
+                               && current_mb_screen != media_browser::ui::Screen::Playback) {
                         mb_exit_modal.open();
                         consume = true;
                     }
