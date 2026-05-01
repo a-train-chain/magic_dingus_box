@@ -1,5 +1,6 @@
 #include "media_browser/ui/mb_filter_overlay.h"
 
+#include "media_browser/ui/mb_chrome.h"
 #include "ui/renderer.h"
 
 #include <algorithm>
@@ -11,22 +12,49 @@ namespace media_browser::ui {
 
 namespace {
 
-// Bezel inset — the wood-frame PNG reserves this many pixels on every edge.
-constexpr int kBezelInset = 40;
+// ============================================================
+// Panel geometry — mirrors the Library overlay exactly.
+//   kOverlayPanelW         = 480    (Library value)
+//   kOverlayPanelOpenX     = 760    (1280 - 40 bezel - 480)
+//   kOverlayPanelTopY      = 120
+//   kOverlayPanelBottomY   = 634
+//   kOverlayPanelH         = 514
+//   kOverlayPanelInnerPadX = 24
+//   kOverlayPanelInnerPadY = 16
+//   kOverlaySectionGap     = 18  — gap between section title and first row
+//   kOverlayRowHeight      = 32  — per-row height in filter/sort sections
+//   kOverlaySectionHeaderH = 28  — ZenDots section heading + gap below it
+//   kPanelTitleFontPx      = 22  — ZenDots title ("FILTERS")
+//   kSectionHeadingFontPx  = 14  — ZenDots section headers ("FILTER BY", "SORT BY")
+//   kRowFontPx             = 16  — body-text font for row label + value
+//   kStatFontPx            = 14  — not used in filter overlay (no stats block)
+// ============================================================
 
-// Top margin increased from 100 → 155 so the panel clears the tab-strip text
-// (Popular | Top Rated | Search | Library | Queue | Settings).
-constexpr int kPanelTopMarginPx    = 155;
-constexpr int kPanelBottomMarginPx = kBezelInset;
+constexpr int kScreenW               = 1280;
+constexpr int kBezelInset            = 40;
 
-// Single-line row: label + value on one line, ~38px tall.
-constexpr int kRowHeightPx = 38;
-constexpr int kPaddingX    = 24;
+constexpr int kOverlayPanelW         = 480;
+constexpr int kOverlayPanelOpenX     = kScreenW - kBezelInset - kOverlayPanelW;  // 760
+constexpr int kOverlayPanelClosedX   = kScreenW;                                  // off-screen right
+constexpr int kOverlayPanelTopY      = 120;
+constexpr int kOverlayPanelBottomY   = 634;
+constexpr int kOverlayPanelH         = kOverlayPanelBottomY - kOverlayPanelTopY;  // 514
+constexpr int kOverlayPanelInnerPadX = 24;
+constexpr int kOverlayPanelInnerPadY = 16;
 
-// Cursor triangle geometry — matches the ▶ style used by LibraryScreen.
+constexpr int kOverlaySectionGap     = 18;
+constexpr int kOverlayRowHeight      = 32;
+constexpr int kOverlaySectionHeaderH = 28;
+
+constexpr int kPanelTitleFontPx      = 22;
+constexpr int kSectionHeadingFontPx  = 14;
+constexpr int kRowFontPx             = 16;
+
+// Cursor triangle geometry — matches LibraryScreen overlay.
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
 
+// Slide easing — identical to LibraryScreen and previous FilterOverlay.
 float ease_in_cubic(float t)  { return t * t * t; }
 float ease_out_cubic(float t) { float u = 1.0f - t; return 1.0f - u * u * u; }
 
@@ -112,21 +140,20 @@ void FilterOverlay::tick() {
 
 int FilterOverlay::compute_panel_left_x() const {
     using namespace std::chrono;
-    constexpr int kScreenW      = 1280;
-    constexpr int kPanelOpenX   = kScreenW - kBezelInset - kPanelWidthPx;  // 860
-    constexpr int kPanelClosedX = kScreenW;  // off-screen right
-    if (state_ == State::Closed) return kPanelClosedX;
-    if (state_ == State::Open)   return kPanelOpenX;
+    if (state_ == State::Closed) return kOverlayPanelClosedX;
+    if (state_ == State::Open)   return kOverlayPanelOpenX;
     const auto elapsed = duration_cast<milliseconds>(
         steady_clock::now() - anim_started_at_).count();
     if (state_ == State::SlidingIn) {
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideInMs), 0.0f, 1.0f);
-        return static_cast<int>(kPanelClosedX + ease_out_cubic(t) * (kPanelOpenX - kPanelClosedX));
+        return static_cast<int>(kOverlayPanelClosedX +
+            ease_out_cubic(t) * (kOverlayPanelOpenX - kOverlayPanelClosedX));
     } else {  // SlidingOut
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideOutMs), 0.0f, 1.0f);
-        return static_cast<int>(kPanelOpenX + ease_in_cubic(t) * (kPanelClosedX - kPanelOpenX));
+        return static_cast<int>(kOverlayPanelOpenX +
+            ease_in_cubic(t) * (kOverlayPanelClosedX - kOverlayPanelOpenX));
     }
 }
 
@@ -234,47 +261,52 @@ bool FilterOverlay::on_btn4_close() {
 }
 
 // ---------------------------------------------------------------------------
-// render helpers
+// render helpers — mirror LibraryScreen overlay's cursor + row draw pattern.
 // ---------------------------------------------------------------------------
 
-// Render a single filter row: label on the left (dim), value on the right (fg
-// normally; gold + brackets when in ValueSelect editing mode for this row).
+// Draw the gold right-pointing ▶ cursor marker at the left panel edge.
+// marker_x is the absolute panel left-x (not content_x), so the triangle
+// sits flush against the gold border rule — identical to Library overlay.
+static void draw_cursor_marker(::ui::Renderer& r, int panel_x, int row_y,
+                                const ::ui::Color& accent) {
+    const float marker_x  = static_cast<float>(panel_x + 6);
+    const float marker_cy = static_cast<float>(row_y + kOverlayRowHeight / 2);
+    r.mb_fill_triangle(
+        marker_x,            marker_cy - kMarkerHalfH,
+        marker_x,            marker_cy + kMarkerHalfH,
+        marker_x + kMarkerW, marker_cy,
+        accent, 1.0f);
+}
+
+// Render a single filter row: label on the left (dim), value right-aligned.
+// When focused + editing: value is gold + bracketed. Otherwise: fg.
+// Label text-baseline matches Library overlay row style: row_y + kOverlayRowHeight - 10.
 void FilterOverlay::render_single_row(::ui::Renderer& r, int panel_x, int x, int y,
                                        const char* label, const char* value,
                                        bool focused, bool editing) {
     const auto& th = r.mb_theme();
 
-    // Cursor triangle — gold right-pointing ▶ at left edge of panel.
-    if (focused) {
-        const float marker_x  = static_cast<float>(panel_x + 6);
-        const float marker_cy = static_cast<float>(y + kRowHeightPx / 2);
-        r.mb_fill_triangle(
-            marker_x,            marker_cy - kMarkerHalfH,
-            marker_x,            marker_cy + kMarkerHalfH,
-            marker_x + kMarkerW, marker_cy,
-            th.accent, 1.0f);
-    }
+    if (focused) draw_cursor_marker(r, panel_x, y, th.accent);
 
-    const float fy = static_cast<float>(y + (kRowHeightPx - 28) / 2);
+    // Vertical centering: matches Library row baseline = row_y + kOverlayRowHeight - 10.
+    const float fy_label = static_cast<float>(y + kOverlayRowHeight - 10);
 
-    // Label on left (always dim).
-    r.mb_draw_text(label, static_cast<float>(x), fy, 14, th.dim);
+    // Label on left, indented past cursor zone (content_x + 18 matches Library).
+    r.mb_draw_text(label, static_cast<float>(x + 18), fy_label, kRowFontPx, th.dim);
 
-    // Value on right side of the panel.
-    // In editing mode: gold color and bracketed. Otherwise: standard fg.
-    const int right_x = x + kPanelWidthPx - 2 * kPaddingX;
+    // Value right-aligned inside the panel content area.
+    const int right_x = x + kOverlayPanelW - 2 * kOverlayPanelInnerPadX;
     if (editing) {
         std::string bracketed = std::string("[") + value + "]";
-        // Right-align by measuring text width.
-        const int tw = r.mb_text_width(bracketed.c_str(), 16);
+        const int tw = r.mb_text_width(bracketed.c_str(), kRowFontPx);
         r.mb_draw_text(bracketed.c_str(),
                        static_cast<float>(right_x - tw),
-                       fy, 16, th.accent);
+                       fy_label, kRowFontPx, th.accent);
     } else {
-        const int tw = r.mb_text_width(value, 16);
+        const int tw = r.mb_text_width(value, kRowFontPx);
         r.mb_draw_text(value,
                        static_cast<float>(right_x - tw),
-                       fy, 16, th.fg);
+                       fy_label, kRowFontPx, th.fg);
     }
 }
 
@@ -282,129 +314,156 @@ void FilterOverlay::render_reset_row(::ui::Renderer& r, int panel_x, int x, int 
                                       bool focused) {
     const auto& th = r.mb_theme();
 
-    if (focused) {
-        const float marker_x  = static_cast<float>(panel_x + 6);
-        const float marker_cy = static_cast<float>(y + kRowHeightPx / 2);
-        r.mb_fill_triangle(
-            marker_x,            marker_cy - kMarkerHalfH,
-            marker_x,            marker_cy + kMarkerHalfH,
-            marker_x + kMarkerW, marker_cy,
-            th.accent, 1.0f);
-    }
+    if (focused) draw_cursor_marker(r, panel_x, y, th.accent);
 
-    const float fy = static_cast<float>(y + (kRowHeightPx - 28) / 2);
-    r.mb_draw_text("RESET ALL", static_cast<float>(x), fy, 14, th.dim);
+    const float fy = static_cast<float>(y + kOverlayRowHeight - 10);
+    r.mb_draw_text("RESET ALL", static_cast<float>(x + 18), fy,
+                   kRowFontPx, focused ? th.accent : th.dim);
 
-    // Hint text on the right.
+    // Right-aligned hint text.
     const char* hint = "press to clear";
-    const int tw = r.mb_text_width(hint, 14);
-    const int right_x = x + kPanelWidthPx - 2 * kPaddingX;
-    r.mb_draw_text(hint, static_cast<float>(right_x - tw), fy, 14, th.fg);
+    const int right_x = x + kOverlayPanelW - 2 * kOverlayPanelInnerPadX;
+    const int tw = r.mb_text_width(hint, kSectionHeadingFontPx);
+    r.mb_draw_text(hint, static_cast<float>(right_x - tw), fy,
+                   kSectionHeadingFontPx, th.fg);
 }
 
 // ---------------------------------------------------------------------------
-// render
+// render — panel chrome + content mirrors LibraryScreen overlay exactly.
 // ---------------------------------------------------------------------------
-void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int screen_h) {
+void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/) {
     if (state_ == State::Closed) return;
 
     const auto& th = r.mb_theme();
 
     const int panel_x = compute_panel_left_x();
-    const int panel_y = kPanelTopMarginPx;
-    const int panel_w = kPanelWidthPx;
-    const int panel_h = screen_h - kPanelTopMarginPx - kPanelBottomMarginPx;
+    const float fpx   = static_cast<float>(panel_x);
+    const float fpy   = static_cast<float>(kOverlayPanelTopY);
+    const float fpw   = static_cast<float>(kOverlayPanelW);
+    const float fph   = static_cast<float>(kOverlayPanelH);
 
-    const float fpx = static_cast<float>(panel_x);
-    const float fpy = static_cast<float>(panel_y);
-    const float fpw = static_cast<float>(panel_w);
-    const float fph = static_cast<float>(panel_h);
-
-    // Panel fill.
-    r.mb_fill_rect(fpx, fpy, fpw, fph, th.bg_lift, 0.96f);
-    // Accent borders.
-    r.mb_fill_rect(fpx, fpy, fpw, 2.0f, th.accent);
-    r.mb_fill_rect(fpx, fpy + fph - 2.0f, fpw, 2.0f, th.accent);
+    // ---- Panel chrome (exactly as Library overlay) ----
+    // Panel background — bg_lift, fully opaque.
+    r.mb_fill_rect(fpx, fpy, fpw, fph, th.bg_lift);
+    // Left edge: 2 px gold rule.
     r.mb_fill_rect(fpx, fpy, 2.0f, fph, th.accent);
+    // Top edge: 1 px dim rule (closure with chrome header band).
+    r.mb_fill_rect(fpx, fpy, fpw, 1.0f, th.dim);
+    // Bottom edge: 2 px gold rule.
+    r.mb_fill_rect(fpx, fpy + fph - 2.0f, fpw, 2.0f, th.accent);
 
-    const int content_x = panel_x + kPaddingX;
-    int y = panel_y + 28;
+    // ---- Content layout ----
+    const int content_x = panel_x + kOverlayPanelInnerPadX;
+    // Right-edge x for divider lines — mirrors Library's panel_x + W - padX.
+    const int content_right = panel_x + kOverlayPanelW - kOverlayPanelInnerPadX;
 
-    // Title heading.
+    // ---- Title heading — "FILTERS" in gold ZenDots at 22 px ----
+    const int title_baseline = kOverlayPanelTopY + kOverlayPanelInnerPadY +
+                               kPanelTitleFontPx - 2;
     r.mb_draw_title_text("FILTERS",
                          static_cast<float>(content_x),
-                         static_cast<float>(y),
-                         20, th.accent);
-    y += 36;
+                         static_cast<float>(title_baseline),
+                         kPanelTitleFontPx, th.accent);
 
-    // Separator line beneath title.
-    r.mb_fill_rect(static_cast<float>(panel_x + kPaddingX),
-                   static_cast<float>(y),
-                   static_cast<float>(panel_w - 2 * kPaddingX),
-                   1.0f,
-                   th.dim, 0.4f);
-    y += 10;
+    // 1 px dim divider beneath title — mirrors Library's divider1.
+    const int divider1_y = title_baseline + 20;
+    r.mb_draw_line(static_cast<float>(content_x),
+                   static_cast<float>(divider1_y),
+                   static_cast<float>(content_right),
+                   static_cast<float>(divider1_y),
+                   1.0f, th.dim, 0.5f);
 
-    // ---- Row 0: Genre (single-line value selector) ----
-    {
-        const bool focused = (focus_row_ == 0);
-        const bool editing = focused && (mode_ == Mode::ValueSelect);
-        render_single_row(r, panel_x, content_x, y,
-                          "GENRE", genre_display_name(working_.genre_mask),
-                          focused, editing);
-        y += kRowHeightPx;
-    }
+    // ---- "FILTER BY" section ----
+    const int filter_heading_y = divider1_y + kOverlaySectionGap;
+    r.mb_draw_title_text("FILTER BY",
+                         static_cast<float>(content_x),
+                         static_cast<float>(filter_heading_y),
+                         kSectionHeadingFontPx, th.accent);
 
-    // ---- Rows 1-5: value selectors ----
-    struct RowDef {
+    // Filter rows: GENRE, DECADE, MIN RATING, RUNTIME, LANGUAGE (rows 0-4).
+    struct FilterRowDef {
         int         row_idx;
         const char* label;
         const char* const* values;
         int         count;
         int         selected;
     };
-    const RowDef value_rows[] = {
-        {1, "DECADE",     kDecadeLabels,   kNumDecades,   working_.decade},
-        {2, "MIN RATING", kRatingLabels,   kNumRatings,   working_.min_rating},
-        {3, "RUNTIME",    kRuntimeLabels,  kNumRuntimes,  working_.runtime},
-        {4, "LANGUAGE",   kLanguageLabels, kNumLanguages, working_.language},
-        {5, "SORT BY",    kSortLabels,     kNumSorts,     working_.sort},
+    const char* genre_val = genre_display_name(working_.genre_mask);
+    const FilterRowDef filter_rows[] = {
+        {0, "GENRE",      nullptr,         0,           0               },  // handled separately
+        {1, "DECADE",     kDecadeLabels,   kNumDecades,  working_.decade },
+        {2, "MIN RATING", kRatingLabels,   kNumRatings,  working_.min_rating},
+        {3, "RUNTIME",    kRuntimeLabels,  kNumRuntimes, working_.runtime},
+        {4, "LANGUAGE",   kLanguageLabels, kNumLanguages,working_.language},
     };
 
-    for (const auto& row : value_rows) {
-        const bool focused = (focus_row_ == row.row_idx);
+    const int filter_rows_y0 = filter_heading_y + kOverlaySectionHeaderH;
+    for (int i = 0; i < 5; ++i) {
+        const int row_y = filter_rows_y0 + i * kOverlayRowHeight;
+        const bool focused = (focus_row_ == filter_rows[i].row_idx);
         const bool editing = focused && (mode_ == Mode::ValueSelect);
-        const char* val = (row.selected >= 0 && row.selected < row.count)
-                              ? row.values[row.selected]
-                              : "?";
-        render_single_row(r, panel_x, content_x, y, row.label, val, focused, editing);
-        y += kRowHeightPx;
+
+        const char* val;
+        if (i == 0) {
+            val = genre_val;
+        } else {
+            const auto& rd = filter_rows[i];
+            val = (rd.selected >= 0 && rd.selected < rd.count)
+                      ? rd.values[rd.selected]
+                      : "?";
+        }
+        render_single_row(r, panel_x, content_x, row_y,
+                          filter_rows[i].label, val, focused, editing);
     }
 
-    // Separator before Reset.
-    r.mb_fill_rect(static_cast<float>(panel_x + kPaddingX),
-                   static_cast<float>(y),
-                   static_cast<float>(panel_w - 2 * kPaddingX),
-                   1.0f,
-                   th.dim, 0.4f);
-    y += 8;
+    // 1 px divider between FILTER BY and SORT BY sections.
+    const int divider2_y = filter_rows_y0 + 5 * kOverlayRowHeight + 6;
+    r.mb_draw_line(static_cast<float>(content_x),
+                   static_cast<float>(divider2_y),
+                   static_cast<float>(content_right),
+                   static_cast<float>(divider2_y),
+                   1.0f, th.dim, 0.5f);
 
-    // ---- Row 6: Reset All ----
-    render_reset_row(r, panel_x, content_x, y, (focus_row_ == 6));
-    y += kRowHeightPx;
+    // ---- "SORT BY" section ----
+    const int sort_heading_y = divider2_y + kOverlaySectionGap;
+    r.mb_draw_title_text("SORT BY",
+                         static_cast<float>(content_x),
+                         static_cast<float>(sort_heading_y),
+                         kSectionHeadingFontPx, th.accent);
 
-    // ---- Footer hint ----
+    // Sort row (row 5): single row for sort-order selection.
+    const int sort_row_y0 = sort_heading_y + kOverlaySectionHeaderH;
     {
-        const char* hint =
-            (mode_ == Mode::ValueSelect)
-                ? "PRESS: save  \xc2\xb7  BTN4: done"   // UTF-8 middle dot
-                : "PRESS: edit  \xc2\xb7  BTN4: apply & close";
-        const int hint_y = panel_y + panel_h - 28;
-        r.mb_draw_text(hint,
-                       static_cast<float>(content_x),
-                       static_cast<float>(hint_y),
-                       12, th.dim);
+        const bool focused = (focus_row_ == 5);
+        const bool editing = focused && (mode_ == Mode::ValueSelect);
+        const char* val = (working_.sort >= 0 && working_.sort < kNumSorts)
+                              ? kSortLabels[working_.sort] : "?";
+        render_single_row(r, panel_x, content_x, sort_row_y0,
+                          "ORDER", val, focused, editing);
     }
+
+    // 1 px divider before RESET ALL.
+    const int divider3_y = sort_row_y0 + kOverlayRowHeight + 6;
+    r.mb_draw_line(static_cast<float>(content_x),
+                   static_cast<float>(divider3_y),
+                   static_cast<float>(content_right),
+                   static_cast<float>(divider3_y),
+                   1.0f, th.dim, 0.5f);
+
+    // ---- RESET ALL row (row 6) ----
+    const int reset_row_y = divider3_y + kOverlaySectionGap / 2;
+    render_reset_row(r, panel_x, content_x, reset_row_y, (focus_row_ == 6));
+
+    // ---- Footer hint inside the panel — mirrors Library overlay ----
+    const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
+    chrome::draw_hint_row(r, content_x, hint_y, {
+        {chrome::HintIcon::Btn2Red,     "Close"},
+        {chrome::HintIcon::Btn4Black,
+         (mode_ == Mode::ValueSelect) ? "Done" : "Apply"},
+        {chrome::HintIcon::RotaryNav,   "Rows"},
+        {chrome::HintIcon::RotaryPress,
+         (mode_ == Mode::ValueSelect) ? "Save" : "Edit"},
+    });
 }
 
 }  // namespace media_browser::ui

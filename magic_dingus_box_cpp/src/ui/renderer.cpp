@@ -2203,14 +2203,13 @@ void Renderer::mb_fill_background() {
     // actually flushes the pipeline). Without this, a 6% alpha gap let
     // the previous main-UI playlist video bleed through.
     //
-    // Uses bg_lift (#2A232A) — the lifted off-bg from the Marquee
-    // palette — instead of the darker bg (#1F191F). Operator
-    // direction: the deeper black read as too cold/clinical for the
-    // Marquee menus; the lift gives a warmer, more cabinet-like base
-    // that the gold accents and chrome card tints sit better on.
+    // Uses bg (#1F191F) — the darker page background from the Marquee
+    // palette. Cards and overlay panels use bg_lift (#2A232A) so they
+    // read as elevated surfaces against this darker page. v1.6.4 operator
+    // direction: page = darker bg, cards = lighter bg_lift.
     draw_quad(0.0f, 0.0f,
               static_cast<float>(width_), static_cast<float>(height_),
-              theme_->bg_lift);
+              theme_->bg);
 }
 
 void Renderer::mb_render_seek_bar(const app::AppState& state) {
