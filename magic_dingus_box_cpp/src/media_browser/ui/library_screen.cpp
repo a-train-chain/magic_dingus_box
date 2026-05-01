@@ -350,8 +350,10 @@ void LibraryScreen::rebuild_view() {
     // empty grid until the next render's render-side clamp catches up.
     const int n = static_cast<int>(view_.size());
     if (grid_cursor_ >= n) grid_cursor_ = std::max(0, n - 1);
+    // Page-based: snap scroll to the page that contains the (possibly clamped) cursor.
+    // 2 = kPageRows (same value as kVisibleRows in render()).
     const int cursor_row = (n == 0) ? 0 : grid_cursor_ / kGridCols;
-    if (scroll_row_ > cursor_row) scroll_row_ = cursor_row;
+    scroll_row_ = (cursor_row / 2) * 2;
     const int max_scroll_row = std::max(0, (n - 1) / kGridCols);
     if (scroll_row_ > max_scroll_row) scroll_row_ = max_scroll_row;
 }
@@ -498,11 +500,11 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
         }
     }
 
-    // Keep cursor visible. Render uses 2 visible rows; clamp lower bound
-    // here, upper bound clamps in render once visible_rows is known.
+    // Page-based scroll: snap scroll_row_ to the page boundary that contains
+    // the cursor row. Each page is 2 rows (= kVisibleRows in render()).
     if (!view_.empty()) {
-        const int row = grid_cursor_ / kGridCols;
-        if (row < scroll_row_) scroll_row_ = row;
+        const int cursor_row = grid_cursor_ / kGridCols;
+        scroll_row_ = (cursor_row / 2) * 2;
     }
 
     return Screen::Library;
@@ -660,10 +662,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int grid_top = stats_y + 14 + chrome::kPad3;
     const int grid_left = chrome::kSafeInset_px;
 
-    const int cursor_row = grid_cursor_ / kGridCols;
-    if (cursor_row >= scroll_row_ + kVisibleRows) {
-        scroll_row_ = cursor_row - kVisibleRows + 1;
-    }
+    // Page-based: scroll_row_ is set in handle_input(). No smooth adjustment.
     const int total_rows =
         (static_cast<int>(view_.size()) + kGridCols - 1) / kGridCols;
     const int last_visible_row =

@@ -754,12 +754,13 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int visible_rows = std::max(1,
         static_cast<int>(grid_h / (cell_h + kRowGap)));
 
+    // Page-based scroll: snap scroll_row_ to the page that contains the cursor.
+    // Each page is visible_rows tall (typically 1 for Search since the keyboard
+    // occupies the upper half — but we keep the formula generic so a larger
+    // visible_rows also snaps correctly).
     if (focus_ == Focus::Results && !results_.empty()) {
         const int focused_row = grid_cursor_ / kGridCols;
-        if (focused_row < scroll_row_) scroll_row_ = focused_row;
-        if (focused_row >= scroll_row_ + visible_rows) {
-            scroll_row_ = focused_row - visible_rows + 1;
-        }
+        scroll_row_ = (focused_row / visible_rows) * visible_rows;
     }
 
     const int total_rows = results_.empty() ? 0

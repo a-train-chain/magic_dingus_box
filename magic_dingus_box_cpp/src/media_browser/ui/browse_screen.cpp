@@ -872,12 +872,12 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         }
     }
 
-    // Keep scroll_row_ such that grid_cursor_ stays visible. Render uses 2
-    // visible rows; clamp here so scroll doesn't get stuck above cursor.
+    // Page-based scroll: scroll_row_ is always the first row of the current
+    // page (a multiple of kPageRows=2). It snaps when cursor crosses a page
+    // boundary, not on every row step.
     if (!movies_.empty()) {
-        const int row = grid_cursor_ / kGridCols;
-        if (row < scroll_row_) scroll_row_ = row;
-        // Upper bound is enforced in render() once visible_rows is known.
+        const int cursor_row = grid_cursor_ / kGridCols;
+        scroll_row_ = (cursor_row / 2) * 2;
     }
 
     return Screen::Browse;
@@ -988,12 +988,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int grid_top = content_top + chrome::kPad3;
     const int grid_left = chrome::kSafeInset_px;
 
-    // Keep cursor visible. We clamped lower bound in handle_input(); upper
-    // bound depends on visible_rows which only exists at render time.
-    const int cursor_row = grid_cursor_ / kGridCols;
-    if (cursor_row >= scroll_row_ + kVisibleRows) {
-        scroll_row_ = cursor_row - kVisibleRows + 1;
-    }
+    // Page-based: scroll_row_ is already set to the page-first-row in
+    // handle_input(). No smoothing here — just derive the window.
     const int total_rows =
         (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
     const int last_visible_row =

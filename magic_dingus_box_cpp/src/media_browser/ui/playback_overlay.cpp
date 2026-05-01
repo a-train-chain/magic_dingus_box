@@ -500,19 +500,14 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        static_cast<float>(grid_top + poster_cell_h / 2),
                        th.font_medium_size, th.dim, 1.0f);
     } else {
-        // Single row, horizontal scroll. The cursor can advance past the
-        // last visible column; first_visible slides right so the cursor
-        // stays on-screen, exposing the next batch of films.
-        // All cards share the same y; bezel-fit is a one-shot row-level
-        // decision (a single break would kill the entire row).
+        // Single-row, page-based scroll. Each page = 1 row of kGridCols (9)
+        // posters. When the cursor advances past position 8, the view snaps
+        // to the next 9; going back below 0 snaps to the previous 9.
+        // cursor_ is absolute; first_visible is the start of the cursor's page.
         const int n = static_cast<int>(snapshot.size());
         const bool row_fits = (grid_top + poster_cell_h + kMetaTotalH + chrome::kPad2) <= footer_band_top;
 
-        int first_visible = 0;
-        if (cursor_ >= kGridCols) first_visible = cursor_ - kGridCols + 1;
-        if (first_visible > std::max(0, n - kGridCols)) {
-            first_visible = std::max(0, n - kGridCols);
-        }
+        const int first_visible = (cursor_ / kGridCols) * kGridCols;
 
         for (int col = 0; col < kGridCols && row_fits; ++col) {
             const int idx = first_visible + col;
