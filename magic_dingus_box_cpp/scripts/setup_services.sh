@@ -16,6 +16,99 @@
 
 set -euo pipefail
 
+SKIP_HOST_NETWORKING=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-host-networking) SKIP_HOST_NETWORKING=1 ;;
+    esac
+done
+
+# 0. Pi host networking — close IPv6 + DNS leak paths.
+#
+# Why: ProtonVPN's WireGuard tunnel is IPv4-only. When the Pi prefers
+# IPv6 outbound (Comcast hands out v6 by default), routes for v6
+# destinations bypass the tunnel entirely. Disable IPv6 globally so
+# every outbound connection takes the v4 path through Gluetun (or
+# the host's own non-VPN'd v4 path for kiosk/OTA traffic, which is
+# the documented accepted gap).
+#
+# DNS: route host DNS through Cloudflare DoH. Plain `nameserver 1.1.1.1`
+# would still leak query domains over UDP/53. DoH encrypts to
+# 1.1.1.1:443 so the ISP sees only opaque TLS.
+#
+# Idempotent: writing the same files on every run is a no-op. Skip
+# this whole block with `--skip-host-networking` for partial re-runs.
+if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
+    echo "=== Step 0: Pi host networking ==="
+
+    # 0a. Disable IPv6 globally
+    cat > /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+    sysctl -p /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf >/dev/null
+    echo "IPv6 disabled globally."
+
+    # 0b. Install cloudflared if missing
+    if ! command -v cloudflared &>/dev/null; then
+        echo "Installing cloudflared (Cloudflare DoH proxy)..."
+        # Add Cloudflare apt repo if not already present.
+        if [ ! -f /etc/apt/sources.list.d/cloudflared.list ]; then
+            mkdir -p /usr/share/keyrings
+            curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+                | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
+                | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
+            apt-get update -qq
+        fi
+        apt-get install -y cloudflared
+    fi
+
+    # 0c. Configure cloudflared as DoH resolver on 127.0.0.1:53
+    mkdir -p /etc/cloudflared
+    cat > /etc/cloudflared/config.yml <<'EOF'
+proxy-dns: true
+proxy-dns-port: 53
+proxy-dns-address: 127.0.0.1
+proxy-dns-upstream:
+  - https://1.1.1.1/dns-query
+  - https://1.0.0.1/dns-query
+EOF
+    # The cloudflared apt package ships a systemd unit named
+    # cloudflared-proxy-dns.service that consumes /etc/cloudflared/config.yml.
+    # Older builds named it cloudflared.service — try both.
+    if systemctl list-unit-files | grep -q cloudflared-proxy-dns.service; then
+        systemctl enable --now cloudflared-proxy-dns.service
+    else
+        systemctl enable --now cloudflared.service
+    fi
+
+    # 0d. Stop NetworkManager from rewriting /etc/resolv.conf
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/99-dns.conf <<'EOF'
+[main]
+dns=none
+EOF
+    systemctl reload NetworkManager 2>/dev/null || true
+
+    # 0e. Point /etc/resolv.conf at the local DoH proxy
+    cat > /etc/resolv.conf <<'EOF'
+nameserver 127.0.0.1
+options edns0 trust-ad
+EOF
+
+    # 0f. Verify DoH resolver works
+    if ! dig +short +time=3 +tries=1 cloudflare.com @127.0.0.1 >/dev/null; then
+        echo "WARNING: DoH resolver test query failed. Continuing — could"
+        echo "be transient. Verify with: dig cloudflare.com @127.0.0.1"
+    else
+        echo "DoH resolver active: 127.0.0.1 -> Cloudflare via DoH."
+    fi
+
+    echo "=== Step 0 complete ==="
+fi
+
 SERVICES_DIR="/opt/magic_dingus_box/services"
 STORAGE_ROOT="${STORAGE_ROOT:-/mnt/ssd}"
 ENV_FILE="${SERVICES_DIR}/.env"
