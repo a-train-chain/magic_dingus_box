@@ -639,6 +639,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // below naturally transitions back to MainMenu on the next input tick.
     media_browser::ui::MbSettingsScreen mb_mb_settings(
         radarr,
+        prowlarr_owned.get(),
         state,
         [&state]() {
             state.media_browser_unlocked = false;

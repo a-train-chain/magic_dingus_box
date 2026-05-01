@@ -94,14 +94,36 @@ public:
         std::string last_error;            // empty if healthy
     };
 
+    // Lightweight projection of the /api/v1/indexer entity. The real
+    // payload is hundreds of fields per indexer (Cardigann definition,
+    // capability matrix, per-cap field schemas) — the Settings panel only
+    // needs the three cells visible on a row plus the id for PUT routing.
+    struct IndexerInfo {
+        int         id = 0;
+        std::string name;
+        bool        enabled = false;
+    };
+
     // Static parsers (separated for unit testing — don't need a live HTTP client).
     static std::vector<ReleaseRecord> parse_search_response(const std::string& json_body);
     static std::vector<IndexerStats>  aggregate_indexer_stats(
         const std::vector<ReleaseRecord>& records, int seed_threshold);
+    static std::vector<IndexerInfo>   parse_indexer_list(const std::string& json_body);
 
     // Live accessors (populated after search_async completes).
     std::vector<ReleaseRecord> get_last_releases() const;
     std::vector<IndexerStats>  get_last_indexer_stats() const;
+
+    // Live GET /api/v1/indexer. Synchronous — called once on Settings
+    // entry. Empty vector on failure (caller can fall back to a "not
+    // reachable" message; peek_error() has the curl/HTTP detail).
+    std::vector<IndexerInfo> list_indexers();
+
+    // Live PUT /api/v1/indexer/<id> with the `enable` field flipped.
+    // Returns true on 2xx. Fetches the full entity first because Prowlarr
+    // requires the entire object on PUT (not a partial patch) — sending
+    // just `{enable: true}` clears every other field on the indexer.
+    bool set_indexer_enabled(int id, bool enabled);
 
     // Kick off a background search. Title is required; year is optional
     // (pass 0 to skip). Cancels any in-flight search via abort flag.
@@ -126,6 +148,13 @@ protected:
     // GET. Returns the response body, or empty string on transport
     // failure (with last_error_ populated).
     virtual std::string http_get(const std::string& path);
+
+    // Virtual for unit tests. Default implementation does a real curl
+    // PUT with a JSON body and the X-Api-Key header. Returns the
+    // response body, or empty string on transport failure (with
+    // last_error_ populated).
+    virtual std::string http_put(const std::string& path,
+                                 const std::string& body);
 
     Config cfg_;
 

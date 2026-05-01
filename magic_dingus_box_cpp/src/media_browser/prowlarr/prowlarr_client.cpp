@@ -363,6 +363,85 @@ ProwlarrClient::get_last_indexer_stats() const {
     return last_indexer_stats_;
 }
 
+std::vector<ProwlarrClient::IndexerInfo>
+ProwlarrClient::parse_indexer_list(const std::string& json_body) {
+    std::vector<IndexerInfo> out;
+    if (json_body.empty()) return out;
+    Json::CharReaderBuilder b;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(json_body);
+    if (!Json::parseFromStream(b, is, &root, &err)) return out;
+    if (!root.isArray()) return out;
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
+        IndexerInfo i;
+        i.id   = r.get("id", 0).asInt();
+        i.name = r.get("name", "").asString();
+        // Prowlarr historically used "enable"; older builds + some
+        // serializers used "enabled". Accept either so the parser is
+        // robust against both shapes.
+        if (r.isMember("enable")) {
+            i.enabled = r.get("enable", false).asBool();
+        } else if (r.isMember("enabled")) {
+            i.enabled = r.get("enabled", false).asBool();
+        }
+        if (i.id > 0 && !i.name.empty()) out.push_back(std::move(i));
+    }
+    return out;
+}
+
+std::vector<ProwlarrClient::IndexerInfo>
+ProwlarrClient::list_indexers() {
+    if (!is_configured()) return {};
+    std::string body = http_get("/api/v1/indexer");
+    return parse_indexer_list(body);
+}
+
+bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) {
+    if (!is_configured() || id <= 0) return false;
+
+    // Step 1: fetch the full indexer entity. Prowlarr's PUT requires the
+    // entire object (not a partial patch) — sending only `{enable:true}`
+    // would clear out every other field on the indexer (Cardigann
+    // definition, capabilities, fields[], priority, …).
+    const std::string path = "/api/v1/indexer/" + std::to_string(id);
+    const std::string get_resp = http_get(path);
+    if (get_resp.empty()) return false;
+
+    Json::CharReaderBuilder rb;
+    Json::Value obj;
+    std::string err;
+    std::istringstream is(get_resp);
+    if (!Json::parseFromStream(rb, is, &obj, &err) || !obj.isObject()) {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        last_error_ = "Prowlarr indexer GET returned non-object";
+        return false;
+    }
+
+    // Step 2: flip the field and serialize back. We update both spellings
+    // defensively in case the Prowlarr build expects one or the other —
+    // extra keys are ignored by the API and adding them is cheap.
+    obj["enable"] = enabled;
+
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    const std::string body = Json::writeString(wb, obj);
+
+    // Step 3: PUT it back. forceSave=true is the conventional query
+    // flag the *arr stack uses to bypass server-side validation that
+    // might otherwise reject minor schema differences. Mirrors the
+    // pattern Prowlarr's own UI uses on the "Indexers" toggle.
+    const std::string put_resp = http_put(path + "?forceSave=true", body);
+    if (put_resp.empty()) {
+        // http_put set last_error_ on failure; nothing else to do here.
+        return false;
+    }
+    spdlog::info("[prowlarr] indexer {} {}",
+                 id, enabled ? "enabled" : "disabled");
+    return true;
+}
+
 std::string ProwlarrClient::http_get(const std::string& path) {
     std::string url = cfg_.base_url + path;
 
@@ -409,6 +488,61 @@ std::string ProwlarrClient::http_get(const std::string& path) {
         return {};
     }
     return body;
+}
+
+std::string ProwlarrClient::http_put(const std::string& path,
+                                     const std::string& body) {
+    std::string url = cfg_.base_url + path;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        last_error_ = "curl init failed";
+        return {};
+    }
+
+    std::string resp;
+    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST,  "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE,
+                     static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+
+    struct curl_slist* hdrs = nullptr;
+    std::string auth = "X-Api-Key: " + cfg_.api_key;
+    hdrs = curl_slist_append(hdrs, auth.c_str());
+    hdrs = curl_slist_append(hdrs, "Accept: application/json");
+    hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+
+    CURLcode rc = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    if (rc != CURLE_OK) {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+        return {};
+    }
+    if (http_code >= 400) {
+        std::lock_guard<std::mutex> lk(result_mtx_);
+        last_error_ = "Prowlarr HTTP " + std::to_string(http_code);
+        return {};
+    }
+    // Some Prowlarr endpoints respond with 202 Accepted + empty body on
+    // a successful PUT (the entity is queued for an internal config
+    // reload). Return a single space so callers can distinguish "empty
+    // body but successful 2xx" from "transport failure" via empty().
+    if (resp.empty()) return " ";
+    return resp;
 }
 
 }  // namespace media_browser

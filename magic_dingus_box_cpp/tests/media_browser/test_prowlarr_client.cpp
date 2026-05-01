@@ -50,3 +50,27 @@ TEST_CASE("ProwlarrClient aggregates per-indexer stats",
     REQUIRE(yts.result_count == 1);
     REQUIRE(yts.results_above_seed_threshold == 1);
 }
+
+TEST_CASE("ProwlarrClient parses indexer list from /api/v1/indexer response",
+          "[prowlarr][indexer-list]") {
+    constexpr const char* kIndexerResp = R"JSON([
+      {"id":1,"name":"LimeTorrents","enable":true,"implementation":"Cardigann"},
+      {"id":2,"name":"YTS","enable":true,"implementation":"Cardigann"},
+      {"id":3,"name":"EZTV","enable":false,"implementation":"Cardigann"}
+    ])JSON";
+    auto indexers = mb::ProwlarrClient::parse_indexer_list(kIndexerResp);
+    REQUIRE(indexers.size() == 3);
+    REQUIRE(indexers[0].id == 1);
+    REQUIRE(indexers[0].name == "LimeTorrents");
+    REQUIRE(indexers[0].enabled == true);
+    REQUIRE(indexers[2].name == "EZTV");
+    REQUIRE(indexers[2].enabled == false);
+}
+
+TEST_CASE("ProwlarrClient indexer list parser handles empty/malformed responses",
+          "[prowlarr][indexer-list]") {
+    REQUIRE(mb::ProwlarrClient::parse_indexer_list("").empty());
+    REQUIRE(mb::ProwlarrClient::parse_indexer_list("not json").empty());
+    REQUIRE(mb::ProwlarrClient::parse_indexer_list("{}").empty());  // not array
+    REQUIRE(mb::ProwlarrClient::parse_indexer_list("[]").empty());  // empty array
+}

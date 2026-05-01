@@ -9,7 +9,10 @@
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
 
-namespace media_browser { class RadarrClient; }
+namespace media_browser {
+class RadarrClient;
+class ProwlarrClient;
+}
 
 namespace media_browser::ui {
 
@@ -37,7 +40,12 @@ namespace media_browser::ui {
 // Screen::Exit so the dispatcher goes straight to MainMenu.
 class MbSettingsScreen : public MbScreen {
 public:
+    // `prowlarr` is optional (nullptr when MDB_PROWLARR_API_KEY isn't
+    // set or services aren't deployed). When null, the Sources panel
+    // shows a "not configured" placeholder instead of attempting any
+    // HTTP calls.
     MbSettingsScreen(RadarrClient& radarr,
+                     ProwlarrClient* prowlarr,
                      ::app::AppState& state,
                      std::function<void()> on_hide_feature);
 
@@ -101,11 +109,20 @@ private:
         bool auto_grab_on_add = true;     // Add → auto-fires Radarr search.
     };
 
-    // Prowlarr indexer, lightly parsed out of the `/api/v1/indexer` response.
-    struct ProwlarrIndexer {
-        int id = 0;
+    // Decorated indexer row for the Sources panel. Built by
+    // refresh_indexers() from a join of (live Prowlarr GET, in-memory
+    // ProwlarrClient::get_last_indexer_stats()). Empty stats fields when
+    // no Detail-screen search has run yet this session.
+    struct IndexerRow {
+        int         id = 0;
         std::string name;
-        bool enabled = true;
+        bool        enabled = false;
+        // Decorations from the last successful Prowlarr search this
+        // session (empty if no search has occurred yet).
+        bool        has_stats = false;
+        int         result_count = 0;
+        int         results_above_seed_threshold = 0;
+        std::string last_error;
     };
 
     void build_rows();
@@ -132,6 +149,7 @@ private:
                                          int64_t total_bytes);
 
     RadarrClient& radarr_;
+    ProwlarrClient* prowlarr_;   // Nullable — see constructor doc.
     ::app::AppState& state_;     // For mb_playback_show_frame + persistence.
     std::function<void()> on_hide_feature_;
 
@@ -162,9 +180,8 @@ private:
     std::vector<RootFolder> root_folders_;
 
     // Prowlarr indexer state.
-    std::vector<ProwlarrIndexer> indexers_;
+    std::vector<IndexerRow> indexer_rows_;
     int indexer_cursor_ = 0;    // focused indexer when IndexerToggles is focused
-    bool prowlarr_api_key_available_ = false;
 
     // Placeholder banner ("Use qBittorrent web UI", etc.).
     std::string banner_text_;

@@ -3,8 +3,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
-#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -12,6 +10,7 @@
 #include <json/json.h>
 
 #include "app/settings_persistence.h"
+#include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -87,12 +86,6 @@ size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     auto* s = static_cast<std::string*>(ud);
     s->append(static_cast<char*>(ptr), size * nmemb);
     return size * nmemb;
-}
-
-// Read an env var, returning an empty string if unset.
-std::string env_or_empty(const char* name) {
-    const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string();
 }
 
 // Truncate `text` with a trailing ellipsis if it exceeds max_w at font_size.
@@ -228,56 +221,18 @@ std::string MbSettingsScreen::format_free_space(int64_t free_bytes,
 // Construction / lifecycle
 // ---------------------------------------------------------------------------
 
-// Resolve the Prowlarr API key with the same 3-stage chain main.cpp
-// uses for both Radarr and Prowlarr:
-//   1. MDB_PROWLARR_API_KEY env var (kiosk override)
-//   2. PROWLARR_API_KEY env var (systemd EnvironmentFile, set by the
-//      v1.6.x systemd unit which loads /opt/magic_dingus_box/services/.env)
-//   3. Parse /opt/magic_dingus_box/services/.env directly (fallback
-//      for unprovisioned Pis / dev workflows where the systemd env
-//      propagation isn't wired up yet)
-// Mirrors main.cpp's resolution exactly so operators don't need to keep
-// duplicate env entries in sync — and so the Settings screen's
-// "is the key configured?" check matches what the rest of the kiosk
-// actually sees at runtime.
-namespace {
-std::string read_env_file_key(const std::string& path,
-                              const std::string& key) {
-    std::ifstream f(path);
-    if (!f) return "";
-    std::string line;
-    const std::string prefix = key + "=";
-    while (std::getline(f, line)) {
-        if (line.rfind(prefix, 0) == 0) {
-            std::string v = line.substr(prefix.size());
-            while (!v.empty() &&
-                   (v.back() == '\n' || v.back() == '\r' || v.back() == ' '))
-                v.pop_back();
-            return v;
-        }
-    }
-    return "";
-}
-
-std::string resolve_prowlarr_key() {
-    std::string k = env_or_empty("MDB_PROWLARR_API_KEY");
-    if (!k.empty()) return k;
-    k = env_or_empty("PROWLARR_API_KEY");
-    if (!k.empty()) return k;
-    return read_env_file_key("/opt/magic_dingus_box/services/.env",
-                             "PROWLARR_API_KEY");
-}
-}  // namespace
-
 MbSettingsScreen::MbSettingsScreen(RadarrClient& radarr,
+                                   ProwlarrClient* prowlarr,
                                    ::app::AppState& state,
                                    std::function<void()> on_hide_feature)
     : radarr_(radarr),
+      prowlarr_(prowlarr),
       state_(state),
       on_hide_feature_(std::move(on_hide_feature)) {
-    // Tag availability of the Prowlarr API key up front — used by the
-    // Indexer row to show a "not configured" fallback message.
-    prowlarr_api_key_available_ = !resolve_prowlarr_key().empty();
+    // The Sources panel keys off `prowlarr_ != nullptr` rather than a
+    // separate "is the key set?" flag — main.cpp only constructs a
+    // ProwlarrClient when the key is present, so the two checks are
+    // equivalent and one is enough.
 }
 
 void MbSettingsScreen::enter() {
@@ -332,7 +287,7 @@ void MbSettingsScreen::build_rows() {
     // Where Radarr looks for releases. Indexer row expands to fit up to
     // kIndexerMaxVisible rows of its embedded sub-list.
     add(RowKind::SectionHeader,        "Sources", kSectionHeaderH);
-    int visible_indexers = std::min<int>(static_cast<int>(indexers_.size()),
+    int visible_indexers = std::min<int>(static_cast<int>(indexer_rows_.size()),
                                          kIndexerMaxVisible);
     if (visible_indexers <= 0) visible_indexers = 1;  // room for "not configured"
     float indexer_height = kRowHeight
@@ -411,37 +366,54 @@ void MbSettingsScreen::refresh_root_folders() {
 }
 
 void MbSettingsScreen::refresh_indexers() {
-    indexers_.clear();
-    if (!prowlarr_api_key_available_) return;
-    const std::string api_key = resolve_prowlarr_key();
-    const std::string header  = "X-Api-Key: " + api_key;
-    const std::string body    = http_get(
-        "http://localhost:9696/api/v1/indexer", header);
-    if (body.empty()) return;
+    indexer_rows_.clear();
+    if (!prowlarr_) return;
 
-    // Parse with jsoncpp (same pattern as radarr_parsers.cpp). The Prowlarr
-    // /api/v1/indexer shape is an array of indexer objects; we only need
-    // `id`, `name`, and `enable` (with `enabled` as a fallback on older
-    // Prowlarr builds).
-    Json::CharReaderBuilder rb;
-    Json::Value root;
-    std::string err;
-    std::istringstream is(body);
-    if (!Json::parseFromStream(rb, is, &root, &err) || !root.isArray()) {
-        return;
-    }
-    for (const auto& r : root) {
-        if (!r.isObject()) continue;
-        ProwlarrIndexer idx;
-        idx.id = r.get("id", 0).asInt();
-        idx.name = r.get("name", "").asString();
-        if (r.isMember("enable")) {
-            idx.enabled = r.get("enable", false).asBool();
-        } else if (r.isMember("enabled")) {
-            idx.enabled = r.get("enabled", false).asBool();
+    // Pull the live enabled-state list from Prowlarr. This is a
+    // synchronous round-trip, but it only happens on screen entry
+    // (loaded_once_ guards against re-fetches during scroll) and the
+    // /api/v1/indexer endpoint typically returns in <100 ms.
+    auto live = prowlarr_->list_indexers();
+    if (live.empty()) return;
+
+    // Decorate with stats from the most recent search. Empty if the
+    // user hasn't visited a Detail screen yet this session — that's
+    // fine, the renderer falls back to a gray "—" health dot.
+    auto stats = prowlarr_->get_last_indexer_stats();
+    auto find_stat =
+        [&](const std::string& name) -> ProwlarrClient::IndexerStats* {
+        for (auto& s : stats) {
+            if (s.name == name) return &s;
         }
-        if (!idx.name.empty()) indexers_.push_back(std::move(idx));
+        return nullptr;
+    };
+
+    for (auto& info : live) {
+        IndexerRow row;
+        row.id      = info.id;
+        row.name    = info.name;
+        row.enabled = info.enabled;
+        if (auto* s = find_stat(info.name)) {
+            row.has_stats = true;
+            row.result_count = s->result_count;
+            row.results_above_seed_threshold =
+                s->results_above_seed_threshold;
+            row.last_error = s->last_error;
+        }
+        indexer_rows_.push_back(std::move(row));
     }
+
+    // Sort: enabled-with-results first (by result count desc), then
+    // enabled-without-stats, then disabled. Keeps the most actionable
+    // sources at the top of the panel — the operator usually wants to
+    // see "is X working?" before "is X enabled?"
+    std::sort(indexer_rows_.begin(), indexer_rows_.end(),
+              [](const IndexerRow& a, const IndexerRow& b) {
+                  if (a.enabled != b.enabled) return a.enabled > b.enabled;
+                  if (a.has_stats != b.has_stats)
+                      return a.has_stats > b.has_stats;
+                  return a.result_count > b.result_count;
+              });
 }
 
 // ---------------------------------------------------------------------------
@@ -535,11 +507,11 @@ Screen MbSettingsScreen::handle_input(
             // walks the embedded sub-list first; only leaves the row when
             // we run off its ends.
             if (rows_[cursor_].kind == RowKind::IndexerToggles &&
-                prowlarr_api_key_available_ &&
-                !indexers_.empty()) {
+                prowlarr_ &&
+                !indexer_rows_.empty()) {
                 int new_ic = indexer_cursor_ + delta;
                 if (new_ic >= 0 &&
-                    new_ic < static_cast<int>(indexers_.size()) &&
+                    new_ic < static_cast<int>(indexer_rows_.size()) &&
                     new_ic < kIndexerMaxVisible) {
                     indexer_cursor_ = new_ic;
                     continue;
@@ -577,7 +549,7 @@ Screen MbSettingsScreen::handle_input(
             if (rows_[cursor_].kind == RowKind::IndexerToggles) {
                 indexer_cursor_ = std::clamp(
                     indexer_cursor_, 0,
-                    std::max(0, static_cast<int>(indexers_.size()) - 1));
+                    std::max(0, static_cast<int>(indexer_rows_.size()) - 1));
             }
             continue;
         }
@@ -692,22 +664,61 @@ Screen MbSettingsScreen::handle_input(
                     refresh_service_health();
                     break;
                 case RowKind::IndexerToggles:
-                    if (!prowlarr_api_key_available_ || indexers_.empty()) {
+                    if (!prowlarr_) {
                         show_banner(
-                            "Prowlarr API key not configured — "
+                            "Prowlarr not configured — "
                             "set PROWLARR_API_KEY in services/.env");
+                    } else if (indexer_rows_.empty()) {
+                        show_banner(
+                            "No indexers reachable — check Prowlarr "
+                            "is running on :9696");
                     } else if (indexer_cursor_ >= 0 &&
                                indexer_cursor_ < static_cast<int>(
-                                   indexers_.size())) {
-                        // Optimistic local toggle. A real implementation
-                        // would PUT the updated indexer back to Prowlarr;
-                        // the spec explicitly lets us show "not implemented"
-                        // here, so we flip the local flag and note it.
-                        indexers_[indexer_cursor_].enabled =
-                            !indexers_[indexer_cursor_].enabled;
-                        show_banner(
-                            "Indexer toggle is local-only in MVP — "
-                            "use Prowlarr web UI to persist");
+                                   indexer_rows_.size())) {
+                        // Live PUT to Prowlarr. On success we mirror the
+                        // new state into our row + re-sort so disabled
+                        // indexers drop to the bottom of the panel
+                        // immediately. On failure we leave the row
+                        // alone and surface the cause via banner — the
+                        // most likely culprit is Prowlarr being down,
+                        // since the GET on screen entry just succeeded.
+                        auto& row = indexer_rows_[indexer_cursor_];
+                        const bool new_state = !row.enabled;
+                        if (prowlarr_->set_indexer_enabled(row.id, new_state)) {
+                            row.enabled = new_state;
+                            show_banner(row.name +
+                                        (new_state ? " enabled"
+                                                   : " disabled"));
+                            // Re-sort so the toggled row migrates to the
+                            // correct section. We re-find the row after
+                            // sort so the cursor follows it, otherwise
+                            // pressing SELECT once would visually move
+                            // the cursor to a different indexer.
+                            const int prev_id = row.id;
+                            std::sort(indexer_rows_.begin(),
+                                      indexer_rows_.end(),
+                                      [](const IndexerRow& a,
+                                         const IndexerRow& b) {
+                                          if (a.enabled != b.enabled)
+                                              return a.enabled > b.enabled;
+                                          if (a.has_stats != b.has_stats)
+                                              return a.has_stats > b.has_stats;
+                                          return a.result_count >
+                                                 b.result_count;
+                                      });
+                            for (size_t k = 0;
+                                 k < indexer_rows_.size(); ++k) {
+                                if (indexer_rows_[k].id == prev_id) {
+                                    indexer_cursor_ = std::min<int>(
+                                        static_cast<int>(k),
+                                        kIndexerMaxVisible - 1);
+                                    break;
+                                }
+                            }
+                        } else {
+                            show_banner(
+                                "Toggle failed — Prowlarr unreachable");
+                        }
                     }
                     break;
                 case RowKind::RefreshLibrary:
@@ -1248,36 +1259,24 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             }
 
             case RowKind::IndexerToggles: {
-                // Convert "Indexers" header label into a steel-blue caps
-                // section header (mirrors the "CAST" / "DIRECTED BY"
-                // section labels in DetailScreen). The label was already
-                // drawn above in the standard label-color path; we redraw
-                // it here in accent2 + small font to match the section
-                // header idiom — cheap to overwrite since we use the
-                // same x coordinate. Then draw the embedded checkbox list.
-                {
-                    // Wipe the standard label by redrawing background-
-                    // colored over it would be wrong (no fill); instead
-                    // we chose to leave the standard label in place but
-                    // ALSO add a small "INDEXERS" section subhead is
-                    // overkill. So just keep the existing label render
-                    // and pivot to the sub-list below.
-                }
-                // Sub-list. Each row: indicator box (16x16 stroke, optional
-                // fill if enabled) + indexer name. Focused indexer in the
-                // sub-list gets its own gold ◂ marker — this is the only
-                // place where we use a SECONDARY focus indicator (because
-                // the OUTER row is also focused, but the sub-cursor
-                // distinguishes which entry the SELECT will toggle).
-                if (!prowlarr_api_key_available_) {
-                    const std::string msg = "Prowlarr API key not configured";
+                // Health-led row layout. Each indexer row carries:
+                //   [health-dot]  Name (dim if disabled)  [stats]  [on/off]
+                // The dot color tells you "did this indexer return useful
+                // results for the last search?" in one glance:
+                //   green  = had results, no errors
+                //   yellow = responded but zero results (likely category
+                //            mismatch or query miss)
+                //   red    = errored
+                //   gray   = no stats this session yet (haven't searched)
+                if (!prowlarr_) {
+                    const std::string msg = "Prowlarr not configured";
                     int tw = r.mb_text_width(msg, value_sz);
                     r.mb_draw_text(msg,
                                    value_x_right - static_cast<float>(tw),
                                    label_y, value_sz, th.dim, 0.85f);
                     break;
                 }
-                if (indexers_.empty()) {
+                if (indexer_rows_.empty()) {
                     const std::string msg = "(no indexers returned)";
                     int tw = r.mb_text_width(msg, value_sz);
                     r.mb_draw_text(msg,
@@ -1287,7 +1286,7 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 }
 
                 // Right-side hint on the header line.
-                const std::string hint = "BTN2: toggle";
+                const std::string hint = "SELECT: toggle";
                 int hw = r.mb_text_width(hint, small_sz);
                 int sb_h = r.mb_text_baseline(small_sz);
                 float hy = center_y - (small_sz / 2.0f)
@@ -1297,55 +1296,97 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                hy, small_sz, th.dim, 0.85f);
 
                 int visible = std::min<int>(
-                    static_cast<int>(indexers_.size()),
+                    static_cast<int>(indexer_rows_.size()),
                     kIndexerMaxVisible);
                 float sub_top = y_top + kRowHeight;
                 int sub_baseline = r.mb_text_baseline(small_sz);
                 for (int k = 0; k < visible; ++k) {
+                    const auto& irow = indexer_rows_[k];
                     float sy = sub_top + k * kIndexerRowHeight;
                     float sub_center_y = sy + (kIndexerRowHeight / 2.0f);
                     bool sub_focused = focused && (k == indexer_cursor_);
 
-                    // Checkbox indicator. Outline always; filled only
-                    // when the indexer is enabled. Color flips green
-                    // (highlight1) for enabled, dim for disabled.
-                    bool en = indexers_[k].enabled;
-                    ::ui::Color box_color = en ? th.highlight1 : th.dim;
-                    float box_x = label_x + 16.0f;
-                    float box_y = sub_center_y - (kCheckboxSize / 2.0f);
-                    r.mb_stroke_rect(box_x, box_y,
-                                     kCheckboxSize, kCheckboxSize,
-                                     2.0f, box_color,
-                                     sub_focused ? 1.0f : 0.85f);
-                    if (en) {
-                        // Inner fill = 4px inset solid block. Conveys
-                        // "checked" without text glyphs (no font fallback
-                        // worries) and stays readable at this small size.
-                        const float inset = 4.0f;
-                        r.mb_fill_rect(box_x + inset, box_y + inset,
-                                       kCheckboxSize - 2.0f * inset,
-                                       kCheckboxSize - 2.0f * inset,
-                                       th.highlight1,
-                                       sub_focused ? 1.0f : 0.9f);
+                    // ---- Health dot --------------------------------
+                    // Same dot-size + theme-color vocabulary as the
+                    // ServiceStatus row so the visual language is
+                    // consistent across the screen. Drawn left of the
+                    // name in place of the previous checkbox.
+                    ::ui::Color dot_color = th.dim;
+                    if (irow.has_stats) {
+                        if (!irow.last_error.empty()) {
+                            dot_color = th.highlight2;       // red — errored
+                        } else if (irow.result_count == 0) {
+                            dot_color = th.accent;            // yellow/gold — zero results
+                        } else {
+                            dot_color = th.highlight1;        // green — has results
+                        }
                     }
+                    const float dot_size = 10.0f;
+                    float dot_x = label_x + 18.0f;
+                    float dot_y = sub_center_y - (dot_size / 2.0f);
+                    r.mb_fill_rect(dot_x, dot_y,
+                                   dot_size, dot_size,
+                                   dot_color,
+                                   sub_focused ? 1.0f : 0.9f);
 
-                    // Indexer name to the right of the checkbox.
-                    float name_x = box_x + kCheckboxSize + 10.0f;
+                    // ---- Indexer name -------------------------------
+                    // Dim when disabled (so the on/off section divide is
+                    // legible at a glance even without scanning the
+                    // right-hand label). Focused row brightens to gold.
+                    float name_x = dot_x + dot_size + 12.0f;
                     float name_y = sub_center_y - (small_sz / 2.0f)
                                  + static_cast<float>(sub_baseline);
                     ::ui::Color name_color = sub_focused
                         ? th.accent
-                        : (en ? th.fg : th.dim);
+                        : (irow.enabled ? th.fg : th.dim);
+                    // Stats string sits at the right edge ahead of the
+                    // on/off pill. Compute its width here so we can
+                    // truncate the name to fit between dot and stats.
+                    std::string stats_str;
+                    if (irow.has_stats) {
+                        std::ostringstream ss;
+                        ss << irow.result_count << " results"
+                           << "  \xC2\xB7  "        // U+00B7 middle dot
+                           << irow.results_above_seed_threshold
+                           << " w/ seeds";
+                        stats_str = ss.str();
+                    } else {
+                        stats_str = "no search yet";
+                    }
+                    const std::string state_str =
+                        irow.enabled ? "[on]" : "[off]";
+                    int state_tw = r.mb_text_width(state_str, small_sz);
+                    int stats_tw = r.mb_text_width(stats_str, small_sz);
+                    constexpr float kColGap = 14.0f;
+                    float state_x = value_x_right
+                                  - static_cast<float>(state_tw);
+                    float stats_x = state_x - kColGap
+                                  - static_cast<float>(stats_tw);
+                    float name_max_w = stats_x - kColGap - name_x;
+                    if (name_max_w < 60.0f) name_max_w = 60.0f;
                     std::string name_drawn = truncate_to_width(
-                        r, indexers_[k].name, small_sz,
-                        row_w - (name_x - row_x) - 16.0f);
+                        r, irow.name, small_sz, name_max_w);
                     r.mb_draw_text(name_drawn, name_x, name_y, small_sz,
                                    name_color, sub_focused ? 1.0f : 0.9f);
 
-                    // Sub-cursor blinking marker, drawn just inside the
-                    // row's left edge. Same right-pointing orientation
-                    // as the parent row marker so the tip arrows at
-                    // the indexer name text.
+                    // ---- Stats column -------------------------------
+                    // Always rendered in dim; the dot already carries
+                    // the "is this healthy?" signal so the numeric
+                    // detail can sit quietly on the right.
+                    r.mb_draw_text(stats_str, stats_x, name_y, small_sz,
+                                   th.dim, sub_focused ? 1.0f : 0.85f);
+
+                    // ---- Enabled state ------------------------------
+                    // Green when on, dim when off. Mirrors the
+                    // AutoGrabOnAdd row's On/Off treatment for
+                    // visual consistency across the screen.
+                    ::ui::Color state_color = irow.enabled
+                        ? th.highlight1 : th.dim;
+                    r.mb_draw_text(state_str, state_x, name_y, small_sz,
+                                   state_color,
+                                   sub_focused ? 1.0f : 0.9f);
+
+                    // ---- Sub-cursor marker --------------------------
                     if (sub_focused && blink_on) {
                         draw_cursor_marker(
                             r,
