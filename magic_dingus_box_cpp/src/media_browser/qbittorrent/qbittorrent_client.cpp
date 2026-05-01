@@ -385,4 +385,12 @@ QbittorrentClient::get_torrents_by_hash() {
     return map;
 }
 
+std::optional<QbitTorrent>
+QbittorrentClient::get_torrent(const std::string& hash) {
+    auto map = get_torrents_by_hash();
+    auto it = map.find(hash);
+    if (it == map.end()) return std::nullopt;
+    return it->second;
+}
+
 }  // namespace media_browser

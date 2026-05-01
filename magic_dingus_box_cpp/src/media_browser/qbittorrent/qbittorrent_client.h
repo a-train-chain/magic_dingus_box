@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,6 +74,11 @@ public:
     // Convenience: same as get_torrents() but indexed by lowercase
     // hash for O(1) lookup against Radarr's downloadId field.
     std::unordered_map<std::string, QbitTorrent> get_torrents_by_hash();
+
+    // Single-torrent lookup by hash. Returns nullopt if not found.
+    // Used by DownloadWatchdog to poll one specific download per tick
+    // without re-fetching the whole torrent list.
+    virtual std::optional<QbitTorrent> get_torrent(const std::string& hash);
 
     // Delete a torrent from qBittorrent by info_hash. When delete_files
     // is true, the partial-or-completed download files on disk are
