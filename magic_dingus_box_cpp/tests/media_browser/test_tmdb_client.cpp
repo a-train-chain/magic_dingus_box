@@ -229,24 +229,35 @@ TEST_CASE("TmdbClient::parse_genres_response on empty array", "[tmdb]") {
 
 TEST_CASE("TmdbClient::build_discover_url encodes filter params", "[tmdb]") {
     media_browser::DiscoverFilter f;
-    f.genre_id = 28;
-    f.year = 2024;
+    f.genre_ids = {28};
+    f.primary_release_year_gte = 2024;
+    f.primary_release_year_lte = 2024;
     f.sort_by = "popularity.desc";
 
     std::string url = media_browser::TmdbClient::build_discover_url("KEY", f, 1);
     // URL should contain every filter parameter and the api_key.
     REQUIRE(url.find("api_key=KEY") != std::string::npos);
     REQUIRE(url.find("with_genres=28") != std::string::npos);
-    REQUIRE(url.find("primary_release_year=2024") != std::string::npos);
+    REQUIRE(url.find("primary_release_date.gte=2024-01-01") != std::string::npos);
+    REQUIRE(url.find("primary_release_date.lte=2024-12-31") != std::string::npos);
     REQUIRE(url.find("sort_by=popularity.desc") != std::string::npos);
     REQUIRE(url.find("/discover/movie") != std::string::npos);
 }
 
+TEST_CASE("TmdbClient::build_discover_url joins multi-genre with pipe (OR semantics)", "[tmdb]") {
+    media_browser::DiscoverFilter f;
+    f.genre_ids = {28, 12, 18};
+    std::string url = media_browser::TmdbClient::build_discover_url("KEY", f, 1);
+    // %7C is the URL-encoded pipe — TMDB treats it as OR for with_genres.
+    REQUIRE(url.find("with_genres=28%7C12%7C18") != std::string::npos);
+}
+
 TEST_CASE("TmdbClient::build_discover_url omits unset filters", "[tmdb]") {
-    media_browser::DiscoverFilter f;  // all defaults — no genre, no year.
+    media_browser::DiscoverFilter f;  // all defaults — no genre, no year, etc.
     std::string url = media_browser::TmdbClient::build_discover_url("KEY", f, 2);
     REQUIRE(url.find("with_genres") == std::string::npos);
-    REQUIRE(url.find("primary_release_year") == std::string::npos);
+    REQUIRE(url.find("primary_release_date.gte") == std::string::npos);
+    REQUIRE(url.find("primary_release_date.lte") == std::string::npos);
     REQUIRE(url.find("page=2") != std::string::npos);
     REQUIRE(url.find("sort_by=popularity.desc") != std::string::npos);
 }
