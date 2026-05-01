@@ -86,6 +86,8 @@ docs/
 !docs/superpowers/specs/**.md
 !docs/superpowers/plans/
 !docs/superpowers/plans/**.md
+# Operator-facing setup doc — must be tracked so README can link to it.
+!magic_dingus_box_cpp/docs/MEDIA_BROWSER_VPN_SETUP.md
 !OTA_UPDATE_GUARANTEES.md
 !magic_dingus_box_cpp/README.md
 !tests/README.md
