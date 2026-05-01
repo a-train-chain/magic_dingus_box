@@ -11,7 +11,7 @@
         "order": 0,
         "name": "host",
         "label": "Host",
-        "value": "gluetun",
+        "value": "localhost",
         "type": "textbox",
         "advanced": false,
         "privacy": "normal",
