@@ -2035,57 +2035,7 @@
     },
     {
         "indexerUrls": [
-            "https://torrentgalaxy.one/"
-        ],
-        "legacyUrls": [],
-        "definitionName": "torrentgalaxyclone",
-        "description": "TorrentGalaxyClone \u2014 community continuation of TGx (RARBG successor lineage)",
-        "language": "en-US",
-        "encoding": "Unicode (UTF-8)",
-        "enable": true,
-        "redirect": false,
-        "supportsRss": true,
-        "supportsSearch": true,
-        "supportsRedirect": false,
-        "supportsPagination": false,
-        "appProfileId": 1,
-        "protocol": "torrent",
-        "privacy": "public",
-        "capabilities": {
-            "limitsMax": 100,
-            "limitsDefault": 100,
-            "categories": [
-                {
-                    "name": "Movies",
-                    "subCategories": []
-                }
-            ]
-        },
-        "priority": 25,
-        "downloadClientId": 0,
-        "added": "0001-01-01T00:00:00Z",
-        "name": "TorrentGalaxyClone",
-        "fields": [
-            {
-                "order": 0,
-                "name": "definitionFile",
-                "value": "torrentgalaxyclone",
-                "type": "textbox",
-                "advanced": false,
-                "hidden": "hidden",
-                "privacy": "normal",
-                "isFloat": false
-            }
-        ],
-        "implementationName": "Cardigann",
-        "implementation": "Cardigann",
-        "configContract": "CardigannSettings",
-        "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentgalaxyclone",
-        "tags_by_label": []
-    },
-    {
-        "indexerUrls": [
-            "https://knaben.eu/"
+            "https://knaben.org/"
         ],
         "legacyUrls": [],
         "definitionName": "knaben",
@@ -2115,111 +2065,23 @@
         "downloadClientId": 0,
         "added": "0001-01-01T00:00:00Z",
         "name": "Knaben",
-        "fields": [],
+        "fields": [
+            {
+                "order": 0,
+                "name": "baseUrl",
+                "label": "Base URL",
+                "value": "https://knaben.org/",
+                "type": "select",
+                "advanced": false,
+                "selectOptionsProviderAction": "getUrls",
+                "privacy": "normal",
+                "isFloat": false
+            }
+        ],
         "implementationName": "Knaben",
         "implementation": "Knaben",
         "configContract": "NoAuthTorrentBaseSettings",
         "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#knaben",
-        "tags_by_label": []
-    },
-    {
-        "indexerUrls": [
-            "https://magnetcat.io/"
-        ],
-        "legacyUrls": [],
-        "definitionName": "magnetcat",
-        "description": "Magnet Cat is a Public meta-search aggregator",
-        "language": "en-US",
-        "encoding": "Unicode (UTF-8)",
-        "enable": true,
-        "redirect": false,
-        "supportsRss": true,
-        "supportsSearch": true,
-        "supportsRedirect": false,
-        "supportsPagination": false,
-        "appProfileId": 1,
-        "protocol": "torrent",
-        "privacy": "public",
-        "capabilities": {
-            "limitsMax": 100,
-            "limitsDefault": 100,
-            "categories": [
-                {
-                    "name": "Movies",
-                    "subCategories": []
-                }
-            ]
-        },
-        "priority": 25,
-        "downloadClientId": 0,
-        "added": "0001-01-01T00:00:00Z",
-        "name": "Magnet Cat",
-        "fields": [
-            {
-                "order": 0,
-                "name": "definitionFile",
-                "value": "magnetcat",
-                "type": "textbox",
-                "advanced": false,
-                "hidden": "hidden",
-                "privacy": "normal",
-                "isFloat": false
-            }
-        ],
-        "implementationName": "Cardigann",
-        "implementation": "Cardigann",
-        "configContract": "CardigannSettings",
-        "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#magnetcat",
-        "tags_by_label": []
-    },
-    {
-        "indexerUrls": [
-            "https://postman.am/"
-        ],
-        "legacyUrls": [],
-        "definitionName": "postman",
-        "description": "Postman is a Public meta-search aggregator",
-        "language": "en-US",
-        "encoding": "Unicode (UTF-8)",
-        "enable": true,
-        "redirect": false,
-        "supportsRss": true,
-        "supportsSearch": true,
-        "supportsRedirect": false,
-        "supportsPagination": false,
-        "appProfileId": 1,
-        "protocol": "torrent",
-        "privacy": "public",
-        "capabilities": {
-            "limitsMax": 100,
-            "limitsDefault": 100,
-            "categories": [
-                {
-                    "name": "Movies",
-                    "subCategories": []
-                }
-            ]
-        },
-        "priority": 25,
-        "downloadClientId": 0,
-        "added": "0001-01-01T00:00:00Z",
-        "name": "Postman",
-        "fields": [
-            {
-                "order": 0,
-                "name": "definitionFile",
-                "value": "postman",
-                "type": "textbox",
-                "advanced": false,
-                "hidden": "hidden",
-                "privacy": "normal",
-                "isFloat": false
-            }
-        ],
-        "implementationName": "Cardigann",
-        "implementation": "Cardigann",
-        "configContract": "CardigannSettings",
-        "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#postman",
         "tags_by_label": []
     }
 ]
