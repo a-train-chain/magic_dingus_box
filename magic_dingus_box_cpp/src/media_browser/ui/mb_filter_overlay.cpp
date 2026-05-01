@@ -32,9 +32,13 @@ namespace {
 
 constexpr int kScreenW               = 1280;
 constexpr int kBezelInset            = 40;
+// Gap between the panel's right edge and the bezel's inner edge.
+// Keeps the right gold rule visible — without it the panel would slide
+// under the bezel artwork and read as a 3-sided box.
+constexpr int kOverlayPanelRightGap  = 20;
 
 constexpr int kOverlayPanelW         = 480;
-constexpr int kOverlayPanelOpenX     = kScreenW - kBezelInset - kOverlayPanelW;  // 760
+constexpr int kOverlayPanelOpenX     = kScreenW - kBezelInset - kOverlayPanelRightGap - kOverlayPanelW;  // 740
 constexpr int kOverlayPanelClosedX   = kScreenW;                                  // off-screen right
 constexpr int kOverlayPanelTopY      = 120;
 constexpr int kOverlayPanelBottomY   = 634;
@@ -342,15 +346,17 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
     const float fpw   = static_cast<float>(kOverlayPanelW);
     const float fph   = static_cast<float>(kOverlayPanelH);
 
-    // ---- Panel chrome (exactly as Library overlay) ----
+    // ---- Panel chrome — full 4-side gold box ----
     // Panel background — bg_lift, fully opaque.
     r.mb_fill_rect(fpx, fpy, fpw, fph, th.bg_lift);
-    // Left edge: 2 px gold rule.
-    r.mb_fill_rect(fpx, fpy, 2.0f, fph, th.accent);
-    // Top edge: 1 px dim rule (closure with chrome header band).
-    r.mb_fill_rect(fpx, fpy, fpw, 1.0f, th.dim);
+    // Top edge: 2 px gold rule.
+    r.mb_fill_rect(fpx, fpy, fpw, 2.0f, th.accent);
     // Bottom edge: 2 px gold rule.
     r.mb_fill_rect(fpx, fpy + fph - 2.0f, fpw, 2.0f, th.accent);
+    // Left edge: 2 px gold rule.
+    r.mb_fill_rect(fpx, fpy, 2.0f, fph, th.accent);
+    // Right edge: 2 px gold rule (panel sits 20 px in from bezel so it's visible).
+    r.mb_fill_rect(fpx + fpw - 2.0f, fpy, 2.0f, fph, th.accent);
 
     // ---- Content layout ----
     const int content_x = panel_x + kOverlayPanelInnerPadX;

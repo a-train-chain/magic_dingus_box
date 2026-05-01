@@ -103,12 +103,15 @@ std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
 }
 
 // Slide-in overlay (v1.6.x).
-//   Panel sits flush with the wood-frame's right inner edge (x=1240).
-//   Width 480 px → left edge at x=760 when fully open.
+//   Panel sits 20 px inside the wood-frame's right inner edge so the
+//   right gold rule reads as a closed 4-sided box (right edge x=1220,
+//   bezel inner edge x=1240).
+//   Width 480 px → left edge at x=740 when fully open.
 //   Vertical extent: y=120 (chrome header bottom) → y=634 (chrome
 //   footer hint band top), 514 px tall.
 constexpr int kOverlayPanelW         = 480;
-constexpr int kOverlayPanelOpenX     = 760;     // Left edge when fully open
+constexpr int kOverlayPanelRightGap  = 20;      // Gap between right edge and bezel inner edge
+constexpr int kOverlayPanelOpenX     = 1280 - 40 - kOverlayPanelRightGap - kOverlayPanelW;  // 740
 constexpr int kOverlayPanelClosedX   = 1280;    // Left edge when fully closed (off-screen right)
 constexpr int kOverlayPanelTopY      = 120;
 constexpr int kOverlayPanelBottomY   = 634;
@@ -833,16 +836,16 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
         // Panel background — bg_lift, fully opaque.
         r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, fpanel_h, th.bg_lift);
-        // Left edge: 2 px gold rule.
-        r.mb_fill_rect(fpanel_x, fpanel_y, 2.0f, fpanel_h, th.accent);
-        // Top edge: 1 px dim rule for closure with chrome header band.
-        r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, 1.0f, th.dim);
-        // Bottom edge: 2 px gold rule (matches the left edge so the
-        // panel reads as a top + left + bottom framed card; the right
-        // edge sits flush against the wood-frame inner edge so no
-        // border is needed there).
+        // Top edge: 2 px gold rule.
+        r.mb_fill_rect(fpanel_x, fpanel_y, fpanel_w, 2.0f, th.accent);
+        // Bottom edge: 2 px gold rule.
         r.mb_fill_rect(fpanel_x, fpanel_y + fpanel_h - 2.0f,
                        fpanel_w, 2.0f, th.accent);
+        // Left edge: 2 px gold rule.
+        r.mb_fill_rect(fpanel_x, fpanel_y, 2.0f, fpanel_h, th.accent);
+        // Right edge: 2 px gold rule (panel sits 20 px in from bezel so it's visible).
+        r.mb_fill_rect(fpanel_x + fpanel_w - 2.0f, fpanel_y,
+                       2.0f, fpanel_h, th.accent);
 
         // Panel content x — inset from left rule by panel inner pad.
         const int content_x = panel_x + kOverlayPanelInnerPadX;
