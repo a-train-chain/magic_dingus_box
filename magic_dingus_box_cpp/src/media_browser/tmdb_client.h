@@ -84,6 +84,11 @@ public:
     // Similar movies (by id) — used by Marquee playback overlay.
     std::vector<TmdbSearchHit> get_similar(int tmdb_id, int page = 1);
 
+    // Recommendations for a movie (by id) — algorithmic mix of similar + trending.
+    // Generally gives better suggestions than get_similar; callers should fall
+    // back to get_similar when this returns empty.
+    std::vector<TmdbSearchHit> get_recommendations(int tmdb_id, int page = 1);
+
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
 

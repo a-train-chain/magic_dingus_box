@@ -250,6 +250,22 @@ std::vector<TmdbSearchHit> TmdbClient::get_similar(int tmdb_id, int page) {
     return parse_list_response(body);
 }
 
+std::vector<TmdbSearchHit> TmdbClient::get_recommendations(int tmdb_id, int page) {
+    // /movie/{id}/recommendations returns an algorithmic mix of similar films
+    // and trending content — generally more useful than /similar, which is
+    // a pure genre-mechanical match. Falls back to get_similar at the call
+    // site when this returns empty (some films have no recommendations data).
+    std::ostringstream url;
+    url << kApiBase << "/movie/" << tmdb_id << "/recommendations"
+        << "?api_key=" << url_encode(api_key_)
+        << "&language=en-US"
+        << "&include_adult=false"
+        << "&page=" << page;
+    auto body = http_get(url.str());
+    if (body.empty()) return {};
+    return parse_list_response(body);
+}
+
 std::string TmdbClient::build_discover_url(const std::string& api_key,
                                            const DiscoverFilter& filter,
                                            int page) {

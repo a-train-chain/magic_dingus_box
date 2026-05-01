@@ -92,6 +92,10 @@ private:
     std::string toast_msg_;
     std::chrono::steady_clock::time_point toast_started_at_;
     bool toast_active_ = false;
+
+    // One-shot diagnostic log: emits snapshot size the first time the overlay
+    // renders after being opened. Reset to true each time open() is called.
+    bool render_log_once_ = false;
 };
 
 }  // namespace media_browser::ui

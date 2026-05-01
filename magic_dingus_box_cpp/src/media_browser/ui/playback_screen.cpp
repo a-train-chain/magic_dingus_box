@@ -470,7 +470,7 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
                     {mc::HintIcon::Btn2Red,     "Pause/Play"},
                     {mc::HintIcon::Btn3Green,   "+10s"},
-                    {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+                    {mc::HintIcon::Btn4Black,   "Back"},
                     {mc::HintIcon::RotaryNav,   "Scrub"},
                     {mc::HintIcon::RotaryPress, "Open Menu"},
                 });

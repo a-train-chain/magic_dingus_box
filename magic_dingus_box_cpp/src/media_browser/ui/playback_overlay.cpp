@@ -19,7 +19,7 @@ namespace {
 // Layout (top→bottom):
 //
 //   [60px safe inset top]
-//   Header: big poster on the left (280×420), info column on the right
+//   Header: poster on the left (200×300), info column on the right
 //     · "NOW PLAYING" accent label
 //     · Title (ZenDots, gold)
 //     · Year · runtime · genres line
@@ -39,9 +39,11 @@ constexpr float kPanelAlpha     = 0.85f;
 constexpr int kSafeInset    = chrome::kSafeInset_px;  // 60 px
 constexpr int kBezelInset   = chrome::kFrameInset_px; // 40 px
 
-// Poster dimensions (mirrors Detail screen exactly: 280×420).
-constexpr int kPosterW      = 280;
-constexpr int kPosterH      = 420;
+// Poster dimensions — smaller than Detail (280×420) so the similar-films
+// row has enough vertical room below the info section. 200×300 keeps the
+// same 2:3 aspect at ~71% the size.
+constexpr int kPosterW      = 200;
+constexpr int kPosterH      = 300;
 
 // Info column starts after the poster + gap.
 constexpr int kColumnGap    = 24;
@@ -157,13 +159,28 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
         similar_.clear();
     }
 
-    spdlog::info("[playback_overlay] starting similar-films prefetch for tmdb_id={}", meta.tmdb_id);
+    spdlog::info("[playback_overlay] start_prefetch tmdb_id={} title='{}'",
+                 meta.tmdb_id, meta.title);
 
     fetch_thread_ = std::thread([this, &tmdb, id = meta.tmdb_id]() {
-        auto results = tmdb.get_similar(id, /*page=*/1);
+        // Try recommendations first — better algorithmic suggestions than
+        // /similar. Fall back to get_similar when recommendations is empty
+        // (some films have no data on TMDB's recommendations endpoint).
+        auto results = tmdb.get_recommendations(id, /*page=*/1);
         if (cancel_requested_.load()) {
             spdlog::debug("[playback_overlay] prefetch cancelled for tmdb_id={}", id);
             return;
+        }
+        spdlog::info("[playback_overlay] get_recommendations returned {} films for tmdb_id={}",
+                     results.size(), id);
+        if (results.empty()) {
+            results = tmdb.get_similar(id, /*page=*/1);
+            if (cancel_requested_.load()) {
+                spdlog::debug("[playback_overlay] prefetch cancelled (fallback) for tmdb_id={}", id);
+                return;
+            }
+            spdlog::info("[playback_overlay] get_similar (fallback) returned {} films for tmdb_id={}",
+                         results.size(), id);
         }
         if (results.size() > static_cast<size_t>(kMaxSimilar)) {
             results.resize(static_cast<size_t>(kMaxSimilar));
@@ -174,7 +191,7 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
             similar_ = std::move(results);
         }
         fetch_state_.store(FetchState::Loaded);
-        spdlog::info("[playback_overlay] prefetch complete: {} similar films for tmdb_id={}",
+        spdlog::info("[playback_overlay] prefetch complete: {} films for tmdb_id={}",
                      count, id);
     });
 }
@@ -186,6 +203,7 @@ void PlaybackOverlay::cancel_prefetch() {
 void PlaybackOverlay::open() {
     open_.store(true);
     cursor_ = 0;
+    render_log_once_ = true;  // arm one-shot render diagnostic log
 }
 
 void PlaybackOverlay::close() {
@@ -236,7 +254,8 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int poster_x = kSafeInset;
     const int poster_y = kHeaderTopY;
 
-    // Big poster (same 280×420 as Detail screen).
+    // Big poster (200×300 — smaller than Detail's 280×420 to give the
+    // similar-films row room below).
     {
         const ::ui::Color tint = poster_tint_for_tmdb(meta_.tmdb_id);
         r.mb_draw_poster_fit(meta_.poster_url,
@@ -452,6 +471,13 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
     {
         std::lock_guard<std::mutex> lk(similar_mu_);
         snapshot = similar_;
+    }
+    // One-shot diagnostic: log snapshot size each time the overlay opens
+    // so we can confirm whether the fetch result reached render().
+    if (render_log_once_) {
+        spdlog::info("[playback_overlay] render: similar snapshot size={} fetch_state={}",
+                     snapshot.size(), static_cast<int>(fs));
+        render_log_once_ = false;
     }
 
     // Grid geometry: identical to BrowseScreen's layout.
