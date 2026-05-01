@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -67,6 +68,9 @@ public:
 
     void render(::ui::Renderer& r, int screen_w, int screen_h);
 
+    // Show a small toast next to the focused poster for ~2 seconds.
+    void show_toast(const std::string& msg);
+
 private:
     std::atomic<bool> open_{false};
     std::atomic<bool> cancel_requested_{false};
@@ -81,6 +85,10 @@ private:
     int prefetched_tmdb_id_ = 0;
 
     std::thread fetch_thread_;
+
+    std::string toast_msg_;
+    std::chrono::steady_clock::time_point toast_started_at_;
+    bool toast_active_ = false;
 };
 
 }  // namespace media_browser::ui

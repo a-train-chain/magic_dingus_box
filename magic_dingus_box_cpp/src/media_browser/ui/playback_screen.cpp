@@ -5,6 +5,7 @@
 #include "app/app_state.h"
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
+#include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "platform/input_manager.h"
@@ -17,8 +18,9 @@ namespace media_browser::ui {
 
 PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state,
                                 ::media_browser::TmdbClient& tmdb,
+                                ::media_browser::RadarrClient& radarr,
                                 QbittorrentClient* qbit)
-    : controller_(controller), state_(state), tmdb_(tmdb), qbit_(qbit) {}
+    : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr), qbit_(qbit) {}
 
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
     movie_path_ = std::move(host_path);
@@ -182,14 +184,63 @@ Screen PlaybackScreen::handle_input(
 
         // Rotary press (SELECT):
         //   - When overlay is closed → open it.
-        //   - When overlay is open → no-op for now; Task 9 will wire quick-add here.
+        //   - When overlay is open → quick-add the focused similar film via Radarr,
+        //     then show a 2s toast confirming the result. The overlay stays open and
+        //     the movie keeps playing.
         // Note: only on key-down (pressed == true); ignore key-up.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (!overlay_.is_open()) {
                 overlay_.open();
+                return Screen::Playback;
             }
-            // TODO Task 9: when overlay_.is_open(), call quick-add on
-            // overlay_.focused_film() via Radarr.
+            // Overlay is open — attempt quick-add for the focused film.
+            auto film = overlay_.focused_film();
+            if (!film) {
+                // No film focused (list still loading or empty) — just ignore.
+                return Screen::Playback;
+            }
+
+            // Pick the best available quality profile. Mirrors
+            // detail_screen.cpp's pick_quality_profile_id() heuristic:
+            // prefer "Any" so we don't block on a profile mismatch.
+            // get_quality_profiles() is a single HTTP call (~5s in worst
+            // case) — acceptable for a user-triggered press action.
+            int qp = 0;
+            {
+                auto profiles = radarr_.get_quality_profiles();
+                for (const auto& p : profiles) {
+                    if (p.name == "Any") { qp = p.id; break; }
+                }
+                if (qp == 0) {
+                    for (const auto& p : profiles) {
+                        if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
+                    }
+                }
+                if (qp == 0 && !profiles.empty()) {
+                    qp = profiles.front().id;
+                }
+            }
+            if (qp == 0) {
+                overlay_.show_toast("No quality profile");
+                return Screen::Playback;
+            }
+
+            bool added = radarr_.add_movie(film->tmdb_id, qp, /*monitor=*/true);
+            if (added) {
+                overlay_.show_toast("Added \xe2\x80\x94 searching");
+            } else {
+                const std::string& err = radarr_.last_error();
+                // Radarr returns HTTP 400 with "This movie has already been
+                // added" in the body when the title is already in the library.
+                // The last_error_ string is "HTTP 400: <json body>" so we
+                // search the body text for "already" to distinguish that case.
+                if (err.find("already") != std::string::npos ||
+                    err.find("Already") != std::string::npos) {
+                    overlay_.show_toast("Already in library");
+                } else {
+                    overlay_.show_toast("Couldn\xe2\x80\x99t add \xe2\x80\x94 try again");
+                }
+            }
             return Screen::Playback;
         }
 

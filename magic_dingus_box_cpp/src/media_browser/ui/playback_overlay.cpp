@@ -103,13 +103,14 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
         if (results.size() > static_cast<size_t>(kMaxSimilar)) {
             results.resize(static_cast<size_t>(kMaxSimilar));
         }
+        auto count = results.size();
         {
             std::lock_guard<std::mutex> lk(similar_mu_);
             similar_ = std::move(results);
         }
         fetch_state_.store(FetchState::Loaded);
         spdlog::info("[playback_overlay] prefetch complete: {} similar films for tmdb_id={}",
-                     similar_.size(), id);
+                     count, id);
     });
 }
 
@@ -141,6 +142,12 @@ std::optional<::media_browser::TmdbSearchHit> PlaybackOverlay::focused_film() co
         return std::nullopt;
     }
     return similar_[cursor_];
+}
+
+void PlaybackOverlay::show_toast(const std::string& msg) {
+    toast_msg_ = msg;
+    toast_started_at_ = std::chrono::steady_clock::now();
+    toast_active_ = true;
 }
 
 void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
@@ -294,15 +301,43 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
     }
 
+    // Toast confirmation: shown for 2 s next to the focused poster card
+    // after a quick-add action (wired by Task 9 in playback_screen.cpp).
+    if (toast_active_) {
+        using namespace std::chrono;
+        auto elapsed_ms = duration_cast<milliseconds>(
+            steady_clock::now() - toast_started_at_).count();
+        if (elapsed_ms > 2000) {
+            toast_active_ = false;
+        } else {
+            int focused_screen_idx = cursor_ - first_visible;
+            if (focused_screen_idx >= 0 && focused_screen_idx < kVisibleCards) {
+                int tx = kPaddingX + focused_screen_idx * (kCardW + kCardGap);
+                int ty = strip_y + kCardH + 8;
+                int tw = static_cast<int>(r.mb_text_width(toast_msg_, 14)) + 16;
+                r.mb_fill_rect(static_cast<float>(tx), static_cast<float>(ty),
+                               static_cast<float>(tw), 24.0f,
+                               th.bg_lift, 1.0f);
+                r.mb_fill_rect(static_cast<float>(tx), static_cast<float>(ty),
+                               static_cast<float>(tw), 1.0f,
+                               th.accent, 1.0f);
+                r.mb_draw_text(toast_msg_,
+                               static_cast<float>(tx + 8),
+                               static_cast<float>(ty + 6),
+                               14, th.accent, 1.0f);
+            }
+        }
+    }
+
     // Footer hint row inside the panel (matches mb_chrome visual style).
-    // "Rotary twist = scroll · BTN4 = close · [rotary press = add — Task 9]"
+    // "Rotary twist = scroll · BTN4 = close · Rotary press = add"
     chrome::draw_hint_row(r,
                           kPaddingX,
                           panel_y + kPanelHeightPx - chrome::kPad2,
                           {
                               {chrome::HintIcon::RotaryNav,   "Scroll"},
                               {chrome::HintIcon::Btn4Black,   "Close"},
-                              {chrome::HintIcon::RotaryPress, "\xE2\x80\x94"},  // — (Task 9)
+                              {chrome::HintIcon::RotaryPress, "Add"},
                           });
 }
 

@@ -14,6 +14,7 @@ struct AppState;
 }
 namespace ui { class Renderer; }
 namespace media_browser { class QbittorrentClient; }
+namespace media_browser { class RadarrClient; }
 namespace media_browser { class TmdbClient; }
 
 namespace media_browser::ui {
@@ -49,8 +50,12 @@ public:
     //
     // tmdb is used by the PlaybackOverlay to fetch similar films in the
     // background when the user opens the overlay (rotary press).
+    //
+    // radarr is used by the SELECT handler (rotary press while overlay is
+    // open) to quick-add the focused similar film via Radarr.
     PlaybackScreen(app::Controller& controller, app::AppState& state,
                    ::media_browser::TmdbClient& tmdb,
+                   ::media_browser::RadarrClient& radarr,
                    QbittorrentClient* qbit = nullptr);
 
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
@@ -73,6 +78,7 @@ private:
     app::Controller&              controller_;
     app::AppState&                state_;
     ::media_browser::TmdbClient&  tmdb_;
+    ::media_browser::RadarrClient& radarr_;
     QbittorrentClient*            qbit_ = nullptr;  // optional; pause/resume during playback
 
     // Tracks whether enter() asked qBit to pause. leave() only resumes

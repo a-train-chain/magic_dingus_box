@@ -608,6 +608,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                                   qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr, state);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
+                                                     radarr,
                                                      qbit_owned.get());
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
