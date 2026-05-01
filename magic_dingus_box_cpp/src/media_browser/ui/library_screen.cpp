@@ -614,11 +614,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        18, th.dim);
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,   "Filter"},
-            {chrome::HintIcon::RotaryNav,   "Posters"},
-            {chrome::HintIcon::RotaryPress, "Open"},
+            {chrome::HintIcon::Btn4Black,   "Sort+Filter"},
+            {chrome::HintIcon::RotaryNav,   "Browse"},
+            {chrome::HintIcon::RotaryPress, "Detail"},
         });
         return;
     }
@@ -633,11 +633,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        18, th.dim);
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,   "Filter"},
-            {chrome::HintIcon::RotaryNav,   "Posters"},
-            {chrome::HintIcon::RotaryPress, "Open"},
+            {chrome::HintIcon::Btn4Black,   "Sort+Filter"},
+            {chrome::HintIcon::RotaryNav,   "Browse"},
+            {chrome::HintIcon::RotaryPress, "Detail"},
         });
         return;
     }
@@ -794,11 +794,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // --- Footer hints ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-        {chrome::HintIcon::Btn2Red,     "Back"},
+        {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-        {chrome::HintIcon::Btn4Black,   "Filter"},
-        {chrome::HintIcon::RotaryNav,   "Posters"},
-        {chrome::HintIcon::RotaryPress, "Open"},
+        {chrome::HintIcon::Btn4Black,   "Sort+Filter"},
+        {chrome::HintIcon::RotaryNav,   "Browse"},
+        {chrome::HintIcon::RotaryPress, "Detail"},
     });
 
     // ============================================================

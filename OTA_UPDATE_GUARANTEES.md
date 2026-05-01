@@ -42,6 +42,17 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
 
+## v1.6.4 (2026-04-30)
+
+Confirmed safe-to-ship via:
+- Build clean from cmake on Pi 4B
+- Smoke test: every overlay opens/closes cleanly, BTN2 modal across every screen, BTN2 pause preserved on Playback, similar-films pre-fetch hits TMDB on playback start, quick-add via Radarr returns expected toasts
+- Settings persistence: 12 new fields write/read on restart
+
+The 12 new Discover filter fields (`display.mb_popular_filter_*` and `display.mb_toprated_filter_*`) live under `config/*`, which is in the `update.sh` rsync exclude list. OTA preserves them exactly like every other display setting. On the first OTA where these keys are absent, the load path applies canonical defaults (all "Any") — no visual regression for operators upgrading from v1.6.3 or earlier.
+
+The footer hint label changes are pure render-string changes in the C++ source; they propagate via the standard `magic_dingus_box_cpp/src/**` rsync and on-Pi rebuild. No new assets, no new services, no new build dependencies.
+
 ## v1.6.3 addition — Library overlay sort + filter survive OTA cleanly
 
 v1.6.3 adds two new persisted fields to `config/settings.json` that drive the new Library slide-in overlay's sort and filter dimensions:

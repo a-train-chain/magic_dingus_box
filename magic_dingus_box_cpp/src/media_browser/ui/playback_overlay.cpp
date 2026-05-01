@@ -335,9 +335,9 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                           kPaddingX,
                           panel_y + kPanelHeightPx - chrome::kPad2,
                           {
-                              {chrome::HintIcon::RotaryNav,   "Scroll"},
+                              {chrome::HintIcon::RotaryNav,   "Browse Similar"},
                               {chrome::HintIcon::Btn4Black,   "Close"},
-                              {chrome::HintIcon::RotaryPress, "Add"},
+                              {chrome::HintIcon::RotaryPress, "Quick Add"},
                           });
 }
 

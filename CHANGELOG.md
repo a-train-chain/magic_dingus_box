@@ -5,40 +5,49 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.3] - 2026-04-30
+## [1.6.4] - 2026-04-30
 
-Marquee navigation grammar redesign + Library filter overlay. v1.6.2 closed the design-fidelity gaps and added the Marquee CRT preference store; this release tackles the next layer up — the operator's mental model when moving around the Media Browser. Queue gets a peer-level destination instead of being only reachable through Detail. BTN2 becomes a global "back" so navigation stops requiring two different button conventions on different screens. BTN4 is freed for a slide-in overlay on Library that exposes the previously-unreachable sort + filter dimensions, with the operator's choices persisted across reboots.
+Marquee filter overlays, search focus toggle, universal exit modal, playback overlay, and footer hint vocabulary pass. v1.6.3 redesigned the input grammar and added the Library overlay; this release extends that foundation with per-tab Discover filters on Browse, a keyboard↔grid focus toggle on Search, a BTN2 exit modal across all MB screens, a translucent playback overlay for browsing similar films without stopping the movie, and a full refresh of every footer hint label to match the finalized v1.6.4 binding vocabulary.
 
 ### Added
-- **Library slide-in overlay** ([`library_screen.{h,cpp}`](magic_dingus_box_cpp/src/media_browser/ui/library_screen.h)) — a 480 px panel that slides in from the right on `BTN4` press, holding three blocks: stats (`<N> titles · <X> used · <Y> free`), `SORT BY` (Recent / Title / Year / Size — single-active radio), `FILTER` (All / Unwatched (soon) / Missing files / Recently added — single-active radio). Animated open/close (200 ms ease-out / 150 ms ease-in cubic). Captures input while open: rotary CW/CCW + D-pad UP/DOWN walk the 8 focusable rows, A applies the chosen sort/filter and slides closed, BTN2 / BTN4 cancel-and-close, BTN1 / BTN3 are no-ops (so a stray tap doesn't tab-jump the underlying grid). Cursor lands on the currently-active sort row on open, so a single A re-confirms the existing choice.
-- **`Queue` tab as a peer Marquee destination** ([`browse_screen.{h,cpp}`](magic_dingus_box_cpp/src/media_browser/ui/browse_screen.h), [`queue_screen.cpp`](magic_dingus_box_cpp/src/media_browser/ui/queue_screen.cpp)) — the Marquee tab strip went from 5 tabs (`Popular · Top Rated · Library · Search · Settings`) to 6 (`Popular · Top Rated · Search · Library · Queue · Settings`). Search moved before Library to read as "find content" → "your stuff" → "config", and Queue inserted between Library and Settings as a peer destination. Operators can now reach the Queue via BTN3 from Library without going through a movie's Detail page.
-- **`MbLibrarySort` + `MbLibraryFilter` enums in `AppState::DisplaySettings`** ([`app_state.h`](magic_dingus_box_cpp/src/app/app_state.h), [`settings_persistence.cpp`](magic_dingus_box_cpp/src/app/settings_persistence.cpp)). Persisted as `display.mb_library_sort` (string: `"recent"`/`"title"`/`"year"`/`"size"`) and `display.mb_library_filter` (string: `"all"`/`"unwatched"`/`"missing_files"`/`"recently_added"`) in `config/settings.json`. Defaults are `Recent` / `All`. String-valued JSON keeps `settings.json` hand-editable.
-- **`LibraryScreen::OverlayState` state machine** with four states (`Closed / SlidingIn / Open / SlidingOut`) and transition helpers (`start_open_overlay()`, `start_close_overlay()`, `tick_overlay_animation()`). Class-static slide-duration constants (`kOverlaySlideInMs = 200`, `kOverlaySlideOutMs = 150`) shared between the tick state machine and the render-side x-position math so the two can't drift. Cubic-ease helpers (`ease_out_cubic` for slide-in, `ease_in_cubic` for slide-out) inline in the anonymous namespace. Tick is called once per `render()` so the animation progresses purely from elapsed time.
-- **`LibraryScreen::compute_overlay_left_x(state, anim_started)` static helper** computes the panel's animated left x-coordinate based on overlay state + elapsed animation time. Pure function, easily testable.
-- **`LibraryScreen::rebuild_view()` rewrite** — fully replaces the legacy `Filter` enum's switch with the new `mb_library_filter` + `mb_library_sort` logic. Filter modes: `All` (keep all), `Unwatched` (placeholder — kept all until watched-history feature lands), `MissingFiles` (`!has_file`), `RecentlyAdded` (last 30 days by `Movie.added_at`). Sort modes: `Recent` (newest first by `Movie.added_at`), `Title` (case-insensitive A-Z), `Year` (newest first; ties broken by title), `Size` (largest first by `file_size_bytes`). Cursor + scroll-row clamping at the end keeps the operator's cursor visible even when a filter shrinks the view.
+- **Discover-style filter overlay** for Popular and Top Rated tabs (BTN4 to open). Filter by genre, decade, min rating, runtime, original language, and sort order. Per-tab independent state; persisted to `config/settings.json`.
+- **Search keyboard ↔ grid focus toggle** (BTN4). Type a query, press BTN4 to jump to the results grid, navigate posters with rotary, press to open Detail.
+- **Universal exit modal** — BTN2 across all MB screens opens an "Exit Marquee?" yes/no modal. Quick-exit via BTN2 again. Replaces the contextual back button (tab navigation handles all within-MB nav).
+- **Playback overlay** — rotary press during MB playback opens a translucent bottom panel showing detail header + similar-films strip (TMDB `/movie/{id}/similar`). Rotary press on a similar film quick-adds it via Radarr without disrupting playback.
+- **6-tab Marquee strip** with Queue between Library and Settings (carried over from unreleased v1.6.3).
+- **Library filter overlay** (sort + filter, slide-in panel, BTN4) (carried over from unreleased v1.6.3).
+- **Icon-based footer hints** with squares for buttons + circle/octagon for rotary; per-screen labels for every input on every screen (carried over from unreleased v1.6.3).
 
 ### Changed
-- **Marquee input grammar redesign** ([all 6 menu screens](magic_dingus_box_cpp/src/media_browser/ui/)). Pre-v1.6.3, `BTN4 (SETTINGS_MENU, black)` was "back" on every Marquee menu screen, and `BTN2 (PLAY_PAUSE, red)` had a different function on each screen (quick-add on Browse / Search, refresh services on MovieSettings, cancel on Queue, primary-button shortcut on Detail). v1.6.3 unifies this:
-  - `BTN2` is **back** globally on every Marquee menu screen.
-  - `BTN4` short-press is a **no-op on every menu screen except Library**, where it opens the new slide-in overlay. Long-press still exits MB → kiosk MainMenu via the input dispatcher's long-press branch.
-  - Cascading conflict resolutions: BrowseScreen's quick-add → operators open Detail and click Add; SearchScreen's quick-add → same; MovieSettings's refresh services → already on the Services row's SELECT; QueueScreen's cancel → reachable via Detail → Confirm Remove; DetailScreen's primary-button shortcut → A on the focused button is the same thing.
-  - The retired helpers (`quick_add_focused`, `do_cancel_focused`, `refresh_service_health`, `on_activate`) are preserved in their files in case future work needs them. Two of them now carry `[[maybe_unused]]` to silence dead-code warnings until reactivation.
-  - **PlaybackScreen is exempt.** BTN2 stays play-pause and BTN4 stays exit-to-Detail there — sacred for media-watching ergonomics.
-- **`LibraryScreen::rebuild_view()` body replaced wholesale** to honor the new persisted sort + filter dimensions. The legacy `Filter` enum + `filter_` member are kept in the header for now (no remaining read sites in the .cpp; deferred cleanup).
-- **`QueueScreen` chrome migration**. Pre-v1.6.3 QueueScreen had its own bespoke `"DOWNLOAD QUEUE"` header drawn directly. To gain parity with the rest of the Marquee (which uses `chrome::draw_screen_header` for the 6-tab strip), QueueScreen's bespoke header was retired and the count + refresh-status content was moved to a sub-line below the chrome header (matching LibraryScreen's stats-line idiom). Chrome's `kSafeInset_px = 60` x-anchor is used for the sub-line so it column-aligns with the chrome title above it.
-- **`LibraryScreen` constructor signature upgrade** — now takes `::app::AppState&` as a second argument so the overlay state machine can read `display_settings.mb_library_sort/filter`. Matches the v1.6.2 `MbSettingsScreen` pattern. Construction site in `main.cpp` updated.
-- **Class-level header doc comments swept** across BrowseScreen, SearchScreen, LibraryScreen, QueueScreen, and DetailScreen to reflect the new BTN2 / BTN4 grammar. No comment in any header still describes the pre-v1.6.3 behavior as live.
+- **BTN2 grammar:** was "back" (v1.6.3 unreleased) → now "exit-to-kiosk" with confirm modal across all MB screens. **Exception: BTN2 remains play/pause during MB movie playback** (per user request).
+- **BTN4 grammar on Detail:** was no-op → now "back to originating list" (replaces the role BTN2 used to play on Detail).
+- **Footer hint vocabulary refreshed** across every MB screen call site to match v1.6.4 bindings. Key changes from unreleased v1.6.3 labels:
+  - All screens: BTN2 label "Back" → "Exit".
+  - Browse (Popular/TopRated): BTN4 "Filter" → "Filters", Rotary "Posters" → "Browse", RotaryPress "Open" → "Detail".
+  - Browse (other categories): Rotary "Posters" → "Browse", RotaryPress "Open" → "Detail".
+  - Search (kbd focus): Rotary "Keys" → "Type".
+  - Search (grid focus): Rotary "Posters" → "Browse", RotaryPress "Open" → "Detail".
+  - Library (all states): BTN4 "Filter" → "Sort+Filter", Rotary "Posters" → "Browse", RotaryPress "Open" → "Detail".
+  - Queue: Rotary "Queue" → "Browse", RotaryPress "Detail"/"Confirm" → "—".
+  - Settings (browse): Rotary "Rows" → "Select".
+  - Settings (edit): BTN2 "Cancel" → "Exit", RotaryPress "Save" → "Confirm".
+  - Detail: BTN4 "—" → "Back", Rotary "Buttons" → "Action", RotaryPress "Activate" → "Confirm".
+  - Playback (no overlay): BTN2 "Pause" → "Pause/Play", BTN4 "Stop" → "—", Rotary "Seek" → "Scrub", RotaryPress "Info" → "Open Menu".
+  - Playback overlay: Rotary "Scroll" → "Browse Similar", RotaryPress "Add" → "Quick Add".
+- **TMDB Discover endpoint switching is hybrid:** when all filters are at "Any", the canonical `/movie/popular` and `/movie/top_rated` endpoints are still used (preserves existing behavior).
+- **TMDB `with_genres` now uses pipe (`|`) for OR semantics** rather than comma (AND).
 
-### Fixed
-- **Overlay-active D-pad UP/DOWN no longer silently mutates the underlying grid cursor.** The first overlay implementation captured rotary CW/CCW + BTN1/BTN3 + BTN2 + SELECT but missed `ROTATE_VERTICAL`. Without the capture, D-pad UP/DOWN was walking `LibraryScreen::grid_cursor_` while the overlay occluded the grid — the operator couldn't see the cursor moving but it was. Added the capture clause; D-pad now walks the same overlay row index as the rotary.
-- **Cursor visibility after view rebuild.** The first cut of `rebuild_view()`'s clamping logic only enforced `grid_cursor_ ≤ n-1` and `scroll_row_ ≤ max_scroll_row`. If the operator was scrolled to row 30 and applied a filter that shrank the view to 5 items, the cursor went to row 0 (clamped) but `scroll_row_` could remain at min(30, max_scroll_row), leaving an empty grid visible until the next render's scroll-clamp caught up. Now `rebuild_view()` also pulls `scroll_row_` down to `cursor_row` so the cursor stays visible immediately after a rebuild. `max_scroll_row` tightened from `n / kGridCols` to `(n-1) / kGridCols` for the inclusive last-row index.
-- **Stale post-chrome-migration constants in QueueScreen** removed. `kHeaderBaselineY` and `kHeaderRuleY` were the anchors of the retired bespoke header and had zero remaining references. The stale namespace-block design summary at the top of `queue_screen.cpp` was rewritten to describe the actual current state (chrome-header-delegated rendering) instead of the pre-migration "DOWNLOAD QUEUE" + steel-blue rule.
-- **QueueScreen sub-line x-anchor** corrected from `kPaddingX = 32` to `chrome::kSafeInset_px = 60` so the count + refresh-status row column-aligns with the chrome header's title above it. Pre-fix the sub-line started ~28 px to the LEFT of the chrome title, breaking visual continuity with every other Marquee screen.
+### Internal
+- New components: `mb_filter_overlay`, `mb_exit_modal`, `playback_overlay`.
+- Extended `tmdb_client::DiscoverFilter` for the full Discover param surface.
+- Added `tmdb_client::get_similar()` for playback overlay pre-fetch.
+- 12 new persisted fields in `DisplaySettings` (6 per Popular/TopRated tab).
 
 ### Notes for operators
 - **The 6-tab strip layout is the new norm.** `Popular · Top Rated · Search · Library · Queue · Settings`. BTN1/BTN3 walk left/right with no wrap. Search now sits between Top Rated and Library — if you OTA-upgrade and your Pi was previously on Search, it stays there; the only change is that BTN3 from Search now lands on Library (not Settings).
-- **BTN2 = back means the kiosk's button vocabulary diverges from the home menu when you're inside the Media Browser.** On the home menu's playlist UI, BTN2 still play-pauses the active video. Inside the Marquee section, BTN2 walks you back through the navigation stack. PlaybackScreen is the exception inside Marquee — it preserves the home-menu pause grammar so muscle memory works during movie-watching.
+- **BTN2 = exit-to-kiosk modal** across all Marquee menu screens. The modal requires a second BTN2 press (or rotary confirm) to actually leave — a single accidental tap is safe. PlaybackScreen is the exception — BTN2 stays play/pause during movie-watching.
 - **The new `display.mb_library_*` keys persist across OTA upgrades and reboots** — see [OTA_UPDATE_GUARANTEES.md § v1.6.3 addition](OTA_UPDATE_GUARANTEES.md). New installs default to Recent / All. The "Unwatched" filter is a placeholder ("(soon)") until watched-history tracking lands; selecting it accepts the click but doesn't change the visible library.
+- **12 new Discover filter fields** (`display.mb_popular_filter_*` and `display.mb_toprated_filter_*`) live under `config/*` and are preserved across OTA. On the first upgrade where they're absent, the load path applies canonical defaults (all "Any") — no visual regression.
 
 ## [1.6.2] - 2026-04-30
 

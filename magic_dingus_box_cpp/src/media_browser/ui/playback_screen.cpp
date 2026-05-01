@@ -412,11 +412,11 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         namespace mc = ::media_browser::ui::chrome;
         mc::draw_footer_hints(r, screen_w, screen_h, {
             {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
-            {mc::HintIcon::Btn2Red,     "Pause"},
+            {mc::HintIcon::Btn2Red,     "Pause/Play"},
             {mc::HintIcon::Btn3Green,   "+10s"},
-            {mc::HintIcon::Btn4Black,   "Stop"},
-            {mc::HintIcon::RotaryNav,   "Seek"},
-            {mc::HintIcon::RotaryPress, "Info"},
+            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryNav,   "Scrub"},
+            {mc::HintIcon::RotaryPress, "Open Menu"},
         });
     }
 

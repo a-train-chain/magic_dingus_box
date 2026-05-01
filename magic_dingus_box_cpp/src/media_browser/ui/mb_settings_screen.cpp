@@ -1462,19 +1462,19 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (editing_) {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
-            {chrome::HintIcon::Btn2Red,     "Cancel"},
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
             {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
             {chrome::HintIcon::RotaryNav,   "Adjust"},
-            {chrome::HintIcon::RotaryPress, "Save"},
+            {chrome::HintIcon::RotaryPress, "Confirm"},
         });
     } else {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
             {chrome::HintIcon::Btn4Black,   "\xE2\x80\x94"},
-            {chrome::HintIcon::RotaryNav,   "Rows"},
+            {chrome::HintIcon::RotaryNav,   "Select"},
             {chrome::HintIcon::RotaryPress, "Edit"},
         });
     }

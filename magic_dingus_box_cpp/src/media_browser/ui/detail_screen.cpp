@@ -1351,11 +1351,11 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         namespace mc = ::media_browser::ui::chrome;
         mc::draw_footer_hints(r, screen_w, screen_h, {
             {mc::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
-            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn2Red,     "Exit"},
             {mc::HintIcon::Btn3Green,   "\xE2\x80\x94"},
-            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
-            {mc::HintIcon::RotaryNav,   "Buttons"},
-            {mc::HintIcon::RotaryPress, "Activate"},
+            {mc::HintIcon::Btn4Black,   "Back"},
+            {mc::HintIcon::RotaryNav,   "Action"},
+            {mc::HintIcon::RotaryPress, "Confirm"},
         });
     }
 

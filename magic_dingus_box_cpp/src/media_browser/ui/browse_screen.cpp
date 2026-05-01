@@ -943,11 +943,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     auto draw_baseline_footer = [&]() {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Back"},
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,   filter_available ? "Filter" : "\xE2\x80\x94"},
-            {chrome::HintIcon::RotaryNav,   "Posters"},
-            {chrome::HintIcon::RotaryPress, "Open"},
+            {chrome::HintIcon::Btn4Black,   filter_available ? "Filters" : "\xE2\x80\x94"},
+            {chrome::HintIcon::RotaryNav,   "Browse"},
+            {chrome::HintIcon::RotaryPress, "Detail"},
         });
     };
 
@@ -1083,11 +1083,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // --- Footer hints ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-        {chrome::HintIcon::Btn2Red,     "Back"},
+        {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-        {chrome::HintIcon::Btn4Black,   filter_available ? "Filter" : "\xE2\x80\x94"},
-        {chrome::HintIcon::RotaryNav,   "Posters"},
-        {chrome::HintIcon::RotaryPress, "Open"},
+        {chrome::HintIcon::Btn4Black,   filter_available ? "Filters" : "\xE2\x80\x94"},
+        {chrome::HintIcon::RotaryNav,   "Browse"},
+        {chrome::HintIcon::RotaryPress, "Detail"},
     });
 
     // Render filter overlay on top of everything else (draws above the grid).

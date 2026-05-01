@@ -908,20 +908,20 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (focus_ == Focus::Keyboard) {
         mc::draw_footer_hints(r, screen_w, screen_h, {
             {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn2Red,     "Exit"},
             {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
             {mc::HintIcon::Btn4Black,   results_.empty() ? "\xE2\x80\x94" : "Grid"},
-            {mc::HintIcon::RotaryNav,   "Keys"},
+            {mc::HintIcon::RotaryNav,   "Type"},
             {mc::HintIcon::RotaryPress, "Type"},
         });
     } else {
         mc::draw_footer_hints(r, screen_w, screen_h, {
             {mc::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {mc::HintIcon::Btn2Red,     "Back"},
+            {mc::HintIcon::Btn2Red,     "Exit"},
             {mc::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
             {mc::HintIcon::Btn4Black,   "Keyboard"},
-            {mc::HintIcon::RotaryNav,   "Posters"},
-            {mc::HintIcon::RotaryPress, "Open"},
+            {mc::HintIcon::RotaryNav,   "Browse"},
+            {mc::HintIcon::RotaryPress, "Detail"},
         });
     }
 }
