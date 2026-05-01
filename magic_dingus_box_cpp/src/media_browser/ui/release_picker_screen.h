@@ -31,6 +31,7 @@ public:
     struct ReleaseCandidate {
         std::string title;
         std::string indexer;
+        int         indexer_id = 0;   // Radarr's indexerId — required to grab
         std::string guid;
         std::string download_url;
         int         seeders   = 0;

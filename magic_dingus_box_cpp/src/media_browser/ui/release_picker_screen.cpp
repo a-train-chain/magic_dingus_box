@@ -65,19 +65,18 @@ std::string format_bytes(int64_t b) {
 }
 
 // Build the JSON release payload Radarr's POST /api/v3/release expects.
-// At minimum we need guid + indexerId, but we can't reconstruct the
-// indexerId from the candidate alone (it's a Radarr-internal int), so
-// we forward the few identifying fields we DO have. Radarr's grab
-// endpoint will look up the cached release record by guid + matching
-// title / size and grab from there. If the picker was sourced from
-// /api/v3/release directly (the recommended call), the server-side
-// cache hit is reliable; if sourced from Prowlarr's download_url,
-// Radarr will fall back to the URL.
+// At minimum Radarr needs guid + indexerId — without indexerId the grab
+// endpoint returns 404. Candidates sourced from Radarr's own
+// /api/v3/release?movieId=X (the path Detail uses, see Task 13) carry
+// indexerId natively. Candidates that omit it (e.g. constructed from
+// Prowlarr-only data) fall back to guid + downloadUrl, which Radarr
+// can resolve via its release cache when the entry is still warm.
 Json::Value to_release_json(const ReleasePickerScreen::ReleaseCandidate& c) {
     Json::Value out(Json::objectValue);
     out["guid"]        = c.guid;
     out["title"]       = c.title;
     out["downloadUrl"] = c.download_url;
+    if (c.indexer_id > 0) out["indexerId"] = c.indexer_id;
     if (c.size_bytes > 0) out["size"] = static_cast<Json::Int64>(c.size_bytes);
     return out;
 }

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -13,6 +14,7 @@
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/release_picker_screen.h"
 
 namespace media_browser { class RadarrClient; }
 namespace media_browser { class TmdbClient; }
@@ -127,6 +129,19 @@ public:
     // if no playable file exists.
     PlayTarget get_play_target() const;
 
+    // Detail->ReleasePicker handoff. The dispatcher in main.cpp registers
+    // a callback that forwards (movie_title, candidates) into the picker
+    // screen's set_candidates() before the screen transition lands. Set
+    // by main.cpp once at construction; if unregistered (e.g. unit tests
+    // that don't include the picker screen), do_pick_source() returns
+    // Screen::Detail without transitioning. See Task 13.
+    using PickerCallback = std::function<void(
+        std::string title,
+        std::vector<ReleasePickerScreen::ReleaseCandidate> rows)>;
+    void set_picker_callback(PickerCallback cb) {
+        picker_callback_ = std::move(cb);
+    }
+
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
@@ -154,6 +169,7 @@ private:
         Play,
         Retry,
         MoreInfo,        // Placeholder — future sub-screen with full trivia.
+        PickSource,      // Manual release-picker (only when in library).
     };
 
     struct Button {
@@ -214,6 +230,7 @@ private:
     Screen do_play();
     Screen do_retry();
     Screen do_more_info();
+    Screen do_pick_source();
 
     // Brief toast messages (e.g. "Search triggered", "Added to library").
     void show_banner(std::string text);
@@ -285,6 +302,13 @@ private:
     // in the destructor so a worker mid-CURL doesn't outlive the
     // DetailScreen and segfault when it tries to publish.
     std::vector<std::thread> tmdb_workers_;
+
+    // Callback set by main.cpp to forward (movie title + candidate rows)
+    // into ReleasePickerScreen::set_candidates() before the dispatcher
+    // transitions us to Screen::ReleasePicker. Unset in unit-test builds
+    // that don't link the picker screen — do_pick_source() degrades to a
+    // no-op + toast in that case.
+    PickerCallback picker_callback_;
 };
 
 }  // namespace media_browser::ui

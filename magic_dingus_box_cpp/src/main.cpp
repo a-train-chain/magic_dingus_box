@@ -614,6 +614,18 @@ int main(int /* argc */, char* /* argv */[]) {
     // Manual release-picker screen — opened from Detail's "Pick a source"
     // button (Task 13) when the user wants to override Radarr's auto-pick.
     media_browser::ui::ReleasePickerScreen mb_release_picker(radarr);
+    // Detail->ReleasePicker handoff: Detail builds the candidate list
+    // (sourced from radarr_.get_releases_for_movie()) and pushes it into
+    // the picker via this callback before requesting Screen::ReleasePicker.
+    // Sourcing from Radarr (not Prowlarr's cached results) ensures every
+    // candidate carries the indexerId that grab_release() requires; see
+    // the Task 13 commit for the rationale.
+    mb_detail.set_picker_callback(
+        [&mb_release_picker](
+            std::string title,
+            std::vector<media_browser::ui::ReleasePickerScreen::ReleaseCandidate> rows) {
+            mb_release_picker.set_candidates(std::move(title), std::move(rows));
+        });
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
     // triggers this callback AND returns Screen::Exit, so the dispatcher

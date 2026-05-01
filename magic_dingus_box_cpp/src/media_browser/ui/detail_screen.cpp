@@ -448,12 +448,20 @@ void DetailScreen::rebuild_buttons() {
             break;
         case Mode::InLibraryNoFile:
             buttons_.push_back({Action::SearchAgain, "Search Again"});
+            // "Pick a source" — gated on the movie being in the library
+            // because Radarr's POST /api/v3/release endpoint requires
+            // indexerId, which we only get from
+            // get_releases_for_movie(radarr_movie_id) — see Task 13. With
+            // no radarr_id we have no way to fetch a list of grabbable
+            // releases.
+            buttons_.push_back({Action::PickSource, "Pick a source"});
             buttons_.push_back(remove_pending_
                                ? Button{Action::ConfirmRemove, "Confirm Remove"}
                                : Button{Action::Remove, "Remove"});
             break;
         case Mode::InLibraryWithFile:
             buttons_.push_back({Action::Play, "Play"});
+            buttons_.push_back({Action::PickSource, "Pick a source"});
             buttons_.push_back(remove_pending_
                                ? Button{Action::ConfirmRemove, "Confirm Remove"}
                                : Button{Action::Remove, "Remove"});
@@ -537,6 +545,7 @@ Screen DetailScreen::on_activate() {
         case Action::Play:           return do_play();
         case Action::Retry:          return do_retry();
         case Action::MoreInfo:       return do_more_info();
+        case Action::PickSource:     return do_pick_source();
     }
     return Screen::Detail;
 }
@@ -809,6 +818,72 @@ Screen DetailScreen::do_more_info() {
     // dead. Keeps the user oriented while real content is built.
     show_banner("More Info — coming soon");
     return Screen::Detail;
+}
+
+Screen DetailScreen::do_pick_source() {
+    // Open the manual release picker so the user can override Radarr's
+    // auto-pick. Radarr's grab endpoint requires indexerId, which only
+    // comes back from /api/v3/release?movieId=X (Radarr's own release
+    // search), so this button is only useful once the movie is in the
+    // library and we have a radarr_id. Prowlarr's cached search results
+    // would NOT carry indexerId — see Task 13's modification note.
+    if (!movie_.has_value() || movie_->radarr_id <= 0) {
+        ::ui::Toast::show("Add to library first to pick a source");
+        return Screen::Detail;
+    }
+    auto releases = radarr_.get_releases_for_movie(movie_->radarr_id);
+    if (releases.empty()) {
+        ::ui::Toast::show("No releases found — Radarr search returned nothing");
+        return Screen::Detail;
+    }
+
+    std::vector<ReleasePickerScreen::ReleaseCandidate> candidates;
+    candidates.reserve(releases.size());
+    for (const auto& r : releases) {
+        ReleasePickerScreen::ReleaseCandidate c;
+        c.title        = r.get("title", "").asString();
+        c.indexer      = r.get("indexer", "").asString();
+        c.indexer_id   = r.get("indexerId", 0).asInt();
+        c.guid         = r.get("guid", "").asString();
+        c.download_url = r.get("downloadUrl", "").asString();
+        c.seeders      = r.get("seeders", 0).asInt();
+        c.leechers     = r.get("leechers", 0).asInt();
+        c.size_bytes   = r.get("size", 0).asInt64();
+        c.score        = r.get("customFormatScore", 0).asInt();
+        // Cheap title-based parsing for the picker's column badges. Radarr's
+        // /api/v3/release response also carries a structured `quality` block
+        // we could plumb through, but the picker columns only need short
+        // string tags and the title regex covers ~95% of releases without
+        // wiring up a new parser.
+        auto match_first = [](const std::string& h,
+                              std::initializer_list<const char*> ns) {
+            for (auto* n : ns) {
+                if (h.find(n) != std::string::npos) return std::string(n);
+            }
+            return std::string{};
+        };
+        c.codec      = match_first(c.title,
+            {"x264", "x265", "h264", "h265", "AV1", "HEVC"});
+        c.resolution = match_first(c.title,
+            {"720p", "1080p", "2160p", "4K"});
+        c.source     = match_first(c.title,
+            {"BluRay", "WEB-DL", "WEBRip", "HDTV", "BDRip"});
+        candidates.push_back(std::move(c));
+    }
+
+    if (!picker_callback_) {
+        // Defensive: if main.cpp didn't wire the callback (shouldn't
+        // happen in production), surface a banner instead of silently
+        // landing on an empty picker screen.
+        show_banner("Picker not wired — internal error");
+        return Screen::Detail;
+    }
+
+    std::string movie_title = tmdb_detail_.has_value()
+                                ? tmdb_detail_->title
+                                : movie_->title;
+    picker_callback_(std::move(movie_title), std::move(candidates));
+    return Screen::ReleasePicker;
 }
 
 void DetailScreen::show_banner(std::string text) {
@@ -1334,6 +1409,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     break;
                 case Action::SearchAgain:
                 case Action::Retry:
+                case Action::PickSource:
                     kind = chrome::ButtonKind::Action;
                     break;
                 case Action::Remove:
