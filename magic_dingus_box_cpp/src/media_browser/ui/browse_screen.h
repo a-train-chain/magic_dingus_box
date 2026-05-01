@@ -248,6 +248,11 @@ private:
     // refetch the full library on every press. Populated on enter() and
     // refreshed after a successful add.
     std::unordered_set<int> library_tmdb_ids_;
+    // tmdb_ids of movies currently in the Radarr download queue. Populated
+    // alongside library_tmdb_ids_ on enter() by calling get_queue() and
+    // cross-referencing with the library's radarr_id → tmdb_id mapping.
+    // Drives the DOWNLOADING badge on poster cards.
+    std::unordered_set<int> downloading_tmdb_ids_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
 };

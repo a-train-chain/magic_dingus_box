@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <unordered_set>
 #include <vector>
 
 #include "app/app_state.h"
@@ -108,6 +109,11 @@ private:
     std::vector<Movie> library_;          // Full library, as returned by Radarr.
     std::vector<const Movie*> view_;      // Filter-applied, possibly-sorted view.
     bool loaded_ = false;
+
+    // tmdb_ids of movies currently in the Radarr download queue. Populated
+    // in reload() alongside the library fetch. Drives the DOWNLOADING badge
+    // on poster cards (takes precedence over the always-true in_library flag).
+    std::unordered_set<int> downloading_tmdb_ids_;
 
     int selected_tmdb_id_ = 0;
 

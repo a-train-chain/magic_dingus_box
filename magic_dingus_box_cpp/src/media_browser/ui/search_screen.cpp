@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include <spdlog/spdlog.h>
@@ -199,6 +200,14 @@ void SearchScreen::run_lib_fetch(uint64_t gen) {
             return;
         }
     }
+    // Fetch queue alongside the library so apply_pending_lib() can populate
+    // downloading_tmdb_ids_ without an extra HTTP round-trip.
+    r.queue = radarr_.get_queue();
+    if (gen != lib_current_gen_.load()) {
+        spdlog::info("[SearchScreen] lib gen={} stale after get_queue; discarding",
+                     gen);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lk(lib_result_mtx_);
         if (gen != lib_current_gen_.load()) return;  // re-check under lock
@@ -214,9 +223,22 @@ void SearchScreen::apply_pending_lib() {
         std::lock_guard<std::mutex> lk(lib_result_mtx_);
         incoming = std::move(lib_pending_);
     }
+    // Build radarr_id → tmdb_id map for queue cross-reference.
+    std::unordered_map<int, int> radarr_to_tmdb;
     library_tmdb_ids_.clear();
     for (const auto& m : incoming.library) {
-        if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
+        if (m.tmdb_id > 0) {
+            library_tmdb_ids_.insert(m.tmdb_id);
+            radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
+        }
+    }
+    // Populate the downloading set.
+    downloading_tmdb_ids_.clear();
+    for (const auto& qi : incoming.queue) {
+        auto it = radarr_to_tmdb.find(qi.movie_id);
+        if (it != radarr_to_tmdb.end()) {
+            downloading_tmdb_ids_.insert(it->second);
+        }
     }
     if (incoming.profiles_valid) {
         quality_profiles_ = std::move(incoming.profiles);
@@ -224,8 +246,9 @@ void SearchScreen::apply_pending_lib() {
     }
     lib_loaded_ = true;
     lib_loading_ = false;
-    spdlog::info("[SearchScreen] applied lib: {} ids, {} profiles",
-                 library_tmdb_ids_.size(), quality_profiles_.size());
+    spdlog::info("[SearchScreen] applied lib: {} ids, {} profiles, {} downloading",
+                 library_tmdb_ids_.size(), quality_profiles_.size(),
+                 downloading_tmdb_ids_.size());
 }
 
 void SearchScreen::quick_add_focused() {
@@ -828,18 +851,22 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const int y = static_cast<int>(grid_top)
                         + (row - scroll_row_) * (cell_h + kRowGap);
 
-            // Poster CARD: tint fill + IN LIBRARY badge + year pill in
-            // one shared helper. Real artwork can later overlay this
-            // (mb_draw_poster_or_tint) but the styled card alone reads
-            // as a designed slot even before TMDB images load.
+            // Poster CARD: tint fill + IN LIBRARY / DOWNLOADING badge +
+            // year pill in one shared helper. Real artwork can later
+            // overlay this (mb_draw_poster_or_tint) but the styled card
+            // alone reads as a designed slot even before TMDB images load.
             const ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
             const bool in_library =
                 (m.tmdb_id > 0 &&
                  library_tmdb_ids_.count(m.tmdb_id) > 0);
+            const bool is_downloading =
+                (m.tmdb_id > 0 &&
+                 downloading_tmdb_ids_.count(m.tmdb_id) > 0);
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 m.title, m.year,
-                tint, in_library, /*download_pct=*/-1,
+                tint, in_library,
+                /*download_pct=*/is_downloading ? 0 : -1,
                 /*poster_url=*/m.poster_url);
 
             // Meta line below poster: title only, wrapped to 2 lines

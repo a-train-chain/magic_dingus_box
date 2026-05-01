@@ -66,11 +66,13 @@ ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y) {
     return {x, y, box_w, box_h};
 }
 
-ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y, int percent_0_to_99) {
+ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y,
+                       [[maybe_unused]] int percent_0_to_99) {
     const auto& th = r.mb_theme();
-    char buf[8];
-    std::snprintf(buf, sizeof(buf), "%d%%", std::clamp(percent_0_to_99, 0, 99));
-    const std::string label = buf;
+    // percent_0_to_99 is retained in the signature so call sites don't need
+    // to change, but we show a fixed label — reliable percentage data isn't
+    // available from Radarr's queue endpoint.
+    const std::string label = "DOWNLOADING";
     const int text_w = r.mb_text_width(label, kBadgeFontPx);
     const int box_w  = text_w + 2 * kBadgePadX;
     const int box_h  = kBadgeFontPx + 2 * kBadgePadY;

@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <strings.h>  // strcasecmp
+#include <unordered_map>
 
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -261,6 +262,19 @@ void LibraryScreen::enter() {
 
 void LibraryScreen::reload() {
     library_ = radarr_.get_library();
+    // Build radarr_id → tmdb_id map so we can cross-reference the queue.
+    std::unordered_map<int, int> radarr_to_tmdb;
+    for (const auto& m : library_) {
+        if (m.tmdb_id > 0) radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
+    }
+    // Populate the downloading set from the current Radarr queue.
+    downloading_tmdb_ids_.clear();
+    for (const auto& qi : radarr_.get_queue()) {
+        auto it = radarr_to_tmdb.find(qi.movie_id);
+        if (it != radarr_to_tmdb.end()) {
+            downloading_tmdb_ids_.insert(it->second);
+        }
+    }
     loaded_ = true;
     rebuild_view();
 }
@@ -679,12 +693,16 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
             // Poster CARD via shared chrome helper — real TMDB image
             // when loaded, deterministic tint placeholder while it
-            // fetches, plus year pill + IN LIBRARY badge.
+            // fetches, plus year pill + IN LIBRARY badge (or
+            // DOWNLOADING badge when the movie is still in the queue).
             const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
+            const bool is_downloading =
+                downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 mv->title, mv->year,
-                tint, /*in_library=*/true, /*download_pct=*/-1,
+                tint, /*in_library=*/true,
+                /*download_pct=*/is_downloading ? 0 : -1,
                 /*poster_url=*/mv->poster_url);
 
             // Meta line below poster: title only, wrapped to 2 lines

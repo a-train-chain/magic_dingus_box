@@ -120,9 +120,12 @@ private:
     // Bundled output of run_lib_fetch(). profiles_valid is separate
     // because we only re-fetch profiles on the FIRST library load —
     // subsequent refreshes (post-add) just refresh the in-library set.
+    // queue carries the Radarr download queue so apply_pending_lib()
+    // can populate downloading_tmdb_ids_ without an extra round-trip.
     struct LibFetchResult {
         std::vector<Movie>          library;
         std::vector<QualityProfile> profiles;
+        std::vector<QueueItem>      queue;
         bool profiles_valid = false;
     };
 
@@ -146,6 +149,10 @@ private:
 
     // --- Quick-add caches (preserved post-v1.6.x, see comment above) ---
     std::unordered_set<int> library_tmdb_ids_;
+    // tmdb_ids of movies currently in the Radarr download queue. Populated
+    // alongside library_tmdb_ids_ in run_lib_fetch() / apply_pending_lib().
+    // Drives the DOWNLOADING badge on result poster cards.
+    std::unordered_set<int> downloading_tmdb_ids_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;   // True once profiles_ have been fetched.
     bool lib_loaded_     = false;   // True once the in-library set has populated

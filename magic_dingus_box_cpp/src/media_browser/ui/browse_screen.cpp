@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 
 #include <spdlog/spdlog.h>
 
@@ -320,8 +321,21 @@ void BrowseScreen::enter() {
     if (services_ok_) {
         auto lib = radarr_.get_library();
         library_tmdb_ids_.clear();
+        // Build radarr_id → tmdb_id map for queue cross-reference below.
+        std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
-            if (m.tmdb_id > 0) library_tmdb_ids_.insert(m.tmdb_id);
+            if (m.tmdb_id > 0) {
+                library_tmdb_ids_.insert(m.tmdb_id);
+                radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
+            }
+        }
+        // Populate the downloading set from the current Radarr queue.
+        downloading_tmdb_ids_.clear();
+        for (const auto& qi : radarr_.get_queue()) {
+            auto it = radarr_to_tmdb.find(qi.movie_id);
+            if (it != radarr_to_tmdb.end()) {
+                downloading_tmdb_ids_.insert(it->second);
+            }
         }
         if (!library_cached_) {
             quality_profiles_ = radarr_.get_quality_profiles();
@@ -1012,10 +1026,12 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // overlay on top; for now the styled card IS the visual.
             const ::ui::Color tint = poster_tint_for_tmdb(movie.tmdb_id);
             const bool in_library = library_tmdb_ids_.count(movie.tmdb_id) > 0;
+            const bool is_downloading = downloading_tmdb_ids_.count(movie.tmdb_id) > 0;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 movie.title, movie.year,
-                tint, in_library, /*download_pct=*/-1,
+                tint, in_library,
+                /*download_pct=*/is_downloading ? 0 : -1,
                 // TmdbSearchHit names the URL field `poster_path` even
                 // though it's already a fully-resolved CDN URL (see
                 // tmdb_client.cpp resolve_poster_url). The artwork
