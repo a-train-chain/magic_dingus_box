@@ -106,6 +106,13 @@ protected:
     virtual std::string http_post(const std::string& path, const std::string& body);
     virtual std::string http_delete(const std::string& path);
 
+    // Long-timeout GET for endpoints that do synchronous work upstream
+    // (notably /api/v3/release?movieId=X, which kicks off an interactive
+    // search across every Prowlarr-synced indexer and can take 10-30s).
+    // Other endpoints use http_get() with the default cfg_.timeout_secs
+    // (5s) so a stalled Radarr doesn't freeze the UI on routine calls.
+    virtual std::string http_get_long(const std::string& path, int timeout_secs);
+
     Config cfg_;
     std::string last_error_;
 };

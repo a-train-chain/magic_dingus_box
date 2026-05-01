@@ -89,13 +89,19 @@ TEST_CASE("RadarrClient::get_releases_for_movie parses release array",
     class StubRadarr : public mb::RadarrClient {
     public:
         StubRadarr() : RadarrClient(Config{}) {}
-        std::string http_get(const std::string& path) override {
+        // get_releases_for_movie uses http_get_long (45s timeout) because
+        // Radarr's interactive search is genuinely slow. The test verifies
+        // the long-timeout variant is invoked AND that the picker would
+        // accept enough time for a real Radarr response.
+        std::string http_get_long(const std::string& path, int timeout_secs) override {
             REQUIRE(path == "/api/v3/release?movieId=99");
+            REQUIRE(timeout_secs >= 30);  // must outlast Radarr's interactive search
             return R"([
               {"guid":"magnet:?xt=urn:btih:abc","indexerId":7,"title":"R1","seeders":200,"size":2147483648},
               {"guid":"magnet:?xt=urn:btih:def","indexerId":7,"title":"R2","seeders":50,"size":943718400}
             ])";
         }
+        std::string http_get(const std::string&) override { return ""; }
         std::string http_post(const std::string&, const std::string&) override { return ""; }
         std::string http_delete(const std::string&) override { return ""; }
     };

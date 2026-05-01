@@ -35,6 +35,10 @@ RadarrClient::~RadarrClient() {
 }
 
 std::string RadarrClient::http_get(const std::string& path) {
+    return http_get_long(path, cfg_.timeout_secs);
+}
+
+std::string RadarrClient::http_get_long(const std::string& path, int timeout_secs) {
     CURL* curl = curl_easy_init();
     if (!curl) { last_error_ = "curl init failed"; return {}; }
     std::string url = cfg_.base_url + path;
@@ -46,7 +50,7 @@ std::string RadarrClient::http_get(const std::string& path) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_secs));
     CURLcode rc = curl_easy_perform(curl);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
@@ -288,8 +292,14 @@ bool RadarrClient::grab_release(const Json::Value& release) {
 
 std::vector<Json::Value>
 RadarrClient::get_releases_for_movie(int radarr_movie_id) {
-    std::string resp = http_get("/api/v3/release?movieId=" +
-                                std::to_string(radarr_movie_id));
+    // Interactive search — Radarr hits every Prowlarr-synced indexer
+    // synchronously and merges results. Empirically takes 10-30s on a
+    // 5-indexer pool; the standard 5s http_get timeout truncates the
+    // call and returns empty (manifesting as "No releases found" in the
+    // picker UI).
+    std::string resp = http_get_long(
+        "/api/v3/release?movieId=" + std::to_string(radarr_movie_id),
+        /*timeout_secs=*/45);
     std::vector<Json::Value> out;
     if (resp.empty()) return out;
     Json::CharReaderBuilder b;
