@@ -23,6 +23,7 @@
 #include "media_browser/ui/mb_settings_screen.h"
 #include "media_browser/ui/playback_screen.h"
 #include "media_browser/ui/mb_exit_modal.h"
+#include "media_browser/health/vpn_health_monitor.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
@@ -360,7 +361,19 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Load saved settings (CRT effects, loop, shuffle, etc.)
     SettingsPersistence::load_settings(state);
-    
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // Layer 3 monitor — only meaningful when Layers 1+2 already pass.
+    // Otherwise the Settings menu won't expose MB anyway, so save the
+    // background polling work. Lifetime: declared here at function scope
+    // so its destructor stops the worker thread cleanly on main() exit.
+    std::unique_ptr<media_browser::VpnHealthMonitor> vpn_health_monitor;
+    if (state.media_browser_unlocked && state.media_browser_vpn_configured) {
+        vpn_health_monitor = std::make_unique<media_browser::VpnHealthMonitor>(state);
+        vpn_health_monitor->start();
+    }
+#endif
+
     // Load available bezels from bezels.json using JsonCpp
     std::vector<std::string> bezel_json_paths = config::get_bezel_search_paths();
 
@@ -1035,6 +1048,13 @@ int main(int /* argc */, char* /* argv */[]) {
     // connect to the wrong sink. We move the stream once after playback starts.
     bool audio_stream_move_pending = (state.audio_settings.output != app::AudioOutput::AUTO);
 
+#ifdef MEDIA_BROWSER_ENABLED
+    // Track previous Layer 3 state to detect drops (true → false transition)
+    // and surface a toast. Recovery is silent — operators don't need a
+    // notification when things start working again.
+    bool prev_vpn_healthy = state.media_browser_vpn_healthy;
+#endif
+
     while (running) {
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "WATCHDOG=1");
@@ -1191,6 +1211,18 @@ int main(int /* argc */, char* /* argv */[]) {
             state.audio_settings.apply_output();
             audio_stream_move_pending = false;
         }
+
+#ifdef MEDIA_BROWSER_ENABLED
+        // Toast on Layer 3 drops. Suppressed during initial Unknown→state
+        // settling because prev_vpn_healthy is initialized to the boot value.
+        if (vpn_health_monitor) {
+            bool now = state.media_browser_vpn_healthy;
+            if (prev_vpn_healthy && !now) {
+                ui::Toast::show("Media Browser unavailable — VPN tunnel down");
+            }
+            prev_vpn_healthy = now;
+        }
+#endif
 
         // Update seek bar timer (countdown to auto-hide)
         if (state.seek_bar_timer > 0.0) {
