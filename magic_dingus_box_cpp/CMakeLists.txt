@@ -347,6 +347,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_radarr_parsers.cpp
         tests/media_browser/test_radarr_client.cpp
         tests/media_browser/test_artwork_cache.cpp
+        tests/media_browser/test_prowlarr_client.cpp
         src/media_browser/artwork/artwork_cache.cpp
         ${MEDIA_BROWSER_SOURCES}
     )

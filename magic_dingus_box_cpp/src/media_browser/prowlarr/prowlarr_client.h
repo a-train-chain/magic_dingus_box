@@ -74,6 +74,35 @@ public:
 
     State state() const { return state_.load(); }
 
+    struct ReleaseRecord {
+        std::string title;
+        std::string indexer;
+        std::string guid;
+        std::string download_url;     // magnet: or http URL
+        std::string protocol;          // "torrent" or "usenet"
+        int         seeders   = 0;
+        int         leechers  = 0;
+        long long   size_bytes = 0;
+        long long   age_seconds = 0;   // since publish, if Prowlarr provides
+    };
+
+    struct IndexerStats {
+        std::string name;
+        int   result_count = 0;
+        int   results_above_seed_threshold = 0;
+        int   last_response_ms = 0;       // 0 if not measured per-indexer
+        std::string last_error;            // empty if healthy
+    };
+
+    // Static parsers (separated for unit testing — don't need a live HTTP client).
+    static std::vector<ReleaseRecord> parse_search_response(const std::string& json_body);
+    static std::vector<IndexerStats>  aggregate_indexer_stats(
+        const std::vector<ReleaseRecord>& records, int seed_threshold);
+
+    // Live accessors (populated after search_async completes).
+    std::vector<ReleaseRecord> get_last_releases() const;
+    std::vector<IndexerStats>  get_last_indexer_stats() const;
+
     // Kick off a background search. Title is required; year is optional
     // (pass 0 to skip). Cancels any in-flight search via abort flag.
     // Idempotent if called repeatedly with the same title+year while
@@ -129,6 +158,15 @@ private:
     mutable std::mutex result_mtx_;
     std::optional<ReleaseSummary> result_;
     std::string last_error_;
+
+    // Per-release records + per-indexer stats from the most recent
+    // search. Populated alongside `result_` on search completion. Kept
+    // under a separate mutex from `result_mtx_` so the larger Sources
+    // panel reads don't contend with the lightweight Detail-screen
+    // ReleaseSummary peek that runs every render frame.
+    mutable std::mutex                    last_results_mu_;
+    std::vector<ReleaseRecord>            last_releases_;       // guarded by last_results_mu_
+    std::vector<IndexerStats>             last_indexer_stats_;  // guarded by last_results_mu_
 
     // All worker threads spawned during this client's lifetime, in
     // creation order. The most recent worker writes the result; older

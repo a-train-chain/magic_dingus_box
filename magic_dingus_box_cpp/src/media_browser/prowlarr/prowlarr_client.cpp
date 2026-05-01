@@ -8,6 +8,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <sstream>
 
 namespace media_browser {
@@ -243,6 +245,18 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
         return;
     }
 
+    // Populate the per-release records + per-indexer stats for the
+    // upcoming Sources panel + release-picker UI. This is additive: the
+    // existing aggregate ReleaseSummary below remains the source of
+    // truth for the Detail screen's AVAILABILITY readout.
+    {
+        auto records = parse_search_response(body);
+        auto stats   = aggregate_indexer_stats(records, /*seed_threshold=*/10);
+        std::lock_guard<std::mutex> lk(last_results_mu_);
+        last_releases_      = std::move(records);
+        last_indexer_stats_ = std::move(stats);
+    }
+
     ReleaseSummary summary;
     int filtered_adult = 0;
     for (const auto& r : root) {
@@ -294,6 +308,59 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
         last_error_.clear();
     }
     state_.store(State::Ready);
+}
+
+std::vector<ProwlarrClient::ReleaseRecord>
+ProwlarrClient::parse_search_response(const std::string& json_body) {
+    std::vector<ReleaseRecord> out;
+    Json::CharReaderBuilder b;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(json_body);
+    if (!Json::parseFromStream(b, is, &root, &err)) return out;
+    if (!root.isArray()) return out;
+    for (const auto& r : root) {
+        ReleaseRecord rr;
+        rr.title        = r.get("title", "").asString();
+        rr.indexer      = r.get("indexer", "").asString();
+        rr.guid         = r.get("guid", "").asString();
+        rr.download_url = r.get("downloadUrl", "").asString();
+        rr.protocol     = r.get("protocol", "torrent").asString();
+        rr.seeders      = r.get("seeders", 0).asInt();
+        rr.leechers     = r.get("leechers", 0).asInt();
+        rr.size_bytes   = r.get("size", 0).asInt64();
+        rr.age_seconds  = r.get("ageHours", 0).asInt64() * 3600;
+        out.push_back(std::move(rr));
+    }
+    return out;
+}
+
+std::vector<ProwlarrClient::IndexerStats>
+ProwlarrClient::aggregate_indexer_stats(
+    const std::vector<ReleaseRecord>& records, int seed_threshold) {
+    std::map<std::string, IndexerStats> by_name;
+    for (const auto& r : records) {
+        auto& s = by_name[r.indexer];
+        s.name = r.indexer;
+        s.result_count++;
+        if (r.seeders >= seed_threshold) s.results_above_seed_threshold++;
+    }
+    std::vector<IndexerStats> out;
+    out.reserve(by_name.size());
+    for (auto& kv : by_name) out.push_back(std::move(kv.second));
+    return out;
+}
+
+std::vector<ProwlarrClient::ReleaseRecord>
+ProwlarrClient::get_last_releases() const {
+    std::lock_guard<std::mutex> lk(last_results_mu_);
+    return last_releases_;
+}
+
+std::vector<ProwlarrClient::IndexerStats>
+ProwlarrClient::get_last_indexer_stats() const {
+    std::lock_guard<std::mutex> lk(last_results_mu_);
+    return last_indexer_stats_;
 }
 
 std::string ProwlarrClient::http_get(const std::string& path) {
