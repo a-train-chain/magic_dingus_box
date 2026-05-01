@@ -157,7 +157,7 @@
             "name": "value",
             "label": "Regular Expression",
             "helpText": "Custom Format RegEx is Case Insensitive",
-            "value": "\\b(yify|yts\\.?(mx|am|ag)|galaxyrg|rarbg|fgt|surge|piratess?)\\b",
+            "value": "\\b(yify|yts\\.?(mx|am|ag)|galaxyrg|rarbg|fgt|surge|piratess?|tgx|evo|aoc|ion10|qxr|successfulcrab)\\b",
             "type": "textbox",
             "advanced": false,
             "privacy": "normal",
