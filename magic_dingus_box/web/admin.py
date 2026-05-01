@@ -2380,12 +2380,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def media_browser_visibility():  # type: ignore[no-redef]
         """Public — return whether the Media Browser tab should be rendered.
 
-        Always 200, never errors. The frontend uses this on page init to
-        decide whether to render the tab nav button + section at all. All
-        OTHER /admin/media-browser/* routes additionally enforce the same
-        check server-side and return 403 when locked.
+        Always 200, never errors. Returns two flags:
+          - visible: Layer 1 (unlock). Whether to render the tab DOM
+            at all.
+          - vpn_configured: Layer 2 (WireGuard config dropped). When
+            visible=true and vpn_configured=false, the frontend shows
+            a "Configure VPN" form instead of the dashboard.
+
+        Other /admin/media-browser/* routes enforce the same gates
+        server-side via _check_media_browser_gates and return 403
+        (`media_browser_locked` or `vpn_not_configured`) on failure.
         """
-        return success_response(data={"visible": _media_browser_unlocked()})
+        return success_response(data={
+            "visible": _media_browser_unlocked(),
+            "vpn_configured": _vpn_configured(),
+        })
 
     @app.get("/admin/media-browser/status")
     def media_browser_status():  # type: ignore[no-redef]
