@@ -118,6 +118,8 @@ public:
         std::string synopsis;         // overview from TMDB
         std::string genres;           // pre-formatted "Action · Drama · Crime"
         std::string poster_url;       // full URL from TmdbMovieDetail::poster_path
+        std::vector<std::string> cast;       // top cast names from TmdbMovieDetail
+        std::string director;                // primary director name
     };
 
     // Returns the host-resolved file path + display title (+ TMDB overlay

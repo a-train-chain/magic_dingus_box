@@ -112,6 +112,24 @@ private:
 
     // Bottom-1/3 similar-films overlay (rotary press to open, BTN4 to close).
     PlaybackOverlay overlay_;
+
+    // --- HUD auto-hide state machine ---
+    //
+    // The scrub bar and footer hints are hidden while the movie plays
+    // normally. Any input event (button press, rotary, pause) bumps
+    // hud_visible_until_ to now + kHudShowMs. The render path fades the
+    // HUD out over kHudFadeMs once the window expires. While paused the
+    // HUD is always fully visible regardless of the timer.
+    std::chrono::steady_clock::time_point hud_visible_until_{};
+    static constexpr int kHudShowMs = 3000;   // visible for 3s after any input
+    static constexpr int kHudFadeMs = 300;    // fade tail duration
+
+    // Extend hud_visible_until_ to now + kHudShowMs. Call on every input.
+    void bump_hud_visibility();
+
+    // Compute HUD alpha [0..1]. 1.0 when paused; otherwise time-window based.
+    // `paused` should be !state_.video_active (or however pause state is checked).
+    float hud_alpha(bool paused) const;
 };
 
 }  // namespace media_browser::ui

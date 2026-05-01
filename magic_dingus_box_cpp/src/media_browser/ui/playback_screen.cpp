@@ -22,6 +22,21 @@ PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state
                                 QbittorrentClient* qbit)
     : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr), qbit_(qbit) {}
 
+void PlaybackScreen::bump_hud_visibility() {
+    hud_visible_until_ = std::chrono::steady_clock::now()
+                       + std::chrono::milliseconds(kHudShowMs);
+}
+
+float PlaybackScreen::hud_alpha(bool paused) const {
+    if (paused) return 1.0f;
+    auto now = std::chrono::steady_clock::now();
+    if (now >= hud_visible_until_) return 0.0f;
+    auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        hud_visible_until_ - now).count();
+    if (remaining_ms > kHudFadeMs) return 1.0f;
+    return static_cast<float>(remaining_ms) / static_cast<float>(kHudFadeMs);
+}
+
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
     movie_path_ = std::move(host_path);
     movie_title_ = std::move(title);
@@ -97,6 +112,9 @@ void PlaybackScreen::enter() {
     // Title marquee for 3 seconds on entry.
     title_marquee_until_ = std::chrono::steady_clock::now()
                           + std::chrono::seconds(3);
+
+    // Show the HUD briefly on entry so the user sees the controls.
+    bump_hud_visibility();
 
     // Initial warmup: suppress EOS detection for ~1 second so an
     // immediate user-initiated scrub right after pressing Play doesn't
@@ -175,6 +193,7 @@ Screen PlaybackScreen::handle_input(
         // we see it, so reaching here means it's a short press. We don't call
         // controller_.stop() because leave() will (idempotently).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            bump_hud_visibility();
             if (overlay_.is_open()) {
                 overlay_.close();
                 return Screen::Playback;
@@ -189,6 +208,7 @@ Screen PlaybackScreen::handle_input(
         //     the movie keeps playing.
         // Note: only on key-down (pressed == true); ignore key-up.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
+            bump_hud_visibility();
             if (!overlay_.is_open()) {
                 overlay_.open();
                 return Screen::Playback;
@@ -252,6 +272,7 @@ Screen PlaybackScreen::handle_input(
         // when the overlay is open.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             controller_.toggle_pause();
+            bump_hud_visibility();  // Pause/resume always shows HUD.
             continue;
         }
 
@@ -274,6 +295,7 @@ Screen PlaybackScreen::handle_input(
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
+            bump_hud_visibility();
             continue;
         }
         if (e.action == platform::InputAction::PREV && e.pressed) {
@@ -281,6 +303,7 @@ Screen PlaybackScreen::handle_input(
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
+            bump_hud_visibility();
             continue;
         }
 
@@ -290,6 +313,7 @@ Screen PlaybackScreen::handle_input(
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
+            bump_hud_visibility();
             continue;
         }
         if (e.action == platform::InputAction::SEEK_LEFT) {
@@ -297,6 +321,7 @@ Screen PlaybackScreen::handle_input(
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
+            bump_hud_visibility();
             continue;
         }
 
@@ -326,6 +351,7 @@ Screen PlaybackScreen::handle_input(
             state_.show_seek_bar = true;
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
+            bump_hud_visibility();
             continue;
         }
     }
@@ -393,31 +419,63 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        2.0f, th.dim, 0.95f * alpha);
     }
 
-    // Match the main UI's playlist seek bar exactly — same colors,
-    // same geometry (80% screen width, 4px track, 10px playhead, time
-    // labels above), same fade behavior. Single source of truth lives
-    // in Renderer::render_seek_bar; mb_render_seek_bar is a thin
-    // wrapper. video_active is no longer gated inside; the decision to
-    // show is purely show_seek_bar + timer, both of which the
-    // PlaybackScreen handle_input path already manages correctly.
-    r.mb_render_seek_bar(state_);
-
-    // Persistent control hint — full chrome footer (six-input icon row),
-    // matching every other Marquee screen. Replaces the previous bottom-
-    // right text-only hint. Sits above the 40 px wood-frame bottom band
-    // (the chrome helper anchors at screen_h - kFrameInset_px - kPad3).
-    // When the overlay is open the footer is hidden (the overlay renders its
-    // own hint row) so the two panels don't clash visually.
+    // HUD auto-hide: scrub bar + footer hints are only shown while paused,
+    // within 3s of any input, or during the 300ms fade-out window.
+    // When the overlay is open, the overlay has its own footer hints — the
+    // no-overlay HUD does NOT render in that case anyway, so the auto-hide
+    // only ever applies to the no-overlay playback state.
     if (!overlay_.is_open()) {
-        namespace mc = ::media_browser::ui::chrome;
-        mc::draw_footer_hints(r, screen_w, screen_h, {
-            {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
-            {mc::HintIcon::Btn2Red,     "Pause/Play"},
-            {mc::HintIcon::Btn3Green,   "+10s"},
-            {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
-            {mc::HintIcon::RotaryNav,   "Scrub"},
-            {mc::HintIcon::RotaryPress, "Open Menu"},
-        });
+        // Determine whether the movie is currently paused. video_active is
+        // false when paused (GStreamer pipeline in PAUSED state).
+        const bool paused = !state_.video_active;
+        const float alpha = hud_alpha(paused);
+
+        if (alpha > 0.0f) {
+            // Scrub bar: moved up so the footer hints can sit below it with
+            // breathing room above the bezel. New position: ~110px from
+            // screen bottom (was 60px). The renderer's seek bar uses
+            // show_seek_bar + seek_bar_timer; we pass it through as before,
+            // but also force-show when HUD is visible (paused or input bump)
+            // and alpha > 0.
+            //
+            // The seek bar render path in renderer.cpp uses its own state-
+            // gated draw; we apply the hud alpha by temporarily scaling the
+            // seek bar timer to ensure it draws, and restoring afterwards.
+            // A cleaner path: call mb_render_seek_bar_alpha once that exists.
+            // For now, since mb_render_seek_bar already handles its own alpha
+            // via seek_bar_timer, we just ensure show_seek_bar is true and
+            // then draw the footer hints with our alpha applied.
+            //
+            // Force the seek bar visible whenever the HUD is showing.
+            const bool saved_show = state_.show_seek_bar;
+            const double saved_timer = state_.seek_bar_timer;
+            if (alpha > 0.0f && !state_.show_seek_bar) {
+                // Temporarily inject a timer so the render path draws it.
+                state_.show_seek_bar = true;
+                state_.seek_bar_timer = static_cast<double>(alpha) * 0.5;
+            }
+            r.mb_render_seek_bar(state_);
+            // Restore original state (don't corrupt the seek-bar timer logic).
+            state_.show_seek_bar = saved_show;
+            state_.seek_bar_timer = saved_timer;
+
+            // Footer hints: draw with hud_alpha applied.
+            // draw_footer_hints doesn't accept an alpha parameter, so we
+            // only draw the hints when alpha is above the visibility threshold.
+            // The hints are positioned by the chrome helper at the screen's
+            // bezel-inset bottom — their position is already correct.
+            if (alpha > 0.05f) {
+                namespace mc = ::media_browser::ui::chrome;
+                mc::draw_footer_hints(r, screen_w, screen_h, {
+                    {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
+                    {mc::HintIcon::Btn2Red,     "Pause/Play"},
+                    {mc::HintIcon::Btn3Green,   "+10s"},
+                    {mc::HintIcon::Btn4Black,   "\xE2\x80\x94"},
+                    {mc::HintIcon::RotaryNav,   "Scrub"},
+                    {mc::HintIcon::RotaryPress, "Open Menu"},
+                });
+            }
+        }
     }
 
     // Overlay: bottom-1/3 panel with movie meta + similar-films carousel.

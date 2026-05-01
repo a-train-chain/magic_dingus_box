@@ -763,6 +763,14 @@ DetailScreen::PlayTarget DetailScreen::get_play_target() const {
             if (i > 0) pt.genres += " \xC2\xB7 ";  // UTF-8 middle dot
             pt.genres += d.genres[i];
         }
+        // Cast: carry top 5 names (overlay truncates further if needed).
+        for (size_t i = 0; i < d.cast_top.size() && i < 5; ++i) {
+            pt.cast.push_back(d.cast_top[i]);
+        }
+        // Director: use the first name from the directors list.
+        if (!d.directors.empty()) {
+            pt.director = d.directors[0];
+        }
     } else {
         pt.tmdb_id = tmdb_id_;  // at least carry the id for the prefetch
     }

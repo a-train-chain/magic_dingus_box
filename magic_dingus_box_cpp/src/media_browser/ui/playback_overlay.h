@@ -22,9 +22,12 @@ struct PlaybackOverlayMovieMeta {
     int year = 0;
     int runtime_min = 0;
     std::string genres;      // pre-formatted, e.g. "Action · Drama · Crime"
-    std::string synopsis;    // 2-line truncation done at render time
-    std::string poster_url;  // full URL (informational; rendering uses placeholder in v1.6.4)
+    std::string synopsis;    // truncation done at render time
+    std::string poster_url;  // full URL passed to artwork cache
     int tmdb_id = 0;         // 0 if local file with no TMDB binding
+    // Cast and director populated from TmdbMovieDetail when available.
+    std::vector<std::string> cast;       // top 3-5 actor names
+    std::string director;                // primary director name (first of directors list)
 };
 
 // Bottom-1/3 translucent overlay drawn on top of the playback video.

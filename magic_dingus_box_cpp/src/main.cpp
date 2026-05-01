@@ -1559,6 +1559,8 @@ int main(int /* argc */, char* /* argv */[]) {
                     meta.synopsis    = pt.synopsis;
                     meta.genres      = pt.genres;
                     meta.poster_url  = pt.poster_url;
+                    meta.cast        = pt.cast;
+                    meta.director    = pt.director;
                     mb_playback.set_movie_meta(std::move(meta));
                 }
                 active_mb_screen->leave();

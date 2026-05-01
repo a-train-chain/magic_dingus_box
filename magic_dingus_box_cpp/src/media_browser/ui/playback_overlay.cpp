@@ -14,12 +14,22 @@ namespace media_browser::ui {
 namespace {
 
 // Full-screen overlay. The overlay covers the entire playback area at
-// ~85% alpha so the movie reads through. Layout (top→bottom):
+// ~85% alpha so the movie reads through.
 //
-//   [40px bezel guard]
-//   Detail header band: title · year · runtime · genres + synopsis
-//   "SIMILAR FILMS" section heading
-//   9-column poster grid (matching BrowseScreen density)
+// Layout (top→bottom):
+//
+//   [60px safe inset top]
+//   Header: big poster on the left (280×420), info column on the right
+//     · "NOW PLAYING" accent label
+//     · Title (ZenDots, gold)
+//     · Year · runtime · genres line
+//     · Synopsis (word-wrapped, truncated to fit)
+//     · "Cast: ..." line
+//     · "Director: ..." line
+//   [divider rule]
+//   "SIMILAR FILMS" label
+//   Single row of up to 9 poster cards
+//   [gap before footer]
 //   Footer hint row
 //   [40px bezel guard]
 
@@ -29,23 +39,25 @@ constexpr float kPanelAlpha     = 0.85f;
 constexpr int kSafeInset    = chrome::kSafeInset_px;  // 60 px
 constexpr int kBezelInset   = chrome::kFrameInset_px; // 40 px
 
-// Header band height (title + meta line + synopsis).
-constexpr int kHeaderTopY   = 56;  // starts just below bezel guard
-constexpr int kHeaderH      = 110;
+// Poster dimensions (mirrors Detail screen exactly: 280×420).
+constexpr int kPosterW      = 280;
+constexpr int kPosterH      = 420;
+
+// Info column starts after the poster + gap.
+constexpr int kColumnGap    = 24;
+
+// Header starts below bezel guard.
+constexpr int kHeaderTopY   = kSafeInset;  // 60 px
 
 // Grid layout — mirrors BrowseScreen exactly.
 constexpr int kGridCols     = 9;
 constexpr int kCellGap      = 8;
-constexpr int kRowGap       = 22;
 constexpr int kMetaFontPx   = 14;
 constexpr int kMetaLineGap  = 2;
 constexpr int kMetaTotalH   = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
 constexpr int kMetaGap      = 4;
 
-constexpr int kMaxSimilar   = 18;  // up to 2 rows of 9
-
-// Maximum characters of synopsis to render.
-constexpr size_t kSynopsisMaxChars = 160;
+constexpr int kMaxSimilar   = 9;  // one row only
 
 // Deterministic tint color for a TMDB id — same Knuth-hash formula as
 // browse_screen.cpp (local copy; that function is file-scoped there).
@@ -55,6 +67,48 @@ inline ::ui::Color poster_tint_for_tmdb(int tmdb_id) {
     uint8_t g = 40  + static_cast<uint8_t>((h >>  8) & 0x5F);
     uint8_t b = 80  + static_cast<uint8_t>((h >> 16) & 0x7F);
     return {r, g, b, 255};
+}
+
+// Simple greedy word-wrap. Returns lines, each fitting within max_w pixels.
+std::vector<std::string> wrap_text_overlay(::ui::Renderer& r,
+                                           const std::string& text,
+                                           int font_size, float max_w) {
+    std::vector<std::string> lines;
+    if (text.empty()) return lines;
+
+    std::string current;
+    size_t pos = 0;
+    // Tokenize by spaces.
+    while (pos <= text.size()) {
+        size_t next = text.find(' ', pos);
+        if (next == std::string::npos) next = text.size();
+        std::string word = text.substr(pos, next - pos);
+        pos = next + 1;
+        if (word.empty()) continue;
+
+        std::string candidate = current.empty() ? word : current + " " + word;
+        if (r.mb_text_width(candidate, font_size) <= static_cast<int>(max_w)) {
+            current = candidate;
+        } else {
+            if (!current.empty()) lines.push_back(current);
+            current = word;
+        }
+    }
+    if (!current.empty()) lines.push_back(current);
+    return lines;
+}
+
+// Cap lines at max_lines, appending "..." to the last line if truncated.
+void cap_lines(::ui::Renderer& r, std::vector<std::string>& lines,
+               int font_size, float max_w, int max_lines) {
+    if (static_cast<int>(lines.size()) <= max_lines) return;
+    lines.resize(max_lines);
+    if (lines.empty()) return;
+    auto& last = lines.back();
+    while (!last.empty() && r.mb_text_width(last + "...", font_size) > max_w) {
+        last.pop_back();
+    }
+    last += "...";
 }
 
 }  // namespace
@@ -175,52 +229,223 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    th.bg_lift, kPanelAlpha);
 
     // -----------------------------------------------------------------------
-    // Header band: NOW PLAYING title/year/runtime/genres + synopsis
-    // Anchored inside the 40 px bezel guard on all sides.
+    // TOP SECTION: Big poster on the left, info column on the right.
+    // Mirrors DetailScreen's layout (kPosterX=60, kPosterY=144 offset
+    // replaced here with kHeaderTopY=60 since we skip the chrome header).
     // -----------------------------------------------------------------------
-    const int hx = kSafeInset;
-    const int hy = kHeaderTopY;
+    const int poster_x = kSafeInset;
+    const int poster_y = kHeaderTopY;
+
+    // Big poster (same 280×420 as Detail screen).
+    {
+        const ::ui::Color tint = poster_tint_for_tmdb(meta_.tmdb_id);
+        r.mb_draw_poster_fit(meta_.poster_url,
+                             static_cast<float>(poster_x),
+                             static_cast<float>(poster_y),
+                             static_cast<float>(kPosterW),
+                             static_cast<float>(kPosterH),
+                             tint, 1.0f);
+        // 2px gold border.
+        r.mb_stroke_rect(static_cast<float>(poster_x),
+                         static_cast<float>(poster_y),
+                         static_cast<float>(kPosterW),
+                         static_cast<float>(kPosterH),
+                         2.0f, th.accent, 0.95f);
+    }
+
+    // Info column: starts to the right of the poster.
+    const int col_x = poster_x + kPosterW + kColumnGap;
+    const int col_w = screen_w - col_x - kSafeInset;
+    float cursor_y = static_cast<float>(poster_y);
 
     // "NOW PLAYING" accent label.
-    r.mb_draw_title_text("NOW PLAYING",
-                         static_cast<float>(hx),
-                         static_cast<float>(hy),
-                         16, th.accent);
+    {
+        int sz = 16;
+        cursor_y += static_cast<float>(r.mb_text_baseline(sz));
+        r.mb_draw_title_text("NOW PLAYING",
+                             static_cast<float>(col_x),
+                             cursor_y,
+                             sz, th.accent);
+        cursor_y += static_cast<float>(sz) * 0.5f;
+    }
 
-    // Title + year/runtime/genres meta line.
-    std::string meta_line = meta_.title;
-    if (meta_.year > 0)        meta_line += "  \xC2\xB7  " + std::to_string(meta_.year);
-    if (meta_.runtime_min > 0) meta_line += "  \xC2\xB7  " + std::to_string(meta_.runtime_min) + "m";
-    if (!meta_.genres.empty()) meta_line += "  \xC2\xB7  " + meta_.genres;
-    r.mb_draw_text(meta_line,
-                   static_cast<float>(hx),
-                   static_cast<float>(hy + 26),
-                   th.font_medium_size, th.fg, 1.0f);
+    // Title — ZenDots, gold.
+    if (!meta_.title.empty()) {
+        int sz = th.font_title_size;
+        int baseline = r.mb_title_text_baseline(sz);
+        // Truncate to column width.
+        std::string title_drawn = meta_.title;
+        while (!title_drawn.empty() &&
+               r.mb_title_text_width(title_drawn, sz) > col_w) {
+            title_drawn.pop_back();
+        }
+        if (title_drawn.size() < meta_.title.size() && !title_drawn.empty()) {
+            // Back off 3 chars for "..." suffix.
+            while (title_drawn.size() >= 3 &&
+                   r.mb_title_text_width(title_drawn + "...", sz) > col_w) {
+                title_drawn.pop_back();
+            }
+            title_drawn += "...";
+        }
+        cursor_y += static_cast<float>(baseline);
+        r.mb_draw_title_text(title_drawn,
+                             static_cast<float>(col_x),
+                             cursor_y,
+                             sz, th.accent, 1.0f);
+        // Gold underline matching title width.
+        int title_w = r.mb_title_text_width(title_drawn, sz);
+        float underline_y = cursor_y + 8.0f;
+        r.mb_draw_line(static_cast<float>(col_x), underline_y,
+                       static_cast<float>(col_x + title_w), underline_y,
+                       2.0f, th.accent, 0.95f);
+        cursor_y = underline_y + 12.0f;
+    }
 
-    // Synopsis (truncated).
-    std::string syn = meta_.synopsis;
-    if (syn.size() > kSynopsisMaxChars) syn = syn.substr(0, kSynopsisMaxChars) + "\xE2\x80\xA6";
-    r.mb_draw_text(syn,
-                   static_cast<float>(hx),
-                   static_cast<float>(hy + 54),
-                   th.font_small_size, th.dim, 1.0f);
+    // Year · runtime · genres meta line.
+    {
+        int sz = th.font_medium_size;
+        int baseline = r.mb_text_baseline(sz);
+        std::string meta_line;
+        if (meta_.year > 0) {
+            meta_line += std::to_string(meta_.year);
+        }
+        if (meta_.runtime_min > 0) {
+            int h = meta_.runtime_min / 60;
+            int m = meta_.runtime_min % 60;
+            if (!meta_line.empty()) meta_line += "  \xE2\x80\xA2  ";
+            if (h > 0) {
+                meta_line += std::to_string(h) + "h";
+                if (m > 0) meta_line += " " + std::to_string(m) + "m";
+            } else {
+                meta_line += std::to_string(m) + "m";
+            }
+        }
+        if (!meta_.genres.empty()) {
+            if (!meta_line.empty()) meta_line += "  \xE2\x80\xA2  ";
+            meta_line += meta_.genres;
+        }
+        if (!meta_line.empty()) {
+            cursor_y += static_cast<float>(baseline);
+            r.mb_draw_text(meta_line,
+                           static_cast<float>(col_x), cursor_y,
+                           sz, th.fg, 0.92f);
+            cursor_y += static_cast<float>(sz) * 0.5f;
+        }
+    }
 
-    // 1 px dim rule between header and grid.
-    const int rule_y = hy + kHeaderH;
-    r.mb_fill_rect(static_cast<float>(hx),
-                   static_cast<float>(rule_y),
+    // Synopsis — word-wrapped, capped to available space before cast/director.
+    // We reserve ~3 lines each for cast + director blocks below.
+    if (!meta_.synopsis.empty()) {
+        int sz = th.font_medium_size;
+        float line_h = static_cast<float>(sz) * 1.4f;
+        // Reserve space: cast label+line + director label+line + padding.
+        float cast_reserve    = meta_.cast.empty()     ? 0.0f : (line_h * 2.2f + 8.0f);
+        float dir_reserve     = meta_.director.empty() ? 0.0f : (line_h * 2.2f + 8.0f);
+        float bottom_anchor   = static_cast<float>(poster_y + kPosterH);
+        float available       = bottom_anchor - cursor_y - cast_reserve - dir_reserve - 12.0f;
+        int max_lines = std::max(1, static_cast<int>(available / line_h));
+
+        auto lines = wrap_text_overlay(r, meta_.synopsis, sz, static_cast<float>(col_w));
+        cap_lines(r, lines, sz, static_cast<float>(col_w), max_lines);
+
+        cursor_y += 10.0f;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += static_cast<float>(baseline);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            r.mb_draw_text(lines[i],
+                           static_cast<float>(col_x),
+                           cursor_y + static_cast<float>(i) * line_h,
+                           sz, th.fg, 0.9f);
+        }
+        cursor_y += line_h * static_cast<float>(lines.size())
+                  - static_cast<float>(baseline);
+    }
+
+    // Cast line.
+    if (!meta_.cast.empty()) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        // Join cast names with " · ".
+        std::string cast_str;
+        for (size_t i = 0; i < meta_.cast.size(); ++i) {
+            if (i > 0) cast_str += "  \xE2\x80\xA2  ";
+            cast_str += meta_.cast[i];
+        }
+        cursor_y += 12.0f;
+        cursor_y += static_cast<float>(baseline);
+        // Label in dim, names in fg.
+        r.mb_draw_text("CAST  ",
+                       static_cast<float>(col_x), cursor_y,
+                       sz, th.dim, 0.85f);
+        int label_w = r.mb_text_width("CAST  ", sz);
+        // Truncate cast string to fit remaining column width.
+        float max_cast_w = static_cast<float>(col_w - label_w);
+        while (!cast_str.empty() &&
+               r.mb_text_width(cast_str, sz) > static_cast<int>(max_cast_w)) {
+            cast_str.pop_back();
+        }
+        if (!cast_str.empty() &&
+            cast_str.size() < meta_.cast[0].size() + 2) {
+            // Fell back too far — show truncated with ...
+            while (cast_str.size() > 3 &&
+                   r.mb_text_width(cast_str + "...", sz) > static_cast<int>(max_cast_w)) {
+                cast_str.pop_back();
+            }
+            cast_str += "...";
+        }
+        r.mb_draw_text(cast_str,
+                       static_cast<float>(col_x + label_w), cursor_y,
+                       sz, th.fg, 0.9f);
+        cursor_y += static_cast<float>(sz) * 1.4f;
+    }
+
+    // Director line.
+    if (!meta_.director.empty()) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += 8.0f;
+        cursor_y += static_cast<float>(baseline);
+        r.mb_draw_text("DIRECTOR  ",
+                       static_cast<float>(col_x), cursor_y,
+                       sz, th.dim, 0.85f);
+        int label_w = r.mb_text_width("DIRECTOR  ", sz);
+        // Truncate director name to fit.
+        std::string dir = meta_.director;
+        float max_dir_w = static_cast<float>(col_w - label_w);
+        while (!dir.empty() && r.mb_text_width(dir, sz) > static_cast<int>(max_dir_w)) {
+            dir.pop_back();
+        }
+        r.mb_draw_text(dir,
+                       static_cast<float>(col_x + label_w), cursor_y,
+                       sz, th.fg, 0.9f);
+        cursor_y += static_cast<float>(sz) * 1.4f;
+    }
+
+    // -----------------------------------------------------------------------
+    // DIVIDER + SIMILAR FILMS SECTION
+    // Positioned below the poster height (whichever is larger, poster or info col).
+    // -----------------------------------------------------------------------
+
+    // Footer hint band — we need its top to calculate spacing.
+    const int footer_band_top = screen_h - kBezelInset - chrome::kFooterHeight_px - chrome::kPad2;
+
+    // Section starts below the poster bottom, with a minimum gap.
+    const int section_top = poster_y + kPosterH + 16;
+
+    // Dim rule.
+    r.mb_fill_rect(static_cast<float>(kSafeInset),
+                   static_cast<float>(section_top),
                    static_cast<float>(screen_w - 2 * kSafeInset),
                    1.0f, th.dim, 0.4f);
 
-    // "SIMILAR FILMS" section label.
-    const int section_label_y = rule_y + 16;
+    const int section_label_y = section_top + 14;
     r.mb_draw_title_text("SIMILAR FILMS",
-                         static_cast<float>(hx),
+                         static_cast<float>(kSafeInset),
                          static_cast<float>(section_label_y),
                          16, th.dim);
 
     // -----------------------------------------------------------------------
-    // 9-column poster grid — snapshot under lock to avoid holding it during render
+    // Single row of up to 9 poster cards.
     // -----------------------------------------------------------------------
     std::vector<::media_browser::TmdbSearchHit> snapshot;
     auto fs = fetch_state_.load();
@@ -232,117 +457,93 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Grid geometry: identical to BrowseScreen's layout.
     const int content_w = screen_w - 2 * kSafeInset;
     const int cell_w    = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
-    const int poster_h  = static_cast<int>(static_cast<float>(cell_w) * 1.5f);
-    const int cell_h    = poster_h + kMetaGap + kMetaTotalH;
+    const int poster_cell_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f);
     const int grid_top  = section_label_y + 18;
     const int grid_left = kSafeInset;
 
-    // Footer hint band — reserve space so we don't clip the grid into it.
-    const int footer_band_top = screen_h - kBezelInset - chrome::kFooterHeight_px - chrome::kPad2;
-
     if (fs == FetchState::InFlight && snapshot.empty()) {
         r.mb_draw_text("Loading related films\xE2\x80\xA6",
-                       static_cast<float>(hx),
-                       static_cast<float>(grid_top + poster_h / 2),
+                       static_cast<float>(kSafeInset),
+                       static_cast<float>(grid_top + poster_cell_h / 2),
                        th.font_medium_size, th.dim, 1.0f);
     } else if (snapshot.empty()) {
         r.mb_draw_text("No related films found",
-                       static_cast<float>(hx),
-                       static_cast<float>(grid_top + poster_h / 2),
+                       static_cast<float>(kSafeInset),
+                       static_cast<float>(grid_top + poster_cell_h / 2),
                        th.font_medium_size, th.dim, 1.0f);
     } else {
-        // Two-row scroll window. Determine which row the cursor is in,
-        // then compute the visible-row range (at most 2 rows visible).
-        // 1-D cursor wraps left/right through the full list.
-        const int n          = static_cast<int>(snapshot.size());
-        const int cursor_row = cursor_ / kGridCols;
-        // scroll_row_ is maintained by on_rotate; clamp here to be safe.
-        const int max_rows     = (n + kGridCols - 1) / kGridCols;
-        const int visible_rows = 2;
-        // Keep cursor row in view (handled in on_rotate; belt-and-suspenders).
-        int start_row = cursor_row;
-        if (start_row > max_rows - 1) start_row = max_rows - 1;
-        // Only scroll down when the second row would exist and cursor is on it.
-        if (cursor_row >= 1) start_row = cursor_row - (cursor_row % visible_rows);
-        start_row = std::max(0, std::min(start_row, max_rows - visible_rows));
-        const int end_row = std::min(start_row + visible_rows, max_rows);
+        // Single row only — up to kMaxSimilar (9) posters.
+        const int n = static_cast<int>(snapshot.size());
+        for (int col = 0; col < kGridCols && col < n; ++col) {
+            const auto& hit = snapshot[col];
+            const int x = grid_left + col * (cell_w + kCellGap);
+            const int y = grid_top;
 
-        for (int row = start_row; row < end_row; ++row) {
-            for (int col = 0; col < kGridCols; ++col) {
-                const int idx = row * kGridCols + col;
-                if (idx >= n) break;
-                const auto& hit = snapshot[idx];
+            // Don't let the card bleed into the footer hints.
+            if (y + poster_cell_h > footer_band_top - 60) break;
 
-                const int x = grid_left + col * (cell_w + kCellGap);
-                const int y = grid_top  + (row - start_row) * (cell_h + kRowGap);
+            const ::ui::Color tint = poster_tint_for_tmdb(hit.tmdb_id);
+            chrome::draw_poster_card(r, x, y, cell_w, poster_cell_h,
+                                     hit.title, hit.year,
+                                     tint, /*in_library=*/false,
+                                     /*download_pct=*/-1,
+                                     hit.poster_path);
 
-                // Stop rendering rows that would bleed into the footer.
-                if (y + poster_h > footer_band_top) break;
-
-                const ::ui::Color tint = poster_tint_for_tmdb(hit.tmdb_id);
-                chrome::draw_poster_card(r, x, y, cell_w, poster_h,
-                                         hit.title, hit.year,
-                                         tint, /*in_library=*/false,
-                                         /*download_pct=*/-1,
-                                         hit.poster_path);
-
-                // Two-line title wrap below poster (matches BrowseScreen logic).
-                const std::string& title = hit.title;
-                const float max_w_f = static_cast<float>(cell_w);
-                std::string line1, line2;
-                if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
-                    line1 = title;
-                } else {
-                    size_t split = std::string::npos;
-                    size_t pos   = 0;
-                    while (true) {
-                        size_t next = title.find(' ', pos + 1);
-                        if (next == std::string::npos) break;
-                        if (r.mb_text_width(title.substr(0, next), kMetaFontPx) > max_w_f)
-                            break;
-                        split = next;
-                        pos   = next;
+            // Two-line title wrap below poster.
+            const std::string& title = hit.title;
+            const float max_w_f = static_cast<float>(cell_w);
+            std::string line1, line2;
+            if (r.mb_text_width(title, kMetaFontPx) <= static_cast<int>(max_w_f)) {
+                line1 = title;
+            } else {
+                size_t split = std::string::npos;
+                size_t pos   = 0;
+                while (true) {
+                    size_t next = title.find(' ', pos + 1);
+                    if (next == std::string::npos) break;
+                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx) > static_cast<int>(max_w_f))
+                        break;
+                    split = next;
+                    pos   = next;
+                }
+                if (split == std::string::npos) {
+                    std::string candidate = title;
+                    while (!candidate.empty() &&
+                           r.mb_text_width(candidate + "...", kMetaFontPx) > static_cast<int>(max_w_f)) {
+                        candidate.pop_back();
                     }
-                    if (split == std::string::npos) {
-                        // No word boundary — truncate by characters.
-                        std::string candidate = title;
+                    line1 = candidate.empty() ? title : (candidate + "...");
+                } else {
+                    line1 = title.substr(0, split);
+                    std::string rem = title.substr(split + 1);
+                    if (r.mb_text_width(rem, kMetaFontPx) <= static_cast<int>(max_w_f)) {
+                        line2 = rem;
+                    } else {
+                        std::string candidate = rem;
                         while (!candidate.empty() &&
-                               r.mb_text_width(candidate + "...", kMetaFontPx) > max_w_f) {
+                               r.mb_text_width(candidate + "...", kMetaFontPx) > static_cast<int>(max_w_f)) {
                             candidate.pop_back();
                         }
-                        line1 = candidate.empty() ? title : (candidate + "...");
-                    } else {
-                        line1 = title.substr(0, split);
-                        std::string rem = title.substr(split + 1);
-                        if (r.mb_text_width(rem, kMetaFontPx) <= max_w_f) {
-                            line2 = rem;
-                        } else {
-                            std::string candidate = rem;
-                            while (!candidate.empty() &&
-                                   r.mb_text_width(candidate + "...", kMetaFontPx) > max_w_f) {
-                                candidate.pop_back();
-                            }
-                            line2 = candidate.empty() ? rem : (candidate + "...");
-                        }
+                        line2 = candidate.empty() ? rem : (candidate + "...");
                     }
                 }
-                const int meta_top = y + poster_h + kMetaGap;
-                r.mb_draw_text(line1,
+            }
+            const int meta_top = y + poster_cell_h + kMetaGap;
+            r.mb_draw_text(line1,
+                           static_cast<float>(x),
+                           static_cast<float>(meta_top + kMetaFontPx),
+                           kMetaFontPx, th.dim);
+            if (!line2.empty()) {
+                r.mb_draw_text(line2,
                                static_cast<float>(x),
-                               static_cast<float>(meta_top + kMetaFontPx),
+                               static_cast<float>(meta_top + kMetaFontPx
+                                                  + kMetaLineGap + kMetaFontPx),
                                kMetaFontPx, th.dim);
-                if (!line2.empty()) {
-                    r.mb_draw_text(line2,
-                                   static_cast<float>(x),
-                                   static_cast<float>(meta_top + kMetaFontPx
-                                                      + kMetaLineGap + kMetaFontPx),
-                                   kMetaFontPx, th.dim);
-                }
+            }
 
-                // Gold focus ring on the cursor cell.
-                if (idx == cursor_) {
-                    chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
-                }
+            // Gold focus ring on the cursor cell.
+            if (col == cursor_) {
+                chrome::draw_focus_ring(r, x, y, cell_w, poster_cell_h);
             }
         }
     }

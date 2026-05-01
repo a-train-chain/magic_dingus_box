@@ -2815,10 +2815,13 @@ void Renderer::render_seek_bar(const app::AppState& state) {
     float progress = static_cast<float>(position / duration);
     progress = std::max(0.0f, std::min(1.0f, progress));
 
-    // Layout: centered at bottom, 80% screen width
+    // Layout: centered, 80% screen width.
+    // Bar sits at ~110px from screen bottom so the chrome footer hints
+    // (rendered ~40px above the bezel bottom = screen_h - 40 - 30 ≈ -70px
+    // from bottom) have clear breathing room below the scrub bar.
     float bar_total_width = static_cast<float>(width_) * 0.8f;
     float bar_x = (static_cast<float>(width_) - bar_total_width) / 2.0f;
-    float bar_y = static_cast<float>(height_) - 60.0f;
+    float bar_y = static_cast<float>(height_) - 110.0f;
     float bar_height = 4.0f;
 
     // Track background (dim gray)
