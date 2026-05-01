@@ -2032,5 +2032,525 @@
     "configContract": "CardigannSettings",
     "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#yts",
     "tags_by_label": []
+  },
+  {
+    "indexerUrls": [
+      "https://1337x.to/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "1337x",
+    "description": "1337x is a Public general-purpose torrent tracker",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "1337x",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#1337x",
+    "tags_by_label": [
+      "cloudflare"
+    ]
+  },
+  {
+    "indexerUrls": [
+      "https://torrentgalaxy.to/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "torrentgalaxy",
+    "description": "TorrentGalaxy is a Public general-purpose torrent tracker (RARBG successor)",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "TorrentGalaxy",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentgalaxy",
+    "tags_by_label": []
+  },
+  {
+    "indexerUrls": [
+      "https://solidtorrents.to/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "solidtorrents",
+    "description": "Solid Torrents is a Public meta-search aggregator",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "Solid Torrents",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#solidtorrents",
+    "tags_by_label": []
+  },
+  {
+    "indexerUrls": [
+      "https://bitsearch.to/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "bitsearch",
+    "description": "BitSearch is a Public meta-search aggregator",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "BitSearch",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#bitsearch",
+    "tags_by_label": []
+  },
+  {
+    "indexerUrls": [
+      "https://knaben.eu/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "knaben",
+    "description": "Knaben is a Public meta-search aggregator with a large database",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "Knaben",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#knaben",
+    "tags_by_label": []
+  },
+  {
+    "indexerUrls": [
+      "https://therarbg.com/"
+    ],
+    "legacyUrls": [],
+    "definitionName": "therarbg",
+    "description": "TheRARBG is a community-run RARBG mirror preserving the original release database",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {
+          "name": "Movies",
+          "subCategories": [
+            {
+              "name": "Movies/Foreign",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/Other",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/SD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/HD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/UHD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/BluRay",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/3D",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/DVD",
+              "subCategories": []
+            },
+            {
+              "name": "Movies/WEB-DL",
+              "subCategories": []
+            }
+          ]
+        }
+      ],
+      "supportsRawSearch": false,
+      "searchParams": [
+        "q"
+      ],
+      "tvSearchParams": [],
+      "movieSearchParams": [
+        "q"
+      ],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 25,
+    "downloadClientId": 0,
+    "added": "0001-01-01T00:00:00Z",
+    "name": "TheRARBG",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#therarbg",
+    "tags_by_label": [
+      "cloudflare"
+    ]
   }
 ]
