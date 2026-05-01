@@ -29,9 +29,14 @@ ExecStopPost=/usr/bin/pulseaudio --kill
 #     integration is unaffected — the kiosk waitpid()'s on RetroArch and
 #     returns through normal control flow, so a clean exit (status 0 / 75)
 #     is not a "failure" and won't trigger a restart loop.
-#   - WatchdogSec=10 is still the primary "frozen render loop" trigger; the
-#     watchdog timing out is itself classified as a failure, so restarting
-#     on-failure handles both cases with one rule.
+#   - WatchdogSec=30 is the "frozen render loop" trigger; the watchdog
+#     timing out is itself classified as a failure, so restarting
+#     on-failure handles both cases with one rule. Was 10s historically;
+#     bumped to 30s in v1.7.x to accommodate the synchronous Radarr
+#     interactive-search call from the manual release picker (typical
+#     14-25s round-trip). A proper fix is to make that call async on a
+#     worker thread so the main render loop never blocks — tracked as a
+#     follow-up (see "Async release-picker loading" task).
 #   - StartLimitBurst caps how often we try (5 attempts in 5 minutes) so a
 #     repeatedly-crashing build doesn't churn forever.
 Restart=on-failure
@@ -55,7 +60,7 @@ EnvironmentFile=-/opt/magic_dingus_box/services/.env
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5
-WatchdogSec=10
+WatchdogSec=30
 
 [Install]
 # Start at multi-user target (before X11)
