@@ -61,7 +61,7 @@ constexpr int kMetaLineGap  = 2;
 constexpr int kMetaTotalH   = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
 constexpr int kMetaGap      = 4;
 
-constexpr int kMaxSimilar   = 9;  // one row only
+constexpr int kMaxSimilar   = 18;  // 2 viewport-widths; cursor scrolls horizontally past col 8
 
 // Deterministic tint color for a TMDB id — same Knuth-hash formula as
 // browse_screen.cpp (local copy; that function is file-scoped there).
@@ -500,14 +500,24 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        static_cast<float>(grid_top + poster_cell_h / 2),
                        th.font_medium_size, th.dim, 1.0f);
     } else {
-        // Single row only — up to kMaxSimilar (9) posters.
-        // All cards in this row share the same y; bezel-fit is determined
-        // once before the loop, not per-iteration (a single break would
-        // kill the entire row, which was the v1.6.4-rc bug).
+        // Single row, horizontal scroll. The cursor can advance past the
+        // last visible column; first_visible slides right so the cursor
+        // stays on-screen, exposing the next batch of films.
+        // All cards share the same y; bezel-fit is a one-shot row-level
+        // decision (a single break would kill the entire row).
         const int n = static_cast<int>(snapshot.size());
         const bool row_fits = (grid_top + poster_cell_h + kMetaTotalH + chrome::kPad2) <= footer_band_top;
-        for (int col = 0; col < kGridCols && col < n && row_fits; ++col) {
-            const auto& hit = snapshot[col];
+
+        int first_visible = 0;
+        if (cursor_ >= kGridCols) first_visible = cursor_ - kGridCols + 1;
+        if (first_visible > std::max(0, n - kGridCols)) {
+            first_visible = std::max(0, n - kGridCols);
+        }
+
+        for (int col = 0; col < kGridCols && row_fits; ++col) {
+            const int idx = first_visible + col;
+            if (idx >= n) break;
+            const auto& hit = snapshot[idx];
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top;
 
@@ -570,8 +580,9 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                kMetaFontPx, th.dim);
             }
 
-            // Gold focus ring on the cursor cell.
-            if (col == cursor_) {
+            // Gold focus ring on the cursor cell (cursor_ is absolute,
+            // idx is also absolute — compare directly).
+            if (idx == cursor_) {
                 chrome::draw_focus_ring(r, x, y, cell_w, poster_cell_h);
             }
         }
