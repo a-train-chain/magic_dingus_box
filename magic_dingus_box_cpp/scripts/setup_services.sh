@@ -205,6 +205,30 @@ else
 fi
 
 # 4. Start stack
+
+# 4a. Pre-pull Byparr (ghcr.io DNS race mitigation).
+#
+# On a fresh Pi the first ghcr.io DNS lookup sometimes fails before
+# DoH (Step 0) is fully warm. Letting `docker compose up` lazily
+# pull byparr causes a confusing failure mid-startup. Pre-pull with
+# explicit retries instead.
+echo "Pre-pulling Byparr (ghcr.io DNS can be flaky on first boot)..."
+BYPARR_DIGEST="ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0"
+PULL_OK=0
+for i in 1 2 3; do
+    if docker pull "${BYPARR_DIGEST}"; then
+        PULL_OK=1
+        break
+    fi
+    echo "Pull attempt $i failed; sleeping 10s..."
+    sleep 10
+done
+if [ "${PULL_OK}" -eq 0 ]; then
+    echo "ERROR: cannot pull byparr after 3 attempts. Likely cause:"
+    echo "       ghcr.io DNS still recovering. Re-run setup in a minute."
+    exit 1
+fi
+
 cd "${SERVICES_DIR}"
 echo "Starting Docker stack..."
 docker compose up -d
