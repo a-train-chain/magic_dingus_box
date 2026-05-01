@@ -70,6 +70,17 @@ public:
     // QbittorrentClient (which normalizes to lowercase internally).
     virtual std::vector<std::string> get_movie_download_hashes(int movie_id);
 
+    struct HistoryEvent {
+        int         id = 0;
+        int         movie_id = 0;
+        std::string event_type;       // grabbed, downloadFailed, downloadFolderImported, etc.
+        std::string source_title;     // release title
+        std::string date_iso;         // ISO 8601
+    };
+
+    // Recent history events for one movie. Returns most-recent-first.
+    virtual std::vector<HistoryEvent> get_history(int radarr_movie_id, int page_size = 20);
+
     // Profiles
     virtual std::vector<QualityProfile> get_quality_profiles();
     virtual std::vector<RootFolder> get_root_folders();

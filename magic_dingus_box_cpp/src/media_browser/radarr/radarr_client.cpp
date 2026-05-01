@@ -360,6 +360,33 @@ RadarrClient::get_movie_download_hashes(int movie_id) {
     return out;
 }
 
+std::vector<RadarrClient::HistoryEvent>
+RadarrClient::get_history(int radarr_movie_id, int page_size) {
+    std::vector<HistoryEvent> out;
+    std::string path = "/api/v3/history?movieId=" + std::to_string(radarr_movie_id) +
+                       "&pageSize=" + std::to_string(page_size) +
+                       "&sortKey=date&sortDirection=descending";
+    std::string resp = http_get(path);
+    if (resp.empty()) return out;
+    Json::CharReaderBuilder b;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(resp);
+    if (!Json::parseFromStream(b, is, &root, &err)) return out;
+    const auto& recs = root["records"];
+    if (!recs.isArray()) return out;
+    for (const auto& r : recs) {
+        HistoryEvent e;
+        e.id           = r.get("id", 0).asInt();
+        e.movie_id     = r.get("movieId", 0).asInt();
+        e.event_type   = r.get("eventType", "").asString();
+        e.source_title = r.get("sourceTitle", "").asString();
+        e.date_iso     = r.get("date", "").asString();
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
 std::vector<QualityProfile> RadarrClient::get_quality_profiles() {
     auto resp = http_get("/api/v3/qualityprofile");
     if (resp.empty()) return {};

@@ -106,3 +106,29 @@ TEST_CASE("RadarrClient::get_releases_for_movie parses release array",
     REQUIRE(releases[0]["seeders"].asInt() == 200);
     REQUIRE(releases[1]["guid"].asString() == "magnet:?xt=urn:btih:def");
 }
+
+TEST_CASE("RadarrClient::get_history parses history records",
+          "[radarr][history]") {
+    class StubRadarr : public mb::RadarrClient {
+    public:
+        StubRadarr() : RadarrClient(Config{}) {}
+        std::string http_get(const std::string& path) override {
+            REQUIRE(path.find("/api/v3/history") == 0);
+            REQUIRE(path.find("movieId=99") != std::string::npos);
+            return R"({"records":[
+              {"id":1,"movieId":99,"eventType":"grabbed",
+               "sourceTitle":"Inception 2010 1080p WEB-DL x264","date":"2026-05-01T10:00:00Z"},
+              {"id":2,"movieId":99,"eventType":"downloadFailed",
+               "sourceTitle":"Inception 2010 1080p WEB-DL x264","date":"2026-05-01T10:30:00Z"}
+            ]})";
+        }
+        std::string http_post(const std::string&, const std::string&) override { return ""; }
+        std::string http_delete(const std::string&) override { return ""; }
+    };
+    StubRadarr r;
+    auto events = r.get_history(99);
+    REQUIRE(events.size() == 2);
+    REQUIRE(events[0].event_type == "grabbed");
+    REQUIRE(events[1].event_type == "downloadFailed");
+    REQUIRE(events[1].movie_id == 99);
+}
