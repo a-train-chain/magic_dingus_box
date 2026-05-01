@@ -41,6 +41,25 @@ done
 if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
     echo "=== Step 0: Pi host networking ==="
 
+    # 0a'. Disable systemd-resolved so cloudflared can fully own DNS.
+    #
+    # On Pi OS Bookworm, systemd-resolved is shipped but typically disabled.
+    # If an operator (or a vendored image) has enabled it, it binds
+    # 127.0.0.53:53 and may symlink /etc/resolv.conf to its stub file.
+    # Both behaviors clash with our cloudflared-on-127.0.0.1:53 design:
+    # the stub-symlink would be re-created on reboot and overwrite our
+    # `nameserver 127.0.0.1` write.
+    if systemctl is-enabled systemd-resolved.service &>/dev/null || \
+       systemctl is-active systemd-resolved.service &>/dev/null; then
+        echo "Disabling systemd-resolved (was active)..."
+        systemctl disable --now systemd-resolved.service || true
+    fi
+    # If /etc/resolv.conf is a symlink (likely to systemd-resolved's stub),
+    # remove it before writing our real file so we don't write through.
+    if [ -L /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
+    fi
+
     # 0a. Disable IPv6 globally
     cat > /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
@@ -62,7 +81,18 @@ EOF
                 | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
             apt-get update -qq
         fi
-        apt-get install -y cloudflared
+        # Install both cloudflared and dnsutils (provides `dig`, used by
+        # the verification step below). Combining the install keeps apt
+        # invocations to one.
+        apt-get install -y cloudflared dnsutils
+    fi
+
+    # Ensure `dig` is available for the DoH verification at the bottom of Step 0.
+    # dnsutils provides dig; install separately so re-runs on Pis that already
+    # have cloudflared still pick this up.
+    if ! command -v dig &>/dev/null; then
+        echo "Installing dnsutils (for dig)..."
+        apt-get install -y dnsutils
     fi
 
     # 0c. Configure cloudflared as DoH resolver on 127.0.0.1:53
@@ -92,11 +122,14 @@ dns=none
 EOF
     systemctl reload NetworkManager 2>/dev/null || true
 
-    # 0e. Point /etc/resolv.conf at the local DoH proxy
-    cat > /etc/resolv.conf <<'EOF'
+    # 0e. Point /etc/resolv.conf at the local DoH proxy.
+    # Write atomically via temp file + rename so concurrent name lookups
+    # never see a zero-length resolv.conf.
+    cat > /etc/resolv.conf.new <<'EOF'
 nameserver 127.0.0.1
 options edns0 trust-ad
 EOF
+    mv /etc/resolv.conf.new /etc/resolv.conf
 
     # 0f. Verify DoH resolver works
     if ! dig +short +time=3 +tries=1 cloudflare.com @127.0.0.1 >/dev/null; then
