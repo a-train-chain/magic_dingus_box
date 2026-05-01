@@ -160,6 +160,7 @@ if(BUILD_KIOSK)
             src/media_browser/radarr/radarr_mock.cpp
             src/media_browser/prowlarr/prowlarr_client.cpp
             src/media_browser/qbittorrent/qbittorrent_client.cpp
+            src/media_browser/qbittorrent/download_watchdog.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
@@ -322,6 +323,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/radarr/radarr_mock.cpp
         src/media_browser/prowlarr/prowlarr_client.cpp
         src/media_browser/qbittorrent/qbittorrent_client.cpp
+        src/media_browser/qbittorrent/download_watchdog.cpp
         src/platform/sequence_detector.cpp
     )
 
@@ -350,6 +352,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_artwork_cache.cpp
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
+        tests/media_browser/test_download_watchdog.cpp
         src/media_browser/artwork/artwork_cache.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
