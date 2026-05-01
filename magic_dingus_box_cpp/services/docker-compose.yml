@@ -37,7 +37,9 @@ services:
     container_name: mdb_prowlarr
     # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
     # per-service dns: block needed. No per-service ports: block —
-    # Prowlarr's :9696 is exposed via gluetun's ports: section.
+    # Prowlarr's :9696 must be exposed via gluetun's ports: section
+    # for host-side access (added in the FlareSolverr→Byparr task,
+    # which collects all behind-Gluetun ports into one place).
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
