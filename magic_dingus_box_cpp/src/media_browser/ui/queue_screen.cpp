@@ -35,7 +35,9 @@ namespace {
 //   - Footer hints come from `chrome::draw_footer_hints` so the bordered
 //     key glyphs match every other Marquee screen.
 
-constexpr float kPaddingX        = 32.0f;
+// kPaddingX matches chrome::kSafeInset_px (60) so queue rows stay inside
+// the 40 px wood-frame bezel that surrounds every Marquee screen.
+constexpr float kPaddingX        = 60.0f;
 
 // Row geometry. 100px is tall enough for poster + 2 lines of metadata +
 // a progress bar without being so tall that fewer than ~5 rows fit on a

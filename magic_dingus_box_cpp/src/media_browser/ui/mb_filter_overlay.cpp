@@ -11,9 +11,13 @@ namespace media_browser::ui {
 
 namespace {
 
-constexpr int kPanelLeftMarginPx = 0;
+// Bezel inset — the wood-frame PNG reserves this many pixels on every edge.
+// Panel content must stay inside screen - kBezelInset on the right and
+// screen + kBezelInset on the left (never less than kBezelInset from the top).
+constexpr int kBezelInset = 40;
+
 constexpr int kPanelTopMarginPx = 100;
-constexpr int kPanelBottomMarginPx = 100;
+constexpr int kPanelBottomMarginPx = kBezelInset;
 constexpr int kRowHeightPx = 56;
 constexpr int kPaddingX = 24;
 
@@ -91,20 +95,33 @@ void FilterOverlay::tick() {
 
 int FilterOverlay::compute_panel_left_x() const {
     using namespace std::chrono;
-    if (state_ == State::Closed) return -kPanelWidthPx;
-    if (state_ == State::Open)   return kPanelLeftMarginPx;
+    // The panel rests flush with the bezel's right inner edge.
+    // panel_open_x  = screen_w - kBezelInset - kPanelWidthPx
+    //               = 1280 - 40 - 380 = 860
+    // panel_closed_x = screen_w (fully off-screen to the right)
+    //               = 1280
+    // These are computed at render time from screen_w stored at open().
+    // For the animation we use a hardcoded 1280 (the kiosk's only target)
+    // and mirror the exact pattern LibraryScreen::compute_overlay_left_x uses.
+    constexpr int kScreenW      = 1280;
+    constexpr int kPanelOpenX   = kScreenW - kBezelInset - kPanelWidthPx;  // 860
+    constexpr int kPanelClosedX = kScreenW;  // off-screen right
+    if (state_ == State::Closed) return kPanelClosedX;
+    if (state_ == State::Open)   return kPanelOpenX;
     const auto elapsed = duration_cast<milliseconds>(
         steady_clock::now() - anim_started_at_).count();
     if (state_ == State::SlidingIn) {
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideInMs), 0.0f, 1.0f);
         const float eased = ease_out_cubic(t);
-        return static_cast<int>(-kPanelWidthPx + eased * kPanelWidthPx);
+        return static_cast<int>(
+            kPanelClosedX + eased * (kPanelOpenX - kPanelClosedX));
     } else {  // SlidingOut
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideOutMs), 0.0f, 1.0f);
         const float eased = ease_in_cubic(t);
-        return static_cast<int>(-eased * kPanelWidthPx);
+        return static_cast<int>(
+            kPanelOpenX + eased * (kPanelClosedX - kPanelOpenX));
     }
 }
 
@@ -157,7 +174,7 @@ bool FilterOverlay::on_btn4_close() {
     return true;
 }
 
-void FilterOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
+void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int screen_h) {
     if (state_ == State::Closed) return;
 
     const auto& th = r.mb_theme();
@@ -178,8 +195,10 @@ void FilterOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
     r.mb_fill_rect(fpx, fpy, fpw, 2.0f, th.accent);
     // Bottom rule in gold.
     r.mb_fill_rect(fpx, fpy + fph - 2.0f, fpw, 2.0f, th.accent);
-    // Right rule in gold (left edge is at screen edge, no border needed there).
-    r.mb_fill_rect(fpx + fpw - 2.0f, fpy, 2.0f, fph, th.accent);
+    // Left rule in gold — the panel slides from the RIGHT, so the left
+    // edge is the visible "entry" border. Right edge sits against the
+    // bezel's inner wall; no right-border needed there.
+    r.mb_fill_rect(fpx, fpy, 2.0f, fph, th.accent);
 
     const int content_x = panel_x + kPaddingX;
     int y = panel_y + 32;
