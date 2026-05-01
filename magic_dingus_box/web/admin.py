@@ -2393,8 +2393,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         Drives the 3-state UI: Not configured / Configuring / Configured.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         env_present = _env_has_wireguard_key(SERVICES_ENV)
         containers = _docker_ps_table()
         services_running = any(
@@ -2450,8 +2450,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         ('file' field) or as pasted text in the 'config_text' form field.
         Returns a job_id; clients poll /admin/media-browser/setup-status/<id>.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         if not SETUP_SERVICES_SCRIPT.exists():
             return error_response(
                 "setup_script_missing",
@@ -2561,8 +2561,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         success with status='unknown' rather than 404 so the frontend can fall
         back to the generic /admin/media-browser/status endpoint.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         job = media_browser_jobs.get(job_id)
         if not job:
             return success_response(data={
@@ -2604,8 +2604,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         the "Show credentials" expander, never on routine status polls, to
         avoid leaking secrets into background traffic.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         env = _read_env_file(SERVICES_ENV)
         radarr_key = env.get("RADARR_API_KEY", "").strip()
@@ -2800,8 +2800,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         call has a 5-sec timeout and is wrapped in try/except; any failing
         field returns -1 / "unavailable" without breaking the others.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         env = _read_env_file(SERVICES_ENV)
         library_count = _radarr_library_count(env)
@@ -2840,8 +2840,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         same path setup_services.sh uses, so it relies on the same NOPASSWD
         sudoers rule.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         try:
             sudo_check = subprocess.run(
@@ -2887,8 +2887,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         in dev tools / curl. After this completes, /status returns
         configured=false → frontend transitions back to State A.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
 
         body = request.get_json(silent=True) or {}
         if body.get("confirm") != "RESET":
