@@ -113,6 +113,11 @@ services:
       - "127.0.0.1:8080:8080"
       - "6881:6881"
       - "6881:6881/udp"
+      # Behind-Gluetun service admin/internal ports.
+      # All loopback-bound; admin UI requires SSH tunnel.
+      - "127.0.0.1:7878:7878"   # Radarr
+      - "127.0.0.1:9696:9696"   # Prowlarr
+      - "127.0.0.1:8191:8191"   # Byparr (Cloudflare bypass)
     volumes:
       - ./config/gluetun:/gluetun
     restart: unless-stopped
@@ -152,27 +157,24 @@ services:
       - ${STORAGE_ROOT}/downloads:/downloads
     restart: unless-stopped
 
-  flaresolverr:
-    # Pinned (matching this file's "all images pinned for reproducibility"
-    # invariant) — :latest would silently pull a new build on `docker
-    # compose pull` and could break Prowlarr's Cloudflare-bypass integration
-    # if the API changes between versions. Bump deliberately, in a commit.
-    image: ghcr.io/flaresolverr/flaresolverr:v3.4.6
-    container_name: mdb_flaresolverr
-    # Explicit DNS: see Radarr rationale above.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+  byparr:
+    # Drop-in FlareSolverr-API replacement that handles current
+    # Cloudflare challenge formats (FlareSolverr's last release v3.4.6
+    # cannot). API-compatible — Prowlarr's "FlareSolverr" indexer-proxy
+    # configuration in prowlarr_indexerproxies.json continues to work
+    # because the proxy's *name* is unchanged; only the URL points to
+    # byparr now.
+    image: ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0
+    container_name: mdb_byparr
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - LOG_LEVEL=info
       - TZ=${TZ}
-    ports:
-      # Bind to 127.0.0.1 only — internal CAPTCHA solver, not needed externally.
-      - "127.0.0.1:8191:8191"
     restart: unless-stopped
     healthcheck:
-      # Use curl (available in the image); wget is not shipped. FlareSolverr's
-      # root URL returns a JSON "FlareSolverr is ready!" payload on success.
       test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8191/"]
       interval: 60s
       timeout: 10s
