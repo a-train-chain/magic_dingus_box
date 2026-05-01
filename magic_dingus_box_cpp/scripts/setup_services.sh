@@ -766,7 +766,7 @@ SEEDER_SUMMARY=$(python3 - "${RADARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
 api_key = sys.argv[1]
 BASE = "http://localhost:7878/api/v3"
-TARGET = 5
+TARGET = 10
 
 def http(method, path, body=None):
     headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
