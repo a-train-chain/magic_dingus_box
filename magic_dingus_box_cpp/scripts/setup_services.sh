@@ -233,6 +233,42 @@ cd "${SERVICES_DIR}"
 echo "Starting Docker stack..."
 docker compose up -d
 
+# 4.5. Wait for Gluetun tunnel to come up.
+#
+# All four torrent-ecosystem services depend_on gluetun's
+# service_healthy condition, which means compose has already
+# verified the healthcheck passes before returning. But the
+# healthcheck only confirms the control server responds — the
+# WireGuard tunnel may still be re-keying, or the public IP fetch
+# may not have completed yet.
+#
+# Hit gluetun's /v1/publicip/ip directly to confirm we can reach
+# the outside world *through* the tunnel. Failing here aborts
+# setup with a clear error rather than letting Prowlarr fail to
+# reach indexers later.
+echo "Waiting for Gluetun tunnel to come up..."
+TUNNEL_OK=0
+for i in $(seq 1 60); do
+    if docker exec mdb_gluetun wget -qO- --timeout=3 \
+        http://localhost:8000/v1/publicip/ip 2>/dev/null \
+        | grep -q '"public_ip"'; then
+        EXIT_IP=$(docker exec mdb_gluetun wget -qO- \
+            http://localhost:8000/v1/publicip/ip \
+            | jq -r .public_ip 2>/dev/null || echo "(unknown)")
+        echo "Tunnel up — exit IP: ${EXIT_IP}"
+        TUNNEL_OK=1
+        break
+    fi
+    sleep 2
+done
+if [ "${TUNNEL_OK}" -eq 0 ]; then
+    echo "ERROR: Gluetun tunnel did not come up in 120s."
+    echo "       Check 'docker logs mdb_gluetun' for WireGuard errors."
+    echo "       Common causes: revoked key, NAT-PMP toggle off, ISP"
+    echo "       blocks UDP/51820 outbound."
+    exit 1
+fi
+
 # 5. Wait for services to initialize their configs
 echo "Waiting for services to finish first-time init (60s)..."
 sleep 60
