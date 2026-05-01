@@ -2341,6 +2341,41 @@ def create_app(data_dir: Path, config=None) -> Flask:
         env = _read_env_file(path)
         return bool(env.get("WIREGUARD_PRIVATE_KEY", "").strip())
 
+    def _vpn_configured() -> bool:
+        """True iff services/.env exists AND has a non-empty WIREGUARD_PRIVATE_KEY.
+
+        Layer 2 of the three-layer Media Browser gate. Failure-closed:
+        any error reading the .env returns False so a malformed file
+        can't accidentally allow access.
+
+        Delegates to _env_has_wireguard_key with the canonical SERVICES_ENV
+        path. Use _env_has_wireguard_key directly if you need to check a
+        non-canonical path (e.g., during setup-job preview).
+        """
+        return _env_has_wireguard_key(SERVICES_ENV)
+
+    def _vpn_required_response():
+        """Standard 403 used when Layer 2 (VPN configured) fails."""
+        return error_response(
+            "vpn_not_configured",
+            "VPN must be configured in the Media Browser tab before using this feature",
+            status=403,
+        )
+
+    def _check_media_browser_gates(*, require_vpn: bool = True):
+        """Run the Layer 1 + (optionally) Layer 2 gates.
+
+        Returns None on pass, or a 403 Response on fail. Endpoints that
+        are part of the VPN-setup flow itself (status, setup,
+        setup-status, reset) pass require_vpn=False so the operator can
+        reach them before configuring VPN.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+        if require_vpn and not _vpn_configured():
+            return _vpn_required_response()
+        return None
+
     @app.get("/admin/media-browser/visibility")
     def media_browser_visibility():  # type: ignore[no-redef]
         """Public — return whether the Media Browser tab should be rendered.
