@@ -160,6 +160,7 @@ if(BUILD_KIOSK)
             src/media_browser/radarr/radarr_mock.cpp
             src/media_browser/prowlarr/prowlarr_client.cpp
             src/media_browser/qbittorrent/qbittorrent_client.cpp
+            src/media_browser/health/vpn_health_monitor.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
