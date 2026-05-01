@@ -40,11 +40,12 @@ constexpr int kSafeInset    = chrome::kSafeInset_px;  // 60 px
 constexpr int kBezelInset   = chrome::kFrameInset_px; // 40 px
 
 // Poster dimensions — smaller than Detail (280×420) so the similar-films
-// row has enough vertical room below the info section. 200×240 sacrifices
-// strict 2:3 aspect for layout fit; at 720p, this keeps grid_bottom +
-// title space safely above the footer hint band.
+// row has enough vertical room below the info section. 200×300 keeps the
+// proper 2:3 movie-poster aspect; at 720p the row + title pad still
+// clear the footer hint band by ~15px (verified via the row_fits check
+// in the similar-films render block).
 constexpr int kPosterW      = 200;
-constexpr int kPosterH      = 240;
+constexpr int kPosterH      = 300;
 
 // Info column starts after the poster + gap.
 constexpr int kColumnGap    = 24;
