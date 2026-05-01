@@ -371,21 +371,14 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
     for (const auto& e : events) {
         // ============================================================
         // Overlay input capture: when the overlay is open or animating,
-        // it consumes ROTATE / SELECT / PLAY_PAUSE / SETTINGS_MENU
-        // inputs. The underlying grid does NOT see these events while
-        // the panel is visible. SETTINGS_MENU is handled separately
-        // below as a toggle (open/close).
+        // it consumes ROTATE / SELECT / SETTINGS_MENU inputs. The
+        // underlying grid does NOT see these events while the panel is
+        // visible. SETTINGS_MENU is handled separately below as a
+        // toggle (open/close). BTN2 (PLAY_PAUSE) is owned globally by
+        // the exit modal in main.cpp and never arrives here.
         // ============================================================
         const bool overlay_active = (overlay_state_ != OverlayState::Closed);
         if (overlay_active) {
-            // BTN2 (PLAY_PAUSE, red) — back closes the overlay.
-            if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-                if (overlay_state_ == OverlayState::Open ||
-                    overlay_state_ == OverlayState::SlidingIn) {
-                    start_close_overlay();
-                }
-                continue;
-            }
             // Rotary CW/CCW — walk through the 8 focusable rows.
             if (e.action == platform::InputAction::ROTATE) {
                 if (e.delta == 0) continue;
@@ -467,13 +460,8 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
             return Screen::Queue;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — back. Library's parent in the back
-        // stack is Browse; Browse retains its last-active content
-        // category so the operator returns to wherever they were
-        // (Popular / Top Rated) before opening Library.
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            return Screen::Browse;
-        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal
+        // in main.cpp. It never reaches here; no per-screen handler needed.
 
         // ROTATE (rotary CW/CCW + D-pad LEFT/RIGHT) — walk one cell at
         // a time, row-major.

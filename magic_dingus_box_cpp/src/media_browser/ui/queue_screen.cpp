@@ -426,12 +426,8 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
             continue;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — back. Returns to Library (Queue's
-        // tab-strip neighbour and the most-likely "where I came from"
-        // for an operator inspecting an active download).
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            return Screen::Library;
-        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal
+        // in main.cpp. It never reaches here; no per-screen handler needed.
 
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (queue_.empty()) continue;

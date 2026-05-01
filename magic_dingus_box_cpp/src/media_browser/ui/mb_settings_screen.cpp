@@ -489,14 +489,8 @@ Screen MbSettingsScreen::handle_input(
             continue;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — back. Settings is at the right end
-        // of the Marquee strip; back returns to Queue (the immediate
-        // PREV-tab neighbour). The Services row's SELECT (A) handler
-        // already does what the old BTN2 shortcut did (re-pings the
-        // 3 services).
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            return Screen::Queue;
-        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal
+        // in main.cpp. It never reaches here; no per-screen handler needed.
 
         // Row-kind classifiers — keep the navigation/edit/action vocabulary
         // in one place so adding a new row only requires updating these

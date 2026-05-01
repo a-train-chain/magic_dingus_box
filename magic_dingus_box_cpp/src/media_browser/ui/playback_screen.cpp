@@ -148,10 +148,17 @@ Screen PlaybackScreen::handle_input(
         // here means it's a short press. We don't call controller_.stop()
         // here because leave() will (idempotently); having a single stop
         // point keeps lifecycle reasoning simple.
+        // TODO Task 9: if a playback overlay is open, close it instead of
+        // returning to Detail.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             return Screen::Detail;
         }
 
+        // BTN2 (PLAY_PAUSE, red) — note: in v1.6.4+ this event is
+        // intercepted globally by the exit modal in main.cpp before
+        // it reaches handle_input, so the block below is unreachable
+        // while the MB is active. Kept to document the pre-v1.6.4
+        // toggle-pause semantic for future reference.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             controller_.toggle_pause();
             continue;

@@ -394,12 +394,8 @@ Screen SearchScreen::handle_input(const std::vector<platform::InputEvent>& event
             return Screen::Library;
         }
 
-        // BTN2 (PLAY_PAUSE, red) — back. Returns to whatever Marquee
-        // tab the operator was on before navigating to Search (handled
-        // via Screen::Browse which retains its category_).
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            return Screen::Browse;
-        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal
+        // in main.cpp. It never reaches here; no per-screen handler needed.
 
         // Horizontal nav: always to the keyboard regardless of focus —
         // the results grid navigates with left/right too, but we model

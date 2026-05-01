@@ -22,6 +22,7 @@
 #include "media_browser/ui/library_screen.h"
 #include "media_browser/ui/mb_settings_screen.h"
 #include "media_browser/ui/playback_screen.h"
+#include "media_browser/ui/mb_exit_modal.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
@@ -626,6 +627,10 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::MbScreen* active_mb_screen = &mb_browse;
     // enter() is called the first time we actually transition into the
     // Media Browser, so entering always starts fresh on Browse.
+
+    // Global "Exit Marquee?" confirm modal. Owned here; intercepts BTN2
+    // (PLAY_PAUSE) before any MB screen sees it. Task 7.
+    media_browser::ui::ExitModal mb_exit_modal;
 #endif
     
     // Try to load intro video at startup
@@ -1421,6 +1426,74 @@ int main(int /* argc */, char* /* argv */[]) {
                 input_events = std::move(forwarded);
             }
 
+            // === Global BTN2 (PLAY_PAUSE) intercept + exit modal ===
+            // The exit modal owns BTN2 entirely while the MB is active.
+            // When the modal is closed, a BTN2 press opens it.
+            // When the modal is open, all input is funnelled to the modal
+            // and consumed so no MB screen sees it.
+            // On modal commit the teardown mirrors the Screen::Exit path.
+            // (Skipped when BTN4 long-press already fired — double-exit
+            // would call leave() on the wrong screen pointer.)
+            bool mb_modal_exited = false;
+            if (!btn4_long_press_exit) {
+                for (auto it = input_events.begin(); it != input_events.end(); ) {
+                    const auto& e = *it;
+                    bool consume = false;
+
+                    if (mb_exit_modal.is_open()) {
+                        // Modal owns all recognisable inputs while visible.
+                        switch (e.action) {
+                            case platform::InputAction::PLAY_PAUSE:
+                                if (e.pressed) { mb_exit_modal.on_btn2(); consume = true; }
+                                break;
+                            case platform::InputAction::PREV:
+                                if (e.pressed) { mb_exit_modal.on_btn1(); consume = true; }
+                                break;
+                            case platform::InputAction::NEXT:
+                                if (e.pressed) { mb_exit_modal.on_btn3(); consume = true; }
+                                break;
+                            case platform::InputAction::SETTINGS_MENU:
+                                if (e.pressed) { mb_exit_modal.on_btn4(); consume = true; }
+                                break;
+                            case platform::InputAction::SELECT:
+                                if (e.pressed) { mb_exit_modal.on_select(); consume = true; }
+                                break;
+                            case platform::InputAction::ROTATE_VERTICAL:
+                            case platform::InputAction::ROTATE:
+                                if (e.delta != 0) { mb_exit_modal.on_rotate(e.delta); consume = true; }
+                                break;
+                            default:
+                                break;
+                        }
+                    } else if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
+                        mb_exit_modal.open();
+                        consume = true;
+                    }
+
+                    if (consume) {
+                        it = input_events.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+
+                // Handle modal commit result before dispatching remaining
+                // events to the active screen.
+                auto modal_result = mb_exit_modal.last_result();
+                if (modal_result == media_browser::ui::ExitModal::Result::Exit) {
+                    // Tear down: same path as Screen::Exit.
+                    mb_exit_modal.clear_result();
+                    active_mb_screen->leave();
+                    state.current_screen = app::AppScreen::MainMenu;
+                    current_mb_screen = media_browser::ui::Screen::Browse;
+                    active_mb_screen = &mb_browse;
+                    input_events.clear();
+                    mb_modal_exited = true;
+                } else if (modal_result == media_browser::ui::ExitModal::Result::Cancel) {
+                    mb_exit_modal.clear_result();
+                }
+            }
+
             if (btn4_long_press_exit) {
                 // Long-press exit bypasses the screen entirely. Mirror the
                 // Screen::Exit return path below: leave the current screen,
@@ -1432,7 +1505,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 current_mb_screen = media_browser::ui::Screen::Browse;
                 active_mb_screen = &mb_browse;
                 input_events.clear();
-            } else {
+            } else if (!mb_modal_exited) {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
                 active_mb_screen->leave();
@@ -1509,7 +1582,7 @@ int main(int /* argc */, char* /* argv */[]) {
             // Consume all input events so the main UI's per-event loop
             // below sees an empty queue this frame.
             input_events.clear();
-            }  // else (not btn4_long_press_exit)
+            }  // else if (!mb_modal_exited && !btn4_long_press_exit)
         }
 #endif
 
@@ -2656,6 +2729,12 @@ int main(int /* argc */, char* /* argv */[]) {
             ui_renderer.mb_begin_2d_state();
 
             active_mb_screen->render(ui_renderer, mode.width, mode.height);
+
+            // "Exit Marquee?" confirm modal — rendered above the active MB
+            // screen but below the wood frame and CRT effects so it reads
+            // as a native UI element. No-op when the modal is not open.
+            mb_exit_modal.render(ui_renderer, mode.width, mode.height);
+
             // Drain any completed poster fetches and upload them to GL.
             // Must happen on the GL-owning main thread. Without this
             // call the background fetcher thread's decoded images would

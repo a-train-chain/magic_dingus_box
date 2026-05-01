@@ -755,15 +755,11 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
     for (const auto& e : events) {
         // ================================================================
         // Overlay input capture: when filter_overlay_ is open/animating,
-        // it consumes ROTATE_VERTICAL / SELECT. BTN4 is handled as a
-        // toggle below (open/close). PLAY_PAUSE closes the overlay
-        // instead of exiting the screen while the overlay is visible.
+        // it consumes ROTATE_VERTICAL / SELECT. BTN4 toggles open/close.
+        // BTN2 (PLAY_PAUSE) is now owned globally by the exit modal in
+        // main.cpp and never reaches this point.
         // ================================================================
         if (filter_overlay_.is_visible()) {
-            if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-                filter_overlay_.on_btn4_close();
-                continue;
-            }
             if (e.action == platform::InputAction::ROTATE_VERTICAL) {
                 if (e.delta != 0) filter_overlay_.on_rotate(e.delta);
                 continue;
@@ -784,13 +780,8 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             }
         }
 
-        // BTN2 (PLAY_PAUSE, red) — back. Browse is the top of the
-        // Marquee section, so back-from-Browse exits the Media Browser
-        // entirely. Same destination as the existing BTN4 long-press
-        // handled by the input dispatcher.
-        if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
-            return Screen::Exit;
-        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal
+        // in main.cpp. It never reaches here; no per-screen handler needed.
 
         // BTN4 (SETTINGS_MENU, black) — toggles the filter overlay on
         // Popular + TopRated tabs. On other tabs it remains a no-op
