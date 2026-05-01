@@ -2180,7 +2180,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         "mdb_radarr",
         "mdb_prowlarr",
         "mdb_qbittorrent",
-        "mdb_flaresolverr",
+        "mdb_byparr",
     ]
 
     # Track media-browser setup jobs (in-memory, cleared on restart)
@@ -2957,9 +2957,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 details={"steps": steps_completed},
             )
 
-        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/flaresolverr)
+        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/byparr)
         config_dirs_root = SERVICES_DIR / "config"
-        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "flaresolverr"]
+        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "byparr"]
         for name in targets:
             target = config_dirs_root / name
             if not target.exists():
