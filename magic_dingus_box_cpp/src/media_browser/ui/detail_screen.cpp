@@ -10,6 +10,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
@@ -624,6 +625,16 @@ Screen DetailScreen::do_add_to_library() {
     // jump to the Queue screen so they see the download start populating
     // in real time.
     ::ui::Toast::show("Added to library — downloading");
+    // Register a stall watch so DownloadWatchdog can later surface a
+    // "Pick another release" prompt if Radarr's auto-pick fails or
+    // the chosen torrent never gets peers. No-op if main.cpp hasn't
+    // wired the watchdog (e.g. tests).
+    if (watchdog_ && tmdb_id_ > 0) {
+        std::string title = tmdb_detail_.has_value()
+                              ? tmdb_detail_->title
+                              : std::string{};
+        watchdog_->watch(tmdb_id_, std::move(title));
+    }
     fetch();
     return Screen::Queue;
 }
@@ -882,7 +893,10 @@ Screen DetailScreen::do_pick_source() {
     std::string movie_title = tmdb_detail_.has_value()
                                 ? tmdb_detail_->title
                                 : movie_->title;
-    picker_callback_(std::move(movie_title), std::move(candidates));
+    // Forward the tmdb_id so the picker can register a watchdog watch
+    // on its own grab (Task 16). Title is forwarded too, but the
+    // picker uses tmdb_id as the canonical key.
+    picker_callback_(tmdb_id_, std::move(movie_title), std::move(candidates));
     return Screen::ReleasePicker;
 }
 

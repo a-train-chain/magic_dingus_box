@@ -24,6 +24,8 @@
 #include "media_browser/ui/playback_screen.h"
 #include "media_browser/ui/release_picker_screen.h"
 #include "media_browser/ui/mb_exit_modal.h"
+#include "media_browser/ui/stall_prompt_modal.h"
+#include "media_browser/qbittorrent/download_watchdog.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"
@@ -622,8 +624,13 @@ int main(int /* argc */, char* /* argv */[]) {
     // the Task 13 commit for the rationale.
     mb_detail.set_picker_callback(
         [&mb_release_picker](
+            int tmdb_id,
             std::string title,
             std::vector<media_browser::ui::ReleasePickerScreen::ReleaseCandidate> rows) {
+            // Forward the tmdb_id BEFORE candidates so the picker has the
+            // right key in hand when SELECT fires its grab_release() +
+            // watchdog->watch() call (Task 16).
+            mb_release_picker.set_movie_tmdb_id(tmdb_id);
             mb_release_picker.set_candidates(std::move(title), std::move(rows));
         });
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
@@ -648,6 +655,40 @@ int main(int /* argc */, char* /* argv */[]) {
     // Global "Exit Marquee?" confirm modal. Owned here; intercepts BTN2
     // (PLAY_PAUSE) before any MB screen sees it. Task 7.
     media_browser::ui::ExitModal mb_exit_modal;
+
+    // Background watchdog for stalled downloads + modal that surfaces
+    // its events to the user. The watchdog is ticked once per frame in
+    // the main loop; tick() rate-limits its own service polls to ~once
+    // per 10s so the per-frame call is cheap. The modal traps input
+    // while active and emits Pick / Dismiss via the handlers below.
+    // Task 16.
+    media_browser::DownloadWatchdog mb_watchdog(radarr, *qbit_owned);
+    media_browser::ui::StallPromptModal mb_stall_modal;
+    mb_stall_modal.set_handlers(
+        [&current_mb_screen, &active_mb_screen, &mb_detail]
+        (int tmdb_id, const std::string& /*title*/) {
+            // v1 Pick handler: route to Detail for the stalled movie. The
+            // user can press "Pick a source" from there to open the
+            // ReleasePickerScreen with fresh Radarr-sourced candidates.
+            // (A v2 enhancement could deep-link straight into the picker,
+            // but that requires plumbing radarr_movie_id through the
+            // watchdog event — out of scope for v1.)
+            if (tmdb_id > 0) {
+                mb_detail.set_tmdb_id(tmdb_id);
+                mb_detail.set_origin(media_browser::ui::Screen::Browse);
+            }
+            active_mb_screen->leave();
+            current_mb_screen = media_browser::ui::Screen::Detail;
+            active_mb_screen = &mb_detail;
+            active_mb_screen->enter();
+        },
+        [&mb_watchdog](int tmdb_id) {
+            mb_watchdog.snooze(tmdb_id, std::chrono::minutes(10));
+        });
+
+    // Wire the watchdog into the screens that initiate downloads.
+    mb_detail.set_watchdog(&mb_watchdog);
+    mb_release_picker.set_watchdog(&mb_watchdog);
 #endif
     
     // Try to load intro video at startup
@@ -1441,6 +1482,49 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
                 }
                 input_events = std::move(forwarded);
+            }
+
+            // === Download stall watchdog — Task 16 ===
+            // Tick every frame; the watchdog rate-limits its own service
+            // polls internally to ~once per 10s, so the per-frame cost is
+            // negligible. Any returned stall events surface as a
+            // StallPromptModal (one-at-a-time — additional events stay
+            // queued in the watchdog's internal state and the next free
+            // frame raises the next one).
+            //
+            // Modal placement note: this runs BEFORE the exit-modal
+            // intercept so the exit modal can take precedence if both
+            // happen to be active in the same frame (user pressing BTN2
+            // to leave the Marquee shouldn't be hijacked by a late stall
+            // event firing the same tick).
+            {
+                auto stall_events = mb_watchdog.tick();
+                if (!stall_events.empty() && !mb_stall_modal.is_active()
+                    && !mb_exit_modal.is_open()) {
+                    const auto& ev = stall_events.front();
+                    media_browser::ui::StallPromptModal::Pending p;
+                    p.tmdb_id = ev.tmdb_id;
+                    p.title   = ev.title;
+                    p.reason_label =
+                        (ev.reason ==
+                         media_browser::DownloadWatchdog::Reason::RadarrFailed)
+                            ? "Radarr reported the download failed"
+                            : "No peers connected after 60s";
+                    mb_stall_modal.show(std::move(p));
+                }
+            }
+
+            // === Stall modal intercept ===
+            // Traps ALL input while active and consumes the queue so no
+            // MB screen sees those events. Mirrors the exit-modal
+            // pattern below. Must run BEFORE the exit-modal block — if
+            // the stall modal is up, any BTN2 should commit/dismiss the
+            // stall prompt, not open a redundant exit-confirm on top.
+            if (mb_stall_modal.is_active()) {
+                bool consumed = mb_stall_modal.handle_input(input_events);
+                if (consumed) {
+                    input_events.clear();
+                }
             }
 
             // === Global BTN2 (PLAY_PAUSE) intercept + exit modal ===
@@ -2766,6 +2850,11 @@ int main(int /* argc */, char* /* argv */[]) {
             // screen but below the wood frame and CRT effects so it reads
             // as a native UI element. No-op when the modal is not open.
             mb_exit_modal.render(ui_renderer, mode.width, mode.height);
+
+            // Download-stall prompt modal — same compositing slot as the
+            // exit modal. is_active() inside render() makes it a no-op
+            // when not shown. Task 16.
+            mb_stall_modal.render(ui_renderer, mode.width, mode.height);
 
             // Drain any completed poster fetches and upload them to GL.
             // Must happen on the GL-owning main thread. Without this

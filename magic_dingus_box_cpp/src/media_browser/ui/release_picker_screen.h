@@ -18,6 +18,7 @@
 
 namespace media_browser {
 class RadarrClient;
+class DownloadWatchdog;
 }
 
 namespace ui { class Renderer; }
@@ -53,6 +54,19 @@ public:
     // sub-floor row) before storing. Resets focus + scroll.
     void set_candidates(std::string movie_title,
                         std::vector<ReleaseCandidate> rows);
+
+    // Optional download-stall watchdog. Set by main.cpp at startup; if
+    // null the screen skips watchdog registration (e.g. unit-test builds
+    // that don't construct one). The SELECT branch of handle_input()
+    // registers a watch on a successful grab so a stalled torrent can
+    // later surface the StallPromptModal.
+    void set_watchdog(::media_browser::DownloadWatchdog* w) { watchdog_ = w; }
+
+    // The tmdb_id of the movie whose releases are being picked. Set by
+    // main.cpp's picker callback (which fires from DetailScreen) just
+    // before the dispatcher transitions us in. Required so a successful
+    // grab can register a watch keyed on the movie.
+    void set_movie_tmdb_id(int tmdb_id) { tmdb_id_ = tmdb_id; }
 
     // MbScreen overrides.
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -91,6 +105,11 @@ private:
     int                            focus_ = 0;
     int                            scroll_top_ = 0;
     static constexpr int           kVisibleRows = 6;
+
+    // See setters above. Both default to "not wired" so unit tests that
+    // construct the screen with just a RadarrClient still compile + run.
+    ::media_browser::DownloadWatchdog* watchdog_ = nullptr;
+    int                                tmdb_id_ = 0;
 };
 
 }  // namespace media_browser::ui

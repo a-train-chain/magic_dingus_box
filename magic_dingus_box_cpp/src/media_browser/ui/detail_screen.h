@@ -20,6 +20,7 @@ namespace media_browser { class RadarrClient; }
 namespace media_browser { class TmdbClient; }
 namespace media_browser { class ProwlarrClient; }
 namespace media_browser { class QbittorrentClient; }
+namespace media_browser { class DownloadWatchdog; }
 
 namespace media_browser::ui {
 
@@ -136,11 +137,19 @@ public:
     // that don't include the picker screen), do_pick_source() returns
     // Screen::Detail without transitioning. See Task 13.
     using PickerCallback = std::function<void(
+        int tmdb_id,
         std::string title,
         std::vector<ReleasePickerScreen::ReleaseCandidate> rows)>;
     void set_picker_callback(PickerCallback cb) {
         picker_callback_ = std::move(cb);
     }
+
+    // Optional download-stall watchdog. Set by main.cpp at startup; if
+    // null the screen skips watchdog registration (e.g. unit-test builds
+    // that don't construct one). do_add_to_library() registers a watch
+    // on success so the watchdog can detect zero-progress / Radarr-failed
+    // downloads later.
+    void set_watchdog(::media_browser::DownloadWatchdog* w) { watchdog_ = w; }
 
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -309,6 +318,9 @@ private:
     // that don't link the picker screen — do_pick_source() degrades to a
     // no-op + toast in that case.
     PickerCallback picker_callback_;
+
+    // See set_watchdog(). Optional; null when not wired (tests, headless).
+    ::media_browser::DownloadWatchdog* watchdog_ = nullptr;
 };
 
 }  // namespace media_browser::ui

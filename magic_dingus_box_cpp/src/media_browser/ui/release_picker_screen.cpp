@@ -1,4 +1,5 @@
 #include "media_browser/ui/release_picker_screen.h"
+#include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "ui/renderer.h"
@@ -135,6 +136,14 @@ Screen ReleasePickerScreen::handle_input(
             bool ok = radarr_.grab_release(payload);
             if (ok) {
                 ::ui::Toast::show("Grabbing release \xE2\x80\x94 see Queue");
+                // Register a stall watch so DownloadWatchdog can later
+                // surface a "Pick another" prompt if this manually-chosen
+                // release also stalls. No-op if main.cpp didn't wire the
+                // watchdog or if tmdb_id wasn't forwarded by the picker
+                // callback (defensive — both should be set in production).
+                if (watchdog_ && tmdb_id_ > 0) {
+                    watchdog_->watch(tmdb_id_, movie_title_);
+                }
                 return Screen::Detail;
             } else {
                 ::ui::Toast::show("Grab failed \xE2\x80\x94 see Radarr logs");
