@@ -40,10 +40,11 @@ constexpr int kSafeInset    = chrome::kSafeInset_px;  // 60 px
 constexpr int kBezelInset   = chrome::kFrameInset_px; // 40 px
 
 // Poster dimensions — smaller than Detail (280×420) so the similar-films
-// row has enough vertical room below the info section. 200×300 keeps the
-// same 2:3 aspect at ~71% the size.
+// row has enough vertical room below the info section. 200×240 sacrifices
+// strict 2:3 aspect for layout fit; at 720p, this keeps grid_bottom +
+// title space safely above the footer hint band.
 constexpr int kPosterW      = 200;
-constexpr int kPosterH      = 300;
+constexpr int kPosterH      = 240;
 
 // Info column starts after the poster + gap.
 constexpr int kColumnGap    = 24;
@@ -499,14 +500,15 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        th.font_medium_size, th.dim, 1.0f);
     } else {
         // Single row only — up to kMaxSimilar (9) posters.
+        // All cards in this row share the same y; bezel-fit is determined
+        // once before the loop, not per-iteration (a single break would
+        // kill the entire row, which was the v1.6.4-rc bug).
         const int n = static_cast<int>(snapshot.size());
-        for (int col = 0; col < kGridCols && col < n; ++col) {
+        const bool row_fits = (grid_top + poster_cell_h + kMetaTotalH + chrome::kPad2) <= footer_band_top;
+        for (int col = 0; col < kGridCols && col < n && row_fits; ++col) {
             const auto& hit = snapshot[col];
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top;
-
-            // Don't let the card bleed into the footer hints.
-            if (y + poster_cell_h > footer_band_top - 60) break;
 
             const ::ui::Color tint = poster_tint_for_tmdb(hit.tmdb_id);
             chrome::draw_poster_card(r, x, y, cell_w, poster_cell_h,
