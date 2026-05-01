@@ -167,6 +167,7 @@ if(BUILD_KIOSK)
             src/media_browser/ui/detail_screen.cpp
             src/media_browser/ui/playback_screen.cpp
             src/media_browser/ui/queue_screen.cpp
+            src/media_browser/ui/release_picker_screen.cpp
             src/media_browser/ui/library_screen.cpp
             src/media_browser/ui/mb_settings_screen.cpp
             src/media_browser/ui/mb_chrome.cpp
