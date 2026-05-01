@@ -81,10 +81,11 @@ EOF
                 | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
             apt-get update -qq
         fi
-        # Install both cloudflared and dnsutils (provides `dig`, used by
-        # the verification step below). Combining the install keeps apt
-        # invocations to one.
-        apt-get install -y cloudflared dnsutils
+        # Install cloudflared, dnsutils (for `dig` in the verification
+        # step), and jq (used elsewhere in this script to parse JSON
+        # responses from gluetun). Combining keeps apt invocations to
+        # one.
+        apt-get install -y cloudflared dnsutils jq
     fi
 
     # Ensure `dig` is available for the DoH verification at the bottom of Step 0.
@@ -93,6 +94,12 @@ EOF
     if ! command -v dig &>/dev/null; then
         echo "Installing dnsutils (for dig)..."
         apt-get install -y dnsutils
+    fi
+
+    # Ensure `jq` is available for JSON parsing of gluetun's /v1/publicip/ip.
+    if ! command -v jq &>/dev/null; then
+        echo "Installing jq..."
+        apt-get install -y jq
     fi
 
     # 0c. Configure cloudflared as DoH resolver on 127.0.0.1:53
