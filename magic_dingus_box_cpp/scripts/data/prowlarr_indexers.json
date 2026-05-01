@@ -2035,58 +2035,6 @@
     },
     {
         "indexerUrls": [
-            "https://1337x.to/"
-        ],
-        "legacyUrls": [],
-        "definitionName": "1337x",
-        "description": "1337x is a Public general-purpose torrent tracker",
-        "language": "en-US",
-        "encoding": "Unicode (UTF-8)",
-        "enable": true,
-        "redirect": false,
-        "supportsRss": true,
-        "supportsSearch": true,
-        "supportsRedirect": false,
-        "supportsPagination": false,
-        "appProfileId": 1,
-        "protocol": "torrent",
-        "privacy": "public",
-        "capabilities": {
-            "limitsMax": 100,
-            "limitsDefault": 100,
-            "categories": [
-                {
-                    "name": "Movies",
-                    "subCategories": []
-                }
-            ]
-        },
-        "priority": 25,
-        "downloadClientId": 0,
-        "added": "0001-01-01T00:00:00Z",
-        "name": "1337x",
-        "fields": [
-            {
-                "order": 0,
-                "name": "definitionFile",
-                "value": "1337x",
-                "type": "textbox",
-                "advanced": false,
-                "hidden": "hidden",
-                "privacy": "normal",
-                "isFloat": false
-            }
-        ],
-        "implementationName": "Cardigann",
-        "implementation": "Cardigann",
-        "configContract": "CardigannSettings",
-        "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#1337x",
-        "tags_by_label": [
-            "cloudflare"
-        ]
-    },
-    {
-        "indexerUrls": [
             "https://torrentgalaxy.one/"
         ],
         "legacyUrls": [],
@@ -2173,58 +2121,6 @@
         "configContract": "NoAuthTorrentBaseSettings",
         "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#knaben",
         "tags_by_label": []
-    },
-    {
-        "indexerUrls": [
-            "https://kickasstorrents.to/"
-        ],
-        "legacyUrls": [],
-        "definitionName": "kickasstorrents-to",
-        "description": "kickasstorrents.to \u2014 KAT mirror, general-purpose torrent tracker",
-        "language": "en-US",
-        "encoding": "Unicode (UTF-8)",
-        "enable": true,
-        "redirect": false,
-        "supportsRss": true,
-        "supportsSearch": true,
-        "supportsRedirect": false,
-        "supportsPagination": false,
-        "appProfileId": 1,
-        "protocol": "torrent",
-        "privacy": "public",
-        "capabilities": {
-            "limitsMax": 100,
-            "limitsDefault": 100,
-            "categories": [
-                {
-                    "name": "Movies",
-                    "subCategories": []
-                }
-            ]
-        },
-        "priority": 25,
-        "downloadClientId": 0,
-        "added": "0001-01-01T00:00:00Z",
-        "name": "kickasstorrents.to",
-        "fields": [
-            {
-                "order": 0,
-                "name": "definitionFile",
-                "value": "kickasstorrents-to",
-                "type": "textbox",
-                "advanced": false,
-                "hidden": "hidden",
-                "privacy": "normal",
-                "isFloat": false
-            }
-        ],
-        "implementationName": "Cardigann",
-        "implementation": "Cardigann",
-        "configContract": "CardigannSettings",
-        "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#kickasstorrentsto",
-        "tags_by_label": [
-            "cloudflare"
-        ]
     },
     {
         "indexerUrls": [
