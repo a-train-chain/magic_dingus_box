@@ -5638,6 +5638,12 @@ async function checkMediaBrowserVisibility() {
         const response = await fetch(`${currentDevice.url}/admin/media-browser/visibility`);
         const data = await response.json();
         visible = !!(data && data.ok && data.data && data.data.visible === true);
+        // Layer 2 surface: tracked for any future UI that wants to badge
+        // the tab nav when unlocked-but-unconfigured. The existing
+        // dashboard already detects `configured: false` from /status and
+        // shows a Configure VPN form, so no DOM change is required here
+        // today.
+        window.mbVpnConfigured = !!(data && data.ok && data.data && data.data.vpn_configured === true);
     } catch (e) {
         console.warn('Media Browser visibility check failed (treating as locked):', e);
         visible = false;
