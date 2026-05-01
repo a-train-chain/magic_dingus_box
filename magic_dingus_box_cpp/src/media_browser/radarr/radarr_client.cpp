@@ -278,6 +278,30 @@ bool RadarrClient::cancel_queue_item(int queue_id) {
     return last_error_.empty();
 }
 
+bool RadarrClient::grab_release(const Json::Value& release) {
+    Json::StreamWriterBuilder w;
+    w["indentation"] = "";
+    std::string body = Json::writeString(w, release);
+    std::string resp = http_post("/api/v3/release", body);
+    return !resp.empty();  // Radarr returns the queued release on success.
+}
+
+std::vector<Json::Value>
+RadarrClient::get_releases_for_movie(int radarr_movie_id) {
+    std::string resp = http_get("/api/v3/release?movieId=" +
+                                std::to_string(radarr_movie_id));
+    std::vector<Json::Value> out;
+    if (resp.empty()) return out;
+    Json::CharReaderBuilder b;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(resp);
+    if (!Json::parseFromStream(b, is, &root, &err)) return out;
+    if (!root.isArray()) return out;
+    for (const auto& r : root) out.push_back(r);
+    return out;
+}
+
 std::vector<std::string>
 RadarrClient::get_movie_download_hashes(int movie_id) {
     // Radarr's /api/v3/history endpoint takes movieId as a filter and

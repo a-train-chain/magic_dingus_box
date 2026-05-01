@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <json/json.h>
 #include "media_browser/radarr/radarr_types.h"
 
 namespace media_browser {
@@ -47,6 +48,16 @@ public:
     // Queue / downloads
     virtual std::vector<QueueItem> get_queue();
     virtual bool cancel_queue_item(int queue_id);
+
+    // Grab a specific release picked by the user. The `release` JSON
+    // must be an object previously returned from /api/v3/release?movieId=X
+    // (or constructed with the same shape — at minimum guid + indexerId).
+    virtual bool grab_release(const Json::Value& release);
+
+    // Fetch /api/v3/release?movieId=X — the list of releases Radarr would
+    // consider for an interactive search of this movie. Each entry has
+    // guid, indexerId, title, seeders, size, quality, customFormatScore, etc.
+    virtual std::vector<Json::Value> get_releases_for_movie(int radarr_movie_id);
 
     // Returns the distinct downloadId values (qBit info_hash) from
     // every "grabbed" event in this movie's Radarr history. Used by
