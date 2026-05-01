@@ -22,6 +22,7 @@
 #include "media_browser/ui/library_screen.h"
 #include "media_browser/ui/mb_settings_screen.h"
 #include "media_browser/ui/playback_screen.h"
+#include "media_browser/ui/release_picker_screen.h"
 #include "media_browser/ui/mb_exit_modal.h"
 #endif
 #include "app/app_state.h"
@@ -610,6 +611,9 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      radarr,
                                                      qbit_owned.get());
+    // Manual release-picker screen — opened from Detail's "Pick a source"
+    // button (Task 13) when the user wants to override Radarr's auto-pick.
+    media_browser::ui::ReleasePickerScreen mb_release_picker(radarr);
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
     // triggers this callback AND returns Screen::Exit, so the dispatcher
@@ -1569,7 +1573,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::Browse:        active_mb_screen = &mb_browse;      break;
                     case media_browser::ui::Screen::Search:        active_mb_screen = &mb_search;      break;
                     case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
-                    case media_browser::ui::Screen::ReleasePicker: break;  // wired in Task 12
+                    case media_browser::ui::Screen::ReleasePicker: active_mb_screen = &mb_release_picker; break;
                     case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;
                     case media_browser::ui::Screen::Library:       active_mb_screen = &mb_library;     break;
                     case media_browser::ui::Screen::Playback:      active_mb_screen = &mb_playback;    break;
