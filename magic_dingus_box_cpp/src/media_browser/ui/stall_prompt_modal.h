@@ -28,11 +28,20 @@ namespace media_browser::ui {
 
 class StallPromptModal {
 public:
-    using PickHandler    = std::function<void(int tmdb_id, const std::string& title)>;
+    // PickHandler signature gained radarr_movie_id in v1.7.x — the
+    // handler now deep-links straight into ReleasePickerScreen's
+    // load_async() (which calls Radarr's /api/v3/release?movieId=X
+    // endpoint) when the id is known. The legacy "open Detail" path
+    // is preserved as a fallback when radarr_movie_id is 0 (e.g.
+    // older watches that predate the id plumbing).
+    using PickHandler    = std::function<void(int tmdb_id,
+                                              int radarr_movie_id,
+                                              const std::string& title)>;
     using DismissHandler = std::function<void(int tmdb_id)>;
 
     struct Pending {
         int         tmdb_id = 0;
+        int         radarr_movie_id = 0;
         std::string title;
         std::string reason_label;  // e.g., "No peers connected after 60s"
     };

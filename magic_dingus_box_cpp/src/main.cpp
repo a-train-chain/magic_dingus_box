@@ -616,22 +616,22 @@ int main(int /* argc */, char* /* argv */[]) {
     // Manual release-picker screen — opened from Detail's "Pick a source"
     // button (Task 13) when the user wants to override Radarr's auto-pick.
     media_browser::ui::ReleasePickerScreen mb_release_picker(radarr);
-    // Detail->ReleasePicker handoff: Detail builds the candidate list
-    // (sourced from radarr_.get_releases_for_movie()) and pushes it into
-    // the picker via this callback before requesting Screen::ReleasePicker.
-    // Sourcing from Radarr (not Prowlarr's cached results) ensures every
-    // candidate carries the indexerId that grab_release() requires; see
-    // the Task 13 commit for the rationale.
+    // Detail->ReleasePicker handoff: Detail forwards the (tmdb_id,
+    // radarr_movie_id, title) tuple via this callback; the picker spawns
+    // its own worker thread for the slow Radarr /api/v3/release call so
+    // the UI stays responsive. Was synchronous in v1.7.x — froze the
+    // render loop for 14-25s and would trip systemd's watchdog at the
+    // old WatchdogSec=10 (we bumped to 30s in commit b2b8c4c, then
+    // reverted to 10s once this async path landed).
     mb_detail.set_picker_callback(
-        [&mb_release_picker](
-            int tmdb_id,
-            std::string title,
-            std::vector<media_browser::ui::ReleasePickerScreen::ReleaseCandidate> rows) {
-            // Forward the tmdb_id BEFORE candidates so the picker has the
-            // right key in hand when SELECT fires its grab_release() +
-            // watchdog->watch() call (Task 16).
+        [&mb_release_picker](int tmdb_id, int radarr_movie_id,
+                             std::string title) {
+            // Set the tmdb_id first so the picker's SELECT branch can
+            // register a watchdog watch keyed on it; then kick off the
+            // worker thread. load_async() returns immediately — render()
+            // shows the Loading state until update() drains the result.
             mb_release_picker.set_movie_tmdb_id(tmdb_id);
-            mb_release_picker.set_candidates(std::move(title), std::move(rows));
+            mb_release_picker.load_async(radarr_movie_id, std::move(title));
         });
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
@@ -666,14 +666,31 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::DownloadWatchdog mb_watchdog(radarr, *qbit_owned);
     media_browser::ui::StallPromptModal mb_stall_modal;
     mb_stall_modal.set_handlers(
-        [&current_mb_screen, &active_mb_screen, &mb_detail]
-        (int tmdb_id, const std::string& /*title*/) {
-            // v1 Pick handler: route to Detail for the stalled movie. The
+        [&current_mb_screen, &active_mb_screen, &mb_detail,
+         &mb_release_picker]
+        (int tmdb_id, int radarr_movie_id, const std::string& title) {
+            // Deep-link path: when the stall event carries the movie's
+            // radarr id (every grab since the v1.7.x async picker
+            // refactor does), open the picker directly with a fresh
+            // load_async() — no Detail intermediate flash. The picker
+            // shows its Loading state instantly and the user is one
+            // click away from picking a different release.
+            //
+            // Fallback path: older watches (registered before the id
+            // plumbing landed, or any future code path that calls
+            // watch() with radarr_movie_id=0) route through Detail. The
             // user can press "Pick a source" from there to open the
-            // ReleasePickerScreen with fresh Radarr-sourced candidates.
-            // (A v2 enhancement could deep-link straight into the picker,
-            // but that requires plumbing radarr_movie_id through the
-            // watchdog event — out of scope for v1.)
+            // picker manually — more clicks but the same end state.
+            if (radarr_movie_id > 0) {
+                mb_release_picker.set_movie_tmdb_id(tmdb_id);
+                mb_release_picker.load_async(radarr_movie_id, title);
+                active_mb_screen->leave();
+                current_mb_screen = media_browser::ui::Screen::ReleasePicker;
+                active_mb_screen = &mb_release_picker;
+                active_mb_screen->enter();
+                return;
+            }
+            // Fallback: open Detail and let the user re-pick from there.
             if (tmdb_id > 0) {
                 mb_detail.set_tmdb_id(tmdb_id);
                 mb_detail.set_origin(media_browser::ui::Screen::Browse);
@@ -1504,8 +1521,9 @@ int main(int /* argc */, char* /* argv */[]) {
                     && !mb_exit_modal.is_open()) {
                     const auto& ev = stall_events.front();
                     media_browser::ui::StallPromptModal::Pending p;
-                    p.tmdb_id = ev.tmdb_id;
-                    p.title   = ev.title;
+                    p.tmdb_id         = ev.tmdb_id;
+                    p.radarr_movie_id = ev.radarr_movie_id;
+                    p.title           = ev.title;
                     p.reason_label =
                         (ev.reason ==
                          media_browser::DownloadWatchdog::Reason::RadarrFailed)

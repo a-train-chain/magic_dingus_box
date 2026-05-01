@@ -7,10 +7,11 @@ namespace media_browser {
 DownloadWatchdog::DownloadWatchdog(RadarrClient& radarr, QbittorrentClient& qbit)
     : radarr_(radarr), qbit_(qbit) {}
 
-void DownloadWatchdog::watch(int tmdb_id, std::string title, std::string qbit_hash) {
+void DownloadWatchdog::watch(int tmdb_id, int radarr_movie_id,
+                             std::string title, std::string qbit_hash) {
     // Replace any existing watch for this tmdb_id (e.g., user grabs again).
     unwatch(tmdb_id);
-    watched_.push_back({tmdb_id, std::move(title),
+    watched_.push_back({tmdb_id, radarr_movie_id, std::move(title),
                         std::chrono::steady_clock::now(), std::move(qbit_hash)});
 }
 
@@ -41,7 +42,8 @@ DownloadWatchdog::evaluate(const Inputs& in) {
             }
         }
         if (radarr_failed) {
-            out.push_back({w.tmdb_id, w.title, Reason::RadarrFailed});
+            out.push_back({w.tmdb_id, w.radarr_movie_id, w.title,
+                           Reason::RadarrFailed});
             continue;
         }
 
@@ -55,7 +57,8 @@ DownloadWatchdog::evaluate(const Inputs& in) {
         // No qBit torrent at all = Radarr never handed off.
         // OR torrent exists but no progress AND no peers connected = stall.
         if (!t || (t->progress == 0.0 && t->num_seeds == 0)) {
-            out.push_back({w.tmdb_id, w.title, Reason::ZeroProgress});
+            out.push_back({w.tmdb_id, w.radarr_movie_id, w.title,
+                           Reason::ZeroProgress});
         }
     }
     return out;

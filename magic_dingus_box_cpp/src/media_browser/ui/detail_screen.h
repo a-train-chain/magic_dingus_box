@@ -131,15 +131,22 @@ public:
     PlayTarget get_play_target() const;
 
     // Detail->ReleasePicker handoff. The dispatcher in main.cpp registers
-    // a callback that forwards (movie_title, candidates) into the picker
-    // screen's set_candidates() before the screen transition lands. Set
-    // by main.cpp once at construction; if unregistered (e.g. unit tests
-    // that don't include the picker screen), do_pick_source() returns
-    // Screen::Detail without transitioning. See Task 13.
+    // a callback that fires the picker's load_async() (the worker thread
+    // hits Radarr; rows arrive via the picker's update() drain on a
+    // future frame). Set by main.cpp once at construction; if unregistered
+    // (e.g. unit tests that don't include the picker screen),
+    // do_pick_source() returns Screen::Detail without transitioning.
+    //
+    // Signature was previously (tmdb_id, title, candidates) — Detail
+    // synchronously fetched + parsed releases before invoking the
+    // callback, blocking the UI thread for 14-25s. The async refactor
+    // moved the fetch into the picker itself, so the callback now just
+    // forwards keys (tmdb_id for watchdog matching, radarr_movie_id for
+    // the Radarr release endpoint, title for the Loading-state header).
     using PickerCallback = std::function<void(
         int tmdb_id,
-        std::string title,
-        std::vector<ReleasePickerScreen::ReleaseCandidate> rows)>;
+        int radarr_movie_id,
+        std::string title)>;
     void set_picker_callback(PickerCallback cb) {
         picker_callback_ = std::move(cb);
     }

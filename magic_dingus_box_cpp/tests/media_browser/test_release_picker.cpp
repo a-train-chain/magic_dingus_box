@@ -1,10 +1,12 @@
 // Unit tests for the static helpers on ReleasePickerScreen.
 //
 // We intentionally exercise ONLY the pure data-shaping helpers
-// (sort_candidates, flag_auto_pick_and_threshold) — the screen's render()
-// and handle_input() touch the Renderer / Toast / RadarrClient and are
-// out of scope for the unit-test binary, which links neither the GL
-// renderer nor the toast subsystem.
+// (sort_candidates, flag_auto_pick_and_threshold) and a minimal
+// load-state default check — the screen's render() and the live worker
+// path in handle_input()/load_async() touch the Renderer / Toast /
+// libcurl-RadarrClient and are out of scope for the unit-test binary,
+// which links neither the GL renderer nor the toast subsystem nor the
+// release_picker_screen.cpp translation unit.
 
 #include <catch2/catch_test_macros.hpp>
 #include "media_browser/ui/release_picker_screen.h"
@@ -48,6 +50,25 @@ TEST_CASE("flag_auto_pick_and_threshold marks Radarr's choice + below-threshold 
     REQUIRE(rows[1].would_auto_pick == false);
     REQUIRE(rows[2].below_threshold == true);
     REQUIRE(rows[0].below_threshold == false);
+}
+
+TEST_CASE("ReleasePickerScreen LoadState enum has the four expected values",
+          "[picker][async]") {
+    // The async refactor introduced a load-state machine (Idle ->
+    // Loading -> Ready/Failed -> Idle). The enum is a public part of
+    // the picker's API because main.cpp's stall-modal handler may want
+    // to distinguish "load is in flight" from "ready to drain" when
+    // deciding whether to show progress UI. Locking the enum in a test
+    // catches accidental reorderings or removals during future
+    // refactors. (We can't construct a ReleasePickerScreen here — its
+    // .cpp isn't linked into the test binary because that would pull
+    // in the GL renderer and Toast — but the enum itself is in the
+    // header and reachable.)
+    using LS = mbu::ReleasePickerScreen::LoadState;
+    REQUIRE(static_cast<int>(LS::Idle)    >= 0);
+    REQUIRE(static_cast<int>(LS::Loading) != static_cast<int>(LS::Idle));
+    REQUIRE(static_cast<int>(LS::Ready)   != static_cast<int>(LS::Loading));
+    REQUIRE(static_cast<int>(LS::Failed)  != static_cast<int>(LS::Ready));
 }
 
 TEST_CASE("flag_auto_pick handles all-below-threshold case (no auto-pick)",

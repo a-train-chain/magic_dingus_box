@@ -2,18 +2,27 @@
 
 // ReleasePickerScreen — manual override of Radarr's auto-pick.
 //
-// Data flow: Detail screen invokes `set_candidates()` with releases sourced
-// from ProwlarrClient::get_last_releases() (already cached on Detail screen
-// when its availability search completed). The picker sorts, decorates, and
-// displays them. SELECT calls RadarrClient::grab_release(); BACK returns
-// to Detail.
+// Data flow: Detail screen (or the StallPromptModal "Pick another" branch)
+// invokes `load_async()` with the Radarr movie id. The picker spawns a
+// worker thread that calls RadarrClient::get_releases_for_movie (Radarr's
+// /api/v3/release?movieId=X — a 14-25s indexer round-trip), then drains
+// the parsed candidates into the rendered state on a future update()
+// tick. While the load is in flight render() shows a "Loading releases…"
+// state with a dot animation; SELECT/DPad are gated until results land
+// so the user can't grab a non-existent row. The synchronous
+// set_candidates() entry point is preserved for unit tests + any future
+// caller that already has Json results in hand.
 
 #include "media_browser/ui/mb_screen.h"
 #include "platform/input_manager.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <limits>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace media_browser {
@@ -47,13 +56,44 @@ public:
     };
 
     explicit ReleasePickerScreen(::media_browser::RadarrClient& radarr);
+    ~ReleasePickerScreen();
 
     // Set the candidates to display. Caller passes raw rows; the screen
     // sorts (seeders desc, score desc) and decorates (would_auto_pick on
     // the highest-scoring above-threshold row, below_threshold on each
     // sub-floor row) before storing. Resets focus + scroll.
+    //
+    // Called by the load_async() worker drain in update(); also exposed
+    // as a public entry point for unit tests + any future caller that
+    // already has parsed candidates in hand.
     void set_candidates(std::string movie_title,
                         std::vector<ReleaseCandidate> rows);
+
+    // Async-load state. The picker tracks whether a worker thread is
+    // currently fetching releases from Radarr; render() branches on this
+    // to show a "Loading…" state vs the populated row list, and
+    // handle_input() gates SELECT/DPad while loading so the user can't
+    // grab a non-existent row.
+    enum class LoadState { Idle, Loading, Ready, Failed };
+
+    // Kicks off a worker thread that calls
+    // radarr_.get_releases_for_movie(radarr_movie_id) and parses the
+    // JSON into ReleaseCandidate rows. Returns immediately. The picker
+    // shows its Loading state until update() drains the worker's
+    // result. Subsequent calls cancel any in-flight load via the
+    // generation counter (the older worker runs to completion in the
+    // background and silently discards its result).
+    //
+    // Required because Radarr's interactive search across the indexer
+    // pool blocks for 14-25s. Running it on the UI thread froze the
+    // kiosk render loop long enough to trip systemd's watchdog (was
+    // 10s, bumped to 30s as a band-aid in v1.7.x — this commit reverts
+    // that). Mirrors ProwlarrClient::search_async + BrowseScreen +
+    // DetailScreen's worker patterns: detached worker, generation
+    // counter, mutex-guarded result slot drained by update().
+    void load_async(int radarr_movie_id, std::string movie_title);
+
+    LoadState load_state() const { return load_state_.load(); }
 
     // Optional download-stall watchdog. Set by main.cpp at startup; if
     // null the screen skips watchdog registration (e.g. unit-test builds
@@ -71,6 +111,10 @@ public:
     // MbScreen overrides.
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void   render(::ui::Renderer& r, int screen_w, int screen_h) override;
+    // Drains a finished worker's result into rows_ when load_state_ ==
+    // Ready. Cheap atomic load most frames. Defined out-of-line in the
+    // .cpp — the test binary doesn't link release_picker_screen.cpp.
+    void   update() override;
 
     // Static helpers — defined inline so the unit-test binary (which
     // does NOT link release_picker_screen.cpp because that would pull
@@ -110,6 +154,37 @@ private:
     // construct the screen with just a RadarrClient still compile + run.
     ::media_browser::DownloadWatchdog* watchdog_ = nullptr;
     int                                tmdb_id_ = 0;
+
+    // --- Async load state ------------------------------------------------
+    // Mirrors the pattern in ProwlarrClient::search_async + DetailScreen
+    // run_fetch: generation counter for cancellable loads, atomic state
+    // flag for the UI's branch, mutex-protected pending result slot,
+    // and a vector of every spawned worker for clean teardown.
+    std::atomic<LoadState>            load_state_{LoadState::Idle};
+    std::atomic<int>                  load_generation_{0};
+    // The Radarr movie id of the in-flight (or most-recently-completed)
+    // load. Stored separately from rows_/movie_title_ so the SELECT
+    // grab path can also feed it to watchdog_->watch() — the watchdog
+    // needs the radarr_movie_id to power the deep-link from the stall
+    // modal "Pick another" button back into the picker.
+    int                               loading_movie_id_ = 0;
+    mutable std::mutex                load_mu_;
+    std::vector<ReleaseCandidate>     pending_rows_;       // guarded by load_mu_
+    std::string                       loading_title_;      // guarded by load_mu_
+    std::chrono::steady_clock::time_point loading_started_at_{};
+
+    // All worker threads spawned during this screen's lifetime. Joined
+    // in the destructor so a worker mid-CURL doesn't outlive the
+    // ReleasePickerScreen and segfault on result publication. Same
+    // tracking pattern DetailScreen uses for its TMDB workers.
+    std::vector<std::thread>          load_workers_;
+
+    // Worker entry — runs on a background thread spawned by load_async.
+    // Captures gen at spawn time and compares against load_generation_
+    // before publishing so a stale worker (load_async called again
+    // before this one returned) silently drops its result rather than
+    // overwriting the new load's pending state.
+    void run_load(int gen, int radarr_movie_id);
 };
 
 }  // namespace media_browser::ui

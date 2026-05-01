@@ -30,6 +30,13 @@ public:
 
     struct WatchedDownload {
         int         tmdb_id = 0;
+        // Radarr's internal movie id for the same movie — required so the
+        // stall-event handler can deep-link straight into the
+        // ReleasePickerScreen (which calls Radarr's /api/v3/release?
+        // movieId=X endpoint, not /tmdb_id). Defaults to 0 for callers
+        // that haven't been updated to forward it; the stall modal then
+        // falls back to the legacy "open Detail screen" path.
+        int         radarr_movie_id = 0;
         std::string title;
         TimePoint   started_at;
         std::string hash;       // qBit torrent hash; may be empty if not yet known
@@ -39,6 +46,10 @@ public:
 
     struct StallEvent {
         int         tmdb_id = 0;
+        // Mirrors WatchedDownload::radarr_movie_id — copied through by
+        // evaluate() so the stall-modal handler in main.cpp can pick
+        // the deep-link path without needing to re-query Radarr.
+        int         radarr_movie_id = 0;
         std::string title;
         Reason      reason  = Reason::ZeroProgress;
     };
@@ -58,7 +69,15 @@ public:
     // Live-instance API (wraps real services).
     DownloadWatchdog(RadarrClient& radarr, QbittorrentClient& qbit);
 
-    void watch(int tmdb_id, std::string title, std::string qbit_hash = "");
+    // Register a watch on a movie download. radarr_movie_id is required
+    // for the stall-modal "Pick another" deep-link (the picker calls
+    // Radarr's /api/v3/release?movieId=X endpoint with this id); pass 0
+    // when the radarr id isn't known yet (the stall modal will fall back
+    // to opening Detail and the user can re-trigger Pick a source from
+    // there). Title is used by the stall-modal headline only — a few
+    // legacy callers pass an empty string.
+    void watch(int tmdb_id, int radarr_movie_id, std::string title,
+               std::string qbit_hash = "");
     void unwatch(int tmdb_id);
     void snooze(int tmdb_id, std::chrono::seconds duration);
 

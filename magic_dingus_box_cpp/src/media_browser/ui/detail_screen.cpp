@@ -633,7 +633,18 @@ Screen DetailScreen::do_add_to_library() {
         std::string title = tmdb_detail_.has_value()
                               ? tmdb_detail_->title
                               : std::string{};
-        watchdog_->watch(tmdb_id_, std::move(title));
+        // radarr_movie_id may be 0 here: the add_movie() POST to Radarr
+        // doesn't return the new id synchronously and we haven't done a
+        // re-fetch yet (fetch() below kicks off async, doesn't block).
+        // Stale-modal "Pick another" therefore falls back to the Detail
+        // route for downloads first registered through Add to Library —
+        // the fast path (deep-link straight to the picker) only applies
+        // to ReleasePickerScreen-initiated grabs, which already have
+        // the radarr id in hand. Acceptable: Add to Library is rarely
+        // the path that produces stalls (Radarr's auto-pick usually
+        // works for the first attempt).
+        const int rid = movie_.has_value() ? movie_->radarr_id : 0;
+        watchdog_->watch(tmdb_id_, rid, std::move(title));
     }
     fetch();
     return Screen::Queue;
@@ -833,55 +844,20 @@ Screen DetailScreen::do_more_info() {
 
 Screen DetailScreen::do_pick_source() {
     // Open the manual release picker so the user can override Radarr's
-    // auto-pick. Radarr's grab endpoint requires indexerId, which only
-    // comes back from /api/v3/release?movieId=X (Radarr's own release
-    // search), so this button is only useful once the movie is in the
-    // library and we have a radarr_id. Prowlarr's cached search results
-    // would NOT carry indexerId — see Task 13's modification note.
+    // auto-pick. The picker now handles its own async fetch (worker
+    // thread + state machine) — this method just forwards keys via
+    // the callback and triggers the screen transition. Was synchronous
+    // in v1.7.x and blocked the UI for 14-25s; see commit log + the
+    // ReleasePickerScreen async-load comment block for the redesign.
+    //
+    // Picker is gated on the movie being in the library because
+    // Radarr's POST /api/v3/release endpoint requires indexerId, which
+    // only comes back from /api/v3/release?movieId=X — so without a
+    // radarr_id we have nothing to feed the picker's load_async().
     if (!movie_.has_value() || movie_->radarr_id <= 0) {
         ::ui::Toast::show("Add to library first to pick a source");
         return Screen::Detail;
     }
-    auto releases = radarr_.get_releases_for_movie(movie_->radarr_id);
-    if (releases.empty()) {
-        ::ui::Toast::show("No releases found — Radarr search returned nothing");
-        return Screen::Detail;
-    }
-
-    std::vector<ReleasePickerScreen::ReleaseCandidate> candidates;
-    candidates.reserve(releases.size());
-    for (const auto& r : releases) {
-        ReleasePickerScreen::ReleaseCandidate c;
-        c.title        = r.get("title", "").asString();
-        c.indexer      = r.get("indexer", "").asString();
-        c.indexer_id   = r.get("indexerId", 0).asInt();
-        c.guid         = r.get("guid", "").asString();
-        c.download_url = r.get("downloadUrl", "").asString();
-        c.seeders      = r.get("seeders", 0).asInt();
-        c.leechers     = r.get("leechers", 0).asInt();
-        c.size_bytes   = r.get("size", 0).asInt64();
-        c.score        = r.get("customFormatScore", 0).asInt();
-        // Cheap title-based parsing for the picker's column badges. Radarr's
-        // /api/v3/release response also carries a structured `quality` block
-        // we could plumb through, but the picker columns only need short
-        // string tags and the title regex covers ~95% of releases without
-        // wiring up a new parser.
-        auto match_first = [](const std::string& h,
-                              std::initializer_list<const char*> ns) {
-            for (auto* n : ns) {
-                if (h.find(n) != std::string::npos) return std::string(n);
-            }
-            return std::string{};
-        };
-        c.codec      = match_first(c.title,
-            {"x264", "x265", "h264", "h265", "AV1", "HEVC"});
-        c.resolution = match_first(c.title,
-            {"720p", "1080p", "2160p", "4K"});
-        c.source     = match_first(c.title,
-            {"BluRay", "WEB-DL", "WEBRip", "HDTV", "BDRip"});
-        candidates.push_back(std::move(c));
-    }
-
     if (!picker_callback_) {
         // Defensive: if main.cpp didn't wire the callback (shouldn't
         // happen in production), surface a banner instead of silently
@@ -893,10 +869,11 @@ Screen DetailScreen::do_pick_source() {
     std::string movie_title = tmdb_detail_.has_value()
                                 ? tmdb_detail_->title
                                 : movie_->title;
-    // Forward the tmdb_id so the picker can register a watchdog watch
-    // on its own grab (Task 16). Title is forwarded too, but the
-    // picker uses tmdb_id as the canonical key.
-    picker_callback_(tmdb_id_, std::move(movie_title), std::move(candidates));
+    // Fire-and-forget: callback kicks off the picker's worker thread
+    // and the dispatcher transitions us to Screen::ReleasePicker on
+    // return. The picker shows its Loading state immediately; rows
+    // populate when the worker drains a few frames later.
+    picker_callback_(tmdb_id_, movie_->radarr_id, std::move(movie_title));
     return Screen::ReleasePicker;
 }
 

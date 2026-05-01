@@ -34,7 +34,9 @@ void StallPromptModal::show(Pending p) {
 void StallPromptModal::commit_pick() {
     const Pending p = pending_;       // copy before we deactivate
     active_ = false;
-    if (pick_handler_) pick_handler_(p.tmdb_id, p.title);
+    if (pick_handler_) {
+        pick_handler_(p.tmdb_id, p.radarr_movie_id, p.title);
+    }
 }
 
 void StallPromptModal::commit_dismiss() {
