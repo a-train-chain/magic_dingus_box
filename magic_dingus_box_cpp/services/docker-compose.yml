@@ -7,13 +7,16 @@ services:
   radarr:
     image: lscr.io/linuxserver/radarr:5.14.0
     container_name: mdb_radarr
-    # Explicit DNS: avoids post-reboot race where Docker's internal DNS
-    # forwarder (127.0.0.11) doesn't yet have host resolv.conf populated,
-    # causing SERVFAIL on api.radarr.video lookups. Pinning public resolvers
-    # makes DNS independent of host boot timing.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    # Behind Gluetun: shares VPN netns. Even Radarr's TMDB metadata
+    # fetches now exit via VPN (was direct via Comcast residential IP).
+    # No per-service ports: block — Radarr's :7878 must be exposed via
+    # gluetun's ports: section for host-side access (added in the
+    # FlareSolverr→Byparr task, which collects all behind-Gluetun
+    # ports into one place).
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
@@ -22,9 +25,6 @@ services:
       - ./config/radarr:/config
       - ${STORAGE_ROOT}/downloads:/downloads
       - ${STORAGE_ROOT}/library:/library
-    ports:
-      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
-      - "127.0.0.1:7878:7878"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
