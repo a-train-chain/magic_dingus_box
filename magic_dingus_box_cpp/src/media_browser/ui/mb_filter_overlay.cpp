@@ -12,20 +12,22 @@ namespace media_browser::ui {
 namespace {
 
 // Bezel inset — the wood-frame PNG reserves this many pixels on every edge.
-// Panel content must stay inside screen - kBezelInset on the right and
-// screen + kBezelInset on the left (never less than kBezelInset from the top).
 constexpr int kBezelInset = 40;
 
-constexpr int kPanelTopMarginPx = 100;
+// Top margin increased from 100 → 155 so the panel clears the tab-strip text
+// (Popular | Top Rated | Search | Library | Queue | Settings).
+constexpr int kPanelTopMarginPx    = 155;
 constexpr int kPanelBottomMarginPx = kBezelInset;
-constexpr int kRowHeightPx = 56;
-constexpr int kPaddingX = 24;
+
+// Single-line row: label + value on one line, ~38px tall.
+constexpr int kRowHeightPx = 38;
+constexpr int kPaddingX    = 24;
 
 // Cursor triangle geometry — matches the ▶ style used by LibraryScreen.
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
 
-float ease_in_cubic(float t) { return t * t * t; }
+float ease_in_cubic(float t)  { return t * t * t; }
 float ease_out_cubic(float t) { float u = 1.0f - t; return 1.0f - u * u * u; }
 
 // Genre catalog — index in this list maps to bit position in genre_mask.
@@ -52,6 +54,20 @@ constexpr int kNumRuntimes  = static_cast<int>(sizeof(kRuntimeLabels)  / sizeof(
 constexpr int kNumLanguages = static_cast<int>(sizeof(kLanguageLabels) / sizeof(kLanguageLabels[0]));
 constexpr int kNumSorts     = static_cast<int>(sizeof(kSortLabels)     / sizeof(kSortLabels[0]));
 
+// Returns the display string for the current genre_mask in single-select mode.
+// "All" if mask is 0, else the genre name corresponding to the lowest set bit.
+const char* genre_display_name(uint32_t mask) {
+    if (mask == 0) return "All";
+    const int bit = __builtin_ctz(mask);
+    if (bit < kNumGenres) return kGenres[bit].display;
+    return "?";
+}
+
+// Wrapping modular arithmetic for signed indices.
+inline int wrap(int val, int count) {
+    return ((val % count) + count) % count;
+}
+
 }  // namespace
 
 const std::vector<int>& filter_overlay_genre_ids() {
@@ -68,10 +84,11 @@ FilterOverlay::FilterOverlay() = default;
 
 void FilterOverlay::open(FilterTabKind tab, const FilterState& current) {
     if (state_ == State::Open || state_ == State::SlidingIn) return;
-    tab_ = tab;
-    working_ = current;
+    tab_      = tab;
+    working_  = current;
     focus_row_ = 0;
-    state_ = State::SlidingIn;
+    mode_     = Mode::RowSelect;   // always start in row-navigation mode
+    state_    = State::SlidingIn;
     anim_started_at_ = std::chrono::steady_clock::now();
 }
 
@@ -95,14 +112,6 @@ void FilterOverlay::tick() {
 
 int FilterOverlay::compute_panel_left_x() const {
     using namespace std::chrono;
-    // The panel rests flush with the bezel's right inner edge.
-    // panel_open_x  = screen_w - kBezelInset - kPanelWidthPx
-    //               = 1280 - 40 - 380 = 860
-    // panel_closed_x = screen_w (fully off-screen to the right)
-    //               = 1280
-    // These are computed at render time from screen_w stored at open().
-    // For the animation we use a hardcoded 1280 (the kiosk's only target)
-    // and mirror the exact pattern LibraryScreen::compute_overlay_left_x uses.
     constexpr int kScreenW      = 1280;
     constexpr int kPanelOpenX   = kScreenW - kBezelInset - kPanelWidthPx;  // 860
     constexpr int kPanelClosedX = kScreenW;  // off-screen right
@@ -113,67 +122,189 @@ int FilterOverlay::compute_panel_left_x() const {
     if (state_ == State::SlidingIn) {
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideInMs), 0.0f, 1.0f);
-        const float eased = ease_out_cubic(t);
-        return static_cast<int>(
-            kPanelClosedX + eased * (kPanelOpenX - kPanelClosedX));
+        return static_cast<int>(kPanelClosedX + ease_out_cubic(t) * (kPanelOpenX - kPanelClosedX));
     } else {  // SlidingOut
         const float t = std::clamp(
             static_cast<float>(elapsed) / static_cast<float>(kSlideOutMs), 0.0f, 1.0f);
-        const float eased = ease_in_cubic(t);
-        return static_cast<int>(
-            kPanelOpenX + eased * (kPanelClosedX - kPanelOpenX));
+        return static_cast<int>(kPanelOpenX + ease_in_cubic(t) * (kPanelClosedX - kPanelOpenX));
     }
 }
 
-bool FilterOverlay::on_rotate(int delta) {
-    if (!is_input_active()) return false;
-    if (delta == 0) return false;
-    int new_focus = focus_row_ + (delta > 0 ? 1 : -1);
-    if (new_focus < 0) new_focus = 0;
-    if (new_focus >= kFocusableRowCount) new_focus = kFocusableRowCount - 1;
-    focus_row_ = new_focus;
-    return true;
-}
-
-bool FilterOverlay::on_select() {
-    if (!is_input_active()) return false;
-
+// ---------------------------------------------------------------------------
+// cycle_focused_value — mutates working_ for the focused row.
+// direction > 0 = forward through options, < 0 = backward.
+// ---------------------------------------------------------------------------
+void FilterOverlay::cycle_focused_value(int direction) {
+    const int dir = (direction >= 0) ? 1 : -1;
     switch (focus_row_) {
         case 0: {
-            // Genre — cycle through single-genre selections.
-            // Sequence: none -> Action(bit 0) -> Adventure(bit 1) -> ... -> War(bit 17) -> none
+            // Genre: cycle "All" → Action → Adventure → … → War → "All"
             const uint32_t mask = working_.genre_mask;
-            if (mask == 0) {
-                working_.genre_mask = 1u;  // Action
+            if (dir > 0) {
+                if (mask == 0) {
+                    working_.genre_mask = 1u;
+                } else {
+                    const int bit = __builtin_ctz(mask);
+                    const int nb  = bit + 1;
+                    working_.genre_mask = (nb >= kNumGenres) ? 0u : (1u << nb);
+                }
             } else {
-                const int bit = __builtin_ctz(mask);
-                const int nb = bit + 1;
-                working_.genre_mask = (nb >= kNumGenres) ? 0u : (1u << nb);
+                if (mask == 0) {
+                    working_.genre_mask = (1u << (kNumGenres - 1));
+                } else {
+                    const int bit = __builtin_ctz(mask);
+                    working_.genre_mask = (bit == 0) ? 0u : (1u << (bit - 1));
+                }
             }
             break;
         }
-        case 1: working_.decade     = (working_.decade + 1)     % kNumDecades;   break;
-        case 2: working_.min_rating = (working_.min_rating + 1) % kNumRatings;   break;
-        case 3: working_.runtime    = (working_.runtime + 1)    % kNumRuntimes;  break;
-        case 4: working_.language   = (working_.language + 1)   % kNumLanguages; break;
-        case 5: working_.sort       = (working_.sort + 1)       % kNumSorts;     break;
-        case 6:
-            working_ = FilterState{};
-            break;
-        default:
-            return true;
+        case 1: working_.decade     = wrap(working_.decade     + dir, kNumDecades);   break;
+        case 2: working_.min_rating = wrap(working_.min_rating + dir, kNumRatings);   break;
+        case 3: working_.runtime    = wrap(working_.runtime    + dir, kNumRuntimes);  break;
+        case 4: working_.language   = wrap(working_.language   + dir, kNumLanguages); break;
+        case 5: working_.sort       = wrap(working_.sort       + dir, kNumSorts);     break;
+        default: break;
     }
+}
 
-    if (on_commit_) on_commit_(working_, tab_);
+// ---------------------------------------------------------------------------
+// on_rotate
+//   RowSelect   → move cursor up/down through rows
+//   ValueSelect → cycle the focused row's value
+// ---------------------------------------------------------------------------
+bool FilterOverlay::on_rotate(int delta) {
+    if (!is_input_active()) return false;
+    if (delta == 0) return false;
+
+    if (mode_ == Mode::ValueSelect) {
+        cycle_focused_value(delta);
+    } else {
+        int new_focus = focus_row_ + (delta > 0 ? 1 : -1);
+        if (new_focus < 0)                  new_focus = 0;
+        if (new_focus >= kFocusableRowCount) new_focus = kFocusableRowCount - 1;
+        focus_row_ = new_focus;
+    }
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// on_select (rotary press)
+//   RowSelect + value row (0-5) → enter ValueSelect for that row
+//   RowSelect + RESET ALL (row 6) → reset working_, stay in RowSelect
+//   ValueSelect → save current value (already in working_ via rotate), exit to RowSelect
+// ---------------------------------------------------------------------------
+bool FilterOverlay::on_select() {
+    if (!is_input_active()) return false;
+
+    if (mode_ == Mode::ValueSelect) {
+        // Value is already staged in working_ by rotate — just exit editing mode.
+        mode_ = Mode::RowSelect;
+    } else {
+        // RowSelect
+        if (focus_row_ == 6) {
+            // RESET ALL — clear staging area, stay in RowSelect, no commit.
+            working_ = FilterState{};
+        } else {
+            // Enter value-editing mode for this row.
+            mode_ = Mode::ValueSelect;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// on_btn4_close
+//   ValueSelect → exit to RowSelect (first press just saves the current edit)
+//   RowSelect   → fire commit callback ONCE with accumulated working_ state, then close
+// ---------------------------------------------------------------------------
 bool FilterOverlay::on_btn4_close() {
     if (!is_visible()) return false;
+
+    if (mode_ == Mode::ValueSelect) {
+        // User pressed BTN4 while editing a value — treat as "done editing this row".
+        // Staged value is already in working_. Return to row navigation.
+        mode_ = Mode::RowSelect;
+        return true;
+    }
+
+    // RowSelect: apply all staged changes in one shot.
+    if (on_commit_) on_commit_(working_, tab_);
     close();
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// render helpers
+// ---------------------------------------------------------------------------
+
+// Render a single filter row: label on the left (dim), value on the right (fg
+// normally; gold + brackets when in ValueSelect editing mode for this row).
+void FilterOverlay::render_single_row(::ui::Renderer& r, int panel_x, int x, int y,
+                                       const char* label, const char* value,
+                                       bool focused, bool editing) {
+    const auto& th = r.mb_theme();
+
+    // Cursor triangle — gold right-pointing ▶ at left edge of panel.
+    if (focused) {
+        const float marker_x  = static_cast<float>(panel_x + 6);
+        const float marker_cy = static_cast<float>(y + kRowHeightPx / 2);
+        r.mb_fill_triangle(
+            marker_x,            marker_cy - kMarkerHalfH,
+            marker_x,            marker_cy + kMarkerHalfH,
+            marker_x + kMarkerW, marker_cy,
+            th.accent, 1.0f);
+    }
+
+    const float fy = static_cast<float>(y + (kRowHeightPx - 28) / 2);
+
+    // Label on left (always dim).
+    r.mb_draw_text(label, static_cast<float>(x), fy, 14, th.dim);
+
+    // Value on right side of the panel.
+    // In editing mode: gold color and bracketed. Otherwise: standard fg.
+    const int right_x = x + kPanelWidthPx - 2 * kPaddingX;
+    if (editing) {
+        std::string bracketed = std::string("[") + value + "]";
+        // Right-align by measuring text width.
+        const int tw = r.mb_text_width(bracketed.c_str(), 16);
+        r.mb_draw_text(bracketed.c_str(),
+                       static_cast<float>(right_x - tw),
+                       fy, 16, th.accent);
+    } else {
+        const int tw = r.mb_text_width(value, 16);
+        r.mb_draw_text(value,
+                       static_cast<float>(right_x - tw),
+                       fy, 16, th.fg);
+    }
+}
+
+void FilterOverlay::render_reset_row(::ui::Renderer& r, int panel_x, int x, int y,
+                                      bool focused) {
+    const auto& th = r.mb_theme();
+
+    if (focused) {
+        const float marker_x  = static_cast<float>(panel_x + 6);
+        const float marker_cy = static_cast<float>(y + kRowHeightPx / 2);
+        r.mb_fill_triangle(
+            marker_x,            marker_cy - kMarkerHalfH,
+            marker_x,            marker_cy + kMarkerHalfH,
+            marker_x + kMarkerW, marker_cy,
+            th.accent, 1.0f);
+    }
+
+    const float fy = static_cast<float>(y + (kRowHeightPx - 28) / 2);
+    r.mb_draw_text("RESET ALL", static_cast<float>(x), fy, 14, th.dim);
+
+    // Hint text on the right.
+    const char* hint = "press to clear";
+    const int tw = r.mb_text_width(hint, 14);
+    const int right_x = x + kPanelWidthPx - 2 * kPaddingX;
+    r.mb_draw_text(hint, static_cast<float>(right_x - tw), fy, 14, th.fg);
+}
+
+// ---------------------------------------------------------------------------
+// render
+// ---------------------------------------------------------------------------
 void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int screen_h) {
     if (state_ == State::Closed) return;
 
@@ -189,49 +320,50 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int screen_h) {
     const float fpw = static_cast<float>(panel_w);
     const float fph = static_cast<float>(panel_h);
 
-    // Panel fill — bg_lift, near-opaque so text behind is suppressed.
+    // Panel fill.
     r.mb_fill_rect(fpx, fpy, fpw, fph, th.bg_lift, 0.96f);
-    // Top rule in gold.
+    // Accent borders.
     r.mb_fill_rect(fpx, fpy, fpw, 2.0f, th.accent);
-    // Bottom rule in gold.
     r.mb_fill_rect(fpx, fpy + fph - 2.0f, fpw, 2.0f, th.accent);
-    // Left rule in gold — the panel slides from the RIGHT, so the left
-    // edge is the visible "entry" border. Right edge sits against the
-    // bezel's inner wall; no right-border needed there.
     r.mb_fill_rect(fpx, fpy, 2.0f, fph, th.accent);
 
     const int content_x = panel_x + kPaddingX;
-    int y = panel_y + 32;
+    int y = panel_y + 28;
 
-    // Title heading — gold ZenDots font.
+    // Title heading.
     r.mb_draw_title_text("FILTERS",
                          static_cast<float>(content_x),
                          static_cast<float>(y),
-                         22, th.accent);
-    y += 40;
+                         20, th.accent);
+    y += 36;
 
-    // ---- Row 0: Genre ----
-    if (focus_row_ == 0) {
-        const float marker_x  = static_cast<float>(panel_x + 6);
-        const float marker_cy = static_cast<float>(y + 12);
-        r.mb_fill_triangle(
-            marker_x,              marker_cy - kMarkerHalfH,
-            marker_x,              marker_cy + kMarkerHalfH,
-            marker_x + kMarkerW,   marker_cy,
-            th.accent, 1.0f);
+    // Separator line beneath title.
+    r.mb_fill_rect(static_cast<float>(panel_x + kPaddingX),
+                   static_cast<float>(y),
+                   static_cast<float>(panel_w - 2 * kPaddingX),
+                   1.0f,
+                   th.dim, 0.4f);
+    y += 10;
+
+    // ---- Row 0: Genre (single-line value selector) ----
+    {
+        const bool focused = (focus_row_ == 0);
+        const bool editing = focused && (mode_ == Mode::ValueSelect);
+        render_single_row(r, panel_x, content_x, y,
+                          "GENRE", genre_display_name(working_.genre_mask),
+                          focused, editing);
+        y += kRowHeightPx;
     }
-    render_genre_row(r, content_x, y);
-    y += kRowHeightPx;
 
     // ---- Rows 1-5: value selectors ----
-    struct ValueRowDef {
-        int          row_idx;
-        const char*  label;
+    struct RowDef {
+        int         row_idx;
+        const char* label;
         const char* const* values;
-        int          count;
-        int          selected;
+        int         count;
+        int         selected;
     };
-    const ValueRowDef value_rows[] = {
+    const RowDef value_rows[] = {
         {1, "DECADE",     kDecadeLabels,   kNumDecades,   working_.decade},
         {2, "MIN RATING", kRatingLabels,   kNumRatings,   working_.min_rating},
         {3, "RUNTIME",    kRuntimeLabels,  kNumRuntimes,  working_.runtime},
@@ -240,107 +372,39 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int screen_h) {
     };
 
     for (const auto& row : value_rows) {
-        if (focus_row_ == row.row_idx) {
-            const float marker_x  = static_cast<float>(panel_x + 6);
-            const float marker_cy = static_cast<float>(y + 12);
-            r.mb_fill_triangle(
-                marker_x,              marker_cy - kMarkerHalfH,
-                marker_x,              marker_cy + kMarkerHalfH,
-                marker_x + kMarkerW,   marker_cy,
-                th.accent, 1.0f);
-        }
-        std::vector<std::string> vs;
-        vs.reserve(row.count);
-        for (int i = 0; i < row.count; ++i) vs.emplace_back(row.values[i]);
-        render_value_row(r, content_x, y, row.label, vs, row.selected);
+        const bool focused = (focus_row_ == row.row_idx);
+        const bool editing = focused && (mode_ == Mode::ValueSelect);
+        const char* val = (row.selected >= 0 && row.selected < row.count)
+                              ? row.values[row.selected]
+                              : "?";
+        render_single_row(r, panel_x, content_x, y, row.label, val, focused, editing);
         y += kRowHeightPx;
     }
 
-    // ---- Row 6: Reset ----
-    if (focus_row_ == 6) {
-        const float marker_x  = static_cast<float>(panel_x + 6);
-        const float marker_cy = static_cast<float>(y + 12);
-        r.mb_fill_triangle(
-            marker_x,              marker_cy - kMarkerHalfH,
-            marker_x,              marker_cy + kMarkerHalfH,
-            marker_x + kMarkerW,   marker_cy,
-            th.accent, 1.0f);
-    }
-    render_reset_row(r, content_x, y);
-}
-
-void FilterOverlay::render_genre_row(::ui::Renderer& r, int x, int y) {
-    const auto& th = r.mb_theme();
-
-    r.mb_draw_text("GENRE",
-                   static_cast<float>(x),
+    // Separator before Reset.
+    r.mb_fill_rect(static_cast<float>(panel_x + kPaddingX),
                    static_cast<float>(y),
-                   14, th.dim);
+                   static_cast<float>(panel_w - 2 * kPaddingX),
+                   1.0f,
+                   th.dim, 0.4f);
+    y += 8;
 
-    constexpr int kChipPad = 6;
-    constexpr int kChipH   = 22;
-    const int max_x = x + kPanelWidthPx - 2 * kPaddingX;
+    // ---- Row 6: Reset All ----
+    render_reset_row(r, panel_x, content_x, y, (focus_row_ == 6));
+    y += kRowHeightPx;
 
-    int cx = x;
-    int cy = y + 18;
-
-    for (int i = 0; i < kNumGenres; ++i) {
-        const bool on = (working_.genre_mask & (1u << i)) != 0;
-        const int chip_w = r.mb_text_width(kGenres[i].display, 12) + kChipPad * 2;
-        if (cx + chip_w > max_x) {
-            cx = x;
-            cy += kChipH + 4;
-        }
-        if (on) {
-            r.mb_fill_rect(static_cast<float>(cx), static_cast<float>(cy),
-                           static_cast<float>(chip_w), static_cast<float>(kChipH),
-                           th.accent, 1.0f);
-            r.mb_draw_text(kGenres[i].display,
-                           static_cast<float>(cx + kChipPad),
-                           static_cast<float>(cy + 4),
-                           12, th.bg);
-        } else {
-            r.mb_fill_rect(static_cast<float>(cx), static_cast<float>(cy),
-                           static_cast<float>(chip_w), static_cast<float>(kChipH),
-                           th.bg_lift, 0.6f);
-            r.mb_draw_text(kGenres[i].display,
-                           static_cast<float>(cx + kChipPad),
-                           static_cast<float>(cy + 4),
-                           12, th.dim);
-        }
-        cx += chip_w + 4;
+    // ---- Footer hint ----
+    {
+        const char* hint =
+            (mode_ == Mode::ValueSelect)
+                ? "PRESS: save  \xc2\xb7  BTN4: done"   // UTF-8 middle dot
+                : "PRESS: edit  \xc2\xb7  BTN4: apply & close";
+        const int hint_y = panel_y + panel_h - 28;
+        r.mb_draw_text(hint,
+                       static_cast<float>(content_x),
+                       static_cast<float>(hint_y),
+                       12, th.dim);
     }
-}
-
-void FilterOverlay::render_value_row(::ui::Renderer& r, int x, int y,
-                                      const std::string& label,
-                                      const std::vector<std::string>& values,
-                                      int selected_index) {
-    const auto& th = r.mb_theme();
-
-    r.mb_draw_text(label,
-                   static_cast<float>(x),
-                   static_cast<float>(y),
-                   14, th.dim);
-    if (selected_index >= 0 && selected_index < static_cast<int>(values.size())) {
-        r.mb_draw_text(values[selected_index],
-                       static_cast<float>(x),
-                       static_cast<float>(y + 18),
-                       16, th.fg);
-    }
-}
-
-void FilterOverlay::render_reset_row(::ui::Renderer& r, int x, int y) {
-    const auto& th = r.mb_theme();
-
-    r.mb_draw_text("RESET ALL",
-                   static_cast<float>(x),
-                   static_cast<float>(y),
-                   14, th.dim);
-    r.mb_draw_text("(press to clear filters)",
-                   static_cast<float>(x),
-                   static_cast<float>(y + 18),
-                   14, th.fg);
 }
 
 }  // namespace media_browser::ui

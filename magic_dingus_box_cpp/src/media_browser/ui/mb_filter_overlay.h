@@ -57,12 +57,23 @@ public:
     void tick();
 
     // Input handlers. Return true if the input was consumed.
-    bool on_rotate(int delta);    // negative = up/prev, positive = down/next
-    bool on_select();              // rotary press → cycle current row's value, fire commit
-    bool on_btn4_close();          // BTN4 → start close animation
+    //   on_rotate: negative = up/prev, positive = down/next.
+    //     Mode::RowSelect  → moves cursor through filter rows.
+    //     Mode::ValueSelect → cycles the focused row's value in working_.
+    //   on_select: rotary press.
+    //     Mode::RowSelect + value row → enter ValueSelect (no commit fired).
+    //     Mode::RowSelect + RESET ALL → reset working_ to defaults (no commit fired).
+    //     Mode::ValueSelect → save value to working_, exit back to RowSelect (no commit fired).
+    //   on_btn4_close:
+    //     Mode::ValueSelect → exit to RowSelect (no commit fired).
+    //     Mode::RowSelect   → fire commit callback ONCE, then close overlay.
+    bool on_rotate(int delta);
+    bool on_select();
+    bool on_btn4_close();
 
     // Commits go through this callback. The caller's commit handler is
     // responsible for persisting the new state and triggering a refetch.
+    // Fires exactly ONCE per overlay session (on BTN4 close from RowSelect).
     using CommitCallback = std::function<void(const FilterState&, FilterTabKind)>;
     void set_on_commit(CommitCallback cb) { on_commit_ = std::move(cb); }
 
@@ -73,24 +84,33 @@ public:
     int compute_panel_left_x() const;
 
 private:
+    // Two-level navigation mode.
+    enum class Mode { RowSelect, ValueSelect };
+
     State state_ = State::Closed;
+    Mode  mode_  = Mode::RowSelect;
     std::chrono::steady_clock::time_point anim_started_at_;
 
     FilterTabKind tab_ = FilterTabKind::Popular;
-    FilterState working_;       // edits in flight
+    FilterState working_;       // staging area — edits accumulate here until BTN4 close
     int focus_row_ = 0;         // 0..kFocusableRowCount-1
 
     CommitCallback on_commit_;
 
     static constexpr int kFocusableRowCount = 7;  // 6 filters + Reset
-    static constexpr int kSlideInMs = 200;
+    static constexpr int kSlideInMs  = 200;
     static constexpr int kSlideOutMs = 150;
     static constexpr int kPanelWidthPx = 380;
 
-    void render_genre_row(::ui::Renderer& r, int x, int y);
-    void render_value_row(::ui::Renderer& r, int x, int y, const std::string& label,
-                          const std::vector<std::string>& values, int selected_index);
-    void render_reset_row(::ui::Renderer& r, int x, int y);
+    // Cycle the focused row's value forward/backward in working_.
+    // direction > 0 = forward, < 0 = backward.
+    void cycle_focused_value(int direction);
+
+    void render_single_row(::ui::Renderer& r, int panel_x, int x, int y,
+                           const char* label, const char* value,
+                           bool focused, bool editing);
+    void render_reset_row(::ui::Renderer& r, int panel_x, int x, int y,
+                          bool focused);
 };
 
 }  // namespace media_browser::ui
