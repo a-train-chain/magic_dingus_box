@@ -44,14 +44,18 @@ TEST_CASE("VpnHealthMonitor stays Healthy through 2 failures (debounce)",
     ScriptedPinger pinger;
     pinger.next_result = false;   // every poll fails
 
+    // 20ms interval + 30ms wait = exactly 2 polls (t=0 and t=20).
+    // Wider interval makes the timing robust against scheduler jitter
+    // — modern Linux can drift 1-2ms; 5ms intervals are too tight to
+    // reliably distinguish "2 polls" from "3 polls".
     media_browser::VpnHealthMonitor monitor(
         state,
         [&pinger]() { return pinger(); },
-        std::chrono::milliseconds(5));
+        std::chrono::milliseconds(20));
 
     monitor.start();
-    // Let exactly 2 polls happen (~10ms). Should NOT flip yet.
-    std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    // Let exactly 2 polls happen. Should NOT flip yet (n=2, threshold=3).
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
     REQUIRE(state.media_browser_vpn_healthy == true);
     monitor.stop();
 }
