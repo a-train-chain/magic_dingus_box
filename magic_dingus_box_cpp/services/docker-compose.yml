@@ -33,21 +33,21 @@ services:
       retries: 3
 
   prowlarr:
-    image: lscr.io/linuxserver/prowlarr:1.26.1
+    image: lscr.io/linuxserver/prowlarr:2.3.5.5327
     container_name: mdb_prowlarr
-    # Explicit DNS: see Radarr rationale above.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
+    # per-service dns: block needed. No per-service ports: block —
+    # Prowlarr's :9696 is exposed via gluetun's ports: section.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
       - ./config/prowlarr:/config
-    ports:
-      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
-      - "127.0.0.1:9696:9696"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
