@@ -1569,6 +1569,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::Browse:        active_mb_screen = &mb_browse;      break;
                     case media_browser::ui::Screen::Search:        active_mb_screen = &mb_search;      break;
                     case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
+                    case media_browser::ui::Screen::ReleasePicker: break;  // wired in Task 12
                     case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;
                     case media_browser::ui::Screen::Library:       active_mb_screen = &mb_library;     break;
                     case media_browser::ui::Screen::Playback:      active_mb_screen = &mb_playback;    break;

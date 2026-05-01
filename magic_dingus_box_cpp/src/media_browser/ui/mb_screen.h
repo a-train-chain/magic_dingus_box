@@ -23,6 +23,7 @@ enum class Screen {
     Browse,
     Search,
     Detail,
+    ReleasePicker,   // Manual release-grab override of Radarr's auto-pick (v1.7.0).
     Queue,
     Library,
     Playback,        // Ad-hoc movie playback inside the Media Browser.
