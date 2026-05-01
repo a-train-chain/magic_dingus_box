@@ -5,6 +5,7 @@
 #include "app/app_state.h"
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
+#include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "platform/input_manager.h"
 #include "ui/renderer.h"
@@ -15,12 +16,20 @@
 namespace media_browser::ui {
 
 PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state,
+                                ::media_browser::TmdbClient& tmdb,
                                 QbittorrentClient* qbit)
-    : controller_(controller), state_(state), qbit_(qbit) {}
+    : controller_(controller), state_(state), tmdb_(tmdb), qbit_(qbit) {}
 
 void PlaybackScreen::set_movie(std::string host_path, std::string title) {
     movie_path_ = std::move(host_path);
     movie_title_ = std::move(title);
+    // Reset overlay meta so a stale entry from a previous movie doesn't leak.
+    overlay_meta_ = {};
+    overlay_meta_.title = movie_title_;
+}
+
+void PlaybackScreen::set_movie_meta(PlaybackOverlayMovieMeta meta) {
+    overlay_meta_ = std::move(meta);
 }
 
 void PlaybackScreen::enter() {
@@ -96,12 +105,26 @@ void PlaybackScreen::enter() {
 
     spdlog::info("[playback] playing '{}' (path='{}')",
                  movie_title_, movie_path_);
+
+    // Start pre-fetching similar films in the background so they are ready
+    // by the time the user presses the rotary to open the overlay.
+    // Idempotent for the same tmdb_id; no-op when tmdb_id == 0.
+    // The fetch runs on a detached std::thread inside PlaybackOverlay; the
+    // overlay's destructor joins it, so lifetime is safe.
+    overlay_.start_prefetch(tmdb_, overlay_meta_);
 }
 
 void PlaybackScreen::leave() {
     // Idempotent — safe to call from any exit path. Catches the case where
     // the user long-presses BTN4 and the dispatcher hard-exits to MainMenu.
     controller_.stop();
+
+    // Cancel any in-flight similar-films prefetch so its thread doesn't
+    // outlive the screen's use of tmdb_ after we've left. The thread checks
+    // cancel_requested_ and exits early; join happens in PlaybackOverlay's
+    // destructor (or on the next start_prefetch call).
+    overlay_.cancel_prefetch();
+    overlay_.close();
 
     // Force state.video_active false immediately. controller_.stop() tears
     // down the pipeline, but state.video_active is normally only updated
@@ -143,20 +166,39 @@ Screen PlaybackScreen::handle_input(
     }
 
     for (const auto& e : events) {
-        // BTN4 short-press → return to Detail. The dispatcher's long-press
-        // handler (held >500ms) intercepts before we see it, so reaching
-        // here means it's a short press. We don't call controller_.stop()
-        // here because leave() will (idempotently); having a single stop
-        // point keeps lifecycle reasoning simple.
-        // TODO Task 9: if a playback overlay is open, close it instead of
-        // returning to Detail.
+        // BTN4 short-press:
+        //   - When overlay is open → close the overlay (stay in Playback).
+        //   - When overlay is closed → return to Detail (existing behavior).
+        // The dispatcher's long-press handler (held >500ms) intercepts before
+        // we see it, so reaching here means it's a short press. We don't call
+        // controller_.stop() because leave() will (idempotently).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            if (overlay_.is_open()) {
+                overlay_.close();
+                return Screen::Playback;
+            }
             return Screen::Detail;
+        }
+
+        // Rotary press (SELECT):
+        //   - When overlay is closed → open it.
+        //   - When overlay is open → no-op for now; Task 9 will wire quick-add here.
+        // Note: only on key-down (pressed == true); ignore key-up.
+        if (e.action == platform::InputAction::SELECT && e.pressed) {
+            if (!overlay_.is_open()) {
+                overlay_.open();
+            }
+            // TODO Task 9: when overlay_.is_open(), call quick-add on
+            // overlay_.focused_film() via Radarr.
+            return Screen::Playback;
         }
 
         // BTN2 (PLAY_PAUSE, red) = toggle play/pause during MB playback.
         // main.cpp's global exit-modal intercept exempts Screen::Playback
         // so this handler stays reachable while a movie is playing.
+        // NOTE: BTN2 is intentionally NOT gated by overlay_.is_open() —
+        // the user explicitly asked for BTN2 = pause/play to work even
+        // when the overlay is open.
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             controller_.toggle_pause();
             continue;
@@ -207,19 +249,26 @@ Screen PlaybackScreen::handle_input(
             continue;
         }
 
-        // Velocity-curve rotary seek — same shape as the main UI's
-        // playlist scrub (main.cpp:1903), but with the max-seek
-        // constant scaled up because movies are ~10x longer than the
-        // typical playlist video. The playlist formula gives 5s slow
-        // → 30s fast (a visible 4% jump on a 12-min video); on a
-        // 2hr movie that same 30s is only 0.4% of the runtime, which
-        // feels like nothing. Bumping the curve to 5s slow → 120s
-        // (~2 min) fast restores the same proportional travel: about
+        // Rotary twist:
+        //   - When overlay is open → scroll the similar-films carousel.
+        //   - When overlay is closed → velocity-curve seek (existing behavior).
+        //
+        // Velocity-curve seek: same shape as the main UI's playlist scrub
+        // (main.cpp:1903), but with the max-seek constant scaled up because
+        // movies are ~10x longer than the typical playlist video. The
+        // playlist formula gives 5s slow → 30s fast (a visible 4% jump on a
+        // 12-min video); on a 2hr movie that same 30s is only 0.4% of the
+        // runtime, which feels like nothing. Bumping the curve to 5s slow
+        // → 120s (~2 min) fast restores the same proportional travel: about
         // 1-2% of total runtime per fast click, suitable for chapter-
-        // skipping while preserving precise small scrubs at slow
-        // velocities (the velocity² factor means low-velocity ticks
-        // still produce ~5-10s seeks, same as the playlist).
+        // skipping while preserving precise small scrubs at slow velocities
+        // (the velocity² factor means low-velocity ticks still produce
+        // ~5-10s seeks, same as the playlist).
         if (e.action == platform::InputAction::ROTATE && e.delta != 0) {
+            if (overlay_.is_open()) {
+                overlay_.on_rotate(e.delta);
+                continue;
+            }
             double velocity = static_cast<double>(e.velocity);
             double seek_seconds = 5.0 + 115.0 * (velocity * velocity);
             controller_.seek(seek_seconds * e.delta);
@@ -306,7 +355,9 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // matching every other Marquee screen. Replaces the previous bottom-
     // right text-only hint. Sits above the 40 px wood-frame bottom band
     // (the chrome helper anchors at screen_h - kFrameInset_px - kPad3).
-    {
+    // When the overlay is open the footer is hidden (the overlay renders its
+    // own hint row) so the two panels don't clash visually.
+    if (!overlay_.is_open()) {
         namespace mc = ::media_browser::ui::chrome;
         mc::draw_footer_hints(r, screen_w, screen_h, {
             {mc::HintIcon::Btn1Yellow,  "\xE2\x88\x92" "10s"},  // −10s
@@ -314,9 +365,14 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             {mc::HintIcon::Btn3Green,   "+10s"},
             {mc::HintIcon::Btn4Black,   "Stop"},
             {mc::HintIcon::RotaryNav,   "Seek"},
-            {mc::HintIcon::RotaryPress, "\xE2\x80\x94"},
+            {mc::HintIcon::RotaryPress, "Info"},
         });
     }
+
+    // Overlay: bottom-1/3 panel with movie meta + similar-films carousel.
+    // Drawn LAST so it sits above all other HUD elements.
+    overlay_.render(r, screen_w, screen_h);
+
     (void)w;
     (void)h;
 }

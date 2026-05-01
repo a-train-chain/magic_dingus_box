@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/playback_overlay.h"
 
 // Forward declarations to keep this header light.
 namespace app {
@@ -13,6 +14,7 @@ struct AppState;
 }
 namespace ui { class Renderer; }
 namespace media_browser { class QbittorrentClient; }
+namespace media_browser { class TmdbClient; }
 
 namespace media_browser::ui {
 
@@ -22,17 +24,20 @@ namespace media_browser::ui {
 //
 // Lifecycle:
 //   set_movie(host_path, title)      <- caller sets target before transition
-//   enter()                          <- load + play, arm title marquee
+//   set_movie_meta(meta)             <- caller sets overlay metadata (tmdb_id,
+//                                       synopsis, genres, runtime) before
+//                                       transitioning. set_movie() must be
+//                                       called first (it owns the path).
+//   enter()                          <- load + play, arm title marquee,
+//                                       kick off similar-films prefetch.
 //   handle_input(events) -> Screen   <- maps inputs to Controller methods,
 //                                       returns Screen::Detail on BTN4 or
 //                                       on natural end-of-stream.
 //   update()                         <- edge-detects end-of-stream,
 //                                       decays title marquee.
-//   render(r, w, h)                  <- draws HUD only (video frame is
-//                                       drawn by the main render loop's
-//                                       state.video_active path).
+//   render(r, w, h)                  <- draws HUD + playback overlay (when open).
 //   leave()                          <- idempotent stop(); surfaces any
-//                                       deferred toast.
+//                                       deferred toast; cancels prefetch.
 class PlaybackScreen : public MbScreen {
 public:
     // qbit pointer is optional. When provided, enter()/leave()
@@ -41,12 +46,22 @@ public:
     // contend with GStreamer's reads and cause scrubbing freezes.
     // When null, playback simply runs without managing qBit state
     // (e.g., unit tests, devs running without the Docker stack).
+    //
+    // tmdb is used by the PlaybackOverlay to fetch similar films in the
+    // background when the user opens the overlay (rotary press).
     PlaybackScreen(app::Controller& controller, app::AppState& state,
+                   ::media_browser::TmdbClient& tmdb,
                    QbittorrentClient* qbit = nullptr);
 
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
     // returning Screen::Playback. Last setter wins.
     void set_movie(std::string host_path, std::string title);
+
+    // Optional — sets rich TMDB metadata for the overlay's header and
+    // similar-films pre-fetch. Call after set_movie() and before the
+    // screen's enter(). When not called (local files, no TMDB binding),
+    // tmdb_id defaults to 0 and the overlay renders without similar films.
+    void set_movie_meta(PlaybackOverlayMovieMeta meta);
 
     void enter() override;
     void leave() override;
@@ -55,9 +70,10 @@ public:
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
 private:
-    app::Controller&   controller_;
-    app::AppState&     state_;
-    QbittorrentClient* qbit_ = nullptr;  // optional; pause/resume during playback
+    app::Controller&              controller_;
+    app::AppState&                state_;
+    ::media_browser::TmdbClient&  tmdb_;
+    QbittorrentClient*            qbit_ = nullptr;  // optional; pause/resume during playback
 
     // Tracks whether enter() asked qBit to pause. leave() only resumes
     // if pause actually succeeded — avoids accidentally starting
@@ -83,6 +99,13 @@ private:
     int eos_suppress_frames_ = 0;
 
     std::chrono::steady_clock::time_point title_marquee_until_{};
+
+    // Overlay metadata — populated by set_movie_meta() before enter().
+    // Falls back to title-only (no synopsis, no similar films) when not set.
+    PlaybackOverlayMovieMeta overlay_meta_;
+
+    // Bottom-1/3 similar-films overlay (rotary press to open, BTN4 to close).
+    PlaybackOverlay overlay_;
 };
 
 }  // namespace media_browser::ui

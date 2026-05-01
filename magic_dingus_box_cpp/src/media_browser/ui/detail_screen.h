@@ -106,14 +106,23 @@ public:
 
     // Carrier struct for the Detail->Playback handoff. Populated by
     // get_play_target() and consumed by main.cpp dispatcher to call
-    // PlaybackScreen::set_movie before the transition lands.
+    // PlaybackScreen::set_movie[_meta] before the transition lands.
     struct PlayTarget {
         std::string host_path;  // empty if no playable file
         std::string title;
+        // Rich metadata for PlaybackScreen's overlay (similar-films panel).
+        // Populated from tmdb_detail_ when available; zero/empty otherwise.
+        int tmdb_id = 0;
+        int year = 0;
+        int runtime_min = 0;
+        std::string synopsis;         // overview from TMDB
+        std::string genres;           // pre-formatted "Action · Drama · Crime"
+        std::string poster_url;       // full URL from TmdbMovieDetail::poster_path
     };
 
-    // Returns the host-resolved file path + display title for the currently
-    // loaded movie, or {empty, empty} if no playable file exists.
+    // Returns the host-resolved file path + display title (+ TMDB overlay
+    // metadata) for the currently loaded movie, or {empty, empty, 0, ...}
+    // if no playable file exists.
     PlayTarget get_play_target() const;
 
     void enter() override;

@@ -748,6 +748,25 @@ DetailScreen::PlayTarget DetailScreen::get_play_target() const {
     } else {
         pt.title = movie_->title;
     }
+
+    // Populate overlay metadata from TMDB detail when available.
+    // PlaybackScreen uses this to render the similar-films panel.
+    if (tmdb_detail_.has_value()) {
+        const auto& d = *tmdb_detail_;
+        pt.tmdb_id     = d.tmdb_id;
+        pt.year        = d.year;
+        pt.runtime_min = d.runtime_minutes;
+        pt.synopsis    = d.overview;
+        pt.poster_url  = d.poster_path;
+        // Format up to 3 genre names joined with " · ".
+        for (size_t i = 0; i < d.genres.size() && i < 3; ++i) {
+            if (i > 0) pt.genres += " \xC2\xB7 ";  // UTF-8 middle dot
+            pt.genres += d.genres[i];
+        }
+    } else {
+        pt.tmdb_id = tmdb_id_;  // at least carry the id for the prefetch
+    }
+
     return pt;
 }
 

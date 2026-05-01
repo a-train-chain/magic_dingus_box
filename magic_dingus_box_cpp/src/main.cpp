@@ -607,7 +607,7 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::QueueScreen      mb_queue(radarr,
                                                   qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr, state);
-    media_browser::ui::PlaybackScreen   mb_playback(controller, state,
+    media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      qbit_owned.get());
     // Task 23: the Movies Settings screen's "Hide Movies feature" checkbox
     // flips media_browser_unlocked=false and persists settings. The screen
@@ -1544,10 +1544,21 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 // Detail -> Playback: copy resolved host path + title from
                 // Detail to Playback so it knows what to load on enter().
+                // Also pass the rich TMDB metadata so the PlaybackOverlay
+                // can show a movie-detail header and pre-fetch similar films.
                 if (next == media_browser::ui::Screen::Playback &&
                     current_mb_screen == media_browser::ui::Screen::Detail) {
                     auto pt = mb_detail.get_play_target();
                     mb_playback.set_movie(pt.host_path, pt.title);
+                    media_browser::ui::PlaybackOverlayMovieMeta meta;
+                    meta.tmdb_id     = pt.tmdb_id;
+                    meta.title       = pt.title;
+                    meta.year        = pt.year;
+                    meta.runtime_min = pt.runtime_min;
+                    meta.synopsis    = pt.synopsis;
+                    meta.genres      = pt.genres;
+                    meta.poster_url  = pt.poster_url;
+                    mb_playback.set_movie_meta(std::move(meta));
                 }
                 active_mb_screen->leave();
                 current_mb_screen = next;
