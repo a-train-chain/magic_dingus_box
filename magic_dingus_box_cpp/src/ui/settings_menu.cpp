@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>  // For std::max
+#include <fstream>
 #include <iostream>
+#include <string_view>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <sys/types.h>
@@ -319,6 +321,30 @@ void SettingsMenuManager::open() {
         game_browser_selected_ = 0;
 
 #ifdef MEDIA_BROWSER_ENABLED
+        // Layer 2 may have changed since boot if the operator just
+        // dropped a WireGuard config via Content Manager. Re-read it
+        // on each open so the UI reflects current state without
+        // requiring a kiosk restart.
+        if (app_state_) {
+            std::ifstream f("/opt/magic_dingus_box/services/.env");
+            bool found = false;
+            if (f) {
+                std::string line;
+                while (std::getline(f, line)) {
+                    constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
+                    if (line.rfind(kKey, 0) != 0) continue;
+                    std::string val = line.substr(kKey.size());
+                    while (!val.empty() && (val.back() == ' ' || val.back() == '\t' ||
+                                            val.back() == '"' || val.back() == '\'')) val.pop_back();
+                    while (!val.empty() && (val.front() == ' ' || val.front() == '\t' ||
+                                            val.front() == '"' || val.front() == '\'')) val.erase(val.begin());
+                    found = !val.empty();
+                    break;
+                }
+            }
+            app_state_->media_browser_vpn_configured = found;
+        }
+
         // Rebuild the top-level menu on every open() so the "Movies" row
         // (conditional on media_browser_unlocked) is re-evaluated each time.
         // Placement: directly under "Video Games" — the feature entry point
@@ -327,7 +353,21 @@ void SettingsMenuManager::open() {
         menu_items_.clear();
         menu_items_.emplace_back("Video Games", MenuSection::VIDEO_GAMES, "Emulated games");
         if (app_state_ && app_state_->media_browser_unlocked) {
-            menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+            if (!app_state_->media_browser_vpn_configured) {
+                // Layer 1 pass, Layer 2 fail: show an info-only row pointing
+                // at Content Manager. Uses MenuSection::INFO so the row is
+                // non-actionable (matches "Content Manager" row pattern below).
+                menu_items_.emplace_back("Movies (configure VPN)", MenuSection::INFO,
+                                         "Drop WireGuard config in Content Manager");
+            } else if (!app_state_->media_browser_vpn_healthy) {
+                // Layer 1+2 pass, Layer 3 fail: hide entirely. Toast (fired
+                // in main.cpp) is the user-visible signal; no row rendered
+                // here so operators can immediately see the feature has
+                // degraded rather than a misleading "click here" entry.
+            } else {
+                // All three layers pass — render Media Browser entry.
+                menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+            }
         }
         menu_items_.emplace_back("Display", MenuSection::DISPLAY, "Screen settings");
         menu_items_.emplace_back("Audio", MenuSection::AUDIO, "Volume");
