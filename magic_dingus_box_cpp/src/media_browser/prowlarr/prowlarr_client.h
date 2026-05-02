@@ -44,12 +44,20 @@ public:
         // instead of a perpetual spinner).
         std::string api_key;
 
-        // 12s is generous for indexer roundtrips. Most searches return
-        // in 2-4s but a slow Cloudflare-protected indexer (especially
-        // when FlareSolverr has to solve a challenge) can stretch to
-        // 8-10s. 12s leaves margin without keeping the spinner up
-        // forever when an indexer is genuinely down.
-        int timeout_secs = 12;
+        // Default timeout for UI-thread calls (list_indexers,
+        // set_indexer_enabled). Kept short so a stalled Prowlarr
+        // doesn't trip systemd's WatchdogSec on Settings -> Sources
+        // entry or indexer toggles. The toggle path is also gated on
+        // vpn_healthy in mb_settings_screen, so 5s is plenty.
+        int timeout_secs = 5;
+        // Worker-thread search uses search_timeout_secs (much longer)
+        // because Prowlarr fans out to all indexers in parallel and a
+        // single Cloudflare-protected one (Byparr solving a challenge)
+        // can push the overall response past 10s. 30s leaves room
+        // without keeping the spinner up forever if all indexers are
+        // genuinely down. search_async runs on a worker thread so the
+        // UI never blocks.
+        int search_timeout_secs = 30;
     };
 
     explicit ProwlarrClient(Config cfg);
@@ -145,9 +153,17 @@ public:
 
 protected:
     // Virtual for unit tests. Default implementation does a real curl
-    // GET. Returns the response body, or empty string on transport
-    // failure (with last_error_ populated).
+    // GET with cfg_.timeout_secs (5s — UI-thread budget). Returns the
+    // response body, or empty string on transport failure (with
+    // last_error_ populated).
     virtual std::string http_get(const std::string& path);
+
+    // Long-timeout variant for the worker-thread search call. Same
+    // implementation as http_get but with an explicit timeout (search
+    // uses cfg_.search_timeout_secs = 30s because Prowlarr fans out
+    // to all indexers in parallel and a single Cloudflare-protected
+    // one can push the overall response past 10s).
+    virtual std::string http_get_long(const std::string& path, int timeout_secs);
 
     // Virtual for unit tests. Default implementation does a real curl
     // PUT with a JSON body and the X-Api-Key header. Returns the

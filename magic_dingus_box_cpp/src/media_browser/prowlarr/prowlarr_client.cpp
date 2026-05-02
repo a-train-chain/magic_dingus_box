@@ -203,7 +203,12 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
                      + "&categories=2080"
                      + "&type=search";
 
-    std::string body = http_get(path);
+    // Worker thread — use the long timeout. Prowlarr's parallel
+    // indexer fan-out can take 8-15s when one indexer is slow
+    // (Byparr challenge, etc.); 5s would frequently truncate
+    // legitimate searches and surface "Sources unavailable: Timeout
+    // was reached" on Detail.
+    std::string body = http_get_long(path, cfg_.search_timeout_secs);
 
     // Aborted mid-flight (destructor) or superseded by a newer search.
     // In either case the worker should silently disappear without
@@ -443,6 +448,10 @@ bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) {
 }
 
 std::string ProwlarrClient::http_get(const std::string& path) {
+    return http_get_long(path, cfg_.timeout_secs);
+}
+
+std::string ProwlarrClient::http_get_long(const std::string& path, int timeout_secs) {
     std::string url = cfg_.base_url + path;
 
     CURL* curl = curl_easy_init();
@@ -456,7 +465,7 @@ std::string ProwlarrClient::http_get(const std::string& path) {
     curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(timeout_secs));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
     // NOSIGNAL is required when curl is invoked from a non-main thread
     // (libcurl's default DNS resolver uses SIGALRM otherwise). Without
