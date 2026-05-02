@@ -27,6 +27,7 @@
 #include "media_browser/ui/stall_prompt_modal.h"
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/health/vpn_health_monitor.h"
+#include "media_browser/artwork/artwork_cache.h"
 #endif
 #include "app/app_state.h"
 #include "app/playlist_loader.h"

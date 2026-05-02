@@ -252,6 +252,14 @@ public:
     void reset_content_viewport();  // Reset to full screen dimensions
     void resize_screen(uint32_t width, uint32_t height);
 
+#ifdef MEDIA_BROWSER_ENABLED
+    // Public accessor for the artwork cache. Lazy first-use init so the
+    // background fetcher thread doesn't start unless the Media Browser
+    // is actually used. main.cpp calls this to drive pause()/resume()
+    // around movie playback (I/O contention guard for GStreamer).
+    media_browser::ArtworkCache& artwork_cache();
+#endif
+
 private:
     uint32_t width_;
     uint32_t height_;
@@ -340,9 +348,6 @@ private:
     // context lifetime. Pointer keeps the artwork_cache.h include out
     // of this header.
     std::unique_ptr<media_browser::ArtworkCache> artwork_cache_;
-    // Lazy first-use init so the background thread doesn't start
-    // unless the Media Browser is actually used.
-    media_browser::ArtworkCache& artwork_cache();
     // Textured-quad drawing helper (used by mb_draw_poster_or_tint).
     void draw_textured_quad(uint32_t tex_id, float x, float y, float w, float h,
                             float alpha_multiplier);
