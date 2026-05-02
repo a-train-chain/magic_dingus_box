@@ -683,6 +683,17 @@ Screen MbSettingsScreen::handle_input(
                         // most likely culprit is Prowlarr being down,
                         // since the GET on screen entry just succeeded.
                         auto& row = indexer_rows_[indexer_cursor_];
+                        // Block the toggle when VPN is down. Prowlarr now
+                        // shares Gluetun's network namespace, so an attempt
+                        // to PUT /api/v1/indexer/<id> would do GET (5s) +
+                        // PUT (5s) at the per-call timeout — combined that
+                        // exceeds WatchdogSec=10s and trips systemd into
+                        // killing the kiosk on the user's first toggle.
+                        // Surface a banner instead and skip the call.
+                        if (!state_.media_browser_vpn_healthy) {
+                            show_banner("Toggle unavailable — VPN tunnel down");
+                            break;
+                        }
                         const bool new_state = !row.enabled;
                         if (prowlarr_->set_indexer_enabled(row.id, new_state)) {
                             row.enabled = new_state;

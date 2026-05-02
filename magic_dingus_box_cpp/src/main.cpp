@@ -1548,7 +1548,19 @@ int main(int /* argc */, char* /* argv */[]) {
             // to leave the Marquee shouldn't be hijacked by a late stall
             // event firing the same tick).
             {
-                auto stall_events = mb_watchdog.tick();
+                // Skip when VPN is unhealthy: the watchdog's tick() does a
+                // synchronous qBit /torrents/info (5s timeout) plus a per-
+                // watched-movie Radarr /history (5s each). With Gluetun down
+                // those calls all stall to their full timeout — multiplied
+                // across active watches that easily exceeds WatchdogSec=10
+                // and trips systemd into respawning the kiosk mid-session.
+                // VpnHealthMonitor already surfaces the "tunnel down" toast
+                // separately, so suppressing stall checks during an outage
+                // also avoids the spurious "no peers" modal blaming peers
+                // when the real culprit is the tunnel.
+                auto stall_events = state.media_browser_vpn_healthy
+                    ? mb_watchdog.tick()
+                    : std::vector<media_browser::DownloadWatchdog::StallEvent>{};
                 if (!stall_events.empty() && !mb_stall_modal.is_active()
                     && !mb_exit_modal.is_open()) {
                     const auto& ev = stall_events.front();
