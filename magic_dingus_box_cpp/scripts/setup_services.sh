@@ -59,6 +59,20 @@ if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
     if [ -L /etc/resolv.conf ]; then
         rm -f /etc/resolv.conf
     fi
+    # Bootstrap DNS for the duration of Step 0.
+    #
+    # If we just disabled systemd-resolved (or removed its stub-symlink
+    # resolv.conf), the host has no DNS until cloudflared is installed
+    # and bound to :53 in 0c. The apt-get update + install in 0b needs
+    # to resolve pkg.cloudflare.com, so write a temporary 1.1.1.1
+    # nameserver here. Step 0e overwrites this with the final DoH
+    # config (nameserver 127.0.0.1).
+    #
+    # Idempotent: writes the same content on every run; subsequent
+    # Step 0e atomic-rename overrides it.
+    if [ ! -e /etc/resolv.conf ] || ! grep -q "nameserver" /etc/resolv.conf 2>/dev/null; then
+        echo "nameserver 1.1.1.1" > /etc/resolv.conf
+    fi
 
     # 0a. Disable IPv6 globally
     cat > /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf <<'EOF'
