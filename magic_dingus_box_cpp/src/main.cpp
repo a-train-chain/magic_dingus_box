@@ -1653,12 +1653,15 @@ int main(int /* argc */, char* /* argv */[]) {
                     // (preserves Search query/results, Library scroll,
                     // etc.) instead of always landing on Browse.
                     //
-                    // Skip when returning from Playback — Detail's origin
-                    // should still point at whatever screen opened Detail
-                    // BEFORE the user hit Play. Otherwise BTN4 on Detail
-                    // would loop the user right back into the player they
-                    // just exited.
-                    if (current_mb_screen != media_browser::ui::Screen::Playback) {
+                    // Skip when returning from Playback or ReleasePicker
+                    // — both are sub-screens of Detail (user opened them
+                    // FROM Detail). Detail's origin should still point at
+                    // whatever screen opened Detail BEFORE the user
+                    // descended into the sub-screen, otherwise BTN4 on
+                    // Detail loops the user right back into the
+                    // sub-screen they just exited.
+                    if (current_mb_screen != media_browser::ui::Screen::Playback &&
+                        current_mb_screen != media_browser::ui::Screen::ReleasePicker) {
                         mb_detail.set_origin(current_mb_screen);
                     }
                 }
