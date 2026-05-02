@@ -2180,7 +2180,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         "mdb_radarr",
         "mdb_prowlarr",
         "mdb_qbittorrent",
-        "mdb_flaresolverr",
+        "mdb_byparr",
     ]
 
     # Track media-browser setup jobs (in-memory, cleared on restart)
@@ -2341,16 +2341,60 @@ def create_app(data_dir: Path, config=None) -> Flask:
         env = _read_env_file(path)
         return bool(env.get("WIREGUARD_PRIVATE_KEY", "").strip())
 
+    def _vpn_configured() -> bool:
+        """True iff services/.env exists AND has a non-empty WIREGUARD_PRIVATE_KEY.
+
+        Layer 2 of the three-layer Media Browser gate. Failure-closed:
+        any error reading the .env returns False so a malformed file
+        can't accidentally allow access.
+
+        Delegates to _env_has_wireguard_key with the canonical SERVICES_ENV
+        path. Use _env_has_wireguard_key directly if you need to check a
+        non-canonical path (e.g., during setup-job preview).
+        """
+        return _env_has_wireguard_key(SERVICES_ENV)
+
+    def _vpn_required_response():
+        """Standard 403 used when Layer 2 (VPN configured) fails."""
+        return error_response(
+            "vpn_not_configured",
+            "VPN must be configured in the Media Browser tab before using this feature",
+            status=403,
+        )
+
+    def _check_media_browser_gates(*, require_vpn: bool = True):
+        """Run the Layer 1 + (optionally) Layer 2 gates.
+
+        Returns None on pass, or a 403 Response on fail. Endpoints that
+        are part of the VPN-setup flow itself (status, setup,
+        setup-status, reset) pass require_vpn=False so the operator can
+        reach them before configuring VPN.
+        """
+        if not _media_browser_unlocked():
+            return _media_browser_locked_response()
+        if require_vpn and not _vpn_configured():
+            return _vpn_required_response()
+        return None
+
     @app.get("/admin/media-browser/visibility")
     def media_browser_visibility():  # type: ignore[no-redef]
         """Public — return whether the Media Browser tab should be rendered.
 
-        Always 200, never errors. The frontend uses this on page init to
-        decide whether to render the tab nav button + section at all. All
-        OTHER /admin/media-browser/* routes additionally enforce the same
-        check server-side and return 403 when locked.
+        Always 200, never errors. Returns two flags:
+          - visible: Layer 1 (unlock). Whether to render the tab DOM
+            at all.
+          - vpn_configured: Layer 2 (WireGuard config dropped). When
+            visible=true and vpn_configured=false, the frontend shows
+            a "Configure VPN" form instead of the dashboard.
+
+        Other /admin/media-browser/* routes enforce the same gates
+        server-side via _check_media_browser_gates and return 403
+        (`media_browser_locked` or `vpn_not_configured`) on failure.
         """
-        return success_response(data={"visible": _media_browser_unlocked()})
+        return success_response(data={
+            "visible": _media_browser_unlocked(),
+            "vpn_configured": _vpn_configured(),
+        })
 
     @app.get("/admin/media-browser/status")
     def media_browser_status():  # type: ignore[no-redef]
@@ -2358,8 +2402,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         Drives the 3-state UI: Not configured / Configuring / Configured.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         env_present = _env_has_wireguard_key(SERVICES_ENV)
         containers = _docker_ps_table()
         services_running = any(
@@ -2415,8 +2459,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         ('file' field) or as pasted text in the 'config_text' form field.
         Returns a job_id; clients poll /admin/media-browser/setup-status/<id>.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         if not SETUP_SERVICES_SCRIPT.exists():
             return error_response(
                 "setup_script_missing",
@@ -2526,8 +2570,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         success with status='unknown' rather than 404 so the frontend can fall
         back to the generic /admin/media-browser/status endpoint.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
         job = media_browser_jobs.get(job_id)
         if not job:
             return success_response(data={
@@ -2569,8 +2613,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         the "Show credentials" expander, never on routine status polls, to
         avoid leaking secrets into background traffic.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         env = _read_env_file(SERVICES_ENV)
         radarr_key = env.get("RADARR_API_KEY", "").strip()
@@ -2765,8 +2809,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         call has a 5-sec timeout and is wrapped in try/except; any failing
         field returns -1 / "unavailable" without breaking the others.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         env = _read_env_file(SERVICES_ENV)
         library_count = _radarr_library_count(env)
@@ -2805,8 +2849,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         same path setup_services.sh uses, so it relies on the same NOPASSWD
         sudoers rule.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates()):
+            return resp
 
         try:
             sudo_check = subprocess.run(
@@ -2852,8 +2896,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         in dev tools / curl. After this completes, /status returns
         configured=false → frontend transitions back to State A.
         """
-        if not _media_browser_unlocked():
-            return _media_browser_locked_response()
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
 
         body = request.get_json(silent=True) or {}
         if body.get("confirm") != "RESET":
@@ -2913,9 +2957,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 details={"steps": steps_completed},
             )
 
-        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/flaresolverr)
+        # 3. Wipe service config dirs (radarr/prowlarr/qbit/gluetun/byparr)
         config_dirs_root = SERVICES_DIR / "config"
-        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "flaresolverr"]
+        targets = ["radarr", "prowlarr", "qbittorrent", "gluetun", "byparr"]
         for name in targets:
             target = config_dirs_root / name
             if not target.exists():

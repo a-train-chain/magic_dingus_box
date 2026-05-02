@@ -198,7 +198,23 @@ public:
 
 #ifdef MEDIA_BROWSER_ENABLED
     // Media Browser feature (unlocked via secret sequence)
+    // Layer 1: operator-side unlock via secret sequence (persisted to settings.json).
     bool media_browser_unlocked = false;
+
+    // Layer 2: WIREGUARD_PRIVATE_KEY non-empty in services/.env at boot.
+    // Re-read on each Settings menu open so an operator who configures
+    // VPN via Content Manager doesn't need to restart the kiosk.
+    bool media_browser_vpn_configured = false;
+
+    // Layer 3: Radarr /ping reachable on localhost:7878. Owned by
+    // VpnHealthMonitor (background thread). Three consecutive failed
+    // polls (~30s at 10s interval) flips this true->false; recovery
+    // is instant on first successful poll. std::atomic because writes
+    // happen on the monitor's worker thread while reads happen on the
+    // main thread (toast detection) and settings_menu thread (Movies
+    // entry visibility) — matches the convention used by other
+    // cross-thread flags in this struct.
+    std::atomic<bool> media_browser_vpn_healthy{false};
 
     // Active top-level screen. Only meaningful when media_browser_unlocked
     // is true; otherwise always MainMenu.

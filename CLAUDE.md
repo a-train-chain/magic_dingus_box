@@ -230,18 +230,46 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
 
 - **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged.
 - **Required Gluetun setup**: WireGuard config from ProtonVPN dashboard MUST have NAT-PMP toggle ON when generated. `FIREWALL_OUTBOUND_SUBNETS` MUST NOT include `10.0.0.0/8` (would block NAT-PMP routing to the VPN gateway at 10.2.0.1).
-- **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload (with `cloudflare` tag → FlareSolverr). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
+- **Active indexers** (Prowlarr → Radarr): TPB, YTS, LimeTorrents, TorrentDownload (with `cloudflare` tag → Byparr,
+which replaces FlareSolverr for current Cloudflare challenge formats). Plus 5 pre-configured but disabled (Demonoid, EZTV, Internet Archive, Magnetz, Torrent Downloads) for future enable.
 - **Gluetun healthcheck**: `wget http://localhost:8000/v1/publicip/ip` (gluetun's own internal endpoint). Avoids the previous `ifconfig.me` healthcheck which flapped due to Cloudflare challenges on ProtonVPN exit IPs.
-- **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, FlareSolverr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.
+- **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, Byparr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.
 
 ### Feature gating
 
-The Media Browser is **hidden by default** behind a kiosk-side secret-sequence unlock (BTN1+BTN3 chord → BTN2 × 3 → rotary click). The flag `media_browser_unlocked` is persisted in `config/settings.json`. Two consequences:
+The Media Browser is **VPN-required and hidden by default**, gated
+by three independent layers:
 
-1. **Kiosk UI**: Media Browser entries in the Settings menu only appear when unlocked.
-2. **Content Manager UI**: The "Media Browser" tab in the web admin is hidden when locked. All `/admin/media-browser/*` routes (except `/visibility`) return 403 `media_browser_locked` server-side. Visibility check at page-load decides whether to render the tab DOM at all.
+1. **Unlocked** — `playback.media_browser_unlocked` flag in
+   `config/settings.json`, set by the kiosk-side secret sequence
+   (BTN1+BTN3 chord → BTN2 × 3 → rotary click). Gates UI
+   *visibility*: when locked, the Settings-menu entry and the web
+   admin tab are hidden entirely.
+2. **VPN configured** — `WIREGUARD_PRIVATE_KEY` non-empty in
+   `services/.env`. Gates *functional* `/admin/media-browser/*`
+   endpoints and the kiosk's MB launch path. The Content Manager
+   tab is visible at Layer 1 alone (so the operator can drop a
+   WireGuard config); the inner functions require Layer 2.
+3. **Tunnel healthy** — Radarr `/ping` reachable on
+   `localhost:7878`. Polled every 10s by the kiosk's
+   `VpnHealthMonitor`; three consecutive failures (~30s) flips the
+   in-memory flag and hides MB entries with a "tunnel down" toast.
+   Recovery is silent on the first successful poll.
 
-Cloned Pis start LOCKED — `first_boot.sh` Step 6 resets the flag during first-boot setup so a fresh Pi inherits no unlock state from the source.
+All four torrent-ecosystem services (Prowlarr, Radarr, Byparr,
+qBittorrent) share Gluetun's network namespace. When Gluetun is
+down, all four are unreachable from the host — Radarr ping is the
+single signal that covers the stack.
+
+Cloned Pis start LOCKED — `first_boot.sh` Step 6 resets the unlock
+flag during first-boot setup so a fresh Pi inherits no unlock
+state from the source.
+
+**Privacy gap (accepted):** the kiosk binary's own TMDB calls exit
+via the host network, not via Gluetun, because the C++ binary runs
+outside Docker. Metadata only — never touches torrent indexers. See
+[MEDIA_BROWSER_VPN_SETUP.md](magic_dingus_box_cpp/docs/MEDIA_BROWSER_VPN_SETUP.md)
+"Privacy notes" for the full threat model.
 
 ### Per-Pi setup workflow (no SSH required)
 

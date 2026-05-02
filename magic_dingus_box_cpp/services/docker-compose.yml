@@ -7,13 +7,16 @@ services:
   radarr:
     image: lscr.io/linuxserver/radarr:5.14.0
     container_name: mdb_radarr
-    # Explicit DNS: avoids post-reboot race where Docker's internal DNS
-    # forwarder (127.0.0.11) doesn't yet have host resolv.conf populated,
-    # causing SERVFAIL on api.radarr.video lookups. Pinning public resolvers
-    # makes DNS independent of host boot timing.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    # Behind Gluetun: shares VPN netns. Even Radarr's TMDB metadata
+    # fetches now exit via VPN (was direct via Comcast residential IP).
+    # No per-service ports: block — Radarr's :7878 must be exposed via
+    # gluetun's ports: section for host-side access (added in the
+    # FlareSolverr→Byparr task, which collects all behind-Gluetun
+    # ports into one place).
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
@@ -22,9 +25,6 @@ services:
       - ./config/radarr:/config
       - ${STORAGE_ROOT}/downloads:/downloads
       - ${STORAGE_ROOT}/library:/library
-    ports:
-      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
-      - "127.0.0.1:7878:7878"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
@@ -33,21 +33,23 @@ services:
       retries: 3
 
   prowlarr:
-    image: lscr.io/linuxserver/prowlarr:1.26.1
+    image: lscr.io/linuxserver/prowlarr:2.3.5
     container_name: mdb_prowlarr
-    # Explicit DNS: see Radarr rationale above.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+    # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
+    # per-service dns: block needed. No per-service ports: block —
+    # Prowlarr's :9696 must be exposed via gluetun's ports: section
+    # for host-side access (added in the FlareSolverr→Byparr task,
+    # which collects all behind-Gluetun ports into one place).
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - PUID=${PUID}
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
       - ./config/prowlarr:/config
-    ports:
-      # Bind to 127.0.0.1 only — admin UI requires SSH tunnel, zero LAN attack surface.
-      - "127.0.0.1:9696:9696"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
@@ -111,6 +113,11 @@ services:
       - "127.0.0.1:8080:8080"
       - "6881:6881"
       - "6881:6881/udp"
+      # Behind-Gluetun service admin/internal ports.
+      # All loopback-bound; admin UI requires SSH tunnel.
+      - "127.0.0.1:7878:7878"   # Radarr
+      - "127.0.0.1:9696:9696"   # Prowlarr
+      - "127.0.0.1:8191:8191"   # Byparr (Cloudflare bypass)
     volumes:
       - ./config/gluetun:/gluetun
     restart: unless-stopped
@@ -150,27 +157,24 @@ services:
       - ${STORAGE_ROOT}/downloads:/downloads
     restart: unless-stopped
 
-  flaresolverr:
-    # Pinned (matching this file's "all images pinned for reproducibility"
-    # invariant) — :latest would silently pull a new build on `docker
-    # compose pull` and could break Prowlarr's Cloudflare-bypass integration
-    # if the API changes between versions. Bump deliberately, in a commit.
-    image: ghcr.io/flaresolverr/flaresolverr:v3.4.6
-    container_name: mdb_flaresolverr
-    # Explicit DNS: see Radarr rationale above.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
+  byparr:
+    # Drop-in FlareSolverr-API replacement that handles current
+    # Cloudflare challenge formats (FlareSolverr's last release v3.4.6
+    # cannot). API-compatible — Prowlarr's "FlareSolverr" indexer-proxy
+    # configuration in prowlarr_indexerproxies.json continues to work
+    # because the proxy's *name* is unchanged; only the URL points to
+    # byparr now.
+    image: ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0
+    container_name: mdb_byparr
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
     environment:
       - LOG_LEVEL=info
       - TZ=${TZ}
-    ports:
-      # Bind to 127.0.0.1 only — internal CAPTCHA solver, not needed externally.
-      - "127.0.0.1:8191:8191"
     restart: unless-stopped
     healthcheck:
-      # Use curl (available in the image); wget is not shipped. FlareSolverr's
-      # root URL returns a JSON "FlareSolverr is ready!" payload on success.
       test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8191/"]
       interval: 60s
       timeout: 10s

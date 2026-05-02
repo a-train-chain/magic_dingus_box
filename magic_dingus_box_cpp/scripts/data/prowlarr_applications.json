@@ -21,7 +21,7 @@
         "name": "baseUrl",
         "label": "Radarr Server",
         "helpText": "URL used to connect to Radarr server, including http(s)://, port, and urlbase if required",
-        "value": "http://radarr:7878",
+        "value": "http://localhost:7878",
         "type": "textbox",
         "advanced": false,
         "privacy": "normal",

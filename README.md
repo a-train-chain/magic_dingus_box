@@ -1,8 +1,24 @@
 # Magic Dingus Box
 
-A turnkey retro-gaming + video-playback kiosk for Raspberry Pi 4B. Boots straight into a curated full-screen UI with no desktop, no window manager, and no compositor — direct DRM/KMS rendering with OpenGL ES, GStreamer for video, RetroArch for emulation, all driven by a custom C++ kiosk binary.
+A retro gaming and video playback kiosk for Raspberry Pi 4B.
 
-Designed to ship as a sealed appliance: cloned from a "golden image" SD card, configured via a LAN-only web Content Manager, and updated over the air via GitHub Releases.
+Magic Dingus Box has two halves:
+
+1. **Retro gaming + video playback** — always works, no internet
+   required after setup. Plays NES / SNES / Genesis / PS1 / PCE /
+   Atari 7800 / Arcade games via RetroArch, plus local videos and
+   YouTube clips.
+
+2. **Movie Media Browser** — discovers and downloads movies via a
+   Radarr / Prowlarr / qBittorrent stack. **Requires a VPN**
+   (ProtonVPN with WireGuard recommended). See
+   [docs/MEDIA_BROWSER_VPN_SETUP.md](magic_dingus_box_cpp/docs/MEDIA_BROWSER_VPN_SETUP.md)
+   for setup.
+
+Without a VPN configured, the Media Browser is fully hidden from
+both the kiosk UI and the web Content Manager. Operators must
+explicitly unlock it (kiosk-side secret sequence) *and* drop a
+working WireGuard config (web admin) before the feature appears.
 
 ## What's in this repo
 

@@ -16,6 +16,119 @@
 
 set -euo pipefail
 
+SKIP_HOST_NETWORKING=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-host-networking) SKIP_HOST_NETWORKING=1 ;;
+    esac
+done
+
+# 0. Pi host networking — close IPv6 + DNS leak paths.
+#
+# Why: ProtonVPN's WireGuard tunnel is IPv4-only. When the Pi prefers
+# IPv6 outbound (Comcast hands out v6 by default), routes for v6
+# destinations bypass the tunnel entirely. Disable IPv6 globally so
+# every outbound connection takes the v4 path through Gluetun (or
+# the host's own non-VPN'd v4 path for kiosk/OTA traffic, which is
+# the documented accepted gap).
+#
+# DNS: replace the ISP's resolver (Comcast's 75.75.75.75 by default)
+# with Cloudflare's 1.1.1.1 so the ISP can no longer log every domain
+# the host queries.
+#
+# Earlier versions of this script attempted DoH via cloudflared, but
+# Cloudflare deprecated the cloudflared DNS-Proxy feature in 2026.2.0
+# (see https://developers.cloudflare.com/changelog/2025-11-11-cloudflared-proxy-dns/).
+# Plain `nameserver 1.1.1.1` is the simpler replacement — DNS queries
+# are cleartext UDP/53 to 1.1.1.1, which the ISP can still observe in
+# transit, but importantly:
+#   - The host's torrent-related DNS (indexer searches, ghcr.io, etc.)
+#     happens *inside* Gluetun's netns where DNS goes through the VPN.
+#   - Only host-level non-VPN'd traffic (TMDB metadata from the kiosk
+#     binary, OTA updates from GitHub, apt updates) leaks domain names.
+# Future work: if DoH becomes important, switch to dnscrypt-proxy
+# (apt install dnscrypt-proxy) or systemd-resolved with DNSOverTLS.
+#
+# Idempotent: writing the same files on every run is a no-op. Skip
+# this whole block with `--skip-host-networking` for partial re-runs.
+if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
+    echo "=== Step 0: Pi host networking ==="
+
+    # 0a. Disable systemd-resolved so it doesn't fight us over resolv.conf.
+    #
+    # If active, systemd-resolved binds 127.0.0.53:53 and may symlink
+    # /etc/resolv.conf to its stub file, which would be re-created on
+    # reboot and overwrite our nameserver line.
+    if systemctl is-enabled systemd-resolved.service &>/dev/null || \
+       systemctl is-active systemd-resolved.service &>/dev/null; then
+        echo "Disabling systemd-resolved (was active)..."
+        systemctl disable --now systemd-resolved.service || true
+    fi
+    # If /etc/resolv.conf is a symlink (likely to systemd-resolved's stub),
+    # remove it before writing our real file so we don't write through.
+    if [ -L /etc/resolv.conf ]; then
+        rm -f /etc/resolv.conf
+    fi
+
+    # 0b. Disable IPv6 globally
+    cat > /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+    sysctl -p /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf >/dev/null
+    echo "IPv6 disabled globally."
+
+    # 0c. Install jq if missing — needed by the tunnel-up gate (Step 4.5)
+    # to parse gluetun's /v1/publicip/ip JSON response.
+    if ! command -v jq &>/dev/null; then
+        echo "Installing jq..."
+        apt-get install -y -qq jq
+    fi
+
+    # 0d. Stop NetworkManager from rewriting /etc/resolv.conf so our
+    # nameserver entry survives reboots and reconnects.
+    mkdir -p /etc/NetworkManager/conf.d
+    cat > /etc/NetworkManager/conf.d/99-dns.conf <<'EOF'
+[main]
+dns=none
+EOF
+    systemctl reload NetworkManager 2>/dev/null || true
+
+    # 0e. Point /etc/resolv.conf at Cloudflare 1.1.1.1.
+    # Write atomically via temp file + rename so concurrent name lookups
+    # never see a zero-length resolv.conf.
+    cat > /etc/resolv.conf.new <<'EOF'
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+options edns0 trust-ad
+EOF
+    mv /etc/resolv.conf.new /etc/resolv.conf
+
+    # 0f. Verify DNS works
+    if ! getent hosts cloudflare.com >/dev/null 2>&1; then
+        echo "WARNING: DNS test query failed. Continuing — could be transient."
+        echo "         Verify with: getent hosts cloudflare.com"
+    else
+        echo "DNS active: nameserver 1.1.1.1."
+    fi
+
+    # 0g. Clean up any stale cloudflared install/config from earlier
+    # script versions that attempted DoH. Idempotent.
+    if [ -f /etc/systemd/system/cloudflared.service ] || \
+       systemctl is-enabled cloudflared.service &>/dev/null; then
+        echo "Removing stale cloudflared service unit (DNS-Proxy was deprecated)..."
+        systemctl disable --now cloudflared.service 2>/dev/null || true
+        rm -f /etc/systemd/system/cloudflared.service
+        rm -rf /etc/cloudflared
+        rm -f /etc/apt/sources.list.d/cloudflared.list
+        rm -f /usr/share/keyrings/cloudflare-main.gpg
+        systemctl daemon-reload
+    fi
+
+    echo "=== Step 0 complete ==="
+fi
+
 SERVICES_DIR="/opt/magic_dingus_box/services"
 STORAGE_ROOT="${STORAGE_ROOT:-/mnt/ssd}"
 ENV_FILE="${SERVICES_DIR}/.env"
@@ -79,9 +192,74 @@ else
 fi
 
 # 4. Start stack
+
+# 4a. Pre-pull Byparr (ghcr.io DNS race mitigation).
+#
+# On a fresh Pi the first ghcr.io DNS lookup sometimes fails before
+# DoH (Step 0) is fully warm. Letting `docker compose up` lazily
+# pull byparr causes a confusing failure mid-startup. Pre-pull with
+# explicit retries instead.
+echo "Pre-pulling Byparr (ghcr.io DNS can be flaky on first boot)..."
+BYPARR_DIGEST="ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0"
+PULL_OK=0
+for i in 1 2 3; do
+    if docker pull "${BYPARR_DIGEST}"; then
+        PULL_OK=1
+        break
+    fi
+    echo "Pull attempt $i failed; sleeping 10s..."
+    sleep 10
+done
+if [ "${PULL_OK}" -eq 0 ]; then
+    echo "ERROR: cannot pull byparr after 3 attempts. Likely cause:"
+    echo "       ghcr.io DNS still recovering. Re-run setup in a minute."
+    exit 1
+fi
+
 cd "${SERVICES_DIR}"
 echo "Starting Docker stack..."
-docker compose up -d
+#
+# --remove-orphans tears down containers that used to be in compose but
+# aren't anymore (e.g., the old mdb_flaresolverr from before the Byparr
+# swap). Without it, an upgrade leaves the orphan running and holding
+# its old port mapping, which blocks Gluetun from rebinding.
+docker compose up -d --remove-orphans
+
+# 4.5. Wait for Gluetun tunnel to come up.
+#
+# All four torrent-ecosystem services depend_on gluetun's
+# service_healthy condition, which means compose has already
+# verified the healthcheck passes before returning. But the
+# healthcheck only confirms the control server responds — the
+# WireGuard tunnel may still be re-keying, or the public IP fetch
+# may not have completed yet.
+#
+# Hit gluetun's /v1/publicip/ip directly to confirm we can reach
+# the outside world *through* the tunnel. Failing here aborts
+# setup with a clear error rather than letting Prowlarr fail to
+# reach indexers later.
+echo "Waiting for Gluetun tunnel to come up..."
+TUNNEL_OK=0
+for i in $(seq 1 60); do
+    if docker exec mdb_gluetun wget -qO- --timeout=3 \
+        http://localhost:8000/v1/publicip/ip 2>/dev/null \
+        | grep -q '"public_ip"'; then
+        EXIT_IP=$(docker exec mdb_gluetun wget -qO- \
+            http://localhost:8000/v1/publicip/ip \
+            | jq -r .public_ip 2>/dev/null || echo "(unknown)")
+        echo "Tunnel up — exit IP: ${EXIT_IP}"
+        TUNNEL_OK=1
+        break
+    fi
+    sleep 2
+done
+if [ "${TUNNEL_OK}" -eq 0 ]; then
+    echo "ERROR: Gluetun tunnel did not come up in 120s."
+    echo "       Check 'docker logs mdb_gluetun' for WireGuard errors."
+    echo "       Common causes: revoked key, NAT-PMP toggle off, ISP"
+    echo "       blocks UDP/51820 outbound."
+    exit 1
+fi
 
 # 5. Wait for services to initialize their configs
 echo "Waiting for services to finish first-time init (60s)..."

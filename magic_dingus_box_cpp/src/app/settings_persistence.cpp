@@ -4,6 +4,7 @@
 #include <json/json.h>
 #include <fstream>
 #include <iostream>
+#include <string_view>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -155,6 +156,31 @@ app::AppState::DisplaySettings::MbDiscoverSort mb_discover_sort_from_string(cons
     if (s == "recent_release") return S::RecentRelease;
     return S::Popularity;
 }
+
+// Reads /opt/magic_dingus_box/services/.env if present and returns true
+// iff WIREGUARD_PRIVATE_KEY is set to a non-empty value. Failure-closed:
+// missing file or any I/O error returns false.
+bool read_vpn_configured_from_services_env() {
+    static constexpr const char* kEnvPath = "/opt/magic_dingus_box/services/.env";
+    std::ifstream f(kEnvPath);
+    if (!f) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        // Match WIREGUARD_PRIVATE_KEY=<non-empty>. Ignore quoted/unquoted form.
+        constexpr std::string_view kKey = "WIREGUARD_PRIVATE_KEY=";
+        if (line.rfind(kKey, 0) != 0) continue;
+        std::string val = line.substr(kKey.size());
+        // Strip surrounding quotes and whitespace.
+        auto trim = [](std::string& s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '"' || s.front() == '\'')) s.erase(s.begin());
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t' || s.back()  == '"' || s.back()  == '\'')) s.pop_back();
+        };
+        trim(val);
+        return !val.empty();
+    }
+    return false;
+}
+
 }  // namespace
 
 namespace app {
@@ -418,6 +444,7 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
         state.shuffle = playback.get("shuffle", false).asBool();
 #ifdef MEDIA_BROWSER_ENABLED
         state.media_browser_unlocked = playback.get("media_browser_unlocked", false).asBool();
+        state.media_browser_vpn_configured = read_vpn_configured_from_services_env();
 #endif
 
         int volume = playback.get("master_volume", config::audio::DEFAULT_VOLUME).asInt();
