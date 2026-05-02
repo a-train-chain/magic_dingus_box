@@ -81,6 +81,15 @@ public:
     void unwatch(int tmdb_id);
     void snooze(int tmdb_id, std::chrono::seconds duration);
 
+    // Backfill the radarr_movie_id for an existing watch — used by the
+    // DetailScreen Add flow which registers the watch before Radarr's
+    // POST has surfaced the new movie id, then calls this once a
+    // subsequent fetch() resolves the id. No-op if no watch matches the
+    // tmdb_id, or if the existing entry already has a non-zero id.
+    // Without this, stall events for adds-via-Library lose the deep-link
+    // path and fall back to opening Detail (one extra click per stall).
+    void upgrade_radarr_id(int tmdb_id, int radarr_movie_id);
+
     // Called from the main loop once per second. Internally rate-limits
     // service polls to ~once per 10s; returns any new stall events to
     // surface to the user.

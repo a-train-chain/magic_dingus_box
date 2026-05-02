@@ -89,6 +89,28 @@ ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y,
     return {x, y, box_w, box_h};
 }
 
+ChipRect draw_stuck_badge(::ui::Renderer& r, int x, int y) {
+    const auto& th = r.mb_theme();
+    const std::string label = "BAD RELEASE";
+    const int text_w = r.mb_text_width(label, kBadgeFontPx);
+    const int box_w  = text_w + 2 * kBadgePadX;
+    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    // Fill the badge with the warning color so it pops harder than
+    // the bordered DOWNLOADING chip — stuck items should jump out
+    // at a glance.
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(box_w), static_cast<float>(box_h),
+                   th.highlight2);
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(box_w), static_cast<float>(box_h),
+                     static_cast<float>(kFocusBorder_px), th.highlight2);
+    r.mb_draw_text(label,
+                   static_cast<float>(x + kBadgePadX),
+                   static_cast<float>(y + kBadgePadY + kBadgeFontPx - 2),
+                   kBadgeFontPx, th.bg);
+    return {x, y, box_w, box_h};
+}
+
 // =====================================================================
 // Footer keyhints
 // =====================================================================
@@ -331,7 +353,8 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
                       const ::ui::Color& tint,
                       bool in_library,
                       int download_pct,
-                      const std::string& poster_url) {
+                      const std::string& poster_url,
+                      bool is_stuck) {
     const auto& th = r.mb_theme();
 
     // Background — real TMDB image if `poster_url` is set (with tint as
@@ -352,7 +375,12 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
     }
 
     // Status badges (only one shows at a time per design).
-    if (download_pct >= 0) {
+    // Precedence: stuck/bad-release > downloading > in-library. A stuck
+    // item is technically also "in library" from Radarr's POV, but the
+    // user needs to see the failure state, not the success state.
+    if (is_stuck) {
+        draw_stuck_badge(r, x + kPad1, y + kPad1);
+    } else if (download_pct >= 0) {
         draw_dl_badge(r, x + kPad1, y + kPad1, download_pct);
     } else if (in_library) {
         draw_lib_badge(r, x + kPad1, y + kPad1);

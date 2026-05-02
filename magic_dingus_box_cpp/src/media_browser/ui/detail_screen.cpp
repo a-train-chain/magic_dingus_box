@@ -386,6 +386,14 @@ void DetailScreen::apply_pending_detail() {
         movie_ = *found;
         mode_ = found->has_file ? Mode::InLibraryWithFile
                                 : Mode::InLibraryNoFile;
+        // Backfill the watchdog with the now-known radarr id. The Add to
+        // Library flow registers a watch before Radarr's POST surfaces a
+        // movie id; without this upgrade, any subsequent stall event
+        // would fall back to opening Detail instead of deep-linking
+        // straight to ReleasePicker.
+        if (watchdog_ && tmdb_id_ > 0 && found->radarr_id > 0) {
+            watchdog_->upgrade_radarr_id(tmdb_id_, found->radarr_id);
+        }
     } else {
         mode_ = Mode::NotInLibrary;
     }
@@ -763,6 +771,18 @@ Screen DetailScreen::do_remove_confirm() {
         rebuild_buttons();
         return Screen::Detail;
     }
+    // Invalidate our cached movie record + force a refetch on the next
+    // entry. Without this, navigating back into Detail for the same
+    // tmdb_id (e.g. via Browse → Popular → re-tap the just-removed
+    // movie) hits the enter() short-circuit and re-renders the stale
+    // InLibrary{NoFile,WithFile} mode for a movie Radarr no longer
+    // knows about. The next fetch will return mode=NotInLibrary
+    // correctly so the UI shows "Add to Library" instead of
+    // "Search Again / Pick a source / Remove".
+    movie_.reset();
+    needs_refresh_ = true;
+    mode_          = Mode::NotInLibrary;
+    rebuild_buttons();
     // After a successful remove, the library view is the natural home.
     return Screen::Library;
 }
@@ -1172,6 +1192,31 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
                        sz, text_col, text_alpha);
+        cursor_y += banner_h + 6.0f;
+    }
+
+    // VPN-down banner — surfaced on every Mode that involves a download
+    // path (NotInLibrary = Add, InLibraryNoFile = re-search). When the
+    // tunnel is unhealthy, Radarr will still accept Add/Search but qBit
+    // can't reach peers, so torrents will sit at 0% indefinitely.
+    // Telling the user up front avoids the "I added it 10 minutes ago,
+    // why is nothing happening?" puzzle.
+    if (vpn_healthy_provider_ && !vpn_healthy_provider_() &&
+        (mode_ == Mode::NotInLibrary || mode_ == Mode::InLibraryNoFile)) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += 12.0f;
+        const float banner_h = static_cast<float>(sz) + 18.0f;
+        r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
+                         2.0f, th.highlight2, 0.95f);
+        std::string txt =
+            "VPN TUNNEL DOWN  \xE2\x80\xA2  Adds will queue but torrents "
+            "won't transfer until the tunnel comes back";
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
+        r.mb_draw_text(drawn, col_x + 12.0f,
+                       cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
+                                + static_cast<float>(baseline),
+                       sz, th.highlight2, 0.95f);
         cursor_y += banner_h + 6.0f;
     }
 

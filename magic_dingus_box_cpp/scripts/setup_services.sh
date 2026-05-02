@@ -225,6 +225,31 @@ echo "Starting Docker stack..."
 # its old port mapping, which blocks Gluetun from rebinding.
 docker compose up -d --remove-orphans
 
+# 3.5. Install + enable the gluetun-cascade-restart watcher (idempotent).
+# Whenever Gluetun (re)starts in isolation — manual `docker stop`, an
+# OOM kill, anything not orchestrated through `docker compose` — the
+# four containers sharing its netns (Radarr, Prowlarr, qBit, Byparr)
+# end up with stale socket bindings and become unreachable from the
+# host. The watcher subscribes to `docker events --filter container=
+# mdb_gluetun --filter event=start` and runs `compose restart` on the
+# dependents so they reattach cleanly.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYSTEMD_DIR="${SCRIPT_DIR}/../systemd"
+if [ -f "${SCRIPT_DIR}/gluetun_cascade_restart.sh" ] && \
+   [ -f "${SYSTEMD_DIR}/gluetun-cascade-restart.service" ]; then
+    sudo install -m 0755 \
+        "${SCRIPT_DIR}/gluetun_cascade_restart.sh" \
+        /usr/local/bin/gluetun_cascade_restart.sh
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/gluetun-cascade-restart.service" \
+        /etc/systemd/system/gluetun-cascade-restart.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now gluetun-cascade-restart.service
+    echo "Gluetun cascade-restart watcher installed + active."
+else
+    echo "Note: gluetun-cascade-restart assets not found, skipping watcher install."
+fi
+
 # 4.5. Wait for Gluetun tunnel to come up.
 #
 # All four torrent-ecosystem services depend_on gluetun's

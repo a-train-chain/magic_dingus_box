@@ -98,6 +98,9 @@ public:
     std::size_t disk_cache_hits() const   { return disk_hits_.load(); }
     std::size_t disk_cache_misses() const { return disk_misses_.load(); }
     std::size_t disk_cache_writes() const { return disk_writes_.load(); }
+    std::size_t disk_cache_bytes() const  { return disk_bytes_in_use_.load(); }
+    std::size_t disk_cache_evictions() const { return disk_evictions_.load(); }
+    std::size_t dead_url_skips() const    { return dead_url_skips_.load(); }
 
     // --- Test-only hooks (no GL). Lets the unit test simulate a
     // completed fetch by directly injecting a decoded pixel buffer, and
@@ -167,9 +170,32 @@ private:
     void write_to_disk(const std::string& url,
                        const std::string& body);
 
+    // Walk disk_cache_dir_ and tally total bytes into disk_bytes_in_use_.
+    // Called once at construction so disk-LRU starts from a correct
+    // baseline rather than only counting writes from this session.
+    // Worker thread only (not yet started at construction time, so the
+    // call is ordered safely on the constructing thread).
+    void disk_recount_bytes();
+
+    // If disk_bytes_in_use_ exceeds max_disk_bytes_, delete the oldest
+    // (by mtime) cache files until we're under budget. Worker thread
+    // only — production calls this from write_to_disk after a successful
+    // write. Best-effort: filesystem errors are logged but not fatal.
+    void disk_evict_lru_if_needed();
+
     // --- Main-thread owned state ---
     std::size_t max_bytes_;
     std::string disk_cache_dir_;        // empty == disk caching disabled
+
+    // --- Disk LRU cap ---
+    // Hard ceiling on total bytes the on-disk poster cache can occupy.
+    // Default 2 GB — comfortable on a 16+ GB SD card while holding tens
+    // of thousands of TMDB posters (avg ~100 KB each). Tunable via the
+    // constructor for tests; not currently surfaced to callers.
+    static constexpr std::size_t kDefaultMaxDiskBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    std::size_t max_disk_bytes_ = kDefaultMaxDiskBytes;
+    std::atomic<std::size_t> disk_bytes_in_use_{0};
+    std::atomic<std::size_t> disk_evictions_{0};
 
     // --- Pause/resume (UI thread sets, worker thread observes) ---
     std::atomic<bool>          paused_{false};
@@ -180,6 +206,16 @@ private:
     std::atomic<std::size_t> disk_hits_{0};
     std::atomic<std::size_t> disk_misses_{0};
     std::atomic<std::size_t> disk_writes_{0};
+
+    // --- Poison-pill for chronically-broken URLs ---
+    // After kMaxDecodeFailures consecutive decode failures for the same
+    // URL, mark it permanently dead so we stop hammering TMDB and the
+    // worker thread. Cleared on process restart (a fresh boot retries
+    // dead URLs in case the upstream content was fixed).
+    static constexpr int kMaxDecodeFailures = 3;
+    std::unordered_map<std::string, int> failure_counts_;  // url -> count, guarded by entries_mutex_
+    std::unordered_set<std::string> dead_urls_;            // guarded by entries_mutex_
+    std::atomic<std::size_t> dead_url_skips_{0};           // diagnostic counter
     mutable std::mutex entries_mutex_;
     std::unordered_map<std::string, Entry> entries_;
     std::size_t bytes_in_use_ = 0;  // guarded by entries_mutex_

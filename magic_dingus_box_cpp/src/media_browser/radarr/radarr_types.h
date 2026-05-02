@@ -44,6 +44,13 @@ struct QueueItem {
     int64_t size_bytes = 0;
     int64_t sizeleft_bytes = 0;
     std::string state;           // "queued", "downloading", "completed", "failed"
+    // Radarr's secondary state machine for downloads — distinguishes
+    // *what's wrong with a "completed" item* (e.g. "importBlocked" =
+    // 100% downloaded but no video file inside; "importPending",
+    // "importing", "imported"). Used by LibraryScreen to surface a
+    // 'Bad release' badge when a movie sits in importBlocked instead of
+    // misleadingly saying "downloading".
+    std::string tracked_download_state;
     int eta_seconds = 0;
     // Radarr's downloadId for this queue item — uppercase hex string
     // matching the qBit info_hash. Used by QueueScreen to merge live

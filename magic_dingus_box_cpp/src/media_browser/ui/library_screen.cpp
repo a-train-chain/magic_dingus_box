@@ -270,12 +270,23 @@ void LibraryScreen::reload() {
     for (const auto& m : library_) {
         if (m.tmdb_id > 0) radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
     }
-    // Populate the downloading set from the current Radarr queue.
+    // Populate the downloading + stuck sets from the current Radarr queue.
+    // A queue item is "stuck" when it has finished downloading (state ==
+    // "completed") but Radarr can't import it (trackedDownloadState ==
+    // "importBlocked"). Those items get a BAD RELEASE badge instead of
+    // DOWNLOADING so the user can pick a different source.
     downloading_tmdb_ids_.clear();
+    stuck_tmdb_ids_.clear();
     for (const auto& qi : radarr_.get_queue()) {
         auto it = radarr_to_tmdb.find(qi.movie_id);
-        if (it != radarr_to_tmdb.end()) {
-            downloading_tmdb_ids_.insert(it->second);
+        if (it == radarr_to_tmdb.end()) continue;
+        const int tmdb_id = it->second;
+        const bool is_stuck = (qi.state == "completed" &&
+                               qi.tracked_download_state == "importBlocked");
+        if (is_stuck) {
+            stuck_tmdb_ids_.insert(tmdb_id);
+        } else {
+            downloading_tmdb_ids_.insert(tmdb_id);
         }
     }
     loaded_ = true;
@@ -697,16 +708,20 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // Poster CARD via shared chrome helper — real TMDB image
             // when loaded, deterministic tint placeholder while it
             // fetches, plus year pill + IN LIBRARY badge (or
-            // DOWNLOADING badge when the movie is still in the queue).
+            // DOWNLOADING / BAD RELEASE badge when the movie is in the
+            // queue or stuck on importBlocked).
             const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
+            const bool is_stuck =
+                stuck_tmdb_ids_.count(mv->tmdb_id) > 0;
             const bool is_downloading =
-                downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
+                !is_stuck && downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 mv->title, mv->year,
                 tint, /*in_library=*/true,
                 /*download_pct=*/is_downloading ? 0 : -1,
-                /*poster_url=*/mv->poster_url);
+                /*poster_url=*/mv->poster_url,
+                /*is_stuck=*/is_stuck);
 
             // Meta line below poster: title only, wrapped to 2 lines
             // when needed. Year now lives inside the poster card.

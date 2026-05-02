@@ -721,6 +721,14 @@ int main(int /* argc */, char* /* argv */[]) {
     // Wire the watchdog into the screens that initiate downloads.
     mb_detail.set_watchdog(&mb_watchdog);
     mb_release_picker.set_watchdog(&mb_watchdog);
+
+    // Wire the VPN-health probe into Detail so its render() can show a
+    // banner ("VPN tunnel down") on Add/Re-search modes when the tunnel
+    // is unhealthy. Captures &state by reference; the lambda lives as
+    // long as mb_detail (which owns the std::function).
+    mb_detail.set_vpn_health_provider([&state]() {
+        return state.media_browser_vpn_healthy.load(std::memory_order_acquire);
+    });
 #endif
     
     // Try to load intro video at startup

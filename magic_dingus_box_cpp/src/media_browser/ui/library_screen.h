@@ -115,6 +115,13 @@ private:
     // on poster cards (takes precedence over the always-true in_library flag).
     std::unordered_set<int> downloading_tmdb_ids_;
 
+    // tmdb_ids of movies whose queue item is sitting in
+    // trackedDownloadState=importBlocked — i.e. the torrent finished but
+    // Radarr couldn't import a video file (typical bait release: trailer-
+    // only torrents). Surfaces as a 'BAD RELEASE' badge instead of the
+    // misleading 'DOWNLOADING' chip.
+    std::unordered_set<int> stuck_tmdb_ids_;
+
     int selected_tmdb_id_ = 0;
 
     // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px

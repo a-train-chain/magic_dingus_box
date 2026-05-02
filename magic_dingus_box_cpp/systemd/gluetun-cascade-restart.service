@@ -1,0 +1,22 @@
+[Unit]
+Description=Gluetun cascade restart (refresh netns linkage on dependent containers)
+Documentation=file:///opt/magic_dingus_box/magic_dingus_box_cpp/scripts/gluetun_cascade_restart.sh
+After=docker.service magic-dingus-services.service
+Requires=docker.service
+# Skip cleanly on un-provisioned Pis (no .env = no docker-compose stack).
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+ConditionPathExists=/opt/magic_dingus_box/services/docker-compose.yml
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gluetun_cascade_restart.sh
+StandardOutput=journal
+StandardError=journal
+# Restart the watcher itself if `docker events` ever drops (network blip,
+# docker daemon restart). 10s backoff so a wedged docker daemon doesn't
+# spin us hot.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

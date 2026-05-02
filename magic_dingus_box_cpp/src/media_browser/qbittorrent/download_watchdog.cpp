@@ -25,6 +25,16 @@ void DownloadWatchdog::snooze(int tmdb_id, std::chrono::seconds duration) {
     snoozed_until_[tmdb_id] = std::chrono::steady_clock::now() + duration;
 }
 
+void DownloadWatchdog::upgrade_radarr_id(int tmdb_id, int radarr_movie_id) {
+    if (radarr_movie_id <= 0) return;
+    for (auto& w : watched_) {
+        if (w.tmdb_id == tmdb_id && w.radarr_movie_id == 0) {
+            w.radarr_movie_id = radarr_movie_id;
+            return;
+        }
+    }
+}
+
 std::vector<DownloadWatchdog::StallEvent>
 DownloadWatchdog::evaluate(const Inputs& in) {
     std::vector<StallEvent> out;

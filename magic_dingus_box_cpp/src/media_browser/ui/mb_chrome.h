@@ -83,6 +83,13 @@ ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y);
 // IN LIBRARY badge — only one shows at a time per poster.
 ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y, int percent_0_to_99);
 
+// "BAD RELEASE" red-bordered chip — shown when the queue item sits in
+// trackedDownloadState=importBlocked (Radarr-side: the torrent finished
+// but didn't contain a usable video file — usually a "movie" pack that
+// turned out to be only trailers). Surfaces the stuck state directly
+// to the user instead of misleadingly saying "DOWNLOADING" forever.
+ChipRect draw_stuck_badge(::ui::Renderer& r, int x, int y);
+
 // ---------- Composite chrome ----------
 
 // Bordered-key footer hint, e.g. `[A] Open`. Returns the total width
@@ -186,7 +193,9 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
                       const ::ui::Color& tint,
                       bool in_library,
                       int download_pct,             // -1 = not downloading
-                      const std::string& poster_url = "");
+                      const std::string& poster_url = "",
+                      bool is_stuck = false);       // true => render BAD RELEASE
+                                                    // badge instead of DOWNLOADING
 
 // Top-of-screen header: a screen title on the left, an N-tab strip on
 // the right. `focused_on_tabs` toggles whether the active tab gets the

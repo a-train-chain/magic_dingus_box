@@ -158,6 +158,17 @@ public:
     // downloads later.
     void set_watchdog(::media_browser::DownloadWatchdog* w) { watchdog_ = w; }
 
+    // Optional VPN health probe. main.cpp wires this to a lambda reading
+    // state.media_browser_vpn_healthy; tests / builds without VPN can
+    // leave it null and the Detail screen treats VPN as healthy. When
+    // VPN is reported down, render() shows a yellow banner above the
+    // action button row so the user understands why a torrent grab will
+    // sit at 0% (Radarr will still accept the add but qBit can't reach
+    // peers until the tunnel comes back).
+    void set_vpn_health_provider(std::function<bool()> fn) {
+        vpn_healthy_provider_ = std::move(fn);
+    }
+
     void enter() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
@@ -328,6 +339,10 @@ private:
 
     // See set_watchdog(). Optional; null when not wired (tests, headless).
     ::media_browser::DownloadWatchdog* watchdog_ = nullptr;
+
+    // See set_vpn_health_provider(). Default null = treat VPN as healthy
+    // (so unit tests don't have to wire the AppState atomic).
+    std::function<bool()> vpn_healthy_provider_;
 };
 
 }  // namespace media_browser::ui

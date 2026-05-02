@@ -62,16 +62,16 @@ ArtworkCache::ArtworkCache(std::size_t max_bytes, std::string disk_cache_dir)
                          disk_cache_dir_, ec.message());
             disk_cache_dir_.clear();
         } else {
-            // Quick sanity stat so we surface permission issues at boot
-            // rather than later on first write.
-            std::size_t existing = 0;
-            for (const auto& entry :
-                 std::filesystem::directory_iterator(disk_cache_dir_, ec)) {
-                (void)entry;
-                ++existing;
-            }
-            spdlog::info("[artwork] disk cache ready at '{}' ({} existing entries)",
-                         disk_cache_dir_, existing);
+            // Tally existing files so disk-LRU starts from a correct
+            // baseline (not just bytes written this session). Walks the
+            // directory once at boot — fast even with thousands of
+            // entries.
+            disk_recount_bytes();
+            // Apply the LRU cap immediately in case a previous run
+            // crashed before its own eviction sweep ran.
+            disk_evict_lru_if_needed();
+            spdlog::info("[artwork] disk cache ready at '{}' ({} bytes used / {} cap)",
+                         disk_cache_dir_, disk_bytes_in_use_.load(), max_disk_bytes_);
         }
     }
 
@@ -120,6 +120,15 @@ std::uint32_t ArtworkCache::get_or_fetch(const std::string& url) {
         if (it != entries_.end()) {
             it->second.last_access = std::chrono::steady_clock::now();
             return it->second.texture_id;
+        }
+        // Poison-pill: URL has failed to decode 3+ times this session
+        // (typically a TMDB JPEG that stb_image can't handle). Stop
+        // re-enqueueing it — every UI frame would otherwise schedule a
+        // fresh network round-trip. Counter incremented for diagnostics
+        // (perf_report.sh surfaces it).
+        if (dead_urls_.find(url) != dead_urls_.end()) {
+            dead_url_skips_.fetch_add(1, std::memory_order_relaxed);
+            return 0;
         }
     }
 
@@ -381,6 +390,79 @@ void ArtworkCache::write_to_disk(const std::string& url,
         return;
     }
     disk_writes_.fetch_add(1, std::memory_order_relaxed);
+    disk_bytes_in_use_.fetch_add(body.size(), std::memory_order_relaxed);
+    // Trigger an eviction sweep when this write pushes us over the cap.
+    // Cheap when the cache is well below cap (single load + compare).
+    if (disk_bytes_in_use_.load(std::memory_order_relaxed) > max_disk_bytes_) {
+        disk_evict_lru_if_needed();
+    }
+}
+
+void ArtworkCache::disk_recount_bytes() {
+    if (disk_cache_dir_.empty()) return;
+    std::error_code ec;
+    std::size_t total = 0;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(disk_cache_dir_, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        std::error_code sec;
+        const auto sz = entry.file_size(sec);
+        if (!sec) total += sz;
+    }
+    disk_bytes_in_use_.store(total, std::memory_order_relaxed);
+}
+
+void ArtworkCache::disk_evict_lru_if_needed() {
+    if (disk_cache_dir_.empty()) return;
+    if (disk_bytes_in_use_.load(std::memory_order_relaxed) <= max_disk_bytes_) {
+        return;
+    }
+
+    // Gather (mtime, size, path) for all regular files in the cache dir
+    // and sort ascending by mtime so we delete the oldest first.
+    struct CacheFile {
+        std::filesystem::file_time_type mtime;
+        std::uintmax_t                  size;
+        std::filesystem::path           path;
+    };
+    std::vector<CacheFile> files;
+    std::error_code ec;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(disk_cache_dir_, ec)) {
+        if (!entry.is_regular_file(ec)) continue;
+        std::error_code mec, sec;
+        const auto mt = entry.last_write_time(mec);
+        const auto sz = entry.file_size(sec);
+        if (mec || sec) continue;
+        files.push_back({mt, sz, entry.path()});
+    }
+    std::sort(files.begin(), files.end(),
+              [](const CacheFile& a, const CacheFile& b) {
+                  return a.mtime < b.mtime;
+              });
+
+    std::size_t evicted = 0;
+    std::size_t bytes_freed = 0;
+    std::size_t cur = disk_bytes_in_use_.load(std::memory_order_relaxed);
+    for (const auto& f : files) {
+        if (cur <= max_disk_bytes_) break;
+        std::error_code rec;
+        std::filesystem::remove(f.path, rec);
+        if (rec) {
+            spdlog::warn("[artwork] disk cache evict failed '{}': {}",
+                         f.path.string(), rec.message());
+            continue;
+        }
+        cur -= std::min<std::uintmax_t>(f.size, cur);
+        bytes_freed += f.size;
+        ++evicted;
+    }
+    disk_bytes_in_use_.store(cur, std::memory_order_relaxed);
+    if (evicted > 0) {
+        disk_evictions_.fetch_add(evicted, std::memory_order_relaxed);
+        spdlog::info("[artwork] disk LRU evicted {} files ({} bytes freed, {} bytes left / {} cap)",
+                     evicted, bytes_freed, cur, max_disk_bytes_);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +561,21 @@ void ArtworkCache::fetcher_thread_main() {
         if (!decoded) {
             spdlog::warn("[artwork] decode failed url='{}' bytes={}",
                          url, body.size());
+            // Track the failure. After kMaxDecodeFailures, mark the URL
+            // dead so get_or_fetch stops re-enqueueing it on every UI
+            // frame. Some TMDB JPEGs trip stb_image deterministically;
+            // without this guard one bad poster generates ~10 net
+            // requests/sec for the kiosk's lifetime.
+            {
+                std::lock_guard<std::mutex> elock(entries_mutex_);
+                int& count = failure_counts_[url];
+                if (++count >= kMaxDecodeFailures) {
+                    dead_urls_.insert(url);
+                    failure_counts_.erase(url);
+                    spdlog::warn("[artwork] url marked DEAD after {} decode failures: '{}'",
+                                 kMaxDecodeFailures, url);
+                }
+            }
             std::lock_guard<std::mutex> lock(work_mutex_);
             in_flight_.erase(url);
             continue;
