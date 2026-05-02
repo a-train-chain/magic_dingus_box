@@ -48,7 +48,9 @@ connects to a single VPN endpoint."
 
 5. **Wait ~90 seconds.** The setup job streams progress. It does
    the following in order:
-   - Applies host network changes (IPv6 disable, DoH DNS).
+   - Applies host network changes (disable IPv6, swap DNS to
+     Cloudflare 1.1.1.1 so the ISP resolver no longer sees host
+     queries).
    - Pulls the Byparr image from ghcr.io (with retries; ghcr.io
      DNS can be flaky on first boot).
    - Starts Gluetun and waits for the WireGuard tunnel to come up
@@ -102,12 +104,12 @@ soon as Gluetun's NAT-PMP service leases one. Wait up to 2 minutes.
 
 Symptom: setup job exits at "cannot pull byparr after 3 attempts".
 
-Cause: ghcr.io DNS sometimes fails on a fresh Pi before DoH is fully
-warmed up. The setup script retries 3× with 10s sleep; if all three
+Cause: ghcr.io DNS sometimes hiccups on a fresh Pi or after a network
+reconnect. The setup script retries 3× with 10s sleep; if all three
 fail, it aborts.
 
 Recovery: wait a minute, then re-run setup from the Content Manager.
-By the second run, DoH is live and ghcr.io resolves cleanly.
+By the second run, DNS is generally stable.
 
 ### All indexers show 0 results
 
@@ -132,7 +134,8 @@ Likely causes:
   because Radarr is in Gluetun's netns).
 - BitTorrent peer connections (qBittorrent has always been behind
   Gluetun).
-- DNS queries from the Pi host (DoH via Cloudflare encrypts these).
+- The ISP's own DNS resolver no longer sees host-level queries
+  (resolv.conf points at Cloudflare 1.1.1.1).
 
 **What the ISP can still see** (accepted gaps):
 
@@ -143,11 +146,21 @@ Likely causes:
   search queries) and never touches torrent indexers, but it does
   reveal "this Pi looks at TMDB." Routing through Radarr's
   metadata proxy is future work.
+- Host-level DNS queries are sent in cleartext UDP/53 to Cloudflare
+  (1.1.1.1). The ISP no longer resolves them, but anyone observing
+  the wire between the Pi and Cloudflare can still see *which*
+  domains the host queries. Affects only host-level non-VPN'd
+  traffic (kiosk-binary TMDB, OTA updates from GitHub, apt). All
+  torrent-related DNS happens inside Gluetun's netns and is
+  encrypted via the WireGuard tunnel.
 - The TLS Server Name Indication (SNI) for any non-VPN'd outbound
-  TLS connection. DoH hides DNS, but the SNI in the TLS handshake
-  is still cleartext until ECH is widely supported. Affects: TMDB
-  calls from the kiosk binary, OTA update GitHub fetches, the
-  cloudflared connection itself.
+  TLS connection — also cleartext until ECH is widely deployed.
+  Same scope as the DNS leak: kiosk-binary TMDB, OTA, apt.
+
+Future work: switch DNS to dnscrypt-proxy or systemd-resolved with
+DNS-over-TLS to encrypt the host-level queries. Was originally
+attempted with cloudflared, but Cloudflare deprecated cloudflared's
+DNS-Proxy feature in 2026.2.0.
 
 For a deeper threat model write-up, see
 `MEDIA_BROWSER_PLAYBACK_AND_DOWNLOADS.md` "Architecture" section.

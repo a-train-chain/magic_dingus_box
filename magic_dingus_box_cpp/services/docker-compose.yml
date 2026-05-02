@@ -33,7 +33,7 @@ services:
       retries: 3
 
   prowlarr:
-    image: lscr.io/linuxserver/prowlarr:2.3.5.5327
+    image: lscr.io/linuxserver/prowlarr:2.3.5
     container_name: mdb_prowlarr
     # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
     # per-service dns: block needed. No per-service ports: block —
