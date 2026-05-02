@@ -107,6 +107,12 @@ std::string TmdbClient::http_get(const std::string& url) {
         body.clear();
         http_code = 0;
 
+        // Privacy gap (accepted): this HTTPS call exits via the host
+        // network, NOT via Gluetun, because the kiosk binary runs outside
+        // Docker. ISPs see the SNI cleartext (api.themoviedb.org) on every
+        // call. Metadata only — never reveals torrent activity. Documented
+        // in magic_dingus_box_cpp/docs/MEDIA_BROWSER_VPN_SETUP.md "Privacy
+        // notes". Future work: route through Radarr's metadata proxy.
         curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  curl_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &body);
