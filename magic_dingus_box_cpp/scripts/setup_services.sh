@@ -32,23 +32,33 @@ done
 # the host's own non-VPN'd v4 path for kiosk/OTA traffic, which is
 # the documented accepted gap).
 #
-# DNS: route host DNS through Cloudflare DoH. Plain `nameserver 1.1.1.1`
-# would still leak query domains over UDP/53. DoH encrypts to
-# 1.1.1.1:443 so the ISP sees only opaque TLS.
+# DNS: replace the ISP's resolver (Comcast's 75.75.75.75 by default)
+# with Cloudflare's 1.1.1.1 so the ISP can no longer log every domain
+# the host queries.
+#
+# Earlier versions of this script attempted DoH via cloudflared, but
+# Cloudflare deprecated the cloudflared DNS-Proxy feature in 2026.2.0
+# (see https://developers.cloudflare.com/changelog/2025-11-11-cloudflared-proxy-dns/).
+# Plain `nameserver 1.1.1.1` is the simpler replacement — DNS queries
+# are cleartext UDP/53 to 1.1.1.1, which the ISP can still observe in
+# transit, but importantly:
+#   - The host's torrent-related DNS (indexer searches, ghcr.io, etc.)
+#     happens *inside* Gluetun's netns where DNS goes through the VPN.
+#   - Only host-level non-VPN'd traffic (TMDB metadata from the kiosk
+#     binary, OTA updates from GitHub, apt updates) leaks domain names.
+# Future work: if DoH becomes important, switch to dnscrypt-proxy
+# (apt install dnscrypt-proxy) or systemd-resolved with DNSOverTLS.
 #
 # Idempotent: writing the same files on every run is a no-op. Skip
 # this whole block with `--skip-host-networking` for partial re-runs.
 if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
     echo "=== Step 0: Pi host networking ==="
 
-    # 0a'. Disable systemd-resolved so cloudflared can fully own DNS.
+    # 0a. Disable systemd-resolved so it doesn't fight us over resolv.conf.
     #
-    # On Pi OS Bookworm, systemd-resolved is shipped but typically disabled.
-    # If an operator (or a vendored image) has enabled it, it binds
-    # 127.0.0.53:53 and may symlink /etc/resolv.conf to its stub file.
-    # Both behaviors clash with our cloudflared-on-127.0.0.1:53 design:
-    # the stub-symlink would be re-created on reboot and overwrite our
-    # `nameserver 127.0.0.1` write.
+    # If active, systemd-resolved binds 127.0.0.53:53 and may symlink
+    # /etc/resolv.conf to its stub file, which would be re-created on
+    # reboot and overwrite our nameserver line.
     if systemctl is-enabled systemd-resolved.service &>/dev/null || \
        systemctl is-active systemd-resolved.service &>/dev/null; then
         echo "Disabling systemd-resolved (was active)..."
@@ -59,22 +69,8 @@ if [ "${SKIP_HOST_NETWORKING}" -eq 0 ]; then
     if [ -L /etc/resolv.conf ]; then
         rm -f /etc/resolv.conf
     fi
-    # Bootstrap DNS for the duration of Step 0.
-    #
-    # If we just disabled systemd-resolved (or removed its stub-symlink
-    # resolv.conf), the host has no DNS until cloudflared is installed
-    # and bound to :53 in 0c. The apt-get update + install in 0b needs
-    # to resolve pkg.cloudflare.com, so write a temporary 1.1.1.1
-    # nameserver here. Step 0e overwrites this with the final DoH
-    # config (nameserver 127.0.0.1).
-    #
-    # Idempotent: writes the same content on every run; subsequent
-    # Step 0e atomic-rename overrides it.
-    if [ ! -e /etc/resolv.conf ] || ! grep -q "nameserver" /etc/resolv.conf 2>/dev/null; then
-        echo "nameserver 1.1.1.1" > /etc/resolv.conf
-    fi
 
-    # 0a. Disable IPv6 globally
+    # 0b. Disable IPv6 globally
     cat > /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -83,59 +79,15 @@ EOF
     sysctl -p /etc/sysctl.d/99-magic-dingus-disable-ipv6.conf >/dev/null
     echo "IPv6 disabled globally."
 
-    # 0b. Install cloudflared if missing
-    if ! command -v cloudflared &>/dev/null; then
-        echo "Installing cloudflared (Cloudflare DoH proxy)..."
-        # Add Cloudflare apt repo if not already present.
-        if [ ! -f /etc/apt/sources.list.d/cloudflared.list ]; then
-            mkdir -p /usr/share/keyrings
-            curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-                | tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
-                | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
-            apt-get update -qq
-        fi
-        # Install cloudflared, dnsutils (for `dig` in the verification
-        # step), and jq (used elsewhere in this script to parse JSON
-        # responses from gluetun). Combining keeps apt invocations to
-        # one.
-        apt-get install -y cloudflared dnsutils jq
-    fi
-
-    # Ensure `dig` is available for the DoH verification at the bottom of Step 0.
-    # dnsutils provides dig; install separately so re-runs on Pis that already
-    # have cloudflared still pick this up.
-    if ! command -v dig &>/dev/null; then
-        echo "Installing dnsutils (for dig)..."
-        apt-get install -y dnsutils
-    fi
-
-    # Ensure `jq` is available for JSON parsing of gluetun's /v1/publicip/ip.
+    # 0c. Install jq if missing — needed by the tunnel-up gate (Step 4.5)
+    # to parse gluetun's /v1/publicip/ip JSON response.
     if ! command -v jq &>/dev/null; then
         echo "Installing jq..."
-        apt-get install -y jq
+        apt-get install -y -qq jq
     fi
 
-    # 0c. Configure cloudflared as DoH resolver on 127.0.0.1:53
-    mkdir -p /etc/cloudflared
-    cat > /etc/cloudflared/config.yml <<'EOF'
-proxy-dns: true
-proxy-dns-port: 53
-proxy-dns-address: 127.0.0.1
-proxy-dns-upstream:
-  - https://1.1.1.1/dns-query
-  - https://1.0.0.1/dns-query
-EOF
-    # The cloudflared apt package ships a systemd unit named
-    # cloudflared-proxy-dns.service that consumes /etc/cloudflared/config.yml.
-    # Older builds named it cloudflared.service — try both.
-    if systemctl list-unit-files | grep -q cloudflared-proxy-dns.service; then
-        systemctl enable --now cloudflared-proxy-dns.service
-    else
-        systemctl enable --now cloudflared.service
-    fi
-
-    # 0d. Stop NetworkManager from rewriting /etc/resolv.conf
+    # 0d. Stop NetworkManager from rewriting /etc/resolv.conf so our
+    # nameserver entry survives reboots and reconnects.
     mkdir -p /etc/NetworkManager/conf.d
     cat > /etc/NetworkManager/conf.d/99-dns.conf <<'EOF'
 [main]
@@ -143,21 +95,35 @@ dns=none
 EOF
     systemctl reload NetworkManager 2>/dev/null || true
 
-    # 0e. Point /etc/resolv.conf at the local DoH proxy.
+    # 0e. Point /etc/resolv.conf at Cloudflare 1.1.1.1.
     # Write atomically via temp file + rename so concurrent name lookups
     # never see a zero-length resolv.conf.
     cat > /etc/resolv.conf.new <<'EOF'
-nameserver 127.0.0.1
+nameserver 1.1.1.1
+nameserver 1.0.0.1
 options edns0 trust-ad
 EOF
     mv /etc/resolv.conf.new /etc/resolv.conf
 
-    # 0f. Verify DoH resolver works
-    if ! dig +short +time=3 +tries=1 cloudflare.com @127.0.0.1 >/dev/null; then
-        echo "WARNING: DoH resolver test query failed. Continuing — could"
-        echo "be transient. Verify with: dig cloudflare.com @127.0.0.1"
+    # 0f. Verify DNS works
+    if ! getent hosts cloudflare.com >/dev/null 2>&1; then
+        echo "WARNING: DNS test query failed. Continuing — could be transient."
+        echo "         Verify with: getent hosts cloudflare.com"
     else
-        echo "DoH resolver active: 127.0.0.1 -> Cloudflare via DoH."
+        echo "DNS active: nameserver 1.1.1.1."
+    fi
+
+    # 0g. Clean up any stale cloudflared install/config from earlier
+    # script versions that attempted DoH. Idempotent.
+    if [ -f /etc/systemd/system/cloudflared.service ] || \
+       systemctl is-enabled cloudflared.service &>/dev/null; then
+        echo "Removing stale cloudflared service unit (DNS-Proxy was deprecated)..."
+        systemctl disable --now cloudflared.service 2>/dev/null || true
+        rm -f /etc/systemd/system/cloudflared.service
+        rm -rf /etc/cloudflared
+        rm -f /etc/apt/sources.list.d/cloudflared.list
+        rm -f /usr/share/keyrings/cloudflare-main.gpg
+        systemctl daemon-reload
     fi
 
     echo "=== Step 0 complete ==="
@@ -252,7 +218,12 @@ fi
 
 cd "${SERVICES_DIR}"
 echo "Starting Docker stack..."
-docker compose up -d
+#
+# --remove-orphans tears down containers that used to be in compose but
+# aren't anymore (e.g., the old mdb_flaresolverr from before the Byparr
+# swap). Without it, an upgrade leaves the orphan running and holding
+# its old port mapping, which blocks Gluetun from rebinding.
+docker compose up -d --remove-orphans
 
 # 4.5. Wait for Gluetun tunnel to come up.
 #

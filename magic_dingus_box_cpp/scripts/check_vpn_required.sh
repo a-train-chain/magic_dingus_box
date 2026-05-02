@@ -3,8 +3,8 @@
 #
 # Run on the Pi. Compares each container's reported public IP against
 # Gluetun's reported public IP. Any container with a different exit IP
-# is leaking. Also verifies host-level: IPv6 disabled and DoH resolver
-# active.
+# is leaking. Also verifies host-level: IPv6 disabled and DNS bypassing
+# the ISP resolver (1.1.1.1).
 #
 # Exit codes:
 #   0 — all checks pass
@@ -65,11 +65,13 @@ else
     LEAKS=$((LEAKS + 1))
 fi
 
-# 5. Host-level: DoH active (resolv.conf points at 127.0.0.1)
-if grep -q "^nameserver 127.0.0.1" /etc/resolv.conf 2>/dev/null; then
-    echo "  host: DoH resolver active (127.0.0.1) ✓"
+# 5. Host-level: DNS bypasses the ISP resolver (resolv.conf points at 1.1.1.1)
+if grep -qE "^nameserver 1\.(1\.1\.1|0\.0\.1)\b" /etc/resolv.conf 2>/dev/null; then
+    echo "  host: DNS bypasses ISP resolver (1.1.1.1) ✓"
 else
-    echo "  host: WARNING — /etc/resolv.conf does not point at local DoH."
+    echo "  host: WARNING — /etc/resolv.conf does not point at 1.1.1.1."
+    echo "         Current nameserver(s):"
+    grep "^nameserver" /etc/resolv.conf 2>/dev/null | sed 's/^/         /'
     LEAKS=$((LEAKS + 1))
 fi
 
