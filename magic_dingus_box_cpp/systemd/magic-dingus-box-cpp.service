@@ -56,6 +56,28 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 # boot the kiosk cleanly — the Media Browser just shows "key not
 # configured" banners for affected rows.
 EnvironmentFile=-/opt/magic_dingus_box/services/.env
+# --- Scheduling priority for smooth video playback ---
+# Pi 4B: 1.6 GB RAM + 4 cores, shared with Docker stack (Radarr,
+# Prowlarr, qBit, Byparr, Gluetun) and PulseAudio. Without explicit
+# priority the kiosk's render thread can be preempted by background
+# work (Prowlarr index sync, Radarr metadata fetch, etc.) mid-frame,
+# producing visible stutter on 1080p H.264 playback even though the
+# v4l2h264dec hardware decoder is keeping up. Three-layer priority:
+#
+#   - Nice=-10 lifts the kiosk above default-niceness siblings in the
+#     CFS scheduler. -10 is conservative (PulseAudio at -5 still beats
+#     us for audio servicing); going lower (-15+) starves the I/O
+#     waiters in the kernel mutexes.
+#   - CPUWeight=1000 (cgroup v2) gives the kiosk's cgroup 10× the CPU
+#     allocation of default-weight (100) cgroups when under contention.
+#     Docker containers default to ~100, so under simultaneous load
+#     the kiosk wins by a 10:1 ratio.
+#   - IOWeight=1000 (cgroup v2) same idea for block I/O — keeps disk
+#     reads for the movie file ahead of background torrent / DB writes.
+Nice=-10
+CPUWeight=1000
+IOWeight=1000
+
 # Kill all processes in the service's cgroup on stop
 KillMode=mixed
 KillSignal=SIGTERM

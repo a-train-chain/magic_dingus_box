@@ -1,5 +1,6 @@
 #include "media_browser/ui/playback_screen.h"
 
+#include <cstdlib>  // std::system — used to call playback_services_pause.sh
 #include <spdlog/spdlog.h>
 
 #include "app/app_state.h"
@@ -83,6 +84,22 @@ void PlaybackScreen::enter() {
                          "playback may stutter on USB-flash media");
         }
     }
+
+    // Also pause the Radarr/Prowlarr/Byparr containers — frees ~300 MB
+    // RAM and ~6% CPU for the duration of the movie so the kiosk's
+    // video pipeline isn't competing with metadata syncs / indexer
+    // queries / Cloudflare-challenge solving. The helper is best-effort
+    // (no-op if Docker isn't installed, the user isn't in the docker
+    // group, or the containers don't exist on this Pi). Resumed on
+    // leave() via the symmetric "unpause" call. Output is logged via
+    // shell, not spdlog, so we discard the return code here.
+    //
+    // std::system() is acceptable for this fire-and-forget shell call
+    // because (a) the script is fixed-path / not derived from any
+    // user-controllable input, (b) we don't care about the exit code
+    // beyond a debug log line, (c) the script itself is idempotent.
+    (void)std::system(
+        "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
     // strategy in path_resolver. The path is already host-absolute (passed
@@ -172,6 +189,14 @@ void PlaybackScreen::leave() {
         }
         qbit_was_paused_by_us_ = false;
     }
+
+    // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
+    // froze in enter(). Unconditional — the helper itself is idempotent
+    // (a no-op for un-paused or missing containers). We don't gate on a
+    // "we paused them" flag the way we do for qBit because the worst
+    // case (un-pausing something that was already running) is harmless.
+    (void)std::system(
+        "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
 
     spdlog::info("[playback] left playback screen");
 }

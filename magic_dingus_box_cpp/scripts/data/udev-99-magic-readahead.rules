@@ -1,0 +1,17 @@
+# Magic Dingus Box — bump readahead on the library SSD for smooth video.
+# Installed to /etc/udev/rules.d/99-magic-readahead.rules.
+#
+# Default block-device readahead (BDI ra_kb) is 128 KB on most kernels.
+# At 1080p H.264 playback, the GStreamer demuxer asks for 64-128 KB
+# chunks from the file ~25 times/sec; with default readahead the kernel
+# barely covers two frames of look-ahead, so any I/O latency spike
+# directly stalls the decoder. Bumping to 4096 KB (4 MB) gives the
+# kernel enough lead time to absorb USB-flash latency variance and
+# competing seek bursts (e.g. qBit piece writes if not paused).
+#
+# Readahead is a per-disk attribute (lives at /sys/block/sda/queue/...),
+# NOT per-partition. The kernel name for the parent disk is `sda`, `sdb`,
+# etc. — no trailing digit. Match both the disk and any partitions so
+# the rule applies regardless of which one udev event fires for.
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd?", ATTR{queue/read_ahead_kb}="4096"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd?[0-9]*", ATTR{queue/read_ahead_kb}="4096"
