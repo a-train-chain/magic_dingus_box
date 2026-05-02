@@ -209,8 +209,12 @@ public:
     // Layer 3: Radarr /ping reachable on localhost:7878. Owned by
     // VpnHealthMonitor (background thread). Three consecutive failed
     // polls (~30s at 10s interval) flips this true->false; recovery
-    // is instant on first successful poll.
-    bool media_browser_vpn_healthy = false;
+    // is instant on first successful poll. std::atomic because writes
+    // happen on the monitor's worker thread while reads happen on the
+    // main thread (toast detection) and settings_menu thread (Movies
+    // entry visibility) — matches the convention used by other
+    // cross-thread flags in this struct.
+    std::atomic<bool> media_browser_vpn_healthy{false};
 
     // Active top-level screen. Only meaningful when media_browser_unlocked
     // is true; otherwise always MainMenu.
