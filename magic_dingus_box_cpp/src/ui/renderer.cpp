@@ -19,6 +19,7 @@
 #endif
 
 #include <GLES3/gl3.h>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <cmath>
@@ -2384,7 +2385,19 @@ media_browser::ArtworkCache& Renderer::artwork_cache() {
         // 256MB budget matches the default from artwork_cache.h. Could
         // be tuned per-hardware later; on Pi 4B this leaves plenty of
         // headroom below our 2GB system RAM.
-        artwork_cache_ = std::make_unique<media_browser::ArtworkCache>();
+        //
+        // Disk-cache directory: /mnt/ssd/cache/posters when the USB SSD
+        // is mounted (it always is when the Media Browser is in use —
+        // it's where the library files live). The cache constructor
+        // tolerates a missing/unwritable directory by silently falling
+        // back to network-only mode, so kiosks without the SSD still
+        // boot fine.
+        const char* env_cache = std::getenv("MDB_ARTWORK_CACHE_DIR");
+        std::string cache_dir = env_cache && *env_cache
+            ? std::string(env_cache)
+            : std::string("/mnt/ssd/cache/posters");
+        artwork_cache_ = std::make_unique<media_browser::ArtworkCache>(
+            256u * 1024u * 1024u, std::move(cache_dir));
     }
     return *artwork_cache_;
 }

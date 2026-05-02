@@ -1729,6 +1729,17 @@ int main(int /* argc */, char* /* argv */[]) {
                     meta.director    = pt.director;
                     mb_playback.set_movie_meta(std::move(meta));
                 }
+                // Artwork I/O contention guard: pause the artwork worker
+                // when entering Playback so it doesn't compete with
+                // GStreamer for read bandwidth on the USB SSD that holds
+                // the library file. Resume on the way back out.
+                if (next == media_browser::ui::Screen::Playback &&
+                    current_mb_screen != media_browser::ui::Screen::Playback) {
+                    ui_renderer.artwork_cache().pause();
+                } else if (current_mb_screen == media_browser::ui::Screen::Playback &&
+                           next != media_browser::ui::Screen::Playback) {
+                    ui_renderer.artwork_cache().resume();
+                }
                 active_mb_screen->leave();
                 current_mb_screen = next;
                 switch (next) {

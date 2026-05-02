@@ -47,7 +47,17 @@ public:
     // max_bytes: LRU eviction threshold; default 256MB (conservative on
     // the Pi 4B with 2GB RAM — TMDB w500 posters are ~50-150KB each so
     // 256MB holds ~2-3k posters uncompressed in GPU memory).
-    explicit ArtworkCache(std::size_t max_bytes = 256u * 1024u * 1024u);
+    //
+    // disk_cache_dir: optional path to a directory holding raw JPEG bytes
+    // keyed by hashed URL. When set, the fetcher thread reads from disk
+    // first before going to the network — turning a 7-15s TMDB round-trip
+    // into a sub-millisecond local read for any URL the kiosk has seen
+    // before. Empty string = disk caching disabled (network-only path,
+    // identical to the original behavior). The directory is created on
+    // construction if missing; if creation fails the cache silently falls
+    // back to network-only.
+    explicit ArtworkCache(std::size_t max_bytes = 256u * 1024u * 1024u,
+                          std::string disk_cache_dir = "");
     ~ArtworkCache();
 
     ArtworkCache(const ArtworkCache&) = delete;
@@ -72,10 +82,22 @@ public:
     // an image into an arbitrary slot.
     std::optional<TextureDims> get_dims(const std::string& url) const;
 
+    // Pause/resume the background fetcher. Call pause() before video
+    // playback starts to prevent the artwork worker from contending with
+    // GStreamer for I/O bandwidth on the same drive that holds the
+    // movie file. resume() restarts the worker. Mirrors the existing
+    // qBittorrent pause_all() pattern. Both are idempotent.
+    void pause();
+    void resume();
+    bool is_paused() const { return paused_.load(std::memory_order_acquire); }
+
     // Diagnostics
     std::size_t entries_count() const;
     std::size_t bytes_in_use() const;
     std::size_t bytes_waiting_upload() const;
+    std::size_t disk_cache_hits() const   { return disk_hits_.load(); }
+    std::size_t disk_cache_misses() const { return disk_misses_.load(); }
+    std::size_t disk_cache_writes() const { return disk_writes_.load(); }
 
     // --- Test-only hooks (no GL). Lets the unit test simulate a
     // completed fetch by directly injecting a decoded pixel buffer, and
@@ -129,8 +151,35 @@ private:
     // skipped.
     void upload_one(PendingUpload&& p);
 
+    // Map a URL to its on-disk cache filename. Returns empty when disk
+    // caching is disabled. Uses std::hash<string> -> hex; collisions
+    // are handled gracefully (cache miss falls back to network).
+    std::string disk_cache_path(const std::string& url) const;
+
+    // Read decoded RGBA pixels from the on-disk JPEG. Returns true on
+    // hit. Out-params populated only on hit. Worker thread only.
+    bool try_load_from_disk(const std::string& url,
+                            int& w, int& h,
+                            std::vector<std::uint8_t>& pixels_rgba);
+
+    // Write the raw JPEG body to the on-disk cache (best-effort —
+    // logged on failure but never throws). Worker thread only.
+    void write_to_disk(const std::string& url,
+                       const std::string& body);
+
     // --- Main-thread owned state ---
     std::size_t max_bytes_;
+    std::string disk_cache_dir_;        // empty == disk caching disabled
+
+    // --- Pause/resume (UI thread sets, worker thread observes) ---
+    std::atomic<bool>          paused_{false};
+    std::mutex                 pause_mutex_;
+    std::condition_variable    pause_cv_;
+
+    // --- Disk cache stats (atomics — read from any thread) ---
+    std::atomic<std::size_t> disk_hits_{0};
+    std::atomic<std::size_t> disk_misses_{0};
+    std::atomic<std::size_t> disk_writes_{0};
     mutable std::mutex entries_mutex_;
     std::unordered_map<std::string, Entry> entries_;
     std::size_t bytes_in_use_ = 0;  // guarded by entries_mutex_

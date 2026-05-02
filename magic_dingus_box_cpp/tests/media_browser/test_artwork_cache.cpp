@@ -14,6 +14,8 @@
 
 #include "media_browser/artwork/artwork_cache.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
@@ -135,6 +137,42 @@ TEST_CASE("LRU: touching the older entry keeps it alive across a new insert",
     REQUIRE(cache.get_or_fetch("a") != 0);  // alive
     REQUIRE(cache.get_or_fetch("b") == 0);  // evicted
     REQUIRE(cache.get_or_fetch("c") != 0);  // alive
+}
+
+TEST_CASE("Pause/resume is idempotent and does not throw", "[artwork][pause]") {
+    ArtworkCache c;
+    REQUIRE_FALSE(c.is_paused());
+    c.pause();
+    REQUIRE(c.is_paused());
+    c.pause();  // double-pause is a no-op
+    REQUIRE(c.is_paused());
+    c.resume();
+    REQUIRE_FALSE(c.is_paused());
+    c.resume();  // double-resume is a no-op
+    REQUIRE_FALSE(c.is_paused());
+}
+
+TEST_CASE("Disk cache stats start at zero", "[artwork][disk]") {
+    // Constructed without a disk_cache_dir — disk cache disabled,
+    // counters should remain at zero.
+    ArtworkCache c;
+    REQUIRE(c.disk_cache_hits()   == 0);
+    REQUIRE(c.disk_cache_misses() == 0);
+    REQUIRE(c.disk_cache_writes() == 0);
+}
+
+TEST_CASE("Disk cache dir is created at construction", "[artwork][disk]") {
+    namespace fs = std::filesystem;
+    const fs::path tmp = fs::temp_directory_path() /
+                         ("mdb_artwork_test_" + std::to_string(std::rand()));
+    fs::remove_all(tmp);
+    REQUIRE_FALSE(fs::exists(tmp));
+    {
+        ArtworkCache c(64u * 1024u * 1024u, tmp.string());
+        REQUIRE(fs::exists(tmp));
+        REQUIRE(fs::is_directory(tmp));
+    }
+    fs::remove_all(tmp);
 }
 
 TEST_CASE("Repeated get_or_fetch for in-flight URL does not re-enqueue",

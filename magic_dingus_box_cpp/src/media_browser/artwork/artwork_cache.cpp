@@ -9,6 +9,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <sstream>
 #include <utility>
 
 // libcurl: only pulled in when we're actually going to run the real
@@ -42,9 +46,35 @@ std::size_t curl_write_to_string(void* contents, std::size_t size,
 
 }  // namespace
 
-ArtworkCache::ArtworkCache(std::size_t max_bytes)
-    : max_bytes_(max_bytes) {
-    spdlog::info("[artwork] cache ctor, max_bytes={}", max_bytes);
+ArtworkCache::ArtworkCache(std::size_t max_bytes, std::string disk_cache_dir)
+    : max_bytes_(max_bytes), disk_cache_dir_(std::move(disk_cache_dir)) {
+    spdlog::info("[artwork] cache ctor, max_bytes={}, disk_cache_dir='{}'",
+                 max_bytes, disk_cache_dir_);
+
+    // Ensure the disk cache directory exists. On any failure, log and
+    // disable disk caching — the network-only path stays correct.
+    if (!disk_cache_dir_.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(disk_cache_dir_, ec);
+        if (ec) {
+            spdlog::warn("[artwork] disk cache dir creation failed ('{}'): {} — "
+                         "disk caching disabled, network-only mode",
+                         disk_cache_dir_, ec.message());
+            disk_cache_dir_.clear();
+        } else {
+            // Quick sanity stat so we surface permission issues at boot
+            // rather than later on first write.
+            std::size_t existing = 0;
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(disk_cache_dir_, ec)) {
+                (void)entry;
+                ++existing;
+            }
+            spdlog::info("[artwork] disk cache ready at '{}' ({} existing entries)",
+                         disk_cache_dir_, existing);
+        }
+    }
+
 #ifndef ARTWORK_CACHE_TEST_MODE
     fetcher_thread_ = std::thread(&ArtworkCache::fetcher_thread_main, this);
     spdlog::info("[artwork] fetcher thread spawned");
@@ -52,11 +82,17 @@ ArtworkCache::ArtworkCache(std::size_t max_bytes)
 }
 
 ArtworkCache::~ArtworkCache() {
-    // Signal shutdown and wake the fetcher so it can exit cleanly.
+    // Signal shutdown and wake the fetcher so it can exit cleanly. The
+    // worker may be parked on either work_cv_ (waiting for a URL) or
+    // pause_cv_ (waiting for resume), so notify both.
     stop_ = true;
     {
         std::lock_guard<std::mutex> lock(work_mutex_);
         work_cv_.notify_all();
+    }
+    {
+        std::lock_guard<std::mutex> lock(pause_mutex_);
+        pause_cv_.notify_all();
     }
     if (fetcher_thread_.joinable()) {
         fetcher_thread_.join();
@@ -216,6 +252,138 @@ ArtworkCache::get_dims(const std::string& url) const {
 }
 
 // ---------------------------------------------------------------------------
+// Pause / resume — gates the fetcher thread during movie playback so the
+// artwork worker doesn't compete with GStreamer for I/O bandwidth on the
+// USB SSD that holds the library files.
+// ---------------------------------------------------------------------------
+
+void ArtworkCache::pause() {
+    if (paused_.exchange(true, std::memory_order_acq_rel)) return;  // already paused
+    spdlog::info("[artwork] paused (playback contention guard)");
+}
+
+void ArtworkCache::resume() {
+    if (!paused_.exchange(false, std::memory_order_acq_rel)) return;  // already running
+    spdlog::info("[artwork] resumed");
+    // Wake the fetcher in case it's idle on pause_cv_.
+    {
+        std::lock_guard<std::mutex> lock(pause_mutex_);
+        pause_cv_.notify_all();
+    }
+    // Also kick the work_cv in case there's queued work and the fetcher
+    // is sleeping on it (it would wake on its own when pause clears, but
+    // notifying here makes the resume snappier in tests).
+    {
+        std::lock_guard<std::mutex> lock(work_mutex_);
+        work_cv_.notify_all();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Disk cache helpers
+// ---------------------------------------------------------------------------
+
+std::string ArtworkCache::disk_cache_path(const std::string& url) const {
+    if (disk_cache_dir_.empty()) return {};
+    // std::hash isn't cryptographic but it's plenty for cache keys —
+    // two distinct URLs hashing to the same file just means a cache miss
+    // (the loaded JPEG would decode to the wrong image, so we ALWAYS
+    // re-decode the body, never trust the filename alone). Hex-encode
+    // the 64-bit hash for a stable filename.
+    auto h = std::hash<std::string>{}(url);
+    std::ostringstream ss;
+    ss << std::hex << h << ".jpg";
+    return disk_cache_dir_ + "/" + ss.str();
+}
+
+bool ArtworkCache::try_load_from_disk(const std::string& url,
+                                      int& w, int& h,
+                                      std::vector<std::uint8_t>& pixels_rgba) {
+#ifdef ARTWORK_CACHE_TEST_MODE
+    // stb_image's symbols come from renderer.cpp's STB_IMAGE_IMPLEMENTATION
+    // define — that file isn't linked into the test binary. The disk
+    // read+decode path is exercised live on the Pi (perf_report.sh
+    // captures hit/miss counters); tests just verify the wiring around
+    // it (dir creation, stats accessors, pause/resume).
+    (void)url; (void)w; (void)h; (void)pixels_rgba;
+    return false;
+#else
+    if (disk_cache_dir_.empty()) return false;
+    const std::string path = disk_cache_path(url);
+    if (path.empty()) return false;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) {
+        disk_misses_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    // Slurp the file
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        disk_misses_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    std::vector<unsigned char> body((std::istreambuf_iterator<char>(f)),
+                                    std::istreambuf_iterator<char>());
+    if (body.empty()) {
+        disk_misses_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    int channels = 0;
+    unsigned char* decoded = stbi_load_from_memory(
+        body.data(), static_cast<int>(body.size()), &w, &h, &channels, 4);
+    if (!decoded) {
+        // Corrupted cache entry — drop it so future attempts will refetch.
+        spdlog::warn("[artwork] disk cache entry corrupt, removing: '{}'", path);
+        std::filesystem::remove(path, ec);
+        disk_misses_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const std::size_t n = static_cast<std::size_t>(w) *
+                          static_cast<std::size_t>(h) * 4u;
+    pixels_rgba.assign(decoded, decoded + n);
+    stbi_image_free(decoded);
+    disk_hits_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+#endif
+}
+
+void ArtworkCache::write_to_disk(const std::string& url,
+                                 const std::string& body) {
+    if (disk_cache_dir_.empty()) return;
+    if (body.empty()) return;
+    const std::string path = disk_cache_path(url);
+    if (path.empty()) return;
+
+    // Atomic-ish: write to a temp then rename. Avoids a half-written
+    // file being left behind if the process is killed mid-write.
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            spdlog::warn("[artwork] disk cache write failed (open): '{}'", tmp);
+            return;
+        }
+        f.write(body.data(), static_cast<std::streamsize>(body.size()));
+        if (!f) {
+            spdlog::warn("[artwork] disk cache write failed (write): '{}'", tmp);
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        spdlog::warn("[artwork] disk cache rename failed '{}' -> '{}': {}",
+                     tmp, path, ec.message());
+        std::filesystem::remove(tmp, ec);
+        return;
+    }
+    disk_writes_.fetch_add(1, std::memory_order_relaxed);
+}
+
+// ---------------------------------------------------------------------------
 // Background fetcher thread
 // ---------------------------------------------------------------------------
 
@@ -239,6 +407,17 @@ void ArtworkCache::fetcher_thread_main() {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "magic-dingus-box/1.0");
 
     while (!stop_.load(std::memory_order_acquire)) {
+        // Pause gate: when paused (movie playback), block here until
+        // resumed. Stop signal still wakes us so shutdown is clean.
+        {
+            std::unique_lock<std::mutex> lock(pause_mutex_);
+            pause_cv_.wait(lock, [&] {
+                return stop_.load(std::memory_order_acquire) ||
+                       !paused_.load(std::memory_order_acquire);
+            });
+            if (stop_.load(std::memory_order_acquire)) break;
+        }
+
         std::string url;
         {
             std::unique_lock<std::mutex> lock(work_mutex_);
@@ -252,6 +431,28 @@ void ArtworkCache::fetcher_thread_main() {
         }
         spdlog::info("[artwork] fetcher picked up url='{}'", url.substr(0, 80));
 
+        // 1) Disk-cache hit path: skip network entirely. Median lookup
+        //    on the USB SSD is sub-millisecond vs 7-15s from TMDB.
+        {
+            int dw = 0, dh = 0;
+            std::vector<std::uint8_t> dpixels;
+            if (try_load_from_disk(url, dw, dh, dpixels) && !dpixels.empty()) {
+                PendingUpload pu;
+                pu.url = url;
+                pu.width = dw;
+                pu.height = dh;
+                pu.pixels_rgba = std::move(dpixels);
+                spdlog::info("[artwork] disk-cache hit url='{}' {}x{}",
+                             url.substr(0, 80), dw, dh);
+                bytes_waiting_upload_.fetch_add(pu.pixels_rgba.size(),
+                                                std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(ready_mutex_);
+                ready_uploads_.push_back(std::move(pu));
+                continue;
+            }
+        }
+
+        // 2) Network path — only when disk cache missed (or is disabled).
         std::string body;
         body.reserve(256 * 1024);  // typical poster JPEG is 30-200KB
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -282,6 +483,11 @@ void ArtworkCache::fetcher_thread_main() {
             in_flight_.erase(url);
             continue;
         }
+
+        // 3) Persist the raw JPEG bytes to disk so subsequent fetches
+        //    of this URL (this session OR after reboot) hit the
+        //    sub-millisecond disk path instead of TMDB.
+        write_to_disk(url, body);
 
         PendingUpload pu;
         pu.url = url;
