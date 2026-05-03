@@ -299,6 +299,29 @@ else
     echo "Note: gluetun-cascade-restart assets not found, skipping watcher install."
 fi
 
+# 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
+#
+# Grants the magic-dingus-web service user permission to open uinput so the
+# phone can drive a virtual gamepad. Without this, UInput() raises EACCES.
+UINPUT_RULES_SRC="${SCRIPT_DIR}/data/90-magicdingus-uinput.rules"
+if [[ -f "$UINPUT_RULES_SRC" ]]; then
+    echo "Installing /dev/uinput udev rule for Phone Remote..."
+    sudo install -m 0644 "$UINPUT_RULES_SRC" /etc/udev/rules.d/90-magicdingus-uinput.rules
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --name-match=uinput || true
+    # Add the magic-dingus-web service user to the input group.
+    SERVICE_USER="$(systemctl show -p User --value magic-dingus-web.service 2>/dev/null)"
+    SERVICE_USER="${SERVICE_USER:-magic}"  # fallback to "magic" if service not installed yet
+    if id -nG "$SERVICE_USER" 2>/dev/null | grep -qw input; then
+        echo "  ✓ user $SERVICE_USER already in input group"
+    else
+        sudo usermod -a -G input "$SERVICE_USER"
+        echo "  ✓ added $SERVICE_USER to input group (re-login required for group to take effect)"
+    fi
+else
+    echo "  ⚠ ${UINPUT_RULES_SRC} not found — skipping uinput rule install"
+fi
+
 # 4.5. Wait for Gluetun tunnel to come up.
 #
 # All four torrent-ecosystem services depend_on gluetun's
