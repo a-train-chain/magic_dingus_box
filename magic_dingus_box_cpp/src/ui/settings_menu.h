@@ -4,9 +4,14 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <memory>
 
 namespace app {
     struct AppState;
+}
+
+namespace ui {
+    class PairingScreen;  // forward declaration — avoid circular include
 }
 
 namespace ui {
@@ -19,6 +24,7 @@ enum class MenuSection {
     WIFI,
     WIFI_NETWORKS,
     INFO,
+    PHONE_REMOTE,    // NEW: drills into the pairing-screen view, not a submenu
     BACK,
     BROWSE_GAMES,
     TOGGLE_PLAYLIST_LOOP,
@@ -106,9 +112,15 @@ public:
     
     // Helper to check if "Back" is selected in game browser
     bool is_game_browser_back_selected() const;
-    
+
     const std::vector<MenuItem>& get_menu_items() const { return menu_items_; }
     const std::vector<MenuItem>& get_submenu_items() const { return submenu_items_; }
+
+    // Phone Remote / PairingScreen
+    PairingScreen* pairing_screen();
+    void open_pairing_screen();
+    void close_pairing_screen();
+    bool is_pairing_screen_active() const { return pairing_active_; }
 
 private:
     app::AppState* app_state_;
@@ -151,6 +163,9 @@ private:
     std::vector<MenuItem> build_wifi_networks_submenu();
     std::vector<MenuItem> build_info_submenu();
     std::string intensity_to_label(float intensity);
+
+    std::unique_ptr<PairingScreen> pairing_screen_;
+    bool pairing_active_ = false;
 };
 
 } // namespace ui

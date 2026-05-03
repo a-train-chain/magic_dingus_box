@@ -2086,6 +2086,8 @@ int main(int /* argc */, char* /* argv */[]) {
                             settings_menu.enter_submenu(ui::MenuSection::WIFI_NETWORKS);
                         } else if (section == ui::MenuSection::INFO) {
                             settings_menu.enter_submenu(ui::MenuSection::INFO);
+                        } else if (section == ui::MenuSection::PHONE_REMOTE) {
+                            settings_menu.open_pairing_screen();
                         } else if (section == ui::MenuSection::BROWSE_GAMES) {
                             // Enter game browser
                             settings_menu.enter_game_browser();
@@ -3116,6 +3118,16 @@ int main(int /* argc */, char* /* argv */[]) {
             if (sw_now - last_status_write >= STATUS_PERIOD) {
                 status_writer.write_now(state);
                 last_status_write = sw_now;
+            }
+        }
+
+        // ── Phone Remote: 1 Hz tick for active pairing screen ────────────────
+        if (settings_menu.is_pairing_screen_active()) {
+            static auto last_pairing_tick = std::chrono::steady_clock::time_point{};
+            auto pt_now = std::chrono::steady_clock::now();
+            if (pt_now - last_pairing_tick >= std::chrono::seconds(1)) {
+                settings_menu.pairing_screen()->tick();
+                last_pairing_tick = pt_now;
             }
         }
         // ─────────────────────────────────────────────────────────────────────

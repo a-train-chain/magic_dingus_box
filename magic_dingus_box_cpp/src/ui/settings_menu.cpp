@@ -1,6 +1,8 @@
 #include "settings_menu.h"
+#include "pairing_screen.h"
 #include "toast.h"
 #include "virtual_keyboard.h"
+#include "../utils/config.h"
 #include "../utils/wifi_manager.h"
 #include <algorithm>
 #include <cmath>
@@ -47,6 +49,7 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
         MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
+        MenuItem("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
@@ -374,6 +377,7 @@ void SettingsMenuManager::open() {
         menu_items_.emplace_back("Wi-Fi", MenuSection::WIFI, "Network Setup");
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
         menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
+        menu_items_.emplace_back("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone");
         menu_items_.emplace_back("Back", MenuSection::BACK);
 #endif
     }
@@ -385,6 +389,8 @@ void SettingsMenuManager::close() {
         is_opening_ = false;
         animation_start_ = std::chrono::steady_clock::now();
     }
+    // Clean up pairing session file whenever the settings menu is dismissed.
+    close_pairing_screen();
 }
 
 float SettingsMenuManager::get_animation_progress() const {
@@ -586,6 +592,28 @@ void SettingsMenuManager::enter_game_list(int playlist_index) {
 void SettingsMenuManager::exit_game_list() {
     viewing_games_in_playlist_ = false;
     selected_game_in_playlist_ = 0;
+}
+
+// ── Phone Remote / PairingScreen ─────────────────────────────────────────────
+
+PairingScreen* SettingsMenuManager::pairing_screen() {
+    if (!pairing_screen_) {
+        pairing_screen_ = std::make_unique<PairingScreen>(
+            config::get_data_path() + "/pairing_session.json");
+    }
+    return pairing_screen_.get();
+}
+
+void SettingsMenuManager::open_pairing_screen() {
+    pairing_active_ = true;
+    pairing_screen()->regenerate();
+}
+
+void SettingsMenuManager::close_pairing_screen() {
+    if (pairing_active_) {
+        pairing_screen()->close();
+        pairing_active_ = false;
+    }
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {
