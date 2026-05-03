@@ -1989,7 +1989,30 @@ int main(int /* argc */, char* /* argv */[]) {
                                         // Disable watchdog during RetroArch (blocks on waitpid)
                                         sd_notify(0, "WATCHDOG_USEC=0");
 #endif
+                                        // ── Phone-remote: transition INTO RetroArch ──────────────────────
+                                        // The main loop blocks on waitpid() while RetroArch runs, so the
+                                        // per-frame deriver never executes.  Set the mode explicitly here
+                                        // and flush status so the companion app sees "retroarch" immediately.
+                                        {
+                                            const auto& game_item = playlist.items[game_idx];
+                                            state.retroarch_rom_name = game_item.title;
+                                            state.retroarch_core     = game_item.emulator_core;
+                                            state.screen_mode.store(app::ScreenMode::RetroArch);
+                                            status_writer.write_now(state);
+                                        }
+                                        // ────────────────────────────────────────────────────────────────
+
                                         auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+
+                                        // ── Phone-remote: transition OUT of RetroArch ────────────────────
+                                        // RetroArch has exited; restore mode and flush status immediately
+                                        // (before the next regular 5 Hz tick).
+                                        state.retroarch_rom_name.clear();
+                                        state.retroarch_core.clear();
+                                        state.screen_mode.store(app::ScreenMode::Playlist);
+                                        status_writer.write_now(state);
+                                        // ────────────────────────────────────────────────────────────────
+
 #ifdef HAVE_SYSTEMD
                                         // Re-enable watchdog after RetroArch exits (10s = 10000000 usec)
                                         sd_notify(0, "WATCHDOG_USEC=10000000");
@@ -3071,12 +3094,11 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
         // ── Phone-remote: derive screen mode + 5 Hz status write ─────────────
-        // Derive screen_mode once per frame from the authoritative runtime
-        // flags so every code path (RetroArch launch, MB enter/exit, settings
-        // open, playback start/stop) is covered without scattered assignments.
+        // Derives screen_mode for the four "live main-loop" states.
+        // NOTE: RetroArch mode is NOT derived here — it is set explicitly at
+        // the fork/waitpid transition point above so the companion app sees
+        // "retroarch" immediately even though the main loop blocks on waitpid.
         state.screen_mode = [&]() -> app::ScreenMode {
-            // RetroArch: display fd is closed while the subprocess owns DRM.
-            if (display.get_fd() < 0) return app::ScreenMode::RetroArch;
 #ifdef MEDIA_BROWSER_ENABLED
             if (state.current_screen == app::AppScreen::MediaBrowser)
                 return app::ScreenMode::MediaBrowser;
