@@ -2985,6 +2985,28 @@ def create_app(data_dir: Path, config=None) -> Flask:
             message="Media Browser reset",
         )
 
+    # ============= Phone Remote — debug endpoint =============
+    # Curl-driven smoke test: POST /admin/remote/_debug/press?btn=OK&phase=tap
+    # Auth is intentionally absent here — Phase C adds the real /admin/remote/ws
+    # which is HMAC-cookie gated. This endpoint stays available for diagnostics.
+    @app.route("/admin/remote/_debug/press", methods=["POST"])
+    def remote_debug_press():
+        from remote.uinput_writer import UinputWriter
+        btn = request.args.get("btn", "")
+        phase = request.args.get("phase", "tap")
+        writer = app.config.get("UINPUT_WRITER")
+        if writer is None:
+            try:
+                writer = UinputWriter()  # opens real /dev/uinput
+                app.config["UINPUT_WRITER"] = writer
+            except Exception as e:
+                return error_response("uinput_unavailable", str(e), status=503)
+        try:
+            writer.press(btn, phase=phase)
+        except ValueError as e:
+            return error_response("bad_button", str(e))
+        return success_response({"sent": btn})
+
     # ===== SERVE WEB INTERFACE =====
 
     @app.get("/")
