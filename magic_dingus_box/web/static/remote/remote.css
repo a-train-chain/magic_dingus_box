@@ -1,0 +1,143 @@
+:root {
+  --bg: #1F191F;
+  --bg-lift: #2A232A;
+  --fg: #F2E4D9;
+  --dim: #968B85;
+  --accent: #F5BF42;
+  --hot: #EA3A27;
+  --success: #66DD7A;
+  --action: #5884B1;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  height: 100%;
+  overscroll-behavior: none;
+  -webkit-touch-callout: none;
+}
+
+body.remote { user-select: none; }
+
+.screen {
+  display: flex; flex-direction: column;
+  width: 100%; min-height: 100dvh;
+  padding:
+    calc(env(safe-area-inset-top) + 14px)
+    calc(env(safe-area-inset-right) + 14px)
+    calc(env(safe-area-inset-bottom) + 14px)
+    calc(env(safe-area-inset-left) + 14px);
+}
+
+/* ---- Now Playing strip ---- */
+.now-playing {
+  background: var(--bg-lift); border-radius: 10px;
+  padding: 10px 12px; display: flex; align-items: center; gap: 10px;
+}
+.now-playing .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--success); flex: none;
+}
+.now-playing .dot[data-state="amber"] { background: var(--accent); }
+.now-playing .dot[data-state="red"]   { background: var(--hot); animation: pulse 1.2s infinite; }
+.now-playing .label {
+  color: var(--dim); font-size: 9px;
+  text-transform: uppercase; letter-spacing: 1px;
+}
+.now-playing .title {
+  font-size: 14px; font-weight: 500; margin-top: 2px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ---- Scrub bar ---- */
+.scrub {
+  height: 4px; background: var(--bg-lift); border-radius: 2px;
+  margin-top: 12px;
+  touch-action: manipulation; cursor: pointer;
+}
+.scrub-fill {
+  background: var(--accent); height: 100%;
+  border-radius: 2px;
+  transition: width 0.1s linear;
+}
+.scrub-time {
+  display: flex; justify-content: space-between;
+  font-size: 9px; color: var(--dim); margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hide scrub in non-playback modes */
+.screen[data-mode="playlist"] .scrub,
+.screen[data-mode="playlist"] .scrub-time,
+.screen[data-mode="settings"] .scrub,
+.screen[data-mode="settings"] .scrub-time,
+.screen[data-mode="media_browser"] .scrub,
+.screen[data-mode="media_browser"] .scrub-time { visibility: hidden; }
+
+/* ---- D-pad ---- */
+.dpad-wrap {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 14px 0;
+}
+.dpad {
+  position: relative; width: 220px; height: 220px;
+}
+.dpad .arm {
+  position: absolute;
+  background: var(--bg-lift); border: none; border-radius: 10px;
+  color: var(--fg);
+  touch-action: manipulation;
+  transition: transform 70ms ease-out, background 70ms ease-out;
+}
+.dpad .arm:active { transform: scale(0.96); background: #3a323a; }
+.dpad .arm.up    { top: 0;    left: 75px;  width: 70px; height: 75px; }
+.dpad .arm.down  { bottom: 0; left: 75px;  width: 70px; height: 75px; }
+.dpad .arm.left  { left: 0;   top: 75px;   width: 75px; height: 70px; }
+.dpad .arm.right { right: 0;  top: 75px;   width: 75px; height: 70px; }
+
+/* Arrow indicators inside arms (CSS triangles) */
+.dpad .arm::before {
+  content: ""; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  border: 11px solid transparent;
+}
+.dpad .arm.up::before    { border-bottom-color: var(--fg); border-top-width: 0; }
+.dpad .arm.down::before  { border-top-color: var(--fg); border-bottom-width: 0; }
+.dpad .arm.left::before  { border-right-color: var(--fg); border-left-width: 0; }
+.dpad .arm.right::before { border-left-color: var(--fg); border-right-width: 0; }
+
+/* OK center */
+.dpad .center {
+  position: absolute; top: 82px; left: 82px;
+  width: 56px; height: 56px;
+  background: var(--accent); color: var(--bg);
+  border: 4px solid var(--bg);  /* outer ring against the bg */
+  border-radius: 50%;
+  font-weight: 700; font-size: 12px; letter-spacing: 1px;
+  touch-action: manipulation;
+  transition: transform 70ms ease-out, filter 70ms ease-out;
+}
+.dpad .center:active { transform: scale(0.94); filter: brightness(0.9); }
+
+/* ---- Action buttons row ---- */
+.actions {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin-top: 12px;
+}
+.actions .btn {
+  height: 48px; border: none; border-radius: 10px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  touch-action: manipulation;
+  transition: transform 70ms ease-out, filter 70ms ease-out;
+}
+.actions .btn:active { transform: scale(0.96); filter: brightness(0.85); }
+.actions .btn.yellow { background: var(--accent); color: var(--bg); }
+.actions .btn.red    { background: var(--hot);    color: var(--fg); }
+.actions .btn.green  { background: var(--success);color: var(--bg); }
+.actions .btn.black  { background: var(--bg-lift);color: var(--fg); border: 1px solid var(--dim); }

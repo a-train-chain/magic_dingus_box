@@ -3085,6 +3085,39 @@ def create_app(data_dir: Path, config=None) -> Flask:
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
 
+    @app.route("/admin/remote", methods=["GET"])
+    def remote_page():  # type: ignore[no-redef]
+        cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
+        device_id = remote_auth.verify_cookie(cookie)
+        if device_id is None:
+            return render_template_string("""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F191F">
+<title>Remote not paired</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1F191F; color: #F2E4D9;
+               font-family: -apple-system, system-ui, sans-serif;
+               min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { width: min(360px, 90%); padding: 32px 24px; background: #2A232A;
+          border-radius: 16px; text-align: center; }
+  h1 { margin: 0 0 12px; font-size: 22px; }
+  p { color: #968B85; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Remote not paired</h1>
+  <p>On the kiosk, open <strong>Settings &rarr; Phone Remote</strong> and scan the QR code with your phone&#39;s camera.</p>
+</div>
+</body></html>
+""")
+        # Cookie OK — serve the static remote shell
+        return send_from_directory("static/remote", "remote.html")
+
     @app.route("/admin/remote/name", methods=["GET", "POST"])
     def remote_name():  # type: ignore[no-redef]
         """Nickname-prompt page shown immediately after a successful pair."""

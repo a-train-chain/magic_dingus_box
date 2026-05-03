@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F191F">
+<link rel="stylesheet" href="/static/remote/remote.css">
+<title>Magic Dingus Remote</title>
+</head>
+<body class="remote">
+<div id="app" class="screen" data-mode="playlist">
+  <div class="now-playing">
+    <div class="dot" id="conn-dot" data-state="amber"></div>
+    <div class="text">
+      <div class="label" id="np-label">Now Playing</div>
+      <div class="title" id="np-title">—</div>
+    </div>
+  </div>
+
+  <div class="scrub" id="scrub">
+    <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
+  </div>
+  <div class="scrub-time">
+    <span id="time-now">0:00</span><span id="time-total">0:00</span>
+  </div>
+
+  <div class="dpad-wrap">
+    <div class="dpad">
+      <button class="arm up"    data-btn="UP"    aria-label="Up"></button>
+      <button class="arm down"  data-btn="DOWN"  aria-label="Down"></button>
+      <button class="arm left"  data-btn="LEFT"  aria-label="Left"></button>
+      <button class="arm right" data-btn="RIGHT" aria-label="Right"></button>
+      <button class="center"    data-btn="OK"    aria-label="Select">OK</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn yellow" data-btn="YELLOW">PREV</button>
+    <button class="btn red"    data-btn="RED" id="btn-red">PAUSE</button>
+    <button class="btn green"  data-btn="GREEN">NEXT</button>
+    <button class="btn black"  data-btn="BLACK">MENU</button>
+  </div>
+</div>
+</body></html>
