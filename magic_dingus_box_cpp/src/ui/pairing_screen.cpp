@@ -1,1 +1,97 @@
 #include "pairing_screen.h"
+
+#include <array>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <random>
+#include <sstream>
+#include <json/json.h>
+
+namespace ui {
+
+namespace {
+constexpr auto kCodeWindow = std::chrono::seconds(120);
+constexpr int kInitialAttempts = 5;
+
+std::random_device& rng() {
+    static std::random_device r;
+    return r;
+}
+}  // namespace
+
+PairingScreen::PairingScreen(std::string session_path)
+    : session_path_(std::move(session_path)),
+      tmp_path_(session_path_ + ".tmp") {}
+
+std::string PairingScreen::generate_code_() {
+    std::uniform_int_distribution<int> d(0, 999999);
+    char buf[7];
+    std::snprintf(buf, sizeof(buf), "%06d", d(rng()));
+    return std::string(buf);
+}
+
+std::string PairingScreen::generate_nonce_() {
+    std::uniform_int_distribution<unsigned> d(0, 0xFFFFFFFFu);
+    std::ostringstream s;
+    s << std::hex << std::setfill('0');
+    for (int i = 0; i < 4; ++i) s << std::setw(8) << d(rng());
+    return s.str();  // 32 hex chars = 128 bits
+}
+
+void PairingScreen::regenerate() {
+    code_ = generate_code_();
+    nonce_ = generate_nonce_();
+    issued_at_ = std::chrono::system_clock::now();
+    expires_at_ = issued_at_ + kCodeWindow;
+    write_atomic_();
+}
+
+void PairingScreen::tick() {
+    namespace fs = std::filesystem;
+    if (code_.empty()) {
+        regenerate();
+        return;
+    }
+    if (std::chrono::system_clock::now() >= expires_at_) {
+        regenerate();
+        return;
+    }
+    if (!fs::exists(session_path_)) {
+        // Flask deleted it (5 wrong attempts); roll a fresh code.
+        regenerate();
+    }
+}
+
+void PairingScreen::close() {
+    std::filesystem::remove(session_path_);
+    code_.clear();
+    nonce_.clear();
+}
+
+void PairingScreen::write_atomic_() {
+    Json::Value root;
+    root["schema"] = 1;
+    root["code"] = code_;
+    root["issued_at"] = static_cast<Json::Int64>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            issued_at_.time_since_epoch()).count());
+    root["expires_at"] = static_cast<Json::Int64>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            expires_at_.time_since_epoch()).count());
+    root["attempts_remaining"] = kInitialAttempts;
+    root["nonce"] = nonce_;
+
+    Json::StreamWriterBuilder b;
+    b["indentation"] = "";
+    std::string out = Json::writeString(b, root);
+
+    {
+        std::ofstream f(tmp_path_, std::ios::binary | std::ios::trunc);
+        f.write(out.data(), static_cast<std::streamsize>(out.size()));
+    }
+    std::rename(tmp_path_.c_str(), session_path_.c_str());
+}
+
+}  // namespace ui
