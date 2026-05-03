@@ -10,24 +10,22 @@ namespace media_browser {
 
 namespace {
 
-// Default ping: GET http://127.0.0.1:8000/v1/publicip/ip with 3s timeout.
-//
-// We deliberately use Gluetun's own control-server endpoint rather than
-// Radarr's /ping because Radarr is paused by the kiosk's playback CPU
-// saver (PlaybackScreen::enter() runs `docker pause mdb_radarr` to free
-// CPU during movie playback). With the old Radarr-ping signal, every
-// movie would generate a spurious "VPN down" toast 30s into playback.
-//
-// Gluetun is never paused — it owns the netns shared by the other 4
-// containers, so pausing it would tear down the entire stack. Its
-// /v1/publicip/ip endpoint returns the current tunnel exit IP, which
-// is the actual signal we care about: "is the tunnel up?"
-//
+// Default ping: GET http://127.0.0.1:7878/ping with 3s timeout.
 // Returns true on HTTP 2xx, false on any error or non-2xx.
-bool default_tunnel_ping() {
+//
+// NB: Radarr is paused by the kiosk's playback CPU saver during movie
+// playback (PlaybackScreen::enter() runs `docker pause mdb_radarr`).
+// The poll loop in run() skips calling this when state.video_active is
+// true, so a paused Radarr never trips the false-alarm path. We can't
+// switch to Gluetun's /v1/publicip/ip endpoint because Gluetun's control
+// server (port 8000) isn't published to the host — only the four app
+// ports (7878, 8080, 8191, 9696) are. Adding the gluetun port mapping
+// would force a full stack restart on the next setup_services.sh run,
+// not worth it for a signal that the video_active guard already fixes.
+bool default_radarr_ping() {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:8000/v1/publicip/ip");
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:7878/ping");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);   // HEAD-equivalent; we don't read body
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -41,7 +39,7 @@ bool default_tunnel_ping() {
 }  // namespace
 
 VpnHealthMonitor::VpnHealthMonitor(app::AppState& state)
-    : VpnHealthMonitor(state, &default_tunnel_ping, std::chrono::seconds(10)) {}
+    : VpnHealthMonitor(state, &default_radarr_ping, std::chrono::seconds(10)) {}
 
 VpnHealthMonitor::VpnHealthMonitor(app::AppState& state,
                                    PingFn ping_fn,
@@ -66,6 +64,21 @@ void VpnHealthMonitor::stop() {
 
 void VpnHealthMonitor::run() {
     while (!stop_flag_.load()) {
+        // Skip the poll during movie playback. Radarr is intentionally
+        // paused by PlaybackScreen::enter() to free CPU, so its /ping
+        // would time out and the 3-strikes counter would flip the
+        // tunnel-unhealthy flag ~30s into every movie — a false alarm.
+        // Skip cleanly: don't increment failures, don't change state,
+        // just wait for the next interval. When playback ends and the
+        // containers are unpaused (PlaybackScreen::leave()), this loop
+        // resumes normally and the next successful ping reaffirms
+        // healthy. Real tunnel failures during playback are detected
+        // immediately when playback ends.
+        if (state_.video_active.load()) {
+            std::this_thread::sleep_for(poll_interval_);
+            continue;
+        }
+
         bool ok = ping_fn_();
         if (ok) {
             // Recovery is instant — any successful poll flips healthy.

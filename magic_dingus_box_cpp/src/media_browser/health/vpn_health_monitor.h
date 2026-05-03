@@ -21,10 +21,11 @@ class VpnHealthMonitor {
 public:
     using PingFn = std::function<bool()>;
 
-    // Default constructor uses an HTTP ping to Gluetun's control server
-    // at localhost:8000/v1/publicip/ip with a 3s curl timeout. Was Radarr's
-    // /ping, but Radarr is paused during movie playback (CPU saver), which
-    // would generate spurious "VPN down" toasts. Gluetun is never paused.
+    // Default constructor uses an HTTP ping to localhost:7878/ping with
+    // a 3s curl timeout. The poll loop skips this during movie playback
+    // (state.video_active) since Radarr is paused then by the kiosk's
+    // playback CPU saver, which would otherwise produce false "tunnel
+    // down" toasts ~30s into every movie.
     explicit VpnHealthMonitor(app::AppState& state);
 
     // Test seam: inject a ping function and a custom poll interval.
