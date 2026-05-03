@@ -482,6 +482,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Expose data_dir to blueprints and request handlers (e.g. remote auth).
     app.config["DATA_DIR"] = str(data_dir)
 
+    # Phone Remote — status broadcaster (kiosk_status.json → WS push).
+    try:
+        from remote.status_broadcaster import StatusBroadcaster
+    except ImportError:
+        from .remote.status_broadcaster import StatusBroadcaster
+    status_path = Path(app.config["DATA_DIR"]) / "kiosk_status.json"
+    app.config["STATUS_BROADCASTER"] = StatusBroadcaster(
+        status_path, queues=[], interval_s=0.2)
+    app.config["STATUS_BROADCASTER"].start()
+
     # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
     max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
     app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
