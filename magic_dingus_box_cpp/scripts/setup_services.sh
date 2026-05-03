@@ -287,7 +287,6 @@ fi
 # host. The watcher subscribes to `docker events --filter container=
 # mdb_gluetun --filter event=start` and runs `compose restart` on the
 # dependents so they reattach cleanly.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYSTEMD_DIR="${SCRIPT_DIR}/../systemd"
 if [ -f "${SCRIPT_DIR}/gluetun_cascade_restart.sh" ] && \
    [ -f "${SYSTEMD_DIR}/gluetun-cascade-restart.service" ]; then
