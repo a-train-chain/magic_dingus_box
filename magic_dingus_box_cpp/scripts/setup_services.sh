@@ -16,6 +16,11 @@
 
 set -euo pipefail
 
+# Resolve our own absolute path NOW, before any `cd` — later steps cd into
+# /opt/magic_dingus_box/services for docker-compose, which breaks any
+# subsequent BASH_SOURCE-relative paths.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 SKIP_HOST_NETWORKING=0
 for arg in "$@"; do
     case "$arg" in
@@ -228,14 +233,14 @@ docker compose up -d --remove-orphans
 # 3.4. Smooth-playback tuning — sysctls, readahead, container-pause helper.
 # These are cheap kernel-level tweaks that materially improve 1080p
 # H.264 playback smoothness on the Pi 4B. See each file's header for
-# the rationale.
-SCRIPT_DIR_TUNING="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# the rationale. (SCRIPT_DIR is resolved at the top of the file before
+# any cd, so it survives the `cd "${SERVICES_DIR}"` on line 219.)
 
 # (a) sysctl: lower swappiness + cache pressure for steadier hardware-
 #     decoder buffer allocations during playback.
-if [ -f "${SCRIPT_DIR_TUNING}/data/sysctl-magic-playback.conf" ]; then
+if [ -f "${SCRIPT_DIR}/data/sysctl-magic-playback.conf" ]; then
     sudo install -m 0644 \
-        "${SCRIPT_DIR_TUNING}/data/sysctl-magic-playback.conf" \
+        "${SCRIPT_DIR}/data/sysctl-magic-playback.conf" \
         /etc/sysctl.d/99-magic-playback.conf
     sudo sysctl --system >/dev/null 2>&1 || true
     echo "Playback sysctls applied (vm.swappiness=10, vfs_cache_pressure=50)."
@@ -243,9 +248,9 @@ fi
 
 # (b) udev: bump readahead on USB block devices (the library SSD) to
 #     4 MB so the GStreamer demuxer doesn't stall on micro I/O latency.
-if [ -f "${SCRIPT_DIR_TUNING}/data/udev-99-magic-readahead.rules" ]; then
+if [ -f "${SCRIPT_DIR}/data/udev-99-magic-readahead.rules" ]; then
     sudo install -m 0644 \
-        "${SCRIPT_DIR_TUNING}/data/udev-99-magic-readahead.rules" \
+        "${SCRIPT_DIR}/data/udev-99-magic-readahead.rules" \
         /etc/udev/rules.d/99-magic-readahead.rules
     sudo udevadm control --reload-rules >/dev/null 2>&1 || true
     # Trigger the rule against the currently-attached devices so the
@@ -256,9 +261,9 @@ fi
 
 # (c) Container-pause helper. Called by PlaybackScreen via std::system()
 #     to freeze Radarr/Prowlarr/Byparr for the duration of a movie.
-if [ -f "${SCRIPT_DIR_TUNING}/playback_services_pause.sh" ]; then
+if [ -f "${SCRIPT_DIR}/playback_services_pause.sh" ]; then
     sudo install -m 0755 \
-        "${SCRIPT_DIR_TUNING}/playback_services_pause.sh" \
+        "${SCRIPT_DIR}/playback_services_pause.sh" \
         /usr/local/bin/playback_services_pause.sh
 fi
 
