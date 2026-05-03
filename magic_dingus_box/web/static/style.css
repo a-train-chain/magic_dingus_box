@@ -3513,3 +3513,56 @@ header::after {
         width: 90vw;
     }
 }
+
+/* ========================================================================== */
+/* Mobile responsive baseline (Phone Remote feature, scope A — non-Remote tabs */
+/* get tap-target sizing, scrollable tab strip, and table overflow only)      */
+/* ========================================================================== */
+
+@media (max-width: 700px) {
+  /* Tab strip: horizontally scrollable pill bar */
+  .tabs, [role="tablist"] {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 8px 12px;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    /* Hide horizontal scrollbar on phone */
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar, [role="tablist"]::-webkit-scrollbar { display: none; }
+  .tabs .tab, [role="tab"] {
+    flex: none;
+    scroll-snap-align: start;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 22px;
+    white-space: nowrap;
+  }
+
+  /* Tap targets — all buttons and links styled as buttons */
+  button, .button, a.button {
+    min-height: 44px;
+  }
+
+  /* Tables — horizontal scroll instead of squish */
+  table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Hint banner for desktop-leaning flows */
+  .desktop-recommended {
+    background: rgba(42, 35, 42, 0.6);
+    color: #968B85;
+    padding: 12px;
+    border-radius: 8px;
+    margin: 0 0 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    border-left: 3px solid #F5BF42;
+  }
+}
