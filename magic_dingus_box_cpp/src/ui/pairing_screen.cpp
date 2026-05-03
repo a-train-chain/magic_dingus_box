@@ -8,6 +8,8 @@
 #include <random>
 #include <sstream>
 #include <json/json.h>
+#include <cerrno>
+#include "../utils/logger.h"
 
 namespace ui {
 
@@ -113,8 +115,17 @@ void PairingScreen::write_atomic_() {
     {
         std::ofstream f(tmp_path_, std::ios::binary | std::ios::trunc);
         f.write(out.data(), static_cast<std::streamsize>(out.size()));
+        if (!f.good()) {
+            LOG_WARN("[pairing] failed to write {}", tmp_path_);
+            std::remove(tmp_path_.c_str());
+            return;
+        }
     }
-    std::rename(tmp_path_.c_str(), session_path_.c_str());
+    if (std::rename(tmp_path_.c_str(), session_path_.c_str()) != 0) {
+        LOG_WARN("[pairing] rename {} -> {} failed (errno {})",
+                 tmp_path_, session_path_, errno);
+        std::remove(tmp_path_.c_str());
+    }
 }
 
 }  // namespace ui

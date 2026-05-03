@@ -143,7 +143,7 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
         }
         // Hint: BTN2 = forget selected device.
         {
-            const std::string hint = "[BTN2 to forget selected]";
+            const std::string hint = "[BTN2 forget · BTN4 back]";
             int hw = body_font_manager_->get_text_width(hint, theme_->font_small_size);
             float hx = (vw - static_cast<float>(hw)) / 2.0f;
             float hy = list_top + 30.0f
