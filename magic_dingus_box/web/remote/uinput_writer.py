@@ -87,14 +87,16 @@ class UinputWriter:
     @staticmethod
     def _open_real_device() -> _DeviceProto:
         # Imported lazily so unit tests don't need uinput available.
-        from evdev import UInput, ecodes as e
+        # NB: AbsInfo lives at evdev's top level on python3-evdev (Bookworm),
+        # not on evdev.ecodes — the latter only has the integer constants.
+        from evdev import UInput, AbsInfo, ecodes as e
 
         capabilities = {
             e.EV_KEY: [BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST,
                        BTN_TL, BTN_TR, BTN_START, KEY_Z],
             e.EV_ABS: [
-                (ABS_HAT0X, e.AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
-                (ABS_HAT0Y, e.AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+                (ABS_HAT0X, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
+                (ABS_HAT0Y, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
             ],
         }
         return UInput(capabilities, name="MagicDingus Phone Remote", phys="flask-remote/0")
