@@ -26,10 +26,12 @@ try:
     from remote import auth as remote_auth
     from remote import devices as remote_devices
     from remote import ws_handler
+    from remote.uinput_writer import UinputWriter
 except ImportError:
     from .remote import auth as remote_auth
     from .remote import devices as remote_devices
     from .remote import ws_handler
+    from .remote.uinput_writer import UinputWriter
 
 
 # ===== SYSTEM MONITORING HELPERS =====
@@ -481,6 +483,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # Expose data_dir to blueprints and request handlers (e.g. remote auth).
     app.config["DATA_DIR"] = str(data_dir)
+
+    # Phone Remote — persistent HMAC secret for cookie signing.
+    # Stored in the data dir so it survives restarts (otherwise paired phones
+    # would be invalidated on every service restart). Falls back to env var
+    # FLASK_SECRET_KEY if the operator wants to manage it externally.
+    secret_path = Path(app.config["DATA_DIR"]) / "flask_secret.key"
+    if os.environ.get("FLASK_SECRET_KEY"):
+        app.config["SECRET_KEY"] = os.environ["FLASK_SECRET_KEY"]
+    elif secret_path.exists():
+        app.config["SECRET_KEY"] = secret_path.read_text().strip()
+    else:
+        new_secret = secrets.token_hex(32)
+        secret_path.write_text(new_secret)
+        secret_path.chmod(0o600)  # readable only by the magic user
+        app.config["SECRET_KEY"] = new_secret
 
     # Phone Remote — status broadcaster (kiosk_status.json → WS push).
     try:
@@ -3071,7 +3088,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # which is HMAC-cookie gated. This endpoint stays available for diagnostics.
     @app.route("/admin/remote/_debug/press", methods=["POST"])
     def remote_debug_press():
-        from remote.uinput_writer import UinputWriter
+        from flask import abort
+        cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
+        if remote_auth.verify_cookie(cookie) is None:
+            abort(401)
         btn = request.args.get("btn", "")
         phase = request.args.get("phase", "tap")
         writer = app.config.get("UINPUT_WRITER")
@@ -3094,7 +3114,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
             writer = app.config.get("UINPUT_WRITER")
             if writer is None:
                 try:
-                    from remote.uinput_writer import UinputWriter
                     writer = UinputWriter()
                     app.config["UINPUT_WRITER"] = writer
                 except Exception:
