@@ -46,7 +46,7 @@ sudo apt install -y \
 # repos. Install via pip with --break-system-packages so the system python
 # (which /usr/bin/python3 -m magic_dingus_box.web.wsgi uses) can import it.
 echo "Installing flask-sock for Phone Remote WebSocket support..."
-sudo pip3 install --break-system-packages flask-sock>=0.7.0
+sudo pip3 install --break-system-packages 'flask-sock>=0.7.0'
 
 # dnsmasq is the DHCP server for the USB-Gadget (usb0) interface.
 # Without it, an operator plugging in a Mac/PC via USB-C wouldn't get
