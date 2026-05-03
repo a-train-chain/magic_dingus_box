@@ -306,6 +306,12 @@ fi
 UINPUT_RULES_SRC="${SCRIPT_DIR}/data/90-magicdingus-uinput.rules"
 if [[ -f "$UINPUT_RULES_SRC" ]]; then
     echo "Installing /dev/uinput udev rule for Phone Remote..."
+    # Ensure the uinput kernel module is loaded NOW and on every boot.
+    # On vanilla Debian Bookworm it isn't auto-loaded; on Raspberry Pi OS
+    # it usually is, but persist it explicitly so udev triggers below have
+    # a device node to match against.
+    sudo modprobe uinput || true
+    echo "uinput" | sudo tee /etc/modules-load.d/uinput.conf > /dev/null
     sudo install -m 0644 "$UINPUT_RULES_SRC" /etc/udev/rules.d/90-magicdingus-uinput.rules
     sudo udevadm control --reload-rules
     sudo udevadm trigger --name-match=uinput || true
@@ -316,7 +322,15 @@ if [[ -f "$UINPUT_RULES_SRC" ]]; then
         echo "  ✓ user $SERVICE_USER already in input group"
     else
         sudo usermod -a -G input "$SERVICE_USER"
-        echo "  ✓ added $SERVICE_USER to input group (re-login required for group to take effect)"
+        echo "  ✓ added $SERVICE_USER to input group"
+        # Restart the running web service so it picks up the new group
+        # membership. Without this restart, the existing process retains
+        # its original supplementary groups and UInput() will EACCES until
+        # next manual restart or reboot.
+        if systemctl is-active --quiet magic-dingus-web.service 2>/dev/null; then
+            sudo systemctl restart magic-dingus-web.service
+            echo "  ✓ magic-dingus-web.service restarted to pick up input group"
+        fi
     fi
 else
     echo "  ⚠ ${UINPUT_RULES_SRC} not found — skipping uinput rule install"

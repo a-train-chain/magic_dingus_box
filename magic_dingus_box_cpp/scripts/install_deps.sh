@@ -40,6 +40,7 @@ sudo apt install -y \
   gstreamer1.0-gl \
   gstreamer1.0-libav \
   python3-evdev \
+  python3-pip \
   dnsmasq
 
 # Phone Remote — flask-sock for WebSocket support is not in Debian Bookworm

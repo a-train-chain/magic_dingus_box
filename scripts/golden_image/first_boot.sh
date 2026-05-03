@@ -290,6 +290,20 @@ except Exception as e:
     log "[6/7] Reset media_browser_unlocked flag (cloned Pi starts locked)"
 fi
 
+# Phone Remote: a cloned Pi must NOT inherit the source's paired phones
+# or its Flask HMAC secret. Wiping flask_secret.key forces create_app() to
+# generate a fresh one on first boot, which invalidates any cookies issued
+# by the source Pi (defense-in-depth even after paired_remotes.json is
+# already wiped). The other files are transient state files that the kiosk
+# / Flask recreate on demand — safe to delete.
+log "[6/7] Wiping Phone Remote per-Pi state (paired phones, sessions, secrets)..."
+for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revocations.txt seek_request.json kiosk_status.json flask_secret.key; do
+    if [[ -f "${DATA_DIR}/${f}" ]]; then
+        rm -f "${DATA_DIR}/${f}"
+        log "    wiped: ${f}"
+    fi
+done
+
 # Step 6c and 6d run UNCONDITIONALLY — they are the most important
 # anti-leak steps for cloned Pis (inherited WiFi credentials and the
 # stale cloning-backup marker that blocks future re-clones). Previously
