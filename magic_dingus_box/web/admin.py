@@ -25,9 +25,11 @@ from flask import Flask, jsonify, redirect, render_template_string, request, sen
 try:
     from remote import auth as remote_auth
     from remote import devices as remote_devices
+    from remote import ws_handler
 except ImportError:
     from .remote import auth as remote_auth
     from .remote import devices as remote_devices
+    from .remote import ws_handler
 
 
 # ===== SYSTEM MONITORING HELPERS =====
@@ -469,6 +471,13 @@ NICKNAME_PROMPT_HTML = """
 
 def create_app(data_dir: Path, config=None) -> Flask:
     app = Flask(__name__)
+
+    # flask-sock for the Phone Remote WebSocket.
+    try:
+        from flask_sock import Sock
+    except ImportError:
+        Sock = None
+    sock = Sock(app) if Sock is not None else None
 
     # Expose data_dir to blueprints and request handlers (e.g. remote auth).
     app.config["DATA_DIR"] = str(data_dir)
@@ -3067,6 +3076,39 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except ValueError as e:
             return error_response("bad_button", str(e))
         return success_response({"sent": btn})
+
+    # Phone Remote — WebSocket endpoint (auth via mdb_remote cookie).
+    if sock is not None:
+        @sock.route("/admin/remote/ws")
+        def remote_ws(ws):
+            writer = app.config.get("UINPUT_WRITER")
+            if writer is None:
+                try:
+                    from remote.uinput_writer import UinputWriter
+                    writer = UinputWriter()
+                    app.config["UINPUT_WRITER"] = writer
+                except Exception:
+                    # Best-effort: send an error and close. The phone will retry.
+                    try:
+                        ws.send(json.dumps({"t": "error",
+                                            "code": "uinput_unavailable"}))
+                        ws.close()
+                    except Exception:
+                        pass
+                    return
+            ws_handler.handle_connection(
+                ws,
+                uinput_writer=writer,
+                data_dir=Path(app.config["DATA_DIR"]),
+                verify_cookie=remote_auth.verify_cookie,
+            )
+    else:
+        import warnings
+        warnings.warn(
+            "flask-sock not installed; /admin/remote/ws WebSocket endpoint is unavailable.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # ===== SERVE WEB INTERFACE =====
 
