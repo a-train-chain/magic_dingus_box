@@ -105,3 +105,6 @@ build-mac/
 
 # Media Browser V2 — service secrets (never commit)
 magic_dingus_box_cpp/services/.env
+
+# Superpowers brainstorming session content (transient mockups)
+.superpowers/
