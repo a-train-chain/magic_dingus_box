@@ -106,6 +106,7 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/pairing_screen_renderer.cpp
     src/ui/theme.cpp
     src/ui/font_manager.cpp
     src/ui/settings_menu.cpp

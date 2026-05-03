@@ -5,11 +5,13 @@
 #include <vector>
 #include <memory>
 #include <unordered_map>
-#include "theme.h"  // For Color type
+#include "theme.h"               // For Color type
+#include "pairing_screen_renderer.h"  // For PairedDevice
 
 namespace ui {
 class Theme;
 class FontManager;
+class PairingScreen;
 class SettingsMenuManager;
 class VirtualKeyboard;
 }
@@ -380,6 +382,12 @@ private:
     void render_game_browser(SettingsMenuManager* menu, const std::vector<app::Playlist>& game_playlists, float menu_x, uint32_t menu_width, const ui::Color& section_color, float text_alpha, float background_alpha);
     void render_virtual_keyboard(const VirtualKeyboard& keyboard);
     void render_qr_code(const std::string& url, float x, float y, float size, float alpha_multiplier = 1.0f);
+
+    // Phone Remote pairing screen — implemented in pairing_screen_renderer.cpp.
+    // Draws QR code, 6-digit code, expiry countdown, and paired-devices list
+    // on a full-screen overlay that replaces the regular settings panel.
+    void render_pairing_screen(const PairingScreen& ps,
+                               const std::vector<PairedDevice>& paired_devices);
     
     // Helper: format time as MM:SS
     std::string format_time(double seconds);

@@ -6,6 +6,8 @@
 #include "theme.h"
 #include "font_manager.h"
 #include "settings_menu.h"
+#include "pairing_screen.h"
+#include "pairing_screen_renderer.h"
 #include "virtual_keyboard.h" // Added for virtual keyboard rendering
 #include "qrcodegen.hpp" // QR code generation
 #include "text_utf8.h"
@@ -1270,8 +1272,26 @@ void Renderer::render(app::AppState& state) {
 
     // Render settings menu if active (on top of everything, before scanlines)
     if (state.settings_menu && state.settings_menu->is_active()) {
+
+        if (state.settings_menu->is_pairing_screen_active()) {
+            // Phone Remote pairing screen replaces the regular settings panel.
+            // Refresh the paired-devices list at ~1 Hz to pick up new pairings
+            // without requiring a full menu rebuild.
+            static auto last_devices_load = std::chrono::steady_clock::time_point{};
+            static std::vector<ui::PairedDevice> cached_devices;
+            auto pn_now = std::chrono::steady_clock::now();
+            if (pn_now - last_devices_load > std::chrono::seconds(1)) {
+                cached_devices = ui::load_paired_devices(
+                    config::get_data_path() + "/paired_remotes.json");
+                last_devices_load = pn_now;
+            }
+            ui::PairingScreen* ps = state.settings_menu->pairing_screen();
+            if (ps) {
+                render_pairing_screen(*ps, cached_devices);
+            }
+        } else {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
-        
+
         // Render QR code when Info submenu is active
         if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO) {
             // Compute qr_url + qr_label from the gated usb_url/wifi_url
@@ -1360,8 +1380,9 @@ void Renderer::render(app::AppState& state) {
                 draw_text(fallback_text, fallback_x, fallback_y, theme_->font_small_size, theme_->highlight2, false, 1.0f);
             }
         }
+        } // end else (not pairing screen active)
     }
-    
+
     // Virtual Keyboard overlay
     if (state.keyboard && state.keyboard->is_active()) {
         render_virtual_keyboard(*state.keyboard);
