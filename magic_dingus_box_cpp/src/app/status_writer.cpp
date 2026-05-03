@@ -1,17 +1,24 @@
 #include "status_writer.h"
 
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <json/json.h>
+#include "utils/logger.h"
 
 namespace app {
 
 StatusWriter::StatusWriter(std::string path)
-    : path_(std::move(path)), tmp_path_(path_ + ".tmp") {}
+    : path_(std::move(path)),
+      tmp_path_(path_ + ".tmp"),
+      owning_thread_(std::this_thread::get_id()) {}
 
 void StatusWriter::write_now(const AppState& state) {
+    assert(std::this_thread::get_id() == owning_thread_ &&
+           "StatusWriter::write_now called from non-owning thread");
     Json::Value root;
     root["schema"] = 1;
 
@@ -58,8 +65,17 @@ void StatusWriter::write_now(const AppState& state) {
     {
         std::ofstream f(tmp_path_, std::ios::binary | std::ios::trunc);
         f.write(out.data(), static_cast<std::streamsize>(out.size()));
+        if (!f.good()) {
+            LOG_WARN("StatusWriter: failed to write tmp file {}", tmp_path_);
+            std::remove(tmp_path_.c_str());
+            return;
+        }
     }
-    std::rename(tmp_path_.c_str(), path_.c_str());
+    if (std::rename(tmp_path_.c_str(), path_.c_str()) != 0) {
+        LOG_WARN("StatusWriter: rename {} -> {} failed (errno {})",
+                 tmp_path_, path_, errno);
+        std::remove(tmp_path_.c_str());
+    }
 }
 
 } // namespace app
