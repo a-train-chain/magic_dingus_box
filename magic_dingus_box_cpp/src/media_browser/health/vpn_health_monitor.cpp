@@ -10,12 +10,24 @@ namespace media_browser {
 
 namespace {
 
-// Default ping: GET http://127.0.0.1:7878/ping with 3s timeout.
+// Default ping: GET http://127.0.0.1:8000/v1/publicip/ip with 3s timeout.
+//
+// We deliberately use Gluetun's own control-server endpoint rather than
+// Radarr's /ping because Radarr is paused by the kiosk's playback CPU
+// saver (PlaybackScreen::enter() runs `docker pause mdb_radarr` to free
+// CPU during movie playback). With the old Radarr-ping signal, every
+// movie would generate a spurious "VPN down" toast 30s into playback.
+//
+// Gluetun is never paused — it owns the netns shared by the other 4
+// containers, so pausing it would tear down the entire stack. Its
+// /v1/publicip/ip endpoint returns the current tunnel exit IP, which
+// is the actual signal we care about: "is the tunnel up?"
+//
 // Returns true on HTTP 2xx, false on any error or non-2xx.
-bool default_radarr_ping() {
+bool default_tunnel_ping() {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:7878/ping");
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:8000/v1/publicip/ip");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);   // HEAD-equivalent; we don't read body
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
@@ -29,7 +41,7 @@ bool default_radarr_ping() {
 }  // namespace
 
 VpnHealthMonitor::VpnHealthMonitor(app::AppState& state)
-    : VpnHealthMonitor(state, &default_radarr_ping, std::chrono::seconds(10)) {}
+    : VpnHealthMonitor(state, &default_tunnel_ping, std::chrono::seconds(10)) {}
 
 VpnHealthMonitor::VpnHealthMonitor(app::AppState& state,
                                    PingFn ping_fn,

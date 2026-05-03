@@ -3166,15 +3166,26 @@ int main(int /* argc */, char* /* argv */[]) {
         // the fork/waitpid transition point above so the companion app sees
         // "retroarch" immediately even though the main loop blocks on waitpid.
         state.screen_mode = [&]() -> app::ScreenMode {
-#ifdef MEDIA_BROWSER_ENABLED
-            if (state.current_screen == app::AppScreen::MediaBrowser)
-                return app::ScreenMode::MediaBrowser;
-#endif
+            // Settings overlay first — covers the entire screen when active
+            // and is conceptually a modal layer on top of any underlying
+            // mode, so the phone remote should reflect Settings even if a
+            // movie is playing or the Media Browser is open underneath.
             if (settings_menu.is_active() ||
                 settings_menu.is_opening() ||
                 settings_menu.is_closing())
                 return app::ScreenMode::Settings;
+            // Playback before MediaBrowser. When the user is watching a
+            // Movies-section film, both `current_screen == MediaBrowser`
+            // and `controller.is_playing()` are true — but for the phone
+            // remote we want the Playback UI (scrub bar, PAUSE/PLAY label
+            // tracking is_paused) regardless of where playback was launched
+            // from. MediaBrowser mode means "browsing the library, no movie
+            // playing yet."
             if (controller.is_playing()) return app::ScreenMode::Playback;
+#ifdef MEDIA_BROWSER_ENABLED
+            if (state.current_screen == app::AppScreen::MediaBrowser)
+                return app::ScreenMode::MediaBrowser;
+#endif
             return app::ScreenMode::Playlist;
         }();
 
