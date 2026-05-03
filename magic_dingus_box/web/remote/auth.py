@@ -121,7 +121,10 @@ def handle_pair_param(submitted_code: str):
     session_path.unlink(missing_ok=True)
     _audit("paired", submitted_code, ip)
 
+    # Redirect to a nickname-prompt page; the cookie is set so the prompt
+    # can authenticate the device. After the user names it, that page
+    # redirects back to /?tab=<target>.
     target = request.args.get("tab", "remote")
-    resp = redirect(f"/?tab={target}", code=303)
+    resp = redirect(f"/admin/remote/name?d={device_id}&tab={target}", code=303)
     issue_cookie(resp, device_id)
     return resp

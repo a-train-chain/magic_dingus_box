@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, redirect, render_template_string, request, send_file, send_from_directory
 
 try:
     from remote import auth as remote_auth
@@ -414,6 +414,57 @@ def format_playlist_yaml(data: dict) -> str:
             lines.append("")
     
     return '\n'.join(lines) + '\n'
+
+
+NICKNAME_PROMPT_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1F191F">
+<title>Name your remote</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    background: #1F191F; color: #F2E4D9;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    width: min(360px, 90%); padding: 32px 24px;
+    background: #2A232A; border-radius: 16px;
+    text-align: center;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+  p.sub { margin: 0 0 24px; font-size: 13px; color: #968B85; }
+  input {
+    width: 100%; padding: 14px 12px;
+    background: #1F191F; color: #F2E4D9;
+    border: 1px solid #968B85; border-radius: 10px;
+    font-size: 16px; text-align: center; margin-bottom: 16px;
+  }
+  button {
+    width: 100%; padding: 14px;
+    background: #F5BF42; color: #1F191F;
+    border: none; border-radius: 10px;
+    font-size: 16px; font-weight: 700;
+    cursor: pointer;
+  }
+  button:active { filter: brightness(0.9); }
+</style>
+</head>
+<body>
+<form class="card" method="post">
+  <h1>&#10003; Paired</h1>
+  <p class="sub">What should we call this remote?</p>
+  <input name="nickname" placeholder="{{ placeholder }}" autofocus
+         autocomplete="off" autocapitalize="words" maxlength="40">
+  <button type="submit">Continue</button>
+</form>
+</body></html>
+"""
 
 
 def create_app(data_dir: Path, config=None) -> Flask:
@@ -3033,6 +3084,37 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return remote_auth.handle_pair_param(pair_code)
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
+
+    @app.route("/admin/remote/name", methods=["GET", "POST"])
+    def remote_name():  # type: ignore[no-redef]
+        """Nickname-prompt page shown immediately after a successful pair."""
+        cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
+        device_id = remote_auth.verify_cookie(cookie)
+        if device_id is None:
+            return redirect("/", code=303)
+
+        paired_path = Path(app.config["DATA_DIR"]) / "paired_remotes.json"
+
+        if request.method == "POST":
+            nickname = (request.form.get("nickname") or "").strip()[:40] or "Phone"
+            # Update the entry in paired_remotes.json
+            try:
+                data = json.loads(paired_path.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                data = {"schema": 1, "devices": []}
+            for d in data["devices"]:
+                if d["id"] == device_id:
+                    d["nickname"] = nickname
+                    break
+            paired_path.write_text(json.dumps(data, indent=2))
+            target = request.args.get("tab", "remote")
+            return redirect(f"/?tab={target}", code=303)
+
+        # GET — render the form. User-Agent hint becomes the placeholder.
+        ua = request.headers.get("User-Agent", "")
+        placeholder = "iPad" if "iPad" in ua else "iPhone" if "iPhone" in ua else "Phone"
+
+        return render_template_string(NICKNAME_PROMPT_HTML, placeholder=placeholder)
 
     @app.route("/admin/remote/protected_check")
     def remote_protected_check():  # type: ignore[no-redef]

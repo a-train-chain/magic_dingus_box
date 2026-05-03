@@ -38,9 +38,10 @@ def write_session(tmp_path: Path, code="847291", attempts=5, expires_in=120):
 def test_pair_with_correct_code_issues_cookie(client, app, tmp_path):
     write_session(tmp_path)
     rv = client.get("/?pair=847291&tab=remote", follow_redirects=False)
-    # Redirects somewhere with a Set-Cookie containing mdb_remote
+    # Redirects to the nickname-prompt page with a Set-Cookie containing mdb_remote
     assert rv.status_code in (302, 303)
     assert "mdb_remote" in rv.headers.get("Set-Cookie", "")
+    assert "/admin/remote/name" in rv.headers.get("Location", "")
 
 
 def test_pair_with_wrong_code_decrements_attempts(client, app, tmp_path):
@@ -90,3 +91,34 @@ def test_revoked_device_rejects_cookie(client, app, tmp_path):
     client.set_cookie(domain="localhost", key=name, value=value)
     rv2 = client.get("/admin/remote/protected_check")
     assert rv2.status_code == 401
+
+
+def test_nickname_submission_updates_device(client, app, tmp_path):
+    write_session(tmp_path)
+    # First pair (sets cookie)
+    rv = client.get("/?pair=847291&tab=remote", follow_redirects=False)
+    cookie = rv.headers["Set-Cookie"].split(";")[0]
+    name, value = cookie.split("=", 1)
+    client.set_cookie(domain="localhost", key=name, value=value)
+
+    # GET the form
+    rv2 = client.get("/admin/remote/name")
+    assert rv2.status_code == 200
+    assert b"Paired" in rv2.data
+
+    # POST a nickname
+    rv3 = client.post("/admin/remote/name?tab=remote",
+                      data={"nickname": "Alex's iPhone"},
+                      follow_redirects=False)
+    assert rv3.status_code in (302, 303)
+    assert "/?tab=remote" in rv3.headers["Location"]
+
+    # Verify paired_remotes.json was updated
+    paired = json.loads((tmp_path / "paired_remotes.json").read_text())
+    assert paired["devices"][0]["nickname"] == "Alex's iPhone"
+
+
+def test_nickname_page_without_cookie_redirects_home(client, app, tmp_path):
+    rv = client.get("/admin/remote/name")
+    assert rv.status_code in (302, 303)
+    assert rv.headers["Location"] == "/"
