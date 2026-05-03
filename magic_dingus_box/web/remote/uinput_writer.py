@@ -15,15 +15,25 @@ EV_ABS = 3
 EV_SYN = 0
 SYN_REPORT = 0
 
-# Button codes (matches Linux input-event-codes.h)
-BTN_SOUTH = 0x130
-BTN_EAST  = 0x131
-BTN_NORTH = 0x133
-BTN_WEST  = 0x134
-BTN_TL    = 0x136
-BTN_TR    = 0x137
-BTN_START = 0x13B
-KEY_Z     = 44       # KEY_Z for RetroArch hotkey
+# Button codes — selected to match what InputManager::map_button_to_action
+# in magic_dingus_box_cpp/src/platform/input_manager.cpp already maps.
+# Picking codes the kiosk doesn't recognize means presses route nowhere.
+#
+# Linux input-event-codes.h reference:
+#   BTN_SOUTH = 0x130 = 304   (kiosk: SELECT)
+#   BTN_EAST  = 0x131 = 305   (kiosk: SETTINGS_MENU)
+#   BTN_X     = 0x133 = 307   (NB: this differs from BTN_NORTH on some kernels)
+#   BTN_Y     = 0x134 = 308   (kiosk: PREV)
+#   BTN_C     = 0x132 = 306   (kiosk: SELECT, alt)
+#   ID 309    = BTN_TL2/Z     (kiosk: NEXT)
+#   ID 310    = BTN_TR2       (kiosk: PLAY_PAUSE)
+BTN_SOUTH = 304     # gold OK center
+BTN_EAST  = 305     # BLACK / MENU
+BTN_PREV  = 308     # YELLOW / PREV
+BTN_NEXT  = 309     # GREEN / NEXT
+BTN_PAUSE = 310     # RED / PAUSE
+BTN_START = 0x13B   # for QUIT_GAME RetroArch hotkey
+KEY_Z     = 44      # KEY_Z for QUIT_GAME RetroArch hotkey
 
 # Axis codes
 ABS_HAT0X = 0x10
@@ -55,17 +65,18 @@ class _KeyEvent:
 
 
 # Mapping: ButtonName → either a single key code (for buttons) or an axis event (for D-pad).
+# Codes match what the kiosk's InputManager::map_button_to_action understands.
 _MAP: dict[ButtonName, _KeyEvent | _AxisEvent] = {
-    ButtonName.OK:        _KeyEvent(BTN_SOUTH),
+    ButtonName.OK:        _KeyEvent(BTN_SOUTH),  # 304 → SELECT
     ButtonName.UP:        _AxisEvent(ABS_HAT0Y, -1),
     ButtonName.DOWN:      _AxisEvent(ABS_HAT0Y,  1),
     ButtonName.LEFT:      _AxisEvent(ABS_HAT0X, -1),
     ButtonName.RIGHT:     _AxisEvent(ABS_HAT0X,  1),
-    ButtonName.YELLOW:    _KeyEvent(BTN_TL),
-    ButtonName.RED:       _KeyEvent(BTN_EAST),
-    ButtonName.GREEN:     _KeyEvent(BTN_TR),
-    ButtonName.BLACK:     _KeyEvent(BTN_NORTH),
-    # QUIT_GAME emits Z + Start as the kiosk's existing hotkey for "quit RetroArch".
+    ButtonName.YELLOW:    _KeyEvent(BTN_PREV),   # 308 → PREV
+    ButtonName.RED:       _KeyEvent(BTN_PAUSE),  # 310 → PLAY_PAUSE
+    ButtonName.GREEN:     _KeyEvent(BTN_NEXT),   # 309 → NEXT
+    ButtonName.BLACK:     _KeyEvent(BTN_EAST),   # 305 → SETTINGS_MENU
+    # QUIT_GAME emits Z + Start — RetroArch's "exit core" hotkey.
     # Implemented specially in press() below.
 }
 
@@ -92,8 +103,8 @@ class UinputWriter:
         from evdev import UInput, AbsInfo, ecodes as e
 
         capabilities = {
-            e.EV_KEY: [BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST,
-                       BTN_TL, BTN_TR, BTN_START, KEY_Z],
+            e.EV_KEY: [BTN_SOUTH, BTN_EAST, BTN_PREV, BTN_NEXT, BTN_PAUSE,
+                       BTN_START, KEY_Z],
             e.EV_ABS: [
                 (ABS_HAT0X, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
                 (ABS_HAT0Y, AbsInfo(value=0, min=-1, max=1, fuzz=0, flat=0, resolution=0)),
