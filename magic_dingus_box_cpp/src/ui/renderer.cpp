@@ -1275,16 +1275,11 @@ void Renderer::render(app::AppState& state) {
 
         if (state.settings_menu->is_pairing_screen_active()) {
             // Phone Remote pairing screen replaces the regular settings panel.
-            // Refresh the paired-devices list at ~1 Hz to pick up new pairings
-            // without requiring a full menu rebuild.
-            static auto last_devices_load = std::chrono::steady_clock::time_point{};
-            static std::vector<ui::PairedDevice> cached_devices;
-            auto pn_now = std::chrono::steady_clock::now();
-            if (pn_now - last_devices_load > std::chrono::seconds(1)) {
-                cached_devices = ui::load_paired_devices(
-                    config::get_data_path() + "/paired_remotes.json");
-                last_devices_load = pn_now;
-            }
+            // Use the shared mtime-based cache so this and main.cpp's input
+            // handler always see the same device list (no divergence after
+            // forget).
+            const auto& cached_devices = ui::paired_devices_cached(
+                config::get_data_path() + "/paired_remotes.json");
             ui::PairingScreen* ps = state.settings_menu->pairing_screen();
             if (ps) {
                 render_pairing_screen(*ps, cached_devices);

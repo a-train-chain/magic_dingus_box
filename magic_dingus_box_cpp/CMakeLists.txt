@@ -457,6 +457,12 @@ if(PHONE_REMOTE_TEST_SOURCES)
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_phone_remote_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
     target_link_libraries(test_phone_remote_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} spdlog::spdlog_header_only pthread)
+    # std::filesystem needs explicit linking on GCC < 9 (Bookworm ships
+    # GCC 12, so this is a no-op there — but matters for older toolchains
+    # used in CI / cross-compile.)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
+        target_link_libraries(test_phone_remote_unit PRIVATE stdc++fs)
+    endif()
     add_test(NAME PhoneRemoteUnit COMMAND test_phone_remote_unit)
     target_compile_options(test_phone_remote_unit PRIVATE -Wall -Wextra)
 endif()

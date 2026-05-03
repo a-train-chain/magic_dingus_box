@@ -17,9 +17,25 @@ namespace {
 constexpr auto kCodeWindow = std::chrono::seconds(120);
 constexpr int kInitialAttempts = 5;
 
-std::random_device& rng() {
-    static std::random_device r;
-    return r;
+// Wraps std::random_device + a fallback std::mt19937. On Linux
+// std::random_device reads from /dev/urandom and can throw if entropy is
+// unavailable (extremely unlikely on a Pi 4B running Bookworm — the kernel
+// has a hardware RNG and seeds urandom very early). If construction or
+// operator() ever throws, we fall back to a time-seeded mt19937 so the
+// kiosk doesn't crash. The fallback is NOT cryptographically suitable, but
+// the pairing-code threat model (6-digit code, 120 s validity, 5 attempts,
+// LAN only) tolerates a temporarily weaker RNG.
+uint32_t safe_random_u32() {
+    static std::mt19937 fallback{
+        static_cast<uint32_t>(
+            std::chrono::system_clock::now().time_since_epoch().count())};
+    try {
+        static std::random_device r;
+        return r();
+    } catch (...) {
+        LOG_WARN("[pairing] std::random_device threw; using mt19937 fallback");
+        return fallback();
+    }
 }
 }  // namespace
 
@@ -28,17 +44,16 @@ PairingScreen::PairingScreen(std::string session_path)
       tmp_path_(session_path_ + ".tmp") {}
 
 std::string PairingScreen::generate_code_() {
-    std::uniform_int_distribution<int> d(0, 999999);
+    int v = static_cast<int>(safe_random_u32() % 1000000u);
     char buf[7];
-    std::snprintf(buf, sizeof(buf), "%06d", d(rng()));
+    std::snprintf(buf, sizeof(buf), "%06d", v);
     return std::string(buf);
 }
 
 std::string PairingScreen::generate_nonce_() {
-    std::uniform_int_distribution<unsigned> d(0, 0xFFFFFFFFu);
     std::ostringstream s;
     s << std::hex << std::setfill('0');
-    for (int i = 0; i < 4; ++i) s << std::setw(8) << d(rng());
+    for (int i = 0; i < 4; ++i) s << std::setw(8) << safe_random_u32();
     return s.str();  // 32 hex chars = 128 bits
 }
 

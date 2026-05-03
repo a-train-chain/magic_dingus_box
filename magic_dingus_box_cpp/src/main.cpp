@@ -2089,14 +2089,10 @@ int main(int /* argc */, char* /* argv */[]) {
                 if (settings_menu.is_pairing_screen_active()) {
                     auto* ps = settings_menu.pairing_screen();
                     if (ps) {
-                        static auto last_ps_devices_load = std::chrono::steady_clock::time_point{};
-                        static std::vector<ui::PairedDevice> ps_cached_devices;
-                        auto ps_now = std::chrono::steady_clock::now();
-                        if (ps_now - last_ps_devices_load > std::chrono::seconds(1)) {
-                            ps_cached_devices = ui::load_paired_devices(
-                                config::get_data_path() + "/paired_remotes.json");
-                            last_ps_devices_load = ps_now;
-                        }
+                        // Shared mtime-based cache — same data the renderer
+                        // sees, so no post-forget divergence.
+                        const auto& ps_cached_devices = ui::paired_devices_cached(
+                            config::get_data_path() + "/paired_remotes.json");
                         if ((ev.action == InputAction::ROTATE || ev.action == InputAction::ROTATE_VERTICAL) && ev.delta != 0) {
                             if (ev.delta < 0)
                                 ps->select_prev_device(static_cast<int>(ps_cached_devices.size()));
@@ -2107,8 +2103,10 @@ int main(int /* argc */, char* /* argv */[]) {
                             std::vector<std::string> ids;
                             for (const auto& d : ps_cached_devices) ids.push_back(d.id);
                             ps->forget_selected_device(ids);
-                            // Invalidate the cache so the next frame reflects the removal.
-                            last_ps_devices_load = std::chrono::steady_clock::time_point{};
+                            // No manual cache invalidation needed — Flask
+                            // rewrites paired_remotes.json on its next
+                            // broadcaster tick (~200 ms), and the cache
+                            // mtime-checks every call.
                             continue; // consumed
                         } else if (ev.action == InputAction::QUIT && ev.pressed) {
                             ps->close();

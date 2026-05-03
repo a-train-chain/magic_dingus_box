@@ -17,9 +17,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <json/json.h>
 #include <string>
+#include <system_error>
 
 namespace ui {
 
@@ -152,6 +154,35 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
             draw_text(hint, hx, hy, theme_->font_small_size, theme_->dim);
         }
     }
+}
+
+// mtime-based shared cache. Single static here so renderer.cpp (display)
+// and main.cpp (input handling) read the same list — the prior
+// implementation had two independent 1 Hz time-based caches that could
+// diverge for up to 1 s after a forget action.
+const std::vector<PairedDevice>& paired_devices_cached(const std::string& path) {
+    static std::vector<PairedDevice> cached;
+    static std::filesystem::file_time_type last_mtime{};
+    static bool initialized = false;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    auto mtime = fs::last_write_time(path, ec);
+    if (ec) {
+        // File missing — clear cache so a deleted file is reflected.
+        if (initialized) {
+            cached.clear();
+            last_mtime = fs::file_time_type{};
+            initialized = false;
+        }
+        return cached;
+    }
+    if (!initialized || mtime != last_mtime) {
+        cached = load_paired_devices(path);
+        last_mtime = mtime;
+        initialized = true;
+    }
+    return cached;
 }
 
 }  // namespace ui
