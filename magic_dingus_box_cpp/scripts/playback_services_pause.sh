@@ -59,12 +59,22 @@ for c in "${CONTAINERS[@]}"; do
     fi
     if [ "$ACTION" = "pause" ]; then
         # `docker stop` is a no-op on already-stopped containers (exit 0
-        # with a warning to stderr). `|| true` swallows the warning so
-        # journalctl stays clean for the idempotent re-entry case.
+        # with a warning to stderr). It also works on currently-paused
+        # containers (Docker unpauses them first internally). `|| true`
+        # swallows any benign warning so journalctl stays clean for the
+        # idempotent re-entry case.
         docker stop -t "$STOP_TIMEOUT_S" "$c" >/dev/null 2>&1 || true
     else
-        if ! docker start "$c" >/dev/null 2>&1; then
-            echo "[playback-services] WARN: docker start $c failed" >&2
+        # Container could be in any of three states when we're called:
+        #   - stopped (new path, post-this-script-update): need `docker start`
+        #   - paused  (legacy path, pre-script-update sessions in flight):
+        #              need `docker unpause`
+        #   - running (idempotent re-entry): both calls are benign no-ops
+        # Try both; verify the container is actually running afterwards.
+        docker unpause "$c" >/dev/null 2>&1 || true
+        docker start "$c" >/dev/null 2>&1 || true
+        if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
+            echo "[playback-services] WARN: failed to bring $c back up" >&2
         fi
     fi
 done
