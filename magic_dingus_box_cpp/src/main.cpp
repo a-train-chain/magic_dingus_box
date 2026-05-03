@@ -34,6 +34,7 @@
 #include "app/controller.h"
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
+#include "app/status_writer.h"
 #include "utils/config.h"
 #include "utils/path_resolver.h"
 #include "utils/wifi_manager.h"
@@ -365,6 +366,12 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Load saved settings (CRT effects, loop, shuffle, etc.)
     SettingsPersistence::load_settings(state);
+
+    // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the
+    // companion app always has a fresh snapshot of screen / playback state.
+    app::StatusWriter status_writer(config::get_data_path() + "/kiosk_status.json");
+    auto last_status_write = std::chrono::steady_clock::now();
+    constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
 #ifdef MEDIA_BROWSER_ENABLED
     // Layer 3 monitor — only meaningful when Layers 1+2 already pass.
@@ -3062,6 +3069,34 @@ int main(int /* argc */, char* /* argv */[]) {
                           ui_renderer.get_width(),
                           ui_renderer.get_height());
 #endif
+
+        // ── Phone-remote: derive screen mode + 5 Hz status write ─────────────
+        // Derive screen_mode once per frame from the authoritative runtime
+        // flags so every code path (RetroArch launch, MB enter/exit, settings
+        // open, playback start/stop) is covered without scattered assignments.
+        state.screen_mode = [&]() -> app::ScreenMode {
+            // RetroArch: display fd is closed while the subprocess owns DRM.
+            if (display.get_fd() < 0) return app::ScreenMode::RetroArch;
+#ifdef MEDIA_BROWSER_ENABLED
+            if (state.current_screen == app::AppScreen::MediaBrowser)
+                return app::ScreenMode::MediaBrowser;
+#endif
+            if (settings_menu.is_active() ||
+                settings_menu.is_opening() ||
+                settings_menu.is_closing())
+                return app::ScreenMode::Settings;
+            if (controller.is_playing()) return app::ScreenMode::Playback;
+            return app::ScreenMode::Playlist;
+        }();
+
+        {
+            auto sw_now = std::chrono::steady_clock::now();
+            if (sw_now - last_status_write >= STATUS_PERIOD) {
+                status_writer.write_now(state);
+                last_status_write = sw_now;
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         // Swap EGL buffers
         if (!egl.swap_buffers()) {
