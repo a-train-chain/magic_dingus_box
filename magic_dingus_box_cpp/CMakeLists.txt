@@ -106,6 +106,7 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/pairing_screen.cpp
     src/ui/pairing_screen_renderer.cpp
     src/ui/theme.cpp
     src/ui/font_manager.cpp
@@ -126,6 +127,7 @@ set(APP_SOURCES
     src/app/controller.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
+    src/app/status_writer.cpp
 )
 
 set(UTILS_SOURCES
