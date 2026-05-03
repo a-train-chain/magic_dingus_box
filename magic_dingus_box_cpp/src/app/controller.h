@@ -65,6 +65,12 @@ public:
     
     // Audio recovery
     void check_audio_recovery();
+
+    // Polled each main-loop tick. Reads data/seek_request.json if present,
+    // seeks to (pos * duration), then deletes the file. No-op if the file
+    // doesn't exist or contains an invalid pos. Cheap when no file exists
+    // (single fs::exists check).
+    void poll_seek_request();
     
     // System Volume
     void set_system_volume(int percent);

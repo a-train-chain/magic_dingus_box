@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <chrono>
 #include <thread>
 #include <random>
@@ -17,6 +18,8 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <json/json.h>
+#include "../utils/config.h"
 
 #include "../platform/input_manager.h"
 
@@ -137,6 +140,31 @@ void Controller::seek_absolute(double timestamp) {
     if (player_) {
         player_->seek_absolute(timestamp);
     }
+}
+
+void Controller::poll_seek_request() {
+    const std::string path = config::get_data_path() + "/seek_request.json";
+    if (!fs::exists(path)) return;
+
+    Json::Value root;
+    {
+        std::ifstream f(path);
+        if (!f) return;
+        try { f >> root; } catch (...) {
+            fs::remove(path);
+            return;
+        }
+    }
+    fs::remove(path);  // consume — even if invalid, don't loop on a bad file
+
+    if (!root.isMember("pos")) return;
+    double frac = root["pos"].asDouble();
+    if (!(frac >= 0.0 && frac <= 1.0)) return;  // also rejects NaN
+
+    double dur = get_duration();
+    if (!(dur > 0.0)) return;
+
+    seek_absolute(frac * dur);
 }
 
 void Controller::stop() {

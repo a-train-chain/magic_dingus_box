@@ -3121,6 +3121,10 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
 
+        // Phone Remote — drain pending tap-to-seek requests each frame.
+        // Cheap (single fs::exists check) when nothing is queued.
+        controller.poll_seek_request();
+
         // ── Phone Remote: 1 Hz tick for active pairing screen ────────────────
         if (settings_menu.is_pairing_screen_active()) {
             static auto last_pairing_tick = std::chrono::steady_clock::time_point{};
