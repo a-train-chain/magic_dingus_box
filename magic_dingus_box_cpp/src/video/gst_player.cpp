@@ -197,12 +197,52 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     g_object_set(G_OBJECT(appsink_raw), "caps", caps, nullptr);
     gst_caps_unref(caps);
 
-    // Set appsink properties
+    // Set appsink properties.
+    //
+    // max-buffers tuning (1 → 5): the appsink is the leaf consumer of
+    // the GStreamer pipeline; its buffer queue acts as a small reservoir
+    // between the v4l2h264dec decoder thread and the kiosk's render
+    // loop. With max-buffers=1 the decoder had to produce in lockstep
+    // with the renderer — any render-thread preemption (a Docker
+    // container waking up, a poster-cache GL upload, a window-manager
+    // tick on a debug build) stalled the decoder for one frame interval
+    // and surfaced as visible stutter. Bumping to 5 gives ~200 ms of
+    // absorbing capacity at 24 fps; well below human-perceptible
+    // latency for movie playback (no interactive feedback to be off-by)
+    // but enough to smooth over typical scheduling jitter on the Pi 4B.
+    //
+    // drop=TRUE retained: if the renderer falls behind by MORE than
+    // 200 ms (catastrophic stall, not normal jitter), drop the oldest
+    // frames rather than backpressure the decoder into stalling. Pairs
+    // with the systemd Nice=-10 + cgroup priority — together those
+    // make >200 ms preemption near-impossible in practice.
+    //
+    // sync=TRUE retained: clock-synced rendering so audio + video stay
+    // in lockstep. Without this, the appsink would deliver frames as
+    // fast as the decoder produced them and audio would drift.
     g_object_set(G_OBJECT(appsink_raw),
         "emit-signals", TRUE,
         "sync", TRUE,
-        "max-buffers", 1,
+        "max-buffers", 5,
         "drop", TRUE,
+        nullptr);
+
+    // playbin buffer-size / buffer-duration tuning. These properties
+    // only take effect when the source URI is a streaming protocol
+    // (HTTP/RTSP/etc.) — playbin then inserts a queue2 between the
+    // source and the demuxer, sized by these. For local file:// URIs
+    // they're inert (the file source is naturally low-latency). Set
+    // here as future-proofing for any later streaming-source path:
+    //   - 16 MB byte budget (default -1 = "use queue2 default" which
+    //     varies but is typically 2 MB — too small for sustained
+    //     1080p over flaky residential links)
+    //   - 5 s duration budget (default -1 = unlimited; capping at 5s
+    //     bounds memory growth on long streams)
+    constexpr gint kPlaybinBufferBytes = 16 * 1024 * 1024;     // 16 MB
+    constexpr gint64 kPlaybinBufferNs  = 5LL * GST_SECOND;     // 5 s
+    g_object_set(G_OBJECT(playbin.get()),
+        "buffer-size",     kPlaybinBufferBytes,
+        "buffer-duration", kPlaybinBufferNs,
         nullptr);
 
     // Set the sink bin as playbin's video-sink (playbin takes ownership)
