@@ -6,6 +6,7 @@
 namespace ui {
 
 struct PairedDevice {
+    std::string id;       // device_id; needed to forget the right entry
     std::string nickname;
     int64_t last_seen;  // Unix seconds
 };

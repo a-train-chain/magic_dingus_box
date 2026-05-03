@@ -2060,6 +2060,41 @@ int main(int /* argc */, char* /* argv */[]) {
                     continue; // Skip normal menu handling when in game browser
                 }
                 
+                // ── Phone Remote pairing screen: intercept navigation/forget ──
+                if (settings_menu.is_pairing_screen_active()) {
+                    auto* ps = settings_menu.pairing_screen();
+                    if (ps) {
+                        static auto last_ps_devices_load = std::chrono::steady_clock::time_point{};
+                        static std::vector<ui::PairedDevice> ps_cached_devices;
+                        auto ps_now = std::chrono::steady_clock::now();
+                        if (ps_now - last_ps_devices_load > std::chrono::seconds(1)) {
+                            ps_cached_devices = ui::load_paired_devices(
+                                config::get_data_path() + "/paired_remotes.json");
+                            last_ps_devices_load = ps_now;
+                        }
+                        if ((ev.action == InputAction::ROTATE || ev.action == InputAction::ROTATE_VERTICAL) && ev.delta != 0) {
+                            if (ev.delta < 0)
+                                ps->select_prev_device(static_cast<int>(ps_cached_devices.size()));
+                            else
+                                ps->select_next_device(static_cast<int>(ps_cached_devices.size()));
+                            continue; // consumed
+                        } else if (ev.action == InputAction::PLAY_PAUSE && ev.pressed) {
+                            std::vector<std::string> ids;
+                            for (const auto& d : ps_cached_devices) ids.push_back(d.id);
+                            ps->forget_selected_device(ids);
+                            // Invalidate the cache so the next frame reflects the removal.
+                            last_ps_devices_load = std::chrono::steady_clock::time_point{};
+                            continue; // consumed
+                        } else if (ev.action == InputAction::QUIT && ev.pressed) {
+                            ps->close();
+                            settings_menu.close_pairing_screen();
+                            continue; // consumed
+                        }
+                    }
+                    continue; // eat all other inputs while pairing screen is up
+                }
+                // ─────────────────────────────────────────────────────────────
+
                 // Normal settings menu handling
                 switch (ev.action) {
                     case InputAction::ROTATE:

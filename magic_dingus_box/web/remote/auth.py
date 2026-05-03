@@ -80,6 +80,38 @@ def _audit(outcome: str, code_attempt: str, ip: str) -> None:
         f.write(line + "\n")
 
 
+def reap_revocations(data_dir: Path) -> int:
+    """Drain pending_revocations.txt, remove matching devices from
+    paired_remotes.json. Returns the number of devices revoked.
+    Safe to call repeatedly — it's a no-op when the file is missing."""
+    rev_path = Path(data_dir) / "pending_revocations.txt"
+    if not rev_path.exists():
+        return 0
+    try:
+        text = rev_path.read_text()
+    except OSError:
+        return 0
+    rev_path.unlink(missing_ok=True)
+    ids = {ln.strip() for ln in text.splitlines() if ln.strip()}
+    if not ids:
+        return 0
+    paired = Path(data_dir) / "paired_remotes.json"
+    if not paired.exists():
+        return 0
+    try:
+        data = json.loads(paired.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0
+    before = len(data.get("devices", []))
+    data["devices"] = [d for d in data.get("devices", []) if d.get("id") not in ids]
+    removed = before - len(data["devices"])
+    if removed > 0:
+        tmp = paired.parent / (paired.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, paired)
+    return removed
+
+
 def handle_pair_param(submitted_code: str):
     """Called from the admin index handler when ?pair= is present.
     Returns a Flask response, or None to indicate 'not pairing — pass through'."""

@@ -70,6 +70,29 @@ void PairingScreen::close() {
     nonce_.clear();
 }
 
+void PairingScreen::select_next_device(int n) {
+    if (n <= 0) { selected_device_ = 0; return; }
+    selected_device_ = (selected_device_ + 1) % n;
+}
+
+void PairingScreen::select_prev_device(int n) {
+    if (n <= 0) { selected_device_ = 0; return; }
+    selected_device_ = (selected_device_ - 1 + n) % n;
+}
+
+void PairingScreen::forget_selected_device(const std::vector<std::string>& ids) {
+    if (selected_device_ < 0 || selected_device_ >= (int)ids.size()) return;
+    namespace fs = std::filesystem;
+    fs::path data_dir = fs::path(session_path_).parent_path();
+    std::ofstream f((data_dir / "pending_revocations.txt").string(), std::ios::app);
+    f << ids[selected_device_] << "\n";
+    // Move selection up if we just removed the last item — caller will
+    // re-load the list, but reset to a safe index for the next render.
+    if (selected_device_ >= (int)ids.size() - 1 && selected_device_ > 0) {
+        --selected_device_;
+    }
+}
+
 void PairingScreen::write_atomic_() {
     Json::Value root;
     root["schema"] = 1;

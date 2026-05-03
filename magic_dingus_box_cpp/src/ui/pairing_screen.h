@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <string>
+#include <vector>
 
 namespace ui {
 
@@ -21,6 +22,17 @@ public:
     const std::string& current_code() const { return code_; }
     std::chrono::system_clock::time_point expires_at() const { return expires_at_; }
 
+    // Move selection up/down through the paired-devices list. n is the
+    // current device count; clamps the index. Wraps around.
+    void select_next_device(int n_devices);
+    void select_prev_device(int n_devices);
+    int selected_device_index() const { return selected_device_; }
+
+    // Append the given device_id to data/pending_revocations.txt for Flask
+    // to drain. Caller passes the list of currently-displayed device_ids;
+    // we use selected_device_index() to pick which one.
+    void forget_selected_device(const std::vector<std::string>& device_ids);
+
 private:
     std::string session_path_;
     std::string tmp_path_;
@@ -28,6 +40,7 @@ private:
     std::string nonce_;
     std::chrono::system_clock::time_point issued_at_;
     std::chrono::system_clock::time_point expires_at_;
+    int selected_device_ = 0;
 
     void write_atomic_();
     static std::string generate_code_();

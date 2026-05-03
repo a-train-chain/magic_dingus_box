@@ -13,6 +13,8 @@ from pathlib import Path
 from queue import Queue, Full
 from typing import Iterable, List
 
+from . import auth as _auth
+
 
 class StatusBroadcaster:
     def __init__(self, path: Path, queues: Iterable[Queue], interval_s: float = 0.2):
@@ -49,6 +51,12 @@ class StatusBroadcaster:
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
+            # Drain any kiosk-issued revocations before broadcasting status.
+            try:
+                _auth.reap_revocations(self._path.parent)
+            except Exception:
+                pass
+
             try:
                 mtime = self._path.stat().st_mtime
             except FileNotFoundError:

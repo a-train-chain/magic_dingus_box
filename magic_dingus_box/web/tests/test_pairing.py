@@ -122,3 +122,31 @@ def test_nickname_page_without_cookie_redirects_home(client, app, tmp_path):
     rv = client.get("/admin/remote/name")
     assert rv.status_code in (302, 303)
     assert rv.headers["Location"] == "/"
+
+
+def test_reap_revocations_removes_matching_devices(tmp_path):
+    # Seed paired_remotes.json with two devices
+    paired = tmp_path / "paired_remotes.json"
+    paired.write_text(json.dumps({
+        "schema": 1,
+        "devices": [
+            {"id": "aaa", "nickname": "iPhone", "paired_at": 1, "last_seen": 1},
+            {"id": "bbb", "nickname": "Pixel",  "paired_at": 2, "last_seen": 2},
+        ],
+    }))
+    # Kiosk writes a revocation for "aaa"
+    (tmp_path / "pending_revocations.txt").write_text("aaa\n")
+
+    from remote.auth import reap_revocations
+    removed = reap_revocations(tmp_path)
+    assert removed == 1
+    data = json.loads(paired.read_text())
+    assert len(data["devices"]) == 1
+    assert data["devices"][0]["id"] == "bbb"
+    # Revocation file is consumed
+    assert not (tmp_path / "pending_revocations.txt").exists()
+
+
+def test_reap_revocations_is_noop_when_file_missing(tmp_path):
+    from remote.auth import reap_revocations
+    assert reap_revocations(tmp_path) == 0

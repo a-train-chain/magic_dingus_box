@@ -40,6 +40,7 @@ std::vector<PairedDevice> load_paired_devices(const std::string& path) {
     if (!root.isMember("devices") || !root["devices"].isArray()) return out;
     for (const auto& d : root["devices"]) {
         PairedDevice pd;
+        pd.id        = d.get("id",        "").asString();
         pd.nickname  = d.get("nickname",  "").asString();
         pd.last_seen = d.get("last_seen",  0).asInt64();
         out.push_back(std::move(pd));
@@ -121,13 +122,34 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
         float hy = list_top + 30.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
         draw_text(hint, hx, hy, theme_->font_small_size, theme_->dim);
     } else {
+        const float row_h = 24.0f;
         for (size_t i = 0; i < paired_devices.size(); ++i) {
             const auto& d = paired_devices[i];
-            float row_y = list_top + 30.0f + static_cast<float>(i) * 24.0f
-                        + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
-            int nw = body_font_manager_->get_text_width(d.nickname, theme_->font_small_size);
+            float row_top = list_top + 30.0f + static_cast<float>(i) * row_h;
+            float row_y   = row_top + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+
+            // Highlight the selected row with a background band.
+            if (static_cast<int>(i) == ps.selected_device_index()) {
+                draw_quad(0.0f, row_top - 2.0f, vw, row_h, theme_->bg_lift, 1.0f);
+            }
+
+            // Prefix selected row with a chevron for extra clarity.
+            std::string label = (static_cast<int>(i) == ps.selected_device_index())
+                                ? "> " + d.nickname
+                                : d.nickname;
+            int nw = body_font_manager_->get_text_width(label, theme_->font_small_size);
             float nx = (vw - static_cast<float>(nw)) / 2.0f;
-            draw_text(d.nickname, nx, row_y, theme_->font_small_size, theme_->fg);
+            draw_text(label, nx, row_y, theme_->font_small_size, theme_->fg);
+        }
+        // Hint: BTN2 = forget selected device.
+        {
+            const std::string hint = "[BTN2 to forget selected]";
+            int hw = body_font_manager_->get_text_width(hint, theme_->font_small_size);
+            float hx = (vw - static_cast<float>(hw)) / 2.0f;
+            float hy = list_top + 30.0f
+                     + static_cast<float>(paired_devices.size()) * row_h
+                     + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
+            draw_text(hint, hx, hy, theme_->font_small_size, theme_->dim);
         }
     }
 }
