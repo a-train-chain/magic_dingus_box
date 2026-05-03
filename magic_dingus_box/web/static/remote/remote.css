@@ -141,3 +141,33 @@ body.remote { user-select: none; }
 .actions .btn.red    { background: var(--hot);    color: var(--fg); }
 .actions .btn.green  { background: var(--success);color: var(--bg); }
 .actions .btn.black  { background: var(--bg-lift);color: var(--fg); border: 1px solid var(--dim); }
+
+/* ---- RetroArch takeover ---- */
+.ra-overlay {
+  position: fixed; inset: 0;
+  background: rgba(31, 25, 31, 0.96);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 32px; padding: 32px;
+  padding-top: calc(env(safe-area-inset-top) + 32px);
+  padding-bottom: calc(env(safe-area-inset-bottom) + 32px);
+  padding-left: calc(env(safe-area-inset-left) + 32px);
+  padding-right: calc(env(safe-area-inset-right) + 32px);
+  z-index: 100;
+}
+.ra-overlay[hidden] { display: none; }
+.ra-title {
+  font-size: 18px; color: var(--dim);
+  text-align: center; max-width: 100%;
+  word-break: break-word;
+}
+.ra-quit {
+  background: var(--hot); color: var(--fg);
+  border: none; border-radius: 16px;
+  padding: 24px 40px;
+  font-size: 18px; font-weight: 700;
+  letter-spacing: 0.5px;
+  box-shadow: 0 6px 16px rgba(234, 58, 39, 0.4);
+  touch-action: manipulation;
+  transition: transform 70ms ease-out;
+}
+.ra-quit:active { transform: scale(0.96); }

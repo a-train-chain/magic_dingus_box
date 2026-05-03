@@ -60,6 +60,18 @@
     lastStatusTs = Date.now();
     screen.dataset.mode = s.screen || 'playlist';
 
+    // RetroArch takeover overlay
+    const ra = document.getElementById('ra-overlay');
+    if (s.screen === 'retroarch') {
+      ra.hidden = false;
+      const raTitle = document.getElementById('ra-title');
+      raTitle.textContent = (s.retroarch && s.retroarch.rom_name)
+        ? s.retroarch.rom_name
+        : 'Game in progress';
+    } else {
+      ra.hidden = true;
+    }
+
     const np = s.now_playing || {};
     if (s.screen === 'playback') {
       npLabel.textContent = 'Now Playing';
