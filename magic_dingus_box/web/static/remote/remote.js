@@ -119,5 +119,24 @@
     send({ t: 'seek', pos: Math.max(0, Math.min(1, pos)) });
   });
 
+  function maybeShowInstallHint() {
+    const isStandalone = (typeof window.navigator.standalone !== 'undefined' && window.navigator.standalone === true)
+                      || window.matchMedia('(display-mode: standalone)').matches;
+    if (isStandalone) return;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    if (!isIOS) return;
+    if (localStorage.getItem('mdb_remote_install_hint_shown') === '1') return;
+    const t = document.createElement('div');
+    t.className = 'install-toast';
+    t.innerHTML = '<strong>Add to Home Screen</strong> for full-screen remote.<br>' +
+                  'Tap the Share button → Add to Home Screen.';
+    t.addEventListener('click', () => {
+      t.remove();
+      localStorage.setItem('mdb_remote_install_hint_shown', '1');
+    });
+    document.body.appendChild(t);
+  }
+  maybeShowInstallHint();
+
   connect();
 })();

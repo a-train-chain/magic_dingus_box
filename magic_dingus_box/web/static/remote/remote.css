@@ -171,3 +171,22 @@ body.remote { user-select: none; }
   transition: transform 70ms ease-out;
 }
 .ra-quit:active { transform: scale(0.96); }
+
+/* ---- iOS "Add to Home Screen" install hint ---- */
+.install-toast {
+  position: fixed; left: 16px; right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  background: var(--bg-lift); color: var(--fg);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  font-size: 13px; line-height: 1.4;
+  z-index: 200;
+  cursor: pointer;
+  animation: toast-in 220ms ease-out;
+}
+.install-toast strong { color: var(--accent); }
+@keyframes toast-in {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}

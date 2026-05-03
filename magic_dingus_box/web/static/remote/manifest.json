@@ -1,0 +1,10 @@
+{
+  "_comment": "TODO: generate square icon-192.png and icon-512.png from a square Magic Dingus logo and add to icons array. Until then, the PWA installs without a custom icon (uses a generic browser icon).",
+  "name": "Magic Dingus Remote",
+  "short_name": "Dingus",
+  "start_url": "/admin/remote",
+  "display": "standalone",
+  "background_color": "#1F191F",
+  "theme_color": "#1F191F",
+  "orientation": "portrait"
+}
