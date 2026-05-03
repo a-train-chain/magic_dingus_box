@@ -373,6 +373,24 @@ int main(int /* argc */, char* /* argv */[]) {
     auto last_status_write = std::chrono::steady_clock::now();
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
+    // Phone Remote: clear any stale pairing session left from a crashed
+    // previous run. Flask only trusts a session that's been freshly issued
+    // from the open pairing screen, so wiping it on boot prevents a leaked
+    // QR (from a screenshot, etc.) being usable after the next reboot.
+    {
+        std::string stale = config::get_data_path() + "/pairing_session.json";
+        std::error_code ec;
+        std::filesystem::remove(stale, ec);
+        if (!ec) {
+            spdlog::info("[remote] cleared stale pairing_session.json from previous run");
+        }
+    }
+    // seek_request.json and pending_revocations.txt shouldn't survive a crash either.
+    for (const std::string& f : {"seek_request.json", "pending_revocations.txt"}) {
+        std::error_code ec;
+        std::filesystem::remove(config::get_data_path() + "/" + f, ec);
+    }
+
 #ifdef MEDIA_BROWSER_ENABLED
     // Layer 3 monitor — only meaningful when Layers 1+2 already pass.
     // Otherwise the Settings menu won't expose MB anyway, so save the
@@ -2002,15 +2020,22 @@ int main(int /* argc */, char* /* argv */[]) {
                                         }
                                         // ────────────────────────────────────────────────────────────────
 
-                                        auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+                                        // RAII cleanup guard — runs whether load_playlist_item returns,
+                                        // throws, or fails silently. Clears the retroarch fields so
+                                        // kiosk_status.json never has stale ROM/core values.
+                                        struct RetroArchExitGuard {
+                                            app::AppState& state;
+                                            app::StatusWriter& writer;
+                                            ~RetroArchExitGuard() {
+                                                state.retroarch_rom_name.clear();
+                                                state.retroarch_core.clear();
+                                                state.screen_mode.store(app::ScreenMode::Playlist);
+                                                try { writer.write_now(state); } catch (...) {}
+                                            }
+                                        } ra_guard{state, status_writer};
 
-                                        // ── Phone-remote: transition OUT of RetroArch ────────────────────
-                                        // RetroArch has exited; restore mode and flush status immediately
-                                        // (before the next regular 5 Hz tick).
-                                        state.retroarch_rom_name.clear();
-                                        state.retroarch_core.clear();
-                                        state.screen_mode.store(app::ScreenMode::Playlist);
-                                        status_writer.write_now(state);
+                                        auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
+                                        // ra_guard destructor runs here on normal return (and on exception)
                                         // ────────────────────────────────────────────────────────────────
 
 #ifdef HAVE_SYSTEMD
@@ -2086,6 +2111,11 @@ int main(int /* argc */, char* /* argv */[]) {
                             last_ps_devices_load = std::chrono::steady_clock::time_point{};
                             continue; // consumed
                         } else if (ev.action == InputAction::QUIT && ev.pressed) {
+                            ps->close();
+                            settings_menu.close_pairing_screen();
+                            continue; // consumed
+                        } else if (ev.action == InputAction::SETTINGS_MENU && ev.pressed) {
+                            // BTN4 (black) — close the pairing screen and return to settings.
                             ps->close();
                             settings_menu.close_pairing_screen();
                             continue; // consumed
