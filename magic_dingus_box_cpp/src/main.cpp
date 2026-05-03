@@ -7,6 +7,8 @@
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
+#include "ui/pairing_screen.h"
+#include "ui/pairing_screen_renderer.h"
 #ifdef MEDIA_BROWSER_ENABLED
 #include "ui/toast.h"
 #include "platform/sequence_detector.h"
