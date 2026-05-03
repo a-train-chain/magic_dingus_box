@@ -136,6 +136,13 @@ rsync -avz \
     --exclude 'data/states/*' \
     --exclude 'data/media/*' \
     --exclude 'data/device_info.json' \
+    --exclude 'data/paired_remotes.json' \
+    --exclude 'data/pairing_session.json' \
+    --exclude 'data/pairing_audit.log' \
+    --exclude 'data/pending_revocations.txt' \
+    --exclude 'data/flask_secret.key' \
+    --exclude 'data/kiosk_status.json' \
+    --exclude 'data/seek_request.json' \
     --filter 'P data/thumbnails/ps1' \
     --filter 'P data/thumbnails/nes' \
     --filter 'P data/thumbnails/snes' \
