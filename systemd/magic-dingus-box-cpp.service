@@ -1,7 +1,9 @@
 [Unit]
 Description=Magic Dingus Box C++ Kiosk Engine
-After=systemd-user-sessions.service sound.target
-Wants=sound.target
+# Phone Remote: web service creates /dev/uinput's virtual gamepad eagerly
+# at startup, so we must boot AFTER it for the kiosk's input scan to find it.
+After=systemd-user-sessions.service sound.target magic-dingus-web.service
+Wants=sound.target magic-dingus-web.service
 # Start early, before X11 (we use DRM/KMS directly)
 Before=graphical.target lightdm.service
 # Don't require X11 - we bypass it entirely

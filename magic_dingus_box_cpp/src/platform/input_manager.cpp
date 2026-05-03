@@ -132,16 +132,6 @@ bool InputManager::open_joystick_devices() {
             continue;
         }
 
-        // Skip the Flask-owned virtual gamepad — grabbing it would break phone remote input
-        {
-            const char* phys = libevdev_get_phys(dev);
-            if (phys && std::string(phys).rfind("flask-remote/", 0) == 0) {
-                std::cout << "  Skipping flask-remote/* virtual device (owned by Flask): " << phys << std::endl;
-                libevdev_free(dev);
-                close(fd);
-                continue;
-            }
-        }
 
         // Check if it's a joystick
         if (libevdev_has_event_type(dev, EV_ABS) &&
@@ -223,16 +213,6 @@ bool InputManager::open_keyboard_devices() {
             continue;
         }
 
-        // Skip the Flask-owned virtual gamepad — grabbing it would break phone remote input
-        {
-            const char* phys = libevdev_get_phys(dev);
-            if (phys && std::string(phys).rfind("flask-remote/", 0) == 0) {
-                std::cout << "  Skipping flask-remote/* virtual device (owned by Flask): " << phys << std::endl;
-                libevdev_free(dev);
-                close(fd);
-                continue;
-            }
-        }
 
         // Check if it's a keyboard
         if (libevdev_has_event_type(dev, EV_KEY) &&
@@ -294,16 +274,6 @@ bool InputManager::open_rotary_devices() {
             continue;
         }
 
-        // Skip the Flask-owned virtual gamepad — grabbing it would break phone remote input
-        {
-            const char* phys = libevdev_get_phys(dev);
-            if (phys && std::string(phys).rfind("flask-remote/", 0) == 0) {
-                std::cout << "  Skipping flask-remote/* virtual device (owned by Flask): " << phys << std::endl;
-                libevdev_free(dev);
-                close(fd);
-                continue;
-            }
-        }
 
         // Check if it's a rotary encoder (REL_X)
         if (libevdev_has_event_type(dev, EV_REL) && libevdev_has_event_code(dev, EV_REL, REL_X)) {

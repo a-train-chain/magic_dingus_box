@@ -509,6 +509,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
         status_path, queues=[], interval_s=0.2)
     app.config["STATUS_BROADCASTER"].start()
 
+    # Eagerly construct the UinputWriter so /dev/input/eventN exists at
+    # boot — the kiosk's InputManager only scans /dev/input/event* once
+    # at startup, so a lazily-created virtual gamepad would never be seen
+    # by the kiosk until it restarted. Failure here is non-fatal (uinput
+    # may be missing in dev environments); WS connect will then fail
+    # gracefully with a 'uinput_unavailable' error to the phone.
+    try:
+        app.config["UINPUT_WRITER"] = UinputWriter()
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Phone Remote: failed to open /dev/uinput at startup: {e}", RuntimeWarning)
+        app.config["UINPUT_WRITER"] = None
+
     # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
     max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
     app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
