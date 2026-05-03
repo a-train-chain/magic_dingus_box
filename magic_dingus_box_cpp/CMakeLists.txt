@@ -429,3 +429,33 @@ if(ENABLE_MEDIA_BROWSER)
     )
     target_compile_options(test_media_browser PRIVATE -Wall -Wextra)
 endif()
+
+# ============================================================
+# Phone Remote feature tests — no Linux-only deps, runs on Mac.
+# ============================================================
+
+# Ensure Catch2 is available (may already be fetched if ENABLE_MEDIA_BROWSER
+# is ON; FetchContent_Declare is idempotent with a matching name).
+if(NOT TARGET Catch2::Catch2WithMain)
+    FetchContent_Declare(
+        Catch2
+        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+        GIT_TAG v3.5.2
+    )
+    FetchContent_MakeAvailable(Catch2)
+endif()
+
+# Phone remote tests
+file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
+if(PHONE_REMOTE_TEST_SOURCES)
+    add_executable(test_phone_remote_unit
+        ${PHONE_REMOTE_TEST_SOURCES}
+        src/app/status_writer.cpp
+        src/ui/pairing_screen.cpp
+    )
+    target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_phone_remote_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_phone_remote_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
+    add_test(NAME PhoneRemoteUnit COMMAND test_phone_remote_unit)
+    target_compile_options(test_phone_remote_unit PRIVATE -Wall -Wextra)
+endif()

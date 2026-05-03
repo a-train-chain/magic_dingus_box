@@ -143,6 +143,24 @@ struct AppState {
     // Initialized to Playlist; updated by main loop / settings_menu / controller.
     std::atomic<ScreenMode> screen_mode{ScreenMode::Playlist};
 
+    // Phone remote status sync — populated by the main loop / controller.
+    // current_playlist_name: display title of the active playlist.
+    // current_item_count:    total items in the active playlist.
+    // now_playing_title:     human-readable title of the active item.
+    // now_playing_subtitle:  secondary label (artist, system name, etc.).
+    // now_playing_kind:      "video" | "game" | "media_browser_movie" | "".
+    // retroarch_rom_name:    ROM filename (populated when ScreenMode == RetroArch).
+    // retroarch_core:        libretro core name (populated when ScreenMode == RetroArch).
+    // NOTE: is_paused is not added here — use the existing `paused` atomic<bool>
+    // field (same semantic, different name from the plan's draft).
+    std::string current_playlist_name;
+    int current_item_count = 0;
+    std::string now_playing_title;
+    std::string now_playing_subtitle;
+    std::string now_playing_kind;
+    std::string retroarch_rom_name;
+    std::string retroarch_core;
+
     double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
