@@ -616,6 +616,36 @@ install_update() {
         fi
     fi
 
+    # Phone Remote bootstrap (idempotent). The Phone Remote feature added
+    # new system deps (python3-pip, python3-evdev, flask-sock) and a udev
+    # rule for /dev/uinput. An existing Pi OTA-updating to a release
+    # introducing these would otherwise get the new binary but no deps,
+    # silently breaking the WS path. Check two markers; if either is
+    # missing, re-run install_deps.sh + setup_services.sh (both are
+    # idempotent — cheap on already-provisioned Pis).
+    json_progress "phone_remote_bootstrap" 85 "Checking Phone Remote dependencies..."
+    PHONE_REMOTE_DEPS_OK=1
+    if ! python3 -c "import flask_sock" 2>/dev/null; then
+        log "Phone Remote: flask-sock not installed; bootstrap needed"
+        PHONE_REMOTE_DEPS_OK=0
+    fi
+    if [[ ! -f /etc/udev/rules.d/90-magicdingus-uinput.rules ]]; then
+        log "Phone Remote: uinput udev rule missing; bootstrap needed"
+        PHONE_REMOTE_DEPS_OK=0
+    fi
+    if [[ "$PHONE_REMOTE_DEPS_OK" -eq 0 ]]; then
+        if [[ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_deps.sh" ]]; then
+            bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_deps.sh" \
+                || log_warn "install_deps.sh failed (Phone Remote will be degraded)"
+        fi
+        if [[ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_services.sh" ]]; then
+            bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_services.sh" \
+                || log_warn "setup_services.sh failed (Phone Remote will be degraded)"
+        fi
+    else
+        log "Phone Remote: deps already provisioned; skipping bootstrap"
+    fi
+
     json_progress "restarting_services" 90 "Restarting services..."
 
     # Reload systemd and start C++ app
