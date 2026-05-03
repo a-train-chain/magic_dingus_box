@@ -3201,7 +3201,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         if request.method == "POST":
             nickname = (request.form.get("nickname") or "").strip()[:40] or "Phone"
-            # Update the entry in paired_remotes.json
+            # Update the entry in paired_remotes.json — atomic temp+rename so
+            # concurrent reads from the StatusBroadcaster's reap_revocations
+            # tick can never see a torn write.
             try:
                 data = json.loads(paired_path.read_text())
             except (FileNotFoundError, json.JSONDecodeError):
@@ -3210,7 +3212,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if d["id"] == device_id:
                     d["nickname"] = nickname
                     break
-            paired_path.write_text(json.dumps(data, indent=2))
+            tmp_path = paired_path.parent / (paired_path.name + ".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2))
+            os.replace(tmp_path, paired_path)
             target = request.args.get("tab", "remote")
             return redirect(f"/?tab={target}", code=303)
 

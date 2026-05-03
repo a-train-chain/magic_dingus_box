@@ -91,16 +91,23 @@ def reap_revocations(data_dir: Path) -> int:
         text = rev_path.read_text()
     except OSError:
         return 0
-    rev_path.unlink(missing_ok=True)
+    # NB: Do NOT unlink the queue file yet. If the process dies between
+    # unlink and os.replace below, the revocation would be permanently lost
+    # (the kiosk only writes the queue once per UI dismiss). Unlink AFTER
+    # the paired_remotes.json save commits.
     ids = {ln.strip() for ln in text.splitlines() if ln.strip()}
     if not ids:
+        rev_path.unlink(missing_ok=True)
         return 0
     paired = Path(data_dir) / "paired_remotes.json"
     if not paired.exists():
+        rev_path.unlink(missing_ok=True)
         return 0
     try:
         data = json.loads(paired.read_text())
     except (OSError, json.JSONDecodeError):
+        # Malformed paired_remotes.json — leave the queue in place so the
+        # operator can investigate; don't silently drop the revocation.
         return 0
     before = len(data.get("devices", []))
     data["devices"] = [d for d in data.get("devices", []) if d.get("id") not in ids]
@@ -109,6 +116,8 @@ def reap_revocations(data_dir: Path) -> int:
         tmp = paired.parent / (paired.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2))
         os.replace(tmp, paired)
+    # Save committed (or no-op if no matches) — now safe to consume the queue.
+    rev_path.unlink(missing_ok=True)
     return removed
 
 
