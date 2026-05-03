@@ -31,6 +31,27 @@ enum class AudioOutput {
     HEADPHONE   // alsa_output.platform-fe00b840.mailbox.stereo-fallback
 };
 
+// Phone remote screen mode — tracks current UI view for status sync.
+// Updated by main loop, settings_menu, and controller.
+enum class ScreenMode {
+    Playlist,
+    Playback,
+    Settings,
+    RetroArch,
+    MediaBrowser
+};
+
+inline const char* screen_mode_to_string(ScreenMode m) {
+    switch (m) {
+        case ScreenMode::Playlist:     return "playlist";
+        case ScreenMode::Playback:     return "playback";
+        case ScreenMode::Settings:     return "settings";
+        case ScreenMode::RetroArch:    return "retroarch";
+        case ScreenMode::MediaBrowser: return "media_browser";
+    }
+    return "unknown";
+}
+
 #ifdef MEDIA_BROWSER_ENABLED
 // Top-level screen/view the app is currently showing. Historically the
 // kiosk has had a single main screen (playlist list + settings overlay);
@@ -117,6 +138,10 @@ struct AppState {
     std::atomic<bool> paused{false};              // True when playback is paused
     std::atomic<bool> is_switching_playlist{false}; // Flag to prevent overlapping playlist switches
     std::atomic<bool> playback_started_{false};   // True when current video has actually started playing
+
+    // Phone remote status sync — derived from current UI mode.
+    // Initialized to Playlist; updated by main loop / settings_menu / controller.
+    std::atomic<ScreenMode> screen_mode{ScreenMode::Playlist};
 
     double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
     std::string current_file;
