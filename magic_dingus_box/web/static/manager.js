@@ -569,6 +569,21 @@ function initializeEventListeners() {
             updateMobileSettingsView();
         } else if (tabId === 'mediabrowser') {
             refreshMediaBrowserStatus();
+        } else if (tabId === 'remote') {
+            // Phone-sized touch device → take over the whole window with the
+            // standalone remote page. Desktop → render inside the iframe in
+            // the existing tab body (already set up in HTML).
+            const isPhoneViewport = window.matchMedia('(max-width: 700px) and (pointer: coarse)').matches;
+            if (isPhoneViewport) {
+                window.location.assign('/admin/remote');
+                return;  // browser navigates away; don't continue
+            }
+            // Desktop case: ensure iframe src is current (in case the user
+            // paired/unpaired and we want to re-load).
+            const f = document.getElementById('remoteFrame');
+            if (f && !f.src.endsWith('/admin/remote')) {
+                f.src = '/admin/remote';
+            }
         }
     }
 

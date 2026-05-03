@@ -87,6 +87,7 @@
             <button class="tab active" data-tab="videos">📹 Videos & Playlists</button>
             <button class="tab" data-tab="roms">🎮 ROMs & Games</button>
             <button class="tab" data-tab="mediabrowser" id="mbTabNavBtn" style="display: none;">🎬 Media Browser</button>
+            <button class="tab" data-tab="remote">📱 Remote</button>
             <button class="tab" data-tab="settings">⚙️ Settings</button>
         </nav>
 
@@ -616,6 +617,21 @@
                 </div>
             </div>
         </section>
+
+        <section id="remote" class="tab-content">
+            <div id="remoteFrameWrap"
+                 style="width: 100%; max-width: 600px; margin: 24px auto; padding: 0 16px;">
+                <p style="color: var(--dim, #968B85); margin-bottom: 12px; font-size: 13px;">
+                    Use the remote below to control the kiosk. Best on a phone — opens
+                    the full-screen remote when accessed from a small touch device.
+                </p>
+                <iframe id="remoteFrame"
+                        src="/admin/remote"
+                        style="display: block; width: 100%; height: 760px;
+                               border: 0; border-radius: 12px; background: #1F191F;"
+                        allow="fullscreen"></iframe>
+            </div>
+        </section>
     </div>
 
     <!-- Bottom Navigation for Mobile -->
@@ -631,6 +647,10 @@
         <button class="bottom-nav-item" data-tab="mediabrowser" id="mbBottomNavBtn" style="display: none;">
             <span class="nav-icon">🎬</span>
             <span>Movies</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="remote">
+            <span class="nav-icon">📱</span>
+            <span>Remote</span>
         </button>
         <button class="bottom-nav-item" data-tab="settings">
             <span class="nav-icon">⚙️</span>
