@@ -445,6 +445,13 @@ utils::Result<> SettingsPersistence::load_settings(AppState& state) {
 #ifdef MEDIA_BROWSER_ENABLED
         state.media_browser_unlocked = playback.get("media_browser_unlocked", false).asBool();
         state.media_browser_vpn_configured = read_vpn_configured_from_services_env();
+        // Diagnostic: log the loaded gate values so operator can debug
+        // "menu doesn't show" issues without recompiling. Three layers
+        // must all pass for the menu row to appear; this surfaces the
+        // first two at boot (third is set later by VpnHealthMonitor).
+        LOG_INFO("[settings] media_browser gate at load: unlocked={} vpn_configured={}",
+                 state.media_browser_unlocked,
+                 state.media_browser_vpn_configured);
 #endif
 
         int volume = playback.get("master_volume", config::audio::DEFAULT_VOLUME).asInt();
