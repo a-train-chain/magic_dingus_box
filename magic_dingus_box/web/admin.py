@@ -22,6 +22,13 @@ from typing import Any, Optional
 import yaml
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
+try:
+    from remote import auth as remote_auth
+    from remote import devices as remote_devices
+except ImportError:
+    from .remote import auth as remote_auth
+    from .remote import devices as remote_devices
+
 
 # ===== SYSTEM MONITORING HELPERS =====
 
@@ -411,7 +418,10 @@ def format_playlist_yaml(data: dict) -> str:
 
 def create_app(data_dir: Path, config=None) -> Flask:
     app = Flask(__name__)
-    
+
+    # Expose data_dir to blueprints and request handlers (e.g. remote auth).
+    app.config["DATA_DIR"] = str(data_dir)
+
     # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
     max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
     app.config["MAX_CONTENT_LENGTH"] = max_mb * 1024 * 1024
@@ -3012,9 +3022,26 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @app.get("/")
     @app.get("/admin")
     def admin_interface():  # type: ignore[no-redef]
-        """Serve the web interface."""
+        """Serve the web interface.
+
+        If ?pair=<code> is present, delegate to the phone-remote pairing flow
+        before serving the static SPA so that the kiosk QR-code link is handled
+        transparently.
+        """
+        pair_code = request.args.get("pair")
+        if pair_code:
+            return remote_auth.handle_pair_param(pair_code)
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
+
+    @app.route("/admin/remote/protected_check")
+    def remote_protected_check():  # type: ignore[no-redef]
+        """Debug endpoint: verify the mdb_remote cookie and return device_id."""
+        cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
+        device_id = remote_auth.verify_cookie(cookie)
+        if device_id is None:
+            return error_response("unpaired", "Not paired", status=401)
+        return success_response({"device_id": device_id})
 
     @app.route("/static/<path:filename>")
     def serve_static(filename):  # type: ignore[no-redef]
