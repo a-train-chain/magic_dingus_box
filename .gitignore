@@ -108,3 +108,6 @@ magic_dingus_box_cpp/services/.env
 
 # Superpowers brainstorming session content (transient mockups)
 .superpowers/
+
+# Local Claude Code state — not for the repo
+.claude/
