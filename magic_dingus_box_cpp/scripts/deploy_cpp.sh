@@ -256,23 +256,33 @@ rsync -avz \
     "${CPP_DIR}/systemd/magic-dingus-box-cpp.service" \
     "${PI_HOST}:${PI_DIR}/systemd/"
 
-# Only restart the kiosk if the binary actually exists on the Pi —
-# otherwise the unit ends up "failed" and the operator has to manually
-# `systemctl reset-failed` before the next `--build` deploy can start it.
-# This was the most common first-deploy stumble: running deploy_cpp.sh
-# without --build before --build, leaving a phantom failed-state that
-# hid real failures from the next deploy.
-ssh "${PI_HOST}" bash <<EOF
-sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable magic-dingus-box-cpp.service
-if [ -x "${PI_DIR}/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
+# Restart policy:
+#   - If --build is set: SKIP the restart here (Step 3 hasn't run yet, the
+#     binary on disk is the OLD one). Restart happens at end of script
+#     after the new binary is built. This was a recurring footgun where
+#     the kiosk got restarted against the OLD binary while the build
+#     replaced the file on disk, leaving the new binary stranded until
+#     a manual restart.
+#   - Otherwise (no --build, just a sync): restart in place if a binary
+#     exists. Same first-deploy guard as before — we only restart if
+#     /opt/magic_dingus_box/.../build/magic_dingus_box_cpp is executable,
+#     so a sync-without-build doesn't crash the unit into a failed state.
+RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
     sudo systemctl restart magic-dingus-box-cpp.service
     echo "  Restarted kiosk (binary present)"
 else
     echo "  Skipping kiosk restart (binary not yet built — run with --build to compile)"
-fi
+fi'
+ssh "${PI_HOST}" bash <<EOF
+sudo cp ${PI_DIR}/systemd/magic-dingus-box-cpp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable magic-dingus-box-cpp.service
 EOF
+if [ "$BUILD" = true ]; then
+    echo "  Deferring kiosk restart until after build completes"
+else
+    ssh "${PI_HOST}" "${RESTART_CMD}"
+fi
 echo "  ✓ C++ App Service installed"
 echo ""
 
@@ -440,6 +450,14 @@ if [ "${MEDIA_BROWSER}" = "true" ]; then
     ls -la test_media_browser test_media_browser_unit 2>/dev/null | awk '{print "    " $NF " (" $5 " bytes)"}'
 fi
 BUILDEOF
+    echo ""
+
+    # Step 3b: Now that the new binary is on disk, restart the kiosk so it
+    # actually runs. Deferred from Step 1.7 to avoid the prior bug where
+    # the kiosk was restarted against the OLD binary, then the build
+    # replaced the file but the running process didn't pick it up.
+    echo "Step 3b: Restarting kiosk service to pick up the new binary..."
+    ssh "${PI_HOST}" "${RESTART_CMD}"
     echo ""
 fi
 
