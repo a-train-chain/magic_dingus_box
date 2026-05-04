@@ -1186,6 +1186,33 @@ int main(int /* argc */, char* /* argv */[]) {
         sd_notify(0, "WATCHDOG=1");
 #endif
 
+        // ── Invariant: kiosk overlays only exist on the kiosk's idle screen ──
+        // Settings menu, on-screen keyboard, and pairing screen are kiosk-
+        // owned modal overlays. They must NOT remain visible (or even active
+        // off-screen) when:
+        //   - a movie is playing (state.video_active), or
+        //   - the Media Browser owns the screen (current_screen == MB).
+        // Both cases mean the kiosk's playlist UI isn't on-screen, so any
+        // open kiosk overlay is invisible to the user — but still rendering
+        // every frame and consuming GPU/CPU. Force-close them here. Calls
+        // are idempotent (close() is a no-op when nothing is open / closing).
+        // Buttons can never leave the user with a stuck overlay this way.
+        {
+            bool kiosk_owns_screen = !state.video_active;
+#ifdef MEDIA_BROWSER_ENABLED
+            kiosk_owns_screen = kiosk_owns_screen
+                && state.current_screen != app::AppScreen::MediaBrowser;
+#endif
+            if (!kiosk_owns_screen) {
+                if (settings_menu.is_active() || settings_menu.is_opening()) {
+                    settings_menu.close();
+                }
+                if (keyboard.is_active()) {
+                    keyboard.close();
+                }
+            }
+        }
+
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
             // Display is closed - RetroArch has taken over
@@ -1847,9 +1874,18 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                     // Only toggle menu if we didn't change volume AND it was a short press
                     if (!menu_hold.volume_changed_while_held && hold_duration < 300) {
-                        // Only allow settings menu when UI is visible
-                        bool ui_available = !state.video_active || state.ui_visible_when_playing;
-                        if (ui_available) {
+                        // BTN4 only toggles the kiosk Settings overlay when
+                        // the kiosk's playlist screen is what's on-screen.
+                        // While a movie is playing OR the Media Browser is
+                        // active, the kiosk Settings overlay isn't visible,
+                        // so BTN4 must not move it. (MB has its own internal
+                        // dispatcher for its own settings/exit modal.)
+                        bool kiosk_owns_screen = !state.video_active;
+#ifdef MEDIA_BROWSER_ENABLED
+                        kiosk_owns_screen = kiosk_owns_screen
+                            && state.current_screen != app::AppScreen::MediaBrowser;
+#endif
+                        if (kiosk_owns_screen) {
                             settings_menu.toggle();
                         }
                     } else if (menu_hold.volume_changed_while_held) {
@@ -1893,35 +1929,6 @@ int main(int /* argc */, char* /* argv */[]) {
                     menu_hold.volume_changed_while_held = true;
                 }
                 continue; // Consume event
-            }
-            
-            // BTN4 (SETTINGS_MENU) handling — asymmetric in/out:
-            //   - If kiosk Settings is already open: always allow CLOSING
-            //     (regardless of MB/Playback state). This prevents the user
-            //     from getting trapped inside the Settings overlay during
-            //     a movie if they ever opened it (or it was opened by a
-            //     prior code path). Closing is always cheap and always wanted.
-            //   - If kiosk Settings is NOT open: only allow OPENING when
-            //     we're on the main playlist screen, NOT inside MB. BTN4
-            //     inside MB is handled by MB's own dispatcher (it has its
-            //     own Settings sub-screen and exit modal). Opening the
-            //     kiosk's settings panel over MB playback forced the full
-            //     UI render path on every frame while v4l2h264dec was
-            //     running, producing visible frame hitches.
-            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()) {
-                const bool already_open = settings_menu.is_active() ||
-                                          settings_menu.is_opening();
-                bool allow = already_open;  // closing is always allowed
-#ifdef MEDIA_BROWSER_ENABLED
-                if (!allow) {
-                    allow = (state.current_screen != app::AppScreen::MediaBrowser);
-                }
-#else
-                if (!allow) allow = true;
-#endif
-                if (allow) {
-                    settings_menu.toggle();
-                }
             }
             
             // Route input
