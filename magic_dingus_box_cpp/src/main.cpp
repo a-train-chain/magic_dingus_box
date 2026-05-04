@@ -402,6 +402,21 @@ int main(int /* argc */, char* /* argv */[]) {
     if (state.media_browser_unlocked && state.media_browser_vpn_configured) {
         vpn_health_monitor = std::make_unique<media_browser::VpnHealthMonitor>(state);
         vpn_health_monitor->start();
+
+        // Startup safety: call playback_services_pause.sh unpause to bring
+        // any stopped MB containers back up. This is the recovery path for
+        // "PlaybackScreen::leave() didn't run cleanly" cases — e.g. kiosk
+        // crashed mid-playback or was SIGABRT'd by systemd watchdog. With
+        // the docker-stop pause behavior, missed leave() = stranded
+        // containers (Docker's restart=unless-stopped doesn't auto-start
+        // manually-stopped containers). Without this safety: Movies entry
+        // silently vanishes on next boot. unpause is idempotent — no-op
+        // for already-running containers, starts stopped ones. Backgrounded
+        // (& at end) so the ~1-2 s docker start doesn't block the kiosk
+        // entering its main loop.
+        std::system(
+            "/usr/local/bin/playback_services_pause.sh unpause "
+            ">/dev/null 2>&1 &");
     }
 #endif
 
