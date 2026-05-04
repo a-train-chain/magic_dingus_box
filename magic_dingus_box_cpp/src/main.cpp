@@ -1895,22 +1895,33 @@ int main(int /* argc */, char* /* argv */[]) {
                 continue; // Consume event
             }
             
-            // New input handling structure
-            // Toggle main-kiosk settings menu — only when we're on the main
-            // (playlist) screen. BTN4 inside the Media Browser is handled
-            // by MB's own dispatcher (it has its own Settings sub-screen and
-            // exit modal), and opening the kiosk's settings panel over MB
-            // playback caused noticeable frame hitches because the panel
-            // forced the full UI render path while v4l2h264dec was running.
-            // Treating BTN4 as MB-internal during MB also matches user
-            // mental model: Movies should be a self-contained mode, not a
-            // launcher that the main kiosk can be popped open over.
-            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()
+            // BTN4 (SETTINGS_MENU) handling — asymmetric in/out:
+            //   - If kiosk Settings is already open: always allow CLOSING
+            //     (regardless of MB/Playback state). This prevents the user
+            //     from getting trapped inside the Settings overlay during
+            //     a movie if they ever opened it (or it was opened by a
+            //     prior code path). Closing is always cheap and always wanted.
+            //   - If kiosk Settings is NOT open: only allow OPENING when
+            //     we're on the main playlist screen, NOT inside MB. BTN4
+            //     inside MB is handled by MB's own dispatcher (it has its
+            //     own Settings sub-screen and exit modal). Opening the
+            //     kiosk's settings panel over MB playback forced the full
+            //     UI render path on every frame while v4l2h264dec was
+            //     running, producing visible frame hitches.
+            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()) {
+                const bool already_open = settings_menu.is_active() ||
+                                          settings_menu.is_opening();
+                bool allow = already_open;  // closing is always allowed
 #ifdef MEDIA_BROWSER_ENABLED
-                && state.current_screen != app::AppScreen::MediaBrowser
+                if (!allow) {
+                    allow = (state.current_screen != app::AppScreen::MediaBrowser);
+                }
+#else
+                if (!allow) allow = true;
 #endif
-            ) {
-                settings_menu.toggle();
+                if (allow) {
+                    settings_menu.toggle();
+                }
             }
             
             // Route input
