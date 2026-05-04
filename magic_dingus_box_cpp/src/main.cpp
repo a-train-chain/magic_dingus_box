@@ -1204,7 +1204,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 && state.current_screen != app::AppScreen::MediaBrowser;
 #endif
             if (!kiosk_owns_screen) {
-                if (settings_menu.is_active() || settings_menu.is_opening()) {
+                // Important: only call close() once. close() resets the
+                // animation_start_ timestamp whenever active_ is still true,
+                // so spamming it every frame keeps the close animation
+                // perpetually restarting → menu never finishes closing →
+                // renderer keeps drawing it → frame drops. Gate on
+                // !is_closing() so the animation can run to completion.
+                if ((settings_menu.is_active() || settings_menu.is_opening())
+                    && !settings_menu.is_closing()) {
                     settings_menu.close();
                 }
                 if (keyboard.is_active()) {
