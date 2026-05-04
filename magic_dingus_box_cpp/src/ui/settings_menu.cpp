@@ -393,6 +393,13 @@ void SettingsMenuManager::close() {
     close_pairing_screen();
 }
 
+void SettingsMenuManager::force_close() {
+    active_ = false;
+    is_opening_ = false;
+    is_closing_ = false;
+    close_pairing_screen();
+}
+
 float SettingsMenuManager::get_animation_progress() const {
     if (!active_ && !is_closing_) {
         return 0.0f;

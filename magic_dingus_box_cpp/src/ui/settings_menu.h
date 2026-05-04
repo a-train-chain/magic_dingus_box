@@ -71,6 +71,13 @@ public:
     void toggle();
     void open();
     void close();
+    // Teleport to fully-closed state without playing the close animation.
+    // Required for paths where the renderer that would normally advance
+    // the close animation isn't running (e.g. while the Media Browser
+    // owns the screen — main.cpp skips ui_renderer.render(state) there,
+    // so close()'s animation timer never advances and is_closing_ stays
+    // stuck true forever).
+    void force_close();
     
     bool is_active() const { return active_; }
     bool is_opening() const { return is_opening_; }
