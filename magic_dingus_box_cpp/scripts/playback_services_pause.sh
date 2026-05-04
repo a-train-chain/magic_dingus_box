@@ -47,37 +47,49 @@ fi
 ACTION="${1}"
 CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
 
-# `docker stop` waits up to STOP_TIMEOUT_S for SIGTERM-clean shutdown,
-# then SIGKILLs. 5 s is enough for Radarr/Prowlarr/Byparr to flush their
-# SQLite state cleanly; longer doesn't help and just delays playback start.
-STOP_TIMEOUT_S=5
+# `docker stop -t TIMEOUT` gives the container TIMEOUT seconds for a
+# SIGTERM-clean shutdown before SIGKILL. We pass ALL containers in a
+# single `docker stop` so they're stopped in PARALLEL — sequential stop
+# of 3 containers at 5 s each can take up to 15 s, which exceeded the
+# 10 s systemd watchdog on PlaybackScreen::enter() and caused the kiosk
+# to be SIGABRT'd mid-playback-init. Parallel stop with a tighter 2 s
+# timeout puts worst-case wall time at ~3 s — comfortable headroom.
+STOP_TIMEOUT_S=2
 
+# Filter to only containers that actually exist on this Pi.
+EXISTING=()
 for c in "${CONTAINERS[@]}"; do
-    # Skip if the container doesn't exist on this Pi (unprovisioned setup).
-    if ! docker inspect "$c" >/dev/null 2>&1; then
-        continue
+    if docker inspect "$c" >/dev/null 2>&1; then
+        EXISTING+=("$c")
     fi
-    if [ "$ACTION" = "pause" ]; then
-        # `docker stop` is a no-op on already-stopped containers (exit 0
-        # with a warning to stderr). It also works on currently-paused
-        # containers (Docker unpauses them first internally). `|| true`
-        # swallows any benign warning so journalctl stays clean for the
-        # idempotent re-entry case.
-        docker stop -t "$STOP_TIMEOUT_S" "$c" >/dev/null 2>&1 || true
-    else
-        # Container could be in any of three states when we're called:
-        #   - stopped (new path, post-this-script-update): need `docker start`
-        #   - paused  (legacy path, pre-script-update sessions in flight):
-        #              need `docker unpause`
-        #   - running (idempotent re-entry): both calls are benign no-ops
-        # Try both; verify the container is actually running afterwards.
-        docker unpause "$c" >/dev/null 2>&1 || true
-        docker start "$c" >/dev/null 2>&1 || true
+done
+
+if [ ${#EXISTING[@]} -eq 0 ]; then
+    echo "[playback-services] no media browser containers on this Pi — nothing to do"
+    exit 0
+fi
+
+if [ "$ACTION" = "pause" ]; then
+    # Parallel stop. `docker stop` is a no-op on already-stopped
+    # containers and also works on paused containers (Docker unpauses
+    # them first internally). `|| true` swallows benign warnings so
+    # journalctl stays clean for the idempotent re-entry case.
+    docker stop -t "$STOP_TIMEOUT_S" "${EXISTING[@]}" >/dev/null 2>&1 || true
+else
+    # Bring containers back up. Container could be in any of three
+    # states when we're called:
+    #   - stopped (new path): need `docker start`
+    #   - paused  (legacy path / from older sessions): need `docker unpause`
+    #   - running (idempotent re-entry): both are benign no-ops
+    # Try both in parallel; verify each is actually running afterwards.
+    docker unpause "${EXISTING[@]}" >/dev/null 2>&1 || true
+    docker start  "${EXISTING[@]}" >/dev/null 2>&1 || true
+    for c in "${EXISTING[@]}"; do
         if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
             echo "[playback-services] WARN: failed to bring $c back up" >&2
         fi
-    fi
-done
+    done
+fi
 
 # Tiny success log so journalctl shows when each transition fired.
 # The action verb stays "pause"/"unpause" externally; internally we now
