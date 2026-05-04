@@ -257,7 +257,20 @@ public:
     // main thread (toast detection) and settings_menu thread (Movies
     // entry visibility) — matches the convention used by other
     // cross-thread flags in this struct.
-    std::atomic<bool> media_browser_vpn_healthy{false};
+    // Initial value is TRUE (optimistic). VpnHealthMonitor does its first
+    // ping ~10 s after kiosk start, but Radarr/Prowlarr/Byparr containers
+    // typically take 30-60 s to become healthy after a fresh Docker boot.
+    // If we started false, the Movies entry would be hidden in the
+    // settings menu for that whole window every reboot, which produces
+    // the "Movies disappeared after reboot" UX bug. Starting true means:
+    //   - cold boot, tunnel actually fine: Movies visible immediately
+    //   - cold boot, tunnel genuinely down: 3 failed pings (~30 s)
+    //     flip this to false, toast fires, Movies entry hides — same
+    //     end-state as before, just delayed by 30 s
+    // The boot-time disagreement window is the price for "innocent
+    // until proven guilty"; it's much smaller than the previous
+    // "guilty until proven innocent" window.
+    std::atomic<bool> media_browser_vpn_healthy{true};
 
     // Active top-level screen. Only meaningful when media_browser_unlocked
     // is true; otherwise always MainMenu.
