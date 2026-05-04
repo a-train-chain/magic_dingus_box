@@ -1896,8 +1896,20 @@ int main(int /* argc */, char* /* argv */[]) {
             }
             
             // New input handling structure
-            // Check for toggle settings menu (always available unless keyboard open)
-            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()) {
+            // Toggle main-kiosk settings menu — only when we're on the main
+            // (playlist) screen. BTN4 inside the Media Browser is handled
+            // by MB's own dispatcher (it has its own Settings sub-screen and
+            // exit modal), and opening the kiosk's settings panel over MB
+            // playback caused noticeable frame hitches because the panel
+            // forced the full UI render path while v4l2h264dec was running.
+            // Treating BTN4 as MB-internal during MB also matches user
+            // mental model: Movies should be a self-contained mode, not a
+            // launcher that the main kiosk can be popped open over.
+            if (ev.action == InputAction::SETTINGS_MENU && ev.pressed && !keyboard.is_active()
+#ifdef MEDIA_BROWSER_ENABLED
+                && state.current_screen != app::AppScreen::MediaBrowser
+#endif
+            ) {
                 settings_menu.toggle();
             }
             
