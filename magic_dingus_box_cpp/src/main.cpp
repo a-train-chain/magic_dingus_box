@@ -1186,39 +1186,34 @@ int main(int /* argc */, char* /* argv */[]) {
         sd_notify(0, "WATCHDOG=1");
 #endif
 
-        // ── Invariant: kiosk overlays only exist on the kiosk's idle screen ──
-        // Settings menu, on-screen keyboard, and pairing screen are kiosk-
-        // owned modal overlays. They must NOT remain visible (or even active
-        // off-screen) when:
-        //   - a movie is playing (state.video_active), or
-        //   - the Media Browser owns the screen (current_screen == MB).
-        // Both cases mean the kiosk's playlist UI isn't on-screen, so any
-        // open kiosk overlay is invisible to the user — but still rendering
-        // every frame and consuming GPU/CPU. Force-close them here. Calls
-        // are idempotent (close() is a no-op when nothing is open / closing).
-        // Buttons can never leave the user with a stuck overlay this way.
-        {
-            bool kiosk_owns_screen = !state.video_active;
+        // ── Invariant: kiosk overlays don't exist inside the Media Browser ─
+        // Kiosk Settings menu / on-screen keyboard / pairing screen are
+        // overlays that visually live above the kiosk's main playlist UI.
+        // While the Media Browser owns the screen they're invisible — but
+        // still rendering every frame, consuming GPU/CPU, and the
+        // renderer that advances close()'s animation is itself skipped
+        // (main.cpp:3014 skips ui_renderer.render(state) for MB), so a
+        // close() call would leave the menu stuck in is_closing_ forever.
+        // Force-close (teleport, no animation) whenever MB is active.
+        //
+        // NOTE: this guard is intentionally MB-only. Main-kiosk playlist
+        // playback is governed by the operator's `ui_visible_when_playing`
+        // preference (legacy behavior) — they may want to pop Settings
+        // open while a playlist video plays, and the renderer DOES draw
+        // it there, so close() works normally and this invariant should
+        // not interfere.
 #ifdef MEDIA_BROWSER_ENABLED
-            kiosk_owns_screen = kiosk_owns_screen
-                && state.current_screen != app::AppScreen::MediaBrowser;
-#endif
-            if (!kiosk_owns_screen) {
-                // Use force_close() (not close()) because the renderer that
-                // would advance close()'s animation is itself skipped when
-                // MB or playback owns the screen — close()'s animation
-                // timer would never tick → is_closing_ stuck true forever.
-                // No one can see the menu anyway, so we teleport it shut.
-                if (settings_menu.is_active()
-                    || settings_menu.is_opening()
-                    || settings_menu.is_closing()) {
-                    settings_menu.force_close();
-                }
-                if (keyboard.is_active()) {
-                    keyboard.close();
-                }
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
+            if (settings_menu.is_active()
+                || settings_menu.is_opening()
+                || settings_menu.is_closing()) {
+                settings_menu.force_close();
+            }
+            if (keyboard.is_active()) {
+                keyboard.close();
             }
         }
+#endif
 
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -1881,19 +1876,32 @@ int main(int /* argc */, char* /* argv */[]) {
                     
                     // Only toggle menu if we didn't change volume AND it was a short press
                     if (!menu_hold.volume_changed_while_held && hold_duration < 300) {
-                        // BTN4 only toggles the kiosk Settings overlay when
-                        // the kiosk's playlist screen is what's on-screen.
-                        // While a movie is playing OR the Media Browser is
-                        // active, the kiosk Settings overlay isn't visible,
-                        // so BTN4 must not move it. (MB has its own internal
-                        // dispatcher for its own settings/exit modal.)
-                        bool kiosk_owns_screen = !state.video_active;
+                        // BTN4 toggle gating:
+                        //  - Inside Media Browser: never toggle the kiosk
+                        //    Settings overlay. MB owns the screen and has
+                        //    its own internal dispatcher (back/exit modal).
+                        //  - Outside MB (main kiosk playlist):
+                        //    * always allow CLOSE (never trap user in an
+                        //      open Settings overlay)
+                        //    * allow OPEN when UI is available, i.e. no
+                        //      playback active OR the user's
+                        //      `ui_visible_when_playing` preference is on.
+                        //      That preserves the original kiosk behavior:
+                        //      operators who ticked "show UI during
+                        //      playback" can still pop into Settings while
+                        //      a playlist video is rolling.
+                        bool in_mb = false;
 #ifdef MEDIA_BROWSER_ENABLED
-                        kiosk_owns_screen = kiosk_owns_screen
-                            && state.current_screen != app::AppScreen::MediaBrowser;
+                        in_mb = (state.current_screen == app::AppScreen::MediaBrowser);
 #endif
-                        if (kiosk_owns_screen) {
-                            settings_menu.toggle();
+                        if (!in_mb) {
+                            const bool already_open =
+                                settings_menu.is_active() || settings_menu.is_opening();
+                            const bool ui_available =
+                                !state.video_active || state.ui_visible_when_playing;
+                            if (already_open || ui_available) {
+                                settings_menu.toggle();
+                            }
                         }
                     } else if (menu_hold.volume_changed_while_held) {
                         // Volume was changed, save settings now
