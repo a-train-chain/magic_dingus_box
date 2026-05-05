@@ -1345,9 +1345,13 @@ int main(int /* argc */, char* /* argv */[]) {
                      auto current = display.get_current_mode();
                      if (current.height > config::display::CRT_MAX_HEIGHT) {
                          std::cout << "Native resolution too high. Clamping to "
-                                   << config::display::PREFERRED_HEIGHT << "p." << std::endl;
-                         display.set_mode(config::display::PREFERRED_WIDTH,
-                                          config::display::PREFERRED_HEIGHT); // Best effort clamp
+                                   << config::display::CRT_CLAMP_HEIGHT << "p (CRT mode)." << std::endl;
+                         // Use CRT_CLAMP_*, NOT PREFERRED_* — PREFERRED is now
+                         // 1080p (for the 24Hz judder fix on Modern TV mode);
+                         // CRT mode wants the lower 720p resolution so the
+                         // shader effects look right.
+                         display.set_mode(config::display::CRT_CLAMP_WIDTH,
+                                          config::display::CRT_CLAMP_HEIGHT);
                      }
                 }
             } else {

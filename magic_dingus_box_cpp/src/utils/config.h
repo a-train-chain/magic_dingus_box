@@ -112,6 +112,17 @@ namespace display {
 
     // Maximum safe height for CRT native mode
     constexpr int CRT_MAX_HEIGHT = 720;
+
+    // CRT-Native clamp resolution. When the user picks CRT_NATIVE mode
+    // and the panel's preferred mode is taller than CRT_MAX_HEIGHT
+    // (e.g. 4K panels), main.cpp clamps the DRM mode to this resolution
+    // so CRT shaders (scanlines, glow, RGB mask) operate on a low-res
+    // framebuffer — that's the whole point of CRT_NATIVE. Kept separate
+    // from PREFERRED_WIDTH/HEIGHT so bumping the latter to 1080p (for
+    // the 24Hz movie-judder fix) doesn't accidentally raise CRT mode's
+    // resolution and dilute the aesthetic.
+    constexpr int CRT_CLAMP_WIDTH  = 1280;
+    constexpr int CRT_CLAMP_HEIGHT = 720;
 }
 
 // =============================================================================
