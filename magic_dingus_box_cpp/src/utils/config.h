@@ -87,16 +87,7 @@ namespace retroarch {
 // =============================================================================
 
 namespace display {
-    // Preferred resolutions in order of preference.
-    // Reverted to 1280x720 (per user request: keep menus exactly as
-    // they were before the judder-fix work). The 24Hz refresh switch
-    // is left in place but is now effectively a no-op at 720p — the
-    // panel doesn't advertise 720p@24Hz (CEA-861 only has 720p50 and
-    // 720p60), so set_refresh_rate(24) at 720p returns false and the
-    // kiosk stays at 720p@60Hz. To actually fix judder for movie
-    // playback we'd need full resolution-switching machinery (boot
-    // at 720p, switch to 1080p@24Hz on movie play, switch back on
-    // stop) — that's a follow-up if/when the user wants it.
+    // Preferred resolutions in order of preference
     constexpr int PREFERRED_WIDTH = 1280;
     constexpr int PREFERRED_HEIGHT = 720;
 
@@ -106,26 +97,8 @@ namespace display {
     constexpr int FALLBACK_WIDTH_2 = 640;
     constexpr int FALLBACK_HEIGHT_2 = 480;
 
-    // Refresh rates kept as constants for the future resolution-
-    // switching path. Currently set_refresh_rate() is called on
-    // video_active edges but is a no-op at 720p (panel doesn't
-    // advertise the target mode).
-    constexpr int MENU_REFRESH_HZ  = 60;
-    constexpr int MOVIE_REFRESH_HZ = 24;
-
     // Maximum safe height for CRT native mode
     constexpr int CRT_MAX_HEIGHT = 720;
-
-    // CRT-Native clamp resolution. When the user picks CRT_NATIVE mode
-    // and the panel's preferred mode is taller than CRT_MAX_HEIGHT
-    // (e.g. 4K panels), main.cpp clamps the DRM mode to this resolution
-    // so CRT shaders (scanlines, glow, RGB mask) operate on a low-res
-    // framebuffer — that's the whole point of CRT_NATIVE. Kept separate
-    // from PREFERRED_WIDTH/HEIGHT so bumping the latter to 1080p (for
-    // the 24Hz movie-judder fix) doesn't accidentally raise CRT mode's
-    // resolution and dilute the aesthetic.
-    constexpr int CRT_CLAMP_WIDTH  = 1280;
-    constexpr int CRT_CLAMP_HEIGHT = 720;
 }
 
 // =============================================================================

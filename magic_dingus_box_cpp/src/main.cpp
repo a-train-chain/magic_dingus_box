@@ -1181,34 +1181,10 @@ int main(int /* argc */, char* /* argv */[]) {
     bool prev_vpn_healthy = state.media_browser_vpn_healthy;
 #endif
 
-    // Track previous-frame video_active so we can fire a one-shot
-    // CRTC refresh-rate switch on the rising/falling edges instead of
-    // every frame. Movies cause 3:2 pulldown judder at 60Hz on 24fps
-    // content; switching the panel to a 24Hz mode for the duration of
-    // playback makes every movie frame land on exactly one vsync.
-    // The switch stays at the *current resolution* — it's a CRTC
-    // timing change only, GBM/EGL framebuffers are untouched.
-    bool prev_video_active = false;
-
     while (running) {
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "WATCHDOG=1");
 #endif
-
-        // ── 24Hz movie / 60Hz menu refresh-rate switch ──────────────────────
-        // Edge-triggered: only fires when video_active changes. Skip if the
-        // panel doesn't advertise the target mode (set_refresh_rate returns
-        // false in that case — kiosk just stays on whatever it was, no harm).
-        if (state.video_active != prev_video_active) {
-            const uint32_t target_hz = state.video_active
-                ? config::display::MOVIE_REFRESH_HZ
-                : config::display::MENU_REFRESH_HZ;
-            if (!display.set_refresh_rate(target_hz)) {
-                // Common when the panel only has 60Hz at this resolution.
-                // Don't spam logs — set_refresh_rate already prints once.
-            }
-            prev_video_active = state.video_active;
-        }
 
         // ── Invariant: kiosk overlays only exist on the kiosk's idle screen ──
         // Settings menu, on-screen keyboard, and pairing screen are kiosk-
@@ -1345,13 +1321,9 @@ int main(int /* argc */, char* /* argv */[]) {
                      auto current = display.get_current_mode();
                      if (current.height > config::display::CRT_MAX_HEIGHT) {
                          std::cout << "Native resolution too high. Clamping to "
-                                   << config::display::CRT_CLAMP_HEIGHT << "p (CRT mode)." << std::endl;
-                         // Use CRT_CLAMP_*, NOT PREFERRED_* — PREFERRED is now
-                         // 1080p (for the 24Hz judder fix on Modern TV mode);
-                         // CRT mode wants the lower 720p resolution so the
-                         // shader effects look right.
-                         display.set_mode(config::display::CRT_CLAMP_WIDTH,
-                                          config::display::CRT_CLAMP_HEIGHT);
+                                   << config::display::PREFERRED_HEIGHT << "p." << std::endl;
+                         display.set_mode(config::display::PREFERRED_WIDTH,
+                                          config::display::PREFERRED_HEIGHT); // Best effort clamp
                      }
                 }
             } else {

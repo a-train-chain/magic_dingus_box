@@ -143,67 +143,6 @@ bool DrmDisplay::set_mode(uint32_t width, uint32_t height) {
     return set_connector_mode(width, height);
 }
 
-bool DrmDisplay::set_refresh_rate(uint32_t refresh_hz) {
-    if (drm_fd_ < 0 || connector_id_ == 0 || crtc_id_ == 0) {
-        return false;
-    }
-    if (current_mode_.width == 0 || current_mode_.height == 0) {
-        // No mode set yet — nothing to refresh-switch from.
-        return false;
-    }
-
-    drmModeConnector* conn = drmModeGetConnector(drm_fd_, connector_id_);
-    if (!conn) return false;
-
-    drmModeModeInfo* match = nullptr;
-    // Walk modes; pick the one matching current resolution AND target
-    // refresh. EDID typically reports vrefresh as a rounded integer
-    // (24, 25, 30, 50, 60) so a direct == compare works for the values
-    // we care about. drmModeModeInfo::vrefresh is plain Hz, not milliHz.
-    for (int i = 0; i < conn->count_modes; i++) {
-        drmModeModeInfo* m = &conn->modes[i];
-        if (m->hdisplay == current_mode_.width &&
-            m->vdisplay == current_mode_.height &&
-            m->vrefresh == refresh_hz) {
-            match = m;
-            break;
-        }
-    }
-    if (!match) {
-        drmModeFreeConnector(conn);
-        std::cerr << "set_refresh_rate: no " << current_mode_.width
-                  << "x" << current_mode_.height << "@" << refresh_hz
-                  << "Hz mode advertised by panel" << std::endl;
-        return false;
-    }
-
-    // Use the saved CRTC's framebuffer — same resolution, so it's still valid.
-    uint32_t fb_id = 0;
-    if (saved_crtc_ && saved_crtc_id_ == crtc_id_) {
-        drmModeCrtc* crtc = static_cast<drmModeCrtc*>(saved_crtc_);
-        fb_id = crtc->buffer_id;
-    }
-
-    int ret = drmModeSetCrtc(drm_fd_, crtc_id_, fb_id, 0, 0,
-                             &connector_id_, 1, match);
-    if (ret < 0) {
-        std::cerr << "set_refresh_rate: drmModeSetCrtc failed: "
-                  << strerror(errno) << std::endl;
-        drmModeFreeConnector(conn);
-        return false;
-    }
-
-    current_mode_.refresh = match->vrefresh;
-    current_mode_.name = match->name;
-    std::cout << "Switched refresh: " << current_mode_.width
-              << "x" << current_mode_.height
-              << "@" << current_mode_.refresh
-              << "Hz (" << current_mode_.name << ")" << std::endl;
-
-    drmModeFreeConnector(conn);
-    return true;
-}
-
 bool DrmDisplay::find_connector() {
     drmModeRes* resources = drmModeGetResources(drm_fd_);
     if (!resources) {
