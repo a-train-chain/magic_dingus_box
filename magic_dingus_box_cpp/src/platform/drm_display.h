@@ -25,7 +25,16 @@ public:
     
     // Set specific resolution (e.g., 720x480) or auto-detect
     bool set_mode(uint32_t width = 0, uint32_t height = 0);
-    
+
+    // Switch refresh rate at the *current resolution* without changing
+    // GBM/EGL framebuffers. Used for movie-playback judder fix:
+    // 24Hz for 24fps content, 60Hz for menus. The framebuffer dims
+    // don't change, only the CRTC scanout timing — safe mid-stream.
+    // Returns false if no mode at the current resolution matches the
+    // requested refresh; callers should fall back to whatever current
+    // mode is. refresh_hz is plain Hz (e.g. 24, 60), NOT milliHz.
+    bool set_refresh_rate(uint32_t refresh_hz);
+
     // Get current mode
     DisplayMode get_current_mode() const { return current_mode_; }
     
