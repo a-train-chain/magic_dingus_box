@@ -88,27 +88,30 @@ namespace retroarch {
 
 namespace display {
     // Preferred resolutions in order of preference.
-    // Bumped 1280x720 → 1920x1080 for the movie-judder fix: only at
-    // 1080p does the panel advertise the 24Hz CEA mode (VIC 32) we
-    // need for clean 1:1 cadence on 24fps movies. 720p has no 24Hz
-    // mode in CEA-861 — only 50Hz and 60Hz, both of which produce
-    // 3:2 pulldown judder on film content.
-    constexpr int PREFERRED_WIDTH = 1920;
-    constexpr int PREFERRED_HEIGHT = 1080;
+    // Reverted to 1280x720 (per user request: keep menus exactly as
+    // they were before the judder-fix work). The 24Hz refresh switch
+    // is left in place but is now effectively a no-op at 720p — the
+    // panel doesn't advertise 720p@24Hz (CEA-861 only has 720p50 and
+    // 720p60), so set_refresh_rate(24) at 720p returns false and the
+    // kiosk stays at 720p@60Hz. To actually fix judder for movie
+    // playback we'd need full resolution-switching machinery (boot
+    // at 720p, switch to 1080p@24Hz on movie play, switch back on
+    // stop) — that's a follow-up if/when the user wants it.
+    constexpr int PREFERRED_WIDTH = 1280;
+    constexpr int PREFERRED_HEIGHT = 720;
 
-    // Fallback resolutions if 1080p isn't available (very rare on
-    // modern panels; legacy CRTs etc. may need these).
-    constexpr int FALLBACK_WIDTH_1 = 1280;
-    constexpr int FALLBACK_HEIGHT_1 = 720;
+    // Fallback resolutions
+    constexpr int FALLBACK_WIDTH_1 = 1920;
+    constexpr int FALLBACK_HEIGHT_1 = 1080;
     constexpr int FALLBACK_WIDTH_2 = 640;
     constexpr int FALLBACK_HEIGHT_2 = 480;
 
-    // Refresh rates for the 24Hz judder-fix mode-switch. Used by
-    // main.cpp on video_active rising/falling edges to swap CRTC
-    // scanout timing between menu and movie cadence. Stays at the
-    // current resolution — only timing changes, no GBM/EGL reset.
-    constexpr int MENU_REFRESH_HZ  = 60;  // smooth menu animations
-    constexpr int MOVIE_REFRESH_HZ = 24;  // 1:1 with 23.976/24fps content
+    // Refresh rates kept as constants for the future resolution-
+    // switching path. Currently set_refresh_rate() is called on
+    // video_active edges but is a no-op at 720p (panel doesn't
+    // advertise the target mode).
+    constexpr int MENU_REFRESH_HZ  = 60;
+    constexpr int MOVIE_REFRESH_HZ = 24;
 
     // Maximum safe height for CRT native mode
     constexpr int CRT_MAX_HEIGHT = 720;
