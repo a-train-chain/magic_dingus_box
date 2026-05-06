@@ -36,7 +36,11 @@
       backoff = 250;
       ws.send(JSON.stringify({ t: 'hello', client: 'remote-v1', schema: 1 }));
       dot.dataset.state = 'green';
-      textInput.disabled = false;
+      // Cache-safety: if the iOS PWA is serving an OLD HTML (without the
+      // text-input element) alongside this newer JS, textInput is null.
+      // Don't throw — just skip the disabled toggle. The user will get a
+      // working D-pad; refreshing fixes the cache mismatch on their end.
+      if (textInput) textInput.disabled = false;
     };
     ws.onmessage = (e) => {
       let msg;
@@ -45,7 +49,7 @@
     };
     ws.onclose = () => {
       dot.dataset.state = 'red';
-      textInput.disabled = true;
+      if (textInput) textInput.disabled = true;
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 5000);
     };
@@ -153,6 +157,12 @@
     const wantsTextMode = ti.active === true;
     document.body.classList.toggle('text-mode', wantsTextMode);
 
+    // Cache-safety: if text-input elements are missing (cached pre-feature
+    // HTML), the body class still toggles (harmless on its own — CSS just
+    // has nothing to reveal) but skip every line that would dereference
+    // the missing nodes.
+    if (!textInput || !textTitle) return;
+
     if (!wantsTextMode) {
       // Kiosk left the text context — dismiss any open OS keyboard.
       if (document.activeElement === textInput) {
@@ -203,30 +213,40 @@
   // Every native-keyboard input event (per character, paste, autocomplete-
   // commit) fires this. We compute the diff against lastLocalValue and
   // emit the matching kiosk message(s).
-  textInput.addEventListener('input', (e) => {
-    const newVal = e.target.value;
-    syncToKiosk(newVal, lastLocalValue);
-    lastLocalValue = newVal;
-  });
+  // Cache-safety: skip listener wiring if the HTML being served lacks the
+  // text-section markup (e.g., iOS PWA serving cached pre-feature HTML
+  // alongside fresh JS). Without these guards, addEventListener on null
+  // throws at module-load time, which crashes the whole JS module
+  // INCLUDING the WS connect() call — the user would see the phone fail
+  // to reconnect with no clear cause.
+  if (textInput) {
+    textInput.addEventListener('input', (e) => {
+      const newVal = e.target.value;
+      syncToKiosk(newVal, lastLocalValue);
+      lastLocalValue = newVal;
+    });
 
-  // The OS keyboard's "Search" / "Return" key. Submit semantics depend
-  // on the kiosk-side context: search keyboard ignores it (no on_enter
-  // callback set; search is debounced); WiFi keyboard fires its
-  // on_enter (commit password attempt).
-  textInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();      // don't submit a form / add a newline
-      send({ t: 'key_special', k: 'enter' });
-    }
-  });
+    // The OS keyboard's "Search" / "Return" key. Submit semantics depend
+    // on the kiosk-side context: search keyboard ignores it (no on_enter
+    // callback set; search is debounced); WiFi keyboard fires its
+    // on_enter (commit password attempt).
+    textInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();      // don't submit a form / add a newline
+        send({ t: 'key_special', k: 'enter' });
+      }
+    });
+  }
 
   // "×" clear affordance.
-  clearBtn.addEventListener('click', () => {
-    textInput.value = '';
-    lastLocalValue = '';
-    send({ t: 'clear' });
-    textInput.focus();    // keep keyboard up so user can keep typing
-  });
+  if (clearBtn && textInput) {
+    clearBtn.addEventListener('click', () => {
+      textInput.value = '';
+      lastLocalValue = '';
+      send({ t: 'clear' });
+      textInput.focus();    // keep keyboard up so user can keep typing
+    });
+  }
 
   function maybeShowInstallHint() {
     const isStandalone = (typeof window.navigator.standalone !== 'undefined' && window.navigator.standalone === true)
