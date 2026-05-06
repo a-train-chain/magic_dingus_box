@@ -21,7 +21,13 @@ BUILD=false
 TEST=false
 INSTALL_CORES=false
 SETUP_USB_GADGET=false
-MEDIA_BROWSER=false
+MEDIA_BROWSER=true   # Default ON — production Pis run Media Browser. The
+                     # CMake option in CMakeLists.txt still defaults to OFF
+                     # for cross-builds on dev machines; this script overrides
+                     # for the deploy path because every Pi this script targets
+                     # is the production kiosk. Override with `MEDIA_BROWSER=false
+                     # ./scripts/deploy_cpp.sh --build` if you ever need an
+                     # MB-stripped build (e.g., debugging the OFF code path).
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -57,7 +63,8 @@ Options:
   --test, -t      Sync, build, and test on Pi
   --cores, -c     Sync, build, install RetroArch cores
   --usb-gadget, -u  Setup USB Ethernet Gadget mode for fast uploads
-  --media-browser, -m  Install Media Browser deps + build with ENABLE_MEDIA_BROWSER=ON
+  --media-browser, -m  Install Media Browser deps (build is MB=ON by default;
+                       this flag adds the apt-get step for the docker stack)
   --help, -h      Show this help
 
 Environment overrides:
