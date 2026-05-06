@@ -9,9 +9,9 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
-#include <fstream>
-#include <sstream>
+#include <cerrno>
 #include <filesystem>
+#include <sstream>
 #include <json/json.h>
 
 namespace fs = std::filesystem;
@@ -37,18 +37,42 @@ void Controller::poll_text_input_queue(AppState& state) {
         return;
     }
 
-    // Read entire file into memory under lock.
-    std::string contents;
-    {
-        std::ifstream f(text_input_queue_path_);
-        std::ostringstream ss;
-        ss << f.rdbuf();
-        contents = ss.str();
+    // Read entire file into memory via the locked fd.
+    // flock(2) is per-open-file-description on Linux: opening a second fd
+    // (e.g. via std::ifstream) would have no lock, so we read from the same
+    // fd we already locked.
+    off_t size = ::lseek(fd, 0, SEEK_END);
+    if (size <= 0) {
+        ::flock(fd, LOCK_UN);
+        ::close(fd);
+        return;
     }
+    ::lseek(fd, 0, SEEK_SET);
 
-    // Truncate the file (we own the exclusive lock).
+    std::string contents(static_cast<size_t>(size), '\0');
+    ssize_t total = 0;
+    while (total < size) {
+        ssize_t n = ::read(fd, contents.data() + total,
+                           static_cast<size_t>(size - total));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::flock(fd, LOCK_UN);
+            ::close(fd);
+            return;  // read failed — skip this batch entirely
+        }
+        if (n == 0) break;  // EOF earlier than expected; truncate buffer below
+        total += n;
+    }
+    contents.resize(static_cast<size_t>(total));
+
+    // Truncate the file (we own the exclusive lock). If truncate fails, return
+    // WITHOUT dispatching events — they'd otherwise be replayed on next frame
+    // because fs::file_size will still be non-zero. Better to skip a batch
+    // than to deliver duplicate keystrokes.
     if (::ftruncate(fd, 0) != 0) {
-        // best-effort — events still parsed below even if truncate fails
+        ::flock(fd, LOCK_UN);
+        ::close(fd);
+        return;
     }
     ::flock(fd, LOCK_UN);
     ::close(fd);
