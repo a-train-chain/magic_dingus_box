@@ -93,6 +93,7 @@ TEST_CASE("status_writer emits text_input block when keyboard active", "[remote]
     Json::Value root;
     f >> root;
 
+    REQUIRE(root.isMember("text_input"));
     REQUIRE(root["text_input"]["active"].asBool() == true);
     REQUIRE(root["text_input"]["title"].asString() == "Search movies");
     REQUIRE(root["text_input"]["buffer"].asString() == "shawsh");
