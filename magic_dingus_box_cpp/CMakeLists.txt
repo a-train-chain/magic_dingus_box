@@ -115,16 +115,15 @@ set(UI_SOURCES
     src/ui/qrcodegen.cpp
 )
 
-# toast.cpp is Media Browser V2 chrome — only compile it when the feature
-# flag is on so the ENABLE_MEDIA_BROWSER=OFF build stays bit-identical to
-# pre-V2 baseline (invariant enforced by CI golden_image preflight).
-if(ENABLE_MEDIA_BROWSER)
-    list(APPEND UI_SOURCES src/ui/toast.cpp)
-endif()
+# toast.cpp is referenced by settings_menu.cpp (Wi-Fi connect toasts) which
+# is always compiled into the kiosk binary, so toast.cpp must also always be
+# included regardless of ENABLE_MEDIA_BROWSER.
+list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
     src/app/playlist_loader.cpp
     src/app/controller.cpp
+    src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
     src/app/status_writer.cpp

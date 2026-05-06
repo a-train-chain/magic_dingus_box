@@ -477,6 +477,8 @@ int main(int /* argc */, char* /* argv */[]) {
     Controller controller(&player);
     controller.set_display(&display);  // Set display reference for DRM cleanup
     controller.set_input_manager(&input);  // Set input manager reference for controller release
+    controller.set_text_input_queue_path(
+        config::get_data_path() + "/text_input_queue.jsonl");
     
     // Initialize Virtual Keyboard
     VirtualKeyboard keyboard;
@@ -1214,6 +1216,27 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
 #endif
+
+        // Phone Remote — refresh the active text-input pointer each frame.
+        // Whichever VirtualKeyboard is currently is_active() becomes the
+        // destination for phone-typed characters via poll_text_input_queue
+        // below. This is the only place the pointer is set/cleared, so
+        // the spec's "single source of truth" invariant holds.
+        state.active_text_keyboard = nullptr;
+        state.active_text_title    = "";
+#ifdef MEDIA_BROWSER_ENABLED
+        if (state.current_screen == app::AppScreen::MediaBrowser
+            && current_mb_screen == media_browser::ui::Screen::Search
+            && mb_search.is_keyboard_active()) {
+            state.active_text_keyboard = &mb_search.keyboard();
+            state.active_text_title    = "Search movies";
+        } else
+#endif
+        if (keyboard.is_active()) {
+            // The kiosk's main VirtualKeyboard (Wi-Fi password etc.).
+            state.active_text_keyboard = &keyboard;
+            state.active_text_title    = keyboard.get_title();
+        }
 
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
@@ -3243,6 +3266,7 @@ int main(int /* argc */, char* /* argv */[]) {
         // Phone Remote — drain pending tap-to-seek requests each frame.
         // Cheap (single fs::exists check) when nothing is queued.
         controller.poll_seek_request();
+        controller.poll_text_input_queue(state);
 
         // ── Phone Remote: 1 Hz tick for active pairing screen ────────────────
         if (settings_menu.is_pairing_screen_active()) {
@@ -3288,9 +3312,13 @@ int main(int /* argc */, char* /* argv */[]) {
         // already finer-grained than the underlying video — no
         // perceived motion difference, just less CPU pressure on
         // sustained-load scenes.
+#ifdef MEDIA_BROWSER_ENABLED
         const bool mb_movie_active =
             state.video_active &&
             state.current_screen == app::AppScreen::MediaBrowser;
+#else
+        const bool mb_movie_active = false;
+#endif
         const int target_ms = mb_movie_active ? 33 : 16;
         if (delta < target_ms) {
             std::this_thread::sleep_for(

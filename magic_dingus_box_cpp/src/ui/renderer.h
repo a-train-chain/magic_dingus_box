@@ -30,13 +30,13 @@ class ArtworkCache;
 namespace ui {
 
 class Renderer {
-#ifdef MEDIA_BROWSER_ENABLED
     // Toast overlay needs access to private drawing helpers (draw_quad,
     // draw_text, draw_line) and to theme_/body_font_manager_ for measuring
     // and styling its centered panel. Kept as a friend to avoid widening
     // the public Renderer API for a single overlay primitive.
+    // Note: Toast is always compiled (Wi-Fi connection feedback in settings_menu
+    // uses it regardless of ENABLE_MEDIA_BROWSER), so the friend is unconditional.
     friend class Toast;
-#endif
 
 public:
     Renderer(uint32_t width, uint32_t height);
