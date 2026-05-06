@@ -27,11 +27,13 @@ try:
     from remote import devices as remote_devices
     from remote import ws_handler
     from remote.uinput_writer import UinputWriter
+    from remote.text_input_writer import TextInputWriter
 except ImportError:
     from .remote import auth as remote_auth
     from .remote import devices as remote_devices
     from .remote import ws_handler
     from .remote.uinput_writer import UinputWriter
+    from .remote.text_input_writer import TextInputWriter
 
 
 # ===== SYSTEM MONITORING HELPERS =====
@@ -521,6 +523,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         import warnings
         warnings.warn(f"Phone Remote: failed to open /dev/uinput at startup: {e}", RuntimeWarning)
         app.config["UINPUT_WRITER"] = None
+
+    # Construct TextInputWriter for phone-remote keyboard input. The kiosk
+    # drains the same queue file each frame via config::get_data_path().
+    app.config["TEXT_INPUT_WRITER"] = TextInputWriter(
+        queue_path=data_dir / "text_input_queue.jsonl"
+    )
 
     # Limit upload sizes; default 8GB (can override via MAGIC_MAX_UPLOAD_MB)
     max_mb = int(os.getenv("MAGIC_MAX_UPLOAD_MB", "8192"))
@@ -3141,6 +3149,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             ws_handler.handle_connection(
                 ws,
                 uinput_writer=writer,
+                text_input_writer=app.config["TEXT_INPUT_WRITER"],
                 data_dir=Path(app.config["DATA_DIR"]),
                 verify_cookie=remote_auth.verify_cookie,
             )

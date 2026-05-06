@@ -49,7 +49,7 @@ def _remove(conn: Connection) -> None:
             pass
 
 
-def handle_connection(ws, *, uinput_writer, data_dir: Path,
+def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                       verify_cookie: Callable[[str], Optional[str]]):
     """Drive a single connection until the socket closes."""
     cookie = request.cookies.get("mdb_remote", "")
@@ -110,6 +110,19 @@ def handle_connection(ws, *, uinput_writer, data_dir: Path,
                 }))
                 os.replace(tmp, seek_path)
                 ws.send(json.dumps({"t": "ack", "of": "seek", "ok": True}))
+            elif t == "type_char":
+                c = msg.get("c", "")
+                if isinstance(c, str) and len(c) == 1 and c.isprintable() and ord(c) < 0x80:
+                    text_input_writer.type_char(c, device_id=device_id)
+
+            elif t == "key_special":
+                k = msg.get("k", "")
+                if isinstance(k, str) and k in ("backspace", "enter", "cancel"):
+                    text_input_writer.key_special(k, device_id=device_id)
+
+            elif t == "clear":
+                text_input_writer.clear(device_id=device_id)
+
             elif t == "hello":
                 pass  # already handshook
     finally:
