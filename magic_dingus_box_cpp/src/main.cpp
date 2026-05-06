@@ -1627,35 +1627,18 @@ int main(int /* argc */, char* /* argv */[]) {
             // happen to be active in the same frame (user pressing BTN2
             // to leave the Marquee shouldn't be hijacked by a late stall
             // event firing the same tick).
-            {
-                // Skip when VPN is unhealthy: the watchdog's tick() does a
-                // synchronous qBit /torrents/info (5s timeout) plus a per-
-                // watched-movie Radarr /history (5s each). With Gluetun down
-                // those calls all stall to their full timeout — multiplied
-                // across active watches that easily exceeds WatchdogSec=10
-                // and trips systemd into respawning the kiosk mid-session.
-                // VpnHealthMonitor already surfaces the "tunnel down" toast
-                // separately, so suppressing stall checks during an outage
-                // also avoids the spurious "no peers" modal blaming peers
-                // when the real culprit is the tunnel.
-                auto stall_events = state.media_browser_vpn_healthy
-                    ? mb_watchdog.tick()
-                    : std::vector<media_browser::DownloadWatchdog::StallEvent>{};
-                if (!stall_events.empty() && !mb_stall_modal.is_active()
-                    && !mb_exit_modal.is_open()) {
-                    const auto& ev = stall_events.front();
-                    media_browser::ui::StallPromptModal::Pending p;
-                    p.tmdb_id         = ev.tmdb_id;
-                    p.radarr_movie_id = ev.radarr_movie_id;
-                    p.title           = ev.title;
-                    p.reason_label =
-                        (ev.reason ==
-                         media_browser::DownloadWatchdog::Reason::RadarrFailed)
-                            ? "Radarr reported the download failed"
-                            : "No peers connected after 60s";
-                    mb_stall_modal.show(std::move(p));
-                }
-            }
+            // ── Stall-prompt modal disabled (per user request) ─────────────
+            // The DownloadWatchdog used to tick here every frame, polling
+            // Radarr + qBit for stalled downloads and surfacing a modal
+            // asking the user to pick a different release or snooze. The
+            // operator found the modal pesky — it was firing on completed
+            // downloads (likely a stale-watch-cleanup bug, not investigated
+            // since we're removing the surface anyway). The watchdog object
+            // still exists (Detail / ReleasePicker hold references and
+            // register watches on grab — those become no-ops without the
+            // tick), and the input/render hooks below stay since modal.is_active()
+            // returns false forever now, making them cheap no-ops. If you
+            // ever want to re-enable: restore the tick + show() block here.
 
             // === Stall modal intercept ===
             // Traps ALL input while active and consumes the queue so no
