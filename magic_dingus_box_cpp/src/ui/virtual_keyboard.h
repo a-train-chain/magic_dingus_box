@@ -48,9 +48,11 @@ public:
     // affordance and paste handling. No-op when not active.
     void clear_buffer();
 
-    // Fire on_enter_(text_buffer_) for the current buffer. No-op when
-    // not active or when no on_enter callback was registered (e.g. MB
-    // Search uses live debounce and ignores submit).
+    // Submit the current buffer: fire on_enter_(text_buffer_) if a
+    // callback is set, then close the keyboard (active_ = false).
+    // This mirrors select()'s ENTER-key path so the Phone Remote's
+    // "enter" message and the on-screen keyboard's ENTER key produce
+    // identical state transitions. No-op when not active.
     void commit();
 
     // Accessors for renderer

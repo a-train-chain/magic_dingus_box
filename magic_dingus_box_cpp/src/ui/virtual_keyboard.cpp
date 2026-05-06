@@ -165,6 +165,7 @@ void VirtualKeyboard::clear_buffer() {
 void VirtualKeyboard::commit() {
     if (!active_) return;
     if (on_enter_) on_enter_(text_buffer_);
+    active_ = false;
 }
 
 } // namespace ui

@@ -43,7 +43,18 @@ TEST_CASE("VirtualKeyboard::commit fires on_enter when set", "[remote][keyboard]
 TEST_CASE("VirtualKeyboard::commit no-op when on_enter unset", "[remote][keyboard]") {
     ui::VirtualKeyboard kb;
     kb.open("hello", "Search", nullptr, nullptr);
-    // Should not crash; nothing to capture.
+    // Should not crash; nothing to capture. Keyboard still closes
+    // after commit() — same semantic as select()'s ENTER key.
     REQUIRE_NOTHROW(kb.commit());
     REQUIRE(kb.get_text() == "hello");
+    REQUIRE_FALSE(kb.is_active());
+}
+
+TEST_CASE("VirtualKeyboard::commit closes keyboard like select-ENTER", "[remote][keyboard]") {
+    ui::VirtualKeyboard kb;
+    kb.open("hello", "T", nullptr, nullptr);
+    REQUIRE(kb.is_active());
+
+    kb.commit();
+    REQUIRE_FALSE(kb.is_active());
 }
