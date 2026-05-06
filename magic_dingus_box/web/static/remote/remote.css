@@ -190,3 +190,79 @@ body.remote { user-select: none; }
   from { transform: translateY(20px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* ── Phone Remote — text input section ──────────────────────────── */
+/* Mirrors the existing D-pad section's spacing/typography so the
+   transition between text-mode and D-pad-mode feels native. */
+
+#text-section {
+  /* Hidden by default; revealed when body.text-mode is set. */
+  display: none;
+  margin: 0 1rem 1rem 1rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  transition: opacity 150ms ease-out;
+}
+
+body.text-mode #text-section {
+  display: block;
+}
+
+.text-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.text-section__title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.02em;
+}
+
+.text-section__clear {
+  appearance: none;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 1.125rem;
+  font-weight: 600;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.text-section__clear:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.text-section__input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.625rem 0.75rem;
+  font-size: 1rem;
+  font-family: inherit;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  color: white;
+  outline: none;
+  transition: border-color 120ms ease-out;
+}
+
+.text-section__input:focus {
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.text-section__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -28,6 +28,23 @@
     <span id="time-now">0:00</span><span id="time-total">0:00</span>
   </div>
 
+  <section id="text-section" hidden>
+    <header class="text-section__header">
+      <span id="text-title" class="text-section__title"></span>
+      <button id="text-clear" class="text-section__clear" type="button" aria-label="Clear">×</button>
+    </header>
+    <input
+      id="text-input"
+      class="text-section__input"
+      type="text"
+      autocomplete="off"
+      autocapitalize="none"
+      spellcheck="false"
+      enterkeyhint="search"
+      aria-label="Text input"
+    >
+  </section>
+
   <div class="dpad-wrap">
     <div class="dpad">
       <button class="arm up"    data-btn="UP"    aria-label="Up"></button>
