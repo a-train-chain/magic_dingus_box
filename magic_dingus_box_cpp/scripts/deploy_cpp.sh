@@ -143,6 +143,7 @@ rsync -avz \
     --exclude 'data/flask_secret.key' \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \
+    --exclude 'data/text_input_queue.jsonl' \
     --filter 'P data/thumbnails/ps1' \
     --filter 'P data/thumbnails/nes' \
     --filter 'P data/thumbnails/snes' \
