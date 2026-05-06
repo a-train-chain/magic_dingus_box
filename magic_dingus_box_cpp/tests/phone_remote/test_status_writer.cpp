@@ -4,6 +4,7 @@
 #include <json/json.h>
 #include "app/app_state.h"
 #include "app/status_writer.h"
+#include "ui/virtual_keyboard.h"
 
 namespace fs = std::filesystem;
 
@@ -54,4 +55,45 @@ TEST_CASE("status_writer atomic write — never leaves partial files", "[remote]
         }
     }
     REQUIRE(has_partial == false);
+}
+
+TEST_CASE("status_writer emits text_input.active=false when no keyboard", "[remote][status][text_input]") {
+    fs::path tmp = fs::temp_directory_path() / "mdb_status_text_inactive.json";
+    fs::remove(tmp);
+
+    app::AppState state;
+    state.active_text_keyboard = nullptr;
+
+    app::StatusWriter w(tmp.string());
+    w.write_now(state);
+
+    std::ifstream f(tmp);
+    Json::Value root;
+    f >> root;
+
+    REQUIRE(root.isMember("text_input"));
+    REQUIRE(root["text_input"]["active"].asBool() == false);
+}
+
+TEST_CASE("status_writer emits text_input block when keyboard active", "[remote][status][text_input]") {
+    fs::path tmp = fs::temp_directory_path() / "mdb_status_text_active.json";
+    fs::remove(tmp);
+
+    ui::VirtualKeyboard kb;
+    kb.open("shawsh", "Search movies", nullptr, nullptr);
+
+    app::AppState state;
+    state.active_text_keyboard = &kb;
+    state.active_text_title    = "Search movies";
+
+    app::StatusWriter w(tmp.string());
+    w.write_now(state);
+
+    std::ifstream f(tmp);
+    Json::Value root;
+    f >> root;
+
+    REQUIRE(root["text_input"]["active"].asBool() == true);
+    REQUIRE(root["text_input"]["title"].asString() == "Search movies");
+    REQUIRE(root["text_input"]["buffer"].asString() == "shawsh");
 }

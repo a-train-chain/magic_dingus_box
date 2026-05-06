@@ -8,6 +8,7 @@
 #include <thread>
 #include <json/json.h>
 #include "utils/logger.h"
+#include "ui/virtual_keyboard.h"
 
 namespace app {
 
@@ -57,6 +58,16 @@ void StatusWriter::write_now(const AppState& state) {
     } else {
         root["retroarch"] = Json::Value::null;
     }
+
+    Json::Value text_input(Json::objectValue);
+    if (state.active_text_keyboard != nullptr) {
+        text_input["active"] = true;
+        text_input["title"]  = state.active_text_title;
+        text_input["buffer"] = state.active_text_keyboard->get_text();
+    } else {
+        text_input["active"] = false;
+    }
+    root["text_input"] = text_input;
 
     Json::StreamWriterBuilder b;
     b["indentation"] = "";
