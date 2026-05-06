@@ -36,6 +36,7 @@
       backoff = 250;
       ws.send(JSON.stringify({ t: 'hello', client: 'remote-v1', schema: 1 }));
       dot.dataset.state = 'green';
+      textInput.disabled = false;
     };
     ws.onmessage = (e) => {
       let msg;
@@ -44,6 +45,7 @@
     };
     ws.onclose = () => {
       dot.dataset.state = 'red';
+      textInput.disabled = true;
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 5000);
     };
@@ -132,6 +134,44 @@
       timeNow.textContent = fmt(p.position_sec);
       timeTotal.textContent = fmt(p.duration_sec);
       btnRed.textContent = p.is_paused ? 'PLAY' : 'PAUSE';
+    }
+
+    applyTextInput(s);
+  }
+
+  // Toggle the phone between D-pad mode and text-input mode based on
+  // the kiosk's text_input.active flag. When the kiosk leaves text
+  // mode, we also blur the <input> to dismiss any open OS keyboard.
+  // When the kiosk has truth that doesn't match the phone's local
+  // value (e.g., physical-controller typing, reconnect catch-up), we
+  // override — but only if the user isn't actively focused on the
+  // field (otherwise their cursor would jump mid-keystroke).
+  function applyTextInput(status) {
+    const ti = status && status.text_input;
+    if (!ti) return;
+
+    const wantsTextMode = ti.active === true;
+    document.body.classList.toggle('text-mode', wantsTextMode);
+
+    if (!wantsTextMode) {
+      // Kiosk left the text context — dismiss any open OS keyboard.
+      if (document.activeElement === textInput) {
+        textInput.blur();
+      }
+      // Reset local state so a fresh entry next time starts clean.
+      lastLocalValue = '';
+      return;
+    }
+
+    // Apply server-truth to the field, but only when the user isn't
+    // actively typing (focus would mean their cursor would jump).
+    textTitle.textContent = ti.title || '';
+    if (document.activeElement !== textInput) {
+      const buf = ti.buffer || '';
+      if (textInput.value !== buf) {
+        textInput.value = buf;
+        lastLocalValue = buf;
+      }
     }
   }
 
