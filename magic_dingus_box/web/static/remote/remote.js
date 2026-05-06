@@ -11,6 +11,20 @@
   const btnRed = document.getElementById('btn-red');
   const scrub = document.getElementById('scrub');
 
+  // ── Phone Remote — text input ──────────────────────────────────────
+  const textSection = document.getElementById('text-section');
+  const textInput   = document.getElementById('text-input');
+  const textTitle   = document.getElementById('text-title');
+  const clearBtn    = document.getElementById('text-clear');
+
+  // The last value we sent to the kiosk. Used to compute per-keystroke
+  // diffs (single-char append → type_char, single-char delete →
+  // backspace, anything else → clear+retype). The kiosk's authoritative
+  // buffer is read back via status; we only override our local copy
+  // when our <input> is unfocused (otherwise we'd clobber the user's
+  // cursor mid-typing).
+  let lastLocalValue = '';
+
   let ws = null;
   let backoff = 250;
   let lastStatusTs = 0;
@@ -38,6 +52,33 @@
 
   function send(obj) {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  }
+
+  // Compute the diff between the input's previous and current value;
+  // emit the WS message(s) that get the kiosk's buffer to match.
+  //   - Single-char append → {t: "type_char", c}
+  //   - Single-char delete (from the end) → {t: "key_special", k: "backspace"}
+  //   - Anything else (paste, multi-delete, IME) → {t: "clear"} + per-char type_chars
+  function syncToKiosk(newVal, oldVal) {
+    // Single-char append at end?
+    if (newVal.length === oldVal.length + 1 && newVal.startsWith(oldVal)) {
+      send({ t: 'type_char', c: newVal[newVal.length - 1] });
+      return;
+    }
+    // Single-char delete at end?
+    if (newVal.length === oldVal.length - 1 && oldVal.startsWith(newVal)) {
+      send({ t: 'key_special', k: 'backspace' });
+      return;
+    }
+    // Multi-char change — paste, multi-delete, IME composition commit.
+    // Cheapest robust path: clear the kiosk buffer and retype everything.
+    send({ t: 'clear' });
+    for (const c of newVal) {
+      // The WS handler filters non-ASCII anyway, but emit cleanly here too.
+      if (c.length === 1 && c.charCodeAt(0) < 0x80) {
+        send({ t: 'type_char', c });
+      }
+    }
   }
 
   function bindPress(el, btn) {
@@ -117,6 +158,34 @@
     const rect = e.currentTarget.getBoundingClientRect();
     const pos = (e.clientX - rect.left) / rect.width;
     send({ t: 'seek', pos: Math.max(0, Math.min(1, pos)) });
+  });
+
+  // Every native-keyboard input event (per character, paste, autocomplete-
+  // commit) fires this. We compute the diff against lastLocalValue and
+  // emit the matching kiosk message(s).
+  textInput.addEventListener('input', (e) => {
+    const newVal = e.target.value;
+    syncToKiosk(newVal, lastLocalValue);
+    lastLocalValue = newVal;
+  });
+
+  // The OS keyboard's "Search" / "Return" key. Submit semantics depend
+  // on the kiosk-side context: search keyboard ignores it (no on_enter
+  // callback set; search is debounced); WiFi keyboard fires its
+  // on_enter (commit password attempt).
+  textInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();      // don't submit a form / add a newline
+      send({ t: 'key_special', k: 'enter' });
+    }
+  });
+
+  // "×" clear affordance.
+  clearBtn.addEventListener('click', () => {
+    textInput.value = '';
+    lastLocalValue = '';
+    send({ t: 'clear' });
+    textInput.focus();    // keep keyboard up so user can keep typing
   });
 
   function maybeShowInstallHint() {
