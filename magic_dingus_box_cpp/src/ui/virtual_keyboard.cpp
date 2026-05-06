@@ -152,4 +152,19 @@ const std::vector<std::vector<std::string>>& VirtualKeyboard::get_layout() const
     return LAYOUT_LOWER;
 }
 
+void VirtualKeyboard::type_char(char c) {
+    if (!active_) return;
+    text_buffer_ += c;
+}
+
+void VirtualKeyboard::clear_buffer() {
+    if (!active_) return;
+    text_buffer_.clear();
+}
+
+void VirtualKeyboard::commit() {
+    if (!active_) return;
+    if (on_enter_) on_enter_(text_buffer_);
+}
+
 } // namespace ui

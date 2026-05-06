@@ -39,6 +39,20 @@ public:
     void toggle_caps();
     void toggle_symbols();
 
+    // Append a literal character to the buffer. Bypasses the on-screen
+    // layout's focus-driven select() so external sources (Phone Remote)
+    // can inject any character directly. No-op when not active.
+    void type_char(char c);
+
+    // Wipe text_buffer_ in one shot. Used by Phone Remote's "×" clear
+    // affordance and paste handling. No-op when not active.
+    void clear_buffer();
+
+    // Fire on_enter_(text_buffer_) for the current buffer. No-op when
+    // not active or when no on_enter callback was registered (e.g. MB
+    // Search uses live debounce and ignores submit).
+    void commit();
+
     // Accessors for renderer
     int get_selected_row() const { return selected_row_; }
     int get_selected_col() const { return selected_col_; }
