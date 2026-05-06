@@ -161,6 +161,19 @@ struct AppState {
     std::string retroarch_rom_name;
     std::string retroarch_core;
 
+    // Phone Remote — text input.
+    // Pointer to the VirtualKeyboard currently accepting characters
+    // from the phone, or nullptr when no text-entry context is active.
+    // Updated once per frame at the top of main.cpp's render loop.
+    // Lifetime: the pointed-to keyboard outlives the state pointer
+    // (both are stack-owned in main.cpp).
+    ui::VirtualKeyboard* active_text_keyboard = nullptr;
+
+    // Human-readable label for the current text-input context, e.g.
+    // "Search movies" or "Wi-Fi password". Set alongside
+    // active_text_keyboard. Empty when no context.
+    std::string active_text_title;
+
     double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)

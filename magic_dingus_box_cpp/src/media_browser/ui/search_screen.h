@@ -84,6 +84,12 @@ public:
     // (same handoff pattern BrowseScreen uses).
     int selected_tmdb_id() const { return selected_tmdb_id_; }
 
+    // Phone Remote integration: expose the search field's keyboard so
+    // main.cpp can route phone-typed characters into it via the
+    // text-input queue drainer.
+    bool is_keyboard_active() const { return keyboard_.is_active(); }
+    ::ui::VirtualKeyboard& keyboard() { return keyboard_; }
+
 private:
     enum class Focus { Keyboard, Results };
 
