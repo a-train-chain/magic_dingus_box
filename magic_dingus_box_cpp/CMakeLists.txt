@@ -456,6 +456,10 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/app/status_writer.cpp
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
+        src/app/controller_text_input.cpp
+        src/retroarch/retroarch_launcher.cpp
+        src/retroarch/controller_detector.cpp
+        src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_phone_remote_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})

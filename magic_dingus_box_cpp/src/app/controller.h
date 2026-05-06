@@ -18,6 +18,8 @@ namespace app {
 class Controller {
 public:
     Controller(video::VideoPlayer* player);
+    // Default constructor for unit tests (player_ = nullptr, all player ops are no-ops).
+    Controller() : player_(nullptr), display_(nullptr), input_manager_(nullptr) {}
     
     // Set display reference for DRM cleanup before RetroArch launch
     void set_display(platform::DrmDisplay* display) { display_ = display; }
@@ -71,6 +73,16 @@ public:
     // doesn't exist or contains an invalid pos. Cheap when no file exists
     // (single fs::exists check).
     void poll_seek_request();
+
+    // Phone Remote: drain the JSON-Lines queue at the configured path
+    // and dispatch each event to state.active_text_keyboard. No-op when
+    // file is missing/empty (idle fast path) or pointer is null. The
+    // file is truncated after parsing under the same flock.
+    void poll_text_input_queue(AppState& state);
+
+    // Set the queue file path. Default is data/text_input_queue.jsonl
+    // resolved via config::get_data_path(). Tests inject a temp path.
+    void set_text_input_queue_path(std::string path);
     
     // System Volume
     void set_system_volume(int percent);
@@ -84,6 +96,7 @@ public:
 private:
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;
+    std::string text_input_queue_path_;
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;
