@@ -1637,6 +1637,43 @@ else:
     fi
 fi
 
+# 17. Reconciliation: trigger Radarr to scan + import any completed
+# torrents that landed before the download client was wired up.
+#
+# Edge case this fixes: if a prior setup_services.sh run failed to
+# load radarr_downloadclients.json (e.g., the $(dirname "$0") bug we
+# fixed earlier this session), Radarr had no download client and any
+# torrents that completed in qBit were orphaned — at 100% in qBit but
+# never imported into the library. With the download client now
+# correctly configured, the on-completion auto-import path is live for
+# FUTURE downloads, but EXISTING completed torrents in qBit (from before
+# the client was configured) are invisible to Radarr until something
+# triggers a scan. Without this step, the operator would see "downloaded"
+# in qBit but "still downloading" in the kiosk library — confusing and
+# unrecoverable without an SSH tunnel + Radarr web UI.
+#
+# RefreshMonitoredDownloads makes Radarr poll its now-configured download
+# client and pick up any unknown completed torrents. DownloadedMoviesScan
+# then walks the configured download directory and imports anything that
+# matches a library movie. Both are no-ops on a clean setup with no
+# orphaned downloads.
+echo "Reconciling Radarr import state (catches completed-but-orphaned torrents)..."
+RECONCILE_OK="✓"
+curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+    -d '{"name":"RefreshMonitoredDownloads"}' \
+    "http://localhost:7878/api/v3/command" >/dev/null \
+    || RECONCILE_OK="WARN"
+sleep 5
+curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+    -d '{"name":"DownloadedMoviesScan","path":"/downloads/complete","importMode":"Auto"}' \
+    "http://localhost:7878/api/v3/command" >/dev/null \
+    || RECONCILE_OK="WARN"
+if [[ "${RECONCILE_OK}" == "✓" ]]; then
+    echo "  ✓ Radarr scan + import triggered (any orphaned downloads will reconcile within ~30s)"
+else
+    echo "  WARN: failed to trigger Radarr import scan; verify via web UI"
+fi
+
 # 9. Print credentials to operator
 cat <<EOF
 
