@@ -1,0 +1,23 @@
+[Unit]
+Description=Magic Dingus Box — Media Browser stack smoke test
+# Don't bother running if the docker stack isn't even loaded (e.g.,
+# unprovisioned Pi). The service file gates on the same .env existence
+# as magic-dingus-services.service does.
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+After=magic-dingus-services.service
+
+[Service]
+Type=oneshot
+# Output goes to journal so failures show up in:
+#   journalctl -u magic-dingus-smoke-test --since "8 days ago"
+# The script exits 1 on failure, which systemd records as a failed
+# activation — surfacing in `systemctl list-timers` and any monitoring.
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_services.sh
+StandardOutput=journal
+StandardError=journal
+# Don't restart on failure — the timer will re-trigger weekly. Failing
+# fast and loud is the whole point.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

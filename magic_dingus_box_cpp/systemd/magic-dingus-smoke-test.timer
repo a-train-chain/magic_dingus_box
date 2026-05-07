@@ -1,0 +1,21 @@
+[Unit]
+Description=Magic Dingus Box — weekly Media Browser stack smoke test
+# Why a timer: setup_services.sh runs the smoke test once (right after
+# provisioning), but Radarr/Prowlarr/qBit Docker images update upstream
+# and schemas drift. Without periodic re-checks, a regression silently
+# breaks Movies for an unknown stretch of time before the user
+# notices. Weekly cadence catches drift within 7 days; output goes to
+# the journal so it never spams the kiosk.
+
+[Timer]
+# Mondays at 03:14 — middle of the night, no user-facing playback in
+# progress, well after any nightly Docker image refresh would have
+# settled. Persistent=true means a missed run (Pi powered off) gets
+# caught up on next boot.
+OnCalendar=Mon 03:14
+Persistent=true
+RandomizedDelaySec=15min
+Unit=magic-dingus-smoke-test.service
+
+[Install]
+WantedBy=timers.target

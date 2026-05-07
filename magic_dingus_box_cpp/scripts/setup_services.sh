@@ -303,6 +303,28 @@ else
     echo "Note: gluetun-cascade-restart assets not found, skipping watcher install."
 fi
 
+# 3.6. Install + enable the weekly smoke-test timer (idempotent).
+# Why a timer: setup_services.sh runs verify_services.sh once at the
+# end of provisioning, but Radarr/Prowlarr/qBit Docker images update
+# upstream and their schemas drift. Without periodic re-checks, a
+# regression silently breaks the Movies pipeline for an unknown
+# stretch of time before the user notices. Weekly cadence catches
+# drift within 7 days; failures land in the journal.
+if [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" ] && \
+   [ -f "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" ]; then
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-smoke-test.service" \
+        /etc/systemd/system/magic-dingus-smoke-test.service
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-smoke-test.timer" \
+        /etc/systemd/system/magic-dingus-smoke-test.timer
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now magic-dingus-smoke-test.timer
+    echo "Weekly smoke-test timer installed + active."
+else
+    echo "Note: smoke-test unit files not found, skipping timer install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the
