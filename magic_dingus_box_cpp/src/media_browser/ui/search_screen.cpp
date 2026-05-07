@@ -374,6 +374,19 @@ void SearchScreen::apply_pending_lookup() {
 }
 
 void SearchScreen::update() {
+    // Phone Remote text input: the on-screen-keyboard SELECT path syncs
+    // keyboard_.get_text() into query_ inside handle_input() — but when
+    // the Phone Remote calls keyboard_.type_char() / backspace() /
+    // clear_buffer() directly via the queue drainer, that path is
+    // bypassed. Poll the buffer here so external buffer changes get
+    // picked up by the debouncer below. Cheap (string compare on a
+    // short buffer); only triggers a query when content actually
+    // differs.
+    if (keyboard_.get_text() != query_) {
+        query_ = keyboard_.get_text();
+        last_input_time_ = std::chrono::steady_clock::now();
+    }
+
     // Drain finished async results first so the rest of update() (and
     // the imminent render() call) sees the latest state.
     apply_pending_lib();
