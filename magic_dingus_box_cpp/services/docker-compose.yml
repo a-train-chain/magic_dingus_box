@@ -25,7 +25,15 @@ services:
       - ./config/radarr:/config
       - ${STORAGE_ROOT}/downloads:/downloads
       - ${STORAGE_ROOT}/library:/library
-    restart: unless-stopped
+    # `always` (not `unless-stopped`) — Radarr can exit cleanly with code
+    # 0 during internal config reloads (e.g., when setup_services.sh
+    # writes new download-client/indexer state and Radarr decides to
+    # restart itself). `unless-stopped` interprets a clean exit as
+    # "user wanted to stop" and leaves the container down indefinitely
+    # — which is what produced the multi-hour outage caught by the
+    # smoke test on first install. `always` restarts on every exit
+    # regardless of code.
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
       interval: 30s
@@ -50,7 +58,10 @@ services:
       - TZ=${TZ}
     volumes:
       - ./config/prowlarr:/config
-    restart: unless-stopped
+    # `always` for the same reason as radarr above: Prowlarr can also
+    # exit 0 on internal restart, and `unless-stopped` would leave it
+    # dead indefinitely.
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
       interval: 30s
@@ -155,7 +166,8 @@ services:
     volumes:
       - ./config/qbittorrent:/config
       - ${STORAGE_ROOT}/downloads:/downloads
-    restart: unless-stopped
+    # `always` — same reasoning as radarr/prowlarr.
+    restart: always
 
   byparr:
     # Drop-in FlareSolverr-API replacement that handles current
@@ -173,7 +185,11 @@ services:
     environment:
       - LOG_LEVEL=info
       - TZ=${TZ}
-    restart: unless-stopped
+    # `always` — Prowlarr's "FlareSolverr" indexer-proxy entries hit
+    # this on every Cloudflare-tagged search; if Byparr is down,
+    # those indexers silently return zero results until restart. Same
+    # clean-exit failure mode as the *arr containers.
+    restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8191/"]
       interval: 60s
