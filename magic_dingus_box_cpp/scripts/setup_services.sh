@@ -466,7 +466,7 @@ fi
 # missing CF gets POSTed. The Any profile's formatItems are only PUT
 # back when at least one score (or minFormatScore) actually drifted.
 echo "Configuring Radarr Custom Formats + 'Any' profile score map..."
-CF_DATA_FILE="$(dirname "$0")/data/radarr_custom_formats.json"
+CF_DATA_FILE="${SCRIPT_DIR}/data/radarr_custom_formats.json"
 if [[ ! -f "${CF_DATA_FILE}" ]]; then
     echo "  WARN: ${CF_DATA_FILE} not found — skipping. Custom Formats may already be configured manually; verify via web UI."
 else
@@ -571,6 +571,68 @@ else:
                 fi["score"] = want
                 profile_changed = True
                 score_changes.append("%s=%+d" % (fname, want))
+
+    # Codify the quality TIER policy. Three pieces:
+    #   1. cutoff = Bluray-720p (id 6) — once Radarr has Bluray-720p
+    #      or anything ranked higher in the items[] list, stop
+    #      searching for "upgrades."
+    #   2. allowed quality tiers — only the 720p+1080p H.264 tiers.
+    #      720p is preferred (lower in the items[] list = lower tier
+    #      = preferred when both exist? no, items are ordered low→
+    #      high quality, so 1080p tiers WIN ties. 720p preference
+    #      isn't enforced via cutoff alone; it'd require items
+    #      reordering or per-quality custom-format scoring. We allow
+    #      both and accept that Radarr picks 1080p when available —
+    #      that's the right behavior for old catalog titles where
+    #      720p is scarce. The custom-format scoring elsewhere keeps
+    #      AV1/HEVC/HDR/Remux out so we don't regress on hardware
+    #      decode anyway.)
+    #   3. disallow SD / 4K / Remux / raw-DVD tiers entirely so
+    #      operator can't accidentally grab them via Pick a Source.
+    #
+    # The fixture is name-based (not id-based) so it survives Radarr
+    # version bumps that re-number quality ids.
+    ALLOWED_QUALITY_NAMES = {
+        "HDTV-720p", "WEB 720p", "Bluray-720p",
+        "HDTV-1080p", "WEB 1080p", "Bluray-1080p",
+    }
+    DESIRED_CUTOFF_QUALITY_NAME = "Bluray-720p"
+
+    # cutoff is an int id that names a row in items[] (or a sub-row in
+    # a quality-group). We resolve by walking items + their nested
+    # qualities so the fixture stays name-based.
+    def find_quality_id(items, target_name):
+        for item in items:
+            if item.get("name") == target_name and item.get("id"):
+                return item["id"]
+            for sub in (item.get("items") or []):
+                q = sub.get("quality") or {}
+                if q.get("name") == target_name:
+                    return q.get("id")
+            q = item.get("quality") or {}
+            if q.get("name") == target_name:
+                return q.get("id")
+        return None
+
+    desired_cutoff = find_quality_id(any_profile.get("items", []), DESIRED_CUTOFF_QUALITY_NAME)
+    if desired_cutoff and any_profile.get("cutoff") != desired_cutoff:
+        any_profile["cutoff"] = desired_cutoff
+        profile_changed = True
+        score_changes.append("cutoff=%s(id=%d)" % (DESIRED_CUTOFF_QUALITY_NAME, desired_cutoff))
+
+    def item_name(item):
+        return item.get("name") or (item.get("quality") or {}).get("name")
+
+    for item in any_profile.get("items", []):
+        # Group items have nested .items[]; their .name is the group
+        # label (e.g., "WEB 720p"). Solo items expose .quality.name.
+        nm = item_name(item)
+        want_allowed = nm in ALLOWED_QUALITY_NAMES if nm else False
+        if item.get("allowed") != want_allowed:
+            item["allowed"] = want_allowed
+            profile_changed = True
+            score_changes.append("%s.allowed=%s" % (nm, want_allowed))
+
     if profile_changed:
         http("PUT", "/qualityprofile/%d" % any_profile["id"], any_profile)
 
@@ -614,7 +676,7 @@ fi
 #
 # We seed the tag first so Steps 12 + 13 can reference it by id.
 echo "Configuring Prowlarr 'cloudflare' tag..."
-PROWLARR_TAGS_FILE="$(dirname "$0")/data/prowlarr_tags.json"
+PROWLARR_TAGS_FILE="${SCRIPT_DIR}/data/prowlarr_tags.json"
 if [[ ! -f "${PROWLARR_TAGS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_TAGS_FILE} not found — skipping. Tag may already be configured manually; verify via web UI."
     PROWLARR_CLOUDFLARE_TAG_ID=""
@@ -682,7 +744,7 @@ fi
 # human-readable labels) so the file stays diff-friendly across
 # deploys. We translate label → id at apply time using Step 11's map.
 echo "Configuring Prowlarr FlareSolverr indexer proxy..."
-PROWLARR_PROXIES_FILE="$(dirname "$0")/data/prowlarr_indexerproxies.json"
+PROWLARR_PROXIES_FILE="${SCRIPT_DIR}/data/prowlarr_indexerproxies.json"
 if [[ ! -f "${PROWLARR_PROXIES_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_PROXIES_FILE} not found — skipping. Proxy may already be configured manually; verify via web UI."
 else
@@ -796,7 +858,7 @@ fi
 # come from the Cardigann definitionFile and are recomputed by
 # Prowlarr on every save. Comparing them would force pointless PUTs.
 echo "Configuring Prowlarr indexers..."
-PROWLARR_INDEXERS_FILE="$(dirname "$0")/data/prowlarr_indexers.json"
+PROWLARR_INDEXERS_FILE="${SCRIPT_DIR}/data/prowlarr_indexers.json"
 if [[ ! -f "${PROWLARR_INDEXERS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_INDEXERS_FILE} not found — skipping."
 else
@@ -914,7 +976,7 @@ fi
 # up`, which is usually enough for Radarr to be reachable, but we add
 # a short retry just in case the API is still warming up.
 echo "Configuring Prowlarr → Radarr Apps integration..."
-PROWLARR_APPS_FILE="$(dirname "$0")/data/prowlarr_applications.json"
+PROWLARR_APPS_FILE="${SCRIPT_DIR}/data/prowlarr_applications.json"
 if [[ ! -f "${PROWLARR_APPS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_APPS_FILE} not found — skipping."
 else
@@ -1103,6 +1165,163 @@ show("already at 5      ", s["unchanged"])
 show("skipped (disabled)", s["skipped_disabled"])
 '
 
+# 14c. Indexer-sync fallback: directly inject Prowlarr indexers that
+# failed Radarr's add-time test.
+#
+# Some Cardigann-defined indexers (notably LimeTorrents) don't return
+# any movie-tagged results when Radarr probes them with an empty
+# query in category 2000 during the indexer-test that runs on every
+# add. Prowlarr's app-sync logs "Query successful, but no results in
+# the configured categories were returned" and silently SKIPS those
+# indexers — so they never appear in Radarr at all, even though they
+# are enabled and healthy in Prowlarr and would return plenty of
+# results to a real movie search.
+#
+# Without this step, the user's Movies search will systematically miss
+# indexers like LimeTorrents — which often carry the only seeded copy
+# of older catalog titles (1990s/early-2000s movies that the YIFY/
+# scene/web-rip indexers don't track). Symptom: "added to library"
+# but "no releases found" for valid older titles.
+#
+# Architectural fix: after the standard Prowlarr→Radarr sync, detect
+# Prowlarr-enabled indexers that did NOT make it to Radarr, and
+# INSERT them directly into Radarr's SQLite Indexers table. We
+# bypass the test-on-add by writing the row directly. Three things
+# make this safe:
+#
+#   1. The Prowlarr master API key authenticates against any indexer's
+#      Newznab/Torznab proxy URL (verified empirically) — so we don't
+#      need per-indexer per-app keys (which Prowlarr only issues at
+#      successful sync time). Same key is used in Settings.apiKey.
+#
+#   2. Radarr's Indexers table schema is stable across versions
+#      (Id, Name, Implementation, Settings, ConfigContract,
+#      EnableRss, EnableAutomaticSearch, EnableInteractiveSearch,
+#      Priority, Tags, DownloadClientId).
+#
+#   3. The injection is idempotent: we skip indexers that already
+#      exist by name in Radarr's table. So normal Prowlarr sync runs
+#      first and gets first claim; we only fill the gaps.
+#
+# Radarr must be restarted at the end so its in-memory indexer cache
+# picks up the new rows.
+echo "Configuring Radarr indexer fallback (direct DB insert for test-failed indexers)..."
+RADARR_DB="/opt/magic_dingus_box/services/config/radarr/radarr.db"
+INDEXER_FALLBACK_SUMMARY=$(python3 - "${PROWLARR_KEY}" "${RADARR_KEY}" "${RADARR_DB}" <<'PYEOF'
+import json, sys, sqlite3, urllib.request, os
+
+prowlarr_key, radarr_key, radarr_db = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def http_get(url, key):
+    req = urllib.request.Request(url, headers={"X-Api-Key": key})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+# 1) Enabled Prowlarr indexers (the desired set from the operator's
+#    perspective — Prowlarr is the source of truth for which indexers
+#    are active).
+prowlarr_idx = http_get("http://localhost:9696/api/v1/indexer", prowlarr_key)
+prowlarr_enabled = [i for i in prowlarr_idx if i.get("enable")]
+
+# 2) Existing Radarr indexers — name is the join key. Synced indexers
+#    from Prowlarr arrive named "<Indexer> (Prowlarr)".
+radarr_idx = http_get("http://localhost:7878/api/v3/indexer", radarr_key)
+radarr_names = {i["name"] for i in radarr_idx}
+
+# 3) Diff: which Prowlarr-enabled indexers are absent from Radarr?
+missing = [
+    p for p in prowlarr_enabled
+    if f"{p['name']} (Prowlarr)" not in radarr_names
+]
+
+if not missing:
+    print(json.dumps({"injected": [], "already_synced": [
+        f"{p['name']} (Prowlarr)" for p in prowlarr_enabled
+    ]}))
+    sys.exit(0)
+
+if not os.path.exists(radarr_db):
+    print(json.dumps({"error": f"Radarr DB not found at {radarr_db}", "missing": [p["name"] for p in missing]}))
+    sys.exit(1)
+
+# 4) Build a Settings JSON for each missing indexer. The Newznab
+#    (Torznab in DB terminology) settings shape is what Prowlarr's
+#    app-sync writes when sync succeeds. We replicate it field-for-
+#    field, with the Prowlarr master key as apiKey and the per-
+#    indexer Newznab proxy URL.
+def build_settings(prowlarr_indexer_id):
+    return {
+        "minimumSeeders": 5,
+        "seedCriteria": {},
+        "rejectBlocklistedTorrentHashesWhileGrabbing": False,
+        "requiredFlags": [],
+        "baseUrl": f"http://localhost:9696/{prowlarr_indexer_id}/",
+        "apiPath": "/api",
+        "apiKey": prowlarr_key,
+        "categories": [2000, 2010, 2020, 2030, 2040, 2045, 2050, 2060, 2070, 2080],
+        "animeCategories": [],
+        "additionalParameters": "",
+        "multiLanguages": [],
+    }
+
+# 5) INSERT directly. We open the DB even while Radarr is running — SQLite
+#    handles concurrent writes via WAL/lock — but we restart Radarr
+#    afterwards so its in-memory indexer cache reloads.
+con = sqlite3.connect(radarr_db, timeout=30)
+cur = con.cursor()
+
+injected = []
+for p in missing:
+    name = f"{p['name']} (Prowlarr)"
+    settings_json = json.dumps(build_settings(p["id"]))
+    cur.execute("""
+        INSERT INTO Indexers (
+            Name, Implementation, Settings, ConfigContract,
+            EnableRss, EnableAutomaticSearch, EnableInteractiveSearch,
+            Priority, Tags, DownloadClientId
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        name,
+        "Torznab",
+        settings_json,
+        "TorznabSettings",
+        1, 1, 1,           # all three enable flags on
+        25,                # default priority
+        "[]",              # no tags
+        0,                 # no specific download client
+    ))
+    injected.append(name)
+
+con.commit()
+con.close()
+
+print(json.dumps({"injected": injected, "already_synced": list(radarr_names)}))
+PYEOF
+)
+INJECTED=$(echo "${INDEXER_FALLBACK_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+inj = s.get("injected", [])
+if inj: print(",".join(inj))
+')
+if [[ -n "${INJECTED}" ]]; then
+    echo "  injected (DB direct): ${INJECTED}"
+    echo "  Restarting Radarr so it reloads the indexer cache..."
+    docker restart mdb_radarr >/dev/null
+    # Wait for Radarr to be reachable again so subsequent steps
+    # (qBit download client config, custom format scoring) don't
+    # race against an unhealthy API.
+    for i in {1..30}; do
+        if curl -fsS -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
+            http://localhost:7878/api/v3/system/status; then
+            break
+        fi
+        sleep 2
+    done
+else
+    echo "  all enabled Prowlarr indexers already present in Radarr"
+fi
+
 # 15. Radarr → qBittorrent download client.
 #
 # Radarr's grab pipeline: indexer search → magnet/.torrent URL →
@@ -1117,7 +1336,7 @@ show("skipped (disabled)", s["skipped_disabled"])
 # password is masked to "********" on subsequent GETs, so drift
 # detection ignores it (same trade-off as the apiKey in Step 14).
 echo "Configuring Radarr → qBittorrent download client..."
-RADARR_DLCLIENTS_FILE="$(dirname "$0")/data/radarr_downloadclients.json"
+RADARR_DLCLIENTS_FILE="${SCRIPT_DIR}/data/radarr_downloadclients.json"
 if [[ ! -f "${RADARR_DLCLIENTS_FILE}" ]]; then
     echo "  WARN: ${RADARR_DLCLIENTS_FILE} not found — skipping."
 else
@@ -1234,7 +1453,7 @@ fi
 # so we match by quality.id (not quality.name, which has been
 # renamed across major versions in the past).
 echo "Configuring Radarr quality definitions..."
-RADARR_QUALITY_FILE="$(dirname "$0")/data/radarr_qualitydefinitions.json"
+RADARR_QUALITY_FILE="${SCRIPT_DIR}/data/radarr_qualitydefinitions.json"
 if [[ ! -f "${RADARR_QUALITY_FILE}" ]]; then
     echo "  WARN: ${RADARR_QUALITY_FILE} not found — skipping."
 else
@@ -1321,7 +1540,7 @@ fi
 # idempotency check just fetches existing categories first and only
 # POSTs missing ones.
 echo "Configuring qBittorrent categories..."
-QBIT_CATS_FILE="$(dirname "$0")/data/qbit_categories.json"
+QBIT_CATS_FILE="${SCRIPT_DIR}/data/qbit_categories.json"
 if [[ ! -f "${QBIT_CATS_FILE}" ]]; then
     echo "  WARN: ${QBIT_CATS_FILE} not found — skipping."
 else
