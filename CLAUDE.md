@@ -37,7 +37,9 @@ make -j4
 ./magic_dingus_box_cpp/scripts/deploy_cpp.sh --usb-gadget
 ```
 
-Environment variables: `PI_HOST` (default: `magic@magicpi.local`), `PI_DIR` (default: `/opt/magic_dingus_box`)
+Environment variables: `PI_HOST` (default: `magic@magicpi.local`), `PI_DIR` (default: `/opt/magic_dingus_box`), `MEDIA_BROWSER` (default: `true` — the deploy target is the production Pi which always uses MB; set to `false` to build without it for debugging the OFF code path).
+
+Note: rsync uses `--checksum` so file content (not mtime) determines whether to transfer. Without this, rsync's preserve-mtime default fooled cmake's incremental build into skipping rebuilds on Pi-side compilation — see commit `824ee88`.
 
 ### Running
 ```bash
@@ -283,6 +285,36 @@ outside Docker. Metadata only — never touches torrent indexers. See
 ### Live SD cloning
 
 `scripts/golden_image/clone_live_sd.sh` clones a running Pi's SD card to a `.img.gz` over SSH without removing the SD physically. Three Pi-side scripts (`prepare_for_cloning.sh`, `restore_after_cloning.sh`, `first_boot.sh` Step 6) handle prepare/restore + per-Pi state cleanup on the cloned image. Source Pi loses no data; total downtime ~1 minute. See `scripts/golden_image/CLONING.md` for full operator workflow.
+
+## Phone Remote
+
+A web-based remote control hosted by the Flask web admin, accessed at `/admin/remote`. Phones pair once via a QR code shown in the kiosk's Settings menu; thereafter the page is HMAC-cookie-authenticated and reconnects automatically. Two input surfaces:
+
+### D-pad (button input)
+
+- Phone JS sends `{t: "press", btn: ..., phase: ...}` over WebSocket
+- Flask's `UinputWriter` (`web/remote/uinput_writer.py`) translates to evdev events on a `/dev/uinput` virtual gamepad
+- Kiosk's `InputManager` opens the gamepad like any other controller (named `MagicDingus Phone Remote`); button codes are picked to match `map_button_to_action` so presses route directly to existing `InputAction` values (SELECT, SETTINGS_MENU, PREV/NEXT/PLAY_PAUSE for the colored buttons)
+
+### Text input (typing into kiosk text fields from phone OS keyboard)
+
+For typing into the MB Search field or the Wi-Fi password keyboard, phones use the native iOS/Android keyboard instead of D-pad-driving the on-screen keyboard. Auto-detected — when the kiosk's status broadcast reports `text_input.active=true`, the phone swaps from D-pad mode to a text-input section.
+
+End-to-end flow:
+- Phone JS `<input>` `input` event → `syncToKiosk(newVal, oldVal)` computes a diff and sends per-keystroke `{t: "type_char", c}` / `{t: "key_special", k: "backspace"}` over WS (paste / multi-delete falls back to `{t: "clear"}` + retype)
+- Flask `ws_handler` filters non-ASCII, routes to `TextInputWriter` (`web/remote/text_input_writer.py`)
+- `TextInputWriter` appends a JSONL event to `data/text_input_queue.jsonl` under `flock(LOCK_EX)` with per-device 50/sec rate limit
+- Kiosk's main loop calls `Controller::poll_text_input_queue(state)` each frame: opens the queue file, acquires `flock`, reads via the locked fd, dispatches each event to `state.active_text_keyboard`'s `type_char` / `backspace` / `clear_buffer` / `commit` methods, truncates under the same lock
+- `state.active_text_keyboard` is refreshed once per frame at the top of main.cpp's render loop — it points to whichever `VirtualKeyboard` is `is_active()` (MB Search's or the kiosk's main one for Wi-Fi)
+- `SearchScreen::update()` polls `keyboard_.get_text()` against its own `query_` so externally-driven buffer changes (from the queue drainer) trigger the existing 400ms search debouncer
+
+The phone's OS-keyboard "Search/Enter" key only dismisses the OS keyboard via `inputEl.blur()` — it does NOT send a commit/close to the kiosk. Search is debounced live; pressing Enter has no separate "submit" semantic. The text field stays visible on phone (re-tap to reopen), and the kiosk's on-screen keyboard stays alive so D-pad navigation still works for selecting results or further editing.
+
+`text_input_queue.jsonl` is excluded from `deploy_cpp.sh`'s rsync so in-flight events aren't lost across deploys.
+
+### Pairing flow
+
+`Settings → Phone Remote` on the kiosk shows a QR code and 6-digit code. Phone scans → opens `/pair?code=NNNNNN` → backend writes a paired-device record + sets HMAC-signed cookie. Pairings persist in `data/paired_remotes.json` (excluded from deploy rsync). The Flask process's HMAC secret lives in `data/flask_secret.key` (also excluded — wiping it would invalidate all paired phones).
 
 ## Additional Documentation
 
