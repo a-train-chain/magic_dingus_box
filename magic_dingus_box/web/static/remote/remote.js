@@ -226,14 +226,31 @@
       lastLocalValue = newVal;
     });
 
-    // The OS keyboard's "Search" / "Return" key. Submit semantics depend
-    // on the kiosk-side context: search keyboard ignores it (no on_enter
-    // callback set; search is debounced); WiFi keyboard fires its
-    // on_enter (commit password attempt).
+    // The OS keyboard's "Search" / "Return" key. Just dismisses the OS
+    // keyboard — does NOT send a "commit" message to the kiosk.
+    //
+    // Why: previously this fired key_special:enter, which called
+    // keyboard.commit() on the kiosk, which closed the kiosk's keyboard
+    // (active_ = false). That flipped status.text_input.active to false,
+    // which made the phone hide its text section entirely — the user
+    // lost both the text field AND D-pad access mid-flow. They had to
+    // re-enter Search to get either back.
+    //
+    // The right semantic: Search is debounced on the kiosk side; the
+    // user typing IS the commit. Pressing the OS keyboard's Search key
+    // just means "I'm done with the OS keyboard for now" — dismiss it
+    // so the D-pad becomes usable below. Text field stays visible (the
+    // user can tap to reopen the OS keyboard); kiosk's on-screen
+    // keyboard stays open (D-pad can drive it for additional typing or
+    // to navigate results).
+    //
+    // Wi-Fi password commit semantic: handled separately. The user
+    // navigates the kiosk's on-screen Submit key via D-pad and presses
+    // SELECT — same as the pre-Phone-Remote flow.
     textInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();      // don't submit a form / add a newline
-        send({ t: 'key_special', k: 'enter' });
+        textInput.blur();        // dismiss OS keyboard, keep field + kiosk keyboard alive
       }
     });
   }
