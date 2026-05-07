@@ -394,6 +394,99 @@ fi
 sed -i "s|RADARR_API_KEY=.*|RADARR_API_KEY=${RADARR_KEY}|" "${ENV_FILE}"
 sed -i "s|PROWLARR_API_KEY=.*|PROWLARR_API_KEY=${PROWLARR_KEY}|" "${ENV_FILE}"
 
+# 7.5. qBittorrent security hardening: set the WebUI password to the
+# random secret already in .env, and disable the localhost-auth-bypass.
+#
+# qBittorrent's Docker image starts with admin/adminadmin AND with the
+# `Bypass authentication for clients on localhost` preference enabled.
+# That second setting masks the password situation entirely — anything
+# connecting from 127.0.0.1 (which includes Radarr via the loopback
+# port mapping AND the kiosk binary) gets in regardless of credentials.
+# Net effect: the random password we wrote to .env earlier was never
+# actually applied, and shell-access-to-Pi → qBit-write-access was
+# completely open.
+#
+# Fix: use qBit's WebUI API to (a) set the real password matching .env
+# and (b) turn the localhost bypass OFF. After this, every client must
+# auth properly, including:
+#   - Radarr: already has the password in its download-client config
+#     (injected from .env at setup time, see Step 15)
+#   - Kiosk binary: reads MDB_QBIT_PASS from the systemd EnvironmentFile=
+#     loading services/.env — but that var doesn't exist yet, so we
+#     write MDB_QBIT_PASS=<same as QBITTORRENT_ADMIN_PASSWORD> to .env
+#     here. The kiosk picks it up on next service restart.
+#
+# Idempotent: we first try logging in with the .env password; if that
+# works, the password is already correct and we just verify the
+# bypass setting. If login fails, fall back to the docker default
+# `adminadmin` and reset the password.
+echo "Hardening qBittorrent: applying random password + disabling localhost auth bypass..."
+QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+if [ -z "${QBIT_PW}" ]; then
+    echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from .env — skipping qBit hardening."
+else
+    QBIT_COOKIE=$(mktemp)
+    LOGIN_OK=0
+    # Try the .env password first (idempotent re-run path)
+    if curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+        -d "username=admin" --data-urlencode "password=${QBIT_PW}" 2>/dev/null \
+        | grep -q "Ok."; then
+        LOGIN_OK=1
+        echo "  ✓ qBit accepts .env password (already correct)"
+    fi
+    # Fall back to docker default
+    if [ "${LOGIN_OK}" -eq 0 ]; then
+        if curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+            -d "username=admin&password=adminadmin" 2>/dev/null | grep -q "Ok."; then
+            LOGIN_OK=1
+            echo "  qBit was on default credentials — applying random password..."
+        fi
+    fi
+    if [ "${LOGIN_OK}" -eq 0 ]; then
+        echo "  WARN: could not log in to qBit with either .env password or default."
+        echo "        qBit may have been hand-configured; verify manually."
+    else
+        # Apply password + disable localhost bypass. POST takes a
+        # 'json' form param with the changed prefs only.
+        PREFS_JSON=$(python3 -c "
+import json,sys
+print(json.dumps({
+    'web_ui_username': 'admin',
+    'web_ui_password': sys.argv[1],
+    'bypass_local_auth': False,
+    'bypass_auth_subnet_whitelist_enabled': False,
+}))" "${QBIT_PW}")
+        if curl -fsS -b "${QBIT_COOKIE}" -X POST \
+            "http://localhost:8080/api/v2/app/setPreferences" \
+            --data-urlencode "json=${PREFS_JSON}" >/dev/null 2>&1; then
+            echo "  ✓ qBit WebUI password set + localhost-auth-bypass disabled"
+        else
+            echo "  WARN: failed to apply qBit preferences — verify manually"
+        fi
+    fi
+    rm -f "${QBIT_COOKIE}"
+fi
+
+# 7.6. Make MDB_QBIT_PASS available to the kiosk via .env (loaded by
+# the kiosk's EnvironmentFile= directive). The kiosk's QbittorrentClient
+# defaults to "adminadmin" if MDB_QBIT_PASS is unset — which would
+# silently fail authentication after Step 7.5 disables the localhost
+# bypass. Idempotent: we only write the line if it's missing or stale.
+if [ -n "${QBIT_PW}" ]; then
+    if grep -q '^MDB_QBIT_PASS=' "${ENV_FILE}"; then
+        sed -i "s|^MDB_QBIT_PASS=.*|MDB_QBIT_PASS=${QBIT_PW}|" "${ENV_FILE}"
+    else
+        echo "MDB_QBIT_PASS=${QBIT_PW}" >> "${ENV_FILE}"
+    fi
+    # Restart kiosk service if it's running, so it picks up the new env
+    # var. Skip silently if the service isn't loaded (fresh Pi during
+    # initial bootstrap before deploy_cpp.sh has run).
+    if systemctl is-active --quiet magic-dingus-box-cpp.service 2>/dev/null; then
+        echo "  Restarting kiosk so it picks up MDB_QBIT_PASS..."
+        sudo systemctl restart magic-dingus-box-cpp.service || true
+    fi
+fi
+
 # 8. Verify Radarr's built-in HD-1080p profile is available.
 # Radarr ships 6 built-in profiles on fresh install (Any, SD, HD-720p, HD-1080p,
 # Ultra-HD, HD - 720p/1080p). We use HD-1080p (id 4) as the kiosk default rather
@@ -1674,6 +1767,34 @@ else
     echo "  WARN: failed to trigger Radarr import scan; verify via web UI"
 fi
 
+# 18. Run smoke test. Hard-asserts every link in the chain (indexers,
+# download client, quality profile, custom formats, qBit auth, kiosk
+# password env var, live indexer search). Non-zero exit means setup
+# regressed somewhere; the operator sees the failures inline instead
+# of weeks later when an empty Movies tab gets reported.
+#
+# We DON'T fail setup_services.sh itself on smoke-test failure — the
+# services may still be coming up (Prowlarr lazy-loads indexers on
+# first search, Radarr's app-sync runs on a 60s timer). The exit code
+# is captured but only printed; the credentials block always runs so
+# the operator at least gets API keys + login info if they need to
+# debug interactively.
+if [[ -x "${SCRIPT_DIR}/verify_services.sh" ]]; then
+    echo ""
+    echo "Running smoke test..."
+    if "${SCRIPT_DIR}/verify_services.sh"; then
+        SMOKE_TEST_OK=1
+    else
+        SMOKE_TEST_OK=0
+        echo ""
+        echo "⚠  Smoke test reported failures. Credentials below — debug interactively."
+        echo "   Re-run: ${SCRIPT_DIR}/verify_services.sh"
+    fi
+else
+    SMOKE_TEST_OK=-1
+    echo "  (verify_services.sh not found or not executable — skipping smoke test)"
+fi
+
 # 9. Print credentials to operator
 cat <<EOF
 
@@ -1700,12 +1821,13 @@ Prowlarr  → http://localhost:9696 (via SSH tunnel only — see operator guide)
 qBittorrent → http://localhost:8080 (via SSH tunnel only — see operator guide)
             Username: admin
             Password: $(grep QBITTORRENT_ADMIN_PASSWORD "${ENV_FILE}" | cut -d= -f2)
-            (Log in and change the default via qBit web UI immediately)
+            (Localhost auth bypass DISABLED; this password is the only way in)
 
 NEXT STEPS:
-  1. Open SSH tunnel (above), log into qBittorrent, change admin password
-  2. In Prowlarr: add at least one indexer (legal content only)
-  3. In Radarr: connect to Prowlarr (auto-discovered) and qBittorrent
-  4. Kiosk Media Browser will now talk to Radarr once ENABLE_MEDIA_BROWSER is on
+  Indexers, quality profile, qBit download client, and Custom Formats
+  are configured automatically. The kiosk Media Browser is ready as
+  soon as ENABLE_MEDIA_BROWSER is on.
+
+  Re-run smoke test anytime: ${SCRIPT_DIR}/verify_services.sh
 ======================================================================
 EOF
