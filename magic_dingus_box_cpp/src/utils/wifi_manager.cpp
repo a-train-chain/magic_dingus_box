@@ -125,42 +125,64 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             connection_error_.clear();
         }
 
-        // Delete existing connections with matching SSID to avoid "property is missing" errors
-        std::string list_out = exec_command_argv({"sudo", "nmcli", "-t", "-f", "UUID,NAME", "connection", "show"});
-        std::istringstream stream(list_out);
-        std::string line;
-        while (std::getline(stream, line)) {
-            if (line.empty()) continue;
-
-            size_t colon = line.find(':');
-            if (colon == std::string::npos) continue;
-
-            std::string uuid = line.substr(0, colon);
-
-            std::string conn_ssid = exec_command_argv({"sudo", "nmcli", "-t", "-f",
-                                                        "802-11-wireless.ssid", "connection", "show", uuid});
-            conn_ssid.erase(std::remove(conn_ssid.begin(), conn_ssid.end(), '\n'), conn_ssid.end());
-
-            // nmcli outputs "802-11-wireless.ssid:ActualSSID"
-            size_t ssid_colon = conn_ssid.find(':');
-            if (ssid_colon != std::string::npos) {
-                conn_ssid = conn_ssid.substr(ssid_colon + 1);
-            }
-
-            if (conn_ssid == ssid) {
-                std::string name = line.substr(colon + 1);
-                std::cout << "WifiManager: Deleting stale connection '" << name
-                          << "' (UUID: " << uuid << ") matches SSID '" << ssid << "'" << std::endl;
-                exec_command_argv({"sudo", "nmcli", "connection", "delete", uuid});
-            }
-        }
-
-        // Attempt connection with timeout
+        // Two distinct flows here, gated on whether the caller passed a
+        // password:
+        //
+        //   - Empty password  → "reconnect to saved profile" (user
+        //     clicked a network labeled "Saved" in the UI; no keyboard
+        //     prompt was shown). Use the existing profile and its
+        //     stored PSK via `connection up id <ssid>`. Do NOT delete
+        //     anything first: the previous version of this code
+        //     unconditionally wiped the matching profile, then ran
+        //     `dev wifi connect` with no password, producing a brand-
+        //     new no-PSK profile and a no-secrets activation failure.
+        //     Every reconnect attempt destroyed the working profile
+        //     and replaced it with a broken one, then reported "Wrong
+        //     password" to the operator. Operator had no way to
+        //     recover without forgetting + re-typing.
+        //
+        //   - Non-empty password → "fresh credentials" (operator typed
+        //     a password on the keyboard). Existing behavior: clear
+        //     out any stale profile with the same SSID (avoids
+        //     "property is missing" errors from partial profiles),
+        //     then activate via `dev wifi connect <ssid> password <p>`.
         std::string output;
         if (password.empty()) {
-            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid},
+            std::cout << "WifiManager: Reconnect (saved profile) — activating '"
+                      << ssid << "' via stored PSK" << std::endl;
+            output = exec_command_argv({"sudo", "nmcli", "connection", "up", "id", ssid},
                                        CONNECTION_TIMEOUT_SECONDS);
         } else {
+            // Delete existing connections with matching SSID to avoid "property is missing" errors
+            std::string list_out = exec_command_argv({"sudo", "nmcli", "-t", "-f", "UUID,NAME", "connection", "show"});
+            std::istringstream stream(list_out);
+            std::string line;
+            while (std::getline(stream, line)) {
+                if (line.empty()) continue;
+
+                size_t colon = line.find(':');
+                if (colon == std::string::npos) continue;
+
+                std::string uuid = line.substr(0, colon);
+
+                std::string conn_ssid = exec_command_argv({"sudo", "nmcli", "-t", "-f",
+                                                            "802-11-wireless.ssid", "connection", "show", uuid});
+                conn_ssid.erase(std::remove(conn_ssid.begin(), conn_ssid.end(), '\n'), conn_ssid.end());
+
+                // nmcli outputs "802-11-wireless.ssid:ActualSSID"
+                size_t ssid_colon = conn_ssid.find(':');
+                if (ssid_colon != std::string::npos) {
+                    conn_ssid = conn_ssid.substr(ssid_colon + 1);
+                }
+
+                if (conn_ssid == ssid) {
+                    std::string name = line.substr(colon + 1);
+                    std::cout << "WifiManager: Deleting stale connection '" << name
+                              << "' (UUID: " << uuid << ") matches SSID '" << ssid << "'" << std::endl;
+                    exec_command_argv({"sudo", "nmcli", "connection", "delete", uuid});
+                }
+            }
+
             output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password},
                                        CONNECTION_TIMEOUT_SECONDS);
         }
@@ -181,7 +203,25 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             } else if (output.find("Secrets were required") != std::string::npos ||
                        output.find("secrets were required") != std::string::npos ||
                        output.find("No secrets") != std::string::npos) {
-                error_msg = "Wrong password";
+                // The PSK slot in the connection profile was empty.
+                //   - Reconnect-to-saved path: the saved profile is
+                //     corrupt (no PSK stored). Tell operator to forget
+                //     it and re-enter the password.
+                //   - Fresh-credentials path: nmcli would have stored
+                //     the PSK we passed; if it still says no-secrets,
+                //     the PSK was actually wrong → "Wrong password".
+                if (password.empty()) {
+                    error_msg = "Saved network missing password — forget and reconnect";
+                } else {
+                    error_msg = "Wrong password";
+                }
+                connection_result_ = ConnectionResult::FAILURE;
+            } else if (output.find("unknown connection") != std::string::npos ||
+                       output.find("Unknown connection") != std::string::npos) {
+                // `connection up id <ssid>` couldn't find the profile.
+                // The "Saved" indicator in the UI was stale; ask operator
+                // to re-enter the password to create a fresh profile.
+                error_msg = "No saved profile — re-enter password";
                 connection_result_ = ConnectionResult::FAILURE;
             } else if (output.find("No network with SSID") != std::string::npos) {
                 error_msg = "Network not found";
