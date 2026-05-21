@@ -84,10 +84,17 @@ void VpnHealthMonitor::run() {
             // Recovery is instant — any successful poll flips healthy.
             consecutive_failures_.store(0);
             state_.media_browser_vpn_healthy = true;
+            ever_healthy_.store(true);  // arm the 3-strikes path
         } else {
             int n = consecutive_failures_.fetch_add(1) + 1;
-            if (n >= kFailureThreshold) {
-                // Three-strikes: flip unhealthy.
+            // Three-strikes: flip unhealthy — BUT only after we've seen
+            // at least one successful poll in this process lifetime.
+            // Without this guard the kiosk shows "Tunnel down" for the
+            // ~60s cold-boot gap between kiosk start and Radarr being
+            // ready (docker stack lags behind kiosk boot by ~90s). Real
+            // tunnel drops mid-session still fire the toast because by
+            // then ever_healthy_ is true.
+            if (n >= kFailureThreshold && ever_healthy_.load()) {
                 state_.media_browser_vpn_healthy = false;
             }
         }

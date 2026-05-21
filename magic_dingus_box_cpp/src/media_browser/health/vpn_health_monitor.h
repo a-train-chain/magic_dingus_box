@@ -51,6 +51,16 @@ private:
     std::chrono::milliseconds poll_interval_;
     std::atomic<bool> stop_flag_{false};
     std::atomic<int> consecutive_failures_{0};
+
+    // Cold-boot guard. Set on the first successful ping. Until then,
+    // we don't flip the healthy flag to false on the 3-strikes path
+    // — the docker stack just hasn't finished coming up yet, so
+    // "Radarr unreachable" is the expected state, not a tunnel drop.
+    // Without this, every cold reboot showed a "Tunnel down" toast
+    // for the ~60s gap between kiosk start and Radarr being ready,
+    // which read as a real failure to the operator.
+    std::atomic<bool> ever_healthy_{false};
+
     std::thread worker_;
 
     static constexpr int kFailureThreshold = 3;
