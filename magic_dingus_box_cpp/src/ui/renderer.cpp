@@ -979,6 +979,11 @@ void Renderer::resize_screen(uint32_t width, uint32_t height) {
     reset_content_viewport();
 }
 
+void Renderer::set_framebuffer_size(uint32_t width, uint32_t height) {
+    framebuffer_width_ = width;
+    framebuffer_height_ = height;
+}
+
 bool Renderer::initialize(const std::string& title_font_path, const std::string& body_font_path) {
     std::cout << "  Initializing UI renderer..." << std::endl;
     std::cout << "    Title font path: " << title_font_path << std::endl;
@@ -3651,7 +3656,26 @@ bool Renderer::begin_scene_fbo(const app::AppState& state) {
     if (!any_effect_active) return false;
 
     // Gate 5: lazily create the FBO (or recreate at new size).
-    ensure_scene_fbo(original_width_, original_height_);
+    //
+    // Size the FBO to match the actual HDMI framebuffer, not the
+    // logical UI canvas. They're equal in Modern TV (so nothing
+    // changes), but in CRT_NATIVE the logical canvas is 640×480
+    // while the framebuffer is whatever HDMI negotiated (typically
+    // 1280×720). Pre-fix, the FBO was 640×480 and the composite
+    // viewport at the end of this pipeline rendered into the
+    // bottom-left 640×480 of a 1280×720 framebuffer — visible on a
+    // CRT as the entire UI scrunched into one corner with everything
+    // else black. With the FBO at framebuffer size, UI projection
+    // upscales 640×480 into the FBO the same way it upscales into
+    // the default framebuffer on the legacy path, and the composite
+    // is a 1:1 copy that fills the screen.
+    //
+    // Fallback: if main.cpp never called set_framebuffer_size() (or
+    // we're in a state where it hasn't been called yet), framebuffer_*
+    // is 0 — use original_* to preserve pre-fix Modern TV behavior.
+    const uint32_t fbo_w = framebuffer_width_  ? framebuffer_width_  : original_width_;
+    const uint32_t fbo_h = framebuffer_height_ ? framebuffer_height_ : original_height_;
+    ensure_scene_fbo(fbo_w, fbo_h);
     if (scene_fbo_ == 0) return false;  // Creation failed; fall back to legacy.
 
     // Bind the FBO and clear it. Caller is expected to set its own
@@ -3889,10 +3913,23 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     //
     // Re-target the default framebuffer at full HDMI mode size. The
     // composite covers everything; bezel/toast follow on top.
+    //
+    // Use framebuffer_* (the actual HDMI mode dims), not original_*
+    // (the logical UI canvas). In Modern TV these are equal and
+    // behavior is unchanged. In CRT_NATIVE the logical canvas is
+    // 640×480 but the framebuffer is 1280×720 — using original_*
+    // here was the bug: it caused the composite to render only into
+    // the bottom-left 640×480 of the screen. See begin_scene_fbo()
+    // above for the matching fbo-size fix.
+    //
+    // Fallback path preserved for callers that haven't wired
+    // set_framebuffer_size() yet (treat 0 as "unset" → original_*).
+    const uint32_t fb_w = framebuffer_width_  ? framebuffer_width_  : original_width_;
+    const uint32_t fb_h = framebuffer_height_ ? framebuffer_height_ : original_height_;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0,
-               static_cast<GLsizei>(original_width_),
-               static_cast<GLsizei>(original_height_));
+               static_cast<GLsizei>(fb_w),
+               static_cast<GLsizei>(fb_h));
 
     glUseProgram(crt_composite_shader_program_);
 

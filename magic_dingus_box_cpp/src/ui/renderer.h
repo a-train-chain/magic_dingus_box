@@ -254,6 +254,21 @@ public:
     void reset_content_viewport();  // Reset to full screen dimensions
     void resize_screen(uint32_t width, uint32_t height);
 
+    // Tell the renderer the actual default-framebuffer size (the HDMI
+    // mode the kiosk is outputting at). Distinct from resize_screen(),
+    // which sets the *logical* UI canvas — in CRT_NATIVE the logical
+    // canvas is forced to 640×480 for chunky text/layout but the HDMI
+    // framebuffer is still 1280×720 (or whatever EDID negotiated).
+    //
+    // Used by the enhanced CRT pipeline to (a) size the scene FBO to
+    // match the framebuffer so no bilinear upscale is needed and
+    // (b) composite back to the full framebuffer instead of a
+    // logical-canvas-sized region in the bottom-left corner. Without
+    // this call the enhanced pipeline falls back to logical-canvas
+    // dimensions, which produces correct output only when logical ==
+    // framebuffer (i.e., Modern TV).
+    void set_framebuffer_size(uint32_t width, uint32_t height);
+
 #ifdef MEDIA_BROWSER_ENABLED
     // Public accessor for the artwork cache. Lazy first-use init so the
     // background fetcher thread doesn't start unless the Media Browser
@@ -299,6 +314,14 @@ private:
     uint32_t scene_fbo_height_ = 0;
     bool scene_fbo_active_ = false;
     bool last_scanlines_enabled_ = true;
+
+    // Actual HDMI default-framebuffer size, set by set_framebuffer_size().
+    // Defaults to 0/0 (unset) — if main.cpp ever fails to call the setter,
+    // begin_scene_fbo / end_scene_fbo_and_composite fall back to using
+    // original_width_/original_height_ (the pre-fix behavior, correct for
+    // Modern TV, broken in bottom-left-corner way for CRT_NATIVE).
+    uint32_t framebuffer_width_ = 0;
+    uint32_t framebuffer_height_ = 0;
 
     // Phase 5 — halation/bloom downsample chain. Two intermediate
     // FBOs at 1/2 and 1/4 resolution feed a Kawase-style soft blur

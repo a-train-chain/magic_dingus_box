@@ -1159,7 +1159,17 @@ int main(int /* argc */, char* /* argv */[]) {
     mode = display.get_current_mode();
     std::cout << "Final Display Mode: " << mode.width << "x" << mode.height << " @ " << (mode.refresh/1000.0) << "Hz" << std::endl;
     gst_renderer.set_screen_size(mode.width, mode.height);
-    
+
+    // Tell the UI renderer what the *actual* HDMI framebuffer size is.
+    // This is distinct from the call to resize_screen() below — that
+    // sets the *logical* UI canvas (forced to 640×480 in CRT_NATIVE
+    // for chunky text/layout). The enhanced CRT pipeline needs both:
+    // the framebuffer size for the scene-FBO + composite viewport,
+    // the logical size for projection/layout. Without this call, the
+    // enhanced CRT composite renders into a 640×480 region in the
+    // bottom-left of the framebuffer instead of filling the screen.
+    ui_renderer.set_framebuffer_size(mode.width, mode.height);
+
     // For CRT Native, force logical 640x480 layout regardless of physical resolution
     // This ensures large text and correct aspect ratio (assuming anamorphic squeeze)
     if (state.display_settings.mode == app::DisplayMode::CRT_NATIVE) {
@@ -1354,15 +1364,21 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Update mode info and notify renderers
                 mode = display.get_current_mode();
                 std::cout << "Switched to: " << mode.name << " (" << mode.width << "x" << mode.height << ")" << std::endl;
-                
+
                 gst_renderer.set_screen_size(mode.width, mode.height);
-                
+                // Keep the enhanced-CRT composite path's framebuffer
+                // dims in sync with the new mode — same reason as the
+                // matching call at boot. Without this, toggling
+                // CRT_NATIVE ↔ MODERN_TV at runtime would leave the
+                // scene FBO sized for the previous mode.
+                ui_renderer.set_framebuffer_size(mode.width, mode.height);
+
                 if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
                     ui_renderer.resize_screen(640, 480);
                 } else {
                     ui_renderer.resize_screen(mode.width, mode.height);
                 }
-                
+
                 // Ensure viewport is reset
                 glViewport(0, 0, mode.width, mode.height);
                 glClear(GL_COLOR_BUFFER_BIT);
