@@ -115,6 +115,25 @@ services:
       #   192.168.0.0/16 — alternative home Wi-Fi convention
       #   172.16.0.0/12  — Docker inter-container bridges
       - FIREWALL_OUTBOUND_SUBNETS=10.0.0.0/24,10.55.0.0/24,192.168.0.0/16,172.16.0.0/12
+      # Disable DNS-over-TLS. Gluetun's default DoT resolver maintains a
+      # long-lived TLS connection to the upstream (Cloudflare 1.1.1.1 by
+      # default); when that pipe stalls — which it does on this Pi on
+      # roughly daily cadence — *all* subsequent DNS queries inside the
+      # netns time out, even though Gluetun's own healthcheck stays
+      # green (it uses an internal cached IP endpoint that needs no DNS).
+      # Symptom: Radarr can't reach api.radarr.video, Prowlarr can't
+      # reach indexers.prowlarr.com, indexer searches return 0 results
+      # across the board, kiosk shows "no source found" on Detail pages.
+      # Recovery pre-fix required a full Pi reboot.
+      #
+      # Plain DNS over UDP to the same upstream is stateless — each query
+      # is independent, no TLS handshake to wedge. Marginally less private
+      # (the queries themselves are visible on-wire) but we're already
+      # tunneled through ProtonVPN's WireGuard, so the threat model
+      # doesn't really change: the only observer of the DNS traffic
+      # would be ProtonVPN itself, which can already see all our DNS
+      # via DoT anyway (it's the upstream resolver).
+      - DOT=off
       - TZ=${TZ}
     ports:
       # qBittorrent web UI + peer ports are exposed via Gluetun.
