@@ -399,6 +399,39 @@ except Exception:
     fi
 }
 
+check_no_active_cooldowns() {
+    header "Radarr indexer cooldowns (none should be active)"
+    # Radarr's IndexerFactory parks failing indexers for up to 24 hours
+    # by persisting a DisabledTill timestamp to radarr.db. Even after the
+    # network heals, those cooldowns silently keep the indexer out of
+    # rotation until the timestamp expires. The boot-time cooldown-reset
+    # oneshot (magic-dingus-clear-cooldowns.service) should keep this
+    # table clean — if this check fires it means the oneshot didn't run
+    # OR new failures piled up since boot (worth investigating).
+    local db="/opt/magic_dingus_box/services/config/radarr/radarr.db"
+    if [[ ! -f "${db}" ]]; then
+        fail "Radarr DB not found at ${db}"
+        return
+    fi
+    local active
+    active=$(sudo python3 -c "
+import sqlite3
+con = sqlite3.connect('${db}')
+cur = con.cursor()
+cur.execute('SELECT COUNT(*) FROM IndexerStatus WHERE DisabledTill IS NOT NULL')
+print(cur.fetchone()[0])
+con.close()
+" 2>/dev/null) || {
+        fail "Could not query IndexerStatus table"
+        return
+    }
+    if [[ "${active}" -eq 0 ]]; then
+        pass "No indexer cooldowns active"
+    else
+        fail "${active} indexer(s) in cooldown — run /usr/local/bin/clear_radarr_cooldowns.py to clear"
+    fi
+}
+
 # ── Main ────────────────────────────────────────────────────────────
 require_env
 
@@ -411,6 +444,7 @@ check_radarr_quality_profile
 check_radarr_custom_formats
 check_qbit_auth
 check_kiosk_qbit_password
+check_no_active_cooldowns
 check_live_search
 
 # Summary
