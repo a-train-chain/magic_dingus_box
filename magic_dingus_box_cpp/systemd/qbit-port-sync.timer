@@ -1,0 +1,18 @@
+[Unit]
+Description=Run qbit-port-sync every minute
+
+[Timer]
+# Wait 60s after boot so Gluetun has time to negotiate NAT-PMP first.
+OnBootSec=60s
+# Then re-check every minute so a Gluetun reconnect is reflected in
+# qBit within ~60s. ProtonVPN's NAT-PMP lease is 60s; Gluetun auto-
+# renews under the hood. Our concern is the rare case where the lease
+# expires AND Gluetun gets a new port on renewal — without this sync,
+# qBit keeps advertising the old port and incoming peer connections
+# silently fail at Gluetun's firewall.
+OnUnitActiveSec=60s
+Persistent=true
+Unit=qbit-port-sync.service
+
+[Install]
+WantedBy=timers.target

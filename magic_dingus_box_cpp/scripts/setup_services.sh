@@ -383,6 +383,40 @@ else
     echo "Note: qBit-password-sync assets not found, skipping install."
 fi
 
+# 3.85. Install + enable qBittorrent listen-port sync timer.
+# Every time Gluetun re-handshakes with the VPN provider (container
+# restart, reconnect, exit rotation), ProtonVPN issues a new NAT-PMP
+# forwarded port. Until qBit's listen_port matches that port, incoming
+# peer connections from the swarm fail at the Gluetun firewall —
+# torrents stall at metaDL / stalledDL with 0 peers even when seeders
+# clearly exist. This 60s-cadence timer keeps the two in sync.
+#
+# The legacy in-place version of this script (deployed by some
+# earlier setup_services.sh that's no longer in the repo) had
+# qBit password hard-coded to "adminadmin" — silently broke the
+# moment Step 7.5 rotated qBit's password. Caught in production on
+# 2026-05-26 when Sling Blade refused to leave metaDL even though
+# 138 releases with up to 98 seeders existed. New version reads
+# password from .env, fails-soft if qBit is mid-restart.
+if [ -f "${SYSTEMD_DIR}/qbit-port-sync.service" ] && \
+   [ -f "${SYSTEMD_DIR}/qbit-port-sync.timer" ] && \
+   [ -f "${SCRIPT_DIR}/qbit_port_sync.sh" ]; then
+    sudo install -m 0755 \
+        "${SCRIPT_DIR}/qbit_port_sync.sh" \
+        /usr/local/bin/qbit-port-sync.sh
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/qbit-port-sync.service" \
+        /etc/systemd/system/qbit-port-sync.service
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/qbit-port-sync.timer" \
+        /etc/systemd/system/qbit-port-sync.timer
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now qbit-port-sync.timer
+    echo "qBit-port-sync timer (every 60s) installed + active."
+else
+    echo "Note: qbit-port-sync assets not found, skipping install."
+fi
+
 # 3.9. Install + enable the auto-blocklist-stuck-warnings timer.
 # Background: Radarr's failure handling auto-retries on FAILED downloads
 # (qBit error, stalled torrent) via autoRedownloadFailed=true, but

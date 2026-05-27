@@ -1,0 +1,15 @@
+[Unit]
+Description=qBittorrent listen-port sync from Gluetun NAT-PMP
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/qbit-port-sync.sh
+StandardOutput=journal
+StandardError=journal
+# Best-effort: if qBit/Gluetun are in transition, exit cleanly and
+# let the next timer tick retry. Never block boot.
+Restart=no
+TimeoutSec=60
