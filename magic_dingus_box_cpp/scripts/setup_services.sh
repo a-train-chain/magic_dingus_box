@@ -325,6 +325,35 @@ else
     echo "Note: smoke-test unit files not found, skipping timer install."
 fi
 
+# 3.7. Install + enable boot-time Radarr cooldown-reset oneshot.
+# Background: Radarr's IndexerFactory persists a 24-hour cooldown in
+# IndexerStatus.DisabledTill (radarr.db SQLite) after consecutive
+# search failures. The cooldown survives container restarts and full
+# Pi reboots — so a single DNS hiccup at 3 AM can lock the indexer
+# chain out until the next morning. From the operator's perspective:
+# smoke test green, containers green, but "no source found" on every
+# Detail page. Pre-fix recovery required manual SQLite editing.
+#
+# This oneshot runs after magic-dingus-services brings the docker
+# stack up, waits for Radarr to be reachable, then nulls out any
+# active DisabledTill values. Idempotent — if no cooldowns are
+# active it's a no-op. Best-effort: failure here does not block
+# boot or the kiosk.
+if [ -f "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" ] && \
+   [ -f "${SCRIPT_DIR}/clear_radarr_cooldowns.py" ]; then
+    sudo install -m 0755 \
+        "${SCRIPT_DIR}/clear_radarr_cooldowns.py" \
+        /usr/local/bin/clear_radarr_cooldowns.py
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-clear-cooldowns.service" \
+        /etc/systemd/system/magic-dingus-clear-cooldowns.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable magic-dingus-clear-cooldowns.service
+    echo "Boot-time cooldown reset installed + enabled."
+else
+    echo "Note: cooldown-clear assets not found, skipping install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the

@@ -1,0 +1,24 @@
+[Unit]
+Description=Magic Dingus Box — clear Radarr indexer cooldowns on boot
+# Only meaningful when the docker stack actually exists.
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+# Must run after the stack is up so we can stop+modify+start Radarr.
+After=magic-dingus-services.service
+Requires=magic-dingus-services.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clear_radarr_cooldowns.py
+StandardOutput=journal
+StandardError=journal
+# Don't restart on failure — the script is idempotent and best-effort.
+# If it fails, the next boot retries it. Real failures here would
+# never block kiosk startup.
+Restart=no
+# Long enough to handle Radarr's worst-case 90s cold-start + the
+# stop/clear/start cycle. Beyond this, something is genuinely wrong
+# and we should bail rather than hold up boot indefinitely.
+TimeoutSec=180
+
+[Install]
+WantedBy=multi-user.target
