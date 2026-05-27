@@ -30,7 +30,8 @@ set -euo pipefail
 
 COMPOSE_DIR='/opt/magic_dingus_box/services'
 DEPENDENTS=(radarr prowlarr qbittorrent byparr)
-STABILIZE_SLEEP=5  # seconds to wait after Gluetun start before restarting dependents
+STABILIZE_SLEEP=5            # seconds after Gluetun start before cascading dependents
+UNHEALTHY_CONFIRM_S=300      # seconds to wait before declaring an unhealthy event a real failure
 
 if ! [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
     echo "[gluetun-cascade] no compose file at ${COMPOSE_DIR} — exiting (services not provisioned)"
@@ -54,7 +55,21 @@ docker events --filter container=mdb_gluetun \
               --filter event=start \
               --filter event=health_status \
               --format '{{.Time}} {{.Action}}' | \
-while read -r event_time event_action; do
+while IFS= read -r line; do
+    # Docker formats health-status actions as `health_status: healthy`
+    # (with a space) when printed via {{.Action}}, but raw start events
+    # are just `start`. Earlier versions of this script naively split on
+    # whitespace via `read -r event_time event_action`, which clipped
+    # the action at the space and made every health_status event miss
+    # the case-statement matches below — silently disabling the entire
+    # auto-restart-on-unhealthy feature.
+    #
+    # Parse: timestamp is field 1; action is everything after the first
+    # space, then normalize "health_status: X" → "health_status:X" so the
+    # case patterns can match without depending on whitespace.
+    event_time="${line%% *}"
+    event_action="${line#* }"
+    event_action="${event_action// /}"   # collapse internal spaces
     case "${event_action}" in
         start)
             echo "[gluetun-cascade] gluetun started at ${event_time}, sleeping ${STABILIZE_SLEEP}s before cascading..."
@@ -75,17 +90,38 @@ while read -r event_time event_action; do
             fi
             ;;
         health_status:unhealthy)
-            # Docker emits `health_status: unhealthy` after retries-many
-            # consecutive failures (per docker-compose retries=3,
-            # interval=60s = ~3 minutes confirmed-broken). By the time
-            # we see this the data path is genuinely down. Restart
-            # gluetun; the resulting `start` event re-enters the case
-            # above and cascades to dependents.
-            echo "[gluetun-cascade] gluetun went UNHEALTHY at ${event_time}, restarting tunnel..."
-            if docker restart mdb_gluetun; then
-                echo "[gluetun-cascade] gluetun restart issued; cascade will follow start event"
+            # Docker emits unhealthy after retries-many consecutive
+            # failures (compose retries=3, interval=60s = ~3 minutes
+            # confirmed-broken). But the healthcheck *can* still flap
+            # on transient network blips — observed live: a single
+            # DNS hiccup causes wget to fail, the next 2 checks fail
+            # too (TCP timeout for instance), unhealthy fires, then
+            # the next check succeeds and the container recovers
+            # without intervention.
+            #
+            # Restarting gluetun on every blip would be worse than the
+            # blip itself: the cascade brings down dependents (Radarr
+            # loses queue tracking, qBit re-handshakes peers, downloads
+            # slow). Add a 5-minute confirmation wait before declaring
+            # a real failure. If still unhealthy after the wait, the
+            # tunnel is genuinely stuck and a restart is warranted.
+            #
+            # Bash `while read` is serial — events that arrive during
+            # the sleep queue up and process after. The post-sleep
+            # check looks at the *current* state, not the queued
+            # events, so a recovery during the wait is handled cleanly.
+            echo "[gluetun-cascade] gluetun went UNHEALTHY at ${event_time}, waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+            sleep "${UNHEALTHY_CONFIRM_S}"
+            current=$(docker inspect mdb_gluetun --format '{{.State.Health.Status}}' 2>/dev/null || echo unknown)
+            if [ "${current}" = "unhealthy" ]; then
+                echo "[gluetun-cascade] still unhealthy after ${UNHEALTHY_CONFIRM_S}s, restarting tunnel..."
+                if docker restart mdb_gluetun; then
+                    echo "[gluetun-cascade] gluetun restart issued; cascade will follow start event"
+                else
+                    echo "[gluetun-cascade] gluetun restart FAILED — manual intervention required"
+                fi
             else
-                echo "[gluetun-cascade] gluetun restart FAILED — manual intervention required"
+                echo "[gluetun-cascade] recovered to '${current}' during wait — no action needed"
             fi
             ;;
         health_status:healthy)
