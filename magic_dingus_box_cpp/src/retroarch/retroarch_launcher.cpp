@@ -1576,7 +1576,22 @@ void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOption
     out << "video_fullscreen = \"true\"\n";
     out << "video_windowed_fullscreen = \"false\"\n";
     out << "video_gpu_screenshot = \"false\"\n";
-    out << "video_allow_rotate = \"false\"\n";
+    // Allow cores to request display rotation via RETRO_ENVIRONMENT_SET_
+    // ROTATION. In practice only FBNeo uses this — it ships a curated
+    // per-game rotation database covering the classic vertical-monitor
+    // arcade cabinets (Pac-Man, Galaga, Donkey Kong, 1942, Bombjack,
+    // Xevious, Pole Position, etc.). With this set to false, those games
+    // render sideways because the vertical native framebuffer (e.g.
+    // Pac-Man's 224x288) gets stretched into our horizontal viewport.
+    // True lets RetroArch rotate them 90° so they display correctly,
+    // letterboxed inside the bezel cutout (mimics the side-curtain
+    // border real arcade cabinets had around vertical CRTs).
+    //
+    // Safe for non-arcade cores: nestopia / snes9x2010 / pcsx_rearmed /
+    // genesis_plus_gx / mednafen_pce_fast / prosystem all leave rotation
+    // at 0 (no horizontal/vertical mix in their game catalogs), so this
+    // flag is effectively a no-op for them.
+    out << "video_allow_rotate = \"true\"\n";
     out << "video_crop_overscan = \"false\"\n";
     out << "video_refresh_rate = \"60.000000\"\n";
     out << "video_aspect_ratio = \"1.333\"\n";
