@@ -605,6 +605,17 @@ SCORE_MAP = {
     "Remux / Raw-HD":                  -500,
     "x264 codec (BONUS)":               50,
     "Trusted small-release groups":     30,
+    # Scam-rejection formats: well below the -200 minFormatScore floor
+    # so a single match makes a release uneligible regardless of other
+    # bonuses. Observed in production tonight: trash indexers (TPB-via-
+    # Knaben aggregator, the "UIndex.org" prefix farm) post torrents
+    # matching newly-released theatrical titles where the content is
+    # actually a 0-byte .txt file or a .exe malware payload. Quality
+    # profile alone doesn't catch them because the release name reads
+    # as legit (proper year, 1080p tag, codec tag). These two CFs
+    # detect the giveaways in the title itself.
+    "Malware/scam executable in title": -10000,
+    "Known scam aggregator branding":   -10000,
 }
 MIN_FORMAT_SCORE = -200
 

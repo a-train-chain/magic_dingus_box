@@ -166,5 +166,61 @@
         ]
       }
     ]
+  },
+  {
+    "id": 7,
+    "name": "Malware/scam executable in title",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Executable extension",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\.(exe|bat|scr|cmd|com|vbs|lnk|msi|ps1|app|jar|hta)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "name": "Known scam aggregator branding",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Scam site prefix",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(uindex\\.?org|fxnow|123movies|fmovies|gomovies|putlocker)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
   }
 ]
