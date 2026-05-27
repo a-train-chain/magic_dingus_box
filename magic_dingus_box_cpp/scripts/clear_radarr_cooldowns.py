@@ -114,12 +114,44 @@ def clear_cooldowns() -> int:
         con.close()
 
 
+def count_active_cooldowns() -> int:
+    """Read-only check of how many indexers have a cooldown timestamp set.
+
+    Read-only access is safe to perform while Radarr is running — SQLite
+    WAL mode allows concurrent readers. Only the UPDATE in clear_cooldowns()
+    needs Radarr stopped.
+    """
+    if not RADARR_DB.exists():
+        return 0
+    con = sqlite3.connect(f"file:{RADARR_DB}?mode=ro", uri=True)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM IndexerStatus "
+            "WHERE DisabledTill IS NOT NULL OR EscalationLevel > 0;")
+        return cur.fetchone()[0]
+    finally:
+        con.close()
+
+
 def main() -> int:
+    # Fast-path: read-only peek BEFORE waiting for Radarr or stopping it.
+    # If the cooldown table is already clean (the common case after the
+    # DOT=off fix landed and indexer failures became rare), exit
+    # immediately. Pre-fix this script restarted Radarr on every boot
+    # even with zero rows to reset, costing ~60s of API downtime for
+    # nothing and producing transient "Movies tab unreachable" UX for
+    # any operator who reaches the kiosk before the dust settles.
+    n_pending = count_active_cooldowns()
+    if n_pending == 0:
+        print("[clear_radarr_cooldowns] no active cooldowns to clear — exiting (Radarr not touched)")
+        return 0
+    print(f"[clear_radarr_cooldowns] {n_pending} cooldown row(s) need clearing — proceeding with Radarr restart")
+
     print("[clear_radarr_cooldowns] waiting for Radarr to be ready...")
     if not wait_for_radarr():
         print(f"  ! Radarr did not respond within {RADARR_READY_TIMEOUT_S}s; "
               "skipping cooldown clear (best-effort)", file=sys.stderr)
-        # Exit 0 — don't fail boot. Cooldowns just stay as-is.
         return 0
     print("  Radarr responded.")
 
