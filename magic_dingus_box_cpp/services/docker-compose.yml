@@ -152,19 +152,30 @@ services:
       - ./config/gluetun:/gluetun
     restart: unless-stopped
     healthcheck:
-      # Hit gluetun's own control server at /v1/publicip/ip rather than
-      # an external IP-check service. Two reasons:
-      #   1. ifconfig.me / api.ipify.org / etc. occasionally serve Cloudflare
-      #      challenge pages to ProtonVPN exit IPs, causing the healthcheck
-      #      to flap. When flapping, qBittorrent (which has
-      #      depends_on: gluetun: condition: service_healthy) refuses to
-      #      start, and `systemctl start magic-dingus-services` fails.
-      #   2. /v1/publicip/ip is gluetun's internal self-report of "I have a
-      #      working VPN tunnel and can resolve outbound traffic" — exactly
-      #      what we actually care about, with no third-party flakiness.
-      # Endpoint returns JSON with public_ip, country, etc.; non-empty 200
-      # response means the tunnel is up.
-      test: ["CMD", "wget", "-qO-", "--tries=1", "--timeout=5", "http://localhost:8000/v1/publicip/ip"]
+      # Hit Cloudflare's `one.one.one.one` via HTTPS rather than gluetun's
+      # own /v1/publicip/ip endpoint. The internal endpoint reports
+      # "healthy" even when egress is broken — it returns a cached IP
+      # value with no DNS lookup. That's the bug we hit on 2026-05-26
+      # where DoT got wedged: containers couldn't resolve any hostname,
+      # all indexer searches returned 0, but gluetun stayed green for
+      # hours until a manual reboot.
+      #
+      # one.one.one.one (Cloudflare's official hostname for 1.1.1.1):
+      #   - Requires DNS lookup → fails fast when the resolver wedges
+      #   - HTTPS → exercises TCP connect + TLS handshake through the
+      #     VPN tunnel
+      #   - /cdn-cgi/trace returns plain text with `ip=...`, `loc=...`
+      #     etc. — the grep confirms we got a sensible 200 body.
+      #   - No rate-limit / Cloudflare challenge issues even on ProtonVPN
+      #     exit IPs (Cloudflare owns the endpoint and never blocks its
+      #     own infrastructure)
+      #
+      # Failure of any layer (DNS, TCP, TLS, content) → wget returns
+      # non-zero → grep fails → exit 1 → container marked unhealthy.
+      # The cascade-restart watcher (gluetun_cascade_restart.sh) catches
+      # the resulting health_status:unhealthy event and restarts gluetun,
+      # which then fires a start event that cascades to dependents.
+      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip='"]
       interval: 60s
       timeout: 10s
       retries: 3
