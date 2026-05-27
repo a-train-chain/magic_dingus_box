@@ -74,19 +74,39 @@ while IFS= read -r line; do
         start)
             echo "[gluetun-cascade] gluetun started at ${event_time}, sleeping ${STABILIZE_SLEEP}s before cascading..."
             sleep "${STABILIZE_SLEEP}"
-            echo "[gluetun-cascade] (re)bringing up dependents: ${DEPENDENTS[*]}"
-            # Use `up -d` not `restart`. `restart` is a no-op on dead
-            # containers — which is what we get when Gluetun was
-            # RECREATED (config change in docker-compose.yml), not just
-            # restarted: dependents sharing its netns crash with
-            # exit 128 the moment Gluetun's old container is destroyed.
-            # `up -d` is idempotent: starts stopped containers,
-            # restarts running ones if config changed, creates them
-            # if missing. Handles every recovery scenario.
-            if docker compose -f "${COMPOSE_DIR}/docker-compose.yml" up -d "${DEPENDENTS[@]}"; then
-                echo "[gluetun-cascade] cascade up -d complete"
+            echo "[gluetun-cascade] cascading dependents: ${DEPENDENTS[*]}"
+            # Two recovery paths needed depending on Gluetun's prior state:
+            #
+            #   - Gluetun was RECREATED (config change → new container):
+            #     dependents sharing its netns crash with exit 128 the
+            #     instant the old gluetun container is destroyed.
+            #     They're "stopped/dead" containers.  → need `up -d`
+            #
+            #   - Gluetun just RESTARTED (same container, new netns):
+            #     dependents stay RUNNING but the host-to-container port
+            #     DNAT rules get torn down with the old netns. They're
+            #     "running but unreachable from host."  → need `restart`
+            #
+            # `up -d` alone is a no-op for the second case (containers
+            # already running, no config change). `restart` alone fails
+            # the first case (can't restart a dead container that needs
+            # creating). Run BOTH, restart first to handle the running
+            # case, then `up -d` as a safety net to ensure anything
+            # that ended up stopped during/after the restart gets back up.
+            # Both are idempotent.
+            local_compose() {
+                docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
+            }
+            if local_compose restart "${DEPENDENTS[@]}" 2>&1; then
+                echo "[gluetun-cascade] dependents restarted"
             else
-                echo "[gluetun-cascade] cascade up -d failed (compose exit=$?), will retry on next event"
+                # restart can fail if some are dead — fall through to up -d
+                echo "[gluetun-cascade] (some dependents not running; up -d will create them)"
+            fi
+            if local_compose up -d "${DEPENDENTS[@]}"; then
+                echo "[gluetun-cascade] cascade complete"
+            else
+                echo "[gluetun-cascade] cascade up -d failed — will retry on next event"
             fi
             ;;
         health_status:unhealthy)

@@ -354,6 +354,35 @@ else
     echo "Note: cooldown-clear assets not found, skipping install."
 fi
 
+# 3.8. Install + enable boot-time qBittorrent password resync.
+# Background: qBit's WebUI password is persisted as a PBKDF2 hash in
+# qBittorrent.conf. When the docker container is RECREATED (which
+# `docker compose up -d` does on any config change), an in-progress
+# password change can be lost if qBit gets SIGKILL'd before flushing
+# config to disk. The new container then starts with the OLD password,
+# Radarr can't authenticate, and the smoke test surfaces "qBit login
+# with .env password FAILED" until manually re-synced.
+#
+# This oneshot re-applies Step 7.5's logic on every boot: try the
+# .env password first (no-op happy path), fall back to docker's
+# default `adminadmin`, then call setPreferences to lock in .env's
+# value. Same pattern as 3.7 (cooldown reset) — idempotent oneshot
+# after magic-dingus-services.
+if [ -f "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" ] && \
+   [ -f "${SCRIPT_DIR}/sync_qbit_password.sh" ]; then
+    sudo install -m 0755 \
+        "${SCRIPT_DIR}/sync_qbit_password.sh" \
+        /usr/local/bin/sync_qbit_password.sh
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-sync-qbit-password.service" \
+        /etc/systemd/system/magic-dingus-sync-qbit-password.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable magic-dingus-sync-qbit-password.service
+    echo "Boot-time qBit password resync installed + enabled."
+else
+    echo "Note: qBit-password-sync assets not found, skipping install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the
