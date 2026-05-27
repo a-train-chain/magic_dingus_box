@@ -1,0 +1,14 @@
+[Unit]
+Description=Magic Dingus Box — auto-blocklist Radarr queue items stuck in warning state
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/auto_blocklist_stuck_warnings.py
+StandardOutput=journal
+StandardError=journal
+# Best-effort: if Radarr is unreachable or the API errors, just exit
+# cleanly and let the next timer firing retry. Never block boot or
+# crash from this watchdog.
+Restart=no
+TimeoutSec=60

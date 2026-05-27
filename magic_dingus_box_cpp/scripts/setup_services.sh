@@ -383,6 +383,39 @@ else
     echo "Note: qBit-password-sync assets not found, skipping install."
 fi
 
+# 3.9. Install + enable the auto-blocklist-stuck-warnings timer.
+# Background: Radarr's failure handling auto-retries on FAILED downloads
+# (qBit error, stalled torrent) via autoRedownloadFailed=true, but
+# WARNING downloads (completed in qBit but Radarr can't import — e.g.
+# the file inside is a .exe, .txt, or otherwise unusable) sit in the
+# queue indefinitely waiting for an operator decision. Scam torrents
+# that pass our search-time Custom Format filters but turn out to be
+# junk content fall into this category.
+#
+# This timer-driven watchdog scans every 15 minutes for warning-state
+# items whose statusMessages contain known-bad signatures (executable
+# file extensions, "no videos in folder", "unsupported extension")
+# and blocklists them, then triggers a fresh search so Radarr picks
+# a real alternative.
+if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
+   [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.timer" ] && \
+   [ -f "${SCRIPT_DIR}/auto_blocklist_stuck_warnings.py" ]; then
+    sudo install -m 0755 \
+        "${SCRIPT_DIR}/auto_blocklist_stuck_warnings.py" \
+        /usr/local/bin/auto_blocklist_stuck_warnings.py
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" \
+        /etc/systemd/system/magic-dingus-auto-blocklist.service
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.timer" \
+        /etc/systemd/system/magic-dingus-auto-blocklist.timer
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now magic-dingus-auto-blocklist.timer
+    echo "Auto-blocklist timer (every 15 min) installed + active."
+else
+    echo "Note: auto-blocklist assets not found, skipping install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the

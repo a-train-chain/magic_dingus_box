@@ -1,0 +1,14 @@
+[Unit]
+Description=Magic Dingus Box — periodic auto-blocklist of stuck-warning queue items
+
+[Timer]
+# Run 90 seconds after boot to catch overnight scams, then every 15
+# minutes. Persistent=true ensures a missed run (Pi off when the
+# timer was supposed to fire) gets caught up on next boot.
+OnBootSec=90
+OnUnitActiveSec=15min
+Persistent=true
+Unit=magic-dingus-auto-blocklist.service
+
+[Install]
+WantedBy=timers.target
