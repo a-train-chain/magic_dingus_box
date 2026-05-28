@@ -120,6 +120,10 @@ private:
     // Snapshotted at render time from radarr_.last_error() whenever the
     // queue comes back empty.
     std::string last_error_;
+    // Mirrors PendingResult::qbit_overlay_failed for the most-recently-
+    // applied refresh — used by render() to decide whether to surface a
+    // "live data unavailable" indicator.
+    bool qbit_overlay_failed_ = false;
 
     // --- Async refresh state ----------------------------------------
     // Pending result from the background worker. Worker writes under
@@ -131,6 +135,14 @@ private:
         std::vector<QueueItem> queue;
         std::vector<Movie>     awaiting;
         std::string            error;
+        // True when the qBit live-data overlay step couldn't fetch the
+        // torrent list (qBit unreachable behind a netns flap, auth
+        // desync, etc.). Radarr's queue snapshot is still returned and
+        // shown, but its progress / dlspeed / peers fields are the
+        // last values Radarr cached internally — typically 30-60 s
+        // stale, sometimes much older. Surfaces in the UI as a yellow
+        // sub-line so the user knows the bars aren't reflecting reality.
+        bool                   qbit_overlay_failed = false;
     };
     std::mutex                 result_mtx_;
     PendingResult              pending_;

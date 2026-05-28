@@ -268,6 +268,16 @@ void QueueScreen::run_refresh() {
     // seeds, eta, sizeleft, state).
     if (qbit_) {
         auto qbit_map = qbit_->get_torrents_by_hash();
+        // Detect overlay failure: qbit_ is wired but we got no torrents
+        // back AND Radarr's queue is non-empty (so we expected at least
+        // those hashes to be in qBit). Either qBit is unreachable (netns
+        // flap, container restart) or auth desynced (config drift).
+        // Either way, the queue rows below this branch will retain
+        // whatever stale progress Radarr returned — flag it so render()
+        // can surface a warning instead of silently misleading the user.
+        if (qbit_map.empty() && !r.queue.empty()) {
+            r.qbit_overlay_failed = true;
+        }
         if (!qbit_map.empty()) {
             for (auto& q : r.queue) {
                 if (q.download_id.empty()) continue;
@@ -334,6 +344,7 @@ void QueueScreen::apply_pending() {
     queue_ = std::move(r.queue);
     awaiting_ = std::move(r.awaiting);
     last_error_ = std::move(r.error);
+    qbit_overlay_failed_ = r.qbit_overlay_failed;
     last_refresh_at_ = std::chrono::steady_clock::now();
     refreshing_ = false;
 
@@ -518,7 +529,16 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             static_cast<float>(::media_browser::ui::chrome::kSafeInset_px);
         r.mb_draw_text(count_text, sub_x_left, sub_y, sub_size, th.dim, 0.85f);
 
-        // Refresh indicator on the far right of the sub-line.
+        // Refresh indicator on the far right of the sub-line. Color-coded
+        // by age so a stuck refresh (Radarr or qBit unreachable behind the
+        // VPN netns when Gluetun flaps, etc.) is visually obvious — the
+        // progress bars on the rows below would otherwise look frozen
+        // because Radarr's queue snapshot stays at its last cached
+        // values while the live qBit overlay can't reach the container.
+        //   <  5 s : dim cream      — normal cadence (refresh fires @ 1.5 s)
+        //   5–15 s : dim cream      — still acceptable
+        //  15–45 s : accent gold    — refresh starting to slip
+        //   > 45 s : highlight red  — refresh is clearly broken; bars stale
         std::string ind_text;
         ::ui::Color ind_color = th.dim;
         float ind_alpha = 0.85f;
@@ -530,9 +550,22 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             auto now = std::chrono::steady_clock::now();
             auto secs = std::chrono::duration_cast<std::chrono::seconds>(
                             now - last_refresh_at_).count();
-            char buf[48];
-            snprintf(buf, sizeof(buf), "updated %llds ago",
-                     static_cast<long long>(secs));
+            char buf[64];
+            if (secs > 45) {
+                snprintf(buf, sizeof(buf),
+                         "STALE \xE2\x80\x94 last update %llds ago",
+                         static_cast<long long>(secs));
+                ind_color = th.highlight2;  // red — data is clearly stale
+                ind_alpha = 0.95f;
+            } else if (secs > 15) {
+                snprintf(buf, sizeof(buf), "slow \xE2\x80\x94 updated %llds ago",
+                         static_cast<long long>(secs));
+                ind_color = th.accent;      // gold — warning
+                ind_alpha = 0.95f;
+            } else {
+                snprintf(buf, sizeof(buf), "updated %llds ago",
+                         static_cast<long long>(secs));
+            }
             ind_text = buf;
         }
         int ind_w = r.mb_text_width(ind_text, sub_size);
@@ -540,6 +573,21 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             screen_w - ::media_browser::ui::chrome::kSafeInset_px);
         float ind_x = sub_x_right - static_cast<float>(ind_w);
         r.mb_draw_text(ind_text, ind_x, sub_y, sub_size, ind_color, ind_alpha);
+
+        // qBit-overlay-failed sub-line. Render() drew the count on the
+        // left and the freshness indicator on the right; this third
+        // line drops below those when live data is missing. Gives the
+        // user a clear "the bars below are stale" signal — without it
+        // a netns flap or qBit auth desync makes downloads look
+        // frozen with no explanation. See PendingResult comment.
+        if (qbit_overlay_failed_ && !queue_.empty()) {
+            const std::string warn_text =
+                "Live data unavailable \xE2\x80\x94 progress shown is "
+                "Radarr's cached snapshot";
+            float warn_y = sub_y + static_cast<float>(sub_size) + 4.0f;
+            r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
+                           th.accent, 0.95f);
+        }
     }
 
     // --- Footer hint (drawn early so we can reserve the bottom band) -
