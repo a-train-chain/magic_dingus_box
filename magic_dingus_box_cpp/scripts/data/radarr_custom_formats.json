@@ -222,5 +222,33 @@
         ]
       }
     ]
+  },
+  {
+    "id": 9,
+    "name": "Non-English title signals",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Non-Latin script or foreign-dub keyword",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive — rejects releases with non-Latin script in the title (Cyrillic, CJK, Korean) or explicit foreign-dub keywords. Catches the title-parser-fooled case observed live with 'Дьявол носит Prada 2 / The Devil Wears Prada 2' — the English text in the cyrillic-titled torrent fooled Radarr's language parser into tagging it as English, so the quality-profile language gate let it through.",
+            "value": "[Ѐ-ӿ一-鿿぀-ヿ가-힯]|\\b(dublado|doblado|castellano|latino|latam|brazilian[. ]?dub|french[. ]?dub|german[. ]?dub|italian[. ]?dub|russian[. ]?dub|spanish[. ]?dub|chinese[. ]?dub|japanese[. ]?dub|korean[. ]?dub)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
   }
 ]

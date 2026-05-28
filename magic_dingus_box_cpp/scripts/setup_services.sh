@@ -741,6 +741,17 @@ SCORE_MAP = {
     # detect the giveaways in the title itself.
     "Malware/scam executable in title": -10000,
     "Known scam aggregator branding":   -10000,
+    # Title-level foreign-language defense. The quality profile's Language
+    # setting (Original) is the primary defense, but Radarr's title parser
+    # can be fooled into tagging a release as English when the torrent
+    # title contains English text alongside non-Latin characters (e.g.
+    # "Дьявол носит Prada 2 / The Devil Wears Prada 2" — parser saw the
+    # English half and the cyrillic Russian audio slipped past). This
+    # CF catches that via title regex: any cyrillic/CJK/korean char OR
+    # an explicit foreign-dub keyword in the title scores -10000, well
+    # below minFormatScore=-200 so the release is uneligible regardless
+    # of other bonuses.
+    "Non-English title signals":        -10000,
 }
 MIN_FORMAT_SCORE = -200
 
