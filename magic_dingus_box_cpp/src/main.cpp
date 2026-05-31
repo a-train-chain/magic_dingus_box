@@ -1750,6 +1750,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 if (modal_result == media_browser::ui::ExitModal::Result::Exit) {
                     // Tear down: same path as Screen::Exit.
                     mb_exit_modal.clear_result();
+                    // Guarantee the artwork worker is running on MB exit.
+                    // pause() is only paired with resume() in the
+                    // screen-transition branch below; exiting via the
+                    // modal/long-press/Screen::Exit paths bypasses that,
+                    // so a Playback->exit would otherwise leave the
+                    // worker paused forever (no posters on next entry).
+                    // resume() is idempotent — a no-op when not paused.
+                    ui_renderer.artwork_cache().resume();
                     active_mb_screen->leave();
                     state.current_screen = app::AppScreen::MainMenu;
                     current_mb_screen = media_browser::ui::Screen::Browse;
@@ -1767,6 +1775,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // reset dispatcher state, and let the rest of the main loop
                 // run this frame (rendering, etc.) with current_screen flipped
                 // to MainMenu.
+                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
                 state.current_screen = app::AppScreen::MainMenu;
                 current_mb_screen = media_browser::ui::Screen::Browse;
@@ -1775,6 +1784,7 @@ int main(int /* argc */, char* /* argv */[]) {
             } else if (!mb_modal_exited) {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
+                ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
                 state.current_screen = app::AppScreen::MainMenu;
                 // Reset to Browse so the next entry into the Media Browser
