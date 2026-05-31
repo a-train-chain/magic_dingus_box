@@ -83,3 +83,109 @@ TEST_CASE("flag_auto_pick handles all-below-threshold case (no auto-pick)",
     REQUIRE(rows[0].below_threshold == true);
     REQUIRE(rows[1].below_threshold == true);
 }
+
+using Playability = mbu::ReleasePickerScreen::Playability;
+
+TEST_CASE("classify_playability blocks formats that won't display",
+          "[picker][playability]") {
+    auto v = [](const char* title) {
+        return mbu::ReleasePickerScreen::classify_playability(title, nullptr);
+    };
+
+    SECTION("HDR / Dolby Vision -> Unplayable") {
+        REQUIRE(v("Movie 2024 1080p BluRay HDR x264") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.2160p.HDR10.x265") == Playability::Unplayable);
+        REQUIRE(v("Movie 2024 1080p Dolby Vision x264") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.1080p.DoVi.HEVC") == Playability::Unplayable);
+    }
+    SECTION("10-bit -> Unplayable (SAND-format green screen)") {
+        REQUIRE(v("Movie 2024 1080p x265 10bit") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.1080p.10-bit.HEVC") == Playability::Unplayable);
+        REQUIRE(v("Movie 2024 Hi10P x264") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.Main10.HEVC") == Playability::Unplayable);
+    }
+    SECTION("AV1 -> Unplayable (no decoder)") {
+        REQUIRE(v("Movie 2024 1080p AV1 WEB-DL") == Playability::Unplayable);
+    }
+    SECTION("4K / 2160p / UHD -> Unplayable") {
+        REQUIRE(v("Movie 2024 2160p WEB-DL x264") == Playability::Unplayable);
+        REQUIRE(v("Movie 2024 4K BluRay") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.UHD.BluRay") == Playability::Unplayable);
+    }
+    SECTION("Disc images / remux -> Unplayable (not a single file)") {
+        REQUIRE(v("Movie 2024 1080p BluRay REMUX AVC") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.BDMV.1080p") == Playability::Unplayable);
+        REQUIRE(v("Movie 2024 1080p.iso") == Playability::Unplayable);
+    }
+    SECTION("3D -> Unplayable (doubled image)") {
+        REQUIRE(v("Movie 2024 1080p 3D HSBS x264") == Playability::Unplayable);
+        REQUIRE(v("Movie.2024.1080p.Half-SBS") == Playability::Unplayable);
+    }
+}
+
+TEST_CASE("classify_playability allows HEVC 8-bit as degraded",
+          "[picker][playability]") {
+    auto v = [](const char* title) {
+        return mbu::ReleasePickerScreen::classify_playability(title, nullptr);
+    };
+    // Plain HEVC/x265 8-bit (no HDR/10-bit markers) is the watchable-
+    // with-stutter tier, NOT a hard block.
+    REQUIRE(v("Movie 2024 1080p WEBRip x265") == Playability::Degraded);
+    REQUIRE(v("Movie.2024.1080p.HEVC") == Playability::Degraded);
+    REQUIRE(v("Movie 2024 1080p H.265 AAC") == Playability::Degraded);
+}
+
+TEST_CASE("classify_playability passes clean x264 as ideal",
+          "[picker][playability]") {
+    auto v = [](const char* title) {
+        return mbu::ReleasePickerScreen::classify_playability(title, nullptr);
+    };
+    REQUIRE(v("Movie 2024 1080p BluRay x264-GRP") == Playability::Ideal);
+    REQUIRE(v("Movie.2024.720p.WEB-DL.H264") == Playability::Ideal);
+    REQUIRE(v("Movie 2024 1080p AMZN WEB-DL DDP5.1 H.264") == Playability::Ideal);
+}
+
+TEST_CASE("classify_playability HDR beats codec and sets a reason",
+          "[picker][playability]") {
+    std::string reason;
+    // An HDR x264 must still block on HDR, not pass as ideal just
+    // because it's x264.
+    auto verdict = mbu::ReleasePickerScreen::classify_playability(
+        "Movie 2024 1080p HDR x264", &reason);
+    REQUIRE(verdict == Playability::Unplayable);
+    REQUIRE_FALSE(reason.empty());
+}
+
+TEST_CASE("sort sinks unplayable below playable, ideal above degraded",
+          "[picker][playability]") {
+    std::vector<mbu::ReleasePickerScreen::ReleaseCandidate> rows = {
+        mk(999, 100, "unplayable-high-seed"),
+        mk(5,   50,  "ideal-low-seed"),
+        mk(200, 30,  "degraded-mid-seed"),
+    };
+    rows[0].playability = Playability::Unplayable;
+    rows[1].playability = Playability::Ideal;
+    rows[2].playability = Playability::Degraded;
+    mbu::ReleasePickerScreen::sort_candidates(rows);
+    REQUIRE(rows[0].playability == Playability::Ideal);
+    REQUIRE(rows[1].playability == Playability::Degraded);
+    REQUIRE(rows[2].playability == Playability::Unplayable);
+}
+
+TEST_CASE("auto-pick never lands on an unplayable row",
+          "[picker][playability]") {
+    std::vector<mbu::ReleasePickerScreen::ReleaseCandidate> rows = {
+        mk(10, 500, "unplayable-best-score"),
+        mk(10, 40,  "playable-lower-score"),
+    };
+    rows[0].playability = Playability::Unplayable;
+    rows[1].playability = Playability::Ideal;
+    mbu::ReleasePickerScreen::flag_auto_pick_and_threshold(rows, -200);
+    int picked = -1;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].would_auto_pick) picked = static_cast<int>(i);
+    }
+    REQUIRE(picked >= 0);
+    REQUIRE(rows[picked].playability != Playability::Unplayable);
+    REQUIRE(rows[picked].score == 40);
+}

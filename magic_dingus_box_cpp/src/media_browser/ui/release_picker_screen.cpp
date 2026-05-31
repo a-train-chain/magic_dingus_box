@@ -260,6 +260,12 @@ void ReleasePickerScreen::set_candidates(std::string movie_title,
                                          std::vector<ReleaseCandidate> rows) {
     movie_title_ = std::move(movie_title);
     rows_        = std::move(rows);
+    // Classify display-compatibility BEFORE sorting so sort_candidates
+    // can sink Unplayable rows to the bottom and float Ideal above
+    // Degraded. Reason string drives the per-row badge in render().
+    for (auto& c : rows_) {
+        c.playability = classify_playability(c.title, &c.playability_reason);
+    }
     sort_candidates(rows_);
     // Radarr's minFormatScore = -200 in the kiosk's quality profile.
     // See CLAUDE.md "Quality configuration" — that's the floor below
@@ -324,6 +330,19 @@ Screen ReleasePickerScreen::handle_input(
             if (rows_.empty()) continue;
             if (focus_ < 0 || focus_ >= static_cast<int>(rows_.size())) continue;
             const auto& cand = rows_[focus_];
+            // Hard block: a release that won't display correctly on this
+            // TV (HDR/4K/AV1/10-bit/Remux/3D) can't be grabbed. Surface a
+            // toast naming the reason so the user understands why instead
+            // of grabbing something that comes out green or washed-out.
+            // HEVC (Degraded) is intentionally NOT blocked here — it's
+            // the watchable-with-stutter last-resort tier.
+            if (cand.playability == Playability::Unplayable) {
+                std::string why = cand.playability_reason.empty()
+                    ? std::string("won't play on this TV")
+                    : cand.playability_reason;
+                ::ui::Toast::show("Can't grab \xE2\x80\x94 " + why);
+                continue;
+            }
             Json::Value payload = to_release_json(cand);
             bool ok = radarr_.grab_release(payload);
             if (ok) {
@@ -577,13 +596,22 @@ void ReleasePickerScreen::render(::ui::Renderer& r, int screen_w, int screen_h) 
             const bool focused = (i == focus_);
             float ry = body_top + (i - scroll_top_) * (kRowHeight + kRowGap);
 
-            // Below-threshold rows render in red with reduced alpha so
-            // they read as "Radarr would reject this" without being
-            // un-selectable. Operator override is the whole point of
-            // the picker — they may want to grab one anyway.
+            // Row text color encodes display-compatibility first (the
+            // thing the user most needs to see), then Radarr's score
+            // floor as a secondary signal:
+            //   Unplayable  → red, dimmed     (can't grab — wrong format)
+            //   Degraded    → amber/accent    (HEVC, watchable w/ stutter)
+            //   below floor → red, dimmed     (Radarr would reject)
+            //   otherwise   → normal cream
             ::ui::Color text_color = th.fg;
             float text_alpha       = focused ? 1.0f : 0.92f;
-            if (c.below_threshold) {
+            if (c.playability == Playability::Unplayable) {
+                text_color = th.highlight2;            // red
+                text_alpha = focused ? 0.9f : 0.55f;   // extra-dim = "off"
+            } else if (c.playability == Playability::Degraded) {
+                text_color = th.accent;                // amber/gold warn
+                text_alpha = focused ? 1.0f : 0.9f;
+            } else if (c.below_threshold) {
                 text_color = th.highlight2;
                 text_alpha = focused ? 0.95f : 0.7f;
             }
@@ -595,9 +623,12 @@ void ReleasePickerScreen::render(::ui::Renderer& r, int screen_w, int screen_h) 
             // Below-threshold but focused rows get a red outline so the
             // visual signal matches the dim-red text inside.
             if (focused) {
-                ::ui::Color outline = c.below_threshold
-                                    ? th.highlight2
-                                    : th.accent2;  // steel blue
+                // Red outline when the focused row is unplayable or below
+                // Radarr's floor (signals "selecting this is blocked /
+                // discouraged"); steel-blue otherwise.
+                const bool warn = c.below_threshold
+                    || c.playability == Playability::Unplayable;
+                ::ui::Color outline = warn ? th.highlight2 : th.accent2;
                 r.mb_stroke_rect(row_x, ry, row_w, kRowHeight,
                                  kRowOutlineW, outline, 1.0f);
             } else if (c.would_auto_pick) {
@@ -617,11 +648,17 @@ void ReleasePickerScreen::render(::ui::Renderer& r, int screen_w, int screen_h) 
             r.mb_draw_text(title_str, title_col_x, title_y,
                            title_size, text_color, text_alpha);
 
-            // Sub-line: indexer + score + (auto-pick / below-threshold)
-            // tag. Dim cream small font, same idiom as Queue's per-row
-            // sub-line.
+            // Sub-line: indexer + score + playability + (auto-pick /
+            // below-threshold) tag. Dim cream small font, same idiom as
+            // Queue's per-row sub-line. The playability reason is the
+            // most actionable bit so it leads after the indexer.
             std::ostringstream sub;
             sub << (c.indexer.empty() ? "?" : c.indexer);
+            if (c.playability == Playability::Unplayable) {
+                sub << "  \xC2\xB7  WON'T PLAY: " << c.playability_reason;
+            } else if (c.playability == Playability::Degraded) {
+                sub << "  \xC2\xB7  " << c.playability_reason;
+            }
             sub << "  \xC2\xB7  score " << c.score;
             if (c.would_auto_pick) sub << "  \xC2\xB7  Radarr's pick";
             if (c.below_threshold) sub << "  \xC2\xB7  below score floor";

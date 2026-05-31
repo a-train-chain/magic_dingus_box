@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <limits>
 #include <mutex>
@@ -38,6 +39,18 @@ class ReleasePickerScreen : public MbScreen {
 public:
     // One row in the picker. Built from a Prowlarr ReleaseRecord (and
     // optionally enriched with Radarr's own scoring once we wire that in).
+    // How well a release will DISPLAY on this kiosk's hardware. Distinct
+    // from `score` (Radarr's quality preference) and `below_threshold`
+    // (Radarr would reject) — this is specifically "will the picture
+    // come out right on the Pi 4B + GL SDR renderer." See
+    // classify_playability() for the rules.
+    enum class Playability {
+        Ideal,       // x264 / H.264 8-bit SDR — hardware-decoded, perfect
+        Degraded,    // HEVC/x265 8-bit SDR — software-decoded, may stutter
+        Unplayable,  // HDR/DV/10-bit/AV1/4K/Remux/3D — wrong colors, green
+                     // screen, no decoder, or not a single playable file
+    };
+
     struct ReleaseCandidate {
         std::string title;
         std::string indexer;
@@ -53,6 +66,12 @@ public:
         int         score        = 0;     // Radarr custom-format score, if known
         bool        would_auto_pick = false;  // gold-border highlight
         bool        below_threshold = false;  // dim red — score < minFormatScore
+        // Display-compatibility verdict + a short human reason (e.g.
+        // "HDR", "10-bit", "AV1 — no decoder"). Populated by
+        // classify_playability() in set_candidates(). Unplayable rows
+        // are sorted to the bottom and can't be SELECTed.
+        Playability playability = Playability::Ideal;
+        std::string playability_reason;
     };
 
     explicit ReleasePickerScreen(::media_browser::RadarrClient& radarr);
@@ -119,9 +138,96 @@ public:
     // Static helpers — defined inline so the unit-test binary (which
     // does NOT link release_picker_screen.cpp because that would pull
     // in Renderer + Toast symbols) can exercise them directly.
+    // Classify how a release will display on the Pi 4B + GL SDR renderer
+    // from its title. Pure string logic — no I/O — so the unit-test
+    // binary can exercise every rule without a Renderer. Returns the
+    // verdict; on a non-Ideal verdict, `reason_out` gets a short tag for
+    // the UI badge (e.g. "HDR", "10-bit", "4K").
+    //
+    // Ordering matters: we check the hard-block signals first (they win
+    // over codec), then the degraded (HEVC-8bit) case, else Ideal.
+    // Case-insensitive substring matching on a lowercased copy.
+    static Playability classify_playability(const std::string& title,
+                                            std::string* reason_out = nullptr) {
+        std::string t;
+        t.reserve(title.size());
+        for (char ch : title) {
+            t.push_back(static_cast<char>(
+                std::tolower(static_cast<unsigned char>(ch))));
+        }
+        auto has = [&t](const char* needle) {
+            return t.find(needle) != std::string::npos;
+        };
+        auto set_reason = [reason_out](const char* r) {
+            if (reason_out) *reason_out = r;
+        };
+
+        // --- Hard blocks: wrong colors / no decoder / not-a-file ---------
+        // HDR + Dolby Vision: the GL renderer is SDR-only, so HDR content
+        // renders washed-out / grey. DV adds a metadata layer nothing in
+        // our pipeline reads.
+        if (has("dolby vision") || has("dolby.vision")
+            || has("dovi") || has(".dv.") || has(" dv ")
+            || has("hdr10") || has("hdr")) {
+            set_reason("HDR/DV — washed-out colour"); return Playability::Unplayable;
+        }
+        // 10-bit (incl. Hi10P): the rpivid HEVC path negotiates the SAND
+        // tiled format GStreamer can't consume → green/no picture. Even
+        // 10-bit H.264 (Hi10P) isn't hardware-decodable on the Pi.
+        if (has("10bit") || has("10 bit") || has("10-bit")
+            || has("hi10p") || has("main 10") || has("main10")) {
+            set_reason("10-bit — green screen"); return Playability::Unplayable;
+        }
+        // AV1: no decoder at all on the Pi 4B (hardware or practical
+        // software at 1080p).
+        if (has("av1")) {
+            set_reason("AV1 — no decoder"); return Playability::Unplayable;
+        }
+        // 4K / 2160p: downscaling overwhelms the Pi and these are almost
+        // always HDR anyway.
+        if (has("2160p") || has("4k") || has("uhd")) {
+            set_reason("4K — too heavy"); return Playability::Unplayable;
+        }
+        // Disc images / remuxes: not a single directly-playable file.
+        if (has("remux") || has("bdmv") || has("video_ts")
+            || has("m2ts") || has(".iso") || has(" iso ")
+            || has("bdremux")) {
+            set_reason("Disc image — not a file"); return Playability::Unplayable;
+        }
+        // 3D side-by-side / over-under: renders doubled on a 2D screen.
+        if (has("hsbs") || has("h-sbs") || has(" sbs ") || has(".sbs.")
+            || has(" hou ") || has(".hou.") || has("half-sbs")
+            || has(" 3d ") || has(".3d.")) {
+            set_reason("3D — doubled image"); return Playability::Unplayable;
+        }
+
+        // --- Degraded: HEVC/x265 8-bit — software-decoded, may stutter ---
+        if (has("x265") || has("h265") || has("h.265") || has("hevc")) {
+            set_reason("HEVC — may stutter"); return Playability::Degraded;
+        }
+
+        // --- Ideal: everything else (x264 / H.264 8-bit SDR) ------------
+        set_reason("");
+        return Playability::Ideal;
+    }
+
     static void sort_candidates(std::vector<ReleaseCandidate>& rows) {
         std::sort(rows.begin(), rows.end(),
                   [](const ReleaseCandidate& a, const ReleaseCandidate& b) {
+                      // Unplayable always sinks below playable. Within the
+                      // playable set, Ideal (hardware H.264) outranks
+                      // Degraded (HEVC) so the smooth options float up
+                      // even when an HEVC release has more seeders.
+                      auto tier = [](const ReleaseCandidate& c) {
+                          switch (c.playability) {
+                              case Playability::Ideal:      return 0;
+                              case Playability::Degraded:   return 1;
+                              case Playability::Unplayable: return 2;
+                          }
+                          return 1;
+                      };
+                      int ta = tier(a), tb = tier(b);
+                      if (ta != tb) return ta < tb;
                       if (a.seeders != b.seeders) return a.seeders > b.seeders;
                       return a.score > b.score;
                   });
@@ -134,6 +240,12 @@ public:
         for (size_t i = 0; i < rows.size(); ++i) {
             rows[i].below_threshold = (rows[i].score < min_format_score);
             rows[i].would_auto_pick = false;
+            // The "Radarr's pick" gold highlight must only ever land on a
+            // release the kiosk can actually display. An Unplayable row
+            // (HDR/4K/AV1/etc.) is never a valid auto-pick even if its
+            // raw score is highest — skip it here so the highlight goes
+            // to the best PLAYABLE above-threshold row instead.
+            if (rows[i].playability == Playability::Unplayable) continue;
             if (!rows[i].below_threshold && rows[i].score > best_score) {
                 best_score = rows[i].score;
                 best_idx   = static_cast<int>(i);
