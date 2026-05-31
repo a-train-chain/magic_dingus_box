@@ -1,0 +1,15 @@
+[Unit]
+Description=Run magic-dingus missing-movie re-search every 4 hours
+Requires=magic-dingus-missing-search.service
+
+[Timer]
+# 3 minutes after boot so a Pi that was off when a release dropped picks
+# it up promptly on next power-on, then every 4 hours thereafter. The
+# add-time auto-search still handles the common case instantly; this is
+# the backstop for titles that found nothing grabbable at add time.
+OnBootSec=3min
+OnUnitActiveSec=4h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
