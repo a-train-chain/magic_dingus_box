@@ -277,6 +277,23 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
             }
             break;
 
+        case GST_MESSAGE_ASYNC_DONE:
+            // A FLUSH seek (or the initial preroll) finished its async
+            // state change. This is the completion signal the seek
+            // coalescer waits on: if the user kept scrubbing while the
+            // seek was in flight, fire the latest coalesced target now;
+            // otherwise mark the pipeline idle so the next scrub fires
+            // immediately. Only act on messages from the pipeline itself
+            // (child elements post their own ASYNC_DONE during preroll).
+            if (GST_MESSAGE_SRC(msg) == GST_OBJECT(player->pipeline_)) {
+                if (player->has_pending_seek_) {
+                    player->fire_seek();
+                } else {
+                    player->seek_in_progress_ = false;
+                }
+            }
+            break;
+
         case GST_MESSAGE_ERROR: {
             gchar* debug = nullptr;
             GError* error = nullptr;
@@ -484,73 +501,85 @@ void GstPlayer::toggle_pause() {
 
 void GstPlayer::seek(double seconds) {
     if (!initialized_) return;
-    gint64 pos = 0;
-    if (gst_element_query_position(pipeline_, GST_FORMAT_TIME, &pos)) {
-        gint64 seek_pos = pos + static_cast<gint64>(seconds * GST_SECOND);
-        if (seek_pos < 0) seek_pos = 0;
-        // Clamp upper bound to (duration - 1s) so a seek can't push past
-        // the end. Otherwise a high-velocity rotary scrub past the file's
-        // last frame fires EOS, which our PlaybackScreen treats as
-        // natural end-of-stream and returns to Detail — looks like a
-        // crash to the user. Treat duration_ <= 0 as "unknown" and
-        // skip the upper clamp in that case.
-        double dur = duration_.load();
-        if (dur > 1.0) {
-            gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
-            if (seek_pos > max_pos) seek_pos = max_pos;
-        }
-        // KEY_UNIT + direction-aware snap. Resolves the "+5s forward
-        // scrub goes backward" bug differently from origin/main's
-        // ACCURATE approach: rather than paying ACCURATE's
-        // decode-from-previous-keyframe latency on every scrub
-        // (visible as a ~200ms hitch on 1080p H.264), we keep KEY_UNIT
-        // for the fast keyframe seek but tell GStreamer which
-        // direction to snap. SNAP_NEAREST picked whichever keyframe
-        // was visually closer to the target — on sparse-keyframe
-        // 1080p that's often the keyframe just BEHIND the current
-        // position, so a forward scrub appeared to go backward.
-        //
-        // SNAP_AFTER on positive seeks forces the snap to the next
-        // keyframe forward; SNAP_BEFORE on negatives forces the
-        // previous keyframe backward. Net effect is "scrub direction
-        // matches input direction" — same correctness fix as the
-        // ACCURATE approach, without the per-seek decode hitch.
-        GstSeekFlags snap = (seconds >= 0)
-            ? GST_SEEK_FLAG_SNAP_AFTER
-            : GST_SEEK_FLAG_SNAP_BEFORE;
-        gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
-            static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
-                                       GST_SEEK_FLAG_KEY_UNIT |
-                                       snap),
-            seek_pos);
+    // Base position the relative delta applies to. If a seek is already
+    // in flight or queued, chain off the last requested target rather
+    // than querying the pipeline: a position query mid-seek returns the
+    // in-flight seek's target (or a stale value), so querying would make
+    // a burst of scrub deltas accumulate against the wrong base. Chaining
+    // off pending_seek_target_ns_ makes N rapid "+5s" ticks correctly add
+    // up to +5N s, which is what the user expects from a fast scrub.
+    gint64 base;
+    if (seek_in_progress_ || has_pending_seek_) {
+        base = pending_seek_target_ns_;
+    } else if (!gst_element_query_position(pipeline_, GST_FORMAT_TIME, &base)) {
+        return;  // can't establish a base position; drop this scrub tick
     }
+    gint64 target = base + static_cast<gint64>(seconds * GST_SECOND);
+    // KEY_UNIT + direction-aware snap (preserved from the prior fix):
+    // SNAP_AFTER on a forward scrub lands on the next keyframe forward,
+    // SNAP_BEFORE on a backward scrub lands on the previous keyframe —
+    // so scrub direction always matches input direction, without paying
+    // ACCURATE's per-seek decode hitch on 1080p H.264.
+    GstSeekFlags snap = (seconds >= 0)
+        ? GST_SEEK_FLAG_SNAP_AFTER
+        : GST_SEEK_FLAG_SNAP_BEFORE;
+    request_seek(target, snap);
 }
 
 void GstPlayer::seek_absolute(double timestamp) {
     if (!initialized_) return;
-    gint64 seek_pos = static_cast<gint64>(timestamp * GST_SECOND);
-    if (seek_pos < 0) seek_pos = 0;
-    // Same upper-bound clamp as seek() — prevents over-shooting from
-    // firing EOS (which PlaybackScreen treats as natural end-of-stream).
+    gint64 target = static_cast<gint64>(timestamp * GST_SECOND);
+    // Absolute seeks (UI "go to position" / phone-remote scrub) carry no
+    // intrinsic direction — SNAP_NEAREST lands on whichever keyframe is
+    // visually closest to the requested timestamp.
+    request_seek(target, GST_SEEK_FLAG_SNAP_NEAREST);
+}
+
+void GstPlayer::request_seek(gint64 target_ns, GstSeekFlags snap) {
+    if (target_ns < 0) target_ns = 0;
+    // Clamp upper bound to (duration - 1s) so a high-velocity scrub can't
+    // push past the last frame and fire EOS (which PlaybackScreen treats
+    // as natural end-of-stream and exits to Detail — looks like a crash).
+    // duration_ <= 1 means "unknown" — skip the upper clamp then.
     double dur = duration_.load();
     if (dur > 1.0) {
         gint64 max_pos = static_cast<gint64>((dur - 1.0) * GST_SECOND);
-        if (seek_pos > max_pos) seek_pos = max_pos;
+        if (target_ns > max_pos) target_ns = max_pos;
     }
-    // KEY_UNIT for fast keyframe seeks (matches the relative seek()
-    // approach above; see that function's comment for the full
-    // rationale on KEY_UNIT vs ACCURATE). Unlike relative seeks,
-    // absolute seeks don't carry an intrinsic direction — they're
-    // typically chapter / "go to position" operations from a UI
-    // scrub, where the user already sees the target timestamp and
-    // just wants the playhead to land there. SNAP_NEAREST is the
-    // right default: pick whichever keyframe is visually closest to
-    // the requested timestamp, regardless of slightly-before/after.
-    gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
+    pending_seek_target_ns_ = target_ns;
+    pending_seek_snap_ = snap;
+
+    if (seek_in_progress_) {
+        // A FLUSH seek is still draining the decoder. Firing another now
+        // would flush the v4l2 hardware decoder mid-flush and risk the
+        // deadlock that froze playback. Just remember the latest target;
+        // the ASYNC_DONE handler fires it once the current seek finishes,
+        // collapsing a rapid burst into a single trailing seek.
+        has_pending_seek_ = true;
+        return;
+    }
+    fire_seek();
+}
+
+void GstPlayer::fire_seek() {
+    seek_in_progress_ = true;
+    has_pending_seek_ = false;
+    seek_started_at_ = std::chrono::steady_clock::now();
+    gboolean ok = gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
         static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
                                    GST_SEEK_FLAG_KEY_UNIT |
-                                   GST_SEEK_FLAG_SNAP_NEAREST),
-        seek_pos);
+                                   pending_seek_snap_),
+        pending_seek_target_ns_);
+    // If the seek was rejected outright (returns FALSE, e.g. the pipeline
+    // isn't in a seekable state this instant), no async operation started
+    // — so no ASYNC_DONE will ever arrive to clear seek_in_progress_. Left
+    // as-is, that would swallow every scrub until the 2s watchdog fires
+    // (the same freeze this coalescer exists to prevent). Clear the flag
+    // immediately so the next scrub retries without the 2s dead window.
+    if (!ok) {
+        LOG_WARN("Seek was rejected by the pipeline; clearing in-flight flag");
+        seek_in_progress_ = false;
+    }
 }
 
 void GstPlayer::stop() {
@@ -574,6 +603,13 @@ void GstPlayer::stop() {
     is_paused_ = false;
     position_ = 0.0;
     duration_ = 0.0;
+
+    // Reset seek-coalescing state so the next stream starts clean — a
+    // leftover seek_in_progress_ from the prior file would block its
+    // first scrub until the watchdog timed out.
+    seek_in_progress_ = false;
+    has_pending_seek_ = false;
+    pending_seek_target_ns_ = 0;
 }
 
 bool GstPlayer::is_playing() const {
@@ -643,6 +679,25 @@ void GstPlayer::update_state() {
             gst_message_unref(msg);
         }
         gst_object_unref(bus);
+    }
+
+    // Seek watchdog. If a FLUSH seek's ASYNC_DONE never arrives (a wedged
+    // v4l2 decoder, a dropped bus message), seek_in_progress_ would stay
+    // stuck true and silently swallow every future scrub — a different
+    // flavor of the freeze we're fixing. After 2s with no completion,
+    // recover: fire the latest pending target if the user is still
+    // scrubbing (a fresh FLUSH frequently un-sticks the decoder), else
+    // clear the flag so the next input fires normally. Note this only
+    // re-fires when there's genuinely new input pending, so a truly idle
+    // wedged decoder clears the flag once and then stops — it never busy-
+    // loops FLUSH seeks on its own.
+    if (seek_in_progress_) {
+        auto elapsed = std::chrono::steady_clock::now() - seek_started_at_;
+        if (elapsed > std::chrono::seconds(2)) {
+            LOG_WARN("Seek did not complete within 2s; recovering");
+            seek_in_progress_ = false;
+            if (has_pending_seek_) fire_seek();
+        }
     }
 
     // Poll current pipeline state (non-blocking to avoid stalling render loop)

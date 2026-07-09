@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <functional>
+#include <chrono>  // steady_clock::time_point (seek watchdog + qos log timers)
 
 namespace video {
 
@@ -84,6 +85,30 @@ private:
 
     // Stored PulseAudio device name for pipeline re-creation
     std::string pulse_device_;
+
+    // ── Seek coalescing (scrub / fast-forward freeze fix) ───────────
+    // Rapid scrub input fires FLUSH seeks faster than the Pi's
+    // v4l2h264dec hardware decoder can complete each one. Flushing the
+    // V4L2 decoder again while a prior flush is still draining its
+    // capture-queue buffers deadlocks it → frozen video. We serialize
+    // seeks: at most one FLUSH seek in flight at a time. While one is
+    // in progress, further requests only update the pending target
+    // (latest-wins); the ASYNC_DONE bus message fires the trailing
+    // seek once the pipeline re-prerolls. All fields are render-thread-
+    // only — seek()/seek_absolute() and the bus pump in update_state()
+    // both run on the render thread, so no locking is required.
+    bool seek_in_progress_ = false;
+    bool has_pending_seek_ = false;
+    gint64 pending_seek_target_ns_ = 0;
+    GstSeekFlags pending_seek_snap_ = GST_SEEK_FLAG_SNAP_NEAREST;
+    std::chrono::steady_clock::time_point seek_started_at_{};
+
+    // Clamp + store the absolute target, then either fire immediately
+    // (no seek in flight) or queue it behind the in-flight seek.
+    void request_seek(gint64 target_ns, GstSeekFlags snap);
+    // Issue the actual gst_element_seek_simple for pending_seek_target_ns_
+    // and mark a seek in progress. Caller must have set the target/snap.
+    void fire_seek();
 
     void update_position();
 };
