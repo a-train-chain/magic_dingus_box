@@ -23,8 +23,29 @@ services:
       - TZ=${TZ}
     volumes:
       - ./config/radarr:/config
+      # Legacy split mounts (kept for backward-compat with existing
+      # installs whose radarr.db still stores /library + /downloads paths).
       - ${STORAGE_ROOT}/downloads:/downloads
       - ${STORAGE_ROOT}/library:/library
+      # Single parent mount that ENABLES INSTANT HARDLINK IMPORTS. With
+      # both downloads and library visible under ONE container mount
+      # (/data), Radarr can hardlink a finished download into the library
+      # instead of copying it (EXDEV across the two separate mounts above
+      # forces a full byte copy — ~15-50s per movie + a duplicate on-disk
+      # copy for every seeding torrent). This mount is INERT until Radarr's
+      # root folder is repointed to /data/library and qBit saves to
+      # /data/downloads. Adding it here changes NOTHING on its own — it's
+      # laid down ahead of the migration so the mount already exists when
+      # you run the one-time DB path rewrite.
+      #
+      # TO ACTIVATE (one-time, on a populated library — do this ATTENDED,
+      # with a radarr.db backup):
+      #   scripts/migrate_hardlink_layout.sh   (tested, transactional)
+      # It rewrites RootFolders.Path + Movies.Path /library -> /data/library
+      # in radarr.db and bulk-"Set location"s qBit torrents to
+      # /data/downloads. See docs/.../2026-07-09-import-hardlink-
+      # investigation.md for the full rationale + rollback.
+      - ${STORAGE_ROOT}:/data
     # `always` (not `unless-stopped`) — Radarr can exit cleanly with code
     # 0 during internal config reloads (e.g., when setup_services.sh
     # writes new download-client/indexer state and Radarr decides to
@@ -195,7 +216,13 @@ services:
       - WEBUI_PORT=8080
     volumes:
       - ./config/qbittorrent:/config
+      # Legacy mount (existing torrents' save path is /downloads).
       - ${STORAGE_ROOT}/downloads:/downloads
+      # Parent mount matching Radarr's /data (see radarr service above).
+      # qBit must see completed files at the SAME container path Radarr
+      # imports from for hardlinks to work. Inert until qBit's save path
+      # is moved to /data/downloads by the migration script.
+      - ${STORAGE_ROOT}:/data
     # `always` — same reasoning as radarr/prowlarr.
     restart: always
 

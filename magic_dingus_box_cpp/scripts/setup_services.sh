@@ -230,6 +230,28 @@ echo "Starting Docker stack..."
 # its old port mapping, which blocks Gluetun from rebinding.
 docker compose up -d --remove-orphans
 
+# 3.35. Hardlink-layout advisory (informational — never mutates anything).
+# The compose file provides a ${STORAGE_ROOT}:/data parent mount that lets
+# Radarr hardlink imports (instant, no duplicate storage) once its root
+# folder is /data/library. If an EXISTING radarr.db is still on the legacy
+# /library root folder, imports keep COPYING (~15-50s/movie + 2x storage
+# while seeding). We do NOT auto-migrate here — rewriting a populated
+# library's paths is an attended operation with a backup. Just surface the
+# opportunity so the operator knows the one-command fix exists.
+RADARR_DB_PATH="${SERVICES_DIR}/config/radarr/radarr.db"
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "${RADARR_DB_PATH}" ]; then
+    CUR_ROOT_FOLDER="$(sqlite3 "${RADARR_DB_PATH}" 'SELECT Path FROM RootFolders LIMIT 1;' 2>/dev/null || echo '')"
+    if [ "${CUR_ROOT_FOLDER}" = "/library" ]; then
+        echo ""
+        echo "  NOTE: Radarr root folder is on the legacy /library layout, so imports"
+        echo "        COPY finished downloads into the library (~15-50s each + a duplicate"
+        echo "        on-disk copy per seeding torrent). To switch to instant hardlink"
+        echo "        imports, run (attended, makes a radarr.db backup first):"
+        echo "            ${SCRIPT_DIR}/migrate_hardlink_layout.sh"
+        echo ""
+    fi
+fi
+
 # 3.4. Smooth-playback tuning — sysctls, readahead, container-pause helper.
 # These are cheap kernel-level tweaks that materially improve 1080p
 # H.264 playback smoothness on the Pi 4B. See each file's header for

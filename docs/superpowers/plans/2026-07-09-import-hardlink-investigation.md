@@ -113,6 +113,65 @@ as its own change with a rehearsal step.
 
 ---
 
+---
+
+## UPDATE (2026-07-09, later) — groundwork done + migration rehearsed
+
+Two corrections + concrete deliverables since the original writeup:
+
+### Correction 1: there is no "free fixture fix" — the root folder is in the golden image
+The original plan implied fresh Pis build their Radarr config from repo
+fixtures, so a compose change would auto-correct new installs. **Wrong.**
+`setup_services.sh` never creates a Radarr root folder (no
+`POST /api/v3/rootfolder` anywhere). The root folder `/library` and every
+movie path live in `config/radarr/radarr.db`, which is part of the GOLDEN
+IMAGE and reused as-is on every clone (the repo ships only
+`docker-compose.yml` + `.env.example` under `services/` — `config/` is
+golden-image-only). So both new and existing Pis inherit `/library`; a
+config-only change can't fix that. The real fix is a one-time `radarr.db`
+path rewrite (per-Pi, or once on the golden master).
+
+### Correction 2: the migration surface is SMALLER than feared
+Full schema scan of the live `radarr.db` (Radarr schema v240): only **two**
+columns hold `/library` — `RootFolders.Path` (1 row) and `Movies.Path`
+(18 rows). `MovieFiles.RelativePath` is relative (no rewrite). No
+`/downloads` anywhere in radarr.db (qBit owns those). So the Radarr side is
+a 19-row, exact-prefix UPDATE — trivial and transactional.
+
+### What was shipped now (groundwork, zero risk to the live Pi)
+- **Backward-compatible compose** (`services/docker-compose.yml`): added
+  `${STORAGE_ROOT}:/data` to Radarr + qBit **alongside** the existing
+  `/downloads` + `/library` mounts. Purely additive — the current Pi's
+  paths still resolve, the new mount is inert until activated. Validated
+  with `docker compose config`.
+- **Tested migration script** (`scripts/migrate_hardlink_layout.sh`):
+  backs up radarr.db → transactional `/library`→`/data/library` rewrite
+  with integrity + movie-count guards (auto-restores backup on any
+  mismatch) → qBit save path to `/data/downloads` + `setLocation` all
+  torrents → restart + verify Radarr still sees the files. Idempotent.
+  shellcheck-clean.
+- **setup_services.sh advisory**: on an existing `/library` install, prints
+  the one-command migration hint (never auto-runs it).
+
+### Rehearsal results (offline, against a copy of the live radarr.db)
+- SQL rewrite: 18/18 `Movies.Path` + root folder → `/data/library`, 0
+  `/library` remaining, `PRAGMA integrity_check = ok`, movie count intact.
+- Path validity: 17/18 migrated container paths (`/data/library/X`) map to
+  a real host folder (`/mnt/ssd/library/X`). The 1 exception is
+  "Three Days of the Condor" — the known stuck/never-imported movie, not a
+  migration flaw.
+- qBit API shape confirmed against live qBit v5.0.3: current
+  `save_path=/downloads/complete`, `temp_path=/downloads/incomplete` — the
+  exact values the script rewrites to `/data/downloads/*`; both
+  `setPreferences` + `setLocation` endpoints present.
+
+**Net:** the migration is now a proven, one-command, attended operation
+with automatic rollback-on-mismatch. It has NOT been run on the live Pi or
+the golden image — that remains a deliberate, user-triggered step. When you
+want instant imports (or to reclaim the ~30-40 GB of double-stored seeding
+copies), run `migrate_hardlink_layout.sh` during a quiet moment and keep
+the printed backup until playback is confirmed.
+
 ## Reproduction / evidence commands (for the record)
 
 ```
