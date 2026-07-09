@@ -165,12 +165,35 @@ a 19-row, exact-prefix UPDATE — trivial and transactional.
   exact values the script rewrites to `/data/downloads/*`; both
   `setPreferences` + `setLocation` endpoints present.
 
-**Net:** the migration is now a proven, one-command, attended operation
-with automatic rollback-on-mismatch. It has NOT been run on the live Pi or
-the golden image — that remains a deliberate, user-triggered step. When you
-want instant imports (or to reclaim the ~30-40 GB of double-stored seeding
-copies), run `migrate_hardlink_layout.sh` during a quiet moment and keep
-the printed backup until playback is confirmed.
+**Net:** the migration is a proven, one-command, attended operation with
+automatic rollback-on-mismatch.
+
+### EXECUTED on the live Pi — 2026-07-09 01:00
+Ran `migrate_hardlink_layout.sh` on magicpi. Results:
+- radarr.db: `/library` → `/data/library` on the root folder + all 18
+  movies; integrity ok; backup at
+  `config/radarr/radarr.db.pre-hardlink-20260709-010033.bak`.
+- Radarr post-migration: root folder `/data/library` accessible=True,
+  17/17 movies-with-files intact, every movieFile path under
+  `/data/library`. qBit save path + all torrents relocated to
+  `/data/downloads`. All 5 containers healthy; kiosk unaffected.
+- **Hardlink capability confirmed live**: an `ln` from `/data/downloads`
+  to `/data/library` inside the Radarr container succeeded and both paths
+  share one inode (12582957). Under the old split mounts this was EXDEV →
+  copy. Every future import now hardlinks (instant, no duplicate storage).
+
+One environment gotcha handled: the linuxserver image runs Radarr as root,
+so `config/radarr/radarr.db` is root-owned and the `magic` user can't
+open it in SQLite write mode. The script now detects non-writability and
+routes all DB ops (backup, rewrite, verify, restore) through sudo. Also
+required installing `sqlite3` on the Pi (wasn't present).
+
+Remaining optional cleanup (not required for correctness): the ~30-40 GB
+of already-double-stored copies from movies imported BEFORE this migration
+won't reclaim automatically — those library files are independent copies,
+not hardlinks. New imports are fine. To reclaim old duplicates you'd
+re-import (or delete the seeding copies once seeding is done). Low value;
+you have 150 GB free. Left as-is.
 
 ## Reproduction / evidence commands (for the record)
 
