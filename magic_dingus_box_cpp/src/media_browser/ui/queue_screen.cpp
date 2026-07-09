@@ -172,6 +172,12 @@ std::string format_bytes(int64_t b) {
     if (state == "downloading" || state == "completed") {
         return th.highlight1;
     }
+    // importing — download done, file being copied into the library.
+    // Amber (accent) so it reads as in-progress, distinct from the green
+    // "completed"/"downloading" and the red failure states.
+    if (state == "importing") {
+        return th.accent;
+    }
     // queued, delay, paused, unknown — anything indeterminate or idle.
     return th.accent;
 }
@@ -315,6 +321,31 @@ void QueueScreen::run_refresh() {
                     q.state = "paused";
                 }
             }
+        }
+    }
+
+    // Path-independent import-state normalization. A download that has
+    // finished in qBit but is still being copied into the library by
+    // Radarr reports, Radarr-side, status="completed" with
+    // trackedDownloadState="importing"/"importPending". The qBit overlay
+    // above collapses the torrent's seeding state to a bare "completed"
+    // (green), which reads to the user as "done" — then the row silently
+    // vanishes once import finishes. Reclassify here, AFTER the overlay
+    // and independent of it, so this also fires when qbit_ is null,
+    // unreachable, or the hash isn't in the qBit map (paths where the
+    // overlay block above never ran and q.state is still Radarr's raw
+    // "completed"). q.tracked_download_state is never mutated by the
+    // overlay, so it's safe to read here.
+    for (auto& q : r.queue) {
+        if (q.state != "completed") continue;
+        if (q.tracked_download_state == "importing" ||
+            q.tracked_download_state == "importPending") {
+            q.state = "importing";   // amber "Importing…" (see render)
+        } else if (q.tracked_download_state == "importBlocked" ||
+                   q.tracked_download_state == "importFailed") {
+            // Agree with LibraryScreen's BAD RELEASE semantics: a
+            // completed-but-unimportable item is a warning, not success.
+            q.state = "warning";
         }
     }
 
@@ -805,7 +836,14 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int sub_size = th.font_small_size;
             int sub_baseline = r.mb_text_baseline(sub_size);
             std::ostringstream ss;
-            ss << titlecase_state(q.state);
+            // "importing" gets an explicit ellipsis label — titlecase_state
+            // only capitalizes and can't add the "…". Everything else uses
+            // the generic capitalizer.
+            if (q.state == "importing") {
+                ss << "Importing\xE2\x80\xA6";
+            } else {
+                ss << titlecase_state(q.state);
+            }
             // Downloaded/total goes FIRST (after state) so it remains
             // visible even if the row gets truncated. On every refresh
             // tick this string changes — the most reliable "this is

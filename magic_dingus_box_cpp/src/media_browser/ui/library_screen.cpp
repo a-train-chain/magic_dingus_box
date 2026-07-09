@@ -190,6 +190,13 @@ LibraryScreen::FileState LibraryScreen::classify(const Movie& m) {
 LibraryScreen::LibraryScreen(RadarrClient& radarr, ::app::AppState& state)
     : radarr_(radarr), state_(state) {}
 
+LibraryScreen::~LibraryScreen() {
+    // Join the async refresh worker so a thread mid-CURL can't outlive
+    // the screen and publish into freed members. Bounded by libcurl's
+    // per-attempt timeout (same rationale as QueueScreen/DetailScreen).
+    if (refresh_worker_.joinable()) refresh_worker_.join();
+}
+
 // ---------------------------------------------------------------------------
 // Slide-in overlay state machine (Task 4 of v1.6.x library-overlay plan).
 // Render + input wiring land in Tasks 5 + 6; for now these helpers exist so
@@ -256,39 +263,97 @@ int LibraryScreen::compute_overlay_left_x(
 }
 
 void LibraryScreen::enter() {
-    // Always refresh on (re-)entry so the library list reflects any
-    // adds/removes that happened in DetailScreen since we were last
-    // visible. The call is cheap on the mock client and acceptable for
-    // the MVP cadence on the real HTTP client.
-    reload();
+    // Kick off a non-blocking refresh on (re-)entry so the grid reflects
+    // any adds/removes from DetailScreen — WITHOUT stalling the render
+    // thread on two Radarr HTTP round-trips. Stale data from the previous
+    // visit stays visible until apply_pending() lands (~50-500ms), same
+    // tradeoff as QueueScreen. The very first entry has no prior data, so
+    // render() shows its "Loading library..." state until loaded_ flips.
+    refresh_async();
 }
 
-void LibraryScreen::reload() {
-    library_ = radarr_.get_library();
-    // Build radarr_id → tmdb_id map so we can cross-reference the queue.
+void LibraryScreen::update() {
+    // Drain a finished refresh, then re-arm the cadence so a download that
+    // completes / imports while the user lingers on the grid updates its
+    // badge live (previously badges only refreshed on leave→re-enter).
+    apply_pending();
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now - last_refresh_at_).count();
+    if (elapsed >= kRefreshIntervalMs) {
+        refresh_async();
+    }
+}
+
+void LibraryScreen::refresh_async() {
+    // CAS guard: at most one refresh in flight. A second call while one is
+    // running is a no-op — the next update() tick catches up. Stamp the
+    // clock here (not on completion) so the cadence measures request→request
+    // and a slow Radarr can't cause back-to-back spawns.
+    bool expected = false;
+    if (!refresh_in_flight_.compare_exchange_strong(expected, true)) return;
+    last_refresh_at_ = std::chrono::steady_clock::now();
+    // Join a previous finished-but-not-joined worker before reusing the
+    // handle (its result was already drained; this just reaps the thread).
+    if (refresh_worker_.joinable()) refresh_worker_.join();
+    refresh_worker_ = std::thread(&LibraryScreen::run_refresh, this);
+}
+
+void LibraryScreen::run_refresh() {
+    // Worker thread: do the two blocking Radarr calls here, build the
+    // result locally, publish under the mutex. Touches NO live member
+    // except pending_/result_ready_/refresh_in_flight_.
+    PendingResult r;
+    r.library = radarr_.get_library();
+
     std::unordered_map<int, int> radarr_to_tmdb;
-    for (const auto& m : library_) {
+    for (const auto& m : r.library) {
         if (m.tmdb_id > 0) radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
     }
-    // Populate the downloading + stuck sets from the current Radarr queue.
-    // A queue item is "stuck" when it has finished downloading (state ==
-    // "completed") but Radarr can't import it (trackedDownloadState ==
-    // "importBlocked"). Those items get a BAD RELEASE badge instead of
-    // DOWNLOADING so the user can pick a different source.
-    downloading_tmdb_ids_.clear();
-    stuck_tmdb_ids_.clear();
+    // Classify each queue item into one of three badge buckets. Key the
+    // importing bucket off tracked_download_state ALONE (not state) — an
+    // importing item's primary state may still read "downloading" or
+    // "completed". Precedence when building: importBlocked → stuck;
+    // importing/importPending → importing; everything else → downloading.
     for (const auto& qi : radarr_.get_queue()) {
         auto it = radarr_to_tmdb.find(qi.movie_id);
         if (it == radarr_to_tmdb.end()) continue;
         const int tmdb_id = it->second;
-        const bool is_stuck = (qi.state == "completed" &&
-                               qi.tracked_download_state == "importBlocked");
-        if (is_stuck) {
-            stuck_tmdb_ids_.insert(tmdb_id);
+        const std::string& tds = qi.tracked_download_state;
+        if (tds == "importBlocked" || tds == "importFailed") {
+            r.stuck.insert(tmdb_id);
+        } else if (tds == "importing" || tds == "importPending") {
+            r.importing.insert(tmdb_id);
         } else {
-            downloading_tmdb_ids_.insert(tmdb_id);
+            r.downloading.insert(tmdb_id);
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lk(pending_mtx_);
+        pending_ = std::move(r);
+    }
+    result_ready_.store(true);
+    refresh_in_flight_.store(false);
+}
+
+void LibraryScreen::apply_pending() {
+    if (!result_ready_.load()) return;
+    PendingResult r;
+    {
+        std::lock_guard<std::mutex> lk(pending_mtx_);
+        r = std::move(pending_);
+    }
+    result_ready_.store(false);
+
+    // Swap into live state + rebuild the filtered view. rebuild_view()
+    // MUST run here on the render thread — it reads state_.display_settings
+    // and mutates grid_cursor_/scroll_row_/view_ (raw Movie* into library_),
+    // so library_ and view_ must be swapped+rebuilt atomically on one thread.
+    library_             = std::move(r.library);
+    downloading_tmdb_ids_ = std::move(r.downloading);
+    stuck_tmdb_ids_       = std::move(r.stuck);
+    importing_tmdb_ids_   = std::move(r.importing);
     loaded_ = true;
     rebuild_view();
 }
@@ -711,17 +776,24 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // DOWNLOADING / BAD RELEASE badge when the movie is in the
             // queue or stuck on importBlocked).
             const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
+            // Badge precedence mirrors draw_poster_card: stuck > importing
+            // > downloading > in_library. Compute each exclusive of the
+            // higher-priority ones so at most one badge is requested.
             const bool is_stuck =
                 stuck_tmdb_ids_.count(mv->tmdb_id) > 0;
+            const bool is_importing =
+                !is_stuck && importing_tmdb_ids_.count(mv->tmdb_id) > 0;
             const bool is_downloading =
-                !is_stuck && downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
+                !is_stuck && !is_importing &&
+                downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 mv->title, mv->year,
                 tint, /*in_library=*/true,
                 /*download_pct=*/is_downloading ? 0 : -1,
                 /*poster_url=*/mv->poster_url,
-                /*is_stuck=*/is_stuck);
+                /*is_stuck=*/is_stuck,
+                /*is_importing=*/is_importing);
 
             // Meta line below poster: title only, wrapped to 2 lines
             // when needed. Year now lives inside the poster card.

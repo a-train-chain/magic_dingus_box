@@ -1,6 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -53,8 +56,10 @@ namespace media_browser::ui {
 class LibraryScreen : public MbScreen {
 public:
     LibraryScreen(RadarrClient& radarr, ::app::AppState& state);
+    ~LibraryScreen();  // joins the async refresh worker
 
     void enter() override;
+    void update() override;  // drains async refresh + re-arms the poll cadence
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
@@ -91,7 +96,16 @@ private:
         MissingFile,        // red     — monitored, no file yet
     };
 
-    void reload();                        // Pull fresh library from Radarr.
+    // Async refresh (mirrors QueueScreen). enter() and the periodic timer
+    // call refresh_async() which spawns run_refresh() on a worker thread;
+    // apply_pending() drains its result on the render thread and calls
+    // rebuild_view(). reload() is retained as a thin synchronous wrapper
+    // (run_refresh into pending + immediate apply) for any caller that
+    // needs blocking semantics, but the live path is fully async so the
+    // render thread never stalls on Radarr HTTP.
+    void refresh_async();                 // non-blocking; spawns worker
+    void run_refresh();                   // worker body (off render thread)
+    void apply_pending();                 // drain on render thread
     void rebuild_view();                  // Apply current filter + sort to library_.
     static const char* label_for_filter(Filter f);
     static FileState classify(const Movie& m);
@@ -122,7 +136,34 @@ private:
     // misleading 'DOWNLOADING' chip.
     std::unordered_set<int> stuck_tmdb_ids_;
 
+    // tmdb_ids whose download finished and Radarr is copying the file into
+    // the library (tracked_download_state importing/importPending). Shows
+    // an IMPORTING badge (in-progress success color), distinct from the
+    // red DOWNLOADING/BAD RELEASE chips. Transient — usually visible for
+    // only a refresh cycle or two before the file lands and the badge
+    // clears to plain IN LIBRARY.
+    std::unordered_set<int> importing_tmdb_ids_;
+
     int selected_tmdb_id_ = 0;
+
+    // --- Async refresh state (mirrors QueueScreen) ----------------------
+    // run_refresh() builds a PendingResult on a worker thread; apply_pending()
+    // swaps it into the live members on the render thread. Only pending_
+    // needs the mutex — library_/view_/the id-sets are read by render() and
+    // written by apply_pending(), both on the render thread.
+    struct PendingResult {
+        std::vector<Movie>      library;
+        std::unordered_set<int> downloading;
+        std::unordered_set<int> stuck;
+        std::unordered_set<int> importing;
+    };
+    std::mutex            pending_mtx_;
+    PendingResult         pending_;
+    std::atomic<bool>     result_ready_{false};
+    std::atomic<bool>     refresh_in_flight_{false};
+    std::thread           refresh_worker_;
+    std::chrono::steady_clock::time_point last_refresh_at_{};
+    static constexpr int  kRefreshIntervalMs = 2000;  // library churns slowly
 
     // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px
     // panel that slides in from the right edge on BTN4 press, holding

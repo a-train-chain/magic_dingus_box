@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -238,14 +239,39 @@ private:
 
     // Worker entry — runs the synchronous TMDB + Radarr calls off-thread.
     // Captures gen at spawn; if a newer fetch starts before this one
-    // returns, the result is silently discarded.
-    void run_fetch(uint64_t gen, int tmdb_id);
+    // returns, the result is silently discarded. `done` is set true as
+    // the worker's final act so reap_finished_workers() can join it
+    // without blocking.
+    void run_fetch(uint64_t gen, int tmdb_id,
+                   std::shared_ptr<std::atomic<bool>> done);
 
     // Drain a completed worker's result into live state (movie_,
     // tmdb_detail_, profiles_, mode_, buttons_) and kick off the
     // Prowlarr availability search. Cheap atomic load most frames; only
     // takes the lock when a result is ready to consume.
     void apply_pending_detail();
+
+    // --- Quiet library re-poll (download→import→ready liveness) ----------
+    // While a movie is in-library-but-no-file (Mode::InLibraryNoFile), the
+    // user may be watching Detail as its download finishes + imports. The
+    // full fetch() path can't be reused for this — it sets Mode::Loading
+    // and re-hits TMDB (~6s), blanking the screen. Instead a SEPARATE
+    // lightweight Radarr-only poll runs on a ~9s cadence: it re-reads the
+    // movie's has_file (and the queue's tracked_download_state for the
+    // "importing" sub-state) WITHOUT ever touching mode_=Loading or
+    // resetting tmdb_detail_. When has_file flips true it swaps in the
+    // fresh Movie record (crucially, its now-populated file_container_path)
+    // and transitions to Mode::InLibraryWithFile so Play appears live.
+    void maybe_repoll_library();                     // called each frame from update()
+    void run_library_poll(uint64_t gen, int radarr_id);  // worker body
+    void apply_library_poll();                       // drain on render thread
+
+    // True readiness predicate — the single source of truth for whether
+    // "Play" should be offered AND will succeed. hasFile alone is NOT
+    // enough: the file must map to a resolvable host path that actually
+    // exists on the mounted SSD. rebuild_buttons() and do_play() both
+    // consult this so the button is never offered when it would fail.
+    bool play_ready() const;
 
     // Helpers that run on SELECT. Each returns the next Screen (often the
     // current one = Screen::Detail).
@@ -290,6 +316,14 @@ private:
     std::optional<Movie> movie_;
     std::vector<QualityProfile> profiles_;
 
+    // True while a download for THIS movie has finished in qBit and Radarr
+    // is copying/importing it into the library (tracked_download_state ==
+    // importing/importPending). Drives the "Downloaded — importing" banner
+    // variant on the InLibraryNoFile screen so the user sees the file is
+    // moments away, not stuck "monitored, awaiting release". Reset on every
+    // state exit (new movie, remove, has_file flip).
+    bool import_in_progress_ = false;
+
     std::vector<Button> buttons_;
     int focus_ = 0;
 
@@ -325,10 +359,49 @@ private:
     std::mutex            tmdb_result_mtx_;
     DetailFetchResult     tmdb_pending_;
     std::atomic<bool>     tmdb_result_ready_{false};
-    // All worker threads spawned during this screen's lifetime. Joined
-    // in the destructor so a worker mid-CURL doesn't outlive the
-    // DetailScreen and segfault when it tries to publish.
-    std::vector<std::thread> tmdb_workers_;
+    // TMDB fetch worker threads. On a long-lived kiosk (up/days) every
+    // navigation/retry/add spawns one; left unreaped they accumulate OS
+    // thread handles until the process hits its thread ceiling and
+    // std::thread's ctor throws (uncaught → terminate). Each worker
+    // carries its OWN done-flag (set as the worker's final act) so the
+    // reaper can join ONLY threads that have actually finished — a
+    // non-blocking sweep that never stalls the render thread on a
+    // still-running (e.g. mid-CURL, possibly-stale) worker. Order of
+    // completion isn't push order (a later fetch can finish before an
+    // earlier stalled one), so we test each entry's flag individually
+    // rather than assuming front-is-oldest-is-done. The destructor joins
+    // whatever remains.
+    struct FetchWorker {
+        std::thread                    thread;
+        std::shared_ptr<std::atomic<bool>> done;  // shared with the worker fn
+    };
+    std::vector<FetchWorker> tmdb_workers_;
+    void reap_finished_workers();
+
+    // --- Quiet library-poll async state (separate from the TMDB fetch) ---
+    // Deliberately a DISTINCT mutex + ready-flag + generation from the
+    // tmdb_* set so a poll publish can never race/clobber the main fetch
+    // drain. The poll uses its own single reused thread handle
+    // (lib_poll_worker_, below), NOT tmdb_workers_.
+    struct LibraryPollResult {
+        std::optional<Movie> movie;      // fresh record (has_file + path)
+        bool import_active = false;      // tracked_download_state importing
+        bool ok = false;                 // Radarr reachable this poll
+    };
+    std::atomic<uint64_t> lib_poll_gen_{0};
+    std::mutex            lib_poll_mtx_;
+    LibraryPollResult     lib_poll_pending_;
+    std::atomic<bool>     lib_poll_ready_{false};
+    std::atomic<bool>     lib_poll_inflight_{false};
+    std::chrono::steady_clock::time_point last_library_poll_at_{};
+    static constexpr int  kLibraryPollMs = 9000;  // ~9s cadence while awaiting file
+    // SINGLE reused thread handle for the poll — NOT tmdb_workers_. A
+    // download can run for tens of minutes, firing a poll every 9s; pushing
+    // each into tmdb_workers_ (only cleared at destruction) would accumulate
+    // hundreds of joinable thread objects. Instead we reuse one handle,
+    // joining the prior (already-finished, inflight guarded) worker before
+    // reassigning. Joined once more in the destructor.
+    std::thread           lib_poll_worker_;
 
     // Callback set by main.cpp to forward (movie title + candidate rows)
     // into ReleasePickerScreen::set_candidates() before the dispatcher

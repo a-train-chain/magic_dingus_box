@@ -264,7 +264,31 @@ void DetailScreen::enter() {
     fetch();
 }
 
+// Non-blocking reaper: join+erase TMDB fetch workers whose per-worker
+// done-flag is set (finished). Called at the top of fetch() so the vector
+// never grows without bound across a long kiosk uptime. Only reaps
+// COMPLETED workers, so each join() is instant — never stalls the render
+// thread on a still-running (mid-CURL / stale) worker.
+void DetailScreen::reap_finished_workers() {
+    // Erase-join only workers whose done-flag is set (finished). A running
+    // worker (mid-CURL, possibly a stalled stale one) is left in place —
+    // its join would block, which we must never do on the render thread.
+    // Completion order isn't push order, so test each entry individually.
+    auto it = tmdb_workers_.begin();
+    while (it != tmdb_workers_.end()) {
+        if (it->done && it->done->load(std::memory_order_acquire)) {
+            if (it->thread.joinable()) it->thread.join();  // finished → instant
+            it = tmdb_workers_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void DetailScreen::fetch() {
+    // Reap any finished workers before spawning another — bounds the
+    // thread vector on a long-lived kiosk (see reap_finished_workers).
+    reap_finished_workers();
     // Async dispatch: clear visible state immediately so the user sees
     // the right empty state for the new movie (not stale data from the
     // previous one), set Mode::Loading so render() shows the spinner,
@@ -283,6 +307,15 @@ void DetailScreen::fetch() {
     tmdb_detail_.reset();
     banner_.clear();
 
+    // Invalidate any in-flight/pending library poll for the OLD movie so
+    // it can't publish an InLibraryWithFile flip onto the freshly-Loading
+    // new movie. Bumping the generation makes an in-flight worker bail
+    // before publishing; clearing the ready flag drops any already-queued
+    // result; import_in_progress_ resets the banner sub-state.
+    lib_poll_gen_.fetch_add(1);
+    lib_poll_ready_.store(false);
+    import_in_progress_ = false;
+
     if (tmdb_id_ == 0) {
         mode_ = Mode::NoTmdb;
         rebuild_buttons();
@@ -294,11 +327,25 @@ void DetailScreen::fetch() {
     const uint64_t my_gen = tmdb_current_gen_.fetch_add(1) + 1;
     spdlog::info("[DetailScreen] fetch: tmdb_id={} (gen={})",
                  tmdb_id_, my_gen);
-    tmdb_workers_.emplace_back(&DetailScreen::run_fetch, this,
-                               my_gen, tmdb_id_);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread t(&DetailScreen::run_fetch, this, my_gen, tmdb_id_, done);
+    tmdb_workers_.push_back(FetchWorker{std::move(t), std::move(done)});
 }
 
-void DetailScreen::run_fetch(uint64_t gen, int tmdb_id) {
+namespace {
+// RAII: set a worker's done-flag on ANY function exit (the fn has several
+// early-return bail paths). The reaper joins only flagged-done threads,
+// so this must fire on every path. `done` may be null in unit-test call
+// paths that invoke run_fetch directly — guarded.
+struct DoneFlag {
+    std::shared_ptr<std::atomic<bool>> f;
+    ~DoneFlag() { if (f) f->store(true, std::memory_order_release); }
+};
+}  // namespace
+
+void DetailScreen::run_fetch(uint64_t gen, int tmdb_id,
+                             std::shared_ptr<std::atomic<bool>> done) {
+    DoneFlag done_flag{std::move(done)};
     // Captured-by-value: do the slow HTTP here. If the user backs out
     // or retries before this returns, tmdb_current_gen_ will bump and
     // our publish will be silently discarded. Each gen-check between
@@ -394,6 +441,13 @@ void DetailScreen::apply_pending_detail() {
         if (watchdog_ && tmdb_id_ > 0 && found->radarr_id > 0) {
             watchdog_->upgrade_radarr_id(tmdb_id_, found->radarr_id);
         }
+        // Seed the quiet-poll clock so the first re-poll is ~9s out (not
+        // an immediate redundant Radarr call the same frame). Only matters
+        // for the InLibraryNoFile path — maybe_repoll_library() gates on
+        // that mode. import_in_progress_ starts clean; the first poll will
+        // set it if the queue shows an import underway.
+        last_library_poll_at_ = std::chrono::steady_clock::now();
+        import_in_progress_ = false;
     } else {
         mode_ = Mode::NotInLibrary;
     }
@@ -424,6 +478,138 @@ void DetailScreen::apply_pending_detail() {
                  tmdb_detail_.has_value() ? tmdb_detail_->title : "");
 }
 
+// True readiness: Radarr says the movie has a file AND that file maps to
+// a host path that actually exists on the mounted SSD. This is the same
+// check do_play() enforces at press time, hoisted so rebuild_buttons()
+// can gate the Play button on it — closing the "In Library but Play
+// fails" gap. Best-effort: a Radarr container-path that doesn't match
+// the kiosk's host prefix passes through resolve_host_path unchanged and
+// then fails filesystem::exists, which correctly reports not-ready.
+bool DetailScreen::play_ready() const {
+    if (!movie_.has_value()) return false;
+    if (!movie_->has_file) return false;
+    if (movie_->file_container_path.empty()) return false;
+    const std::string host = radarr_.resolve_host_path(movie_->file_container_path);
+    if (host.empty()) return false;
+    std::error_code ec;
+    return std::filesystem::exists(host, ec);
+}
+
+// Called each frame from update(). Fires a quiet Radarr-only poll on a
+// ~9s cadence while the movie is in-library-without-a-file, so a download
+// that finishes + imports while the user watches Detail flips to Play
+// without a manual refresh. Gated so it never runs during Loading /
+// Error / NotInLibrary, never stacks concurrent polls, and never blocks
+// the render thread (the HTTP happens on the worker).
+void DetailScreen::maybe_repoll_library() {
+    if (mode_ != Mode::InLibraryNoFile) return;
+    if (!movie_.has_value() || movie_->radarr_id <= 0) return;
+    if (lib_poll_inflight_.load()) return;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       now - last_library_poll_at_).count();
+    if (elapsed < kLibraryPollMs) return;
+
+    last_library_poll_at_ = now;
+    lib_poll_inflight_.store(true);
+    const uint64_t gen = lib_poll_gen_.fetch_add(1) + 1;
+    const int radarr_id = movie_->radarr_id;
+    // Reuse the single poll handle. The prior worker is guaranteed
+    // finished — lib_poll_inflight_ was false to reach here, and a worker
+    // clears inflight only on its LAST action (either the publish or a
+    // bail return), so the thread is at/near exit. join() reaps it (near-
+    // instant, no render stall) before we reassign.
+    if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
+    lib_poll_worker_ = std::thread(&DetailScreen::run_library_poll, this,
+                                   gen, radarr_id);
+}
+
+// Worker body (off the render thread). Re-reads the movie record for the
+// current has_file + file path, and scans the queue for an in-progress
+// import so the banner can distinguish "importing" from "awaiting
+// release". Publishes under lib_poll_mtx_ only if still the current gen.
+void DetailScreen::run_library_poll(uint64_t gen, int radarr_id) {
+    LibraryPollResult r;
+    auto m = radarr_.get_movie(radarr_id);
+    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+    if (m.has_value()) {
+        r.movie = std::move(m);
+        r.ok = true;
+    }
+
+    // Best-effort import-state probe: if this movie is still in the queue
+    // with tracked_download_state importing/importPending, the file is
+    // downloaded and being copied into the library. Failure here is
+    // non-fatal — we just fall back to import_active=false (plain
+    // MONITORED banner) rather than erroring the poll.
+    if (r.ok && r.movie && !r.movie->has_file) {
+        for (const auto& qi : radarr_.get_queue()) {
+            if (qi.movie_id != radarr_id) continue;
+            if (qi.tracked_download_state == "importing" ||
+                qi.tracked_download_state == "importPending") {
+                r.import_active = true;
+            }
+            break;
+        }
+    }
+    if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+
+    {
+        std::lock_guard<std::mutex> lk(lib_poll_mtx_);
+        if (gen != lib_poll_gen_.load()) { lib_poll_inflight_.store(false); return; }
+        lib_poll_pending_ = std::move(r);
+    }
+    lib_poll_ready_.store(true);
+    // inflight means ONLY "a worker thread is running" — clear it on the
+    // success path too, not just the bail paths. If apply_library_poll()
+    // owned this clear instead, a fetch()/navigate that lands between the
+    // publish and the drain (which clears lib_poll_ready_) would leave
+    // inflight stuck true forever and silently kill all future polling.
+    // Re-poll-before-drain is prevented by the 9s cadence timer, not by
+    // inflight — a drain happens on the very next frame (~16ms << 9s).
+    lib_poll_inflight_.store(false);
+}
+
+// Drain a completed poll on the render thread. NEVER sets Mode::Loading
+// or touches tmdb_detail_ — that's the whole point (no "Loading" flash
+// over on-screen content). Guarded to only act while still InLibraryNoFile
+// so a poll that landed after the user navigated away is dropped.
+void DetailScreen::apply_library_poll() {
+    if (!lib_poll_ready_.load()) return;
+    LibraryPollResult r;
+    {
+        std::lock_guard<std::mutex> lk(lib_poll_mtx_);
+        r = std::move(lib_poll_pending_);
+    }
+    lib_poll_ready_.store(false);
+    // NOTE: do NOT clear lib_poll_inflight_ here — the worker owns that
+    // flag and clears it on its own exit (success or bail). Clearing it
+    // here would double-manage it and reintroduce the stuck-inflight race.
+
+    // Backstop: only apply while awaiting a file. If the user hit Retry or
+    // navigated to a different movie (both set Mode::Loading via fetch),
+    // this stale result must not clobber the new state.
+    if (mode_ != Mode::InLibraryNoFile) return;
+    if (!r.ok || !r.movie.has_value()) return;
+
+    if (r.movie->has_file) {
+        // The file landed. Swap in the FRESH record (its now-populated
+        // file_container_path is required by get_play_target/do_play) and
+        // flip to the Play state. Toast so the user knows it's ready even
+        // if they glance away.
+        movie_ = std::move(r.movie);
+        import_in_progress_ = false;
+        mode_ = Mode::InLibraryWithFile;
+        rebuild_buttons();
+        ::ui::Toast::show("Ready to play");
+        spdlog::info("[DetailScreen] library poll: file landed for radarr_id={}, "
+                     "flipped to InLibraryWithFile", movie_->radarr_id);
+    } else {
+        // Still no file — refresh the importing sub-state for the banner.
+        import_in_progress_ = r.import_active;
+    }
+}
+
 DetailScreen::~DetailScreen() {
     // Bump gen so any in-flight worker sees its result is stale and
     // bails before publishing. Then join all tracked workers so we
@@ -436,8 +622,12 @@ DetailScreen::~DetailScreen() {
     // ceiling is an accepted trade for resilience under transient
     // VPN-egress flakiness.
     tmdb_current_gen_.fetch_add(1);
-    for (auto& t : tmdb_workers_) {
-        if (t.joinable()) t.join();
+    // Also invalidate + join the library poll worker (its own single
+    // handle, separate from tmdb_workers_).
+    lib_poll_gen_.fetch_add(1);
+    if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
+    for (auto& w : tmdb_workers_) {
+        if (w.thread.joinable()) w.thread.join();
     }
 }
 
@@ -469,7 +659,16 @@ void DetailScreen::rebuild_buttons() {
                                : Button{Action::Remove, "Remove"});
             break;
         case Mode::InLibraryWithFile:
-            buttons_.push_back({Action::Play, "Play"});
+            // Only offer Play when the file is TRULY ready — resolvable +
+            // present on the host SSD, not just hasFile=true in Radarr's
+            // cache. During the brief import-copy window (or a mount
+            // hiccup) hasFile can be true before the file is actually
+            // playable; offering Play then lands the user back here with a
+            // "File missing" banner. play_ready() is the same predicate
+            // do_play() enforces, so the button and the action agree.
+            if (play_ready()) {
+                buttons_.push_back({Action::Play, "Play"});
+            }
             buttons_.push_back({Action::PickSource, "Pick a source"});
             buttons_.push_back(remove_pending_
                                ? Button{Action::ConfirmRemove, "Confirm Remove"}
@@ -486,6 +685,13 @@ void DetailScreen::update() {
     // Drain a finished async fetch result first so the rest of update()
     // (timer expiry, banner clear) sees the right mode_ for this frame.
     apply_pending_detail();
+
+    // Drain a finished quiet library poll, then maybe kick a new one. Both
+    // are cheap atomic-load early-outs on most frames (same shape as
+    // apply_pending_detail above). apply first so a just-landed has_file
+    // flip is visible this frame; then maybe_repoll re-arms the cadence.
+    apply_library_poll();
+    maybe_repoll_library();
 
     auto now = std::chrono::steady_clock::now();
     if (remove_pending_) {
@@ -782,6 +988,11 @@ Screen DetailScreen::do_remove_confirm() {
     movie_.reset();
     needs_refresh_ = true;
     mode_          = Mode::NotInLibrary;
+    import_in_progress_ = false;
+    // Invalidate any in-flight library poll so it can't resurrect a
+    // "ready" flip for the movie we just removed.
+    lib_poll_gen_.fetch_add(1);
+    lib_poll_ready_.store(false);
     rebuild_buttons();
     // After a successful remove, the library view is the natural home.
     return Screen::Library;
@@ -1229,19 +1440,32 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
-        // Outlined banner — same steel-blue-outline idiom as the section
-        // dividers, sized to fit a single small-font line of body text.
         const float banner_h = static_cast<float>(sz) + 18.0f;
+        // Two sub-states share this slot:
+        //   import_in_progress_ : the download FINISHED and Radarr is
+        //     copying the file into the library right now — ready in
+        //     seconds. Green (highlight1) so it reads as imminent success.
+        //   else (plain monitored) : no release grabbed yet; Radarr is
+        //     still watching indexers. Dim steel-blue, informational.
+        // The quiet library poll (maybe_repoll_library) drives the flip
+        // and, when the file lands, transitions the whole screen to
+        // InLibraryWithFile so Play appears — this banner is only the
+        // interim signal.
+        ::ui::Color border_col = import_in_progress_ ? th.highlight1 : th.dim;
+        ::ui::Color text_col   = import_in_progress_ ? th.highlight1 : th.dim;
+        std::string txt = import_in_progress_
+            ? std::string("DOWNLOADED  \xE2\x80\xA2  Importing to library — "
+                          "ready to play in a few seconds")
+            : std::string("MONITORED  \xE2\x80\xA2  Radarr re-checks indexers "
+                          "every 30 minutes and will auto-download when "
+                          "seeders appear");
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
-                         2.0f, th.dim, 0.9f);
-        std::string txt =
-            "MONITORED  \xE2\x80\xA2  Radarr re-checks indexers every "
-            "30 minutes and will auto-download when seeders appear";
+                         2.0f, border_col, 0.9f);
         std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
         r.mb_draw_text(drawn, col_x + 12.0f,
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
-                       sz, th.dim, 0.95f);
+                       sz, text_col, 0.95f);
         cursor_y += banner_h + 6.0f;
     }
 
