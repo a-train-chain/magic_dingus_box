@@ -28,6 +28,12 @@ std::string shell_single_quote(const std::string& value) {
     return quoted;
 }
 
+bool is_ps1_core(const std::string& core_name) {
+    return core_name.find("pcsx") != std::string::npos ||
+           core_name.find("beetle_psx") != std::string::npos ||
+           core_name.find("swanstation") != std::string::npos;
+}
+
 }  // namespace
 
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
@@ -149,10 +155,7 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
 }
 
 void write_core_options(std::ostream& out, const std::string& core_name) {
-    const bool is_ps1 = core_name.find("pcsx") != std::string::npos ||
-                        core_name.find("beetle_psx") != std::string::npos ||
-                        core_name.find("swanstation") != std::string::npos;
-    if (!is_ps1) {
+    if (!is_ps1_core(core_name)) {
         return;
     }
 
@@ -180,6 +183,10 @@ void write_core_options(std::ostream& out, const std::string& core_name) {
     // Render at native 1x resolution; RetroArch scales into the bezel.
     out << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
     out << "pcsx_rearmed_dithering = \"enabled\"\n";
+}
+
+int audio_latency_ms_for_core(const std::string& core_name) {
+    return is_ps1_core(core_name) ? 64 : 48;
 }
 
 std::string build_kms_ready_watch_block(const std::string& command,

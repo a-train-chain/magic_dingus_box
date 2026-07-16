@@ -123,6 +123,22 @@ TEST_CASE("non-PS1 core emits no PCSX-ReARMed options",
     REQUIRE(output.str().empty());
 }
 
+TEST_CASE("PS1 cores use underrun-safe audio latency",
+          "[retroarch][audio]") {
+    REQUIRE(retroarch::audio_latency_ms_for_core("pcsx_rearmed_libretro") ==
+            64);
+    REQUIRE(retroarch::audio_latency_ms_for_core("beetle_psx_libretro") ==
+            64);
+    REQUIRE(retroarch::audio_latency_ms_for_core("swanstation_libretro") ==
+            64);
+}
+
+TEST_CASE("non-PS1 cores keep low audio latency", "[retroarch][audio]") {
+    REQUIRE(retroarch::audio_latency_ms_for_core("nestopia_libretro") == 48);
+    REQUIRE(retroarch::audio_latency_ms_for_core("snes9x2010_libretro") ==
+            48);
+}
+
 TEST_CASE("KMS marker makes startup ready without waiting for game exit",
           "[retroarch][startup]") {
     const std::string marker = temp_path("ready");

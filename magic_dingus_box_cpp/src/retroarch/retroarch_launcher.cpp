@@ -863,7 +863,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "audio_sync = \"true\"\n";
 //             script_file << "audio_resampler = \"sinc\"\n";
             script_file << "audio_out_rate = \"48000\"\n";
-            script_file << "audio_latency = \"48\"\n";  // Tighter audio sync (was 64)
+            script_file << "audio_latency = \""
+                        << audio_latency_ms_for_core(core_name) << "\"\n";
             script_file << "# Audio buffer settings - ensure audio callback works\n";
 //             script_file << "audio_block_frames = \"512\"\n";
 //             script_file << "audio_rate_control = \"true\"\n";
