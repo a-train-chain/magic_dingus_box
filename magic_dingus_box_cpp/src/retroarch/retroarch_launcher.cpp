@@ -776,8 +776,11 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Video config (driver, resolution, viewport, sync)
             write_video_config(script_file, opts);
-            script_file << "audio_driver = \"alsa\"\n"; // Default to alsa for other cores
-            script_file << "audio_resampler = \"sinc\"\n"; // High quality for other cores
+            // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
+            // independently of brief emulation or Vulkan present stalls.
+            script_file << "audio_driver = \"" << audio_driver_for_gameplay()
+                        << "\"\n";
+            script_file << "audio_resampler = \"sinc\"\n"; // High-quality gameplay resampling
 
             script_file << "input_joypad_driver = \"udev\"\n";
             script_file << "input_max_users = \"4\"\n";
@@ -840,7 +843,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "quit_press_twice = \"false\"\n";
             script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
             script_file << "# Audio settings - use ALSA to match GStreamer (simplified for reliability)\n";
-//             script_file << "audio_driver = \"alsa\"\n";
             script_file << "audio_device = \"" << alsa_device << "\"\n";
             script_file << "audio_enable = \"true\"\n";
             script_file << "audio_mute_enable = \"false\"\n";

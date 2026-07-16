@@ -185,8 +185,12 @@ void write_core_options(std::ostream& out, const std::string& core_name) {
     out << "pcsx_rearmed_dithering = \"enabled\"\n";
 }
 
+const char* audio_driver_for_gameplay() {
+    return "alsathread";
+}
+
 int audio_latency_ms_for_core(const std::string& core_name) {
-    return is_ps1_core(core_name) ? 128 : 48;
+    return is_ps1_core(core_name) ? 64 : 48;
 }
 
 std::string build_kms_ready_watch_block(const std::string& command,

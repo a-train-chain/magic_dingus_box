@@ -37,26 +37,39 @@ A second live candidate at 96 ms also failed, though it improved the result:
 `avail_max` of 5,085 frames against a 4,608-frame buffer. Video launch,
 sustained play, and menu return remained clean.
 
+The 128 ms candidate failed too: 22 retriggers, 12 non-RUNNING samples, and
+`avail_max` of 6,695 frames against a 6,144-frame buffer. Because the demand
+peak continued to move above every larger hardware buffer, capacity alone
+was disproven as the root cause.
+
+The generated gameplay config explicitly forces `audio_driver = "alsa"`.
+RetroArch's verbose log confirms this starts its synchronous audio driver.
+The installed RetroArch 1.20 binary also contains `alsathread`, and the
+official RetroArch changelog says the threaded wrapper became the default
+for ALSA devices on threaded builds in version 1.9.5. The explicit kiosk
+override was therefore defeating RetroArch's intended Linux audio path and
+tying hardware feeding to brief emulation/Vulkan-present stalls.
+
 ## Design
 
-Add a portable production contract:
+Add portable production contracts:
 
 ```cpp
+const char* audio_driver_for_gameplay();
 int audio_latency_ms_for_core(const std::string& core_name);
 ```
 
-The function returns 128 for the existing PS1 core-name family (`pcsx`,
-`beetle_psx`, and `swanstation`) and 48 for every other core. The generated
-game config uses that value for `audio_latency`. The core downloader remains
-at its current 48 ms because it does not run emulated content.
+`audio_driver_for_gameplay()` returns `alsathread` for every emulator core so
+the worker thread can keep the HDMI device fed independently of the
+emulation/video thread. The generated game config uses it instead of the
+synchronous `alsa` override. The core downloader remains on synchronous ALSA
+because it does not run emulated content.
 
-At 48 kHz, 128 ms produces a 6,144-frame buffer. That covers the 5,085-frame
-peak measured during the rejected 96 ms run with 1,059 frames of margin and
-matches the minimum latency PCSX-ReARMed previously requested through its
-frontend callback. It adds 80 ms of audio buffering to PS1 but does not add
-video/input frames or affect non-PS1 consoles. The 128 ms value must still
-pass live zero-retrigger validation; otherwise it is rejected rather than
-declared fixed.
+`audio_latency_ms_for_core()` returns the originally approved 64 ms for the
+existing PS1 core-name family (`pcsx`, `beetle_psx`, and `swanstation`) and
+48 ms for every other core. This avoids retaining the 128 ms workaround once
+the driver architecture is corrected. Audio threading does not enable video
+threading and does not add video or input frames.
 
 The PS1-name predicate is shared internally by core-option and audio-latency
 generation so those two contracts cannot drift.
@@ -74,7 +87,10 @@ The change must preserve:
 - PS1 native 1x rendering, ARM64 dynarec, BIOS, SPU threading, CD/XA audio,
   PSX clock 57, interpolation, reverb, and dithering settings.
 - All controller mappings, hotkeys, save paths, audio routing, and volume.
-- A 48 ms buffer for all non-PS1 emulator cores and the core downloader.
+- Threaded ALSA for emulator gameplay, with synchronous ALSA retained for the
+  core downloader.
+- A 64 ms buffer for PS1, and 48 ms for all non-PS1 emulator cores and the
+  core downloader.
 - The 15-second launch timeout and every menu/display/input recovery path.
 
 No core update, resampler change, output-rate change, display change,
@@ -84,20 +100,21 @@ background-service shutdown, or system-clock change is part of this repair.
 
 Implementation follows a red-green test cycle:
 
-1. Add Catch2 assertions that all supported PS1 core names select 128 ms and
-   representative non-PS1 names select 48 ms.
+1. Add Catch2 assertions that gameplay selects `alsathread`, all supported
+   PS1 core names select 64 ms, and representative non-PS1 names select 48 ms.
 2. Observe the test fail before adding the production function.
 3. Implement the predicate and generated-config integration.
 4. Run the complete portable test suite and Pi-side RetroArch test.
 5. Deploy without merging and launch Tony Hawk's Pro Skater 2.
-6. Confirm the live ALSA buffer is 6,144 frames and the generated PS1 config
-   says `audio_latency = "128"`.
+6. Confirm the generated PS1 config says `audio_driver = "alsathread"` and
+   `audio_latency = "64"`, and the live hardware buffer is 3,072 frames.
 7. Sample ALSA for at least 30 seconds. Acceptance requires zero trigger-time
    resets, playback delay staying above zero, and `avail_max` staying within
-   the 6,144-frame buffer.
+   the 3,072-frame hardware buffer.
 8. Confirm frame skipping remains disabled, the exact video/bezel contract is
    unchanged, and the game returns cleanly to the menu.
-9. Run one title on each of the seven installed cores before merge.
+9. Run one title on each of the seven installed cores and confirm the
+   generated gameplay config retains `alsathread` before merge.
 
 The user performs the final listening and responsiveness check before any
 merge decision.
