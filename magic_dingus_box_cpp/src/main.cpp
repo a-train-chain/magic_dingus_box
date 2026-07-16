@@ -1568,6 +1568,24 @@ int main(int /* argc */, char* /* argv */[]) {
         // below, which prevents stray Menu / DPad / Select events from
         // leaking into the main UI while the Media Browser is active.
         if (state.current_screen == app::AppScreen::MediaBrowser) {
+            // Restore the main menu's renderable state on ANY exit from
+            // the Media Browser (used by all three exit paths below:
+            // exit modal, BTN4 long-press, Screen::Exit). Belt-and-braces
+            // companion to the same reset done at MB entry: if playing-item
+            // indexes or a stale UI fade survive into MainMenu, the
+            // Renderer either early-returns (is_transitioning: indexes set
+            // + no video) or draws at alpha 0 — both look like a
+            // permanently blank main menu. Idempotent; matches the
+            // RetroArch return path's "CRITICAL: Reset playback state".
+            auto reset_main_ui_state = [&state]() {
+                state.video_active = false;
+                state.is_switching_playlist = false;
+                state.current_playlist_index = -1;
+                state.current_item_index = -1;
+                state.is_fading = false;
+                state.ui_visible_when_playing = false;
+            };
+
             // Controller-free navigation on the kiosk enclosure:
             // synthesize vertical nav from BTN1 (yellow/PREV) and BTN3
             // (green/NEXT) so users can reach every UI element with only
@@ -1759,6 +1777,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     // resume() is idempotent — a no-op when not paused.
                     ui_renderer.artwork_cache().resume();
                     active_mb_screen->leave();
+                    reset_main_ui_state();
                     state.current_screen = app::AppScreen::MainMenu;
                     current_mb_screen = media_browser::ui::Screen::Browse;
                     active_mb_screen = &mb_browse;
@@ -1777,6 +1796,7 @@ int main(int /* argc */, char* /* argv */[]) {
                 // to MainMenu.
                 ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
+                reset_main_ui_state();
                 state.current_screen = app::AppScreen::MainMenu;
                 current_mb_screen = media_browser::ui::Screen::Browse;
                 active_mb_screen = &mb_browse;
@@ -1786,6 +1806,7 @@ int main(int /* argc */, char* /* argv */[]) {
             if (next == media_browser::ui::Screen::Exit) {
                 ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
+                reset_main_ui_state();
                 state.current_screen = app::AppScreen::MainMenu;
                 // Reset to Browse so the next entry into the Media Browser
                 // starts fresh on the landing screen.
@@ -2269,6 +2290,20 @@ int main(int /* argc */, char* /* argv */[]) {
                             controller.stop();
                             state.video_active = false;
                             state.is_switching_playlist = false;
+                            // CRITICAL: also clear the playing-item indexes
+                            // and any in-flight UI fade. The Renderer's
+                            // is_transitioning logic (current_item_index >= 0
+                            // && !video_active) skips the ENTIRE main-UI
+                            // render, and a stale is_fading with a hidden
+                            // target zeroes the UI alpha — either one leaves
+                            // the main menu permanently BLANK after exiting
+                            // the Media Browser. Same reset the RetroArch
+                            // return path does in Controller (see the
+                            // "CRITICAL: Reset playback state" comment there).
+                            state.current_playlist_index = -1;
+                            state.current_item_index = -1;
+                            state.is_fading = false;
+                            state.ui_visible_when_playing = false;
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
                             // Always start on the Browse landing screen.
