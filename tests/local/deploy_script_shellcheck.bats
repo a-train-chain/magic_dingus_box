@@ -12,6 +12,15 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "deploy excludes host build and Python cache artifacts" {
+    for pattern in 'build-*' '__pycache__' '*.pyc'; do
+        grep -Fq -- "--exclude '$pattern'" "$SCRIPTS_DIR/deploy_cpp.sh" || {
+            echo "deploy_cpp.sh is missing rsync exclude: $pattern"
+            false
+        }
+    done
+}
+
 @test "shellcheck clean: init_audio.sh" {
     run shellcheck -S error "$SCRIPTS_DIR/init_audio.sh"
     [ "$status" -eq 0 ]
