@@ -74,6 +74,21 @@ threading and does not add video or input frames.
 The PS1-name predicate is shared internally by core-option and audio-latency
 generation so those two contracts cannot drift.
 
+## Live validation result
+
+The threaded-driver design passed on the target Pi. Tony Hawk's Pro Skater 2
+ran for a 30-second, 300-sample ALSA trace with all 300 samples in RUNNING,
+zero trigger resets, minimum playback delay of 2,232 frames, and `avail_max`
+of 952 frames within the 3,072-frame hardware buffer. The game launched in
+6.3 seconds, sustained play without a video error, and returned to the menu
+in 4.2 seconds.
+
+The seven-core regression matrix then passed one game each on FBNeo,
+ProSystem, Nestopia, Beetle PCE Fast, PCSX-ReARMed, Genesis Plus GX, and
+Snes9x 2010. The final non-PS1 generated config retained `alsathread` with a
+48 ms buffer. The exact Modern TV video, viewport, and bezel contract was
+unchanged.
+
 ## Frozen behavior
 
 The change must preserve:
