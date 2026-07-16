@@ -65,35 +65,71 @@
   //   - Single-char append → {t: "type_char", c}
   //   - Single-char delete (from the end) → {t: "key_special", k: "backspace"}
   //   - Anything else (paste, multi-delete, IME) → {t: "clear"} + per-char type_chars
+  const isAscii = (s) => {
+    for (let i = 0; i < s.length; i++) {
+      if (s.charCodeAt(i) >= 0x80) return false;
+    }
+    return true;
+  };
+
   function syncToKiosk(newVal, oldVal) {
-    // Single-char append at end?
-    if (newVal.length === oldVal.length + 1 && newVal.startsWith(oldVal)) {
-      send({ t: 'type_char', c: newVal[newVal.length - 1] });
-      return;
+    // The kiosk buffer can only hold ASCII (the WS handler + TextInputWriter
+    // drop everything else), so the single-char append/delete fast paths are
+    // only valid when BOTH strings are fully ASCII. If either side carries a
+    // non-ASCII char (a smart quote, em-dash, or accented letter the iOS
+    // keyboard/autocorrect inserts), the phone field and the kiosk buffer no
+    // longer line up 1:1 — a fast-path backspace would then delete a REAL
+    // character the user never touched. In that case fall through to a full
+    // clear + ASCII-only retype, which deterministically resyncs the kiosk to
+    // the ASCII projection of the field.
+    if (isAscii(newVal) && isAscii(oldVal)) {
+      // Single-char append at end?
+      if (newVal.length === oldVal.length + 1 && newVal.startsWith(oldVal)) {
+        send({ t: 'type_char', c: newVal[newVal.length - 1] });
+        return;
+      }
+      // Single-char delete at end?
+      if (newVal.length === oldVal.length - 1 && oldVal.startsWith(newVal)) {
+        send({ t: 'key_special', k: 'backspace' });
+        return;
+      }
     }
-    // Single-char delete at end?
-    if (newVal.length === oldVal.length - 1 && oldVal.startsWith(newVal)) {
-      send({ t: 'key_special', k: 'backspace' });
-      return;
-    }
-    // Multi-char change — paste, multi-delete, IME composition commit.
-    // Cheapest robust path: clear the kiosk buffer and retype everything.
+    // Multi-char change, or any non-ASCII involved — paste, multi-delete,
+    // IME/autocorrect commit. Cheapest robust path: clear the kiosk buffer
+    // and retype the ASCII-representable characters.
     send({ t: 'clear' });
     for (const c of newVal) {
-      // The WS handler filters non-ASCII anyway, but emit cleanly here too.
       if (c.length === 1 && c.charCodeAt(0) < 0x80) {
         send({ t: 'type_char', c });
       }
     }
   }
 
+  // Buttons currently held down on THIS phone, so we can force-release them
+  // if the page is backgrounded or hidden (iOS Safari does NOT reliably fire
+  // pointerup/pointercancel when the tab backgrounds, the screen locks, or
+  // the app is swiped away — leaving the kiosk seeing the button stuck down).
+  const heldButtons = new Set();
+
+  function pressDown(btn) {
+    heldButtons.add(btn);
+    send({ t: 'press', btn: btn, phase: 'down' });
+  }
+  function pressUp(btn) {
+    if (!heldButtons.delete(btn)) return;  // wasn't held; nothing to release
+    send({ t: 'press', btn: btn, phase: 'up' });
+  }
+  function releaseAllHeld() {
+    for (const btn of Array.from(heldButtons)) pressUp(btn);
+  }
+
   function bindPress(el, btn) {
     el.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      send({ t: 'press', btn: btn, phase: 'down' });
+      pressDown(btn);
       if (typeof navigator.vibrate === 'function') navigator.vibrate(8);
     });
-    const release = () => send({ t: 'press', btn: btn, phase: 'up' });
+    const release = () => pressUp(btn);
     el.addEventListener('pointerup', release);
     el.addEventListener('pointercancel', release);
     el.addEventListener('pointerleave', release);
@@ -102,6 +138,15 @@
   document.querySelectorAll('[data-btn]').forEach((el) => {
     bindPress(el, el.dataset.btn);
   });
+
+  // Release everything the moment the page stops being visible or is
+  // navigated/backgrounded away. Belt-and-braces with the server-side
+  // release-on-disconnect: whichever fires first prevents a stuck input.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') releaseAllHeld();
+  });
+  window.addEventListener('pagehide', releaseAllHeld);
+  window.addEventListener('blur', releaseAllHeld);
 
   function applyStatus(s) {
     lastStatusTs = Date.now();

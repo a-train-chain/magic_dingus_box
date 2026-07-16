@@ -295,11 +295,19 @@ class TestVersion:
 class TestURLValidation:
     """Tests for URL validation security."""
 
+    # The install endpoint pins download_url to THIS project's own repo
+    # (a-train-chain/magic_dingus_box), not "any github.com URL" — a bare
+    # github.com prefix let a LAN device install an attacker-owned tarball.
     @pytest.mark.parametrize("url,expected_valid", [
-        ("https://github.com/user/repo/releases/download/v1.0.0/file.tar.gz", True),
-        ("https://api.github.com/repos/user/repo/tarball/v1.0.0", True),
+        # This project's own repo — accepted.
+        ("https://github.com/a-train-chain/magic_dingus_box/releases/download/v1.0.0/file.tar.gz", True),
+        ("https://api.github.com/repos/a-train-chain/magic_dingus_box/tarball/v1.0.0", True),
+        ("https://codeload.github.com/a-train-chain/magic_dingus_box/tar.gz/refs/tags/v1.0.0", True),
+        # A DIFFERENT GitHub repo — now rejected (was the RCE hole).
+        ("https://github.com/user/repo/releases/download/v1.0.0/file.tar.gz", False),
+        ("https://api.github.com/repos/attacker/evil/tarball/v1.0.0", False),
         ("https://evil.com/malware.tar.gz", False),
-        ("http://github.com/user/repo/file.tar.gz", False),  # http not https
+        ("http://github.com/a-train-chain/magic_dingus_box/file.tar.gz", False),  # http not https
         ("https://github.com.evil.com/file.tar.gz", False),  # subdomain trick
         ("https://not-github.com/file.tar.gz", False),
         ("file:///etc/passwd", False),

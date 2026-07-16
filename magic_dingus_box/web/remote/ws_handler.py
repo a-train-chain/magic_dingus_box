@@ -25,6 +25,10 @@ class Connection:
     sock: object              # flask-sock WebSocket
     device_id: str
     queue: "Queue[dict]" = field(default_factory=lambda: Queue(maxsize=64))
+    # Buttons/axes this connection has driven 'down' but not yet 'up'.
+    # Drained on disconnect so a phone that drops mid-hold can't leave the
+    # kiosk seeing a stuck input. Holds ButtonName string values.
+    held: set = field(default_factory=set)
 
 
 _lock = Lock()
@@ -66,6 +70,15 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
     conn = Connection(sock=ws, device_id=device_id)
     _add(conn)
 
+    # Zero any input state a previously-dead connection of this (or any)
+    # device may have left latched on the shared virtual gamepad, so a new
+    # session always starts from a clean, all-released state.
+    if uinput_writer is not None and hasattr(uinput_writer, "release_all"):
+        try:
+            uinput_writer.release_all()
+        except Exception:
+            pass
+
     # Phase E will hook the broadcaster here.
     broadcaster = current_app.config.get("STATUS_BROADCASTER")
     if broadcaster is not None and hasattr(broadcaster, "add_queue"):
@@ -97,6 +110,13 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                 phase = msg.get("phase", "tap")
                 try:
                     uinput_writer.press(btn, phase=phase)
+                    # Track hold state so a mid-hold disconnect can be
+                    # released. 'tap' is self-balancing (down+up in one
+                    # call), so it never leaves anything held.
+                    if phase == "down":
+                        conn.held.add(btn)
+                    elif phase == "up":
+                        conn.held.discard(btn)
                 except ValueError:
                     ws.send(json.dumps({"t": "error",
                                         "code": "bad_button", "msg": btn}))
@@ -126,6 +146,22 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
             elif t == "hello":
                 pass  # already handshook
     finally:
+        # Release anything this phone was still holding when the socket
+        # closed (clean close, timeout, or exception) so the kiosk never
+        # keeps seeing a stuck button/axis. Per-control release first
+        # (precise); release_all as a belt-and-braces sweep.
+        if uinput_writer is not None:
+            for btn in list(conn.held):
+                try:
+                    uinput_writer.press(btn, phase="up")
+                except Exception:
+                    pass
+            conn.held.clear()
+            if hasattr(uinput_writer, "release_all"):
+                try:
+                    uinput_writer.release_all()
+                except Exception:
+                    pass
         if broadcaster is not None and hasattr(broadcaster, "remove_queue"):
             broadcaster.remove_queue(conn.queue)
         _remove(conn)

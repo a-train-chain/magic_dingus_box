@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import io
 import json
 import socket
@@ -324,6 +325,24 @@ def get_local_ip() -> str:
         return "unknown"
 
 
+def _is_within(child, parent) -> bool:
+    """True iff `child` is `parent` itself or a descendant of it.
+
+    Uses the resolved-path parent relationship, NOT a string prefix.
+    `str(x).startswith(str(y))` is a classic CWE-22 containment bypass:
+    "/data/media_backup/secret" startswith "/data/media" is True even
+    though media_backup is a SIBLING of media, not inside it — so a
+    crafted <path:...> could reach files outside the intended tree the
+    moment any such sibling directory exists. Path.is_relative_to()
+    (Py3.9+) compares path components, so siblings never match."""
+    try:
+        child = Path(child).resolve()
+        parent = Path(parent).resolve()
+        return child == parent or parent in child.parents
+    except Exception:
+        return False
+
+
 def format_playlist_yaml(data: dict) -> str:
     """Format playlist data as clean YAML matching the expected format.
     
@@ -365,8 +384,9 @@ def format_playlist_yaml(data: dict) -> str:
     description = data.get('description', '')
     lines.append(f"description: {yaml_quote(description)}")
     
-    # Playlist type (video or game)
-    lines.append(f"playlist_type: {data.get('playlist_type', 'video')}")
+    # Playlist type (video or game). Quote like every other user-supplied
+    # field — an unquoted value could inject newlines / extra YAML keys.
+    lines.append(f"playlist_type: {yaml_quote(data.get('playlist_type', 'video'))}")
     
     # Loop as lowercase boolean
     loop_value = 'true' if data.get('loop', False) else 'false'
@@ -384,7 +404,7 @@ def format_playlist_yaml(data: dict) -> str:
         artist = item.get('artist', '')
         lines.append(f"    artist: {yaml_quote(artist)}")
         
-        lines.append(f"    source_type: {item.get('source_type', 'local')}")
+        lines.append(f"    source_type: {yaml_quote(item.get('source_type', 'local'))}")
         
         # Path is required for local/emulated_game types - MUST quote as paths often contain #
         if item.get('path'):
@@ -408,12 +428,12 @@ def format_playlist_yaml(data: dict) -> str:
                 for tag in valid_tags:
                     lines.append(f"      - {yaml_quote(tag)}")
         
-        # Emulator fields for games
+        # Emulator fields for games — quote like every other field.
         if item.get('emulator_core'):
-            lines.append(f"    emulator_core: {item['emulator_core']}")
-        
+            lines.append(f"    emulator_core: {yaml_quote(item['emulator_core'])}")
+
         if item.get('emulator_system'):
-            lines.append(f"    emulator_system: {item['emulator_system']}")
+            lines.append(f"    emulator_system: {yaml_quote(item['emulator_system'])}")
         
         # Add blank line between items for readability
         if item != items[-1]:  # Not the last item
@@ -481,6 +501,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
         from flask_sock import Sock
     except ImportError:
         Sock = None
+    # WS keepalive: ping every 25s so a phone that vanishes without a clean
+    # close (WiFi drop, screen lock, walked out of range) gets its connection
+    # torn down within ~one interval instead of lingering half-open. Without
+    # this, the dead socket's worker thread — and any button the phone was
+    # holding — stuck around until kernel TCP keepalive gave up (hours).
+    # flask-sock reads ping_interval from SOCK_SERVER_OPTIONS (not a Sock()
+    # constructor kwarg in 0.7.x), so set it BEFORE constructing Sock.
+    app.config.setdefault("SOCK_SERVER_OPTIONS", {"ping_interval": 25})
     sock = Sock(app) if Sock is not None else None
 
     # Expose data_dir to blueprints and request handlers (e.g. remote auth).
@@ -958,7 +986,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # path-traversal that survived _sanitize_filename (symlinks, etc.).
         p_resolved = p.resolve()
         playlists_dir_resolved = playlists_dir.resolve()
-        if not str(p_resolved).startswith(str(playlists_dir_resolved)):
+        if not _is_within(p_resolved, playlists_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         if not p.exists():
@@ -1000,6 +1028,20 @@ def create_app(data_dir: Path, config=None) -> Flask:
             # Safer check for path traversal:
             if '..' in safe_name or '/' in safe_name or '\\' in safe_name:
                 return error_response("VALIDATION_ERROR", "Invalid filename")
+
+            # Overwrite guard. A NEW playlist whose title maps to an
+            # already-existing file would silently clobber that other
+            # playlist (filename is derived from the title client-side).
+            # The client sends overwrite=false when creating-new; if the
+            # file already exists we refuse with 409 so the UI can warn and
+            # let the user confirm or rename. overwrite defaults to true to
+            # preserve the edit-existing path and other API callers.
+            overwrite = request.args.get("overwrite", "true").lower() != "false"
+            if not overwrite and p.exists():
+                return error_response(
+                    "CONFLICT",
+                    f"A playlist named '{safe_name}' already exists.",
+                    status=409)
 
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(yaml_content)
@@ -1055,7 +1097,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Ensure path stays within playlists_dir
         p_resolved = p.resolve()
         playlists_dir_resolved = playlists_dir.resolve()
-        if not str(p_resolved).startswith(str(playlists_dir_resolved)):
+        if not _is_within(p_resolved, playlists_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         if not p.exists():
@@ -1103,7 +1145,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                             candidate_resolved = candidate.resolve()
                             # Verify path is within data directories
                             data_parent = data_dir.parent.resolve()
-                            if str(candidate_resolved).startswith(str(data_parent)):
+                            if _is_within(candidate_resolved, data_parent):
                                 try:
                                     candidate.unlink()
                                     videos_deleted += 1
@@ -1519,7 +1561,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Ensure path stays within media_dir
         out_resolved = out.resolve()
         media_dir_resolved = media_dir.resolve()
-        if not str(out_resolved).startswith(str(media_dir_resolved)):
+        if not _is_within(out_resolved, media_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1541,7 +1583,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             (data_dir.parent / "dev_data" / "media").resolve(),
         ]
 
-        if not any(str(target_resolved).startswith(str(d)) for d in allowed_dirs):
+        if not any(_is_within(target_resolved, d) for d in allowed_dirs):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         if target.exists() and target.is_file():
@@ -1559,6 +1601,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
+
+    # Cap concurrent ffmpeg encodes. The Pi 4 has 4 cores / limited RAM
+    # shared with the kiosk and (optionally) the Media Browser Docker stack;
+    # one libx264 encode already saturates it. 2 lets a second upload start
+    # transcoding while a first finishes without thrashing. Excess jobs block
+    # in run_transcode_job() and report 'queued' to the UI.
+    _TRANSCODE_SEMAPHORE = threading.Semaphore(
+        int(os.getenv("MAGIC_MAX_TRANSCODES", "2")))
 
     # TTL for completed/errored jobs in any of the three job dicts. Without
     # eviction, a long-running kiosk that sees repeated upload/update/MB
@@ -1594,6 +1644,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
         job = transcode_jobs[job_id]
         res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS['crt'])
         width, height = res['width'], res['height']
+
+        # Bound concurrent encodes. Each transcode is a full libx264 encode;
+        # on a Pi 4 sharing RAM/CPU with the kiosk (and possibly the Media
+        # Browser Docker stack), several phones uploading at once would spawn
+        # unbounded parallel ffmpeg processes and thrash/OOM. Block here until
+        # a slot frees — the job sits in 'queued' rather than competing.
+        job['status'] = 'queued'
+        job['message'] = 'Queued — waiting for an encoder slot...'
+        _TRANSCODE_SEMAPHORE.acquire()
+        stderr_file = None
 
         # Build FFmpeg command with center crop (no black bars, no distortion)
         ffmpeg_cmd = [
@@ -1644,11 +1704,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
             except Exception:
                 duration = 0
 
-            # Run FFmpeg
+            # Run FFmpeg. Progress goes to stdout (`-progress pipe:1`), which
+            # we parse below; the ffmpeg banner + decoder warnings/errors go
+            # to stderr. We redirect stderr to a TEMP FILE rather than a pipe:
+            # with a stderr PIPE that we only read after stdout drains, a
+            # chatty stderr (iPhone HEVC/.MOV decode warnings routinely exceed
+            # the ~64KB pipe buffer) blocks ffmpeg's write(), stdout stops
+            # advancing, our readline() blocks, and the job hangs forever with
+            # ffmpeg orphaned. A file has no such buffer limit, so it can't
+            # deadlock; we read it back only if ffmpeg fails.
+            stderr_file = tempfile.NamedTemporaryFile(
+                mode='w+', suffix='.ffmpeg-stderr', delete=False)
             process = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=stderr_file,
                 text=True
             )
 
@@ -1670,6 +1740,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     except (ValueError, IndexError):
                         pass
 
+            process.wait()  # ensure returncode is set
+
             # Check result
             if process.returncode == 0:
                 job['status'] = 'complete'
@@ -1683,9 +1755,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 except Exception:
                     pass
             else:
-                stderr_output = process.stderr.read()
+                # Read ffmpeg's error output back from the stderr temp file.
+                stderr_output = ''
+                try:
+                    stderr_file.seek(0)
+                    stderr_output = stderr_file.read()
+                except Exception:
+                    pass
                 job['status'] = 'error'
-                job['message'] = f'FFmpeg failed: {stderr_output[:200]}'
+                job['message'] = f'FFmpeg failed: {stderr_output[-200:]}'
 
                 # Clean up on error
                 try:
@@ -1700,6 +1778,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
         except Exception as e:
             job['status'] = 'error'
             job['message'] = str(e)
+        finally:
+            # Always remove the stderr temp file.
+            if stderr_file is not None:
+                try:
+                    stderr_file.close()
+                    os.unlink(stderr_file.name)
+                except Exception:
+                    pass
+            _TRANSCODE_SEMAPHORE.release()
 
     @app.post("/admin/upload-and-transcode")
     @require_csrf
@@ -2024,7 +2111,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Ensure path stays within roms_dir
         out_resolved = out.resolve()
         roms_dir_resolved = roms_dir.resolve()
-        if not str(out_resolved).startswith(str(roms_dir_resolved)):
+        if not _is_within(out_resolved, roms_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -2136,13 +2223,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
         """Background thread function to run the update installation."""
         job = update_jobs[job_id]
 
+        recent_lines: "collections.deque[str]" = collections.deque(maxlen=20)
         try:
-            # Run update script with install command
-            # Use start_new_session=True so the process survives when web service stops
+            # Run update script with install command.
+            # stderr is MERGED into stdout (not a separate pipe): the progress
+            # parser below already ignores any non-JSON line, so mixing the
+            # script's stderr in is harmless — and it removes the classic
+            # dual-pipe deadlock where a chatty stderr fills its 64KB buffer,
+            # blocks the script's write(), and hangs our stdout read forever.
+            # Use start_new_session=True so the process survives web restart.
             process = subprocess.Popen(
                 [str(UPDATE_SCRIPT), "install", version, download_url],
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,  # Line buffered
                 start_new_session=True  # Detach from parent process group
@@ -2152,6 +2245,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             for line in process.stdout:
                 line = line.strip()
                 if line:
+                    recent_lines.append(line)
                     try:
                         progress_data = json.loads(line)
                         job['stage'] = progress_data.get('stage', job['stage'])
@@ -2171,9 +2265,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
             process.wait()
 
             if process.returncode != 0 and job['status'] != 'complete':
-                stderr = process.stderr.read()
+                tail = "\n".join(recent_lines)
                 job['status'] = 'error'
-                job['message'] = stderr[:500] if stderr else 'Update failed'
+                job['message'] = tail[-500:] if tail else 'Update failed'
 
         except Exception as e:
             job['status'] = 'error'
@@ -2200,9 +2294,23 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not version or not download_url:
             return error_response("VALIDATION_ERROR", "version and download_url required")
 
-        # Validate download URL (must be from GitHub)
-        if not download_url.startswith("https://github.com/") and not download_url.startswith("https://api.github.com/"):
-            return error_response("VALIDATION_ERROR", "Invalid download URL (must be from GitHub)")
+        # Validate the download URL. Pin it to THIS PROJECT's own repo, not
+        # just "any github.com URL" — the old prefix check let any device on
+        # the LAN POST a download_url pointing at an attacker-owned GitHub
+        # repo and have the Pi fetch + install that tarball over itself
+        # (update.sh runs with no signature check). Restricting to the
+        # project's release/tarball paths closes that to LAN-adjacent RCE.
+        # Override via MAGIC_GITHUB_REPO for forks.
+        gh_repo = os.getenv("MAGIC_GITHUB_REPO", "a-train-chain/magic_dingus_box")
+        allowed_prefixes = (
+            f"https://github.com/{gh_repo}/",
+            f"https://api.github.com/repos/{gh_repo}/",
+            f"https://codeload.github.com/{gh_repo}/",
+        )
+        if not any(download_url.startswith(p) for p in allowed_prefixes):
+            return error_response(
+                "VALIDATION_ERROR",
+                f"Invalid download URL (must be from the {gh_repo} GitHub repo)")
 
         # Create job (prune stale terminal-state entries first)
         _prune_terminal_jobs(update_jobs)

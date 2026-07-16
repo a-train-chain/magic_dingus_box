@@ -386,6 +386,33 @@ async function apiDelete(url) {
 }
 
 // ===== UPLOAD CONFIGURATION =====
+// Screen Wake Lock — kept while an upload is in progress so the phone
+// doesn't lock its screen (which suspends the tab's JS and can stall/kill a
+// multi-minute, multi-GB WiFi upload). Supported in iOS Safari 16.4+; a
+// no-op where unavailable. The OS auto-releases the lock when the page is
+// hidden, so we re-acquire on visibilitychange while an upload is active.
+let _wakeLock = null;
+let _wakeLockWanted = false;
+async function acquireWakeLock() {
+    _wakeLockWanted = true;
+    try {
+        if ('wakeLock' in navigator && !_wakeLock) {
+            _wakeLock = await navigator.wakeLock.request('screen');
+            _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+        }
+    } catch (e) {
+        console.warn('Wake Lock unavailable:', e);
+    }
+}
+async function releaseWakeLock() {
+    _wakeLockWanted = false;
+    try { if (_wakeLock) { await _wakeLock.release(); _wakeLock = null; } }
+    catch (e) { /* already gone */ }
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && _wakeLockWanted) acquireWakeLock();
+});
+
 const UPLOAD_CONFIG = {
     CONCURRENCY_LIMIT: 3,      // Max parallel uploads
     MAX_RETRIES: 2,            // Number of retry attempts per file
@@ -1452,6 +1479,12 @@ async function handleDirectUpload(input) {
     if (detailsEl) detailsEl.textContent = 'Preparing upload...';
     statusEl?.classList.add('loading');
 
+    // Keep the screen awake for the whole upload+transcode run.
+    await acquireWakeLock();
+    // Names of files that failed, surfaced to the user at the end instead of
+    // just an opaque "N failed" count.
+    const failedNames = [];
+
     let completed = 0;
     let skipped = 0;  // Files that were already compatible
     let errors = 0;
@@ -1481,6 +1514,12 @@ async function handleDirectUpload(input) {
                     xhr.setRequestHeader('X-CSRF-Token', csrfToken);
                 }
 
+                // Hard timeout so a stalled transfer (WiFi hiccup, phone
+                // screen-lock suspending the tab mid-upload) can't leave this
+                // Promise pending forever with the UI frozen on "Uploading…
+                // NNN MB". Without it there was NO recovery but a page reload.
+                xhr.timeout = UPLOAD_CONFIG.TIMEOUT_MS;
+
                 xhr.upload.onprogress = (e) => {
                     if (e.lengthComputable) {
                         const mb = (e.loaded / 1024 / 1024).toFixed(1);
@@ -1501,6 +1540,8 @@ async function handleDirectUpload(input) {
                 };
 
                 xhr.onerror = () => reject(new Error('Network error'));
+                xhr.ontimeout = () => reject(new Error('Upload timed out — check WiFi and keep this screen awake'));
+                xhr.onabort = () => reject(new Error('Upload cancelled'));
                 xhr.send(formData);
             });
 
@@ -1522,6 +1563,7 @@ async function handleDirectUpload(input) {
         } catch (error) {
             console.error(`[SmartUpload] Error processing ${file.name}:`, error);
             errors++;
+            failedNames.push(`${truncatedName} (${error.message || 'failed'})`);
         }
 
         // Update overall progress
@@ -1552,6 +1594,7 @@ async function handleDirectUpload(input) {
                     } else if (statusData.data?.status === 'error') {
                         console.error(`[SmartUpload] ${job.fileName}: Transcode failed`);
                         errors++;
+                        failedNames.push(`${job.truncatedName} (${statusData.data?.message || 'transcode failed'})`);
                         pendingJobs.splice(i, 1);
                     } else {
                         // Still running - update status
@@ -1574,10 +1617,11 @@ async function handleDirectUpload(input) {
         }
     }
 
-    // All done!
+    // All done! — the screen can sleep again.
+    await releaseWakeLock();
     if (progressEl) progressEl.style.width = '100%';
     statusEl?.classList.remove('loading');
-    statusEl?.classList.add('complete');
+    statusEl?.classList.add(errors > 0 ? 'error' : 'complete');
 
     // Build completion message
     const parts = [];
@@ -1585,11 +1629,17 @@ async function handleDirectUpload(input) {
     if (completed - skipped > 0) parts.push(`${completed - skipped} transcoded`);
     if (errors > 0) parts.push(`${errors} failed`);
 
-    if (labelEl) labelEl.textContent = `Complete!`;
-    if (detailsEl) detailsEl.textContent = parts.join(', ') || `${completed} files processed`;
+    if (labelEl) labelEl.textContent = errors > 0 ? 'Finished with errors' : 'Complete!';
+    if (detailsEl) {
+        // Name the failures instead of only a count, so the user knows what
+        // to retry. Keep the panel up longer when something failed.
+        detailsEl.textContent = failedNames.length
+            ? `${parts.join(', ')} — ${failedNames.join('; ')}`
+            : (parts.join(', ') || `${completed} files processed`);
+    }
 
-    // Wait a moment then hide
-    await new Promise(resolve => setTimeout(resolve, 2500));
+    // Wait a moment then hide — longer when there were errors to read.
+    await new Promise(resolve => setTimeout(resolve, errors > 0 ? 8000 : 2500));
     if (statusEl) statusEl.style.display = 'none';
     statusEl?.classList.remove('complete', 'loading', 'error');
 
@@ -2625,8 +2675,15 @@ async function performSavePlaylist(type) {
     const editingFile = saveBtn?.dataset.editingFile;
     const filename = editingFile || `${title.toLowerCase().replace(/\s+/g, '_')}.yaml`;
 
-    try {
-        const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
+    // For a NEW playlist (not editing an existing file), ask the server to
+    // refuse if the derived filename already belongs to a different
+    // playlist — prevents silently clobbering it. Editing an existing file
+    // is an intentional overwrite.
+    const isNew = !editingFile;
+
+    async function doSave(overwrite) {
+        const qs = overwrite ? '?overwrite=true' : '?overwrite=false';
+        const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}${qs}`, {
             method: 'POST',
             headers: getCsrfHeaders(),
             body: JSON.stringify(playlistData)
@@ -2634,18 +2691,34 @@ async function performSavePlaylist(type) {
 
         if (response.ok) {
             cancelEdit(type);
-
-            // Force switch view immediately
             if (type === 'game') {
                 switchGameView('playlists');
             } else {
                 switchVideoView('playlists');
             }
-
             await loadExistingPlaylists();
-        } else {
-            alert('Failed to save playlist');
+            return;
         }
+
+        if (response.status === 409) {
+            // Name collision with an existing playlist. Let the user decide.
+            showConfirmModal(
+                'Playlist already exists',
+                `A playlist named "${filename}" already exists. Overwrite it? ` +
+                `(To keep both, cancel and rename this playlist.)`,
+                () => { doSave(true).catch((e) => {
+                    console.error('Failed to save playlist:', e);
+                    alert('Failed to save playlist');
+                }); }
+            );
+            return;
+        }
+
+        alert('Failed to save playlist');
+    }
+
+    try {
+        await doSave(!isNew);  // editing → overwrite; new → guard first
     } catch (e) {
         console.error('Failed to save playlist:', e);
         alert('Failed to save playlist');
@@ -3116,9 +3189,12 @@ function renderVideoPlaylistAvailable() {
     renderLibraryPanel();  // Use new library panel styling
 }
 
-function renderGamePlaylistAvailable() {
-    renderPlaylistAvailable('game');
-}
+// NOTE: the canonical renderGamePlaylistAvailable() lives later in this file
+// and calls renderROMLibraryPanel() (the current touch-friendly ROM UI). A
+// second, older declaration used to sit here calling the superseded
+// renderPlaylistAvailable('game'); JS hoisting meant the later one always
+// won, so this was dead code that would silently resurrect the broken ROM
+// panel if the two were ever reordered. Removed to kill that footgun.
 
 function handleDragStart(event, playlistType) {
     const type = event.target.dataset.type;

@@ -2542,6 +2542,20 @@ header::after {
     color: var(--error);
 }
 
+/* Touch: the ▲ ▼ ✕ reorder/delete buttons are the ONLY way to reorder a
+   playlist on a phone (drag-to-reorder needs HTML5 DnD, dead on iOS touch),
+   so they must be real 44px targets — the default ~22px icons packed into a
+   100px column caused constant mis-taps (delete instead of move). */
+@media (pointer: coarse) {
+    .row-actions { gap: 0.5rem; }
+    .row-actions button {
+        min-width: 44px;
+        min-height: 44px;
+        font-size: 1.15rem;
+    }
+    .playlist-table .col-actions { width: auto; }
+}
+
 /* Empty state */
 .playlist-empty-state {
     position: absolute;
@@ -2704,12 +2718,31 @@ header::after {
     cursor: pointer;
     padding: 0.25rem;
     font-size: 1rem;
-    opacity: 0;
+    /* Visible by default. The reveal-on-hover treatment below is applied
+       ONLY on true hover-capable (mouse) devices — on touch there is no
+       :hover, so hiding it made the +Add-to-playlist button (the only way
+       to add an item on a phone, since HTML5 drag-and-drop doesn't fire on
+       iOS touch) completely invisible and the core flow unusable. */
+    opacity: 1;
     transition: opacity 0.15s;
 }
 
-.library-item:hover .add-btn {
-    opacity: 1;
+@media (hover: hover) and (pointer: fine) {
+    .library-item .add-btn {
+        opacity: 0;
+    }
+    .library-item:hover .add-btn {
+        opacity: 1;
+    }
+}
+
+/* Touch / coarse-pointer: give the +Add button a real 44px tap target. */
+@media (pointer: coarse) {
+    .library-item .add-btn {
+        min-width: 44px;
+        min-height: 44px;
+        font-size: 1.4rem;
+    }
 }
 
 /* Library Upload Section */

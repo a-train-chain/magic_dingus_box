@@ -143,3 +143,18 @@ class UinputWriter:
             self._dev.write(EV_ABS, code, value); self._dev.syn()
         if phase in ("up", "tap"):
             self._dev.write(EV_ABS, code, 0); self._dev.syn()
+
+    def release_all(self) -> None:
+        """Force every key up and every axis to center. Idempotent and safe
+        to call at any time. Used to recover from a phone that dropped its
+        connection mid-hold (WiFi loss / screen lock / backgrounded tab)
+        without sending the matching 'up' — otherwise the kiosk sees the
+        virtual gamepad button/axis stuck down forever (runaway navigation)
+        until a kiosk restart. Also called on a fresh connect to zero any
+        state a previously-dead connection may have left latched."""
+        for code in (BTN_SOUTH, BTN_EAST, BTN_PREV, BTN_NEXT, BTN_PAUSE,
+                     BTN_START, KEY_Z):
+            self._dev.write(EV_KEY, code, 0)
+        for code in (ABS_HAT0X, ABS_HAT0Y):
+            self._dev.write(EV_ABS, code, 0)
+        self._dev.syn()
