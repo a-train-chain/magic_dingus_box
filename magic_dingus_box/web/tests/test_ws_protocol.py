@@ -265,3 +265,85 @@ def test_ws_key_special_filters_unknown_key(ws_test_app):
     fake_text.calls.clear()
     ws_test_app.send_recv({"t": "key_special", "k": "nonsense"})
     assert fake_text.calls == []
+
+
+# ── Stuck-input recovery (release-on-disconnect) ─────────────────────────────
+
+def test_held_button_is_released_on_disconnect(tmp_path):
+    """A phone that presses 'down' and then drops its socket without an 'up'
+    must not leave the kiosk seeing the button held. handle_connection() must
+    emit the release (value 0) when the connection ends."""
+    from pathlib import Path
+    from remote.uinput_writer import EV_ABS, ABS_HAT0X
+
+    flask_app = create_app(data_dir=tmp_path)
+    flask_app.config["SECRET_KEY"] = "test-key"
+    cookie_value = _make_paired_cookie_dev1(tmp_path)
+
+    captured = []
+    class CapturingDev:
+        def write(self, t, c, v): captured.append((t, c, v))
+        def syn(self): captured.append(("SYN",))
+    fake_uinput = UinputWriter(device=CapturingDev())
+
+    # A WS whose receive() RAISES once closed, mirroring flask-sock's
+    # ConnectionClosed — that's what makes handle_connection break out of its
+    # loop and run the finally (release) block. (The shared _FakeWS returns
+    # None, which the handler treats as a timeout and keeps looping.)
+    class _RaisingWS:
+        def __init__(self):
+            self._in = queue.Queue()
+            self._out = queue.Queue()
+            self._closed = False
+        def receive(self, timeout=None):
+            if self._closed:
+                raise ConnectionError("closed")
+            try:
+                return self._in.get(timeout=timeout)
+            except queue.Empty:
+                return None
+        def send(self, data): self._out.put(data)
+        def close(self): self._closed = True
+        def push(self, msg): self._in.put(json.dumps(msg))
+        def shutdown(self): self._closed = True
+
+    fake_ws = _RaisingWS()
+
+    def _run():
+        with flask_app.test_request_context(
+            "/admin/remote/ws",
+            headers={"Cookie": f"mdb_remote={cookie_value}"},
+        ):
+            try:
+                ws_handler.handle_connection(
+                    fake_ws,
+                    uinput_writer=fake_uinput,
+                    text_input_writer=FakeTextInputWriter(),
+                    data_dir=Path(tmp_path),
+                    verify_cookie=remote_auth.verify_cookie,
+                )
+            except ConnectionError:
+                pass  # expected on close
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+    # Wait for hello_ack, then hold LEFT down (ABS_HAT0X = -1) and drop.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(fake_ws._out.get(timeout=0.1)).get("t") == "hello_ack":
+                break
+        except queue.Empty:
+            continue
+
+    fake_ws.push({"t": "press", "btn": "LEFT", "phase": "down"})
+    time.sleep(0.2)
+    assert (EV_ABS, ABS_HAT0X, -1) in captured  # the hold was applied
+    captured.clear()
+
+    fake_ws.shutdown()          # socket drops WITHOUT an 'up'
+    t.join(timeout=1.5)
+
+    # The axis must have been driven back to center (0) on disconnect.
+    assert (EV_ABS, ABS_HAT0X, 0) in captured

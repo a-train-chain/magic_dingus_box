@@ -57,3 +57,26 @@ def test_unknown_button_raises(writer):
     w, _ = writer
     with pytest.raises(ValueError):
         w.press("BOGUS", phase="tap")  # type: ignore
+
+
+def test_release_all_zeroes_every_key_and_axis(writer):
+    from remote.uinput_writer import (EV_ABS, BTN_EAST, BTN_PREV, BTN_NEXT,
+                                      BTN_PAUSE, BTN_START, KEY_Z,
+                                      ABS_HAT0X, ABS_HAT0Y)
+    w, fake = writer
+    # Hold a button and a direction down, then release everything.
+    w.press(ButtonName.OK, phase="down")
+    w.press(ButtonName.LEFT, phase="down")
+    fake.events.clear()
+
+    w.release_all()
+
+    # Every key we declared must have been driven to 0 (up)...
+    for code in (BTN_SOUTH, BTN_EAST, BTN_PREV, BTN_NEXT, BTN_PAUSE,
+                 BTN_START, KEY_Z):
+        assert (EV_KEY, code, 0) in fake.events
+    # ...and both hat axes centered.
+    assert (EV_ABS, ABS_HAT0X, 0) in fake.events
+    assert (EV_ABS, ABS_HAT0Y, 0) in fake.events
+    # Ends with a SYN so the release is reported atomically.
+    assert fake.events[-1] == ("SYN",)

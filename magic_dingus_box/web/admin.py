@@ -363,8 +363,19 @@ def format_playlist_yaml(data: dict) -> str:
         value = str(value)
         if not value:
             return "''"
+        # Control characters (newline, tab, CR, etc.) CANNOT be represented in
+        # a single-quoted YAML scalar — embedding a literal newline there
+        # produces broken or injectable YAML (a dedented continuation line
+        # parses as a brand-new key). Emit a double-quoted scalar with proper
+        # backslash escapes instead, which round-trips control chars safely.
+        if any(ord(c) < 0x20 for c in value):
+            escaped = (value.replace('\\', '\\\\')
+                            .replace('"', '\\"')
+                            .replace('\n', '\\n')
+                            .replace('\t', '\\t')
+                            .replace('\r', '\\r'))
+            return f'"{escaped}"'
         # Characters that need quoting: # (comment), : (key separator), leading/trailing spaces
-        # Also quote if contains newlines, tabs, or other control characters
         needs_quoting = any(c in value for c in ['#', ':', '[', ']', '{', '}', '&', '*', '!', '|', '>', "'", '"', '%', '@', '`'])
         needs_quoting = needs_quoting or value.startswith(' ') or value.endswith(' ')
         needs_quoting = needs_quoting or value.startswith('-') or value.startswith('?')
