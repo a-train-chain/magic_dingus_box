@@ -59,6 +59,30 @@ void StatusWriter::write_now(const AppState& state) {
         root["retroarch"] = Json::Value::null;
     }
 
+    // Settings / game-browser cursor — enables closed-loop navigation for
+    // the emulator smoke-test harness. game_playlist_name/games_in_playlist
+    // are derived from game_playlists for the currently-open game playlist.
+    Json::Value sm(Json::objectValue);
+    sm["active"]                = state.sm_active;
+    sm["highlighted_label"]     = state.sm_highlighted_label;
+    sm["selected_index"]        = state.sm_selected_index;
+    sm["game_browser_active"]   = state.sm_game_browser_active;
+    sm["viewing_games"]         = state.sm_viewing_games;
+    sm["game_browser_selected"] = state.sm_game_browser_selected;
+    sm["game_playlist_index"]   = state.sm_game_playlist_index;
+    sm["selected_game_index"]   = state.sm_selected_game_index;
+    sm["game_playlist_count"]   = static_cast<int>(state.game_playlists.size());
+    if (state.sm_game_playlist_index >= 0 &&
+        state.sm_game_playlist_index < static_cast<int>(state.game_playlists.size())) {
+        const auto& gp = state.game_playlists[state.sm_game_playlist_index];
+        sm["game_playlist_name"] = gp.title;
+        sm["games_in_playlist"]  = static_cast<int>(gp.items.size());
+    } else {
+        sm["game_playlist_name"] = "";
+        sm["games_in_playlist"]  = 0;
+    }
+    root["settings"] = sm;
+
     Json::Value text_input(Json::objectValue);
     if (state.active_text_keyboard != nullptr) {
         text_input["active"] = true;

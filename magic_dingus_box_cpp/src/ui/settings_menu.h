@@ -120,6 +120,12 @@ public:
     // Helper to check if "Back" is selected in game browser
     bool is_game_browser_back_selected() const;
 
+    // Label of whatever row is currently highlighted, across menu levels
+    // (top menu, submenu). Used to mirror cursor state into AppState /
+    // kiosk_status.json for closed-loop test automation. Returns "" when
+    // nothing sensible is highlighted.
+    std::string get_current_highlighted_label() const;
+
     const std::vector<MenuItem>& get_menu_items() const { return menu_items_; }
     const std::vector<MenuItem>& get_submenu_items() const { return submenu_items_; }
 

@@ -1248,6 +1248,18 @@ int main(int /* argc */, char* /* argv */[]) {
             state.active_text_title    = keyboard.get_title();
         }
 
+        // Mirror the settings / game-browser cursor into AppState so the
+        // StatusWriter can publish it (kiosk_status.json). Read-only copy;
+        // does not affect menu behavior. Enables closed-loop test automation.
+        state.sm_active               = settings_menu.is_active();
+        state.sm_highlighted_label    = settings_menu.get_current_highlighted_label();
+        state.sm_selected_index       = settings_menu.get_selected_index();
+        state.sm_game_browser_active  = settings_menu.is_game_browser_active();
+        state.sm_viewing_games        = settings_menu.is_viewing_games_in_playlist();
+        state.sm_game_browser_selected = settings_menu.get_game_browser_selected();
+        state.sm_game_playlist_index  = settings_menu.get_current_game_playlist_index();
+        state.sm_selected_game_index  = settings_menu.get_selected_game_in_playlist();
+
         // Skip rendering if display is cleaned up (RetroArch is running)
         if (display.get_fd() < 0) {
             // Display is closed - RetroArch has taken over

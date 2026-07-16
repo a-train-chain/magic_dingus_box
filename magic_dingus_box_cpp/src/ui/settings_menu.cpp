@@ -870,7 +870,20 @@ std::string SettingsMenuManager::intensity_to_label(float intensity) {
 
 bool SettingsMenuManager::is_game_browser_back_selected() const {
     if (!game_browser_active_) return false;
-    return false; 
+    return false;
+}
+
+std::string SettingsMenuManager::get_current_highlighted_label() const {
+    // Top menu vs submenu. Game-browser levels are reported separately via
+    // the game_browser cursor indices (the harness maps those to names via
+    // AppState.game_playlists), so this covers the menu/submenu rows a
+    // caller navigates to *reach* the game browser (e.g. "Browse Games").
+    const std::vector<MenuItem>& items =
+        (current_submenu_ != MenuSection::BACK) ? submenu_items_ : menu_items_;
+    if (selected_index_ >= 0 && selected_index_ < static_cast<int>(items.size())) {
+        return items[selected_index_].label;
+    }
+    return "";
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {

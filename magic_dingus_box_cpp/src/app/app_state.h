@@ -174,6 +174,21 @@ struct AppState {
     // active_text_keyboard. Empty when no context.
     std::string active_text_title;
 
+    // Settings / game-browser cursor mirror. The SettingsMenu owns this
+    // state, but the StatusWriter only reads AppState, so main.cpp copies
+    // it here each frame. Exposed in kiosk_status.json so external
+    // automation (the emulator smoke-test harness) can navigate the
+    // Settings → Browse Games → game menus with closed-loop feedback
+    // instead of blindly counting presses. Inert for normal operation.
+    bool sm_active = false;                 // settings menu open
+    std::string sm_highlighted_label;       // label of the highlighted menu/submenu row
+    int sm_selected_index = -1;             // cursor in the current menu/submenu
+    bool sm_game_browser_active = false;    // in the Browse Games view
+    bool sm_viewing_games = false;          // viewing a specific playlist's games
+    int sm_game_browser_selected = -1;      // cursor in the game-playlist list
+    int sm_game_playlist_index = -1;        // which game playlist is open
+    int sm_selected_game_index = -1;        // cursor within a playlist's games
+
     double original_volume;  // Store original volume when video starts (for dimming when UI is visible)
     std::string current_file;
     int current_playlist_index;  // Index of playlist currently playing (-1 if none)
