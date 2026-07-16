@@ -32,6 +32,11 @@ times, spent 25 samples outside the RUNNING state, and reported `avail_max`
 of 3,830 frames. The video launch, sustained-play, and return checks all
 passed, isolating the remaining failure to audio-buffer capacity.
 
+A second live candidate at 96 ms also failed, though it improved the result:
+18 retriggers, four non-RUNNING samples, playback delay reaching zero, and
+`avail_max` of 5,085 frames against a 4,608-frame buffer. Video launch,
+sustained play, and menu return remained clean.
+
 ## Design
 
 Add a portable production contract:
@@ -40,16 +45,18 @@ Add a portable production contract:
 int audio_latency_ms_for_core(const std::string& core_name);
 ```
 
-The function returns 96 for the existing PS1 core-name family (`pcsx`,
+The function returns 128 for the existing PS1 core-name family (`pcsx`,
 `beetle_psx`, and `swanstation`) and 48 for every other core. The generated
 game config uses that value for `audio_latency`. The core downloader remains
 at its current 48 ms because it does not run emulated content.
 
-At 48 kHz, 96 ms produces a 4,608-frame buffer. That covers the 3,830-frame
-peak measured during the rejected 64 ms run with 778 frames of margin. It
-adds 48 ms of audio buffering to PS1 but does not add video/input frames or
-affect non-PS1 consoles. The 96 ms value must still pass live zero-retrigger
-validation; otherwise it is rejected rather than declared fixed.
+At 48 kHz, 128 ms produces a 6,144-frame buffer. That covers the 5,085-frame
+peak measured during the rejected 96 ms run with 1,059 frames of margin and
+matches the minimum latency PCSX-ReARMed previously requested through its
+frontend callback. It adds 80 ms of audio buffering to PS1 but does not add
+video/input frames or affect non-PS1 consoles. The 128 ms value must still
+pass live zero-retrigger validation; otherwise it is rejected rather than
+declared fixed.
 
 The PS1-name predicate is shared internally by core-option and audio-latency
 generation so those two contracts cannot drift.
@@ -77,17 +84,17 @@ background-service shutdown, or system-clock change is part of this repair.
 
 Implementation follows a red-green test cycle:
 
-1. Add Catch2 assertions that all supported PS1 core names select 96 ms and
+1. Add Catch2 assertions that all supported PS1 core names select 128 ms and
    representative non-PS1 names select 48 ms.
 2. Observe the test fail before adding the production function.
 3. Implement the predicate and generated-config integration.
 4. Run the complete portable test suite and Pi-side RetroArch test.
 5. Deploy without merging and launch Tony Hawk's Pro Skater 2.
-6. Confirm the live ALSA buffer is 4,608 frames and the generated PS1 config
-   says `audio_latency = "96"`.
+6. Confirm the live ALSA buffer is 6,144 frames and the generated PS1 config
+   says `audio_latency = "128"`.
 7. Sample ALSA for at least 30 seconds. Acceptance requires zero trigger-time
    resets, playback delay staying above zero, and `avail_max` staying within
-   the 4,608-frame buffer.
+   the 6,144-frame buffer.
 8. Confirm frame skipping remains disabled, the exact video/bezel contract is
    unchanged, and the game returns cleanly to the menu.
 9. Run one title on each of the seven installed cores before merge.

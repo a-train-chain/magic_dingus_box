@@ -126,11 +126,11 @@ TEST_CASE("non-PS1 core emits no PCSX-ReARMed options",
 TEST_CASE("PS1 cores use underrun-safe audio latency",
           "[retroarch][audio]") {
     REQUIRE(retroarch::audio_latency_ms_for_core("pcsx_rearmed_libretro") ==
-            96);
+            128);
     REQUIRE(retroarch::audio_latency_ms_for_core("beetle_psx_libretro") ==
-            96);
+            128);
     REQUIRE(retroarch::audio_latency_ms_for_core("swanstation_libretro") ==
-            96);
+            128);
 }
 
 TEST_CASE("non-PS1 cores keep low audio latency", "[retroarch][audio]") {
