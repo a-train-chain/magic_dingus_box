@@ -13,12 +13,15 @@ the heaviest core.
 ## Baseline and prerequisite
 
 All work builds on `main` after `codex/retroarch-kms-launch-recovery` is
-play-validated and merged. That branch already establishes: Vulkan with the
-`khr_display` direct-display context, supervised KMS takeover with a
-15-second timeout and readiness marker, unified launch-failure recovery,
-`alsathread` gameplay audio, PS1 frame skipping explicitly disabled, and PS1
-`audio_latency = 128`. The launch/return architecture was reviewed for this
-design and is sound; no structural changes are proposed.
+play-validated and merged (merged 2026-07-16 as `f1643fb`). That branch
+establishes: Vulkan with the `khr_display` direct-display context, supervised
+KMS takeover with a 15-second timeout and readiness marker, unified
+launch-failure recovery, `alsathread` gameplay audio, PS1 frame skipping
+explicitly disabled, and PS1 `audio_latency = 64` — the threaded ALSA driver
+passed a 30-second zero-retrigger trace at 64 ms, so the earlier 128 ms
+band-aid was already retired on that branch. The launch/return architecture
+was reviewed for this design and is sound; no structural changes are
+proposed.
 
 ## Live evidence
 
@@ -46,12 +49,13 @@ Measured on the production Pi (2026-07-16):
   observed in today's sessions (66–68 °C), so this track is preventative.
 - `gpu_mem=128` reserves firmware memory the KMS/V3D stack does not use;
   76 MB is the documented safe value, reclaiming ~52 MB.
-- The PS1 audio underruns that forced 48 → 128 ms occurred while the system
-  was ~95% idle, on both `alsa` and `alsathread` drivers — a bursty-delivery
-  signature, not a compute shortage. `pcsx_rearmed_spu_thread = enabled` is
-  the prime suspect: upstream defaults it to disabled with a documented
-  audio-glitch warning; it exists to help CPU-starved devices, which this is
-  not.
+- The PS1 audio underruns occurred while the system was ~95% idle — a
+  bursty-delivery signature, not a compute shortage. Synchronous `alsa`
+  failed at 64/96/128 ms; the switch to `alsathread` fixed it at 64 ms
+  (validated zero-retrigger). If a further reduction to 48 ms underruns,
+  `pcsx_rearmed_spu_thread = enabled` is the next suspect: upstream defaults
+  it to disabled with a documented audio-glitch warning; it exists to help
+  CPU-starved devices, which this is not.
 - The installed May-2026 aarch64 PCSX-ReARMed build uses the ari64 ARM64
   dynamic recompiler (`pcsx_rearmed_drc = enabled` is correct and must stay).
   `pcsx_rearmed_gpu_thread_rendering` (threaded software rasterization,
@@ -93,14 +97,16 @@ Reuse the movie pause machinery in the game-launch path:
 Hypothesis-driven A/B on the Pi, using Tony Hawk's Pro Skater 2 (the known
 worst case) and the ALSA acceptance harness from the audio-buffer work
 (≥30-second soak; zero trigger-time resets; playback delay never zero;
-`avail_max` within the buffer):
+`avail_max` within the buffer). Baseline is the already-validated
+`alsathread` + 64 ms:
 
-1. Set `pcsx_rearmed_spu_thread = "disabled"` (inline SPU: steady per-frame
-   audio delivery, affordable at the measured CPU usage) and
-   `audio_latency_ms_for_core(PS1)` 128 → 64. Run the harness.
-2. If clean, attempt 48. Ship the lowest clean value (48 preferred, else 64).
-3. If 64 is not clean with inline SPU, revert to `spu_thread = enabled` and
-   `audio_latency = 128` (status quo) and close the track as no-change.
+1. Set `audio_latency_ms_for_core(PS1)` 64 → 48. Run the harness.
+2. If 48 is not clean, additionally A/B `pcsx_rearmed_spu_thread =
+   "disabled"` at 48 (inline SPU: steadier per-frame audio delivery,
+   affordable at the measured CPU usage). Ship 48 only if a combination
+   passes clean.
+3. If neither passes, revert to `audio_latency = 64` with
+   `spu_thread = enabled` (status quo) and close the track as no-change.
 
 The PS1-name predicate (`pcsx`, `beetle_psx`, `swanstation`) stays shared
 between core-option and audio-latency generation. Non-PS1 cores stay at
@@ -165,7 +171,7 @@ Every track preserves:
   `video_vsync = "true"`, `video_frame_delay = "4"`.
 - PS1 native 1x rendering (`neon_enhancement_enable = disabled`), ari64
   dynarec, BIOS, PSX clock 57, dithering, CD/XA audio, and — unless Track 2's
-  gate passes — the current SPU threading and 128 ms buffer.
+  gate passes — the current SPU threading and 64 ms buffer.
 - All controller mappings, hotkeys, save paths, auto-save/load, audio device
   routing, and volume calculations.
 - The 15-second KMS-takeover supervision and every launch/return recovery
