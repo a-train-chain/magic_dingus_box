@@ -465,6 +465,14 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
     LOG_DEBUG("GstPlayer::load_file - Current volume: {}%", get_volume());
 
     if (start > 0.0) {
+        // play() no longer blocks for preroll, but a seek issued before the
+        // pipeline has prerolled can be dropped by some demuxers. No current
+        // caller passes start > 0 (all live call sites load from 0.0), so
+        // this bounded wait preserves the original seek-after-preroll
+        // semantics for this branch only, without costing the common path
+        // anything.
+        GstState current, pending;
+        (void)gst_element_get_state(pipeline_, &current, &pending, 3 * GST_SECOND);
         seek_absolute(start);
     }
 
@@ -476,14 +484,23 @@ void GstPlayer::play() {
 
     LOG_DEBUG("GstPlayer::play() called - setting state to PLAYING");
     GstStateChangeReturn ret = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR("GstPlayer::play() - state change to PLAYING failed");
+        return;
+    }
     LOG_DEBUG("GstPlayer::play() state change return: {}", static_cast<int>(ret));
 
-    // Non-blocking state check with 3-second timeout
+    // Zero-timeout state peek, purely for the debug log. This used to be a
+    // BLOCKING gst_element_get_state with a 3-second timeout — on every video
+    // launch AND every pause→resume the render thread froze until preroll
+    // completed (~0.3-3s), even though the result only fed these log lines.
+    // Preroll completion is already observed asynchronously: update_state()
+    // polls with a 0 timeout each frame and treats ASYNC+pending==PLAYING as
+    // playing, and the bus handler sees ASYNC_DONE. Callers that need
+    // playback confirmation poll is_playing() (see Controller::
+    // load_playlist_item) instead of blocking here.
     GstState current, pending;
-    GstStateChangeReturn result = gst_element_get_state(pipeline_, &current, &pending, 3 * GST_SECOND);
-    if (result == GST_STATE_CHANGE_FAILURE) {
-        LOG_ERROR("GstPlayer::play() - state change to PLAYING failed");
-    }
+    (void)gst_element_get_state(pipeline_, &current, &pending, 0);
     LOG_DEBUG("GstPlayer::play() current state: {}, pending: {}",
               gst_element_state_get_name(current),
               gst_element_state_get_name(pending));

@@ -356,6 +356,22 @@ void Controller::update_state(AppState& state) {
     state.status_text = status_text();
 }
 
+void Controller::wait_for_playback_start(int max_ms, std::function<void()> progress_callback) {
+    auto start = std::chrono::steady_clock::now();
+    auto budget = std::chrono::milliseconds(max_ms);
+    while (std::chrono::steady_clock::now() - start < budget) {
+        // Tick the player state machine so is_playing_ can flip: drains the
+        // GStreamer bus and does a 0-timeout state poll (which counts
+        // ASYNC+pending==PLAYING as playing — see GstPlayer::update_state).
+        if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
+            gst_player->update_state();
+        }
+        if (is_playing()) return;  // started — no reason to keep waiting
+        if (progress_callback) progress_callback();
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+}
+
 // Helper to wait with callback
 void wait_with_callback(int milliseconds, std::function<void()> callback) {
     auto start = std::chrono::steady_clock::now();
@@ -403,13 +419,14 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
             play();
 
-            // Update player state immediately after play
-            if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
-                gst_player->update_state();
-            }
-
-            // Brief delay for playback to start
-            wait_with_callback(1000, progress_callback);
+            // Wait for playback to start — but exit the moment it does
+            // instead of always burning the full budget. GstPlayer::
+            // update_state() treats ASYNC+pending==PLAYING as playing, so
+            // this typically exits on the first tick (~16ms) where the old
+            // fixed wait_with_callback(1000) froze the render thread a full
+            // second every launch. The 1000ms cap and the warning on
+            // timeout are unchanged.
+            wait_for_playback_start(1000, progress_callback);
 
             // Verify playback actually started
             if (!is_playing()) {
@@ -442,10 +459,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
             play();
-            if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
-                gst_player->update_state();
-            }
-            wait_with_callback(1000, progress_callback);
+            // Early-exit poll — see the "local" branch above for rationale.
+            wait_for_playback_start(1000, progress_callback);
             if (!is_playing()) {
                 std::cerr << "Warning: Playback did not start after load" << std::endl;
             }

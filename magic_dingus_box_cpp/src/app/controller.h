@@ -94,6 +94,14 @@ public:
     retroarch::RetroArchLauncher& get_retroarch_launcher() { return retroarch_launcher_; }
 
 private:
+    // Poll until playback starts, up to max_ms. Ticks the player's state
+    // machine (bus drain + non-blocking state poll) and the optional
+    // progress callback every ~16ms, returning as soon as is_playing()
+    // flips true. Replaces fixed-length wait_with_callback(1000) calls in
+    // load_playlist_item that froze the render thread for the full budget
+    // even when playback had already started.
+    void wait_for_playback_start(int max_ms, std::function<void()> progress_callback);
+
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::string text_input_queue_path_;

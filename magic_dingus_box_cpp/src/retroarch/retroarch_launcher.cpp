@@ -1575,26 +1575,15 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
     // Wait for processes to exit
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Check if ALSA device is still in use
-    FILE* lsof_pipe = popen("lsof 2>/dev/null | grep snd || true", "r");
-    if (lsof_pipe) {
-        char buffer[256];
-        bool device_busy = false;
-        while (fgets(buffer, sizeof(buffer), lsof_pipe) != nullptr) {
-            std::string line(buffer);
-            if (line.find("snd") != std::string::npos) {
-                device_busy = true;
-                std::cout << "ALSA device still in use: " << line;
-            }
-        }
-        pclose(lsof_pipe);
+    // ALSA settle wait. This used to be gated on `popen("lsof | grep snd")`
+    // — a scan of EVERY process's fd table (100ms-1s+ on this Pi with the
+    // Docker stack up) whose outcome was constant: PulseAudio always holds
+    // /dev/snd devices open by design on this system, so "device busy" was
+    // always true and the 300ms wait always fired anyway. Keeping the wait
+    // unconditional preserves the exact effective timing while dropping the
+    // scan cost from every game launch.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-        if (device_busy) {
-            std::cout << "ALSA device still busy, waiting additional 300ms..." << std::endl;
-            std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        }
-    }
-    
     std::cout << "GStreamer cleanup complete" << std::endl;
 }
 
