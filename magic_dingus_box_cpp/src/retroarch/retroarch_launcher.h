@@ -1,20 +1,12 @@
 #pragma once
 
-#include <ostream>
 #include <string>
 #include <optional>
 #include <vector>
 
-#include "../app/app_state.h"  // for app::DisplayMode
+#include "launch_contract.h"
 
 namespace retroarch {
-
-struct LaunchOptions {
-    app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
-    std::string bezel_file;  // e.g. "mdb_1974.png"; empty if procedural/none
-};
-
-
 
 struct GameLaunchInfo {
     std::string rom_path;
@@ -58,14 +50,9 @@ private:
     // Stop GStreamer and cleanup audio resources
     void stop_gstreamer_and_cleanup();
 
-    // Emit video + overlay config lines to the RetroArch config stream
-    // based on the launch options. Branching on display_mode lives here.
-    void write_video_config(std::ostream& out, const LaunchOptions& opts);
-
 private:
     std::optional<std::string> retroarch_bin_;
     bool retroarch_available_;
 };
 
 } // namespace retroarch
-

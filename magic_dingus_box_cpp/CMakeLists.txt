@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(magic_dingus_box_cpp)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -136,6 +138,7 @@ set(UTILS_SOURCES
 )
 
 set(RETROARCH_SOURCES
+    src/retroarch/launch_contract.cpp
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
 )
@@ -447,6 +450,21 @@ if(NOT TARGET Catch2::Catch2WithMain)
     FetchContent_MakeAvailable(Catch2)
 endif()
 
+# RetroArch launch-contract tests are deliberately portable so display
+# handoff behavior can be verified on a development machine without DRM.
+file(GLOB RETROARCH_TEST_SOURCES "tests/retroarch/*.cpp")
+if(RETROARCH_TEST_SOURCES)
+    add_executable(test_retroarch_unit
+        ${RETROARCH_TEST_SOURCES}
+        src/retroarch/launch_contract.cpp
+        src/utils/config.cpp
+    )
+    target_include_directories(test_retroarch_unit PRIVATE src)
+    target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain pthread)
+    target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
+endif()
+
 # Phone remote tests
 file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
 if(PHONE_REMOTE_TEST_SOURCES)
@@ -456,6 +474,7 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
         src/app/controller_text_input.cpp
+        src/retroarch/launch_contract.cpp
         src/retroarch/retroarch_launcher.cpp
         src/retroarch/controller_detector.cpp
         src/utils/config.cpp
