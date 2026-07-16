@@ -31,7 +31,8 @@ bool FontManager::load_font(const std::string& path, int size) {
 
     font_path_ = path;
     font_size_ = size;
-    baseline_cache_.clear();  // font_data_ just changed; memo is stale
+    baseline_cache_.clear();  // font_data_ just changed; memos are stale
+    width_cache_.clear();
     
     // Calculate proper line height and baseline from font metrics
     if (!font_data_.empty()) {
@@ -263,6 +264,22 @@ int FontManager::get_text_width(const std::string& text) {
 }
 
 int FontManager::get_text_width(const std::string& text, int font_size) {
+    // Memoized: hot render paths measure the same strings every frame —
+    // MB header tabs (~18 measures/frame), footer hints, poster-card
+    // years, and the grid title fit/wrap checks. Widths are a pure
+    // function of font_data_ + size (glyph ADVANCES survive
+    // reset_textures(); only the GL textures are recreated), so the memo
+    // is invalidated only where font_data_ changes (load_font/cleanup).
+    // Size-capped: grid wrap loops measure substring candidates, which
+    // would otherwise grow the map without bound — on overflow just
+    // clear; the hot entries repopulate within a frame.
+    std::string key;
+    key.reserve(text.size() + 8);
+    key.append(std::to_string(font_size)).push_back('\x1F');
+    key.append(text);
+    auto it = width_cache_.find(key);
+    if (it != width_cache_.end()) return it->second;
+
     int width = 0;
     std::size_t pos = 0;
     while (pos < text.size()) {
@@ -271,6 +288,9 @@ int FontManager::get_text_width(const std::string& text, int font_size) {
         Glyph g = get_glyph_at_size(c, font_size);
         width += g.advance;
     }
+
+    if (width_cache_.size() >= kWidthCacheMaxEntries) width_cache_.clear();
+    width_cache_.emplace(std::move(key), width);
     return width;
 }
 
@@ -293,6 +313,7 @@ void FontManager::cleanup() {
 
     font_data_.clear();
     baseline_cache_.clear();
+    width_cache_.clear();
 }
 
 void FontManager::reset_textures() {

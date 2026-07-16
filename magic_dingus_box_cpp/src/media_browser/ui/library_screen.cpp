@@ -673,20 +673,32 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         r, screen_w, "Library", tabs, /*focused_tab=*/-1);
 
     // --- Stats line: "N titles · X.X GB · Y.Y GB free" ---
-    int64_t used_bytes = 0;
-    for (const Movie& m : library_) {
-        if (m.has_file) used_bytes += m.file_size_bytes;
-    }
-    int64_t free_bytes = 0;
+    // Cached: this used to run EVERY FRAME — an O(N) sum over the whole
+    // library, a statvfs() kernel syscall (std::filesystem::space) against
+    // the SSD mount, and several heap-allocating string concats, 60×/sec,
+    // to draw one label. Refresh every 5s (disk free drifts slowly; the
+    // title count also updates on the next tick after apply_pending()
+    // swaps in a fresh library — well within the 2s refresh cadence).
     {
-        std::error_code ec;
-        auto info = std::filesystem::space("/mnt/ssd/library", ec);
-        if (!ec) free_bytes = static_cast<int64_t>(info.available);
+        const auto now = std::chrono::steady_clock::now();
+        if (stats_line_.empty() ||
+            now - last_stats_refresh_ >= std::chrono::seconds(5)) {
+            last_stats_refresh_ = now;
+            int64_t used_bytes = 0;
+            for (const Movie& m : library_) {
+                if (m.has_file) used_bytes += m.file_size_bytes;
+            }
+            int64_t free_bytes = 0;
+            std::error_code ec;
+            auto info = std::filesystem::space("/mnt/ssd/library", ec);
+            if (!ec) free_bytes = static_cast<int64_t>(info.available);
+            stats_line_ =
+                std::to_string(library_.size()) + " titles  ·  "
+                + format_bytes(used_bytes) + " used  ·  "
+                + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
+        }
     }
-    const std::string stats =
-        std::to_string(library_.size()) + " titles  ·  "
-        + format_bytes(used_bytes) + " used  ·  "
-        + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
+    const std::string& stats = stats_line_;
     const int stats_y = content_top + chrome::kPad2;
     r.mb_draw_text(stats,
                    static_cast<float>(chrome::kSafeInset_px),

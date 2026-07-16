@@ -95,6 +95,13 @@ private:
     // mutable because the getter is const. Cleared wherever font_data_ is
     // replaced/cleared.
     mutable std::unordered_map<int, int> baseline_cache_;
+
+    // Memo for get_text_width(text, size): key is "<size>\x1F<text>".
+    // Valid across reset_textures() (advances don't change); cleared with
+    // baseline_cache_ where font_data_ changes. Capped — see the .cpp
+    // comment about wrap-loop substring churn.
+    static constexpr std::size_t kWidthCacheMaxEntries = 4096;
+    std::unordered_map<std::string, int> width_cache_;
     
     // Rasterize a glyph using stb_truetype (at base font size)
     Glyph rasterize_glyph(char32_t codepoint);

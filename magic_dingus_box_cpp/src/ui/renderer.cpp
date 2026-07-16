@@ -811,7 +811,7 @@ void Renderer::render_bezel() {
     float bezel_h = static_cast<float>(original_height_);
     
     // Set screenSize uniform for the shader (uses screen coords divider)
-    glUniform2f(glGetUniformLocation(shader_program_, "screenSize"), bezel_w, bezel_h);
+    glUniform2f(u_screen_size_loc_, bezel_w, bezel_h);
     
     // Render bezel as fullscreen textured quad
     float x = 0.0f;
@@ -929,7 +929,7 @@ void Renderer::render_marquee_frame() {
     // owns the whole HDMI canvas.
     const float screen_w = static_cast<float>(original_width_);
     const float screen_h = static_cast<float>(original_height_);
-    glUniform2f(glGetUniformLocation(shader_program_, "screenSize"), screen_w, screen_h);
+    glUniform2f(u_screen_size_loc_, screen_w, screen_h);
     glUniform4f(u_color_loc_, 1.0f, 1.0f, 1.0f, 1.0f);
     glUniform1i(u_use_texture_loc_, 1);
     glActiveTexture(GL_TEXTURE0);
@@ -1198,7 +1198,7 @@ void Renderer::render(app::AppState& state) {
     }
     
     // Set screen size uniform
-    GLint screenSizeLoc = glGetUniformLocation(shader_program_, "screenSize");
+    GLint screenSizeLoc = u_screen_size_loc_;
     if (screenSizeLoc < 0) {
         std::cerr << "Warning: screenSize uniform not found" << std::endl;
     } else {
@@ -2278,7 +2278,7 @@ void Renderer::mb_begin_2d_state() {
         // the pillarbox area and every MB UI element would render at
         // the wrong scale. The MB dispatcher in main.cpp always sets a
         // fullscreen glViewport, so original_* is what matches.
-        GLint loc = glGetUniformLocation(shader_program_, "screenSize");
+        GLint loc = u_screen_size_loc_;
         if (loc >= 0) {
             glUniform2f(loc,
                         static_cast<float>(original_width_),
@@ -3460,8 +3460,9 @@ bool Renderer::compile_shaders() {
     // Cache the hot uniform locations (see header note). Must run on every
     // (re)link — locations are per-program-object, so the RetroArch-return
     // recompile would silently invalidate previously cached values.
-    u_color_loc_ = u_color_loc_;
-    u_use_texture_loc_ = u_use_texture_loc_;
+    u_color_loc_ = glGetUniformLocation(shader_program_, "color");
+    u_use_texture_loc_ = glGetUniformLocation(shader_program_, "useTexture");
+    u_screen_size_loc_ = glGetUniformLocation(shader_program_, "screenSize");
 
     return true;
 }

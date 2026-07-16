@@ -165,6 +165,12 @@ private:
     std::chrono::steady_clock::time_point last_refresh_at_{};
     static constexpr int  kRefreshIntervalMs = 2000;  // library churns slowly
 
+    // Header stats line cache ("N titles · X GB used · Y GB free").
+    // Rebuilt at most every 5s in render() — computing it per frame cost a
+    // statvfs syscall + O(library) sum + string concats at 60fps.
+    std::string stats_line_;
+    std::chrono::steady_clock::time_point last_stats_refresh_{};
+
     // Slide-in overlay state machine (v1.6.x). The overlay is a 480 px
     // panel that slides in from the right edge on BTN4 press, holding
     // stats + sort + filter controls. Closed = no overlay rendered;

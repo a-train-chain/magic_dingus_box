@@ -300,6 +300,7 @@ private:
     // shaders and would invalidate stale locations.
     int32_t u_color_loc_ = -1;
     int32_t u_use_texture_loc_ = -1;
+    int32_t u_screen_size_loc_ = -1;
     uint32_t crt_shader_program_;            // Legacy: procedural alpha-blend overlay
     uint32_t crt_composite_shader_program_;  // Enhanced: samples scene FBO + applies effects
     uint32_t vao_;
