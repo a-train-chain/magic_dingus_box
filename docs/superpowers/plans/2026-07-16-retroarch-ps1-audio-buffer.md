@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Eliminate PS1 HDMI audio underruns by restoring a 64 ms frontend audio buffer for PS1 games only, without altering the existing video, scaling, bezel, input, save, or non-PS1 behavior.
+**Goal:** Eliminate PS1 HDMI audio underruns with a 96 ms frontend audio buffer for PS1 games only, without altering the existing video, scaling, bezel, input, save, or non-PS1 behavior. Live validation rejected the initial 64 ms candidate because it still retriggered 110 times in 30 seconds.
 
 **Architecture:** Add a portable core-name-to-audio-latency contract beside the existing RetroArch launch-contract helpers. Reuse one internal PS1 predicate for both core options and audio latency, then have only the gameplay config consume the selected value. Preserve the core-downloader config at 48 ms.
 
@@ -28,7 +28,7 @@
 
 **Step 1: Write the failing contract tests**
 
-Add Catch2 cases proving that `pcsx_rearmed_libretro`, `beetle_psx_libretro`, and `swanstation_libretro` select 64 ms, while representative NES and SNES core names select 48 ms.
+Add Catch2 cases proving that `pcsx_rearmed_libretro`, `beetle_psx_libretro`, and `swanstation_libretro` select 96 ms, while representative NES and SNES core names select 48 ms.
 
 **Step 2: Run the focused test target and verify RED**
 
@@ -48,7 +48,7 @@ Declare this in `launch_contract.h`:
 int audio_latency_ms_for_core(const std::string& core_name);
 ```
 
-In `launch_contract.cpp`, extract the existing PS1 core-name test into an internal `is_ps1_core()` helper and use it in both `write_core_options()` and `audio_latency_ms_for_core()`. Return 64 for PS1 and 48 for every other core.
+In `launch_contract.cpp`, extract the existing PS1 core-name test into an internal `is_ps1_core()` helper and use it in both `write_core_options()` and `audio_latency_ms_for_core()`. Return 96 for PS1 and 48 for every other core.
 
 In the game-launch config in `retroarch_launcher.cpp`, replace the literal `audio_latency = "48"` with the helper's result. Leave the core-downloader literal at 48 ms.
 
@@ -106,17 +106,17 @@ Use the existing emulator smoke harness with playlist 4, game 27 and a 35-second
 
 **Step 4: Measure the live ALSA stream concurrently**
 
-Confirm `/proc/asound/card1/pcm0p/sub0/hw_params` reports `buffer_size: 3072`. Sample ALSA status for at least 30 seconds and record trigger-time changes, minimum delay, maximum delay, and maximum `avail_max`.
+Confirm `/proc/asound/card1/pcm0p/sub0/hw_params` reports `buffer_size: 4608`. Sample ALSA status for at least 30 seconds and record trigger-time changes, minimum delay, maximum delay, and maximum `avail_max`.
 
 Expected acceptance:
 
 - zero trigger-time resets;
 - minimum playback delay above zero;
-- maximum `avail_max` no greater than 3,072 frames.
+- maximum `avail_max` no greater than 4,608 frames.
 
 **Step 5: Verify the full generated contract**
 
-Confirm `/tmp/retroarch_mdb.cfg` contains `audio_latency = "64"`, disabled PS1 frame skipping, and the exact existing video/scaling/bezel values from Global Constraints. Confirm a clean return to the menu.
+Confirm `/tmp/retroarch_mdb.cfg` contains `audio_latency = "96"`, disabled PS1 frame skipping, and the exact existing video/scaling/bezel values from Global Constraints. Confirm a clean return to the menu.
 
 **Step 6: Run the seven-core smoke matrix**
 
