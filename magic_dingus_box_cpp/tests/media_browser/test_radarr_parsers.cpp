@@ -27,8 +27,43 @@ TEST_CASE("parse_movie_lookup: extracts 2 hits from fixture", "[radarr][parsers]
     REQUIRE(hits[0].imdb_id == "tt0133093");
     REQUIRE(!hits[0].poster_url.empty());
     REQUIRE(!hits[0].fanart_url.empty());
+    // Radarr hands us "original"-size TMDB URLs; the parser must downsize
+    // them to w500 so library posters (a) don't blow the artwork cache's
+    // byte budget (a 2000x3000 poster is ~24MB of GPU RAM) and (b) share
+    // the cache key with the w500 URLs Browse/Detail already use. The
+    // fixture's remoteUrls are /t/p/original/... — verify they came out
+    // rewritten to /t/p/w500/ and no "original" segment remains.
+    REQUIRE(hits[0].poster_url.find("/t/p/w500/") != std::string::npos);
+    REQUIRE(hits[0].poster_url.find("/original/") == std::string::npos);
     REQUIRE(hits[1].tmdb_id == 604);
     REQUIRE(hits[1].year == 2003);
+}
+
+TEST_CASE("normalize_tmdb_poster_url: only rewrites the size segment",
+          "[radarr][parsers]") {
+    // Exercised via parse_movie_lookup (pick_image is file-local). Use a
+    // tiny inline JSON to assert edge behavior directly.
+    auto one = [](const std::string& remote) {
+        std::string json =
+            "[{\"tmdbId\":1,\"images\":[{\"coverType\":\"poster\","
+            "\"remoteUrl\":\"" + remote + "\"}]}]";
+        auto h = media_browser::RadarrParsers::parse_movie_lookup(json);
+        return h.empty() ? std::string("<none>") : h[0].poster_url;
+    };
+    // original -> w500
+    REQUIRE(one("https://image.tmdb.org/t/p/original/abc.jpg")
+            == "https://image.tmdb.org/t/p/w500/abc.jpg");
+    // an explicit w-size is still normalized to w500
+    REQUIRE(one("https://image.tmdb.org/t/p/w780/abc.jpg")
+            == "https://image.tmdb.org/t/p/w500/abc.jpg");
+    // already w500 stays w500 (idempotent)
+    REQUIRE(one("https://image.tmdb.org/t/p/w500/abc.jpg")
+            == "https://image.tmdb.org/t/p/w500/abc.jpg");
+    // non-TMDB URL passes through untouched
+    REQUIRE(one("https://example.com/posters/abc.jpg")
+            == "https://example.com/posters/abc.jpg");
+    // empty stays empty
+    REQUIRE(one("") == "");
 }
 
 TEST_CASE("parse_movie_list: extracts movieFile.path as file_container_path",
