@@ -35,7 +35,7 @@ class ReadinessTests(unittest.TestCase):
             self.assertIsNone(
                 smoke.read_ready_pid(marker.name, time.time() - 1))
 
-    def test_wayland_and_swapchain_errors_are_fatal(self):
+    def test_wayland_without_direct_display_and_swapchain_errors_are_fatal(self):
         self.assertIn(
             "Wayland",
             smoke.launch_log_failure(
@@ -45,6 +45,15 @@ class ReadinessTests(unittest.TestCase):
             "QueuePresent",
             smoke.launch_log_failure(
                 "[Vulkan]: QueuePresent failed, destroying swapchain"),
+        )
+
+    def test_wayland_probe_followed_by_khr_display_is_not_fatal(self):
+        self.assertIsNone(
+            smoke.launch_log_failure(
+                "[ERROR] [Wayland]: Failed to connect to Wayland server.\n"
+                "[INFO] [Vulkan]: Found vulkan context: \"khr_display\".\n"
+                "[INFO] [Vulkan]: Using resolution 1920x1080.\n"
+            )
         )
 
     def test_clean_launch_log_has_no_failure(self):

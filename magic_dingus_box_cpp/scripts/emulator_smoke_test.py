@@ -205,7 +205,6 @@ def read_ready_pid(marker_path: str, launch_started_at: float):
 
 def launch_log_failure(log_text: str):
     fatal_signatures = (
-        ("Failed to connect to Wayland server", "Wayland display connection failed"),
         ("QueuePresent failed", "QueuePresent failed in Vulkan KMS"),
         ("did not take over KMS within 15 seconds", "KMS takeover timed out"),
         ("exited before taking over KMS", "RetroArch exited before KMS takeover"),
@@ -213,6 +212,12 @@ def launch_log_failure(log_text: str):
     for signature, message in fatal_signatures:
         if signature in log_text:
             return message
+    # RetroArch may probe Wayland before falling through to VK_KHR_display.
+    # That probe is harmless only when the same launch subsequently confirms
+    # the direct-display Vulkan context. A lone Wayland failure remains fatal.
+    if ("Failed to connect to Wayland server" in log_text and
+            'Found vulkan context: "khr_display"' not in log_text):
+        return "Wayland display connection failed without KHR display fallback"
     return None
 
 

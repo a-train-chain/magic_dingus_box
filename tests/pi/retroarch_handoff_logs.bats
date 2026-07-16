@@ -15,12 +15,14 @@ from pathlib import Path
 
 path = Path("/home/magic/retroarch_launcher.log")
 log = path.read_text(errors="replace") if path.exists() else ""
-latest = log.rsplit("Launcher: Launching RetroArch directly...", 1)[-1]
+latest = log.rsplit("Launcher: Preparing to launch RetroArch...", 1)[-1]
 fatal = [
     signature
     for signature in ("Failed to connect to Wayland server", "QueuePresent failed")
     if signature in latest
 ]
+if "Found vulkan context: \"khr_display\"" not in latest:
+    fatal.append("missing khr_display Vulkan context")
 raise SystemExit("fatal video signatures: " + ", ".join(fatal) if fatal else 0)
 PY'
     [ "$status" -eq 0 ]

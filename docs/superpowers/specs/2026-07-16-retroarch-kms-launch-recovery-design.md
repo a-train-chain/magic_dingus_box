@@ -56,7 +56,7 @@ viewport, or change the kiosk UI's 1280x720 mode.
 The following generated RetroArch behavior is frozen by regression tests:
 
 - `video_driver = "vulkan"`
-- `video_context_driver = "kms"` (new explicit context selection)
+- `video_context_driver = "khr_display"` (new explicit Vulkan direct-display context selection)
 - `video_threaded = "false"`
 - `video_max_swapchain_images = "2"`
 - `video_vsync = "true"`
@@ -103,7 +103,7 @@ messages and prevents the kiosk from competing with RetroArch during takeover.
 
 ### 2. Select the correct standalone display context
 
-The isolated RetroArch config adds `video_context_driver = "kms"` next to the
+The isolated RetroArch config adds `video_context_driver = "khr_display"` next to the
 existing Vulkan driver. The child process removes `DISPLAY`, `WAYLAND_DISPLAY`,
 `XDG_SESSION_TYPE`, and `SDL_VIDEODRIVER` instead of exporting a fake
 `DISPLAY=:0`. It retains the real `HOME` and `XDG_RUNTIME_DIR` values needed by

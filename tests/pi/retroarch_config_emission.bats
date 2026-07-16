@@ -45,7 +45,7 @@ extract_config() {
     config=$(extract_config)
     for line in \
         'video_driver = "vulkan"' \
-        'video_context_driver = "kms"' \
+        'video_context_driver = "khr_display"' \
         'video_threaded = "false"' \
         'video_max_swapchain_images = "2"' \
         'video_vsync = "true"' \

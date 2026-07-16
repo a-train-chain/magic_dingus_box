@@ -33,10 +33,12 @@ std::string shell_single_quote(const std::string& value) {
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // --- Common video settings (apply to both modes) ---
     out << "video_driver = \"vulkan\"\n";
-    // The kiosk and RetroArch both run without X11/Wayland. Pinning the
-    // Vulkan context to KMS prevents an inherited desktop environment from
-    // sending RetroArch down a compositor path that does not exist.
-    out << "video_context_driver = \"kms\"\n";
+    // The kiosk and RetroArch both run without X11/Wayland. RetroArch's
+    // Vulkan driver names its direct DRM/KMS context "khr_display" (the
+    // separate "kms" identifier belongs to the EGL/OpenGL context). Pinning
+    // the correct Vulkan context avoids a compositor probe and goes straight
+    // to VK_KHR_display on the Pi's V3D device.
+    out << "video_context_driver = \"khr_display\"\n";
     // video_threaded MUST be false on this Pi 4B / V3D + Vulkan-KMS combo.
     // With threaded video ON, RetroArch's video thread races the V3D
     // KMS present path and the Vulkan swapchain thrashes:

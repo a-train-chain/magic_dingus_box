@@ -51,7 +51,7 @@ TEST_CASE("Modern TV keeps its native-core 4:3 bezel contract",
     const std::string config = output.str();
 
     require_line(config, "video_driver = \"vulkan\"");
-    require_line(config, "video_context_driver = \"kms\"");
+    require_line(config, "video_context_driver = \"khr_display\"");
     require_line(config, "video_threaded = \"false\"");
     require_line(config, "video_max_swapchain_images = \"2\"");
     require_line(config, "video_vsync = \"true\"");
@@ -81,7 +81,7 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport",
     retroarch::write_video_config(output, options);
     const std::string config = output.str();
 
-    require_line(config, "video_context_driver = \"kms\"");
+    require_line(config, "video_context_driver = \"khr_display\"");
     require_line(config, "video_fullscreen_x = \"640\"");
     require_line(config, "video_fullscreen_y = \"480\"");
     require_line(config, "video_custom_viewport_enable = \"false\"");
