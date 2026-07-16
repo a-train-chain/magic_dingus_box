@@ -523,6 +523,8 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
 
 
 bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
+    const ReadyWatchOptions ready_options;
+
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
@@ -749,32 +751,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Create Core Options file with performance-tuned settings
             script_file << "cat > /tmp/retroarch_core_options.cfg << 'OPTS'\n";
-            if (core_name.find("pcsx") != std::string::npos || core_name.find("beetle_psx") != std::string::npos || core_name.find("swanstation") != std::string::npos) {
-                script_file << "pcsx_rearmed_pad1type = \"analog\"\n";
-                // Performance: offload SPU audio to separate CPU core (Pi 4B has 4 cores)
-                script_file << "pcsx_rearmed_spu_thread = \"enabled\"\n";
-                // Audio: enable CD audio and XA decoding for full game experience
-                script_file << "pcsx_rearmed_nocdaudio = \"disabled\"\n";
-                script_file << "pcsx_rearmed_noxadecoding = \"disabled\"\n";
-                // Performance: auto-frameskip as safety net (only skips when falling behind)
-                script_file << "pcsx_rearmed_frameskip_type = \"auto_threshold\"\n";
-                script_file << "pcsx_rearmed_frameskip_threshold = \"33\"\n";
-                script_file << "pcsx_rearmed_frameskip_interval = \"3\"\n";
-                // Performance: fast GPU linked list processing
-                script_file << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
-                // Keep DRC (dynamic recompiler) enabled - critical for performance
-                script_file << "pcsx_rearmed_drc = \"enabled\"\n";
-                // Keep icache emulation for compatibility (disabling breaks some games)
-                script_file << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
-                // Standard PSX clock (57 = native speed)
-                script_file << "pcsx_rearmed_psxclock = \"57\"\n";
-                // Audio quality (minimal CPU: no interpolation, no reverb)
-                script_file << "pcsx_rearmed_spu_interpolation = \"off\"\n";
-                script_file << "pcsx_rearmed_spu_reverb = \"disabled\"\n";
-                // Rendering at native 1x resolution (no upscaling overhead)
-                script_file << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
-                script_file << "pcsx_rearmed_dithering = \"enabled\"\n";
-            }
+            write_core_options(script_file, core_name);
             script_file << "OPTS\n";
 
             // Delete per-core .opt override file so our core options take effect
@@ -799,8 +776,11 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Video config (driver, resolution, viewport, sync)
             write_video_config(script_file, opts);
-            script_file << "audio_driver = \"alsa\"\n"; // Default to alsa for other cores
-            script_file << "audio_resampler = \"sinc\"\n"; // High quality for other cores
+            // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
+            // independently of brief emulation or Vulkan present stalls.
+            script_file << "audio_driver = \"" << audio_driver_for_gameplay()
+                        << "\"\n";
+            script_file << "audio_resampler = \"sinc\"\n"; // High-quality gameplay resampling
 
             script_file << "input_joypad_driver = \"udev\"\n";
             script_file << "input_max_users = \"4\"\n";
@@ -863,7 +843,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "quit_press_twice = \"false\"\n";
             script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
             script_file << "# Audio settings - use ALSA to match GStreamer (simplified for reliability)\n";
-//             script_file << "audio_driver = \"alsa\"\n";
             script_file << "audio_device = \"" << alsa_device << "\"\n";
             script_file << "audio_enable = \"true\"\n";
             script_file << "audio_mute_enable = \"false\"\n";
@@ -886,7 +865,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "audio_sync = \"true\"\n";
 //             script_file << "audio_resampler = \"sinc\"\n";
             script_file << "audio_out_rate = \"48000\"\n";
-            script_file << "audio_latency = \"48\"\n";  // Tighter audio sync (was 64)
+            script_file << "audio_latency = \""
+                        << audio_latency_ms_for_core(core_name) << "\"\n";
             script_file << "# Audio buffer settings - ensure audio callback works\n";
 //             script_file << "audio_block_frames = \"512\"\n";
 //             script_file << "audio_rate_control = \"true\"\n";
@@ -1065,8 +1045,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# Set essential environment for RetroArch\n";
             script_file << "export XDG_RUNTIME_DIR=/run/user/" << getuid() << "\n";
             script_file << "export HOME=" << config::get_home_path() << "\n";
-            script_file << "# CRITICAL: Ensure we have access to input devices\n";
-            script_file << "export DISPLAY=:0\n";
             script_file << "# CRITICAL: Check who is holding the input device\n";
             script_file << "echo 'Launcher: Checking input device usage...' >> /tmp/retroarch_launcher.log\n";
             script_file << "fuser -v /dev/input/event0 >> /tmp/retroarch_launcher.log 2>&1 || true\n";
@@ -1112,20 +1090,20 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# CRITICAL: Redirect stdout/stderr to log file\n";
             script_file << "exec 1>>" << config::retroarch::get_launcher_log() << " 2>&1\n";
             script_file << "echo 'Launcher: Launching RetroArch directly...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# CRITICAL: Run RetroArch in foreground (not exec) so cleanup can run\n";
-            script_file << "# Background keepalive processes keep controller awake while RetroArch runs\n";
-            script_file << "# RetroArch will open input devices itself (they're kept awake by background processes)\n";
-            script_file << retroarch_cmd << "\n";
-            script_file << "RETROARCH_EXIT=$?\n";
+            script_file << "# Launch RetroArch under the KMS readiness watcher so the parent can\n";
+            script_file << "# distinguish real display takeover from a stuck startup.\n";
+            script_file << build_kms_ready_watch_block(retroarch_cmd, ready_options);
             script_file << "echo \"Launcher: RetroArch exited with code $RETROARCH_EXIT\" >> /tmp/retroarch_launcher.log\n";
             // Clean up temp config files (no restore needed - we used isolated /tmp config)
             script_file << "rm -f \"$UI_CONFIG\"\n";
             script_file << "rm -f /tmp/retroarch_core_options.cfg\n";
+            script_file << "rm -f \"$RETROARCH_READY_FILE\"\n";
             script_file << "# CRITICAL: Autoconfig file should remain in place (not backed up/restored)\n";
             script_file << "# Clean up any old backup files from previous runs\n";
             script_file << "find \"$AUTOCONFIG_DIR\" -name '*.backup.*' -type f -mtime +1 -delete 2>/dev/null || true\n";
                 script_file << "echo 'Launcher: RetroArch finished'\n";
                 script_file << "# Script will exit, main service continues running\n";
+                script_file << "exit \"$RETROARCH_EXIT\"\n";
 
             script_file.close();
 
@@ -1138,12 +1116,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             }
         }
 
-        // Set environment variables for the RetroArch process
-        std::string xdg_runtime = "/run/user/" + std::to_string(getuid());
-        setenv("XDG_RUNTIME_DIR", xdg_runtime.c_str(), 1);
-        setenv("HOME", config::get_home_path().c_str(), 1);
-        setenv("DISPLAY", ":0", 1);
-        
         // CRITICAL: Verify controller device is accessible before forking
         std::cout << "Verifying controller device accessibility..." << std::endl;
         bool controller_accessible = false;
@@ -1170,10 +1142,27 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         std::string launch_cmd = "/bin/bash " + launcher_script;
         
         std::cout << "Command: " << launch_cmd << std::endl;
+
+        // A stale marker must never make a new launch look ready. The script
+        // removes it again immediately before starting RetroArch, but doing it
+        // synchronously here closes the pre-fork window as well.
+        std::error_code ready_remove_error;
+        fs::remove(ready_options.ready_file, ready_remove_error);
+        if (ready_remove_error) {
+            std::cerr << "Failed to clear RetroArch readiness marker: "
+                      << ready_remove_error.message() << std::endl;
+            return false;
+        }
         
         // CRITICAL: Fork to run command in background (non-blocking for UI)
         pid_t launch_pid = fork();
         if (launch_pid == 0) {
+            // Isolate every pre-launch helper and RetroArch itself in one
+            // process group so a startup timeout can terminate all of them.
+            if (setpgid(0, 0) != 0) {
+                _exit(126);
+            }
+
             // Child process - execute the launch command
             // Redirect output to log file
             int log_fd = open(config::retroarch::get_launcher_log().c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -1198,14 +1187,59 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             execl("/bin/bash", "bash", launcher_script.c_str(), nullptr);
             // If we reach here, exec failed
             std::cerr << "Failed to execute launch command" << std::endl;
-            exit(1);
+            _exit(127);
         } else if (launch_pid > 0) {
-            // Parent process - WAIT for RetroArch to exit (Blocking)
-            std::cout << "RetroArch launch initiated (Blocking, PID: " << launch_pid << ")" << std::endl;
-            
-            int status;
-            waitpid(launch_pid, &status, 0);
-            
+            // Repeat setpgid in the parent to close the fork/exec race. EACCES
+            // means the child already exec'd after successfully grouping itself.
+            if (setpgid(launch_pid, launch_pid) != 0 && errno != EACCES &&
+                errno != ESRCH) {
+                std::cerr << "Failed to create RetroArch launch process group: "
+                          << std::strerror(errno) << std::endl;
+                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
+                return false;
+            }
+
+            std::cout << "RetroArch launch initiated (PID: " << launch_pid
+                      << ", waiting up to 15 seconds for KMS)" << std::endl;
+            const StartupStatus startup = wait_for_startup(
+                launch_pid, ready_options.ready_file, std::chrono::seconds(15));
+            if (startup != StartupStatus::Ready) {
+                switch (startup) {
+                    case StartupStatus::Exited:
+                        std::cerr << "RetroArch exited before taking over KMS" << std::endl;
+                        break;
+                    case StartupStatus::TimedOut:
+                        std::cerr << "RetroArch did not take over KMS within 15 seconds"
+                                  << std::endl;
+                        break;
+                    case StartupStatus::WaitError:
+                        std::cerr << "Unable to supervise RetroArch startup" << std::endl;
+                        break;
+                    case StartupStatus::Ready:
+                        break;
+                }
+                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
+                fs::remove(ready_options.ready_file, ready_remove_error);
+                return false;
+            }
+
+            std::cout << "RetroArch has taken over the KMS display" << std::endl;
+
+            // KMS is ready; supervision is finished and adds no gameplay
+            // overhead. Block until the user exits RetroArch as before.
+            int status = 0;
+            pid_t wait_result;
+            do {
+                wait_result = waitpid(launch_pid, &status, 0);
+            } while (wait_result < 0 && errno == EINTR);
+
+            fs::remove(ready_options.ready_file, ready_remove_error);
+            if (wait_result < 0) {
+                std::cerr << "Failed while waiting for RetroArch to exit: "
+                          << std::strerror(errno) << std::endl;
+                return true;
+            }
+
             if (WIFEXITED(status)) {
                 std::cout << "RetroArch exited with status " << WEXITSTATUS(status) << std::endl;
             } else if (WIFSIGNALED(status)) {
@@ -1585,118 +1619,6 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
     std::cout << "GStreamer cleanup complete" << std::endl;
-}
-
-void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOptions& opts) {
-    // --- Common video settings (apply to both modes) ---
-    out << "video_driver = \"vulkan\"\n";
-    // video_threaded MUST be false on this Pi 4B / V3D + Vulkan-KMS combo.
-    // With threaded video ON, RetroArch's video thread races the V3D
-    // KMS present path and the Vulkan swapchain thrashes:
-    //   "[Vulkan]: QueuePresent failed, destroying swapchain" repeating,
-    //   ~19 times per launch, with the driver rebuilding the swapchain
-    //   over and over. When that recovery loop doesn't converge the
-    //   screen stays black and the game never appears — the intermittent
-    //   "launch didn't reach RetroArch" failure. Measured live: threaded
-    //   ON => QueuePresent-failed count 1+ and climbing; threaded OFF =>
-    //   0, consistently across repeated launches. Isolated to THIS flag
-    //   (swapchain-images=2 and hard_sync alone did NOT fix it).
-    //
-    // Tradeoff: threaded video decouples the GPU present from the
-    // emulation core, which can smooth framepacing for heavier cores
-    // (PS1). A game that runs is strictly better than one that
-    // black-screens, and on this hardware 2D/PS1 content stays full-
-    // speed single-threaded anyway. If a specific heavy title ever needs
-    // it back, do it per-core, not globally.
-    out << "video_threaded = \"false\"\n";
-    out << "video_fullscreen = \"true\"\n";
-    out << "video_windowed_fullscreen = \"false\"\n";
-    out << "video_gpu_screenshot = \"false\"\n";
-    // Allow cores to request display rotation via RETRO_ENVIRONMENT_SET_
-    // ROTATION. In practice only FBNeo uses this — it ships a curated
-    // per-game rotation database covering the classic vertical-monitor
-    // arcade cabinets (Pac-Man, Galaga, Donkey Kong, 1942, Bombjack,
-    // Xevious, Pole Position, etc.). With this set to false, those games
-    // render sideways because the vertical native framebuffer (e.g.
-    // Pac-Man's 224x288) gets stretched into our horizontal viewport.
-    // True lets RetroArch rotate them 90° so they display correctly,
-    // letterboxed inside the bezel cutout (mimics the side-curtain
-    // border real arcade cabinets had around vertical CRTs).
-    //
-    // Safe for non-arcade cores: nestopia / snes9x2010 / pcsx_rearmed /
-    // genesis_plus_gx / mednafen_pce_fast / prosystem all leave rotation
-    // at 0 (no horizontal/vertical mix in their game catalogs), so this
-    // flag is effectively a no-op for them.
-    out << "video_allow_rotate = \"true\"\n";
-    out << "video_crop_overscan = \"false\"\n";
-    out << "video_refresh_rate = \"60.000000\"\n";
-    out << "video_aspect_ratio = \"1.333\"\n";
-    out << "video_force_aspect = \"true\"\n";
-    out << "video_scale = \"1.0\"\n";
-    out << "video_scale_integer = \"false\"\n";
-    out << "video_scale_filter = \"0\"\n";
-    out << "video_smooth = \"false\"\n";
-    out << "video_rotation = \"0\"\n";
-    out << "video_hard_sync = \"false\"\n";
-    out << "video_vsync = \"true\"\n";
-    out << "video_frame_delay = \"4\"\n";
-    // 2 (double-buffer) is the more stable swapchain depth for the V3D
-    // KMS Vulkan path; 3 gave no measured benefit here and pairs with the
-    // threaded-video thrash above. Belt-and-suspenders alongside
-    // video_threaded=false.
-    out << "video_max_swapchain_images = \"2\"\n";
-    out << "video_shader_enable = \"false\"\n";
-    out << "video_filter = \"\"\n";
-    out << "video_frame_blend = \"false\"\n";
-    out << "video_gpu_record = \"false\"\n";
-    out << "video_record = \"false\"\n";
-    out << "video_disable_composition = \"false\"\n";
-
-    // --- Mode-specific resolution + viewport + overlay ---
-    if (opts.display_mode == app::DisplayMode::MODERN_TV) {
-        // 1920x1080 output, game rendered into a 4:3 viewport centered
-        // on the bezel's screen cutout. Cutout intersection across both
-        // bezel families is (251, 10, 1415, 1059). RetroArch enforces
-        // strict 4:3 inside that viewport via video_force_aspect above.
-        out << "video_fullscreen_x = \"1920\"\n";
-        out << "video_fullscreen_y = \"1080\"\n";
-        out << "video_windowed_width = \"1920\"\n";
-        out << "video_windowed_height = \"1080\"\n";
-        out << "video_custom_viewport_enable = \"true\"\n";
-        out << "video_custom_viewport_x = \"251\"\n";
-        out << "video_custom_viewport_y = \"10\"\n";
-        out << "video_custom_viewport_width = \"1415\"\n";
-        out << "video_custom_viewport_height = \"1059\"\n";
-        out << "aspect_ratio_index = \"22\"\n";  // 22 = custom viewport
-
-        // Bezel overlay (optional — skipped when user has procedural "Simple" selected)
-        if (!opts.bezel_file.empty()) {
-            // Swap .png -> .cfg (RetroArch overlay configs live alongside PNGs)
-            std::string cfg_name = opts.bezel_file;
-            auto dot = cfg_name.rfind('.');
-            if (dot != std::string::npos) {
-                cfg_name.replace(dot, std::string::npos, ".cfg");
-            } else {
-                cfg_name += ".cfg";
-            }
-            std::string cfg_path = config::get_bezels_dir() + "/" + cfg_name;
-
-            out << "input_overlay = \"" << cfg_path << "\"\n";
-            out << "input_overlay_enable = \"true\"\n";
-            out << "input_overlay_opacity = \"1.0\"\n";
-            // Hide overlay when RetroArch's in-game menu is open so it doesn't
-            // obscure the menu UI (Z+Start hotkey). Overlay returns on menu close.
-            out << "input_overlay_hide_in_menu = \"true\"\n";
-        }
-    } else {
-        // CRT_NATIVE: 640x480, no custom viewport (unchanged from pre-change behavior)
-        out << "video_fullscreen_x = \"640\"\n";
-        out << "video_fullscreen_y = \"480\"\n";
-        out << "video_windowed_width = \"640\"\n";
-        out << "video_windowed_height = \"480\"\n";
-        out << "video_custom_viewport_enable = \"false\"\n";
-        out << "aspect_ratio_index = \"23\"\n";
-    }
 }
 
 } // namespace retroarch

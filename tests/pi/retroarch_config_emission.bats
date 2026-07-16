@@ -41,6 +41,38 @@ extract_config() {
     [ "$val" = "1.333" ]
 }
 
+@test "launcher pins Vulkan to KMS without changing stable video tuning" {
+    config=$(extract_config)
+    for line in \
+        'video_driver = "vulkan"' \
+        'video_context_driver = "khr_display"' \
+        'video_threaded = "false"' \
+        'video_max_swapchain_images = "2"' \
+        'video_vsync = "true"' \
+        'video_frame_delay = "4"' \
+        'video_shader_enable = "false"' \
+        'video_smooth = "false"'; do
+        echo "$config" | grep -Fqx "$line" || {
+            echo "missing stable video line: $line"
+            false
+        }
+    done
+}
+
+@test "launcher watches the real RetroArch process for KMS readiness" {
+    script=$(pi_ssh "cat $LAUNCHER")
+    for fragment in \
+        'unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER' \
+        'RETROARCH_READY_FILE=' \
+        '/proc/$RETROARCH_PID/fd/*' \
+        '/dev/dri/card*'; do
+        echo "$script" | grep -Fq "$fragment" || {
+            echo "missing KMS readiness fragment: $fragment"
+            false
+        }
+    done
+}
+
 @test "if Modern TV mode, custom_viewport is at expected (251, 10, 1415, 1059)" {
     config=$(extract_config)
     enabled=$(echo "$config" | grep '^video_custom_viewport_enable' | head -1 | sed 's/.*= *"//; s/".*//')

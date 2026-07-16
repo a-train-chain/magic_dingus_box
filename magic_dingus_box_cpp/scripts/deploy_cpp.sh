@@ -132,6 +132,9 @@ rsync -avz --checksum \
     --delete \
     --exclude '.git' \
     --exclude 'build' \
+    --exclude 'build-*' \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
     --exclude '.DS_Store' \
     --exclude '*.o' \
     --exclude '*.a' \
@@ -637,4 +640,3 @@ if [ "$TEST" = false ] && [ "$BUILD" = true ] && [ "$INSTALL_CORES" = false ]; t
     echo "  1. SSH to Pi: ssh ${PI_HOST}"
     echo "  2. Test: cd ${PI_DIR}/magic_dingus_box_cpp/build && sudo ./magic_dingus_box_cpp"
 fi
-

@@ -2205,13 +2205,13 @@ int main(int /* argc */, char* /* argv */[]) {
 
                                         if (launch_result) {
                                             std::cout << "Game launched successfully" << std::endl;
-                                            // Exit settings menu after successful launch
-                                            // The wrapper script will stop the UI service, so we don't need to do anything else
-                                            settings_menu.close();
                                         } else {
                                             std::cout << "Game launch failed: " << launch_result.error() << std::endl;
-                                            state.set_error("Failed to launch game");
+                                            state.set_error("Unable to start game");
                                         }
+                                        // Return to the playlist UI after every launch outcome;
+                                        // a failed takeover must not leave the game browser open.
+                                        settings_menu.close();
                                     } else {
                                         std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
                                     }
@@ -3443,4 +3443,3 @@ int main(int /* argc */, char* /* argv */[]) {
 
     return 0;
 }
-

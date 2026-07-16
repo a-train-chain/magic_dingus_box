@@ -15,7 +15,7 @@
 - Keep the Modern TV custom viewport exactly `(251, 10, 1415, 1059)` with aspect-ratio index 22.
 - Keep CRT Native at 640x480 with custom viewport disabled and aspect-ratio index 23.
 - Keep `video_driver="vulkan"`, `video_threaded="false"`, `video_max_swapchain_images="2"`, `video_vsync="true"`, `video_frame_delay="4"`, shaders off, and smoothing off.
-- Add only the explicit `video_context_driver="kms"` selection to the video contract.
+- Add only the explicit `video_context_driver="khr_display"` selection to the Vulkan video contract.
 - Keep PS1 native 1x rendering, per-core options, controller mappings, rotation, saves, audio routing, and volume calculations unchanged.
 - Production startup timeout is exactly 15 seconds; shorter values are injectable only through the launch-supervisor options used by tests.
 - Once KMS readiness is observed, startup supervision stops polling and adds no gameplay overhead.
@@ -64,7 +64,7 @@ TEST_CASE("Modern TV keeps its native-core 4:3 bezel contract", "[retroarch][vid
     const std::string cfg = out.str();
 
     require_line(cfg, "video_driver = \"vulkan\"");
-    require_line(cfg, "video_context_driver = \"kms\"");
+    require_line(cfg, "video_context_driver = \"khr_display\"");
     require_line(cfg, "video_threaded = \"false\"");
     require_line(cfg, "video_max_swapchain_images = \"2\"");
     require_line(cfg, "video_vsync = \"true\"");
@@ -92,7 +92,7 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport", "[retroarch][v
     retroarch::write_video_config(out, opts);
     const std::string cfg = out.str();
 
-    require_line(cfg, "video_context_driver = \"kms\"");
+    require_line(cfg, "video_context_driver = \"khr_display\"");
     require_line(cfg, "video_fullscreen_x = \"640\"");
     require_line(cfg, "video_fullscreen_y = \"480\"");
     require_line(cfg, "video_custom_viewport_enable = \"false\"");
@@ -158,7 +158,7 @@ Move the existing `RetroArchLauncher::write_video_config` implementation byte-fo
 
 ```cpp
 out << "video_driver = \"vulkan\"\n";
-out << "video_context_driver = \"kms\"\n";
+out << "video_context_driver = \"khr_display\"\n";
 ```
 
 Move `LaunchOptions` out of `retroarch_launcher.h`, include `launch_contract.h` there, remove the private writer declaration, add `launch_contract.cpp` to `RETROARCH_SOURCES`, and add it to `test_retroarch_unit`.
@@ -458,7 +458,7 @@ Extend `tests/pi/retroarch_config_emission.bats`:
     config=$(extract_config)
     for line in \
         'video_driver = "vulkan"' \
-        'video_context_driver = "kms"' \
+        'video_context_driver = "khr_display"' \
         'video_threaded = "false"' \
         'video_max_swapchain_images = "2"' \
         'video_vsync = "true"' \

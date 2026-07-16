@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "game_launch_recovery.h"
 #include "../video/video_player.h"
 #include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
@@ -565,11 +566,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             // We rely on pkill and display restoration logic for clean exit.
             bool disable_crtc = false;
 
+            // Present the final loading frame while the kiosk still owns DRM.
+            // From release_master onward, no callback may page-flip until the
+            // display is re-acquired after RetroArch exits.
+            if (progress_callback) {
+                progress_callback();
+            }
             std::cout << "Releasing DRM master for RetroArch (disable_crtc=" << disable_crtc << ")..." << std::endl;
             display_->release_master(disable_crtc);
             std::cout << "DRM master released" << std::endl;
             // Wait for DRM resources to be fully released and display to settle
-            wait_with_callback(200, progress_callback);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
         
         // CRITICAL: Release controller input grab before launching RetroArch
@@ -596,7 +603,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         };
         run_udevadm("--sysname-match=js*");
         run_udevadm("--sysname-match=event*");
-        wait_with_callback(200, progress_callback);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
         std::cout << "Controller wake-up signal sent" << std::endl;
         
         // Launch the game (BLOCKING)
@@ -700,37 +707,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         std::cout << "Restoring audio output after RetroArch..." << std::endl;
         state.audio_settings.apply_output();
 
+        // The video pipeline and playback indices are invalid after either a
+        // completed game or a failed/timed-out startup. Normalize both paths
+        // before returning so the main loop can always rebuild the kiosk UI.
+        if (player_) {
+            player_->stop();
+            std::cout << "Stopped video player after RetroArch launch" << std::endl;
+        }
+        prepare_kiosk_state_after_game(state);
+
         if (launched) {
             std::cout << "Successfully launched game: " << item.title << std::endl;
-            
-            // CRITICAL: Ensure UI is visible when returning from game
-            std::cout << "Game exited - ensuring UI is visible and video state is correct" << std::endl;
-            
-            // Signal main loop to reset display state (fix page flip failure)
-            state.reset_display = true;
-            
-            // CRITICAL: Do NOT try to resume video after game exit
-            // The GStreamer pipeline was killed via pkill during RetroArch launch
-            // The GstPlayer object still has stale state (duration > 0, position, etc.)
-            // Trying to play() on a dead pipeline corrupts EGL rendering state
-            // Instead, properly stop the player to clear its state
-            if (player_) {
-                // Determine if we need to cleanup (if not already done)
-                // We called cleanup() before launch, but player_ object still exists
-                // Calling stop() here ensures pure-virtual state is clean
-                player_->stop();
-                std::cout << "Stopped video player after game exit" << std::endl;
-            }
-
-            // CRITICAL: Reset playback state to prevent Renderer from thinking we are "transitioning"
-            // The Renderer's is_transitioning logic (current_item_index >= 0 && !video_active)
-            // causes it to skip rendering the UI (thinking it's a video transition gap).
-            // Since we just finished a game, we are NOT playing video, so we must clear this state
-            // to allow the UI to render.
-            state.current_item_index = -1;
-            state.current_playlist_index = -1;
-            state.video_active = false; // Ensure this is false too
-
             return utils::Result<>::ok();
         } else {
             std::string error = "Failed to launch game: " + item.title;
