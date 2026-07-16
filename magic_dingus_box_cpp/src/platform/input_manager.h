@@ -56,6 +56,19 @@ public:
     // Cleanup
     void cleanup();
 
+    // Recover the phone-remote virtual gamepad after the web service
+    // restarts. magic-dingus-web.service has Restart=always, and each
+    // restart destroys and recreates the "MagicDingus Phone Remote" uinput
+    // device with a NEW /dev/input/event node. Since initialize() only
+    // scans once at startup, the kiosk would otherwise keep a dead grab on
+    // the old node and the phone D-pad would go silent until a full kiosk
+    // restart. Call this on a throttled cadence from the main loop: it
+    // drops a dead phone-remote grab and (re)opens the current node. It
+    // ONLY ever touches devices named "MagicDingus Phone Remote" — real USB
+    // controllers, keyboards, and the rotary encoder are never disturbed.
+    // Cheap and a no-op when the device is already healthy.
+    void reprobe_phone_remote();
+
 private:
     struct Device;
     std::vector<std::unique_ptr<Device>> devices_;

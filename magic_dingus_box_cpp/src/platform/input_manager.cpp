@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <sys/ioctl.h>
 #include <cstring>
 #include <iostream>
 #include <algorithm>
@@ -182,6 +183,79 @@ bool InputManager::open_joystick_devices() {
     
     closedir(dir);
     return found;
+}
+
+void InputManager::reprobe_phone_remote() {
+    static const char* kPhoneName = "MagicDingus Phone Remote";
+
+    // Step 1: drop a dead phone-remote grab. When the web service restarts,
+    // the old uinput node is destroyed; EVIOCGID on its fd then fails with
+    // ENODEV. This ioctl is non-destructive (doesn't consume events) and we
+    // only run it on the phone-remote device, so healthy controllers are
+    // untouched.
+    for (auto it = devices_.begin(); it != devices_.end(); ) {
+        Device* d = it->get();
+        if (d->name == kPhoneName) {
+            struct input_id id;
+            if (ioctl(d->fd, EVIOCGID, &id) < 0) {
+                std::cout << "Phone remote node gone (web restart?); dropping "
+                             "stale grab, will reopen" << std::endl;
+                it = devices_.erase(it);  // ~Device closes fd + frees libevdev
+                continue;
+            }
+        }
+        ++it;
+    }
+
+    // Step 2: if a phone remote is already open and healthy, nothing to do.
+    for (auto& d : devices_) {
+        if (d->name == kPhoneName) return;
+    }
+
+    // Step 3: no phone remote open — scan for the current node and grab it.
+    // Filtered strictly by name, so this can never open/grab any other
+    // device. Mirrors open_joystick_devices()'s open+grab sequence.
+    const char* input_dir = "/dev/input";
+    DIR* dir = opendir(input_dir);
+    if (!dir) return;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (strncmp(entry->d_name, "event", 5) != 0) continue;
+        std::string path = std::string(input_dir) + "/" + entry->d_name;
+        int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        struct libevdev* dev = nullptr;
+        int rc = libevdev_new_from_fd(fd, &dev);
+        if (rc < 0 || !dev) {
+            if (dev) libevdev_free(dev);
+            close(fd);
+            continue;
+        }
+        const char* dev_name = libevdev_get_name(dev);
+        const bool is_phone = dev_name && std::string(dev_name) == kPhoneName;
+        const bool is_joystick = libevdev_has_event_type(dev, EV_ABS) &&
+            (libevdev_has_event_code(dev, EV_ABS, ABS_X) ||
+             libevdev_has_event_code(dev, EV_ABS, ABS_HAT0X));
+        if (is_phone && is_joystick) {
+            auto device = std::make_unique<Device>();
+            device->fd = fd;
+            device->dev = dev;
+            device->name = kPhoneName;
+            device->is_joystick = true;
+            int grab_rc = libevdev_grab(dev, LIBEVDEV_GRAB);
+            if (grab_rc < 0) {
+                std::cerr << "  Warning: could not grab reopened phone remote"
+                          << std::endl;
+            }
+            devices_.push_back(std::move(device));
+            std::cout << "  Reopened phone remote at " << path << std::endl;
+            closedir(dir);
+            return;
+        }
+        libevdev_free(dev);
+        close(fd);
+    }
+    closedir(dir);
 }
 
 bool InputManager::open_keyboard_devices() {

@@ -1430,6 +1430,20 @@ int main(int /* argc */, char* /* argv */[]) {
         // Update menu state (Wi-Fi scanning, etc.)
         settings_menu.update();
 
+        // Recover the phone-remote virtual gamepad if the web service
+        // restarted (Restart=always → new /dev/input node). Throttled to
+        // ~every 3s; only ever touches the "MagicDingus Phone Remote"
+        // device, so it can't disturb real controllers. Cheap no-op when
+        // the remote is already healthy or absent.
+        {
+            static auto last_remote_reprobe = std::chrono::steady_clock::now();
+            auto now_rp = std::chrono::steady_clock::now();
+            if (now_rp - last_remote_reprobe >= std::chrono::seconds(3)) {
+                last_remote_reprobe = now_rp;
+                input.reprobe_phone_remote();
+            }
+        }
+
         // Poll input
         auto input_events = input.poll();
 
