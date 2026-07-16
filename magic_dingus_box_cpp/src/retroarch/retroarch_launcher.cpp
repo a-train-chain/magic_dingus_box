@@ -605,8 +605,21 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         std::ofstream script_file(launcher_script);
         if (script_file.is_open()) {
             script_file << "#!/bin/bash\n";
-            script_file << "set -e\n";  // Exit on any error
-            
+            // NOTE: deliberately NO `set -e`. This script is ~90 lines of
+            // best-effort setup (controller wake-ups, udev triggers,
+            // permission probes, autoconfig housekeeping) BEFORE the
+            // RetroArch invocation. Under `set -e`, any one of those
+            // non-critical commands returning non-zero — a udevadm trigger
+            // that momentarily fails, a js* glob that doesn't expand
+            // because the controller hasn't re-enumerated yet after the
+            // DRM/input handoff, an empty-variable reference — silently
+            // aborts the whole script and the game never launches. That
+            // was the intermittent "launch didn't reach RetroArch" bug:
+            // the log ended mid-preamble with no RetroArch line. We WANT
+            // the launch to proceed even if a cosmetic setup step hiccups;
+            // RetroArch's own exit code is captured explicitly after it
+            // runs (RETROARCH_EXIT=$?), which is the outcome that matters.
+
             // ISOLATED CONFIG STRATEGY (Matches Manual Test)
             // We write a fresh config to /tmp/retroarch_ui.cfg and pass it via --config
             script_file << "# Use isolated temp config to avoid overwriting user's RetroArch config\n";
@@ -634,6 +647,18 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# Autoconfig is ENABLED, so we need the autoconfig file to be present\n";
             script_file << "AUTOCONFIG_DIR=\"$HOME/.config/retroarch/autoconfig/udev\"\n";
             script_file << "mkdir -p \"$AUTOCONFIG_DIR\"\n";
+            // Defensive default: AUTOCONFIG_FILE is only assigned a real
+            // path inside the N64_ADAPTER controller branch below, but it
+            // is referenced UNCONDITIONALLY later (rm -f "$AUTOCONFIG_FILE"
+            // and [ ! -f "$AUTOCONFIG_FILE" ]). On the PS-style / unknown
+            // controller paths those references would otherwise expand to
+            // an empty string ("rm -f ''", "[ ! -f '' ]") — harmless with
+            // `set -e` removed, but the empty-path test spuriously logged
+            // "Autoconfig file missing!" and, under the old `set -e`, was a
+            // coin-flip abort. Seed it to a harmless sentinel so every
+            // reference is well-defined regardless of controller type; the
+            // N64 branch overrides it with the real path when applicable.
+            script_file << "AUTOCONFIG_FILE=\"$AUTOCONFIG_DIR/.mdb_unused_autoconfig\"\n";
 
             // Autoconfig file emission is controller-specific. RetroArch's autoconfig
             // is disabled at runtime (see input_autoconfig_enable below), so this is
@@ -1250,7 +1275,11 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
         std::ofstream script_file(launcher_script);
         if (script_file.is_open()) {
             script_file << "#!/bin/bash\n";
-            script_file << "set -e\n";  // Exit on any error
+            // No `set -e` — same rationale as the game launcher above: the
+            // best-effort setup preamble must not abort the RetroArch
+            // (core-downloader) launch on a cosmetic non-zero exit. The
+            // downloader's outcome is observed via RetroArch itself, not a
+            // mid-preamble error.
             script_file << "echo \"$(date): Downloader: Starting RetroArch downloader script\" >> /tmp/retroarch_launcher.log\n";
             // printf form keeps $(date) live while shell_sq_escape'ing the value.
             // See the launcher path above for the full rationale.
@@ -1572,7 +1601,25 @@ void RetroArchLauncher::stop_gstreamer_and_cleanup() {
 void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOptions& opts) {
     // --- Common video settings (apply to both modes) ---
     out << "video_driver = \"vulkan\"\n";
-    out << "video_threaded = \"true\"\n";  // Decouples GPU from emulation core (helps PS1 on Pi 4B)
+    // video_threaded MUST be false on this Pi 4B / V3D + Vulkan-KMS combo.
+    // With threaded video ON, RetroArch's video thread races the V3D
+    // KMS present path and the Vulkan swapchain thrashes:
+    //   "[Vulkan]: QueuePresent failed, destroying swapchain" repeating,
+    //   ~19 times per launch, with the driver rebuilding the swapchain
+    //   over and over. When that recovery loop doesn't converge the
+    //   screen stays black and the game never appears — the intermittent
+    //   "launch didn't reach RetroArch" failure. Measured live: threaded
+    //   ON => QueuePresent-failed count 1+ and climbing; threaded OFF =>
+    //   0, consistently across repeated launches. Isolated to THIS flag
+    //   (swapchain-images=2 and hard_sync alone did NOT fix it).
+    //
+    // Tradeoff: threaded video decouples the GPU present from the
+    // emulation core, which can smooth framepacing for heavier cores
+    // (PS1). A game that runs is strictly better than one that
+    // black-screens, and on this hardware 2D/PS1 content stays full-
+    // speed single-threaded anyway. If a specific heavy title ever needs
+    // it back, do it per-core, not globally.
+    out << "video_threaded = \"false\"\n";
     out << "video_fullscreen = \"true\"\n";
     out << "video_windowed_fullscreen = \"false\"\n";
     out << "video_gpu_screenshot = \"false\"\n";
@@ -1604,7 +1651,11 @@ void RetroArchLauncher::write_video_config(std::ostream& out, const LaunchOption
     out << "video_hard_sync = \"false\"\n";
     out << "video_vsync = \"true\"\n";
     out << "video_frame_delay = \"4\"\n";
-    out << "video_max_swapchain_images = \"3\"\n";
+    // 2 (double-buffer) is the more stable swapchain depth for the V3D
+    // KMS Vulkan path; 3 gave no measured benefit here and pairs with the
+    // threaded-video thrash above. Belt-and-suspenders alongside
+    // video_threaded=false.
+    out << "video_max_swapchain_images = \"2\"\n";
     out << "video_shader_enable = \"false\"\n";
     out << "video_filter = \"\"\n";
     out << "video_frame_blend = \"false\"\n";
