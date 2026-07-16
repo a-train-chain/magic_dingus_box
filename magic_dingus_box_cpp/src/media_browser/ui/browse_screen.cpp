@@ -294,52 +294,98 @@ BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb,
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
-    // Health-check Radarr on entry so we can surface a banner when the
-    // service isn't answering. Cheap — hits /api/v3/system/status.
-    // We keep this even though Discovery is now TMDB-powered: Radarr is
-    // still required for add-to-library / queue actions downstream.
-    services_ok_ = radarr_.is_reachable();
-    spdlog::info("[BrowseScreen] enter: radarr_ok={}, loaded={}",
-                 services_ok_, loaded_);
     if (!loaded_) {
         load_category(category_);
         loaded_ = true;
     }
+    // Kick off the Radarr health-check + library/queue fetch on a worker
+    // thread instead of blocking the render thread on 3-4 HTTP round-trips.
+    // Stale "in library"/"downloading" badges from the previous visit stay
+    // visible until apply_library_pending() lands (next update() ticks). See
+    // the PendingLibrary block in the header for the quick-add correctness
+    // rationale.
+    refresh_library_async();
+}
 
-    // Always re-fetch the library on (re-)entry so the "in library"
-    // cache reflects any adds/removes that happened on Detail since
-    // we were last visible. Without this, removing a movie via Detail
-    // → Confirm Remove leaves a stale entry in library_tmdb_ids_, and
-    // the user gets "Already in library" toasts when re-adding the
-    // same movie. Same cost (one Radarr GET, ~200ms) and same
-    // pattern LibraryScreen::enter() already uses.
-    //
-    // Quality profiles are cached separately because they don't change
-    // when adds/removes happen — only when the user reconfigures
-    // quality profiles in Radarr's settings UI, which is rare enough
-    // that we accept staleness. Refresh once on first entry.
-    if (services_ok_) {
+void BrowseScreen::refresh_library_async() {
+    // CAS guard: at most one refresh in flight. A second enter() (or any
+    // future periodic caller) while one is running is a no-op. Snapshot
+    // library_cached_ HERE on the render thread and pass it to the worker
+    // so the worker never touches a render-thread-owned member.
+    bool expected = false;
+    if (!lib_refresh_in_flight_.compare_exchange_strong(expected, true)) return;
+    // Reap a previous finished-but-not-joined worker before reusing the handle.
+    if (lib_refresh_worker_.joinable()) lib_refresh_worker_.join();
+    const bool fetch_quality = !library_cached_;
+    lib_refresh_worker_ =
+        std::thread(&BrowseScreen::run_library_refresh, this, fetch_quality);
+}
+
+void BrowseScreen::run_library_refresh(bool fetch_quality) {
+    // Worker thread: all blocking Radarr I/O happens here. Touches NO live
+    // member except lib_pending_/lib_result_ready_/lib_refresh_in_flight_.
+    PendingLibrary r;
+    // Health-check Radarr so render() can surface a banner when the service
+    // isn't answering. Radarr is still required for add-to-library / queue
+    // actions even though Discovery is TMDB-powered.
+    r.services_ok = radarr_.is_reachable();
+    if (r.services_ok) {
         auto lib = radarr_.get_library();
-        library_tmdb_ids_.clear();
         // Build radarr_id → tmdb_id map for queue cross-reference below.
         std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
             if (m.tmdb_id > 0) {
-                library_tmdb_ids_.insert(m.tmdb_id);
+                r.library_ids.insert(m.tmdb_id);
                 radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
             }
         }
         // Populate the downloading set from the current Radarr queue.
-        downloading_tmdb_ids_.clear();
         for (const auto& qi : radarr_.get_queue()) {
             auto it = radarr_to_tmdb.find(qi.movie_id);
             if (it != radarr_to_tmdb.end()) {
-                downloading_tmdb_ids_.insert(it->second);
+                r.downloading_ids.insert(it->second);
             }
         }
-        if (!library_cached_) {
-            quality_profiles_ = radarr_.get_quality_profiles();
-            library_cached_ = true;
+        // Quality profiles change only when the operator reconfigures Radarr
+        // (rare), so we fetch them once — fetch_quality is a render-thread
+        // snapshot of !library_cached_, avoiding a cross-thread read.
+        if (fetch_quality) {
+            r.quality_profiles = radarr_.get_quality_profiles();
+            r.quality_fetched = true;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(lib_pending_mtx_);
+        lib_pending_ = std::move(r);
+    }
+    lib_result_ready_.store(true);
+    lib_refresh_in_flight_.store(false);
+}
+
+void BrowseScreen::apply_library_pending() {
+    if (!lib_result_ready_.load()) return;
+    PendingLibrary r;
+    {
+        std::lock_guard<std::mutex> lk(lib_pending_mtx_);
+        r = std::move(lib_pending_);
+    }
+    lib_result_ready_.store(false);
+
+    services_ok_ = r.services_ok;
+    spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
+                 "in_library={}, downloading={}",
+                 services_ok_, r.library_ids.size(), r.downloading_ids.size());
+    // Only replace the id-sets when Radarr answered. When it didn't, keep the
+    // previous visit's cache intact (matches the old code, where the clear +
+    // rebuild lived entirely inside the services_ok_ branch). Replacing
+    // atomically — never clearing first — means quick_add_focused() always
+    // reads a complete set, never a momentarily-empty one.
+    if (r.services_ok) {
+        library_tmdb_ids_     = std::move(r.library_ids);
+        downloading_tmdb_ids_ = std::move(r.downloading_ids);
+        if (r.quality_fetched) {
+            quality_profiles_ = std::move(r.quality_profiles);
+            library_cached_   = true;
         }
     }
 }
@@ -656,7 +702,8 @@ void BrowseScreen::maybe_load_more_pages() {
 
 void BrowseScreen::update() {
     filter_overlay_.tick();
-    apply_pending();
+    apply_pending();             // TMDB page workers → movies_
+    apply_library_pending();     // Radarr library/queue worker → id-sets
     maybe_load_more_pages();
 }
 
@@ -674,6 +721,10 @@ BrowseScreen::~BrowseScreen() {
     for (auto& t : tmdb_workers_) {
         if (t.joinable()) t.join();
     }
+    // Join the Radarr library-refresh worker too, so a thread mid-CURL can't
+    // outlive the screen and publish into freed members. Bounded by
+    // RadarrClient's per-attempt curl timeout.
+    if (lib_refresh_worker_.joinable()) lib_refresh_worker_.join();
 }
 
 void BrowseScreen::cycle_filter_value(int delta) {

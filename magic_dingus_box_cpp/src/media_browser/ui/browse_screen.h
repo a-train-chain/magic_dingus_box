@@ -255,6 +255,38 @@ private:
     std::unordered_set<int> downloading_tmdb_ids_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
+
+    // --- Async Radarr library/services refresh (mirrors LibraryScreen) ---
+    // enter() used to call is_reachable() + get_library() + get_queue()
+    // (+ get_quality_profiles() on first entry) SYNCHRONOUSLY on the render
+    // thread — 3-4 blocking HTTP round-trips (~200ms-1s+ over the VPN egress)
+    // that stalled the whole kiosk every time the operator opened the movie
+    // marquee. Those calls now run on lib_refresh_worker_; apply_library_pending()
+    // drains the result on the render thread on the next update() tick.
+    //
+    // Correctness note for quick_add_focused(): it reads library_tmdb_ids_ and
+    // quality_profiles_. During the async window those sets keep the PREVIOUS
+    // visit's data (they're only replaced atomically in apply_library_pending(),
+    // never cleared first), so quick-add always sees complete — if up to one
+    // refresh-cycle stale — data. Same staleness tolerance LibraryScreen and
+    // QueueScreen already accept. On the very first entry the sets are empty,
+    // which reads as "not in library yet" — identical to the pre-async state
+    // during the blocking fetch, just non-blocking now.
+    struct PendingLibrary {
+        bool                        services_ok = false;
+        std::unordered_set<int>     library_ids;
+        std::unordered_set<int>     downloading_ids;
+        std::vector<QualityProfile> quality_profiles;
+        bool                        quality_fetched = false;
+    };
+    void refresh_library_async();              // non-blocking; spawns worker
+    void run_library_refresh(bool fetch_quality);  // worker body (off render)
+    void apply_library_pending();              // drain on render thread
+    std::mutex        lib_pending_mtx_;
+    PendingLibrary    lib_pending_;
+    std::atomic<bool> lib_result_ready_{false};
+    std::atomic<bool> lib_refresh_in_flight_{false};
+    std::thread       lib_refresh_worker_;
 };
 
 }  // namespace media_browser::ui
