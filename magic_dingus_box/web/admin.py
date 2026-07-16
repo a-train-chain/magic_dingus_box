@@ -3,6 +3,8 @@ from __future__ import annotations
 import collections
 import io
 import json
+import posixpath
+from urllib.parse import urlsplit
 import socket
 import os
 import re
@@ -1733,25 +1735,40 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 text=True
             )
 
-            # Parse progress from stdout
-            current_time = 0
-            while True:
-                line = process.stdout.readline()
-                if not line and process.poll() is not None:
-                    break
+            # Watchdog: kill a hung ffmpeg so it can't hold its encoder slot
+            # (the _TRANSCODE_SEMAPHORE below) forever. A stalled decode on a
+            # corrupt/partial upload would otherwise block the readline() loop
+            # indefinitely — two such stalls exhaust the default 2-slot pool
+            # and every later upload sits 'queued' until a service restart.
+            # SIGKILL after the cap unblocks readline() (stdout closes) → the
+            # job falls through to the non-zero-returncode error path.
+            transcode_timeout_s = int(os.getenv("MAGIC_TRANSCODE_TIMEOUT_S", "3600"))
+            watchdog = threading.Timer(transcode_timeout_s, process.kill)
+            watchdog.daemon = True
+            watchdog.start()
 
-                # Parse out_time_ms from progress output
-                if line.startswith('out_time_ms='):
-                    try:
-                        time_ms = int(line.split('=')[1].strip())
-                        current_time = time_ms / 1000000  # Convert to seconds
-                        if duration > 0:
-                            job['progress'] = min(99, int((current_time / duration) * 100))
-                            job['message'] = f'Transcoding: {job["progress"]}%'
-                    except (ValueError, IndexError):
-                        pass
+            try:
+                # Parse progress from stdout
+                current_time = 0
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
 
-            process.wait()  # ensure returncode is set
+                    # Parse out_time_ms from progress output
+                    if line.startswith('out_time_ms='):
+                        try:
+                            time_ms = int(line.split('=')[1].strip())
+                            current_time = time_ms / 1000000  # Convert to seconds
+                            if duration > 0:
+                                job['progress'] = min(99, int((current_time / duration) * 100))
+                                job['message'] = f'Transcoding: {job["progress"]}%'
+                        except (ValueError, IndexError):
+                            pass
+
+                process.wait()  # ensure returncode is set
+            finally:
+                watchdog.cancel()
 
             # Check result
             if process.returncode == 0:
@@ -2158,20 +2175,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # filepath is relative to /opt/magic_dingus_box (parent of data_dir)
         target = data_dir.parent / filepath
 
-        # Security check: ensure path is within allowed directories
-        target_resolved = target.resolve()
-        data_dir_resolved = data_dir.parent.resolve()
-
-        # Check if path is within the parent directory
-        if not str(target_resolved).startswith(str(data_dir_resolved)):
-            return error_response("VALIDATION_ERROR", "Invalid path")
-
-        # Extra check: must be in roms dir (either data/roms or dev_data/roms)
-        is_data_rom = str(target_resolved).startswith(str(roms_dir.resolve()))
+        # Security check: must live under data/roms or dev_data/roms. Use the
+        # resolved-path containment helper, NOT str.startswith — the latter
+        # matches sibling dirs (e.g. "roms_backup" as inside "roms"), which
+        # for a DELETE endpoint taking a <path:...> is arbitrary-file-delete.
         dev_roms_dir = data_dir.parent / "dev_data" / "roms"
-        is_dev_rom = dev_roms_dir.exists() and str(target_resolved).startswith(str(dev_roms_dir.resolve()))
-
-        if not (is_data_rom or is_dev_rom):
+        if not (_is_within(target, roms_dir) or _is_within(target, dev_roms_dir)):
             return error_response("VALIDATION_ERROR", "File is not a ROM")
 
         if target.exists() and target.is_file():
@@ -2309,16 +2318,32 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # just "any github.com URL" — the old prefix check let any device on
         # the LAN POST a download_url pointing at an attacker-owned GitHub
         # repo and have the Pi fetch + install that tarball over itself
-        # (update.sh runs with no signature check). Restricting to the
-        # project's release/tarball paths closes that to LAN-adjacent RCE.
-        # Override via MAGIC_GITHUB_REPO for forks.
+        # (update.sh runs with no signature check). Override via
+        # MAGIC_GITHUB_REPO for forks.
+        #
+        # A plain string startswith() is NOT enough: curl (which update.sh
+        # uses with -L) normalizes RFC-3986 dot-segments before the request,
+        # so ".../a-train-chain/magic_dingus_box/../../attacker/repo/x.tar.gz"
+        # would pass a prefix check yet fetch attacker/repo. Parse the URL and
+        # compare the NORMALIZED path segments (same defense the _is_within
+        # filesystem check uses), and match the host exactly.
         gh_repo = os.getenv("MAGIC_GITHUB_REPO", "a-train-chain/magic_dingus_box")
-        allowed_prefixes = (
-            f"https://github.com/{gh_repo}/",
-            f"https://api.github.com/repos/{gh_repo}/",
-            f"https://codeload.github.com/{gh_repo}/",
+        # host → required leading path (normalized, no trailing slash yet)
+        host_prefix = {
+            "github.com":         f"/{gh_repo}",
+            "codeload.github.com": f"/{gh_repo}",
+            "api.github.com":     f"/repos/{gh_repo}",
+        }
+        parts = urlsplit(download_url)
+        norm_path = posixpath.normpath(parts.path) if parts.path else ""
+        expected = host_prefix.get(parts.netloc)
+        url_ok = (
+            parts.scheme == "https"
+            and expected is not None
+            # exact repo dir or a descendant path, post-normalization
+            and (norm_path == expected or norm_path.startswith(expected + "/"))
         )
-        if not any(download_url.startswith(p) for p in allowed_prefixes):
+        if not url_ok:
             return error_response(
                 "VALIDATION_ERROR",
                 f"Invalid download URL (must be from the {gh_repo} GitHub repo)")

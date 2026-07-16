@@ -2683,11 +2683,21 @@ async function performSavePlaylist(type) {
 
     async function doSave(overwrite) {
         const qs = overwrite ? '?overwrite=true' : '?overwrite=false';
-        const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}${qs}`, {
-            method: 'POST',
-            headers: getCsrfHeaders(),
-            body: JSON.stringify(playlistData)
-        });
+        // Guard against a double-tap firing two concurrent POSTs to the same
+        // playlist path (no visual feedback otherwise, so slow WiFi trains
+        // re-taps). Disable the Save button for the duration of the request;
+        // re-enable in finally so the 409→confirm→retry path stays usable.
+        let response;
+        if (saveBtn) saveBtn.disabled = true;
+        try {
+            response = await fetch(`${currentDevice.url}/admin/playlists/${filename}${qs}`, {
+                method: 'POST',
+                headers: getCsrfHeaders(),
+                body: JSON.stringify(playlistData)
+            });
+        } finally {
+            if (saveBtn) saveBtn.disabled = false;
+        }
 
         if (response.ok) {
             cancelEdit(type);
@@ -3238,11 +3248,15 @@ function removePlaylistItem(index, type) {
     items.splice(index, 1);
     config.setItems(items);
     renderPlaylistItems(type);
-    // Use new library panel for videos
+    // Use the touch-friendly panels for BOTH types. The game branch must
+    // call renderGamePlaylistAvailable() (→ renderROMLibraryPanel, with the
+    // +Add buttons), NOT the legacy renderPlaylistAvailable('game') which
+    // re-renders the old .content-item markup with no working touch handlers
+    // — that silently broke "add ROM" after deleting a row on iPhone.
     if (type === 'video') {
         renderLibraryPanel();
     } else {
-        renderPlaylistAvailable(type);
+        renderGamePlaylistAvailable();
     }
 }
 
@@ -3424,11 +3438,13 @@ function addItemToPlaylist(draggedItem, type) {
     config.setItems(items);
     renderPlaylistItems(type);
 
-    // Refresh available items using correct renderer
+    // Refresh available items using the touch-friendly renderer for both
+    // types (game → renderROMLibraryPanel via renderGamePlaylistAvailable;
+    // see removePlaylistItem for why the legacy path is avoided).
     if (type === 'video') {
         renderVideoPlaylistAvailable();
     } else {
-        renderPlaylistAvailable(type);
+        renderGamePlaylistAvailable();
     }
 }
 

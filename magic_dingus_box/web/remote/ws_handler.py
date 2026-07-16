@@ -70,10 +70,15 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
     conn = Connection(sock=ws, device_id=device_id)
     _add(conn)
 
-    # Zero any input state a previously-dead connection of this (or any)
-    # device may have left latched on the shared virtual gamepad, so a new
-    # session always starts from a clean, all-released state.
-    if uinput_writer is not None and hasattr(uinput_writer, "release_all"):
+    # Zero any input state a previously-dead connection may have left latched
+    # on the shared virtual gamepad — but ONLY when this is the sole
+    # connection. release_all() is a global sweep of the one shared device;
+    # firing it while ANOTHER phone is currently holding a button would rip
+    # that phone's input away. With a second phone present, we rely on the
+    # per-connection held-button tracking below (each connection releases
+    # exactly its own held controls on disconnect).
+    if (uinput_writer is not None and hasattr(uinput_writer, "release_all")
+            and len(all_connections()) <= 1):
         try:
             uinput_writer.release_all()
         except Exception:
@@ -146,10 +151,11 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
             elif t == "hello":
                 pass  # already handshook
     finally:
-        # Release anything this phone was still holding when the socket
-        # closed (clean close, timeout, or exception) so the kiosk never
-        # keeps seeing a stuck button/axis. Per-control release first
-        # (precise); release_all as a belt-and-braces sweep.
+        # Release exactly the controls THIS phone was still holding when the
+        # socket closed (clean close, timeout, or exception) so the kiosk
+        # never keeps seeing a stuck button/axis from this connection. This
+        # per-control release is precise and never touches another phone's
+        # input.
         if uinput_writer is not None:
             for btn in list(conn.held):
                 try:
@@ -157,7 +163,10 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                 except Exception:
                     pass
             conn.held.clear()
-            if hasattr(uinput_writer, "release_all"):
+            # A full release_all() sweep only when this is the LAST
+            # connection — otherwise it would zero a still-connected phone's
+            # held buttons. (all_connections() still includes conn here.)
+            if hasattr(uinput_writer, "release_all") and len(all_connections()) <= 1:
                 try:
                     uinput_writer.release_all()
                 except Exception:

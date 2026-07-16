@@ -78,6 +78,30 @@ def test_source_type_and_playlist_type_quoted():
 
 # ── Path containment ─────────────────────────────────────────────────────────
 
+def test_delete_rom_rejects_sibling_dir(client, temp_data_dir):
+    # roms_dir is data/roms. A sibling data/roms_backup must NOT be treated
+    # as inside it (the old str.startswith bug). Target a file there and
+    # confirm the delete is refused, and the file survives.
+    sibling = temp_data_dir / "roms_backup"
+    sibling.mkdir()
+    victim = sibling / "keepme.nes"
+    victim.write_text("rom")
+    # filepath is relative to data_dir.parent (== temp_data_dir.parent).
+    rel = victim.relative_to(temp_data_dir.parent)
+    rv = client.delete(f"/admin/roms/{rel}")
+    assert rv.status_code == 400
+    assert victim.exists()  # not deleted
+
+
+def test_delete_rom_allows_real_rom(client, temp_data_dir):
+    rom = temp_data_dir / "roms" / "game.nes"
+    rom.write_text("rom")
+    rel = rom.relative_to(temp_data_dir.parent)
+    rv = client.delete(f"/admin/roms/{rel}")
+    assert rv.status_code == 200
+    assert not rom.exists()
+
+
 def test_is_within_rejects_sibling_prefix(tmp_path):
     media = tmp_path / "media"
     media.mkdir()

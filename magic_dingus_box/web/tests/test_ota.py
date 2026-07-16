@@ -312,6 +312,12 @@ class TestURLValidation:
         ("https://not-github.com/file.tar.gz", False),
         ("file:///etc/passwd", False),
         ("javascript:alert(1)", False),
+        # Dot-segment normalization bypass: passes a naive startswith() but
+        # curl -L normalizes /../ before the request → attacker/repo. Must
+        # be rejected by comparing the NORMALIZED path.
+        ("https://github.com/a-train-chain/magic_dingus_box/../../attacker/evil/archive/main.tar.gz", False),
+        # Sibling repo whose name merely starts with the pinned repo.
+        ("https://github.com/a-train-chain/magic_dingus_box_evil/releases/download/v1/f.tar.gz", False),
     ])
     def test_url_validation(self, client, mock_update_script, auth_headers, url, expected_valid):
         """Test URL validation with various inputs."""

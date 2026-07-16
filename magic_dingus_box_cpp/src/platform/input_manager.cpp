@@ -200,6 +200,15 @@ void InputManager::reprobe_phone_remote() {
             if (ioctl(d->fd, EVIOCGID, &id) < 0) {
                 std::cout << "Phone remote node gone (web restart?); dropping "
                              "stale grab, will reopen" << std::endl;
+                // Clear the manager-level D-pad hold latch. The phone-remote
+                // D-pad is an ABS_HAT0X/Y axis; if the node vanishes mid-hold
+                // no 'value=0' event ever arrives, so dpad_held_* would stay
+                // latched and generate_dpad_repeats() would scroll the menu
+                // forever. cleanup() already does this on full teardown; the
+                // incremental erase here must too. Always safe — we can't
+                // know if the dying device was the one holding a direction.
+                dpad_held_x_ = 0;
+                dpad_held_y_ = 0;
                 it = devices_.erase(it);  // ~Device closes fd + frees libevdev
                 continue;
             }
