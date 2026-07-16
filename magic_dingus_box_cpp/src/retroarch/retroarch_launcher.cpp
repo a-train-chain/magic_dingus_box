@@ -751,32 +751,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Create Core Options file with performance-tuned settings
             script_file << "cat > /tmp/retroarch_core_options.cfg << 'OPTS'\n";
-            if (core_name.find("pcsx") != std::string::npos || core_name.find("beetle_psx") != std::string::npos || core_name.find("swanstation") != std::string::npos) {
-                script_file << "pcsx_rearmed_pad1type = \"analog\"\n";
-                // Performance: offload SPU audio to separate CPU core (Pi 4B has 4 cores)
-                script_file << "pcsx_rearmed_spu_thread = \"enabled\"\n";
-                // Audio: enable CD audio and XA decoding for full game experience
-                script_file << "pcsx_rearmed_nocdaudio = \"disabled\"\n";
-                script_file << "pcsx_rearmed_noxadecoding = \"disabled\"\n";
-                // Performance: auto-frameskip as safety net (only skips when falling behind)
-                script_file << "pcsx_rearmed_frameskip_type = \"auto_threshold\"\n";
-                script_file << "pcsx_rearmed_frameskip_threshold = \"33\"\n";
-                script_file << "pcsx_rearmed_frameskip_interval = \"3\"\n";
-                // Performance: fast GPU linked list processing
-                script_file << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
-                // Keep DRC (dynamic recompiler) enabled - critical for performance
-                script_file << "pcsx_rearmed_drc = \"enabled\"\n";
-                // Keep icache emulation for compatibility (disabling breaks some games)
-                script_file << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
-                // Standard PSX clock (57 = native speed)
-                script_file << "pcsx_rearmed_psxclock = \"57\"\n";
-                // Audio quality (minimal CPU: no interpolation, no reverb)
-                script_file << "pcsx_rearmed_spu_interpolation = \"off\"\n";
-                script_file << "pcsx_rearmed_spu_reverb = \"disabled\"\n";
-                // Rendering at native 1x resolution (no upscaling overhead)
-                script_file << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
-                script_file << "pcsx_rearmed_dithering = \"enabled\"\n";
-            }
+            write_core_options(script_file, core_name);
             script_file << "OPTS\n";
 
             // Delete per-core .opt override file so our core options take effect

@@ -148,6 +148,40 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     }
 }
 
+void write_core_options(std::ostream& out, const std::string& core_name) {
+    const bool is_ps1 = core_name.find("pcsx") != std::string::npos ||
+                        core_name.find("beetle_psx") != std::string::npos ||
+                        core_name.find("swanstation") != std::string::npos;
+    if (!is_ps1) {
+        return;
+    }
+
+    out << "pcsx_rearmed_pad1type = \"analog\"\n";
+    // Offload SPU audio to a separate CPU core (Pi 4B has four cores).
+    out << "pcsx_rearmed_spu_thread = \"enabled\"\n";
+    // Retain CD audio and XA decoding for the complete game soundtrack.
+    out << "pcsx_rearmed_nocdaudio = \"disabled\"\n";
+    out << "pcsx_rearmed_noxadecoding = \"disabled\"\n";
+    // The Pi has measured emulation headroom. Threshold frame skipping made
+    // the core drop up to three consecutive frames and request 128 ms audio
+    // latency even at full speed, producing the observed choppy response.
+    out << "pcsx_rearmed_frameskip_type = \"disabled\"\n";
+    // Fast GPU linked-list processing.
+    out << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
+    // ARM64 dynamic recompilation is critical for PS1 performance.
+    out << "pcsx_rearmed_drc = \"enabled\"\n";
+    // Preserve compatibility for games that depend on cache behavior.
+    out << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
+    // Keep the native PSX CPU clock.
+    out << "pcsx_rearmed_psxclock = \"57\"\n";
+    // Retain the established low-overhead audio options.
+    out << "pcsx_rearmed_spu_interpolation = \"off\"\n";
+    out << "pcsx_rearmed_spu_reverb = \"disabled\"\n";
+    // Render at native 1x resolution; RetroArch scales into the bezel.
+    out << "pcsx_rearmed_neon_enhancement_enable = \"disabled\"\n";
+    out << "pcsx_rearmed_dithering = \"enabled\"\n";
+}
+
 std::string build_kms_ready_watch_block(const std::string& command,
                                         const ReadyWatchOptions& options) {
     std::ostringstream block;

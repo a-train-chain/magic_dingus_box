@@ -15,6 +15,7 @@ struct LaunchOptions {
 };
 
 void write_video_config(std::ostream& out, const LaunchOptions& options);
+void write_core_options(std::ostream& out, const std::string& core_name);
 
 enum class StartupStatus {
     Ready,

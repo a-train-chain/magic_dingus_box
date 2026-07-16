@@ -89,6 +89,40 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport",
     REQUIRE(config.find("input_overlay =") == std::string::npos);
 }
 
+TEST_CASE("PS1 core disables frame skipping and preserves native performance options",
+          "[retroarch][core-options][ps1]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "pcsx_rearmed_libretro");
+    const std::string config = output.str();
+
+    require_line(config, "pcsx_rearmed_pad1type = \"analog\"");
+    require_line(config, "pcsx_rearmed_spu_thread = \"enabled\"");
+    require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
+    require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");
+    require_line(config, "pcsx_rearmed_frameskip_type = \"disabled\"");
+    require_line(config, "pcsx_rearmed_gpu_slow_llists = \"disabled\"");
+    require_line(config, "pcsx_rearmed_drc = \"enabled\"");
+    require_line(config, "pcsx_rearmed_icache_emulation = \"enabled\"");
+    require_line(config, "pcsx_rearmed_psxclock = \"57\"");
+    require_line(config, "pcsx_rearmed_spu_interpolation = \"off\"");
+    require_line(config, "pcsx_rearmed_spu_reverb = \"disabled\"");
+    require_line(config,
+                 "pcsx_rearmed_neon_enhancement_enable = \"disabled\"");
+    require_line(config, "pcsx_rearmed_dithering = \"enabled\"");
+    REQUIRE(config.find("pcsx_rearmed_frameskip_threshold") ==
+            std::string::npos);
+    REQUIRE(config.find("pcsx_rearmed_frameskip_interval") ==
+            std::string::npos);
+    REQUIRE(config.find("auto_threshold") == std::string::npos);
+}
+
+TEST_CASE("non-PS1 core emits no PCSX-ReARMed options",
+          "[retroarch][core-options]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "nestopia_libretro");
+    REQUIRE(output.str().empty());
+}
+
 TEST_CASE("KMS marker makes startup ready without waiting for game exit",
           "[retroarch][startup]") {
     const std::string marker = temp_path("ready");
