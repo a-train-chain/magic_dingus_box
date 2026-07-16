@@ -4,7 +4,19 @@ Description=Magic Dingus Box C++ Kiosk Engine
 # at startup, so the kiosk must boot AFTER it for the kiosk's input scan
 # to find the virtual gamepad. Without this, the phone remote silently
 # does nothing because the kiosk never reads the device.
-After=network-online.target systemd-user-sessions.service sound.target magic-dingus-web.service
+# NOTE: network-online.target is intentionally in Wants= but NOT After=.
+# The kiosk UI, game emulation, and playlist video playback need NO network
+# to start — only the Media Browser's TMDB/Radarr calls do, and those are
+# lazy (clients connect on first use, VpnHealthMonitor polls on its own
+# thread). Ordering the kiosk After=network-online blocked its start ~14s
+# on NetworkManager-wait-online (measured), leaving the screen black that
+# whole time. Keeping network-online in Wants= still pulls the network up
+# in parallel, so it's ready by the time the operator opens the Media
+# Browser — the menu just appears ~10s sooner. magic-dingus-web.service
+# STAYS in After= (below): the phone-remote virtual gamepad must exist
+# before the kiosk's input scan (see note above), and that service starts
+# fast without waiting on network.
+After=systemd-user-sessions.service sound.target magic-dingus-web.service
 Wants=network-online.target sound.target magic-dingus-web.service
 # Start early, before X11 (we use DRM/KMS directly)
 Before=graphical.target lightdm.service
