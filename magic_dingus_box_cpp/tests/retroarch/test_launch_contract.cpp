@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -142,4 +143,22 @@ TEST_CASE("generated watcher removes compositor hints and publishes real PID",
     REQUIRE(block.find("printf '%s\\n' \"$RETROARCH_PID\"") !=
             std::string::npos);
     REQUIRE(block.find("/dev/dri/card*") != std::string::npos);
+}
+
+TEST_CASE("generated KMS watcher is valid Bash", "[retroarch][startup]") {
+    const std::string script_path = temp_path("watcher.sh");
+    retroarch::ReadyWatchOptions options;
+    options.ready_file = temp_path("watcher-ready");
+
+    {
+        std::ofstream script(script_path);
+        REQUIRE(script.is_open());
+        script << "#!/bin/bash\n";
+        script << retroarch::build_kms_ready_watch_block(
+            "/usr/bin/retroarch --verbose", options);
+        script << "exit \"$RETROARCH_EXIT\"\n";
+    }
+
+    REQUIRE(std::system(("/bin/bash -n '" + script_path + "'").c_str()) == 0);
+    fs::remove(script_path);
 }

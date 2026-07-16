@@ -523,6 +523,8 @@ bool RetroArchLauncher::launch_game(const GameLaunchInfo& game_info, int system_
 
 
 bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_volume_percent, float volume_offset_db, int audio_output, const LaunchOptions& opts) {
+    const ReadyWatchOptions ready_options;
+
     std::cout << "=== RetroArch Launcher Called ===" << std::endl;
     std::cout << "ROM: " << game_info.rom_path << std::endl;
     std::cout << "Core: " << game_info.core_name << std::endl;
@@ -1065,8 +1067,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# Set essential environment for RetroArch\n";
             script_file << "export XDG_RUNTIME_DIR=/run/user/" << getuid() << "\n";
             script_file << "export HOME=" << config::get_home_path() << "\n";
-            script_file << "# CRITICAL: Ensure we have access to input devices\n";
-            script_file << "export DISPLAY=:0\n";
             script_file << "# CRITICAL: Check who is holding the input device\n";
             script_file << "echo 'Launcher: Checking input device usage...' >> /tmp/retroarch_launcher.log\n";
             script_file << "fuser -v /dev/input/event0 >> /tmp/retroarch_launcher.log 2>&1 || true\n";
@@ -1112,20 +1112,20 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# CRITICAL: Redirect stdout/stderr to log file\n";
             script_file << "exec 1>>" << config::retroarch::get_launcher_log() << " 2>&1\n";
             script_file << "echo 'Launcher: Launching RetroArch directly...' >> /tmp/retroarch_launcher.log\n";
-            script_file << "# CRITICAL: Run RetroArch in foreground (not exec) so cleanup can run\n";
-            script_file << "# Background keepalive processes keep controller awake while RetroArch runs\n";
-            script_file << "# RetroArch will open input devices itself (they're kept awake by background processes)\n";
-            script_file << retroarch_cmd << "\n";
-            script_file << "RETROARCH_EXIT=$?\n";
+            script_file << "# Launch RetroArch under the KMS readiness watcher so the parent can\n";
+            script_file << "# distinguish real display takeover from a stuck startup.\n";
+            script_file << build_kms_ready_watch_block(retroarch_cmd, ready_options);
             script_file << "echo \"Launcher: RetroArch exited with code $RETROARCH_EXIT\" >> /tmp/retroarch_launcher.log\n";
             // Clean up temp config files (no restore needed - we used isolated /tmp config)
             script_file << "rm -f \"$UI_CONFIG\"\n";
             script_file << "rm -f /tmp/retroarch_core_options.cfg\n";
+            script_file << "rm -f \"$RETROARCH_READY_FILE\"\n";
             script_file << "# CRITICAL: Autoconfig file should remain in place (not backed up/restored)\n";
             script_file << "# Clean up any old backup files from previous runs\n";
             script_file << "find \"$AUTOCONFIG_DIR\" -name '*.backup.*' -type f -mtime +1 -delete 2>/dev/null || true\n";
                 script_file << "echo 'Launcher: RetroArch finished'\n";
                 script_file << "# Script will exit, main service continues running\n";
+                script_file << "exit \"$RETROARCH_EXIT\"\n";
 
             script_file.close();
 
@@ -1138,12 +1138,6 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             }
         }
 
-        // Set environment variables for the RetroArch process
-        std::string xdg_runtime = "/run/user/" + std::to_string(getuid());
-        setenv("XDG_RUNTIME_DIR", xdg_runtime.c_str(), 1);
-        setenv("HOME", config::get_home_path().c_str(), 1);
-        setenv("DISPLAY", ":0", 1);
-        
         // CRITICAL: Verify controller device is accessible before forking
         std::cout << "Verifying controller device accessibility..." << std::endl;
         bool controller_accessible = false;
@@ -1170,10 +1164,27 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         std::string launch_cmd = "/bin/bash " + launcher_script;
         
         std::cout << "Command: " << launch_cmd << std::endl;
+
+        // A stale marker must never make a new launch look ready. The script
+        // removes it again immediately before starting RetroArch, but doing it
+        // synchronously here closes the pre-fork window as well.
+        std::error_code ready_remove_error;
+        fs::remove(ready_options.ready_file, ready_remove_error);
+        if (ready_remove_error) {
+            std::cerr << "Failed to clear RetroArch readiness marker: "
+                      << ready_remove_error.message() << std::endl;
+            return false;
+        }
         
         // CRITICAL: Fork to run command in background (non-blocking for UI)
         pid_t launch_pid = fork();
         if (launch_pid == 0) {
+            // Isolate every pre-launch helper and RetroArch itself in one
+            // process group so a startup timeout can terminate all of them.
+            if (setpgid(0, 0) != 0) {
+                _exit(126);
+            }
+
             // Child process - execute the launch command
             // Redirect output to log file
             int log_fd = open(config::retroarch::get_launcher_log().c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -1198,14 +1209,59 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             execl("/bin/bash", "bash", launcher_script.c_str(), nullptr);
             // If we reach here, exec failed
             std::cerr << "Failed to execute launch command" << std::endl;
-            exit(1);
+            _exit(127);
         } else if (launch_pid > 0) {
-            // Parent process - WAIT for RetroArch to exit (Blocking)
-            std::cout << "RetroArch launch initiated (Blocking, PID: " << launch_pid << ")" << std::endl;
-            
-            int status;
-            waitpid(launch_pid, &status, 0);
-            
+            // Repeat setpgid in the parent to close the fork/exec race. EACCES
+            // means the child already exec'd after successfully grouping itself.
+            if (setpgid(launch_pid, launch_pid) != 0 && errno != EACCES &&
+                errno != ESRCH) {
+                std::cerr << "Failed to create RetroArch launch process group: "
+                          << std::strerror(errno) << std::endl;
+                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
+                return false;
+            }
+
+            std::cout << "RetroArch launch initiated (PID: " << launch_pid
+                      << ", waiting up to 15 seconds for KMS)" << std::endl;
+            const StartupStatus startup = wait_for_startup(
+                launch_pid, ready_options.ready_file, std::chrono::seconds(15));
+            if (startup != StartupStatus::Ready) {
+                switch (startup) {
+                    case StartupStatus::Exited:
+                        std::cerr << "RetroArch exited before taking over KMS" << std::endl;
+                        break;
+                    case StartupStatus::TimedOut:
+                        std::cerr << "RetroArch did not take over KMS within 15 seconds"
+                                  << std::endl;
+                        break;
+                    case StartupStatus::WaitError:
+                        std::cerr << "Unable to supervise RetroArch startup" << std::endl;
+                        break;
+                    case StartupStatus::Ready:
+                        break;
+                }
+                terminate_process_group(launch_pid, std::chrono::milliseconds(500));
+                fs::remove(ready_options.ready_file, ready_remove_error);
+                return false;
+            }
+
+            std::cout << "RetroArch has taken over the KMS display" << std::endl;
+
+            // KMS is ready; supervision is finished and adds no gameplay
+            // overhead. Block until the user exits RetroArch as before.
+            int status = 0;
+            pid_t wait_result;
+            do {
+                wait_result = waitpid(launch_pid, &status, 0);
+            } while (wait_result < 0 && errno == EINTR);
+
+            fs::remove(ready_options.ready_file, ready_remove_error);
+            if (wait_result < 0) {
+                std::cerr << "Failed while waiting for RetroArch to exit: "
+                          << std::strerror(errno) << std::endl;
+                return true;
+            }
+
             if (WIFEXITED(status)) {
                 std::cout << "RetroArch exited with status " << WEXITSTATUS(status) << std::endl;
             } else if (WIFSIGNALED(status)) {
