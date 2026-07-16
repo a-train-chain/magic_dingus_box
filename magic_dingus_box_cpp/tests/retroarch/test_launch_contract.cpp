@@ -1,14 +1,40 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "retroarch/launch_contract.h"
 
 namespace {
 
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
+
 void require_line(const std::string& config, const std::string& line) {
     REQUIRE(config.find(line + "\n") != std::string::npos);
+}
+
+std::string temp_path(const char* leaf) {
+    return (fs::temp_directory_path() /
+            (std::string("mdb-ra-") + std::to_string(getpid()) + "-" + leaf))
+        .string();
+}
+
+pid_t spawn_group(const std::string& command) {
+    const pid_t pid = fork();
+    REQUIRE(pid >= 0);
+    if (pid == 0) {
+        setpgid(0, 0);
+        execl("/bin/bash", "bash", "-c", command.c_str(), nullptr);
+        _exit(127);
+    }
+    setpgid(pid, pid);
+    return pid;
 }
 
 }  // namespace
@@ -60,4 +86,60 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport",
     require_line(config, "video_custom_viewport_enable = \"false\"");
     require_line(config, "aspect_ratio_index = \"23\"");
     REQUIRE(config.find("input_overlay =") == std::string::npos);
+}
+
+TEST_CASE("KMS marker makes startup ready without waiting for game exit",
+          "[retroarch][startup]") {
+    const std::string marker = temp_path("ready");
+    fs::remove(marker);
+    const pid_t pid = spawn_group("sleep 0.10; printf '1234\\n' > '" + marker +
+                                  "'; sleep 5");
+
+    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
+            retroarch::StartupStatus::Ready);
+    REQUIRE(retroarch::terminate_process_group(pid, 500ms));
+    fs::remove(marker);
+}
+
+TEST_CASE("child exit before KMS marker is a startup failure",
+          "[retroarch][startup]") {
+    const std::string marker = temp_path("early-ready");
+    fs::remove(marker);
+    const pid_t pid = spawn_group("exit 7");
+
+    REQUIRE(retroarch::wait_for_startup(pid, marker, 2s, 20ms) ==
+            retroarch::StartupStatus::Exited);
+    fs::remove(marker);
+}
+
+TEST_CASE("startup timeout terminates the entire launch group",
+          "[retroarch][startup]") {
+    const std::string marker = temp_path("timeout-ready");
+    fs::remove(marker);
+    const pid_t pid = spawn_group("sleep 10");
+
+    REQUIRE(retroarch::wait_for_startup(pid, marker, 200ms, 20ms) ==
+            retroarch::StartupStatus::TimedOut);
+    REQUIRE(retroarch::terminate_process_group(pid, 200ms));
+    int status = 0;
+    REQUIRE(waitpid(pid, &status, WNOHANG) == -1);
+    fs::remove(marker);
+}
+
+TEST_CASE("generated watcher removes compositor hints and publishes real PID",
+          "[retroarch][startup]") {
+    retroarch::ReadyWatchOptions options;
+    options.ready_file = "/tmp/mdb-ready";
+    options.drm_card_pattern = "/dev/dri/card*";
+
+    const std::string block = retroarch::build_kms_ready_watch_block(
+        "/usr/bin/retroarch --verbose", options);
+
+    REQUIRE(block.find(
+                "unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE SDL_VIDEODRIVER") !=
+            std::string::npos);
+    REQUIRE(block.find("/proc/$RETROARCH_PID/fd/*") != std::string::npos);
+    REQUIRE(block.find("printf '%s\\n' \"$RETROARCH_PID\"") !=
+            std::string::npos);
+    REQUIRE(block.find("/dev/dri/card*") != std::string::npos);
 }
