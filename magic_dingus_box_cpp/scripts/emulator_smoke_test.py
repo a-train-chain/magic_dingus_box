@@ -16,8 +16,8 @@ HOW IT DRIVES THE KIOSK
     RetroArch enter/exit. Fields used: screen, retroarch.{rom_name,core},
     and the settings.* game-browser cursor (added for closed-loop nav).
   - Health: the systemd journal for the kiosk service (launch/return log
-    strings) and /tmp/retroarch_launcher.log (the Vulkan "QueuePresent
-    failed" black-screen signature).
+    strings), /home/magic/retroarch_launcher.log (fatal video signatures),
+    and the fresh /tmp/retroarch_mdb.ready KMS-takeover marker.
 
 QUIT MECHANISM
   Games are quit by sending SIGTERM to the retroarch process. From the
@@ -44,6 +44,7 @@ import hashlib
 import hmac
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -55,7 +56,10 @@ DATA_DIR = os.environ.get(
 STATUS_PATH = os.path.join(DATA_DIR, "kiosk_status.json")
 SECRET_PATH = os.path.join(DATA_DIR, "flask_secret.key")
 PAIRED_PATH = os.path.join(DATA_DIR, "paired_remotes.json")
-LAUNCHER_LOG = "/tmp/retroarch_launcher.log"
+LAUNCHER_LOG = os.environ.get(
+    "MAGIC_RETROARCH_LOG", "/home/magic/retroarch_launcher.log")
+READY_MARKER = os.environ.get(
+    "MAGIC_RETROARCH_READY", "/tmp/retroarch_mdb.ready")
 BASE_URL = os.environ.get("MAGIC_WEB_URL", "http://127.0.0.1:5000")
 KIOSK_UNIT = "magic-dingus-box-cpp.service"
 
@@ -67,7 +71,7 @@ BTN_UP = "UP"            # -> ROTATE_VERTICAL -1
 
 # Timing (seconds)
 PRESS_SETTLE = 0.35      # wait after a press for the status file to update
-LAUNCH_TIMEOUT = 45      # SELECT -> screen==retroarch
+LAUNCH_TIMEOUT = 45      # SELECT -> fresh, live KMS-ready RetroArch PID
 PLAY_SECONDS = 7         # let the core reach steady state (catch Vulkan thrash)
 RETURN_TIMEOUT = 40      # quit -> screen==playlist
 NAV_MAX_STEPS = 40       # bound blind-ish navigation loops
@@ -154,12 +158,84 @@ def journal_since(cursor_ts: float) -> str:
         return f"(journal read failed: {e})"
 
 
-def launcher_log_tail(n=200) -> str:
+def launcher_log_cursor() -> int:
     try:
-        with open(LAUNCHER_LOG) as f:
-            return "".join(f.readlines()[-n:])
-    except Exception:
+        return os.path.getsize(LAUNCHER_LOG)
+    except OSError:
+        return 0
+
+
+def launcher_log_since(cursor: int) -> str:
+    try:
+        with open(LAUNCHER_LOG, errors="replace") as launcher_log:
+            size = os.fstat(launcher_log.fileno()).st_size
+            launcher_log.seek(cursor if 0 <= cursor <= size else 0)
+            return launcher_log.read()
+    except OSError:
         return ""
+
+
+def retroarch_pid_is_live(pid: int) -> bool:
+    """Require both a live process and the actual RetroArch executable."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        with open(f"/proc/{pid}/comm") as comm:
+            return comm.read().strip() == "retroarch"
+    except (OSError, ValueError):
+        return False
+
+
+def read_ready_pid(marker_path: str, launch_started_at: float):
+    """Return the live RetroArch PID from a marker created by this launch."""
+    try:
+        marker_stat = os.stat(marker_path)
+        if marker_stat.st_mtime < launch_started_at:
+            return None
+        with open(marker_path) as marker:
+            fields = marker.read().split()
+        if len(fields) != 1:
+            return None
+        pid = int(fields[0])
+    except (OSError, ValueError):
+        return None
+    return pid if retroarch_pid_is_live(pid) else None
+
+
+def launch_log_failure(log_text: str):
+    fatal_signatures = (
+        ("Failed to connect to Wayland server", "Wayland display connection failed"),
+        ("QueuePresent failed", "QueuePresent failed in Vulkan KMS"),
+        ("did not take over KMS within 15 seconds", "KMS takeover timed out"),
+        ("exited before taking over KMS", "RetroArch exited before KMS takeover"),
+    )
+    for signature, message in fatal_signatures:
+        if signature in log_text:
+            return message
+    return None
+
+
+def wait_for_kms_takeover(k: Kiosk, launch_started_at: float,
+                          timeout: float, log_cursor: int) -> int:
+    """Wait for a fresh marker, failing early if the kiosk cancels launch."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pid = read_ready_pid(READY_MARKER, launch_started_at)
+        if pid is not None:
+            return pid
+
+        status = k.status()
+        if (time.time() - launch_started_at > 0.5 and
+                status.get("screen") == "playlist"):
+            failure = launch_log_failure(launcher_log_since(log_cursor))
+            detail = failure or "launcher returned to the menu before KMS readiness"
+            raise RuntimeError(detail)
+        time.sleep(0.1)
+
+    failure = launch_log_failure(launcher_log_since(log_cursor))
+    detail = f": {failure}" if failure else ""
+    raise TimeoutError(f"timeout waiting for fresh KMS readiness marker{detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +303,13 @@ def sigterm_retroarch(sig="TERM"):
                    capture_output=True)
 
 
+def signal_retroarch_pid(pid: int, sig=signal.SIGTERM):
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
 def kiosk_alive_and_in_menu(st: dict) -> bool:
     # Predicate for wait_status: receives a status dict. Back at the menu
     # means the RetroArch mode has been torn down and we're on the playlist.
@@ -254,6 +337,7 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
               "played_clean": None, "returned": False, "return_ms": None,
               "errors": []}
     cursor_ts = time.time() - 1
+    log_cursor = launcher_log_cursor()
 
     # Navigate to the game and launch.
     sm = open_game_playlist(k, playlist_idx)
@@ -271,15 +355,17 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
     try:
         st = k.wait_status(
             lambda s: s.get("screen") == "retroarch" and s.get("retroarch"),
-            LAUNCH_TIMEOUT, "RetroArch to launch")
+            5, "kiosk to enter RetroArch launch mode")
+        retroarch_pid = wait_for_kms_takeover(
+            k, t0, LAUNCH_TIMEOUT, log_cursor)
         result["launched"] = True
         result["launch_ms"] = int((time.time() - t0) * 1000)
         result["core"] = (st.get("retroarch") or {}).get("core", "?")
         result["rom"] = (st.get("retroarch") or {}).get("rom_name", "?")
-        log(f"  launched core={result['core']} rom='{result['rom']}' "
-            f"in {result['launch_ms']}ms", Colors.G)
-    except TimeoutError as e:
-        result["errors"].append(f"launch timeout: {e}")
+        log(f"  KMS ready pid={retroarch_pid} core={result['core']} "
+            f"rom='{result['rom']}' in {result['launch_ms']}ms", Colors.G)
+    except (TimeoutError, RuntimeError) as e:
+        result["errors"].append(f"launch failed: {e}")
         log(f"  LAUNCH FAILED: {e}", Colors.R)
         recover(k)
         return result
@@ -287,17 +373,22 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
     # Play — let the core reach steady state so a Vulkan swapchain thrash
     # would surface in the launcher log.
     time.sleep(PLAY_SECONDS)
-    ltail = launcher_log_tail()
-    if "QueuePresent failed" in ltail:
+    launch_log = launcher_log_since(log_cursor)
+    log_failure = launch_log_failure(launch_log)
+    if log_failure:
         result["played_clean"] = False
-        result["errors"].append("Vulkan QueuePresent thrash (black-screen risk)")
-        log("  WARNING: QueuePresent failed in launcher log", Colors.R)
+        result["errors"].append(log_failure)
+        log(f"  FATAL VIDEO ERROR: {log_failure}", Colors.R)
+    elif not retroarch_pid_is_live(retroarch_pid):
+        result["played_clean"] = False
+        result["errors"].append("RetroArch died during the sustained-play check")
+        log("  RetroArch died before the sustained-play check completed", Colors.R)
     else:
         result["played_clean"] = True
 
     # Quit via SIGTERM (== RetroArch-menu Quit from the kiosk's POV).
     t1 = time.time()
-    sigterm_retroarch("TERM")
+    signal_retroarch_pid(retroarch_pid)
     try:
         k.wait_status(kiosk_alive_and_in_menu, RETURN_TIMEOUT,
                       "kiosk to return to menu")
@@ -333,15 +424,18 @@ def test_restart_path(k: Kiosk) -> dict:
               "intro_replayed": False, "recovered": False, "errors": []}
     log("RESTART-BUTTON PATH: launch a game, then trigger restart", Colors.B)
     # Launch playlist 0 / game 0.
+    log_cursor = launcher_log_cursor()
     try:
         sm = open_game_playlist(k, 0)
         nav_cursor_to(k, "selected_game_index", 0)
+        launch_started_at = time.time()
         k.press(BTN_SELECT)
         k.wait_status(lambda s: s.get("screen") == "retroarch" and s.get("retroarch"),
-                      LAUNCH_TIMEOUT, "RetroArch to launch")
+                      5, "kiosk to enter RetroArch launch mode")
+        wait_for_kms_takeover(k, launch_started_at, LAUNCH_TIMEOUT, log_cursor)
         result["launched"] = True
         log("  game running; triggering restart (systemctl restart)", Colors.Y)
-    except TimeoutError as e:
+    except (TimeoutError, RuntimeError) as e:
         result["errors"].append(f"pre-restart launch failed: {e}")
         recover(k)
         return result
