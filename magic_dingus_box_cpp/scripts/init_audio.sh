@@ -32,6 +32,25 @@ if [ "$(loginctl show-user magic --property=Linger --value 2>/dev/null)" != "yes
     sudo loginctl enable-linger magic
 fi
 
+# Mask the systemd USER-SESSION PulseAudio units. This script owns
+# PulseAudio on the kiosk (writes default.pa with the correct sink, then
+# starts the daemon) — but linger (above) means user@$MAGIC_UID runs at
+# every boot, and the distro-default user units (pulseaudio.socket +
+# pulseaudio.service, --global enabled) socket-activate a SECOND, config-
+# less PA instance that races ours during boot. Observed live 2026-07-16:
+# the user-session instance won the race, wedged (pactl: "Connection
+# refused"), and every gst_element_set_state(PLAYING) in the kiosk failed
+# synchronously — no intro video, no video playback at all for the whole
+# boot. Masking (symlink to /dev/null in /etc/systemd/user) is persistent
+# and clone-safe; the check makes re-runs a silent no-op.
+if [ "$(systemctl --global is-enabled pulseaudio.socket 2>/dev/null)" != "masked" ]; then
+    echo "Masking user-session PulseAudio units (init_audio owns PA)..."
+    sudo systemctl --global mask pulseaudio.service pulseaudio.socket
+    # Stop any already-running user-session instance so it can't linger
+    # into this boot. Ignore errors — the user manager may not be up yet.
+    systemctl --user stop pulseaudio.socket pulseaudio.service 2>/dev/null || true
+fi
+
 # Suppress PulseAudio warnings for the unused HDMI controller. The Pi 4 exposes
 # two HDMI controllers via DT (vc4-hdmi-0, vc4-hdmi-1) but the kiosk only uses
 # HDMI0. The unused vc4-hdmi-1 has no audio profile, so on every kiosk start
