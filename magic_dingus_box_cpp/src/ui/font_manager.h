@@ -88,6 +88,13 @@ private:
     
     // Font data (loaded from TTF)
     std::vector<uint8_t> font_data_;
+
+    // Memo for get_baseline_at_size(): baseline is a pure function of the
+    // immutable font_data_ + size, but computing it re-parses the whole
+    // font (stbtt_InitFont) — and the renderer asks per item per frame.
+    // mutable because the getter is const. Cleared wherever font_data_ is
+    // replaced/cleared.
+    mutable std::unordered_map<int, int> baseline_cache_;
     
     // Rasterize a glyph using stb_truetype (at base font size)
     Glyph rasterize_glyph(char32_t codepoint);

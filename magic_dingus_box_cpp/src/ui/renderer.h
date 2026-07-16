@@ -290,6 +290,16 @@ private:
     
     // GL state
     uint32_t shader_program_;
+    // Cached uniform locations for the main UI shader. Looked up once per
+    // link in compile_shaders() instead of a string-keyed
+    // glGetUniformLocation per draw call — draw_quad hits these per quad
+    // and draw_text PER GLYPH per frame (tens of thousands of driver
+    // lookups/sec on the idle menu). Locations are only stable per program
+    // object, so compile_shaders() re-caches them on every (re)link — this
+    // covers the RetroArch-return reset_gl() path, which recompiles the
+    // shaders and would invalidate stale locations.
+    int32_t u_color_loc_ = -1;
+    int32_t u_use_texture_loc_ = -1;
     uint32_t crt_shader_program_;            // Legacy: procedural alpha-blend overlay
     uint32_t crt_composite_shader_program_;  // Enhanced: samples scene FBO + applies effects
     uint32_t vao_;

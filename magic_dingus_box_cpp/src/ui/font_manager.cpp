@@ -28,9 +28,10 @@ bool FontManager::load_font(const std::string& path, int size) {
     if (!load_ttf_file(path)) {
         return false;
     }
-    
+
     font_path_ = path;
     font_size_ = size;
+    baseline_cache_.clear();  // font_data_ just changed; memo is stale
     
     // Calculate proper line height and baseline from font metrics
     if (!font_data_.empty()) {
@@ -222,18 +223,31 @@ int FontManager::get_baseline_at_size(int size) const {
     if (font_data_.empty()) {
         return static_cast<int>(size * 0.8);
     }
-    
+
+    // Memoized: this is a pure function of the immutable font_data_ and
+    // size, but stbtt_InitFont re-parses the whole TrueType table
+    // directory on every call — and renderer.cpp calls this from
+    // per-item render loops every frame (~600 full font re-parses/sec on
+    // the playlist menu, for a value that only ever takes a couple of
+    // distinct sizes).
+    auto it = baseline_cache_.find(size);
+    if (it != baseline_cache_.end()) {
+        return it->second;
+    }
+
     stbtt_fontinfo font;
-    if (!stbtt_InitFont(&font, const_cast<unsigned char*>(font_data_.data()), 
+    if (!stbtt_InitFont(&font, const_cast<unsigned char*>(font_data_.data()),
                         stbtt_GetFontOffsetForIndex(font_data_.data(), 0))) {
         return static_cast<int>(size * 0.8);
     }
-    
+
     float scale = stbtt_ScaleForPixelHeight(&font, static_cast<float>(size));
     int ascent, descent, line_gap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
-    
-    return static_cast<int>(ascent * scale);
+
+    const int baseline = static_cast<int>(ascent * scale);
+    baseline_cache_.emplace(size, baseline);
+    return baseline;
 }
 
 int FontManager::get_text_width(const std::string& text) {
@@ -276,8 +290,9 @@ void FontManager::cleanup() {
         }
     }
     size_glyph_cache_.clear();
-    
+
     font_data_.clear();
+    baseline_cache_.clear();
 }
 
 void FontManager::reset_textures() {

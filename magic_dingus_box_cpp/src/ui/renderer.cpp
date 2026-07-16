@@ -828,8 +828,8 @@ void Renderer::render_bezel() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
     // Use white color with full alpha to render texture as-is
-    glUniform4f(glGetUniformLocation(shader_program_, "color"), 1.0f, 1.0f, 1.0f, 1.0f);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+    glUniform4f(u_color_loc_, 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform1i(u_use_texture_loc_, 1);
     
     // Ensure we are using Texture Unit 0 and tell the shader
     glActiveTexture(GL_TEXTURE0);
@@ -930,8 +930,8 @@ void Renderer::render_marquee_frame() {
     const float screen_w = static_cast<float>(original_width_);
     const float screen_h = static_cast<float>(original_height_);
     glUniform2f(glGetUniformLocation(shader_program_, "screenSize"), screen_w, screen_h);
-    glUniform4f(glGetUniformLocation(shader_program_, "color"), 1.0f, 1.0f, 1.0f, 1.0f);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+    glUniform4f(u_color_loc_, 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform1i(u_use_texture_loc_, 1);
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
 
@@ -1437,9 +1437,9 @@ void Renderer::draw_quad(float x, float y, float w, float h, const ui::Color& co
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
-    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+    glUniform4f(u_color_loc_,
                 color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+    glUniform1i(u_use_texture_loc_, 0);
     
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1493,33 +1493,26 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
         float glyph_y = baseline_y - glyph.bearing_y;  // Top of glyph bitmap
         
         glBindTexture(GL_TEXTURE_2D, glyph.texture_id);
-        
-        // Ensure smooth texture filtering for crisp text (not blocky)
-        // Re-apply texture parameters to ensure they're set correctly
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        
-        // Ensure texture is not using nearest neighbor filtering
-        GLint min_filter, mag_filter;
-        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &min_filter);
-        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &mag_filter);
-        if (min_filter != GL_LINEAR || mag_filter != GL_LINEAR) {
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        }
-        
+
+        // Texture params (LINEAR filtering, CLAMP wrap) are per-texture-
+        // object state set once at glyph creation (font_manager.cpp
+        // rasterize path) and re-applied automatically when glyphs are
+        // re-rasterized after reset_textures() (RetroArch return). The
+        // per-glyph re-set + glGetTexParameteriv verification that used to
+        // live here cost 2 driver READBACKS per glyph per frame (~36k
+        // pipeline syncs/sec on a full menu) for a condition that could
+        // never be false — removed.
+
         // Set color uniform
         // IMPORTANT: For text, we want colors to stay vibrant, so we DON'T multiply RGB by ui_alpha_
         // ui_alpha_ is only for background transparency, not text dimming
         // alpha_multiplier controls fade in/out animation, which we do want
-        GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+        GLint colorLoc = u_color_loc_;
         if (colorLoc >= 0) {
             glUniform4f(colorLoc, color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
         }
         
-        GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+        GLint useTextureLoc = u_use_texture_loc_;
         if (useTextureLoc >= 0) {
             glUniform1i(useTextureLoc, 1);
         }
@@ -1557,14 +1550,14 @@ void Renderer::draw_glyph(char32_t codepoint, float x, float baseline_y, int fon
     float glyph_y = baseline_y - glyph.bearing_y;
 
     glBindTexture(GL_TEXTURE_2D, glyph.texture_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    // Filtering params live on the texture object (set at glyph creation);
+    // no per-draw re-set needed — see the matching note in draw_text().
 
-    GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+    GLint colorLoc = u_color_loc_;
     if (colorLoc >= 0) {
         glUniform4f(colorLoc, color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
     }
-    GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+    GLint useTextureLoc = u_use_texture_loc_;
     if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 1);
 
     float vertices[] = {
@@ -1602,9 +1595,9 @@ void Renderer::draw_line(float x1, float y1, float x2, float y2, float width, co
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     
-    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+    glUniform4f(u_color_loc_,
                 color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+    glUniform1i(u_use_texture_loc_, 0);
     
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1721,9 +1714,9 @@ void Renderer::render_title(float text_alpha, bool /* video_active */, bool /* u
         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
         
         // Use white color to render texture as-is (multiplied by alpha)
-        glUniform4f(glGetUniformLocation(shader_program_, "color"),
+        glUniform4f(u_color_loc_,
                     1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha);
-        glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1); // Enable texture
+        glUniform1i(u_use_texture_loc_, 1); // Enable texture
         
         glBindTexture(GL_TEXTURE_2D, logo_texture_id_);
         
@@ -1874,12 +1867,12 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
         
-        GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+        GLint colorLoc = u_color_loc_;
         if (colorLoc >= 0) {
             glUniform4f(colorLoc, theme_->accent2.r / 255.0f, theme_->accent2.g / 255.0f, 
                        theme_->accent2.b / 255.0f, (theme_->accent2.a / 255.0f) * ui_alpha_ * text_alpha);
         }
-        GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+        GLint useTextureLoc = u_use_texture_loc_;
         if (useTextureLoc >= 0) {
             glUniform1i(useTextureLoc, 0);
         }
@@ -1966,12 +1959,12 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
 
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
-            GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+            GLint colorLoc = u_color_loc_;
             if (colorLoc >= 0) {
                 glUniform4f(colorLoc, channel_color.r / 255.0f, channel_color.g / 255.0f,
                            channel_color.b / 255.0f, (channel_color.a / 255.0f) * ui_alpha_ * text_alpha);
             }
-            GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+            GLint useTextureLoc = u_use_texture_loc_;
             if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 0);
             glBindVertexArray(vao_);
             glDrawArrays(GL_TRIANGLES, 0, 18);
@@ -2013,12 +2006,12 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
             
-            GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+            GLint colorLoc = u_color_loc_;
             if (colorLoc >= 0) {
                 glUniform4f(colorLoc, theme_->accent2.r / 255.0f, theme_->accent2.g / 255.0f, 
                            theme_->accent2.b / 255.0f, (theme_->accent2.a / 255.0f) * ui_alpha_ * text_alpha);
             }
-            GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+            GLint useTextureLoc = u_use_texture_loc_;
             if (useTextureLoc >= 0) {
                 glUniform1i(useTextureLoc, 0);  // No texture, solid color
             }
@@ -2045,12 +2038,12 @@ void Renderer::render_playlist_list(const std::vector<app::Playlist>& playlists,
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
         
-        GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+        GLint colorLoc = u_color_loc_;
         if (colorLoc >= 0) {
             glUniform4f(colorLoc, theme_->accent2.r / 255.0f, theme_->accent2.g / 255.0f, 
                        theme_->accent2.b / 255.0f, (theme_->accent2.a / 255.0f) * ui_alpha_ * text_alpha);
         }
-        GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+        GLint useTextureLoc = u_use_texture_loc_;
         if (useTextureLoc >= 0) {
             glUniform1i(useTextureLoc, 0);
         }
@@ -2167,12 +2160,12 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
-    GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+    GLint colorLoc = u_color_loc_;
     if (colorLoc >= 0) {
         glUniform4f(colorLoc, theme_->accent.r / 255.0f, theme_->accent.g / 255.0f,
                    theme_->accent.b / 255.0f, 1.0f);
     }
-    GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+    GLint useTextureLoc = u_use_texture_loc_;
     if (useTextureLoc >= 0) {
         glUniform1i(useTextureLoc, 0);
     }
@@ -2346,10 +2339,10 @@ void Renderer::mb_fill_star(float cx, float cy, float outer_r,
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
-    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+    glUniform4f(u_color_loc_,
                 color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
                 (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+    glUniform1i(u_use_texture_loc_, 0);
 
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_FAN, 0, kVerts);
@@ -2412,10 +2405,10 @@ void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
-    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+    glUniform4f(u_color_loc_,
                 color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
                 (color.a / 255.0f) * ui_alpha_ * alpha_multiplier);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+    glUniform1i(u_use_texture_loc_, 0);
 
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -2459,9 +2452,9 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
-    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+    glUniform4f(u_color_loc_,
                 1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier);
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+    glUniform1i(u_use_texture_loc_, 1);
 
     glBindTexture(GL_TEXTURE_2D, tex_id);
     glBindVertexArray(vao_);
@@ -2470,7 +2463,7 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
     glBindTexture(GL_TEXTURE_2D, 0);
     // Restore solid-color mode so the next draw_quad doesn't sample
     // whatever texture was bound.
-    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 0);
+    glUniform1i(u_use_texture_loc_, 0);
 }
 
 void Renderer::mb_draw_poster_or_tint(const std::string& url,
@@ -2773,12 +2766,12 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             glBindBuffer(GL_ARRAY_BUFFER, vbo_);
             glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
             
-            GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+            GLint colorLoc = u_color_loc_;
             if (colorLoc >= 0) {
                 glUniform4f(colorLoc, section_color.r / 255.0f, section_color.g / 255.0f,
                            section_color.b / 255.0f, (section_color.a / 255.0f) * ui_alpha_ * text_alpha);
             }
-            GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+            GLint useTextureLoc = u_use_texture_loc_;
             if (useTextureLoc >= 0) {
                 glUniform1i(useTextureLoc, 0);
             }
@@ -3157,9 +3150,9 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
-                    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                    glUniform4f(u_color_loc_,
                                 1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha);
-                    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+                    glUniform1i(u_use_texture_loc_, 1);
 
                     glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
                     glBindVertexArray(vao_);
@@ -3209,9 +3202,9 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                         glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
                         // Render logo in white to match text color
-                        glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                        glUniform4f(u_color_loc_,
                                     1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha * 0.5f);
-                        glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+                        glUniform1i(u_use_texture_loc_, 1);
 
                         glBindTexture(GL_TEXTURE_2D, logo->texture_id);
                         glBindVertexArray(vao_);
@@ -3251,9 +3244,9 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
 
-                    glUniform4f(glGetUniformLocation(shader_program_, "color"),
+                    glUniform4f(u_color_loc_,
                                 1.0f, 1.0f, 1.0f, ui_alpha_ * text_alpha * 0.3f);
-                    glUniform1i(glGetUniformLocation(shader_program_, "useTexture"), 1);
+                    glUniform1i(u_use_texture_loc_, 1);
 
                     glBindTexture(GL_TEXTURE_2D, logo->texture_id);
                     glBindVertexArray(vao_);
@@ -3314,12 +3307,12 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                     glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
-                    GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+                    GLint colorLoc = u_color_loc_;
                     if (colorLoc >= 0) {
                         glUniform4f(colorLoc, section_color.r / 255.0f, section_color.g / 255.0f,
                                    section_color.b / 255.0f, (section_color.a / 255.0f) * ui_alpha_ * text_alpha);
                     }
-                    GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+                    GLint useTextureLoc = u_use_texture_loc_;
                     if (useTextureLoc >= 0) {
                         glUniform1i(useTextureLoc, 0);
                     }
@@ -3403,12 +3396,12 @@ void Renderer::render_game_browser(ui::SettingsMenuManager* menu, const std::vec
                 glBindBuffer(GL_ARRAY_BUFFER, vbo_);
                 glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
-                GLint colorLoc = glGetUniformLocation(shader_program_, "color");
+                GLint colorLoc = u_color_loc_;
                 if (colorLoc >= 0) {
                     glUniform4f(colorLoc, section_color.r / 255.0f, section_color.g / 255.0f,
                                section_color.b / 255.0f, (section_color.a / 255.0f) * ui_alpha_ * text_alpha);
                 }
-                GLint useTextureLoc = glGetUniformLocation(shader_program_, "useTexture");
+                GLint useTextureLoc = u_use_texture_loc_;
                 if (useTextureLoc >= 0) {
                     glUniform1i(useTextureLoc, 0);
                 }
@@ -3463,7 +3456,13 @@ bool Renderer::compile_shaders() {
     
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
-    
+
+    // Cache the hot uniform locations (see header note). Must run on every
+    // (re)link — locations are per-program-object, so the RetroArch-return
+    // recompile would silently invalidate previously cached values.
+    u_color_loc_ = u_color_loc_;
+    u_use_texture_loc_ = u_use_texture_loc_;
+
     return true;
 }
 
