@@ -40,8 +40,16 @@ public:
     // Get latest scan results (thread-safe)
     std::vector<WifiNetwork> get_scan_results();
 
-    // Async connection
-    void connect_async(const std::string& ssid, const std::string& password);
+    // Async connection. `fresh_credentials` selects the flow:
+    //   true  → build a new profile via `dev wifi connect` (password may
+    //           legitimately be empty for OPEN networks; any stale profile
+    //           with the same SSID is deleted first).
+    //   false → activate the existing saved profile via `connection up`.
+    // The old two-arg call inferred the flow from password.empty(), which
+    // made unsaved OPEN networks take the saved-profile path and fail
+    // with "unknown connection".
+    void connect_async(const std::string& ssid, const std::string& password,
+                       bool fresh_credentials);
     ConnectionResult get_connection_result() const { return connection_result_; }
     bool is_connecting() const { return is_connecting_; }
     // SSID currently being connected to. Empty when no connect is in flight.
@@ -53,6 +61,14 @@ public:
 
     // Error details from last connection attempt
     std::string get_connection_error();
+
+    // SSID of the most recent FAILED attempt + whether that failure came
+    // from the saved-profile path (stale/corrupt profile). Lets the UI
+    // offer "Enter New Password" recovery instead of the old dead-end
+    // ("forget and reconnect" with no way to do either). Cleared by
+    // reset_connection_state().
+    std::string get_last_failed_ssid() const;
+    bool last_failure_was_saved_profile() const { return last_failed_saved_; }
 
     // Status
     std::string get_current_ssid();
@@ -88,6 +104,10 @@ private:
     // the worker thread publishes its result). Read concurrently from the
     // render thread, so guarded by the same mutex as connection_error_.
     std::string connecting_ssid_;
+
+    // Recovery context for the UI (guarded by error_mutex_ / atomic).
+    std::string last_failed_ssid_;
+    std::atomic<bool> last_failed_saved_{false};
 };
 
 } // namespace utils

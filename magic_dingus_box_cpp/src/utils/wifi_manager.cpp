@@ -50,52 +50,58 @@ void WifiManager::scan_networks_async() {
 
     std::cout << "WifiManager: Starting async scan..." << std::endl;
     std::thread([this]() {
-        // Two-phase scan. The previous single-call form
-        //   `nmcli dev wifi list --rescan yes`
-        // was supposed to trigger a rescan AND block until results were
-        // ready, but on this Pi 4 + Pi OS Bookworm + NetworkManager 1.42
-        // it returns cached results immediately and the rescan happens
-        // in the background — so the kiosk only ever saw networks
-        // already in nmcli's cache (typically just the currently-connected
-        // SSID). Symptom: "Scan Networks" shows 1 entry instead of 10+.
+        // Adaptive two-phase scan.
         //
-        // Fix: explicit `rescan` command (which kicks off the scan and
-        // returns once it has been scheduled), then a brief wait for
-        // the scan to complete, then a plain `list` to read the fresh
-        // results. 4s is the empirically-reliable wait on a Pi 4 with
-        // the bcm43436 chip; some scans complete in 2s but tail
-        // outliers can take 3.5s, so 4s gives margin without making the
-        // UI feel laggy.
+        // `nmcli dev wifi list --rescan yes` returns cached results
+        // immediately on this Pi OS / NetworkManager combo, so we issue
+        // an explicit `rescan` (sudo required by polkit for the magic
+        // user; plain `list` is not) and then poll the list while the
+        // scan completes.
         //
-        // sudo on the rescan is required by the policykit config on
-        // recent Pi OS (the magic user can't request a rescan without
-        // it). The list command does NOT need sudo.
-
-        // Phase 1: trigger rescan
+        // The previous version slept a FIXED 4 seconds and read once.
+        // That was tuned against a warm scan cache; a COLD cache (fresh
+        // boot at a new location — exactly when the operator needs the
+        // scan most) can take longer than 4s to populate, so the first
+        // scan showed only the odd cached entry. Measured live: warm
+        // cache 14 networks by t+2s; cold cache ~1 network at t+4s.
+        //
+        // Now we poll every second up to 12s, publishing partial
+        // results incrementally (the UI shows the list growing), and
+        // finish early once the network count has been stable for two
+        // consecutive polls after at least 4s.
         std::string rescan_out = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "rescan"});
         if (!rescan_out.empty()) {
             std::cout << "WifiManager: rescan: " << rescan_out << std::endl;
         }
 
-        // Phase 2: wait for scan to complete
-        std::this_thread::sleep_for(std::chrono::seconds(4));
-
-        // Phase 3: read fresh results
-        std::string output = exec_command_argv({"nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
-                                                "dev", "wifi", "list"});
-
-        std::cout << "WifiManager: Scan complete. Output length: " << output.length() << std::endl;
-
-        auto networks = parse_nmcli_scan_output(output);
-        std::cout << "WifiManager: Parsed " << networks.size() << " networks." << std::endl;
-
-        {
-            std::lock_guard<std::mutex> lock(scan_mutex_);
-            scan_results_ = networks;
+        size_t last_count = 0;
+        int stable_polls = 0;
+        for (int elapsed = 1; elapsed <= 12; ++elapsed) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            std::string output = exec_command_argv(
+                {"nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY,IN-USE",
+                 "dev", "wifi", "list"});
+            auto networks = parse_nmcli_scan_output(output);
+            {
+                std::lock_guard<std::mutex> lock(scan_mutex_);
+                scan_results_ = networks;
+            }
+            if (networks.size() == last_count && !networks.empty()) {
+                stable_polls++;
+            } else {
+                stable_polls = 0;
+            }
+            last_count = networks.size();
+            if (elapsed >= 4 && stable_polls >= 2) {
+                std::cout << "WifiManager: scan stable at " << last_count
+                          << " networks after " << elapsed << "s" << std::endl;
+                break;
+            }
         }
+        std::cout << "WifiManager: Scan complete — " << last_count
+                  << " networks." << std::endl;
 
         is_scanning_ = false;
-        std::cout << "WifiManager: is_scanning_ set to false" << std::endl;
     }).detach();
 }
 
@@ -104,7 +110,8 @@ std::vector<WifiNetwork> WifiManager::get_scan_results() {
     return scan_results_;
 }
 
-void WifiManager::connect_async(const std::string& ssid, const std::string& password) {
+void WifiManager::connect_async(const std::string& ssid, const std::string& password,
+                                bool fresh_credentials) {
     // Atomic claim — see scan_networks_async() for rationale on CAS.
     bool expected = false;
     if (!is_connecting_.compare_exchange_strong(expected, true)) return;
@@ -118,36 +125,33 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     }
     connection_result_ = ConnectionResult::IN_PROGRESS;
 
-    std::thread([this, ssid, password]() {
+    std::thread([this, ssid, password, fresh_credentials]() {
         // Clear previous error
         {
             std::lock_guard<std::mutex> lock(error_mutex_);
             connection_error_.clear();
         }
 
-        // Two distinct flows here, gated on whether the caller passed a
-        // password:
+        // Two distinct flows, chosen EXPLICITLY by the caller:
         //
-        //   - Empty password  → "reconnect to saved profile" (user
-        //     clicked a network labeled "Saved" in the UI; no keyboard
+        //   - fresh_credentials=false → "reconnect to saved profile"
+        //     (user clicked a network labeled "Saved"; no keyboard
         //     prompt was shown). Use the existing profile and its
         //     stored PSK via `connection up id <ssid>`. Do NOT delete
-        //     anything first: the previous version of this code
-        //     unconditionally wiped the matching profile, then ran
-        //     `dev wifi connect` with no password, producing a brand-
-        //     new no-PSK profile and a no-secrets activation failure.
-        //     Every reconnect attempt destroyed the working profile
-        //     and replaced it with a broken one, then reported "Wrong
-        //     password" to the operator. Operator had no way to
-        //     recover without forgetting + re-typing.
+        //     anything first: an earlier version wiped the profile and
+        //     recreated it without a PSK, destroying working profiles
+        //     on every reconnect.
         //
-        //   - Non-empty password → "fresh credentials" (operator typed
-        //     a password on the keyboard). Existing behavior: clear
-        //     out any stale profile with the same SSID (avoids
-        //     "property is missing" errors from partial profiles),
-        //     then activate via `dev wifi connect <ssid> password <p>`.
+        //   - fresh_credentials=true → operator supplied credentials
+        //     (or the network is OPEN and needs none). Clear out any
+        //     stale profile with the same SSID (avoids "property is
+        //     missing" errors from partial profiles), then activate via
+        //     `dev wifi connect <ssid> [password <p>]`. The flow used
+        //     to be inferred from password.empty(), which sent unsaved
+        //     OPEN networks down the saved-profile path → guaranteed
+        //     "unknown connection" failure.
         std::string output;
-        if (password.empty()) {
+        if (!fresh_credentials) {
             std::cout << "WifiManager: Reconnect (saved profile) — activating '"
                       << ssid << "' via stored PSK" << std::endl;
             output = exec_command_argv({"sudo", "nmcli", "connection", "up", "id", ssid},
@@ -183,8 +187,14 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
                 }
             }
 
-            output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password},
-                                       CONNECTION_TIMEOUT_SECONDS);
+            if (password.empty()) {
+                // OPEN network — no password argument at all.
+                output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid},
+                                           CONNECTION_TIMEOUT_SECONDS);
+            } else {
+                output = exec_command_argv({"sudo", "nmcli", "dev", "wifi", "connect", ssid, "password", password},
+                                           CONNECTION_TIMEOUT_SECONDS);
+            }
         }
 
         std::cout << "WifiManager: Connecting to SSID: " << ssid << std::endl;
@@ -205,13 +215,13 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
                        output.find("No secrets") != std::string::npos) {
                 // The PSK slot in the connection profile was empty.
                 //   - Reconnect-to-saved path: the saved profile is
-                //     corrupt (no PSK stored). Tell operator to forget
-                //     it and re-enter the password.
+                //     corrupt (no PSK stored). The UI offers "Enter New
+                //     Password" recovery via get_last_failed_ssid().
                 //   - Fresh-credentials path: nmcli would have stored
                 //     the PSK we passed; if it still says no-secrets,
                 //     the PSK was actually wrong → "Wrong password".
-                if (password.empty()) {
-                    error_msg = "Saved network missing password — forget and reconnect";
+                if (!fresh_credentials) {
+                    error_msg = "Saved network needs a new password";
                 } else {
                     error_msg = "Wrong password";
                 }
@@ -219,9 +229,9 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             } else if (output.find("unknown connection") != std::string::npos ||
                        output.find("Unknown connection") != std::string::npos) {
                 // `connection up id <ssid>` couldn't find the profile.
-                // The "Saved" indicator in the UI was stale; ask operator
-                // to re-enter the password to create a fresh profile.
-                error_msg = "No saved profile — re-enter password";
+                // The "Saved" indicator in the UI was stale; the UI's
+                // recovery item re-prompts for a password.
+                error_msg = "Saved profile is gone — enter password";
                 connection_result_ = ConnectionResult::FAILURE;
             } else if (output.find("No network with SSID") != std::string::npos) {
                 error_msg = "Network not found";
@@ -238,16 +248,28 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             {
                 std::lock_guard<std::mutex> lock(error_mutex_);
                 connection_error_ = error_msg;
+                // Recovery context for the UI's "Enter New Password" item.
+                last_failed_ssid_ = ssid;
             }
+            last_failed_saved_ = !fresh_credentials;
         }
 
         // Clear the target SSID — connection attempt is over (success or fail).
         {
             std::lock_guard<std::mutex> lock(error_mutex_);
             connecting_ssid_.clear();
+            if (connection_result_ == ConnectionResult::SUCCESS) {
+                last_failed_ssid_.clear();
+                last_failed_saved_ = false;
+            }
         }
         is_connecting_ = false;
     }).detach();
+}
+
+std::string WifiManager::get_last_failed_ssid() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return last_failed_ssid_;
 }
 
 std::string WifiManager::get_connecting_ssid() const {
@@ -262,7 +284,9 @@ void WifiManager::reset_connection_state() {
     {
         std::lock_guard<std::mutex> lock(error_mutex_);
         connecting_ssid_.clear();
+        last_failed_ssid_.clear();
     }
+    last_failed_saved_ = false;
 }
 
 std::string WifiManager::get_current_ssid() {
@@ -472,6 +496,30 @@ std::string WifiManager::exec_command_argv(const std::vector<std::string>& args,
     return result;
 }
 
+namespace {
+
+// nmcli -t escapes ':' as '\:' and '\' as '\\' inside field values.
+// The parser splits fields on raw ':' from the right (safe, since the
+// numeric/flag fields never contain colons), but the extracted SSID
+// keeps the escapes. Undo them — otherwise an SSID like "Bob's:Cafe"
+// renders with a stray backslash AND fails to connect (nmcli expects
+// the raw name as an argument, not the -t-escaped form).
+std::string unescape_nmcli(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size() &&
+            (s[i + 1] == ':' || s[i + 1] == '\\')) {
+            out += s[++i];
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string& output) {
     std::vector<WifiNetwork> networks;
 
@@ -484,7 +532,7 @@ std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string&
         // Format: NAME:TYPE  (e.g., "MyWiFi:802-11-wireless")
         size_t colon = saved_line.rfind(':');
         if (colon != std::string::npos && saved_line.substr(colon + 1) == "802-11-wireless") {
-            saved_ssids.insert(saved_line.substr(0, colon));
+            saved_ssids.insert(unescape_nmcli(saved_line.substr(0, colon)));
         }
     }
 
@@ -521,14 +569,11 @@ std::vector<WifiNetwork> WifiManager::parse_nmcli_scan_output(const std::string&
         
         std::string signal_str = line.substr(sig_colon + 1, sec_colon - sig_colon - 1);
         
-        // SSID is everything before signal
-        std::string ssid = line.substr(0, sig_colon);
-        
-        // Unescape SSID if needed (nmcli escapes colons as \:)
-        // Simple replace for now
-        
-        // Filter empty SSIDs (hidden networks) if desired
-        if (ssid.empty()) continue; // keep them? UI might look weird. Skip for now.
+        // SSID is everything before signal — undo nmcli's -t escaping.
+        std::string ssid = unescape_nmcli(line.substr(0, sig_colon));
+
+        // Filter empty SSIDs (hidden networks) — connecting to a hidden
+        // network needs a manual-SSID flow the kiosk doesn't have.
         if (ssid.empty()) continue;
         
         WifiNetwork net;

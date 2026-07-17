@@ -156,6 +156,9 @@ private:
     // periodically while it's open so the QR code reflects state changes
     // (e.g., user unplugs the USB-C cable while sitting on this screen).
     std::chrono::steady_clock::time_point last_info_refresh_{};
+    // Wi-Fi networks submenu live refresh while a scan streams in
+    // partial results (2 Hz — see update()).
+    std::chrono::steady_clock::time_point last_scan_refresh_{};
     
     MenuSection current_submenu_;
     std::vector<MenuItem> menu_items_;

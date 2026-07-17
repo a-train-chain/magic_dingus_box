@@ -60,13 +60,25 @@ void SettingsMenuManager::update() {
     // Check Wi-Fi scanning state if we are in the networks submenu
     if (current_submenu_ == MenuSection::WIFI_NETWORKS) {
         bool is_scanning = utils::WifiManager::instance().is_scanning();
-        
+
+        // While a scan runs, refresh twice a second: the scan worker
+        // publishes partial results incrementally, so the operator sees
+        // the network list grow live (plus the animated "Scanning..."
+        // header) instead of a frozen "Please wait".
+        if (is_scanning) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_scan_refresh_ >= std::chrono::milliseconds(500)) {
+                last_scan_refresh_ = now;
+                rebuild_current_submenu();
+            }
+        }
+
         // If we were scanning and now we stopped, we need to refresh to show results
         if (was_scanning_ && !is_scanning) {
             std::cout << "SettingsMenuManager: Scan finished, rebuilding submenu..." << std::endl;
             rebuild_current_submenu();
         }
-        
+
         was_scanning_ = is_scanning;
     }
 
@@ -911,33 +923,46 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
         status = "Not Connected";
     }
 
-    return {
-        MenuItem("Status: " + status, MenuSection::BACK, meta),
-        MenuItem("Scan Networks", MenuSection::WIFI_NETWORKS, "Find Wi-Fi",
+    std::vector<MenuItem> items;
+    items.emplace_back("Status: " + status, MenuSection::BACK, meta);
+    items.emplace_back("Scan Networks", MenuSection::WIFI_NETWORKS, "Find Wi-Fi",
                  [&]() {
                      utils::WifiManager::instance().scan_networks_async();
-                 }),
-        MenuItem(wifi_disconnect_confirm_ ? "Confirm Disconnect?" : "Disconnect",
-                 MenuSection::WIFI,
-                 wifi_disconnect_confirm_ ? "Press again to confirm" : "Forget current network",
-                 [this]() {
-                     if (wifi_disconnect_confirm_) {
-                         utils::WifiManager::instance().forget_network(
-                             utils::WifiManager::instance().get_current_ssid());
-                         wifi_disconnect_confirm_ = false;
-                         rebuild_current_submenu();
-                     } else {
-                         wifi_disconnect_confirm_ = true;
-                         rebuild_current_submenu();
-                     }
-                 }),
-        MenuItem("Back", MenuSection::BACK)
-    };
+                 });
+
+    // Disconnect only makes sense with an active connection — hide it
+    // otherwise (it used to sit there permanently and silently no-op
+    // when nothing was connected). Name the network in both the item
+    // and the confirm step so the operator knows exactly what they're
+    // forgetting, and toast the outcome.
+    std::string current = wifi.is_connected() ? wifi.get_current_ssid() : "";
+    if (!current.empty()) {
+        items.emplace_back(
+            wifi_disconnect_confirm_ ? "Confirm: forget " + current + "?"
+                                     : "Disconnect from " + current,
+            MenuSection::WIFI,
+            wifi_disconnect_confirm_ ? "Press again to disconnect + forget"
+                                     : "Drops Wi-Fi and deletes the saved password",
+            [this, current]() {
+                if (wifi_disconnect_confirm_) {
+                    bool ok = utils::WifiManager::instance().forget_network(current);
+                    ui::Toast::show(ok ? "Forgot network " + current
+                                       : "Could not forget " + current);
+                    wifi_disconnect_confirm_ = false;
+                    rebuild_current_submenu();
+                } else {
+                    wifi_disconnect_confirm_ = true;
+                    rebuild_current_submenu();
+                }
+            });
+    }
+    items.emplace_back("Back", MenuSection::BACK);
+    return items;
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
     auto& wifi = utils::WifiManager::instance();
-    
+
     if (wifi.is_connecting()) {
          return {
             MenuItem("Connecting...", MenuSection::BACK, "Verifying credentials..."),
@@ -949,40 +974,84 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
     utils::ConnectionResult result = wifi.get_connection_result();
     if (result == utils::ConnectionResult::FAILURE || result == utils::ConnectionResult::TIMEOUT) {
         std::string error = wifi.get_connection_error();
+        // Recovery path: a failed saved-profile reconnect used to be a
+        // dead end ("forget and reconnect" — with no way to do either
+        // from this screen). Offer a password re-entry that goes down
+        // the fresh-credentials path, which replaces the stale profile.
+        std::string failed_ssid = wifi.get_last_failed_ssid();
+        bool offer_reentry = !failed_ssid.empty();
         wifi.reset_connection_state();
-        return {
-            MenuItem("Connection Failed", MenuSection::BACK, error.empty() ? "Unknown error" : error),
-            MenuItem("Back", MenuSection::BACK, "Return to list",
-                []() { utils::WifiManager::instance().scan_networks_async(); })
-        };
+
+        std::vector<MenuItem> items;
+        items.emplace_back("Connection Failed", MenuSection::BACK,
+                           error.empty() ? "Unknown error" : error);
+        if (offer_reentry) {
+            items.emplace_back("Enter New Password", MenuSection::WIFI,
+                "Retry " + failed_ssid + " with fresh credentials",
+                [this, failed_ssid]() {
+                    if (app_state_ && app_state_->keyboard) {
+                        app_state_->keyboard->open("", "Enter Password for " + failed_ssid,
+                            [failed_ssid](const std::string& password) {
+                                utils::WifiManager::instance().connect_async(
+                                    failed_ssid, password, /*fresh_credentials=*/true);
+                            },
+                            [this]() { enter_submenu(MenuSection::WIFI); });
+                    }
+                });
+        }
+        items.emplace_back("Back", MenuSection::BACK, "Return to list",
+            []() { utils::WifiManager::instance().scan_networks_async(); });
+        return items;
     }
 
-    if (wifi.is_scanning()) {
-        utils::WifiManager::instance().scan_networks_async(); // Ensure it's running
-        return {
-            MenuItem("Scanning...", MenuSection::BACK, "Please wait"),
-            MenuItem("Back", MenuSection::BACK)
-        };
-    }
-    
+    // While scanning, show the partial results as they stream in (the
+    // scan worker publishes incrementally) with a live header. update()
+    // rebuilds this submenu twice a second while is_scanning() so the
+    // list visibly grows instead of sitting on a static "Please wait".
+    const bool scanning = wifi.is_scanning();
     auto results = wifi.get_scan_results();
     std::vector<MenuItem> items;
-    
+
+    if (scanning) {
+        int dots = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()
+            / 500 % 4);
+        items.emplace_back("Scanning" + std::string(dots, '.'),
+                           MenuSection::BACK,
+                           "Found " + std::to_string(results.size()) +
+                           " so far");
+    }
+
     for (const auto& net : results) {
         std::string label = net.ssid;
         if (net.in_use) label += " (Connected)";
         else if (net.saved) label += " (Saved)";
 
-        std::string sub = "Signal: " + std::to_string(net.signal_strength) + "% " + net.security;
+        const bool open_network = net.security.empty();
+        std::string sub = "Signal: " + std::to_string(net.signal_strength) + "% " +
+                          (open_network ? std::string("Open") : net.security);
 
         if (net.in_use) {
             // Already connected - no action needed
             items.emplace_back(label, MenuSection::BACK, sub);
         } else if (net.saved) {
-            // Saved network - reconnect without password
+            // Saved network - reconnect using the stored password
             items.emplace_back(label, MenuSection::WIFI, sub,
                 [this, net]() {
-                    utils::WifiManager::instance().connect_async(net.ssid, "");
+                    utils::WifiManager::instance().connect_async(
+                        net.ssid, "", /*fresh_credentials=*/false);
+                    enter_submenu(MenuSection::WIFI);
+                });
+        } else if (open_network) {
+            // Open network — no password to ask for. The old code sent
+            // this through the password keyboard, and the resulting
+            // empty-password connect took the saved-profile path and
+            // failed with "unknown connection" every time.
+            items.emplace_back(label, MenuSection::WIFI, sub,
+                [this, net]() {
+                    utils::WifiManager::instance().connect_async(
+                        net.ssid, "", /*fresh_credentials=*/true);
                     enter_submenu(MenuSection::WIFI);
                 });
         } else {
@@ -990,8 +1059,9 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
                 [this, net]() {
                     if (app_state_ && app_state_->keyboard) {
                         app_state_->keyboard->open("", "Enter Password for " + net.ssid,
-                            [this, net](const std::string& password) {
-                                utils::WifiManager::instance().connect_async(net.ssid, password);
+                            [net](const std::string& password) {
+                                utils::WifiManager::instance().connect_async(
+                                    net.ssid, password, /*fresh_credentials=*/true);
                             },
                             [this]() {
                                 enter_submenu(MenuSection::WIFI);
@@ -1001,16 +1071,18 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_networks_submenu() {
                 });
         }
     }
-    
+
     if (items.empty()) {
         items.emplace_back("No networks found", MenuSection::BACK);
     }
-    
-    items.emplace_back("Rescan", MenuSection::WIFI, "", [&](){
-         utils::WifiManager::instance().scan_networks_async();
-         rebuild_current_submenu(); 
-    });
-    
+
+    if (!scanning) {
+        items.emplace_back("Rescan", MenuSection::WIFI, "", [&](){
+             utils::WifiManager::instance().scan_networks_async();
+             rebuild_current_submenu();
+        });
+    }
+
     items.emplace_back("Back", MenuSection::WIFI);
     return items;
 }

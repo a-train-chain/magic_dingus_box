@@ -64,7 +64,24 @@ bezels) and all controller mappings unchanged.
     (deliberate: early real releases still grab the moment they
     exist); these warnings cover the fake-release window instead.
 
+- **Wi-Fi setup overhaul (new-location flow)** — scanning now streams
+  results onto the screen as they're found (animated "Scanning…" header
+  with a live count) instead of a fixed 4s "Please wait"; the scan
+  itself adapts (polls up to 12s, finishes early once results settle),
+  fixing the near-empty first scan on a cold cache — exactly the
+  fresh-boot-at-a-new-house case. Disconnect is now named ("Disconnect
+  from <SSID>"), hidden when nothing is connected, and toasts its
+  outcome. A failed saved-network reconnect now offers "Enter New
+  Password" right on the failure screen instead of a dead-end message.
+
 ### Fixed
+- **Open (passwordless) Wi-Fi networks never connected** — the UI's
+  empty-password path routed them through "activate saved profile",
+  which always failed with "unknown connection" for a never-saved
+  network. Connect flow now takes an explicit fresh-vs-saved flag and
+  open networks connect with a single press (no keyboard).
+- **SSIDs containing ':' parsed with a stray backslash** (nmcli -t
+  escaping was never undone) and could not be connected to.
 - **Smoke harness:** waits for the settings menu to actually close
   between games instead of a blind settle — the quiet-mode container
   resume right at return-to-menu could stale the status file long
