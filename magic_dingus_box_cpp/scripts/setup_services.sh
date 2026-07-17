@@ -1383,29 +1383,34 @@ fi
 # a download that hangs at 0% with 0 connected peers despite the
 # torrent metadata claiming a healthy swarm.
 #
-# We set minimumSeeders=5 on every Radarr indexer (the indexer
+# We set minimumSeeders=3 on every Radarr indexer (the indexer
 # objects on Radarr's side, populated by the Apps-integration sync
 # in Step 14). At search time, indexers that return releases with
-# fewer than 5 reported seeders never even reach Radarr's scoring
+# fewer than 3 reported seeders never even reach Radarr's scoring
 # pass, so the operator never gets a "stalled" download from a
 # dead swarm.
 #
-# 5 is a deliberately conservative floor: high enough to weed out
-# graveyard torrents, low enough that legitimate niche releases
+# 3 is a deliberately conservative floor: high enough to weed out
+# graveyard torrents (observed live: "Old School (2003)" RARBG
+# releases reporting 1-2 stale seeders that qBit could never reach,
+# hanging at metaDL 0%), low enough that legitimate niche releases
 # (foreign films, documentaries, just-released indie movies) still
 # pass. We don't compete on "fastest possible" downloads — we just
 # refuse to start ones that won't progress.
 #
-# Idempotent: PUT only when the live value differs from 5. Default
+# Idempotent: PUT only when the live value differs from 3. Default
 # Radarr value when an indexer is first synced from Prowlarr is 1
 # (effectively no filter), so on a fresh setup every indexer gets
-# bumped on first run and stays at 5 thereafter.
+# bumped on first run and stays at 3 thereafter. NOTE: a Prowlarr
+# Apps re-sync (e.g. adding an indexer) can reset these back to 1 —
+# re-run this script or the standalone bump if downloads start
+# stalling at metaDL again.
 echo "Configuring Radarr indexer minimum_seeders threshold..."
 SEEDER_SUMMARY=$(python3 - "${RADARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
 api_key = sys.argv[1]
 BASE = "http://localhost:7878/api/v3"
-TARGET = 10
+TARGET = 3
 
 def http(method, path, body=None):
     headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
