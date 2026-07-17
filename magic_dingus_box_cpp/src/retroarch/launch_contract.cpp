@@ -190,7 +190,11 @@ const char* audio_driver_for_gameplay() {
 }
 
 int audio_latency_ms_for_core(const std::string& core_name) {
-    return is_ps1_core(core_name) ? 64 : 48;
+    // PS1 was 64 during the alsathread migration; walked back down to 48
+    // after a clean zero-retrigger soak (Track 2, 2026-07-16). If PS1
+    // crackle ever returns, raise the PS1 branch back to 64 first.
+    (void)core_name;
+    return 48;
 }
 
 std::string build_kms_ready_watch_block(const std::string& command,
