@@ -61,5 +61,21 @@ class ReadinessTests(unittest.TestCase):
             smoke.launch_log_failure("[KMS]: New FB: 1920x1080\nRunning content"))
 
 
+class Ps1DynarecTests(unittest.TestCase):
+    def test_passes_on_ari64_dynarec_log(self):
+        self.assertIsNone(smoke.check_ps1_dynarec(
+            "blah\n"
+            "[libretro INFO] Init new dynarec, ndrc size 1001000, "
+            "pgsize 4096\n"
+            "blah\n"))
+
+    def test_fails_on_lightrec(self):
+        self.assertIsNotNone(
+            smoke.check_ps1_dynarec("Lightrec initialized\n"))
+
+    def test_fails_when_no_dynarec_mentioned(self):
+        self.assertIsNotNone(smoke.check_ps1_dynarec("nothing relevant\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

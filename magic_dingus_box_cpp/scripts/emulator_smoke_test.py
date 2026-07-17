@@ -44,6 +44,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -221,6 +222,22 @@ def launch_log_failure(log_text: str):
     return None
 
 
+PS1_DYNAREC_OK = re.compile(r"(?i)dynarec|dynamic recompiler")
+PS1_DYNAREC_BAD = re.compile(r"(?i)lightrec|falling back to interpreter")
+
+
+def check_ps1_dynarec(log_text: str):
+    """A future core update that silently drops ari64 for Lightrec or the
+    interpreter is a multi-x PS1 slowdown — fail the smoke run loudly.
+    The healthy line on this build: 'Init new dynarec, ndrc size ...'."""
+    if PS1_DYNAREC_BAD.search(log_text):
+        return ("PS1 core is not using the ari64 dynarec "
+                "(lightrec/interpreter found)")
+    if not PS1_DYNAREC_OK.search(log_text):
+        return "PS1 launch log has no dynarec initialization line"
+    return None
+
+
 def wait_for_kms_takeover(k: Kiosk, launch_started_at: float,
                           timeout: float, log_cursor: int) -> int:
     """Wait for a fresh marker, failing early if the kiosk cancels launch."""
@@ -380,6 +397,8 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
     time.sleep(PLAY_SECONDS)
     launch_log = launcher_log_since(log_cursor)
     log_failure = launch_log_failure(launch_log)
+    if not log_failure and result["core"].startswith("pcsx_rearmed"):
+        log_failure = check_ps1_dynarec(launch_log)
     if log_failure:
         result["played_clean"] = False
         result["errors"].append(log_failure)
