@@ -95,6 +95,10 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     out << "video_hard_sync = \"false\"\n";
     out << "video_vsync = \"true\"\n";
     out << "video_frame_delay = \"4\"\n";
+    // Auto mode (RetroArch >= 1.9.13): treat 4 as the target and back the
+    // effective delay off automatically if a heavy scene makes frames run
+    // long — converts a would-be stutter into a 4 ms latency give-back.
+    out << "video_frame_delay_auto = \"true\"\n";
     // 2 (double-buffer) is the more stable swapchain depth for the V3D
     // KMS Vulkan path; 3 gave no measured benefit here and pairs with the
     // threaded-video thrash above. Belt-and-suspenders alongside
@@ -169,6 +173,11 @@ void write_core_options(std::ostream& out, const std::string& core_name) {
     // the core drop up to three consecutive frames and request 128 ms audio
     // latency even at full speed, producing the observed choppy response.
     out << "pcsx_rearmed_frameskip_type = \"disabled\"\n";
+    // Run the software rasterizer on a second thread (Pi 4 has four
+    // cores; the accepted community setting for heavy scenes). "async"
+    // is the fast variant; a handful of titles show frame glitches with
+    // it — drop to "sync" (or remove) if the visual A/B finds any.
+    out << "pcsx_rearmed_gpu_thread_rendering = \"async\"\n";
     // Fast GPU linked-list processing.
     out << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
     // ARM64 dynamic recompilation is critical for PS1 performance.

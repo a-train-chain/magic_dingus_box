@@ -56,6 +56,7 @@ TEST_CASE("Modern TV keeps its native-core 4:3 bezel contract",
     require_line(config, "video_max_swapchain_images = \"2\"");
     require_line(config, "video_vsync = \"true\"");
     require_line(config, "video_frame_delay = \"4\"");
+    require_line(config, "video_frame_delay_auto = \"true\"");
     require_line(config, "video_shader_enable = \"false\"");
     require_line(config, "video_smooth = \"false\"");
     require_line(config, "video_fullscreen_x = \"1920\"");
@@ -82,6 +83,7 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport",
     const std::string config = output.str();
 
     require_line(config, "video_context_driver = \"khr_display\"");
+    require_line(config, "video_frame_delay_auto = \"true\"");
     require_line(config, "video_fullscreen_x = \"640\"");
     require_line(config, "video_fullscreen_y = \"480\"");
     require_line(config, "video_custom_viewport_enable = \"false\"");
@@ -100,6 +102,7 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
     require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");
     require_line(config, "pcsx_rearmed_frameskip_type = \"disabled\"");
+    require_line(config, "pcsx_rearmed_gpu_thread_rendering = \"async\"");
     require_line(config, "pcsx_rearmed_gpu_slow_llists = \"disabled\"");
     require_line(config, "pcsx_rearmed_drc = \"enabled\"");
     require_line(config, "pcsx_rearmed_icache_emulation = \"enabled\"");
