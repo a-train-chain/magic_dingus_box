@@ -275,6 +275,11 @@ public:
     // is actually used. main.cpp calls this to drive pause()/resume()
     // around movie playback (I/O contention guard for GStreamer).
     media_browser::ArtworkCache& artwork_cache();
+
+    // True once the lazy artwork cache exists. Lets the game-launch path
+    // clear poster textures without constructing a cache (and its disk
+    // recount + fetcher thread) on kiosks that never opened the MB.
+    bool artwork_cache_initialized() const { return artwork_cache_ != nullptr; }
 #endif
 
 private:

@@ -32,6 +32,7 @@
 #include "media_browser/artwork/artwork_cache.h"
 #endif
 #include "app/app_state.h"
+#include "app/game_quiet_mode.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
 #include "app/sample_mode.h"
@@ -658,6 +659,38 @@ int main(int /* argc */, char* /* argv */[]) {
         }());
     std::cout << "[media_browser] qBittorrent client enabled "
               << "(base_url=http://localhost:8080)" << std::endl;
+
+    // Track-1 quiet mode: silence the torrent/media stack for the whole
+    // game session, mirroring PlaybackScreen's movie behavior. Gated on
+    // the provisioning marker so unprovisioned Pis do exactly nothing
+    // (no docker errors, no qBit timeouts in the log).
+    app::GameQuietMode game_quiet_mode({
+        /*pause=*/[qbit = qbit_owned.get()]() {
+            if (!std::filesystem::exists(
+                    "/opt/magic_dingus_box/services/.env")) {
+                return;
+            }
+            if (qbit != nullptr && !qbit->pause_all()) {
+                std::cout << "[quiet-mode] qbit pause_all failed "
+                             "(best-effort)" << std::endl;
+            }
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh pause "
+                ">/dev/null 2>&1");
+        },
+        /*resume=*/[qbit = qbit_owned.get()]() {
+            if (!std::filesystem::exists(
+                    "/opt/magic_dingus_box/services/.env")) {
+                return;
+            }
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh unpause "
+                ">/dev/null 2>&1");
+            if (qbit != nullptr && !qbit->resume_all()) {
+                std::cout << "[quiet-mode] qbit resume_all failed; "
+                             "resume from web UI if needed" << std::endl;
+            }
+        }});
 
     // Six screens — dispatcher owns one instance of each.
     media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb, state);
@@ -2114,7 +2147,19 @@ int main(int /* argc */, char* /* argv */[]) {
                                         
                                         // Set loading state
                                         state.is_loading_game = true;
-                                        
+
+#ifdef MEDIA_BROWSER_ENABLED
+                                        // Quiet the media stack for the whole
+                                        // session (async — never delays launch)
+                                        // and drop poster textures while the GL
+                                        // context is still current.
+                                        game_quiet_mode.request_pause();
+                                        if (ui_renderer.artwork_cache_initialized()) {
+                                            ui_renderer.artwork_cache().pause();
+                                            ui_renderer.artwork_cache().clear_textures();
+                                        }
+#endif
+
                                         // Create progress callback to keep UI alive during launch
                                         auto progress_callback = [&]() {
                                             // Clear screen
@@ -2202,6 +2247,13 @@ int main(int /* argc */, char* /* argv */[]) {
 
                                         // Reset loading state
                                         state.is_loading_game = false;
+
+#ifdef MEDIA_BROWSER_ENABLED
+                                        if (ui_renderer.artwork_cache_initialized()) {
+                                            ui_renderer.artwork_cache().resume();
+                                        }
+                                        game_quiet_mode.request_resume();
+#endif
 
                                         if (launch_result) {
                                             std::cout << "Game launched successfully" << std::endl;
