@@ -3073,31 +3073,31 @@ header::after {
         width: 100%;
     }
 
-    /* Playlist cards: full width with better spacing */
+    /* Playlist cards: full width with better spacing.
+       NB: the card markup uses .playlist-header/.playlist-actions/
+       .playlist-meta (no "card-" infix) — earlier rules here targeted
+       .playlist-card-* classes that exist in no markup, so phones never
+       got a real treatment. */
     .playlist-card {
         padding: 1rem;
     }
 
-    .playlist-card-header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.5rem;
+    /* The action buttons stay absolutely pinned bottom-right (desktop
+       design), so the meta text must reserve the full button zone —
+       button height (~28px, 44px tap side) + 12px bottom offset.
+       Without this, a long description's last wrapped line (e.g.
+       "Exported from Retro Ripper on <date>") runs under the Edit
+       button on narrow cards. */
+    .playlist-card .playlist-meta {
+        padding-bottom: 3.5rem;  /* 40px button + 12px offset = 52px zone */
     }
 
-    .playlist-card-title {
-        font-size: 1rem;
-    }
-
-    .playlist-card-actions {
-        width: 100%;
-        display: flex;
-        gap: 0.5rem;
-    }
-
-    .playlist-card-actions button {
-        flex: 1;
-        padding: 0.6rem;
-        min-height: 44px;
+    /* Comfortable tap targets without changing the visual size much —
+       these buttons have no .btn-edit class, so the generic
+       pointer:coarse rules never reach them. */
+    .playlist-card .playlist-actions button {
+        padding: 0.5rem 0.9rem;
+        min-height: 40px;
     }
 
     /* Media cards */
