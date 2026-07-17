@@ -29,7 +29,38 @@ struct Movie : MovieSearchHit {
     std::string file_quality;         // e.g. "Bluray-1080p"
     int64_t file_size_bytes = 0;
     std::string added_at;             // ISO 8601
+    // Radarr's availability state machine: "tba" / "announced" /
+    // "inCinemas" / "released" / "deleted". "released" means a home
+    // (digital/physical) release exists per Radarr's metadata.
+    std::string status;
+    // Actual duration of the imported file (movieFile.mediaInfo.runTime,
+    // floored to minutes). 0 when there's no file or Radarr hasn't
+    // probed it yet.
+    int file_runtime_minutes = 0;
 };
+
+// True when Radarr metadata says no home release exists yet. Anything a
+// torrent search finds for the title right now is almost certainly a
+// pre-release scam upload (observed live: three fake "The Odyssey 2026"
+// grabs the day after its theatrical premiere). Unknown/empty status
+// stays quiet — never warn on missing data.
+inline bool likely_prerelease_fakes_only(const Movie& m) {
+    return m.status == "tba" || m.status == "announced" ||
+           m.status == "inCinemas";
+}
+
+// True when the imported file's measured duration deviates >25% from
+// the movie's expected runtime — a renamed trailer, sample, or junk
+// video wearing a legit release name. Quiet unless both durations are
+// actually known.
+inline bool file_runtime_suspicious(const Movie& m) {
+    if (!m.has_file || m.file_runtime_minutes <= 0 || m.runtime_minutes <= 0) {
+        return false;
+    }
+    const double ratio = static_cast<double>(m.file_runtime_minutes) /
+                         static_cast<double>(m.runtime_minutes);
+    return ratio < 0.75 || ratio > 1.25;
+}
 
 struct QueueItem {
     int id = 0;                  // queue row id (used for delete)

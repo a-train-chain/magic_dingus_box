@@ -791,8 +791,13 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // Badge precedence mirrors draw_poster_card: stuck > importing
             // > downloading > in_library. Compute each exclusive of the
             // higher-priority ones so at most one badge is requested.
+            // A file whose measured duration is wildly off the expected
+            // runtime (renamed trailer/junk upload) earns the same BAD
+            // RELEASE badge as an importBlocked queue item — Detail
+            // explains the specifics.
             const bool is_stuck =
-                stuck_tmdb_ids_.count(mv->tmdb_id) > 0;
+                stuck_tmdb_ids_.count(mv->tmdb_id) > 0 ||
+                file_runtime_suspicious(*mv);
             const bool is_importing =
                 !is_stuck && importing_tmdb_ids_.count(mv->tmdb_id) > 0;
             const bool is_downloading =

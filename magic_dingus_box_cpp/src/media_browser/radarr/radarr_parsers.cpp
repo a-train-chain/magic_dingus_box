@@ -70,59 +70,11 @@ void fill_search_hit(const Json::Value& r, MovieSearchHit& h) {
     h.fanart_url = pick_image(r["images"], "fanart");
 }
 
-}  // namespace
-
-std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string& json) {
-    std::vector<MovieSearchHit> out;
-    Json::Value root;
-    if (!parse_json(json, root) || !root.isArray()) return out;
-    for (const auto& r : root) {
-        MovieSearchHit h;
-        fill_search_hit(r, h);
-        out.push_back(std::move(h));
-    }
-    return out;
-}
-
-std::vector<Movie> RadarrParsers::parse_movie_list(const std::string& json) {
-    std::vector<Movie> out;
-    Json::Value root;
-    if (!parse_json(json, root) || !root.isArray()) return out;
-    for (const auto& r : root) {
-        Movie m;
-        fill_search_hit(r, m);
-        m.radarr_id = r.get("id", 0).asInt();
-        m.monitored = r.get("monitored", false).asBool();
-        m.has_file = r.get("hasFile", false).asBool();
-        if (r.isMember("movieFile")) {
-            const auto& f = r["movieFile"];
-            m.file_path = f.get("relativePath", "").asString();
-            m.file_container_path = f.get("path", "").asString();
-            m.file_quality = f["quality"]["quality"].get("name", "").asString();
-            m.file_size_bytes = f.get("size", 0).asInt64();
-        }
-        m.added_at = r.get("added", "").asString();
-        out.push_back(std::move(m));
-    }
-    return out;
-}
-
-std::optional<Movie> RadarrParsers::parse_movie(const std::string& json) {
-    Json::Value root;
-    if (!parse_json(json, root) || !root.isObject()) return std::nullopt;
-    Movie m;
-    fill_search_hit(root, m);
-    m.radarr_id = root.get("id", 0).asInt();
-    m.monitored = root.get("monitored", false).asBool();
-    m.has_file = root.get("hasFile", false).asBool();
-    return m;
-}
-
-namespace {
-
-// Parse Radarr `timeleft` strings into total seconds.
+// Parse Radarr duration strings into total seconds.
 // Accepts "HH:MM:SS" and "D.HH:MM:SS" (days-dot-hours). Returns 0 on parse
-// failure so the caller can leave QueueItem::eta_seconds at its default.
+// failure so callers can leave their duration fields at the default.
+// Used for both QueueItem::eta_seconds ("timeleft") and
+// movieFile.mediaInfo.runTime.
 int parse_timeleft_to_seconds(const std::string& s) {
     if (s.empty()) return 0;
     int days = 0;
@@ -149,7 +101,60 @@ int parse_timeleft_to_seconds(const std::string& s) {
     return days * 86400 + hh * 3600 + mm * 60 + ss;
 }
 
+// Library-only fields shared by the movie-list and single-movie
+// payloads (parse_movie_list / parse_movie).
+void fill_library_fields(const Json::Value& r, Movie& m) {
+    m.radarr_id = r.get("id", 0).asInt();
+    m.monitored = r.get("monitored", false).asBool();
+    m.has_file = r.get("hasFile", false).asBool();
+    m.status = r.get("status", "").asString();
+    if (r.isMember("movieFile")) {
+        const auto& f = r["movieFile"];
+        m.file_path = f.get("relativePath", "").asString();
+        m.file_container_path = f.get("path", "").asString();
+        m.file_quality = f["quality"]["quality"].get("name", "").asString();
+        m.file_size_bytes = f.get("size", 0).asInt64();
+        m.file_runtime_minutes = parse_timeleft_to_seconds(
+            f["mediaInfo"].get("runTime", "").asString()) / 60;
+    }
+    m.added_at = r.get("added", "").asString();
+}
+
 }  // namespace
+
+std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string& json) {
+    std::vector<MovieSearchHit> out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    for (const auto& r : root) {
+        MovieSearchHit h;
+        fill_search_hit(r, h);
+        out.push_back(std::move(h));
+    }
+    return out;
+}
+
+std::vector<Movie> RadarrParsers::parse_movie_list(const std::string& json) {
+    std::vector<Movie> out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    for (const auto& r : root) {
+        Movie m;
+        fill_search_hit(r, m);
+        fill_library_fields(r, m);
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+std::optional<Movie> RadarrParsers::parse_movie(const std::string& json) {
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isObject()) return std::nullopt;
+    Movie m;
+    fill_search_hit(root, m);
+    fill_library_fields(root, m);
+    return m;
+}
 
 std::vector<QueueItem> RadarrParsers::parse_queue(const std::string& json) {
     std::vector<QueueItem> out;

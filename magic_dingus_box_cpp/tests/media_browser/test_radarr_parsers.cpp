@@ -76,6 +76,68 @@ TEST_CASE("parse_movie_list: extracts movieFile.path as file_container_path",
             "Sintel (2010) [720p] [BluRay] [YTS.MX].mp4");
     REQUIRE(movies[0].file_container_path ==
             "/library/Sintel (2010)/Sintel (2010) [720p] [BluRay] [YTS.MX].mp4");
+    // Release status + measured file duration feed the fake-download
+    // warnings (pre-release banner, runtime-mismatch badge).
+    REQUIRE(movies[0].status == "released");
+    REQUIRE(movies[0].file_runtime_minutes == 14);  // "0:14:48" floored
+}
+
+TEST_CASE("parse_movie: single-movie GET carries status + file fields",
+          "[radarr][parsers]") {
+    const std::string json = R"({
+        "id": 44, "tmdbId": 1368337, "title": "The Odyssey", "year": 2026,
+        "runtime": 173, "status": "inCinemas", "monitored": true,
+        "hasFile": true,
+        "movieFile": {
+            "path": "/library/The Odyssey (2026)/fake.mp4",
+            "relativePath": "fake.mp4", "size": 900000000,
+            "quality": {"quality": {"name": "WEBRip-1080p"}},
+            "mediaInfo": {"runTime": "0:47:02"}
+        }
+    })";
+    auto m = media_browser::RadarrParsers::parse_movie(json);
+    REQUIRE(m.has_value());
+    REQUIRE(m->status == "inCinemas");
+    REQUIRE(m->runtime_minutes == 173);
+    REQUIRE(m->file_runtime_minutes == 47);
+    REQUIRE(m->file_container_path == "/library/The Odyssey (2026)/fake.mp4");
+}
+
+TEST_CASE("likely_prerelease_fakes_only: flags pre-home-release statuses",
+          "[radarr][fake-detection]") {
+    media_browser::Movie m;
+    for (const char* s : {"tba", "announced", "inCinemas"}) {
+        m.status = s;
+        REQUIRE(media_browser::likely_prerelease_fakes_only(m));
+    }
+    m.status = "released";
+    REQUIRE(!media_browser::likely_prerelease_fakes_only(m));
+    m.status = "";  // unknown — don't cry wolf
+    REQUIRE(!media_browser::likely_prerelease_fakes_only(m));
+}
+
+TEST_CASE("file_runtime_suspicious: flags >25% duration deviation",
+          "[radarr][fake-detection]") {
+    media_browser::Movie m;
+    m.has_file = true;
+    m.runtime_minutes = 173;
+
+    m.file_runtime_minutes = 47;   // renamed junk / partial
+    REQUIRE(media_browser::file_runtime_suspicious(m));
+    m.file_runtime_minutes = 165;  // credits trimmed — fine
+    REQUIRE(!media_browser::file_runtime_suspicious(m));
+    m.file_runtime_minutes = 240;  // way too long is also wrong
+    REQUIRE(media_browser::file_runtime_suspicious(m));
+
+    // Missing data must never warn.
+    m.file_runtime_minutes = 0;
+    REQUIRE(!media_browser::file_runtime_suspicious(m));
+    m.file_runtime_minutes = 47;
+    m.runtime_minutes = 0;
+    REQUIRE(!media_browser::file_runtime_suspicious(m));
+    m.runtime_minutes = 173;
+    m.has_file = false;
+    REQUIRE(!media_browser::file_runtime_suspicious(m));
 }
 
 TEST_CASE("parse_queue: extracts 1 queue item", "[radarr][parsers]") {

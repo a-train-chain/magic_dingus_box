@@ -1441,31 +1441,67 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
         const float banner_h = static_cast<float>(sz) + 18.0f;
-        // Two sub-states share this slot:
+        // Three sub-states share this slot:
         //   import_in_progress_ : the download FINISHED and Radarr is
         //     copying the file into the library right now — ready in
         //     seconds. Green (highlight1) so it reads as imminent success.
+        //   pre-release (Radarr status tba/announced/inCinemas) : no home
+        //     release exists yet, so anything indexers surface right now
+        //     is a scam upload. Red/orange warning so the user doesn't
+        //     chase fake grabs (observed live: "The Odyssey 2026" fakes
+        //     the day after theatrical premiere).
         //   else (plain monitored) : no release grabbed yet; Radarr is
         //     still watching indexers. Dim steel-blue, informational.
         // The quiet library poll (maybe_repoll_library) drives the flip
         // and, when the file lands, transitions the whole screen to
         // InLibraryWithFile so Play appears — this banner is only the
         // interim signal.
-        ::ui::Color border_col = import_in_progress_ ? th.highlight1 : th.dim;
-        ::ui::Color text_col   = import_in_progress_ ? th.highlight1 : th.dim;
+        const bool prerelease =
+            movie_.has_value() && likely_prerelease_fakes_only(*movie_);
+        ::ui::Color state_col = import_in_progress_ ? th.highlight1
+                              : prerelease          ? th.highlight2
+                                                    : th.dim;
         std::string txt = import_in_progress_
             ? std::string("DOWNLOADED  \xE2\x80\xA2  Importing to library — "
                           "ready to play in a few seconds")
+            : prerelease
+            ? std::string("IN THEATERS  \xE2\x80\xA2  No digital release "
+                          "exists yet — downloads found now are almost "
+                          "always fakes; the real one lands automatically")
             : std::string("MONITORED  \xE2\x80\xA2  Radarr re-checks indexers "
                           "every 30 minutes and will auto-download when "
                           "seeders appear");
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
-                         2.0f, border_col, 0.9f);
+                         2.0f, state_col, 0.9f);
         std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
         r.mb_draw_text(drawn, col_x + 12.0f,
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
-                       sz, text_col, 0.95f);
+                       sz, state_col, 0.95f);
+        cursor_y += banner_h + 6.0f;
+    }
+
+    // Runtime-mismatch warning: the imported file's measured duration is
+    // wildly off the movie's expected runtime — a renamed trailer/junk
+    // video wearing a legit release name (the fake-upload long tail that
+    // slips past pre-grab scoring). Tells the user what to do about it.
+    if (mode_ == Mode::InLibraryWithFile && movie_.has_value() &&
+        file_runtime_suspicious(*movie_)) {
+        int sz = th.font_small_size;
+        int baseline = r.mb_text_baseline(sz);
+        cursor_y += 12.0f;
+        const float banner_h = static_cast<float>(sz) + 18.0f;
+        std::string txt = "FILE LOOKS WRONG  \xE2\x80\xA2  " +
+            std::to_string(movie_->file_runtime_minutes) + " min file vs " +
+            std::to_string(movie_->runtime_minutes) + " min expected — "
+            "probably not the real movie (use Remove, then re-add)";
+        r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
+                         2.0f, th.highlight2, 0.9f);
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
+        r.mb_draw_text(drawn, col_x + 12.0f,
+                       cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
+                                + static_cast<float>(baseline),
+                       sz, th.highlight2, 0.95f);
         cursor_y += banner_h + 6.0f;
     }
 

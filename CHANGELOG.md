@@ -50,11 +50,30 @@ bezels) and all controller mappings unchanged.
   memory). Applied on the source Pi + recorded in the golden-image doc;
   rollback at `/boot/firmware/config.txt.bak-headroom`.
 
+- **Fake-download warnings (Media Browser)** — two new user-facing
+  signals for scam releases (observed live: three fake "The Odyssey
+  2026" grabs the day after its theatrical premiere):
+  - Detail shows an **"IN THEATERS — no digital release exists yet;
+    downloads found now are almost always fakes"** banner for library
+    movies whose Radarr status is tba/announced/inCinemas.
+  - Detail shows a **"FILE LOOKS WRONG — X min file vs Y min
+    expected"** banner (and Library shows the BAD RELEASE badge) when
+    an imported file's measured duration deviates >25% from the
+    movie's runtime — catches renamed trailers/junk that slip past
+    pre-grab scoring. Radarr's `minimumAvailability=announced` stays
+    (deliberate: early real releases still grab the moment they
+    exist); these warnings cover the fake-release window instead.
+
 ### Fixed
 - **Smoke harness:** waits for the settings menu to actually close
   between games instead of a blind settle — the quiet-mode container
   resume right at return-to-menu could stale the status file long
   enough to make the next navigation start from a closed menu.
+- **missing-search timer:** the boot catch-up run fired before Radarr
+  was accepting connections and died on an uncaught connection reset,
+  silencing missing-movie retries for 4h after every boot. Now waits
+  for Radarr readiness (up to 120s) and treats socket errors as a
+  clean retry-next-timer exit.
 
 ## [1.6.4] - 2026-04-30
 
