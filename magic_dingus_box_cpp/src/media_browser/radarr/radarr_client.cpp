@@ -417,9 +417,24 @@ std::vector<RootFolder> RadarrClient::get_root_folders() {
 
 std::string RadarrClient::resolve_host_path(const std::string& container_path) const {
     if (container_path.empty()) return container_path;
+    // Primary: the configured container prefix.
     if (container_path.rfind(cfg_.container_library_prefix, 0) == 0) {
         return cfg_.host_library_prefix +
                container_path.substr(cfg_.container_library_prefix.size());
+    }
+    // Fallback: the compose mounts BOTH /data/library and /library into the
+    // container at the same host library dir, and an install may store
+    // either style in radarr.db depending on when its root folder was
+    // migrated. Try the known alternates (each normalized to end in '/' so
+    // /library2 can't false-match) so Play works regardless of which one
+    // Radarr recorded, without an env override on every box.
+    for (const std::string& alt : {std::string("/data/library/"),
+                                   std::string("/library/")}) {
+        if (alt != cfg_.container_library_prefix &&
+            container_path.rfind(alt, 0) == 0) {
+            return cfg_.host_library_prefix +
+                   container_path.substr(alt.size());
+        }
     }
     spdlog::warn("[radarr] resolve_host_path: '{}' does not match prefix "
                  "'{}'; passing through unchanged",

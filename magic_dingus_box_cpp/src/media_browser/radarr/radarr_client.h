@@ -18,10 +18,14 @@ public:
         // get_queue() / is_reachable() are in-flight.
         int timeout_secs = 5;
         // Path translation for movie files: Radarr returns container-internal
-        // paths like /library/foo.mp4. The kiosk runs on the host and needs
-        // /mnt/ssd/library/foo.mp4. Both prefixes are normalized to end in
-        // '/' by the constructor (defense against /library2 false-matches).
-        std::string container_library_prefix = "/library/";
+        // paths and the kiosk runs on the host. The docker-compose repoints
+        // Radarr's root folder to /data/library (with /downloads hardlink
+        // support), so movieFile.path is "/data/library/...". Default the
+        // container prefix to match; resolve_host_path also falls back to
+        // the legacy "/library/" mount (the compose maps both to the same
+        // host dir). Both prefixes are normalized to end in '/' by the
+        // constructor (defense against /library2 false-matches).
+        std::string container_library_prefix = "/data/library/";
         std::string host_library_prefix      = "/mnt/ssd/library/";
     };
 

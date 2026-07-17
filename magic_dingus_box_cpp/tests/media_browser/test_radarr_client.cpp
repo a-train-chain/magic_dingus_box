@@ -51,6 +51,31 @@ TEST_CASE("resolve_host_path: normalizes prefix without trailing slash",
     REQUIRE(c.resolve_host_path("/library2/foo.mp4") == "/library2/foo.mp4");
 }
 
+TEST_CASE("resolve_host_path: default config maps Radarr's /data/library",
+          "[radarr][paths]") {
+    // Real deployment: the docker-compose repoints Radarr's root folder to
+    // /data/library, so movieFile.path is "/data/library/...". The default
+    // container prefix must match that, or every in-library movie fails
+    // play_ready() and the Detail page shows only "Pick a source".
+    mb::RadarrClient c{mb::RadarrClient::Config{}};  // all defaults
+    REQUIRE(c.resolve_host_path(
+                "/data/library/Pulp Fiction (1994)/Pulp Fiction.mp4") ==
+            "/mnt/ssd/library/Pulp Fiction (1994)/Pulp Fiction.mp4");
+}
+
+TEST_CASE("resolve_host_path: still handles legacy /library paths",
+          "[radarr][paths]") {
+    // The compose mounts BOTH /library and /data/library into the
+    // container at the same host dir; an install migrated at a different
+    // time may store either. The resolver falls back to the alternate
+    // prefix so Play works regardless of which one radarr.db recorded.
+    mb::RadarrClient c{mb::RadarrClient::Config{}};  // default = /data/library/
+    REQUIRE(c.resolve_host_path("/library/Sintel (2010)/Sintel.mp4") ==
+            "/mnt/ssd/library/Sintel (2010)/Sintel.mp4");
+    // The false-prefix guard must survive the fallback path too.
+    REQUIRE(c.resolve_host_path("/library2/foo.mp4") == "/library2/foo.mp4");
+}
+
 namespace {
 class RecordingRadarr : public mb::RadarrClient {
 public:
