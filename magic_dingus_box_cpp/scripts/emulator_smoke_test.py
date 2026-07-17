@@ -414,10 +414,22 @@ def test_one_game(k: Kiosk, playlist_idx: int, game_idx: int) -> dict:
         result["errors"].append("DRM master re-acquire hit CRITICAL retries")
 
     # Leave the settings/game menu so the next iteration starts clean.
+    # Wait for the close to land in the status file — a blind settle is
+    # not enough right after a game returns (quiet-mode container resume
+    # loads the box), and a stale "settings.active" makes the next
+    # enter_game_browser skip reopening and navigate a closed menu.
     st = k.status()
     if st.get("settings", {}).get("active"):
         k.press(BTN_SETTINGS)
-        time.sleep(PRESS_SETTLE)
+        try:
+            k.wait_status(lambda s: not s.get("settings", {}).get("active"),
+                          5, "settings menu to close")
+        except TimeoutError:
+            # The close press itself may have been dropped under load —
+            # retry once before giving up on this iteration's cleanup.
+            k.press(BTN_SETTINGS)
+            k.wait_status(lambda s: not s.get("settings", {}).get("active"),
+                          5, "settings menu to close")
     return result
 
 
