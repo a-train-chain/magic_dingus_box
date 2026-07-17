@@ -5,6 +5,51 @@ All notable changes to Magic Dingus Box will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+RetroArch performance-headroom round: quiet the media stack during game
+sessions, reclaim PS1 audio latency, add heavy-scene video options, and
+cool the boot config. Video contract (Vulkan/khr_display, viewports,
+bezels) and all controller mappings unchanged.
+
+### Added
+- **Game quiet mode** — launching any game now pauses qBittorrent
+  torrents and stops the Radarr/Prowlarr/Byparr containers for the whole
+  session (mirrors movie playback's existing behavior), restoring them
+  on return. Serialized async worker (`GameQuietMode`); launch is never
+  delayed, and a fast pause→resume flip can never strand services
+  paused. No-op on unprovisioned Pis.
+- **`ArtworkCache::clear_textures()`** — poster textures + queued
+  uploads are dropped at game launch (cache rebuilds lazily from disk on
+  return), so they don't sit in RAM/GPU memory during gameplay.
+- **VPN monitor game-session awareness** — health polling skips game
+  sessions (Radarr is intentionally down) plus a 90 s post-session grace
+  while containers restart, so quiet mode never triggers a false
+  "tunnel down" toast.
+- **Smoke-test dynarec assertion** — PS1 smoke runs now fail loudly if
+  the core ever silently drops the ari64 dynarec for Lightrec or the
+  interpreter (multi-x slowdown guard).
+
+### Changed
+- **PS1 audio latency 64 → 48 ms** (alsathread) — 30 s THPS2 ALSA soak
+  showed zero underrun retriggers at 48 ms; `spu_thread` stays enabled.
+- **`video_frame_delay_auto = "true"`** (all cores, both display modes) —
+  RetroArch backs the 4 ms frame delay off automatically in heavy scenes
+  instead of stuttering.
+- **`pcsx_rearmed_gpu_thread_rendering = "async"`** (PS1) — software
+  rasterizer runs on a second core for heavy-scene headroom.
+- **Boot config:** `force_turbo=1` removed (idle downclock → ~6 °C
+  cooler idle; `performance` governor still pins ARM at 2 GHz in use)
+  and `gpu_mem` 128 → 76 (KMS/V3D allocates from CMA, not firmware
+  memory). Applied on the source Pi + recorded in the golden-image doc;
+  rollback at `/boot/firmware/config.txt.bak-headroom`.
+
+### Fixed
+- **Smoke harness:** waits for the settings menu to actually close
+  between games instead of a blind settle — the quiet-mode container
+  resume right at return-to-menu could stale the status file long
+  enough to make the next navigation start from a closed menu.
+
 ## [1.6.4] - 2026-04-30
 
 Marquee filter overlays, search focus toggle, universal exit modal, playback overlay, and footer hint vocabulary pass. v1.6.3 redesigned the input grammar and added the Library overlay; this release extends that foundation with per-tab Discover filters on Browse, a keyboard↔grid focus toggle on Search, a BTN2 exit modal across all MB screens, a translucent playback overlay for browsing similar films without stopping the movie, and a full refresh of every footer hint label to match the finalized v1.6.4 binding vocabulary.
