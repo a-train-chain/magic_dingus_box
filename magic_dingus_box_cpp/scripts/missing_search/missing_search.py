@@ -31,11 +31,33 @@ internally queues + rate-limits the per-movie searches.
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 
 RADARR_API_KEY = ""
 RADARR_BASE = "http://localhost:7878"
+
+
+def wait_for_radarr(timeout_s=120, poll_s=5):
+    """Poll Radarr's /ping until it answers, or give up after timeout_s.
+
+    The timer's Persistent=true boot catch-up fires within a minute of
+    boot, while the docker stack is still starting — without this wait
+    the run dies on connection-reset and the missing backlog is not
+    retried for another 4 hours.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(RADARR_BASE + "/ping")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                if r.status == 200:
+                    return True
+        except OSError:
+            pass
+        time.sleep(poll_s)
+    return False
 
 
 def load_env(path="/opt/magic_dingus_box/services/.env"):
@@ -68,12 +90,19 @@ def main():
         print("[missing-search] RADARR_API_KEY not set in .env — skipping")
         return 0
 
+    if not wait_for_radarr():
+        print("[missing-search] Radarr not ready within 120s — "
+              "will retry next timer")
+        return 1
+
     # Count the current monitored-but-missing backlog purely for the
     # log line — Radarr's MissingMoviesSearch command does the actual
     # selection internally, so we don't need to enumerate ids ourselves.
+    # OSError covers URLError plus raw socket errors (e.g. a connection
+    # reset mid-read while Radarr is still warming up).
     try:
         movies = http("GET", "/api/v3/movie")
-    except urllib.error.URLError as e:
+    except OSError as e:
         print(f"[missing-search] Radarr unreachable ({e}) — will retry next timer")
         return 1
 
@@ -93,7 +122,7 @@ def main():
         cmd = http("POST", "/api/v3/command", {"name": "MissingMoviesSearch"})
         cmd_id = cmd.get("id") if isinstance(cmd, dict) else "?"
         print(f"[missing-search] MissingMoviesSearch queued (command id={cmd_id})")
-    except urllib.error.URLError as e:
+    except OSError as e:
         print(f"[missing-search] failed to queue search ({e})")
         return 1
     return 0
