@@ -126,6 +126,23 @@ DB, etc.) — useful if you want to start fresh, but not if you have a
 working library you want to keep using on the source while building
 the golden image.
 
+## Boot config (2026-07-16)
+
+`/boot/firmware/config.txt` on the source Pi carries the RetroArch
+performance-headroom settings, and cloned Pis inherit them via the SD
+image:
+
+- `force_turbo=1` **removed** — lets the SoC downclock at idle for
+  thermal headroom (~6 °C cooler idle measured); the `performance`
+  CPU governor still pins ARM at 2 GHz whenever the kiosk runs, so
+  gameplay clocks are unchanged.
+- `gpu_mem=76` (was 128) — the KMS/V3D stack allocates from CMA, not
+  firmware memory, so the larger carve-out was pure waste; 76 MB is
+  the firmware-recommended floor for this stack.
+
+Rollback: `/boot/firmware/config.txt.bak-headroom` on the source Pi
+holds the pre-change file (`sudo cp` it back and reboot).
+
 ## Performance notes
 
 | Network | ~32 GB SD clone time |
