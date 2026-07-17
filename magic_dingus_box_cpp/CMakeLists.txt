@@ -124,6 +124,7 @@ list(APPEND UI_SOURCES src/ui/toast.cpp)
 
 set(APP_SOURCES
     src/app/game_launch_recovery.cpp
+    src/app/game_quiet_mode.cpp
     src/app/playlist_loader.cpp
     src/app/controller.cpp
     src/app/controller_text_input.cpp
@@ -458,6 +459,7 @@ if(RETROARCH_TEST_SOURCES)
     add_executable(test_retroarch_unit
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
+        src/app/game_quiet_mode.cpp
         src/retroarch/launch_contract.cpp
         src/utils/config.cpp
     )
