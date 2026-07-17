@@ -146,3 +146,83 @@ TEST_CASE("VpnHealthMonitor recovers immediately on first successful poll",
 
     REQUIRE(state.media_browser_vpn_healthy == true);
 }
+
+TEST_CASE("VpnHealthMonitor skips polling during a game session",
+          "[vpn_health_monitor]") {
+    app::AppState state;
+    state.media_browser_vpn_healthy = true;
+
+    ScriptedPinger pinger;
+    pinger.next_result = true;
+
+    media_browser::VpnHealthMonitor monitor(
+        state, [&pinger]() { return pinger(); },
+        std::chrono::milliseconds(5),
+        /*post_session_grace=*/std::chrono::milliseconds(0));
+
+    monitor.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));  // arm ever_healthy_
+
+    state.is_loading_game = true;
+    pinger.next_result = false;   // Radarr is stopped by quiet mode
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // >> 3 polls
+    REQUIRE(state.media_browser_vpn_healthy == true);
+    REQUIRE(monitor.consecutive_failures() == 0);
+
+    state.is_loading_game = false;
+    monitor.stop();
+}
+
+TEST_CASE("VpnHealthMonitor ignores failures during the post-session grace",
+          "[vpn_health_monitor]") {
+    app::AppState state;
+    state.media_browser_vpn_healthy = true;
+
+    ScriptedPinger pinger;
+    pinger.next_result = true;
+
+    media_browser::VpnHealthMonitor monitor(
+        state, [&pinger]() { return pinger(); },
+        std::chrono::milliseconds(5),
+        /*post_session_grace=*/std::chrono::seconds(10));
+
+    monitor.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));  // arm ever_healthy_
+
+    state.is_loading_game = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state.is_loading_game = false;
+
+    // Radarr is still restarting: failures land inside the 10s grace.
+    pinger.next_result = false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    REQUIRE(state.media_browser_vpn_healthy == true);
+    monitor.stop();
+}
+
+TEST_CASE("VpnHealthMonitor resumes real failure detection after the grace",
+          "[vpn_health_monitor]") {
+    app::AppState state;
+    state.media_browser_vpn_healthy = true;
+
+    ScriptedPinger pinger;
+    pinger.next_result = true;
+
+    media_browser::VpnHealthMonitor monitor(
+        state, [&pinger]() { return pinger(); },
+        std::chrono::milliseconds(5),
+        /*post_session_grace=*/std::chrono::milliseconds(20));
+
+    monitor.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));  // arm ever_healthy_
+
+    state.is_loading_game = true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state.is_loading_game = false;
+
+    pinger.next_result = false;
+    // 20ms grace expires, then >3 failing polls at 5ms cadence.
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    REQUIRE(state.media_browser_vpn_healthy == false);
+    monitor.stop();
+}

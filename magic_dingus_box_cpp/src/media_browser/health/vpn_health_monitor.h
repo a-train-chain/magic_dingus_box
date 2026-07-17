@@ -23,15 +23,21 @@ public:
 
     // Default constructor uses an HTTP ping to localhost:7878/ping with
     // a 3s curl timeout. The poll loop skips this during movie playback
-    // (state.video_active) since Radarr is paused then by the kiosk's
-    // playback CPU saver, which would otherwise produce false "tunnel
-    // down" toasts ~30s into every movie.
+    // (state.video_active) AND game sessions (state.is_loading_game) —
+    // both intentionally quiet the media stack (PlaybackScreen /
+    // GameQuietMode stop Radarr), which would otherwise produce false
+    // "tunnel down" toasts. After a session ends, failures are ignored
+    // for a grace period so a docker-start-ing Radarr (~10-30s) doesn't
+    // trip the 3-strikes counter either.
     explicit VpnHealthMonitor(app::AppState& state);
 
-    // Test seam: inject a ping function and a custom poll interval.
+    // Test seam: inject a ping function, poll interval, and the
+    // post-session grace window (production default: 90s).
     VpnHealthMonitor(app::AppState& state,
                      PingFn ping_fn,
-                     std::chrono::milliseconds poll_interval);
+                     std::chrono::milliseconds poll_interval,
+                     std::chrono::milliseconds post_session_grace =
+                         std::chrono::seconds(90));
 
     ~VpnHealthMonitor();
 
@@ -49,6 +55,11 @@ private:
     app::AppState& state_;
     PingFn ping_fn_;
     std::chrono::milliseconds poll_interval_;
+    std::chrono::milliseconds post_session_grace_;
+    // Worker-thread-only: deadline until which post-session ping
+    // failures are ignored. Pushed forward continuously while a
+    // movie/game session is active.
+    std::chrono::steady_clock::time_point grace_until_{};
     std::atomic<bool> stop_flag_{false};
     std::atomic<int> consecutive_failures_{0};
 

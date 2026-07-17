@@ -43,9 +43,11 @@ VpnHealthMonitor::VpnHealthMonitor(app::AppState& state)
 
 VpnHealthMonitor::VpnHealthMonitor(app::AppState& state,
                                    PingFn ping_fn,
-                                   std::chrono::milliseconds poll_interval)
+                                   std::chrono::milliseconds poll_interval,
+                                   std::chrono::milliseconds post_session_grace)
     : state_(state), ping_fn_(std::move(ping_fn)),
-      poll_interval_(poll_interval) {}
+      poll_interval_(poll_interval),
+      post_session_grace_(post_session_grace) {}
 
 VpnHealthMonitor::~VpnHealthMonitor() {
     stop();
@@ -64,17 +66,23 @@ void VpnHealthMonitor::stop() {
 
 void VpnHealthMonitor::run() {
     while (!stop_flag_.load()) {
-        // Skip the poll during movie playback. Radarr is intentionally
-        // paused by PlaybackScreen::enter() to free CPU, so its /ping
-        // would time out and the 3-strikes counter would flip the
-        // tunnel-unhealthy flag ~30s into every movie — a false alarm.
-        // Skip cleanly: don't increment failures, don't change state,
-        // just wait for the next interval. When playback ends and the
-        // containers are unpaused (PlaybackScreen::leave()), this loop
-        // resumes normally and the next successful ping reaffirms
-        // healthy. Real tunnel failures during playback are detected
-        // immediately when playback ends.
-        if (state_.video_active.load()) {
+        // Skip the poll while the kiosk has intentionally quieted the
+        // media stack: movie playback (PlaybackScreen::enter() pauses
+        // Radarr) or a game session (GameQuietMode stops Radarr /
+        // Prowlarr / Byparr; is_loading_game stays true for the whole
+        // blocked RetroArch session). Polling then would time out and
+        // the 3-strikes counter would flip the tunnel-unhealthy flag —
+        // a false alarm. Skip cleanly: don't increment failures, don't
+        // change state, and keep pushing the post-session grace
+        // deadline so the freshly docker-start-ed containers get time
+        // to come up after the session ends. Real tunnel failures are
+        // detected once the grace expires.
+        const bool session_active =
+            state_.video_active.load() || state_.is_loading_game.load();
+        if (session_active) {
+            consecutive_failures_.store(0);
+            grace_until_ =
+                std::chrono::steady_clock::now() + post_session_grace_;
             std::this_thread::sleep_for(poll_interval_);
             continue;
         }
@@ -85,6 +93,11 @@ void VpnHealthMonitor::run() {
             consecutive_failures_.store(0);
             state_.media_browser_vpn_healthy = true;
             ever_healthy_.store(true);  // arm the 3-strikes path
+            grace_until_ = {};          // healthy again — grace over
+        } else if (std::chrono::steady_clock::now() < grace_until_) {
+            // Radarr is still restarting after a game/movie session; a
+            // failure here is expected, not a tunnel drop.
+            consecutive_failures_.store(0);
         } else {
             int n = consecutive_failures_.fetch_add(1) + 1;
             // Three-strikes: flip unhealthy — BUT only after we've seen
