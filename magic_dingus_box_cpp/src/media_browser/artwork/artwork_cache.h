@@ -91,6 +91,16 @@ public:
     void resume();
     bool is_paused() const { return paused_.load(std::memory_order_acquire); }
 
+    // Main thread only (owns the GL context). Deletes every uploaded
+    // texture and discards queued-but-not-yet-uploaded pixel buffers,
+    // including their in-flight dedup markers so the posters can
+    // re-fetch later. Called before the DRM handoff to RetroArch so up
+    // to max_bytes_ of poster textures don't sit in RAM/GPU memory for
+    // the whole game session. Entries rebuild lazily via get_or_fetch()
+    // on return — the disk cache makes that a local re-read, not a TMDB
+    // round-trip.
+    void clear_textures();
+
     // Diagnostics
     std::size_t entries_count() const;
     std::size_t bytes_in_use() const;
@@ -120,6 +130,8 @@ public:
     std::size_t pump_for_tests();
     // Manually mark a URL as accessed (for LRU testing).
     void test_touch(const std::string& url);
+    // True if url currently has an in-flight fetch marker (dedup guard).
+    bool test_is_in_flight(const std::string& url);
 #endif
 
 private:

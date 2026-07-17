@@ -195,3 +195,37 @@ TEST_CASE("Repeated get_or_fetch for in-flight URL does not re-enqueue",
         REQUIRE(cache.get_or_fetch(url) != 0);
     }
 }
+
+TEST_CASE("clear_textures drops entries, queued uploads, and their "
+          "in-flight markers", "[artwork]") {
+    ArtworkCache cache;
+
+    // One fully-uploaded entry.
+    REQUIRE(cache.get_or_fetch("https://example.com/p1.jpg") == 0);
+    cache.test_inject_ready_upload(make_upload("https://example.com/p1.jpg", 8, 8));
+    REQUIRE(cache.pump_for_tests() == 1);
+    REQUIRE(cache.entries_count() == 1);
+    REQUIRE(cache.bytes_in_use() > 0);
+
+    // One upload left waiting (not pumped). Its in-flight marker is only
+    // dropped at upload time, so clear_textures() must erase it too —
+    // otherwise get_or_fetch() would never re-enqueue this poster.
+    REQUIRE(cache.get_or_fetch("https://example.com/p2.jpg") == 0);
+    cache.test_inject_ready_upload(make_upload("https://example.com/p2.jpg", 8, 8));
+    REQUIRE(cache.bytes_waiting_upload() > 0);
+    REQUIRE(cache.test_is_in_flight("https://example.com/p2.jpg"));
+
+    cache.clear_textures();
+
+    REQUIRE(cache.entries_count() == 0);
+    REQUIRE(cache.bytes_in_use() == 0);
+    REQUIRE(cache.bytes_waiting_upload() == 0);
+    REQUIRE(cache.pump_for_tests() == 0);
+    REQUIRE_FALSE(cache.test_is_in_flight("https://example.com/p2.jpg"));
+
+    // The cache must keep working after a clear.
+    REQUIRE(cache.get_or_fetch("https://example.com/p3.jpg") == 0);
+    cache.test_inject_ready_upload(make_upload("https://example.com/p3.jpg", 8, 8));
+    REQUIRE(cache.pump_for_tests() == 1);
+    REQUIRE(cache.entries_count() == 1);
+}

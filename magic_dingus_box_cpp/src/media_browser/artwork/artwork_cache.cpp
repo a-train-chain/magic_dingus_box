@@ -288,6 +288,43 @@ void ArtworkCache::resume() {
     }
 }
 
+void ArtworkCache::clear_textures() {
+    // Discard queued-but-not-yet-uploaded pixel buffers first so pump()
+    // after a game doesn't re-upload stale posters. Their in-flight
+    // markers are normally erased at upload time (upload_one), so erase
+    // them here too — otherwise get_or_fetch() would treat these URLs
+    // as forever-pending and never re-enqueue them.
+    std::vector<PendingUpload> discarded;
+    {
+        std::lock_guard<std::mutex> ready_lock(ready_mutex_);
+        discarded.swap(ready_uploads_);
+        bytes_waiting_upload_.store(0, std::memory_order_relaxed);
+    }
+    if (!discarded.empty()) {
+        std::lock_guard<std::mutex> work_lock(work_mutex_);
+        for (const auto& upload : discarded) {
+            in_flight_.erase(upload.url);
+        }
+    }
+
+    std::size_t dropped = 0;
+    {
+        std::lock_guard<std::mutex> entries_lock(entries_mutex_);
+        dropped = entries_.size();
+#ifndef ARTWORK_CACHE_TEST_MODE
+        for (auto& [url, entry] : entries_) {
+            if (entry.texture_id != 0) {
+                glDeleteTextures(1, &entry.texture_id);
+            }
+        }
+#endif
+        entries_.clear();
+        bytes_in_use_ = 0;
+    }
+    spdlog::info("[artwork] cleared {} textures + {} queued uploads "
+                 "for game session", dropped, discarded.size());
+}
+
 // ---------------------------------------------------------------------------
 // Disk cache helpers
 // ---------------------------------------------------------------------------
@@ -639,6 +676,11 @@ void ArtworkCache::test_touch(const std::string& url) {
     if (it != entries_.end()) {
         it->second.last_access = std::chrono::steady_clock::now();
     }
+}
+
+bool ArtworkCache::test_is_in_flight(const std::string& url) {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    return in_flight_.count(url) > 0;
 }
 #endif
 
