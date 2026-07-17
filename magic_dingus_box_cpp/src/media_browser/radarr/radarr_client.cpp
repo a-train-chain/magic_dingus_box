@@ -275,6 +275,12 @@ std::vector<QueueItem> RadarrClient::get_queue() {
     return RadarrParsers::parse_queue(resp);
 }
 
+ActiveSearches RadarrClient::get_active_searches() {
+    auto resp = http_get("/api/v3/command");
+    if (resp.empty()) return {};
+    return RadarrParsers::parse_active_searches(resp);
+}
+
 bool RadarrClient::cancel_queue_item(int queue_id) {
     last_error_.clear();
     http_delete("/api/v3/queue/" + std::to_string(queue_id)

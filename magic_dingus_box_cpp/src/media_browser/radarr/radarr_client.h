@@ -49,6 +49,11 @@ public:
     virtual std::vector<QueueItem> get_queue();
     virtual bool cancel_queue_item(int queue_id);
 
+    // Which movies Radarr is actively searching indexers for right now
+    // (running MoviesSearch / MissingMoviesSearch commands). Powers the
+    // "Searching indexers now…" state in the awaiting-release list.
+    virtual ActiveSearches get_active_searches();
+
     // Grab a specific release picked by the user. The `release` JSON
     // must be an object previously returned from /api/v3/release?movieId=X
     // (or constructed with the same shape — at minimum guid + indexerId).

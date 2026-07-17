@@ -16,6 +16,7 @@ public:
     static std::vector<QualityProfile> parse_quality_profiles(const std::string& json);
     static std::vector<RootFolder> parse_root_folders(const std::string& json);
     static std::optional<SystemStatus> parse_system_status(const std::string& json);
+    static ActiveSearches parse_active_searches(const std::string& json);
 };
 
 }  // namespace media_browser

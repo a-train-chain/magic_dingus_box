@@ -111,6 +111,10 @@ private:
     // below the active downloads so the user sees Radarr is watching for
     // a release even when nothing is grabbing yet.
     std::vector<Movie> awaiting_;
+    // Which awaiting movies Radarr is actively searching indexers for
+    // right now (snapshot from the last refresh). Drives the per-row
+    // "Searching indexers now…" state vs the passive "awaiting release".
+    ActiveSearches active_searches_;
 
     int cursor_ = 0;
     int scroll_row_ = 0;
@@ -134,6 +138,7 @@ private:
     struct PendingResult {
         std::vector<QueueItem> queue;
         std::vector<Movie>     awaiting;
+        ActiveSearches         active_searches;
         std::string            error;
         // True when the qBit live-data overlay step couldn't fetch the
         // torrent list (qBit unreachable behind a netns flap, auth

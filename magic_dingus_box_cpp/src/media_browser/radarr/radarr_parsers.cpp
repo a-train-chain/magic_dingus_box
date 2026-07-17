@@ -245,4 +245,26 @@ std::optional<SystemStatus> RadarrParsers::parse_system_status(const std::string
     return s;
 }
 
+ActiveSearches RadarrParsers::parse_active_searches(const std::string& json) {
+    ActiveSearches out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    for (const auto& c : root) {
+        const std::string status = c.get("status", "").asString();
+        // Only in-flight commands count as "searching now".
+        if (status != "started" && status != "queued") continue;
+        const std::string name = c.get("name", "").asString();
+        if (name == "MoviesSearch") {
+            const Json::Value& ids = c["body"]["movieIds"];
+            if (ids.isArray()) {
+                for (const auto& id : ids) out.movie_ids.insert(id.asInt());
+            }
+        } else if (name == "MissingMoviesSearch") {
+            // No per-movie ids — this sweeps the whole missing backlog.
+            out.global_search_running = true;
+        }
+    }
+    return out;
+}
+
 }  // namespace media_browser

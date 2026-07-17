@@ -1,5 +1,6 @@
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -116,6 +117,16 @@ struct SystemStatus {
     std::string version;
     std::string build_time;
     bool startup_completed = false;
+};
+
+// Snapshot of Radarr's currently-running search commands. Lets the UI
+// say "Searching indexers now…" for a just-added movie instead of the
+// passive "awaiting release, re-checks every 30 min" copy that reads as
+// "nothing is happening" during the exact window when the add-time
+// search IS running.
+struct ActiveSearches {
+    std::set<int> movie_ids;             // per-movie MoviesSearch targets
+    bool global_search_running = false;  // a MissingMoviesSearch sweep is live
 };
 
 }  // namespace media_browser

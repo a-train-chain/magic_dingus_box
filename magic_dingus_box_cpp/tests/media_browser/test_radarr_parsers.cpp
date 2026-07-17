@@ -82,6 +82,36 @@ TEST_CASE("parse_movie_list: extracts movieFile.path as file_container_path",
     REQUIRE(movies[0].file_runtime_minutes == 14);  // "0:14:48" floored
 }
 
+TEST_CASE("parse_active_searches: collects movieIds from running searches",
+          "[radarr][parsers][search-status]") {
+    // Radarr /api/v3/command: a per-movie MoviesSearch carries
+    // body.movieIds; a global MissingMoviesSearch carries none. Only
+    // started/queued commands count — a completed one is not "now".
+    const std::string json = R"([
+        {"name": "MoviesSearch", "status": "started",
+         "body": {"movieIds": [44, 51]}},
+        {"name": "MoviesSearch", "status": "completed",
+         "body": {"movieIds": [99]}},
+        {"name": "MissingMoviesSearch", "status": "queued", "body": {}},
+        {"name": "RefreshMovie", "status": "started", "body": {"movieId": 7}}
+    ])";
+    auto s = media_browser::RadarrParsers::parse_active_searches(json);
+    // 44 and 51 are actively searched; 99 finished; global sweep running.
+    REQUIRE(s.movie_ids.count(44) == 1);
+    REQUIRE(s.movie_ids.count(51) == 1);
+    REQUIRE(s.movie_ids.count(99) == 0);
+    REQUIRE(s.movie_ids.count(7) == 0);   // RefreshMovie is not a search
+    REQUIRE(s.global_search_running == true);
+}
+
+TEST_CASE("parse_active_searches: quiet when nothing is searching",
+          "[radarr][parsers][search-status]") {
+    auto s = media_browser::RadarrParsers::parse_active_searches(
+        R"([{"name": "RefreshMonitoredDownloads", "status": "started"}])");
+    REQUIRE(s.movie_ids.empty());
+    REQUIRE(s.global_search_running == false);
+}
+
 TEST_CASE("parse_movie: single-movie GET carries status + file fields",
           "[radarr][parsers]") {
     const std::string json = R"({

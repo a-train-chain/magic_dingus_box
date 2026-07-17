@@ -264,6 +264,14 @@ void QueueScreen::run_refresh() {
         r.awaiting.push_back(std::move(m));
     }
 
+    // Which of those are being actively searched right now (add-time
+    // search, manual re-search, or the missing-movies sweep). Cheap
+    // extra call on the 1.5s refresh cadence; only queried when there's
+    // an awaiting list to annotate.
+    if (!r.awaiting.empty()) {
+        r.active_searches = radarr_.get_active_searches();
+    }
+
     // Live-data overlay: pull current per-torrent stats from qBit
     // directly and merge them into the queue items by hash. Radarr
     // caches qBit's data on a 30-60s internal poll cycle, which makes
@@ -374,6 +382,7 @@ void QueueScreen::apply_pending() {
 
     queue_ = std::move(r.queue);
     awaiting_ = std::move(r.awaiting);
+    active_searches_ = std::move(r.active_searches);
     last_error_ = std::move(r.error);
     qbit_overlay_failed_ = r.qbit_overlay_failed;
     last_refresh_at_ = std::chrono::steady_clock::now();
@@ -1019,17 +1028,40 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                            2.0f, th.dim, 0.85f);
             section_y = rule_y + 14.0f;
 
-            // Sub-line explaining the state — dim cream small-font.
+            // How many awaiting movies are being actively searched right
+            // now — drives both the section sub-line and per-row state.
+            int searching_now = 0;
+            for (const auto& m : awaiting_) {
+                if (active_searches_.global_search_running ||
+                    active_searches_.movie_ids.count(m.radarr_id) > 0) {
+                    ++searching_now;
+                }
+            }
+
+            // Sub-line explaining the state — dim cream small-font. When
+            // a search is live, lead with that (green) so a just-added
+            // movie doesn't read as "nothing happening for 30 minutes".
             int sub_size = th.font_small_size;
             int sub_baseline = r.mb_text_baseline(sub_size);
-            const std::string sub =
-                "Radarr re-checks indexers every 30 minutes. Movies will "
-                "auto-download when seeders are available.";
+            std::string sub;
+            ::ui::Color sub_col = th.dim;
+            if (searching_now > 0) {
+                sub = "Searching indexers now for " +
+                      std::to_string(searching_now) +
+                      (searching_now == 1 ? " title" : " titles") +
+                      " \xE2\x80\xA2  auto-downloads the moment a good "
+                      "seeded release appears";
+                sub_col = th.highlight1;  // green — active
+            } else {
+                sub = "Radarr re-checks indexers every ~30 minutes and "
+                      "auto-downloads when a good seeded release appears "
+                      "\xE2\x80\x94 no action needed.";
+            }
             std::string sub_drawn = truncate_to_width(r, sub, sub_size,
                                                       row_w_a);
             r.mb_draw_text(sub_drawn, row_x_a,
                            section_y + static_cast<float>(sub_baseline),
-                           sub_size, th.dim, 0.85f);
+                           sub_size, sub_col, 0.9f);
             section_y += static_cast<float>(sub_size) + 14.0f;
 
             // One row per awaiting movie. Read-only, no cursor focus.
@@ -1037,18 +1069,35 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int title_baseline = r.mb_text_baseline(title_size);
             float row_h_a = static_cast<float>(title_size) * 1.6f;
 
+            // Smooth pulse for the "Searching…" rows (same 1.2s sin
+            // heartbeat as the active-download dot) so the operator can
+            // see at a glance which titles are being worked right now.
+            double s_phase = (epoch_ms % 1200) / 1200.0;
+            float s_pulse = 0.55f + 0.45f *
+                static_cast<float>(0.5 + 0.5 * std::sin(
+                    s_phase * 2.0 * 3.14159265358979));
+
             int drawn_count = 0;
             for (const auto& m : awaiting_) {
                 if (section_y + row_h_a > h - footer_reserve) break;
+                const bool searching =
+                    active_searches_.global_search_running ||
+                    active_searches_.movie_ids.count(m.radarr_id) > 0;
                 std::ostringstream label;
                 label << m.title;
                 if (m.year > 0) label << " (" << m.year << ")";
-                label << "  \xE2\x80\xA2  Monitored, awaiting release";
+                label << "  \xE2\x80\xA2  "
+                      << (searching ? "Searching indexers now\xE2\x80\xA6"
+                                    : "Monitored, awaiting release");
                 std::string label_drawn = truncate_to_width(
                     r, label.str(), title_size, row_w_a);
+                // Searching rows glow green and pulse; passive rows stay
+                // calm cream.
+                ::ui::Color row_col = searching ? th.highlight1 : th.fg;
+                float row_alpha = searching ? s_pulse : 0.85f;
                 r.mb_draw_text(label_drawn, row_x_a,
                                section_y + static_cast<float>(title_baseline),
-                               title_size, th.fg, 0.85f);
+                               title_size, row_col, row_alpha);
                 section_y += row_h_a;
                 ++drawn_count;
             }

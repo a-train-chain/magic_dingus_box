@@ -29,6 +29,13 @@ bezels) and all controller mappings unchanged.
 - **Smoke-test dynarec assertion** — PS1 smoke runs now fail loudly if
   the core ever silently drops the ari64 dynarec for Lightrec or the
   interpreter (multi-x slowdown guard).
+- **"Searching indexers now…" download indicator** — the Queue screen's
+  AWAITING RELEASE section now distinguishes movies Radarr is actively
+  searching for right this second (pulsing green, live count in the
+  section header) from those passively waiting for the next 30-minute
+  sweep. Closes the "I just added it, why is nothing happening?" gap:
+  the add-time search runs immediately, and now the user sees it. Reads
+  Radarr's running-command list (`/api/v3/command`).
 
 ### Changed
 - **PS1 audio latency 64 → 48 ms** (alsathread) — 30 s THPS2 ALSA soak
