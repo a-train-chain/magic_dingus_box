@@ -15,7 +15,11 @@ struct LaunchOptions {
 };
 
 void write_video_config(std::ostream& out, const LaunchOptions& options);
-void write_core_options(std::ostream& out, const std::string& core_name);
+// rom_path selects per-title performance overrides (e.g. the THPS4
+// overclock); pass the launch path as-is — matching is filename-based
+// and case-insensitive.
+void write_core_options(std::ostream& out, const std::string& core_name,
+                        const std::string& rom_path);
 const char* audio_driver_for_gameplay();
 int audio_latency_ms_for_core(const std::string& core_name);
 

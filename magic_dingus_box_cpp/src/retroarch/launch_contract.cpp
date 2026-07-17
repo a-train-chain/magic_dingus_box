@@ -1,5 +1,7 @@
 #include "launch_contract.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <csignal>
 #include <filesystem>
@@ -158,10 +160,51 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     }
 }
 
-void write_core_options(std::ostream& out, const std::string& core_name) {
+namespace {
+
+std::string lowercase(const std::string& s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return out;
+}
+
+// Per-title PS1 performance overrides. THPS4's engine chugs on REAL
+// PlayStation hardware (30fps target, low-20s in big parks) — the
+// emulator reproduces that authentic slowdown at the native clock while
+// using <20% of one Pi core. A modest emulated-CPU overclock plus
+// disabled stall emulation lets the game engine hit its frame target
+// the way it never could on the original console. Scoped per-title
+// because both knobs can break timing-sensitive games.
+struct Ps1TitleOverride {
+    const char* rom_name_substring;  // matched lowercase against rom_path
+    const char* psxclock;
+    bool nostalls;
+};
+
+constexpr Ps1TitleOverride kPs1TitleOverrides[] = {
+    {"tony hawk's pro skater 4", "65", true},
+};
+
+const Ps1TitleOverride* find_ps1_override(const std::string& rom_path) {
+    const std::string haystack = lowercase(rom_path);
+    for (const auto& override_entry : kPs1TitleOverrides) {
+        if (haystack.find(override_entry.rom_name_substring) !=
+            std::string::npos) {
+            return &override_entry;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+void write_core_options(std::ostream& out, const std::string& core_name,
+                        const std::string& rom_path) {
     if (!is_ps1_core(core_name)) {
         return;
     }
+    const Ps1TitleOverride* title_override = find_ps1_override(rom_path);
 
     out << "pcsx_rearmed_pad1type = \"analog\"\n";
     // Offload SPU audio to a separate CPU core (Pi 4B has four cores).
@@ -173,19 +216,20 @@ void write_core_options(std::ostream& out, const std::string& core_name) {
     // the core drop up to three consecutive frames and request 128 ms audio
     // latency even at full speed, producing the observed choppy response.
     out << "pcsx_rearmed_frameskip_type = \"disabled\"\n";
-    // Run the software rasterizer on a second thread (Pi 4 has four
-    // cores; the accepted community setting for heavy scenes). "async"
-    // is the fast variant; a handful of titles show frame glitches with
-    // it — drop to "sync" (or remove) if the visual A/B finds any.
-    out << "pcsx_rearmed_gpu_thread_rendering = \"async\"\n";
     // Fast GPU linked-list processing.
     out << "pcsx_rearmed_gpu_slow_llists = \"disabled\"\n";
     // ARM64 dynamic recompilation is critical for PS1 performance.
     out << "pcsx_rearmed_drc = \"enabled\"\n";
     // Preserve compatibility for games that depend on cache behavior.
     out << "pcsx_rearmed_icache_emulation = \"enabled\"\n";
-    // Keep the native PSX CPU clock.
-    out << "pcsx_rearmed_psxclock = \"57\"\n";
+    // Native PSX clock by default; heavy titles get a per-title bump.
+    out << "pcsx_rearmed_psxclock = \""
+        << (title_override ? title_override->psxclock : "57") << "\"\n";
+    if (title_override && title_override->nostalls) {
+        // Skip CPU stall-cycle emulation: faster-than-real-hardware
+        // execution for engine-bound titles, at a small accuracy cost.
+        out << "pcsx_rearmed_nostalls = \"enabled\"\n";
+    }
     // Retain the established low-overhead audio options.
     out << "pcsx_rearmed_spu_interpolation = \"off\"\n";
     out << "pcsx_rearmed_spu_reverb = \"disabled\"\n";

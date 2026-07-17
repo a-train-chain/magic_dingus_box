@@ -751,7 +751,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             
             // Create Core Options file with performance-tuned settings
             script_file << "cat > /tmp/retroarch_core_options.cfg << 'OPTS'\n";
-            write_core_options(script_file, core_name);
+            write_core_options(script_file, core_name, game_info.rom_path);
             script_file << "OPTS\n";
 
             // Delete per-core .opt override file so our core options take effect

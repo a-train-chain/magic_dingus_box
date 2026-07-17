@@ -36,8 +36,14 @@ bezels) and all controller mappings unchanged.
 - **`video_frame_delay_auto = "true"`** (all cores, both display modes) —
   RetroArch backs the 4 ms frame delay off automatically in heavy scenes
   instead of stuttering.
-- **`pcsx_rearmed_gpu_thread_rendering = "async"`** (PS1) — software
-  rasterizer runs on a second core for heavy-scene headroom.
+- **Per-title PS1 performance overrides** — THPS4 runs with
+  `psxclock = 65` + `nostalls = enabled`: its slowdown is authentic PS1
+  engine chug (30 fps target, low-20s in big parks on real hardware)
+  faithfully reproduced by the emulator at <20% of one Pi core; the
+  overclock lets the engine hit its frame target. Scoped per-title
+  (filename match) because both knobs can break timing-sensitive games.
+  (An earlier `gpu_thread_rendering = "async"` attempt was removed —
+  this core build has no THREAD_RENDERING support, so it was inert.)
 - **Boot config:** `force_turbo=1` removed (idle downclock → ~6 °C
   cooler idle; `performance` governor still pins ARM at 2 GHz in use)
   and `gpu_mem` 128 → 76 (KMS/V3D allocates from CMA, not firmware

@@ -94,7 +94,9 @@ TEST_CASE("CRT Native remains 640x480 without a custom viewport",
 TEST_CASE("PS1 core disables frame skipping and preserves native performance options",
           "[retroarch][core-options][ps1]") {
     std::ostringstream output;
-    retroarch::write_core_options(output, "pcsx_rearmed_libretro");
+    retroarch::write_core_options(output, "pcsx_rearmed_libretro",
+                                  "data/roms/ps1/Castlevania: Symphony of "
+                                  "the Night (USA).chd");
     const std::string config = output.str();
 
     require_line(config, "pcsx_rearmed_pad1type = \"analog\"");
@@ -102,7 +104,6 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
     require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");
     require_line(config, "pcsx_rearmed_frameskip_type = \"disabled\"");
-    require_line(config, "pcsx_rearmed_gpu_thread_rendering = \"async\"");
     require_line(config, "pcsx_rearmed_gpu_slow_llists = \"disabled\"");
     require_line(config, "pcsx_rearmed_drc = \"enabled\"");
     require_line(config, "pcsx_rearmed_icache_emulation = \"enabled\"");
@@ -117,12 +118,55 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     REQUIRE(config.find("pcsx_rearmed_frameskip_interval") ==
             std::string::npos);
     REQUIRE(config.find("auto_threshold") == std::string::npos);
+    // This core build has no THREAD_RENDERING support — emitting the
+    // option would be an inert no-op, so we must not.
+    REQUIRE(config.find("gpu_thread_rendering") == std::string::npos);
+    // Default titles run at the native PSX clock with stall emulation.
+    REQUIRE(config.find("pcsx_rearmed_nostalls") == std::string::npos);
+}
+
+TEST_CASE("THPS4 gets the heavy-title PS1 overclock override",
+          "[retroarch][core-options][ps1]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "pcsx_rearmed_libretro",
+                                  "data/roms/ps1/Tony Hawk's Pro Skater 4 "
+                                  "(USA).chd");
+    const std::string config = output.str();
+
+    require_line(config, "pcsx_rearmed_psxclock = \"65\"");
+    require_line(config, "pcsx_rearmed_nostalls = \"enabled\"");
+    REQUIRE(config.find("pcsx_rearmed_psxclock = \"57\"") ==
+            std::string::npos);
+    // The rest of the PS1 contract is untouched by the override.
+    require_line(config, "pcsx_rearmed_drc = \"enabled\"");
+    require_line(config, "pcsx_rearmed_frameskip_type = \"disabled\"");
+    require_line(config, "pcsx_rearmed_dithering = \"enabled\"");
+}
+
+TEST_CASE("THPS4 override matches case-insensitively",
+          "[retroarch][core-options][ps1]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "pcsx_rearmed_libretro",
+                                  "/roms/TONY HAWK'S PRO SKATER 4.chd");
+    require_line(output.str(), "pcsx_rearmed_psxclock = \"65\"");
+}
+
+TEST_CASE("other Tony Hawk titles keep the native clock",
+          "[retroarch][core-options][ps1]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "pcsx_rearmed_libretro",
+                                  "data/roms/ps1/Tony Hawk's Pro Skater 2 "
+                                  "(USA).chd");
+    const std::string config = output.str();
+    require_line(config, "pcsx_rearmed_psxclock = \"57\"");
+    REQUIRE(config.find("pcsx_rearmed_nostalls") == std::string::npos);
 }
 
 TEST_CASE("non-PS1 core emits no PCSX-ReARMed options",
           "[retroarch][core-options]") {
     std::ostringstream output;
-    retroarch::write_core_options(output, "nestopia_libretro");
+    retroarch::write_core_options(output, "nestopia_libretro",
+                                  "data/roms/nes/Bubble Bobble (USA).zip");
     REQUIRE(output.str().empty());
 }
 
