@@ -288,6 +288,22 @@ header::after {
     margin-bottom: 1rem;
 }
 
+/* One-paragraph USB-mode primer under the connect controls — the flow
+   is invisible otherwise (users must know the 10.55.0.1 URL, and that
+   magicpi.local silently stays on Wi-Fi even with the cable in). */
+.usb-mode-hint {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.usb-mode-hint a,
+.usb-mode-hint code {
+    color: var(--accent);
+    font-family: inherit;
+}
+
 .device-card {
     background: var(--bg-dark);
     border: 2px solid var(--text-secondary);
