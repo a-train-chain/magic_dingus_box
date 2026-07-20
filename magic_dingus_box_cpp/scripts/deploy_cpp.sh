@@ -261,6 +261,29 @@ EOF
 echo "  ✓ Web UI Service installed and started"
 echo ""
 
+# Step 1.65: Install first-boot service unit (DISABLED on the source Pi).
+#
+# The live-clone flow (prepare_for_cloning.sh) runs `systemctl enable
+# magic-first-boot.service` so the unit fires on the cloned Pi's first
+# boot. That enable hard-fails (and aborts the whole clone under
+# `set -euo pipefail`) if the unit file was never installed to
+# /etc/systemd/system/ — which only prepare_golden_image.sh (the old
+# destructive flow) ever did. Install it here so every deployed Pi is
+# clone-ready. Deliberately NOT enabled: on the source Pi it must stay
+# disabled (first_boot.sh would wipe WiFi creds + MB state); only
+# prepare_for_cloning.sh enables it, and restore/first_boot re-disable.
+echo "Step 1.65: Installing first-boot service unit (disabled)..."
+rsync -avz --checksum \
+    "${CPP_DIR}/../systemd/magic-first-boot.service" \
+    "${PI_HOST}:${PI_DIR}/systemd/"
+
+ssh "${PI_HOST}" bash <<EOF
+sudo cp ${PI_DIR}/systemd/magic-first-boot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+EOF
+echo "  ✓ First-boot service unit installed (stays disabled until cloning)"
+echo ""
+
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz --checksum \

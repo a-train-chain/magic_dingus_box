@@ -148,6 +148,27 @@ fi
 # reboots later.
 log "[3/5] Re-enabling magic-first-boot.service (so cloned Pi runs it)..."
 
+# Self-heal: the unit file may never have been installed on this Pi
+# (only prepare_golden_image.sh historically installed it; deploy_cpp.sh
+# Step 1.65 now does too, but older deployments predate that). Without
+# the unit file, `systemctl enable` fails and set -euo pipefail aborts
+# the clone. Install from the repo copy synced to ${INSTALL_DIR}/systemd/.
+UNIT_INSTALLED="/etc/systemd/system/magic-first-boot.service"
+UNIT_SRC="${INSTALL_DIR}/systemd/magic-first-boot.service"
+if [[ ! -f "$UNIT_INSTALLED" ]]; then
+    if [[ -f "$UNIT_SRC" ]]; then
+        cp "$UNIT_SRC" "$UNIT_INSTALLED"
+        systemctl daemon-reload
+        log "[3/5] Installed missing magic-first-boot.service unit from ${UNIT_SRC}"
+    else
+        log "ERROR: magic-first-boot.service unit not installed and no copy at ${UNIT_SRC}"
+        log "       Run deploy_cpp.sh from the dev machine first (it syncs systemd/ units),"
+        log "       then retry the clone. Without this unit the cloned image would never"
+        log "       run first_boot.sh (no identity reset, no WiFi/VPN credential wipe)."
+        exit 1
+    fi
+fi
+
 if systemctl is-enabled magic-first-boot.service &>/dev/null; then
     log "[3/5] magic-first-boot.service was already enabled (unusual but harmless)"
 else
