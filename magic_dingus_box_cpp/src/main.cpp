@@ -3,6 +3,7 @@
 #include "platform/egl_context.h"
 #include "platform/input_manager.h"
 #include "platform/gpio_manager.h"
+#include "platform/platform_profile.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -369,6 +370,23 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Load saved settings (CRT effects, loop, shuffle, etc.)
     SettingsPersistence::load_settings(state);
+
+    // Detect the board we're running on (Pi 4B vs Pi 5) and reconcile
+    // loaded settings with its hardware: a settings.json carried over
+    // from a Pi 4 (golden image clone) may say "headphone", but the
+    // Pi 5 has no analog jack — coerce to AUTO so audio resolves to
+    // HDMI instead of a nonexistent sink.
+    {
+        platform::PlatformProfile profile = platform::detect_platform();
+        const char* model_name =
+            (profile.model == platform::PiModel::Pi4) ? "Raspberry Pi 4" :
+            (profile.model == platform::PiModel::Pi5) ? "Raspberry Pi 5" :
+            "unknown board";
+        std::cout << "Platform: " << model_name
+                  << " (analog audio: " << (profile.has_analog_audio ? "yes" : "no")
+                  << ")" << std::endl;
+        state.audio_settings.sanitize_for_platform(profile.has_analog_audio);
+    }
 
     // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the
     // companion app always has a fresh snapshot of screen / playback state.
@@ -1368,13 +1386,10 @@ int main(int /* argc */, char* /* argv */[]) {
             // This bypasses PulseAudio default sink which can be overridden by
             // module-switch-on-port-available or module-default-device-restore
             {
-                std::string pulse_device;
-                if (state.audio_settings.output == app::AudioOutput::HEADPHONE) {
-                    pulse_device = "alsa_output.platform-fe00b840.mailbox.stereo-fallback";
-                } else {
-                    pulse_device = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
+                std::string pulse_device = state.audio_settings.resolve_output_sink();
+                if (!pulse_device.empty()) {
+                    player.set_audio_device(pulse_device);
                 }
-                player.set_audio_device(pulse_device);
             }
 
             // CRITICAL: Also reset UI Renderer GL resources

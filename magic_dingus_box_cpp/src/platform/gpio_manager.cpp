@@ -1,5 +1,6 @@
 #include "gpio_manager.h"
 #include "input_manager.h"  // For InputEvent and InputAction
+#include "platform_profile.h"
 
 #ifdef HAVE_GPIOD
 #include <gpiod.h>
@@ -7,6 +8,7 @@
 
 #include <iostream>
 #include <chrono>
+#include <string>
 #include <thread>
 #include <cstdlib>
 #include <unistd.h>
@@ -49,12 +51,42 @@ uint64_t GpioManager::get_time_ms() const {
 
 bool GpioManager::initialize() {
     std::cout << "  Initializing GPIO..." << std::endl;
-    
-    // Try to open the GPIO chip
-    impl_->chip = gpiod_chip_open("/dev/gpiochip0");
-    if (!impl_->chip) {
-        std::cerr << "  Warning: Could not open /dev/gpiochip0 - GPIO not available" << std::endl;
+
+    // Find the 40-pin header chip by LABEL, not by chip number. The
+    // header lives on gpiochip0 on the Pi 4, but on the Pi 5 it moved to
+    // the RP1 southbridge and its chip number has changed across kernel
+    // releases (gpiochip4 at launch, back to gpiochip0 since 6.6.47) —
+    // hardcoding /dev/gpiochip0 was the old Pi-4-only behavior.
+    std::vector<std::string> chip_labels;
+    for (int i = 0; i < 8; ++i) {
+        std::string path = "/dev/gpiochip" + std::to_string(i);
+        struct gpiod_chip* c = gpiod_chip_open(path.c_str());
+        if (!c) {
+            chip_labels.emplace_back();  // keep index == chip number
+            continue;
+        }
+        struct gpiod_chip_info* info = gpiod_chip_get_info(c);
+        chip_labels.emplace_back(info ? gpiod_chip_info_get_label(info) : "");
+        if (info) gpiod_chip_info_free(info);
+        gpiod_chip_close(c);
+    }
+
+    platform::PlatformProfile profile = platform::detect_platform();
+    int chip_index = platform::pick_gpiochip(chip_labels, profile.gpiochip_labels);
+    if (chip_index < 0) {
+        std::cerr << "  Warning: No GPIO header chip found - GPIO not available" << std::endl;
         std::cerr << "  (This is normal if not running on Raspberry Pi)" << std::endl;
+        available_ = false;
+        return false;
+    }
+
+    std::string chip_path = "/dev/gpiochip" + std::to_string(chip_index);
+    std::cout << "  GPIO header chip: " << chip_path
+              << " (" << chip_labels[static_cast<size_t>(chip_index)] << ")" << std::endl;
+
+    impl_->chip = gpiod_chip_open(chip_path.c_str());
+    if (!impl_->chip) {
+        std::cerr << "  Warning: Could not open " << chip_path << " - GPIO not available" << std::endl;
         available_ = false;
         return false;
     }

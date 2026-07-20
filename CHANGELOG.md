@@ -13,6 +13,26 @@ cool the boot config. Video contract (Vulkan/khr_display, viewports,
 bezels) and all controller mappings unchanged.
 
 ### Added
+- **Raspberry Pi 5 groundwork: platform profile** — new
+  `platform::PlatformProfile` (`src/platform/platform_profile.{h,cpp}`)
+  detects the board from `/proc/device-tree/model` at startup and
+  carries per-model hardware facts (analog-audio availability, GPIO
+  header chip labels). Covered by a new portable Catch2 target
+  (`test_platform_unit`, `tests/platform/`) plus
+  `tests/local/audio_sink_resolution.bats`.
+- **Dynamic PulseAudio sink resolution** — audio sinks are resolved at
+  runtime against `pactl list short sinks` instead of the hardcoded
+  Pi 4 bus addresses (`platform-fef00700.hdmi` /
+  `platform-fe00b840.mailbox`), in both the kiosk binary
+  (`AudioSettings::resolve_output_sink()`) and `init_audio.sh` (new
+  `scripts/resolve_audio_sink.sh`). A "headphone" preference on a board
+  with no analog jack degrades to HDMI instead of silence; USB DACs and
+  I2S HATs are picked up as analog sinks.
+- **GPIO header chip discovery by label** — `GpioManager` scans
+  `/dev/gpiochip0..7` and selects the header chip by gpiod label
+  (`pinctrl-bcm2711` on Pi 4, `pinctrl-rp1` on Pi 5) instead of
+  hardcoding `/dev/gpiochip0`, surviving the Pi 5's chip-number
+  shuffles across kernel releases.
 - **Game quiet mode** — launching any game now pauses qBittorrent
   torrents and stops the Radarr/Prowlarr/Byparr containers for the whole
   session (mirrors movie playback's existing behavior), restoring them
@@ -38,6 +58,14 @@ bezels) and all controller mappings unchanged.
   Radarr's running-command list (`/api/v3/command`).
 
 ### Changed
+- **Settings → Audio Output cycle is platform-aware** — the Headphone
+  option is skipped on boards without a 3.5mm jack (Pi 5), and a stale
+  `"headphone"` value loaded from settings.json (e.g. a golden image
+  cloned from a Pi 4) is coerced to Auto at startup.
+- **`init_audio.sh` sets the default sink after PulseAudio starts**
+  (via `resolve_audio_sink.sh`) rather than baking a hardcoded sink
+  name into `default.pa` before startup; `module-stream-restore
+  restore_device=false` still keeps streams following the default.
 - **PS1 audio latency 64 → 48 ms** (alsathread) — 30 s THPS2 ALSA soak
   showed zero underrun retriggers at 48 ms; `spu_thread` stays enabled.
 - **`video_frame_delay_auto = "true"`** (all cores, both display modes) —

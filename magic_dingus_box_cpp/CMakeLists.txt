@@ -92,6 +92,7 @@ set(PLATFORM_SOURCES
     src/platform/egl_context.cpp
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
+    src/platform/platform_profile.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -467,6 +468,20 @@ if(RETROARCH_TEST_SOURCES)
     target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain pthread)
     target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
+endif()
+
+# Platform profile tests — Pi model detection + sink/gpiochip resolution.
+# Pure logic, no Linux-only deps, runs on Mac.
+file(GLOB PLATFORM_TEST_SOURCES "tests/platform/*.cpp")
+if(PLATFORM_TEST_SOURCES)
+    add_executable(test_platform_unit
+        ${PLATFORM_TEST_SOURCES}
+        src/platform/platform_profile.cpp
+    )
+    target_include_directories(test_platform_unit PRIVATE src)
+    target_link_libraries(test_platform_unit PRIVATE Catch2::Catch2WithMain)
+    target_compile_options(test_platform_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME PlatformUnit COMMAND test_platform_unit)
 endif()
 
 # Phone remote tests

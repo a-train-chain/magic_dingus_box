@@ -104,40 +104,28 @@ if [ $WAITED -ge $MAX_WAIT ]; then
     echo "Warning: HDMI audio card not detected after ${MAX_WAIT}s, proceeding anyway"
 fi
 
-# Determine desired audio output from saved settings BEFORE starting PulseAudio
-# This configures default.pa so PulseAudio starts with the correct default sink
+# Determine desired audio output from saved settings. The actual sink
+# NAME is resolved AFTER PulseAudio starts (below) — sink names embed
+# SoC platform bus addresses that differ between Pi 4 and Pi 5, and
+# hardcoding the Pi 4 names here used to mean silent no-audio on any
+# other board.
 SETTINGS_FILE="/opt/magic_dingus_box/config/settings.json"
 PULSE_CONFIG="$HOME/.config/pulse/default.pa"
-HDMI_SINK="alsa_output.platform-fef00700.hdmi.hdmi-stereo"
-HEADPHONE_SINK="alsa_output.platform-fe00b840.mailbox.stereo-fallback"
-DEFAULT_SINK="$HDMI_SINK"  # Default to HDMI
+AUDIO_OUTPUT="auto"
 
 if [ -f "$SETTINGS_FILE" ]; then
-    AUDIO_OUTPUT=$(python3 -c "import json; d=json.load(open('$SETTINGS_FILE')); print(d.get('audio',{}).get('output','auto'))" 2>/dev/null)
-    case "$AUDIO_OUTPUT" in
-        headphone)
-            DEFAULT_SINK="$HEADPHONE_SINK"
-            echo "Audio output setting: Headphone"
-            ;;
-        hdmi)
-            DEFAULT_SINK="$HDMI_SINK"
-            echo "Audio output setting: HDMI"
-            ;;
-        *)
-            echo "Audio output setting: Auto (HDMI default)"
-            ;;
-    esac
+    AUDIO_OUTPUT=$(python3 -c "import json; d=json.load(open('$SETTINGS_FILE')); print(d.get('audio',{}).get('output','auto'))" 2>/dev/null || echo auto)
+    echo "Audio output setting: $AUDIO_OUTPUT"
 fi
 
-# Write PulseAudio config with correct default sink BEFORE starting PulseAudio
-# This ensures all new streams (including GStreamer) connect to the right sink
+# Write PulseAudio config BEFORE starting PulseAudio. restore_device=false
+# keeps streams following the default sink we set post-start, instead of
+# PA remembering a per-stream device from a previous boot.
 mkdir -p "$(dirname "$PULSE_CONFIG")"
 cat > "$PULSE_CONFIG" <<PAEOF
 .include /etc/pulse/default.pa
-set-default-sink $DEFAULT_SINK
 load-module module-stream-restore restore_device=false
 PAEOF
-echo "PulseAudio default sink configured: $DEFAULT_SINK"
 
 # Disable PulseAudio's 20-second idle-exit. Without this, PA shuts down
 # whenever no audio sinks are connected (e.g., between the intro video
@@ -162,5 +150,18 @@ for i in $(seq 1 10); do
     fi
     sleep 0.5
 done
+
+# Resolve and set the default sink now that PulseAudio has enumerated the
+# actual cards on this board (Pi 4 vs Pi 5 vs USB DAC). On a board with no
+# analog jack a saved "headphone" preference degrades to HDMI rather than
+# silence — resolve_audio_sink.sh handles the fallback.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_SINK="$(pactl list short sinks 2>/dev/null | "$SCRIPT_DIR/resolve_audio_sink.sh" "$AUDIO_OUTPUT" || true)"
+if [ -n "$DEFAULT_SINK" ]; then
+    pactl set-default-sink "$DEFAULT_SINK"
+    echo "PulseAudio default sink configured: $DEFAULT_SINK"
+else
+    echo "Warning: no usable audio sink found; leaving PulseAudio default unchanged"
+fi
 
 echo "PulseAudio ready, default sink: $(pactl info 2>/dev/null | grep 'Default Sink' | cut -d: -f2 | tr -d ' ')"

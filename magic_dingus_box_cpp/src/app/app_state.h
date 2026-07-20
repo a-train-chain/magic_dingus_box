@@ -21,14 +21,17 @@ enum class DisplayMode {
     MODERN_TV     // 4:3 centered with bezel overlay
 };
 
-// Audio output enumeration (Pi 4B supports HDMI and 3.5mm headphone jack).
-// Routing happens via PulseAudio, NOT the old ALSA `amixer numid=3` method —
-// see apply_output() below. AUTO and HDMI both map to the HDMI sink today;
-// HEADPHONE maps to the bcm2835 mailbox (3.5mm jack) sink.
+// Audio output enumeration. Routing happens via PulseAudio, NOT the old
+// ALSA `amixer numid=3` method — see apply_output() below. Sink names are
+// resolved at runtime against the sinks that actually exist on this board
+// (they embed SoC bus addresses that differ between Pi 4 and Pi 5).
+// AUTO and HDMI both resolve to the HDMI sink; HEADPHONE resolves to an
+// analog sink (Pi 4 3.5mm jack, USB DAC, I2S HAT) and is hidden from the
+// Settings cycle on boards without one (Pi 5 has no analog jack).
 enum class AudioOutput {
     AUTO,       // PulseAudio default sink + active stream move (defaults to HDMI)
-    HDMI,       // alsa_output.platform-fef00700.hdmi.hdmi-stereo
-    HEADPHONE   // alsa_output.platform-fe00b840.mailbox.stereo-fallback
+    HDMI,       // first *hdmi* sink
+    HEADPHONE   // first analog (mailbox/analog-stereo) sink
 };
 
 // Phone remote screen mode — tracks current UI view for status sync.
@@ -82,6 +85,7 @@ class VirtualKeyboard;
 }
 
 #include "../utils/wifi_manager.h"
+#include "../platform/platform_profile.h"
 
 namespace app {
 
@@ -568,6 +572,37 @@ public:
     struct AudioSettings {
         AudioOutput output = AudioOutput::AUTO;  // Default to auto
         float retroarch_volume_offset_db = 0.0f; // -12 to 0, applied to game volume
+
+        // True when this board has a 3.5mm analog jack. Set from
+        // platform::PlatformProfile at startup — Pi 4B has the jack,
+        // Pi 5 does not, so Headphone is hidden from the cycle there.
+        bool analog_audio_available = true;
+
+        // Next value in the Settings-menu cycle, skipping HEADPHONE on
+        // boards without an analog jack.
+        static AudioOutput next_output(AudioOutput cur, bool analog_available) {
+            switch (cur) {
+                case AudioOutput::AUTO:
+                    return AudioOutput::HDMI;
+                case AudioOutput::HDMI:
+                    return analog_available ? AudioOutput::HEADPHONE
+                                            : AudioOutput::AUTO;
+                case AudioOutput::HEADPHONE:
+                    return AudioOutput::AUTO;
+            }
+            return AudioOutput::AUTO;
+        }
+
+        // Reconcile a loaded settings.json value with the actual board:
+        // a stale "headphone" preference on a jack-less board becomes
+        // AUTO (which resolves to HDMI) instead of pointing at a sink
+        // that will never exist.
+        void sanitize_for_platform(bool analog_available) {
+            analog_audio_available = analog_available;
+            if (!analog_available && output == AudioOutput::HEADPHONE) {
+                output = AudioOutput::AUTO;
+            }
+        }
         
         // Get output name for display
         std::string get_output_name() const {
@@ -579,18 +614,61 @@ public:
             }
         }
         
+        // Capture stdout of a 3-arg pactl invocation via fork/execlp —
+        // no shell anywhere (see the injection note in apply_output).
+        static std::string capture_pactl(const char* a1, const char* a2,
+                                         const char* a3) {
+            int pipefd[2];
+            if (pipe(pipefd) != 0) return {};
+            pid_t pid = fork();
+            if (pid == 0) {
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                int devnull = open("/dev/null", O_WRONLY);
+                if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+                close(pipefd[1]);
+                execlp("pactl", "pactl", a1, a2, a3, nullptr);
+                _exit(127);
+            }
+            close(pipefd[1]);
+            std::string out;
+            if (pid > 0) {
+                char buf[256];
+                ssize_t n;
+                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                    out.append(buf, static_cast<size_t>(n));
+                }
+                int s;
+                waitpid(pid, &s, 0);
+            }
+            close(pipefd[0]);
+            return out;
+        }
+
+        // Resolve the PulseAudio sink for the current output setting by
+        // querying the sinks that actually exist on this board. Sink
+        // names embed SoC bus addresses that differ between Pi 4 and
+        // Pi 5 (and USB DACs), so nothing is hardcoded: HEADPHONE finds
+        // an analog sink (falling back to HDMI when the board has no
+        // jack); AUTO/HDMI find an HDMI sink. Empty string when
+        // PulseAudio is unreachable or has no sinks.
+        std::string resolve_output_sink() const {
+            std::string sinks = capture_pactl("list", "short", "sinks");
+            auto want = (output == AudioOutput::HEADPHONE)
+                ? platform::SinkChoice::Analog
+                : platform::SinkChoice::Hdmi;
+            return platform::resolve_sink(sinks, want).value_or("");
+        }
+
         // Apply the audio output setting via PulseAudio
         // Pi 4B uses PulseAudio, not the old ALSA numid=3 method
-        // Sink 0 = Headphone (platform-fe00b840.mailbox)
-        // Sink 1 = HDMI (platform-fef00700.hdmi)
         void apply_output() const {
-            std::string sink_name;
-
-            if (output == AudioOutput::HEADPHONE) {
-                sink_name = "alsa_output.platform-fe00b840.mailbox.stereo-fallback";
-            } else {
-                // HDMI for both AUTO and HDMI modes
-                sink_name = "alsa_output.platform-fef00700.hdmi.hdmi-stereo";
+            std::string sink_name = resolve_output_sink();
+            if (sink_name.empty()) {
+                // No usable sink (PA not up yet, or no cards) — leave
+                // the PulseAudio default alone rather than pointing it
+                // at a sink that doesn't exist.
+                return;
             }
 
             // Set default sink via fork/execlp.
@@ -605,34 +683,11 @@ public:
 
             // Move active streams to the new sink. Previously this used
             // /bin/sh -c with sink_name interpolated into a pipeline — safe
-            // today (sink_name is a hardcoded constant) but a shell-injection
-            // landmine if sink_name ever becomes user-derived. Now: enumerate
+            // when sink_name was a hardcoded constant but a shell-injection
+            // landmine now that it comes from pactl output. Enumerate
             // sink-input IDs via pactl with a pipe(2)-captured stdout, then
             // execlp pactl move-sink-input directly per ID. No shell anywhere.
-            int pipefd[2];
-            if (pipe(pipefd) != 0) return;
-            pid_t list_pid = fork();
-            if (list_pid == 0) {
-                close(pipefd[0]);
-                dup2(pipefd[1], STDOUT_FILENO);
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-                close(pipefd[1]);
-                execlp("pactl", "pactl", "list", "short", "sink-inputs", nullptr);
-                _exit(127);
-            }
-            close(pipefd[1]);
-            std::string list_out;
-            if (list_pid > 0) {
-                char buf[256];
-                ssize_t n;
-                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    list_out.append(buf, static_cast<size_t>(n));
-                }
-                int s;
-                waitpid(list_pid, &s, 0);
-            }
-            close(pipefd[0]);
+            std::string list_out = capture_pactl("list", "short", "sink-inputs");
 
             // Each line is "<id>\t<sink>\t..." — extract the leading numeric ID.
             std::istringstream iss(list_out);
@@ -673,11 +728,7 @@ public:
         
         // Cycle through audio output options
         void cycle_output() {
-            switch (output) {
-                case AudioOutput::AUTO: output = AudioOutput::HDMI; break;
-                case AudioOutput::HDMI: output = AudioOutput::HEADPHONE; break;
-                case AudioOutput::HEADPHONE: output = AudioOutput::AUTO; break;
-            }
+            output = next_output(output, analog_audio_available);
             apply_output();
         }
     } audio_settings;
