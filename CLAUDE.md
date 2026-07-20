@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Magic Dingus Box is a retro gaming and video playback kiosk for Raspberry Pi 4B. It consists of:
+Magic Dingus Box is a retro gaming and video playback kiosk for Raspberry Pi 4B and Raspberry Pi 5. The board is detected at runtime (`src/platform/platform_profile.{h,cpp}` reads `/proc/device-tree/model`); audio sinks, the GPIO header chip, and video-decode expectations all resolve dynamically — never hardcode Pi 4 sink names, `/dev/gpiochip0`, or `v4l2h264dec` availability. It consists of:
 
 1. **C++ Kiosk Engine** (`magic_dingus_box_cpp/`) - Primary application using DRM/KMS for true kiosk mode with direct GPU access, no X11/Wayland
 2. **Python Web Admin** (`magic_dingus_box/web/`) - Flask-based remote playlist/content management interface
@@ -196,12 +196,13 @@ The Media Browser is a sub-mode of the kiosk that provides movie discovery, down
 - Prowlarr → AVAILABILITY readout on Detail (release-search seeders, async background thread)
 - qBittorrent → QueueScreen live overlay (real-time progress; Radarr's queue cache is 30-60s stale)
 - Gluetun → VPN tunnel for all torrent traffic with NAT-PMP port forwarding
-- GStreamer playbin → PlaybackScreen (hardware H.264 decode preferred, software HEVC fallback)
+- GStreamer playbin → PlaybackScreen (hardware H.264 decode on Pi 4, software decode on Pi 5, software HEVC fallback on both)
 
 ### Playback hardware notes
 
-- `v4l2h264dec` (Pi 4 hardware H.264) is rank-promoted and used by default
-- `v4l2slh265dec` (Pi 4 hardware HEVC) is **disabled** — has a pixel-format negotiation bug on this kernel; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile)
+- **Pi 4**: `v4l2h264dec` (hardware H.264) is rank-promoted and used by default
+- **Pi 5**: has NO hardware H.264 decoder (BCM2712 dropped the block); the rank promotions are no-ops there and playbin falls through to `avdec_h264` (libav software, ~20% CPU for 1080p on the A76s — validate headroom on the 2GB board)
+- `v4l2slh265dec` (V4L2 stateless hardware HEVC, both boards) is **disabled** — SAND pixel-format negotiation bug with GStreamer 1.22; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile)
 - AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
 - Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
 

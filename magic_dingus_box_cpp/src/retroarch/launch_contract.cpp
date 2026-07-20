@@ -65,6 +65,12 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // black-screens, and on this hardware 2D/PS1 content stays full-
     // speed single-threaded anyway. If a specific heavy title ever needs
     // it back, do it per-core, not globally.
+    //
+    // Pi 5 note: this workaround (and max_swapchain_images=2 below) was
+    // measured on the Pi 4's V3D 4.2 Vulkan driver. The Pi 5's V3D 7.1
+    // driver may not need either — when a Pi 5 is available to bench,
+    // branch on options.pi_model here and update the parity test in
+    // test_launch_contract.cpp ("identical across Pi models").
     out << "video_threaded = \"false\"\n";
     out << "video_fullscreen = \"true\"\n";
     out << "video_windowed_fullscreen = \"false\"\n";

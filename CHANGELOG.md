@@ -33,6 +33,18 @@ bezels) and all controller mappings unchanged.
   (`pinctrl-bcm2711` on Pi 4, `pinctrl-rp1` on Pi 5) instead of
   hardcoding `/dev/gpiochip0`, surviving the Pi 5's chip-number
   shuffles across kernel releases.
+- **RetroArch launch contract carries the board model** —
+  `LaunchOptions.pi_model` (from `AppState.platform_profile`) gives
+  Pi-5-specific video tuning a single landing spot. The emitted
+  contract is deliberately identical on both boards until the Pi 4
+  V3D swapchain workarounds are re-benchmarked on Pi 5's V3D 7.1;
+  a parity test pins that decision.
+- **Pi 5 bring-up checklist** in `scripts/golden_image/CLONING.md` —
+  base OS, `[pi4]`/`[pi5]` config.txt sections, overlay carry-over
+  (incl. the hand-baked `rotary-encoder` line that must be copied
+  from the Pi 4 image), power/cooling, and a first-boot validation
+  list. Docs (`README`, `CLAUDE.md`, `gst_player.cpp` decode notes)
+  updated for dual-board reality.
 - **Game quiet mode** — launching any game now pauses qBittorrent
   torrents and stops the Radarr/Prowlarr/Byparr containers for the whole
   session (mirrors movie playback's existing behavior), restoring them

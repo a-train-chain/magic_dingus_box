@@ -19,7 +19,7 @@ constexpr int kInitialAttempts = 5;
 
 // Wraps std::random_device + a fallback std::mt19937. On Linux
 // std::random_device reads from /dev/urandom and can throw if entropy is
-// unavailable (extremely unlikely on a Pi 4B running Bookworm — the kernel
+// unavailable (extremely unlikely on a Pi running Bookworm — the kernel
 // has a hardware RNG and seeds urandom very early). If construction or
 // operator() ever throws, we fall back to a time-seeded mt19937 so the
 // kiosk doesn't crash. The fallback is NOT cryptographically suitable, but

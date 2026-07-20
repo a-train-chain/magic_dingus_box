@@ -1,6 +1,6 @@
 # Magic Dingus Box
 
-A retro gaming and video playback kiosk for Raspberry Pi 4B.
+A retro gaming and video playback kiosk for Raspberry Pi 4B and Raspberry Pi 5.
 
 Magic Dingus Box has two halves:
 

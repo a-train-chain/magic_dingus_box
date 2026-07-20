@@ -143,6 +143,48 @@ image:
 Rollback: `/boot/firmware/config.txt.bak-headroom` on the source Pi
 holds the pre-change file (`sudo cp` it back and reboot).
 
+## Raspberry Pi 5 (2026-07-20)
+
+The app binary is board-agnostic (runtime detection via
+`platform::PlatformProfile`; one arm64 OTA artifact serves both
+boards), but **SD images are per-board concerns**. A Pi 4 golden
+image will boot a Pi 5 only if it is a full Raspberry Pi OS
+Bookworm 64-bit image with `kernel_2712.img` present (stock images
+ship it; firmware auto-selects it on Pi 5). Checklist for building
+the first Pi 5 golden image:
+
+- **Base OS**: Raspberry Pi OS Bookworm 64-bit or later. Bullseye
+  cannot boot a Pi 5 at all.
+- **config.txt**: use `[pi4]` / `[pi5]` conditional sections for any
+  model-specific settings. Drop `gpu_mem=76` from the `[pi5]` path —
+  the setting is ignored on Pi 5 (fully CMA-based).
+- **Overlays to carry over** (same lines work on Pi 5; they bind via
+  RP1/pinctrl-rp1 automatically): `gpio-shutdown,gpio_pin=3,...`
+  (scripted by `setup_boot_service.sh`), `dtoverlay=dwc2` if the USB
+  gadget is wanted (UNVERIFIED on Pi 5 — different USB topology; test
+  before relying on gadget-mode deploys).
+- **`rotary-encoder` overlay**: NOT scripted anywhere — it is baked
+  into the Pi 4 golden image's config.txt by hand. **Copy the exact
+  overlay line from the working Pi 4 image** (parameters encode the
+  encoder's detent behavior) into the Pi 5 config before first boot,
+  or the encoder produces no `EV_REL` events and seeking dies.
+- **Audio**: nothing to configure — sink resolution is dynamic as of
+  the Pi 5 groundwork change. The Settings menu hides "Headphone" on
+  Pi 5 (no analog jack). If a build needs analog out, add a USB DAC
+  or I2S HAT; it will be picked up as the analog sink automatically.
+- **Power/cooling**: 5.1V/5A PSU recommended (on 3A supplies the
+  firmware caps USB at 600 mA); fit the official Active Cooler for
+  sustained RetroArch/decode loads — the Pi 5 runs hotter than the
+  4B and a sealed MDB enclosure needs a vent path.
+- **To validate on first Pi 5 boot**: rotary encoder + buttons + LEDs
+  (GPIO now found by chip label), HDMI audio after boot and after a
+  RetroArch session, 1080p H.264 playback headroom (software decode
+  on Pi 5 — watch CPU + RAM on the 2GB board), RetroArch launch/
+  return (Vulkan V3D 7.1 — the `video_threaded=false` /
+  `max_swapchain_images=2` workarounds are Pi 4-tuned and pinned
+  identical on Pi 5 until re-benchmarked; see
+  `test_launch_contract.cpp`), power-switch halt/wake behavior.
+
 ## Performance notes
 
 | Network | ~32 GB SD clone time |

@@ -733,6 +733,12 @@ public:
         }
     } audio_settings;
     
+    // Detected board profile (Pi 4B vs Pi 5) — set once at startup in
+    // main.cpp before settings are sanitized; read wherever behavior
+    // must branch on the actual hardware (audio gating, RetroArch
+    // launch contract).
+    platform::PlatformProfile platform_profile;
+
     // Available bezels (loaded from bezels.json)
     std::vector<BezelInfo> available_bezels;
 

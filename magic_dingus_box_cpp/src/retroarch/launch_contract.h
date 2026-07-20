@@ -12,6 +12,11 @@ namespace retroarch {
 struct LaunchOptions {
     app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
     std::string bezel_file;
+    // Detected board, so Pi-5-specific video tuning has one place to
+    // land. Today the emitted contract is identical for every model
+    // (pinned by test_launch_contract) — the Pi 4 V3D swapchain
+    // workarounds are kept everywhere until re-benchmarked on Pi 5.
+    platform::PiModel pi_model = platform::PiModel::Unknown;
 };
 
 void write_video_config(std::ostream& out, const LaunchOptions& options);

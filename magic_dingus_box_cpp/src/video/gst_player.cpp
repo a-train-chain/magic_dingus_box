@@ -65,7 +65,16 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
         }
     };
 
-    // Prefer hardware accelerated decoders when available
+    // Prefer hardware accelerated decoders when available.
+    //
+    // Pi 4 only: the BCM2711 has the legacy VideoCore H.264/VP8/VP9
+    // decode blocks these elements front. The Pi 5 (BCM2712) dropped
+    // them entirely — none of these elements exist there, so every
+    // promote below is a harmless no-op and playbin falls through to
+    // avdec_h264 (libav software). That's by design: RPi's position is
+    // that the Cortex-A76s software-decode H.264 faster than the old
+    // hardware block (~20% CPU for 1080p), and MDB's Media Browser
+    // quality pipeline only admits 720p/1080p 8-bit x264 anyway.
     promote_decoder("v4l2h264dec", "V4L2 H.264");
     promote_decoder("v4l2h265dec", "V4L2 H.265");
     promote_decoder("v4l2vp8dec", "V4L2 VP8");
@@ -108,8 +117,12 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     // (LibreELEC's path) and piping decoded frames into our existing
     // GL renderer — significant refactor for a feature that becomes
     // free when GStreamer 1.26 lands. Not worth the complexity.
+    // The same disable is correct on the Pi 5: its HEVC block (the only
+    // hardware decoder the BCM2712 kept) is also driven through the
+    // V4L2 stateless API with SAND output formats, so GStreamer 1.22
+    // hits the same negotiation failure there.
     disable_decoder("v4l2slh265dec",
-                    "Pi 4 V4L2 stateless HEVC: SAND-format mismatch with mainline GStreamer "
+                    "V4L2 stateless HEVC: SAND-format mismatch with mainline GStreamer "
                     "(MR gstreamer/gstreamer#9247 pending, Trixie-only)");
 
     // Create playbin with RAII wrapper

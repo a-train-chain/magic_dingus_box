@@ -377,7 +377,8 @@ int main(int /* argc */, char* /* argv */[]) {
     // Pi 5 has no analog jack — coerce to AUTO so audio resolves to
     // HDMI instead of a nonexistent sink.
     {
-        platform::PlatformProfile profile = platform::detect_platform();
+        state.platform_profile = platform::detect_platform();
+        const platform::PlatformProfile& profile = state.platform_profile;
         const char* model_name =
             (profile.model == platform::PiModel::Pi4) ? "Raspberry Pi 4" :
             (profile.model == platform::PiModel::Pi5) ? "Raspberry Pi 5" :

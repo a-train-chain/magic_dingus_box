@@ -615,6 +615,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         retroarch::LaunchOptions opts;
         opts.display_mode = state.display_settings.mode;
+        opts.pi_model = state.platform_profile.model;
         {
             int idx = state.display_settings.bezel_index;
             if (idx >= 0 && idx < static_cast<int>(state.available_bezels.size())) {

@@ -264,3 +264,28 @@ TEST_CASE("generated KMS watcher is valid Bash", "[retroarch][startup]") {
     REQUIRE(std::system(("/bin/bash -n '" + script_path + "'").c_str()) == 0);
     fs::remove(script_path);
 }
+
+TEST_CASE("video contract is identical across Pi models until Pi 5 is benchmarked",
+          "[retroarch][video][platform]") {
+    // LaunchOptions carries the detected board so Pi-5-specific tuning has
+    // a single place to land. The two Pi-4-empirical workarounds
+    // (video_threaded=false, max_swapchain_images=2 — see the comments in
+    // write_video_config) are deliberately kept on BOTH boards until they
+    // are re-benchmarked on the Pi 5's V3D 7.1 Vulkan driver; this test
+    // pins that parity so a divergence is a conscious, tested decision.
+    retroarch::LaunchOptions pi4_options;
+    pi4_options.display_mode = app::DisplayMode::MODERN_TV;
+    pi4_options.bezel_file = "mdb_kv19.png";
+    pi4_options.pi_model = platform::PiModel::Pi4;
+
+    retroarch::LaunchOptions pi5_options = pi4_options;
+    pi5_options.pi_model = platform::PiModel::Pi5;
+
+    std::ostringstream pi4_out, pi5_out;
+    retroarch::write_video_config(pi4_out, pi4_options);
+    retroarch::write_video_config(pi5_out, pi5_options);
+
+    REQUIRE(pi4_out.str() == pi5_out.str());
+    require_line(pi5_out.str(), "video_threaded = \"false\"");
+    require_line(pi5_out.str(), "video_max_swapchain_images = \"2\"");
+}

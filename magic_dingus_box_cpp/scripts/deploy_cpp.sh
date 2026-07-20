@@ -187,6 +187,11 @@ rsync -avz --checksum \
 
 # Make update.sh executable on Pi
 ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/update.sh" 2>/dev/null || true
+# resolve_audio_sink.sh is invoked directly by path from init_audio.sh
+# (not via `bash ...`), so it must keep its executable bit — a lost mode
+# bit would silently disable sink resolution (init_audio's `|| true`
+# swallows the failure) and boot every Pi with no default audio sink.
+ssh "${PI_HOST}" "chmod +x ${PI_DIR}/magic_dingus_box_cpp/scripts/resolve_audio_sink.sh" 2>/dev/null || true
 echo "  ✓ VERSION file and update script synced"
 
 # Step 1.57: Sync golden_image clone tooling.
