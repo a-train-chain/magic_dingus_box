@@ -183,6 +183,17 @@ the first Pi 5 golden image:
   (pull-up), which reads as "switch OFF" and the watcher stops the
   kiosk on every boot. Enable it only in the final image for units
   that ship with the physical switch.
+- **MOVIES drive automount + library self-import**: fstab gets
+  `LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2`
+  and `magic-dingus-library-import.service` (WantedBy=mnt-ssd.mount)
+  runs `import_library_movies.sh` whenever the drive mounts — so a
+  pre-loaded movie drive populates the kiosk Library automatically on
+  fresh provisions, replacement SDs, or swapped drives. Both are
+  installed by setup_services.sh; verify they're baked into the image.
+- **Quiet kiosk boot**: `systemctl disable getty@tty1` and append
+  `logo.nologo vt.global_cursor_default=0 loglevel=3` to cmdline.txt
+  (alongside stock `quiet splash`) so boots go straight to the intro
+  video with no console text, cursor, or login prompt.
 - **Cooling is mandatory for Pi 5 production units**: a bare bench
   board hit 85-88 °C and hard-throttled (`throttled=0xe0006`) under
   a single x264 encode. Decode-only playback is fine even throttled

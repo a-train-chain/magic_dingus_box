@@ -468,6 +468,23 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo systemctl daemon-reload
     sudo systemctl enable --now magic-dingus-auto-blocklist.timer
     echo "Auto-blocklist timer (every 15 min) installed + active."
+
+    # Library import on MOVIES-drive mount: registers pre-loaded movies
+    # (/mnt/ssd/library/<Title (Year)>/) with Radarr so the kiosk Library
+    # populates when a drive is attached — fresh provisions, replacement
+    # SDs, and swapped drives all self-heal. Requires the fstab entry
+    # (LABEL=MOVIES → /mnt/ssd, x-systemd.automount) which is added below.
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-library-import.service" \
+        /etc/systemd/system/magic-dingus-library-import.service
+    if ! grep -q "LABEL=MOVIES" /etc/fstab; then
+        echo "LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2" \
+            | sudo tee -a /etc/fstab >/dev/null
+        echo "fstab: MOVIES-drive automount entry added."
+    fi
+    sudo systemctl daemon-reload
+    sudo systemctl enable magic-dingus-library-import.service
+    echo "Library-import-on-mount service installed + enabled."
 else
     echo "Note: auto-blocklist assets not found, skipping install."
 fi
@@ -1223,23 +1240,40 @@ with open(indexers_path) as f:
 live_indexers = http("GET", "/indexer") or []
 live_by_name = {i["name"]: i for i in live_indexers}
 
-created, updated, unchanged = [], [], []
+created, updated, unchanged, skipped = [], [], [], []
 for desired in desired_indexers:
     name = desired["name"]
     payload = shape_payload(desired)
-    if name in live_by_name:
-        live = live_by_name[name]
-        if match(live, payload):
-            unchanged.append(name)
+    # A single indexer must not sink the whole provisioning run. The
+    # common failure is a Cardigann definitionName that Prowlarr's
+    # upstream repo has since removed (e.g. "demonoid-clone" 404'd on
+    # indexers.prowlarr.com, making Prowlarr 500 the POST — hit live on
+    # the first Pi 5 provisioning, 2026-07-22). These are the
+    # pre-configured-but-DISABLED convenience indexers; losing one is a
+    # warning, not a fatal. The active indexers that the smoke test
+    # asserts on are unaffected because they still exist upstream.
+    try:
+        if name in live_by_name:
+            live = live_by_name[name]
+            if match(live, payload):
+                unchanged.append(name)
+            else:
+                payload["id"] = live["id"]
+                http("PUT", "/indexer/%d" % live["id"], payload)
+                updated.append(name)
         else:
-            payload["id"] = live["id"]
-            http("PUT", "/indexer/%d" % live["id"], payload)
-            updated.append(name)
-    else:
-        http("POST", "/indexer", payload)
-        created.append(name)
+            http("POST", "/indexer", payload)
+            created.append(name)
+    except urllib.error.HTTPError as e:
+        # Re-raise for ENABLED indexers — a live/active indexer failing
+        # is a real problem the operator needs to see fail loudly.
+        if desired.get("enable", False):
+            sys.stderr.write("FATAL: enabled indexer %r failed: %s\n" % (name, e))
+            raise
+        skipped.append(name)
 
-print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+print(json.dumps({"created": created, "updated": updated,
+                  "unchanged": unchanged, "skipped": skipped}))
 PYEOF
 )
     echo "${INDEXER_SUMMARY}" | python3 -c '
@@ -1251,6 +1285,7 @@ def show(label, items):
 show("created  ", s["created"])
 show("updated  ", s["updated"])
 show("unchanged", s["unchanged"])
+show("skipped (disabled, stale upstream definition)", s.get("skipped", []))
 '
 fi
 
