@@ -278,13 +278,20 @@ echo ""
 # disabled (first_boot.sh would wipe WiFi creds + MB state); only
 # prepare_for_cloning.sh enables it, and restore/first_boot re-disable.
 echo "Step 1.65: Installing first-boot service unit (disabled)..."
+# Stage via /tmp, not directly into ${PI_DIR}/systemd/: the /opt copy
+# can be root-owned (the pre-2026 golden-image tooling created it as
+# root), and rsync-as-magic then exits 23 ("failed to set times"),
+# which kills the whole deploy under set -euo pipefail — observed live
+# 2026-07-22, aborting the deploy before the build step ever ran.
 rsync -avz --checksum \
     "${CPP_DIR}/../systemd/magic-first-boot.service" \
-    "${PI_HOST}:${PI_DIR}/systemd/"
+    "${PI_HOST}:/tmp/magic-first-boot.service"
 
 ssh "${PI_HOST}" bash <<EOF
-sudo cp ${PI_DIR}/systemd/magic-first-boot.service /etc/systemd/system/
+sudo install -m 644 -o magic -g magic /tmp/magic-first-boot.service ${PI_DIR}/systemd/magic-first-boot.service
+sudo cp /tmp/magic-first-boot.service /etc/systemd/system/magic-first-boot.service
 sudo systemctl daemon-reload
+rm -f /tmp/magic-first-boot.service
 EOF
 echo "  ✓ First-boot service unit installed (stays disabled until cloning)"
 echo ""

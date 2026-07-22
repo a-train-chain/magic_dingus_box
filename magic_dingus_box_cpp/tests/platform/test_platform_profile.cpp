@@ -6,6 +6,7 @@
 
 #include "platform/platform_profile.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
