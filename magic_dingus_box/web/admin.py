@@ -506,6 +506,75 @@ NICKNAME_PROMPT_HTML = """
 """
 
 
+def _parse_wireguard_config(text: str) -> dict:
+    """Parse a WireGuard .conf file into the 4 vars Gluetun needs.
+
+    Returns a dict with keys:
+      WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES,
+      WIREGUARD_PUBLIC_KEY,  WIREGUARD_ENDPOINT_IP
+    Raises ValueError on missing/malformed fields.
+    """
+    section = None
+    interface: dict = {}
+    peer: dict = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if section == "interface":
+            interface[key] = value
+        elif section == "peer":
+            peer[key] = value
+
+    missing = []
+    if "PrivateKey" not in interface:
+        missing.append("[Interface] PrivateKey")
+    if "Address" not in interface:
+        missing.append("[Interface] Address")
+    if "PublicKey" not in peer:
+        missing.append("[Peer] PublicKey")
+    if "Endpoint" not in peer:
+        missing.append("[Peer] Endpoint")
+    if missing:
+        raise ValueError(f"Missing required fields: {', '.join(missing)}")
+
+    endpoint = peer["Endpoint"]
+    # Endpoint format: "host:port" — split off the port. Handle bracketed
+    # IPv6 like "[2001:db8::1]:51820" defensively.
+    if endpoint.startswith("["):
+        endpoint_ip = endpoint[1:].split("]", 1)[0]
+    else:
+        endpoint_ip = endpoint.rsplit(":", 1)[0]
+    if not endpoint_ip:
+        raise ValueError("Could not parse host from [Peer] Endpoint")
+
+    # ProtonVPN configs list dual-stack addresses
+    # ("10.2.0.2/32, 2a07:b944::2:2/128"). Gluetun's container has no
+    # IPv6 and hard-fails on the IPv6 entry, crash-looping the stack —
+    # hit live on the first Pi 5 provisioning (2026-07-22). Keep IPv4 only.
+    addresses = [a.strip() for a in interface["Address"].split(",")]
+    ipv4_addresses = [a for a in addresses if a and ":" not in a]
+    if not ipv4_addresses:
+        raise ValueError(
+            "[Interface] Address has no IPv4 entry (IPv6-only configs are "
+            "not supported by the Gluetun container)")
+
+    return {
+        "WIREGUARD_PRIVATE_KEY": interface["PrivateKey"],
+        "WIREGUARD_ADDRESSES": ", ".join(ipv4_addresses),
+        "WIREGUARD_PUBLIC_KEY": peer["PublicKey"],
+        "WIREGUARD_ENDPOINT_IP": endpoint_ip,
+    }
+
+
 def create_app(data_dir: Path, config=None) -> Flask:
     app = Flask(__name__)
 
@@ -2449,63 +2518,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
     media_browser_jobs: dict = {}
     _MB_LOG_BUFFER_LIMIT = 500  # keep at most this many lines per job
     _MB_LOG_TAIL_LINES = 30     # return this many lines on each status poll
-
-    def _parse_wireguard_config(text: str) -> dict:
-        """Parse a WireGuard .conf file into the 4 vars Gluetun needs.
-
-        Returns a dict with keys:
-          WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES,
-          WIREGUARD_PUBLIC_KEY,  WIREGUARD_ENDPOINT_IP
-        Raises ValueError on missing/malformed fields.
-        """
-        section = None
-        interface: dict = {}
-        peer: dict = {}
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or line.startswith(";"):
-                continue
-            if line.startswith("[") and line.endswith("]"):
-                section = line[1:-1].strip().lower()
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if section == "interface":
-                interface[key] = value
-            elif section == "peer":
-                peer[key] = value
-
-        missing = []
-        if "PrivateKey" not in interface:
-            missing.append("[Interface] PrivateKey")
-        if "Address" not in interface:
-            missing.append("[Interface] Address")
-        if "PublicKey" not in peer:
-            missing.append("[Peer] PublicKey")
-        if "Endpoint" not in peer:
-            missing.append("[Peer] Endpoint")
-        if missing:
-            raise ValueError(f"Missing required fields: {', '.join(missing)}")
-
-        endpoint = peer["Endpoint"]
-        # Endpoint format: "host:port" — split off the port. Handle bracketed
-        # IPv6 like "[2001:db8::1]:51820" defensively.
-        if endpoint.startswith("["):
-            endpoint_ip = endpoint[1:].split("]", 1)[0]
-        else:
-            endpoint_ip = endpoint.rsplit(":", 1)[0]
-        if not endpoint_ip:
-            raise ValueError("Could not parse host from [Peer] Endpoint")
-
-        return {
-            "WIREGUARD_PRIVATE_KEY": interface["PrivateKey"],
-            "WIREGUARD_ADDRESSES": interface["Address"],
-            "WIREGUARD_PUBLIC_KEY": peer["PublicKey"],
-            "WIREGUARD_ENDPOINT_IP": endpoint_ip,
-        }
 
     def _read_env_file(path: Path) -> dict:
         """Parse a KEY=VALUE .env file into a dict. Returns {} if missing."""
