@@ -159,15 +159,21 @@ the first Pi 5 golden image:
   model-specific settings. Drop `gpu_mem=76` from the `[pi5]` path —
   the setting is ignored on Pi 5 (fully CMA-based).
 - **Overlays to carry over** (same lines work on Pi 5; they bind via
-  RP1/pinctrl-rp1 automatically): `gpio-shutdown,gpio_pin=3,...`
-  (scripted by `setup_boot_service.sh`), `dtoverlay=dwc2` if the USB
-  gadget is wanted (UNVERIFIED on Pi 5 — different USB topology; test
-  before relying on gadget-mode deploys).
+  RP1/pinctrl-rp1 automatically): `dtoverlay=dwc2` if the USB gadget
+  is wanted (UNVERIFIED on Pi 5 — different USB topology; test before
+  relying on gadget-mode deploys). Note the production Pi 4 has
+  `gpio-shutdown` **commented out** — GPIO 3 is handled by
+  `kiosk-standby-watcher.service` instead (unit + script are in the
+  repo); carry the watcher, not the overlay.
 - **`rotary-encoder` overlay**: NOT scripted anywhere — it is baked
-  into the Pi 4 golden image's config.txt by hand. **Copy the exact
-  overlay line from the working Pi 4 image** (parameters encode the
-  encoder's detent behavior) into the Pi 5 config before first boot,
-  or the encoder produces no `EV_REL` events and seeking dies.
+  into the Pi 4 golden image's config.txt by hand. Captured from the
+  production Pi 4B (2026-07-22); use this exact line:
+
+  ```
+  dtoverlay=rotary-encoder,pin_a=17,pin_b=27,relative_axis=1,steps-per-period=2
+  ```
+
+  Without it the encoder produces no `EV_REL` events and seeking dies.
 - **Audio**: nothing to configure — sink resolution is dynamic as of
   the Pi 5 groundwork change. The Settings menu hides "Headphone" on
   Pi 5 (no analog jack). If a build needs analog out, add a USB DAC
