@@ -162,12 +162,24 @@ the first Pi 5 golden image:
   model-specific settings. Drop `gpu_mem=76` from the `[pi5]` path —
   the setting is ignored on Pi 5 (fully CMA-based).
 - **Overlays to carry over** (same lines work on Pi 5; they bind via
-  RP1/pinctrl-rp1 automatically): `dtoverlay=dwc2` if the USB gadget
-  is wanted (UNVERIFIED on Pi 5 — different USB topology; test before
-  relying on gadget-mode deploys). Note the production Pi 4 has
-  `gpio-shutdown` **commented out** — GPIO 3 is handled by
-  `kiosk-standby-watcher.service` instead (unit + script are in the
-  repo); carry the watcher, not the overlay.
+  RP1/pinctrl-rp1 automatically): `dtoverlay=dwc2,dr_mode=peripheral`
+  for the USB gadget — VERIFIED WORKING on Pi 5 (2026-07-22 bench):
+  enumerates on the USB-C power connector; note stock-image
+  cloud-init/netplan silently fails to configure usb0 (and wlan0) —
+  create the NetworkManager profiles with nmcli instead. Note the
+  production Pi 4 has `gpio-shutdown` **commented out** — GPIO 3 is
+  handled by `kiosk-standby-watcher.service` instead (unit + script
+  are in the repo); carry the watcher, not the overlay.
+- **kiosk-standby-watcher caveat**: do NOT enable the watcher on a
+  bench Pi with no switch harness attached — GPIO 3 floats HIGH
+  (pull-up), which reads as "switch OFF" and the watcher stops the
+  kiosk on every boot. Enable it only in the final image for units
+  that ship with the physical switch.
+- **Cooling is mandatory for Pi 5 production units**: a bare bench
+  board hit 85-88 °C and hard-throttled (`throttled=0xe0006`) under
+  a single x264 encode. Decode-only playback is fine even throttled
+  (1080p30 H.264 measured 6.1x realtime), but RetroArch-class
+  sustained load needs the Active Cooler + enclosure airflow.
 - **`rotary-encoder` overlay**: NOT scripted anywhere — it is baked
   into the Pi 4 golden image's config.txt by hand. Captured from the
   production Pi 4B (2026-07-22); use this exact line:
