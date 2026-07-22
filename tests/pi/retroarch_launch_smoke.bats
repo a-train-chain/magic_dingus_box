@@ -24,7 +24,7 @@ teardown() {
 # Echoes the path or returns 1 if none found.
 find_rom() {
     local dir="$1"
-    pi_ssh "ls $dir/*.{nes,sfc,smc,md,gen,bin,iso,m3u,pce,a78,zip} 2>/dev/null | head -1"
+    pi_ssh "ls $dir/*.{nes,sfc,smc,md,gen,bin,iso,m3u,pce,a78,zip,7z,chd,pbp} 2>/dev/null | head -1"
 }
 
 # Helper: try to launch a core with a ROM, give it $2 seconds, then kill it.
