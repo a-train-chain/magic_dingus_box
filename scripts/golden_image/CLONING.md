@@ -153,8 +153,11 @@ Bookworm 64-bit image with `kernel_2712.img` present (stock images
 ship it; firmware auto-selects it on Pi 5). Checklist for building
 the first Pi 5 golden image:
 
-- **Base OS**: Raspberry Pi OS Bookworm 64-bit or later. Bullseye
-  cannot boot a Pi 5 at all.
+- **Base OS**: Raspberry Pi OS **Trixie 64-bit** — this matches the
+  production Pi 4B, which runs Trixie (Debian 13, kernel 6.12,
+  GStreamer 1.26, libgpiod 2.2) as of 2026-07-22 despite older repo
+  comments saying Bookworm. Bookworm also boots a Pi 5; Bullseye
+  cannot boot one at all.
 - **config.txt**: use `[pi4]` / `[pi5]` conditional sections for any
   model-specific settings. Drop `gpu_mem=76` from the `[pi5]` path —
   the setting is ignored on Pi 5 (fully CMA-based).
@@ -190,6 +193,13 @@ the first Pi 5 golden image:
   `max_swapchain_images=2` workarounds are Pi 4-tuned and pinned
   identical on Pi 5 until re-benchmarked; see
   `test_launch_contract.cpp`), power-switch halt/wake behavior.
+- **HEVC experiment (both boards, optional)**: production runs
+  GStreamer 1.26, the release where the SAND-format fix for
+  `v4l2slh265dec` landed (see the long comment in `gst_player.cpp`).
+  The element is still force-disabled from the Bookworm era. Worth
+  re-testing hardware HEVC decode on Trixie — Pi 4's rpivid block
+  and Pi 5's HEVC block both go through that element. Only lift the
+  disable if playback proves stable.
 
 ## Performance notes
 

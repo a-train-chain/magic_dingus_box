@@ -202,7 +202,7 @@ The Media Browser is a sub-mode of the kiosk that provides movie discovery, down
 
 - **Pi 4**: `v4l2h264dec` (hardware H.264) is rank-promoted and used by default
 - **Pi 5**: has NO hardware H.264 decoder (BCM2712 dropped the block); the rank promotions are no-ops there and playbin falls through to `avdec_h264` (libav software, ~20% CPU for 1080p on the A76s — validate headroom on the 2GB board)
-- `v4l2slh265dec` (V4L2 stateless hardware HEVC, both boards) is **disabled** — SAND pixel-format negotiation bug with GStreamer 1.22; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile)
+- `v4l2slh265dec` (V4L2 stateless hardware HEVC, both boards) is **disabled** — SAND pixel-format negotiation bug with GStreamer 1.22-era Bookworm; falls back to `avdec_h265` (software, ~30-50% of one core for 1080p 8-bit Main profile). NOTE (2026-07-22): production Pis actually run **Trixie** with GStreamer 1.26, where the SAND fix landed — the disable is now conservative and re-testable (see CLONING.md "HEVC experiment")
 - AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
 - Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
 
