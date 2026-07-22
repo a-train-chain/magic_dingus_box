@@ -170,6 +170,12 @@ rsync -avz --checksum \
 echo "  ✓ Code synced"
 
 # Step 1.5: Sync Web UI
+# Pre-create every rsync destination parent: rsync only creates the
+# final path component, so on a virgin Pi (fresh bench install) the
+# nested targets below fail with "mkdir ... No such file or directory".
+# No-op on already-deployed Pis. Observed live on the first Pi 5
+# bench deploy, 2026-07-22.
+ssh "${PI_HOST}" "mkdir -p ${PI_DIR}/magic_dingus_box/web ${PI_DIR}/scripts/golden_image ${PI_DIR}/services ${PI_DIR}/systemd"
 echo "Step 1.5: Syncing Web UI to ${PI_HOST}:${PI_DIR}/magic_dingus_box/web"
 rsync -avz --checksum \
     --delete \
