@@ -51,6 +51,21 @@ if [ "$(systemctl --global is-enabled pulseaudio.socket 2>/dev/null)" != "masked
     systemctl --user stop pulseaudio.socket pulseaudio.service 2>/dev/null || true
 fi
 
+# Mask PipeWire the same way. Stock Trixie images ship PipeWire as the
+# default audio server: pipewire-pulse holds the PulseAudio socket (so
+# our PA daemon can't bind it) and WirePlumber holds the ALSA devices
+# (so module-alsa-card can't open them). The kiosk stack owns audio via
+# real PulseAudio — first hit on the Pi 5 bench install, 2026-07-22.
+# Idempotent: no-op once masked, and harmless on Pis without PipeWire.
+if systemctl --global is-enabled pipewire-pulse.socket >/dev/null 2>&1 && \
+   [ "$(systemctl --global is-enabled pipewire-pulse.socket 2>/dev/null)" != "masked" ]; then
+    echo "Masking user-session PipeWire units (init_audio owns PA)..."
+    sudo systemctl --global mask pipewire.service pipewire.socket \
+        pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+    systemctl --user stop pipewire.socket pipewire-pulse.socket \
+        pipewire.service pipewire-pulse.service wireplumber.service 2>/dev/null || true
+fi
+
 # Suppress PulseAudio warnings for the unused HDMI controller. The Pi 4 exposes
 # two HDMI controllers via DT (vc4-hdmi-0, vc4-hdmi-1) but the kiosk only uses
 # HDMI0. The unused vc4-hdmi-1 has no audio profile, so on every kiosk start

@@ -74,3 +74,8 @@ PI5_USB_DAC_SINKS='0	alsa_output.platform-107c701400.hdmi.hdmi-stereo	module-als
     run grep -E 'platform-(fef00700|fe00b840)' "$CPP_DIR/scripts/init_audio.sh"
     [ "$status" -ne 0 ]
 }
+
+@test "init_audio.sh masks PipeWire units (stock Trixie ships PipeWire)" {
+    grep -q "systemctl --global mask pipewire" "$CPP_DIR/scripts/init_audio.sh"
+    grep -q "wireplumber.service" "$CPP_DIR/scripts/init_audio.sh"
+}
