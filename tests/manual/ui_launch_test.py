@@ -88,8 +88,12 @@ def kiosk_restart():
 def exit_game(console, game_idx):
     """Escalating exit: chord -> pkill -> pkill -9 -> service restart.
     Returns the method that worked, or None."""
-    w.press(ButtonName.QUIT_GAME, "tap")
-    if wait_for(lambda: screen() != "retroarch" and not retroarch_core(), 8):
+    # Hold the chord ~400ms like a real finger — an instantaneous tap can
+    # fall between RetroArch's input polls and be missed entirely.
+    w.press(ButtonName.QUIT_GAME, "down")
+    time.sleep(0.4)
+    w.press(ButtonName.QUIT_GAME, "up")
+    if wait_for(lambda: screen() != "retroarch" and not retroarch_core(), 12):
         return "chord"
     subprocess.run(["pkill", "retroarch"], capture_output=True)
     if wait_for(lambda: screen() != "retroarch" and not retroarch_core(), 25):
@@ -156,7 +160,12 @@ def open_game_browser():
     """From main UI: settings -> Video Games -> browser active."""
     tap(ButtonName.BLACK, settle=1.2)
     if not wait_for(lambda: sm("active"), 4):
-        return False
+        # One retry — right after a service start the intro video may
+        # still be swallowing input.
+        time.sleep(5)
+        tap(ButtonName.BLACK, settle=1.2)
+        if not wait_for(lambda: sm("active"), 4):
+            return False
     if not steer_until("highlighted_label", "Video Games"):
         # try steering upward in case we started below it
         if not steer_until("highlighted_label", "Video Games", btn=ButtonName.UP):
