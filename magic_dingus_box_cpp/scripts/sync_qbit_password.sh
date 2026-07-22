@@ -84,9 +84,19 @@ if curl -fsS -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
     | grep -q "Ok\."; then
     log "qBit on default credentials — applying .env password..."
 else
-    log "WARN: qBit rejects BOTH .env password AND adminadmin; manual recovery needed"
-    log "      to recover: stop mdb_qbittorrent, edit qBittorrent.conf to remove WebUI\\Password_PBKDF2 line, start container, grep its logs for temporary password, then re-run this script"
-    exit 0
+    # qBittorrent 5.x removed the adminadmin default: new containers
+    # print a per-session temporary password in their log instead.
+    # (Hit live on the first Pi 5 provisioning, 2026-07-22.)
+    TMP_PW=$(docker logs mdb_qbittorrent 2>&1 | grep "temporary password" | tail -1 | awk '{print $NF}')
+    if [ -n "${TMP_PW}" ] && curl -fsS -c "${COOKIE}" -X POST "${QBIT_URL}/api/v2/auth/login" \
+        -d "username=admin" --data-urlencode "password=${TMP_PW}" 2>/dev/null \
+        | grep -q "Ok\."; then
+        log "qBit on session temporary password — applying .env password..."
+    else
+        log "WARN: qBit rejects .env password, adminadmin, AND the session temporary password; manual recovery needed"
+        log "      to recover: stop mdb_qbittorrent, edit qBittorrent.conf to remove WebUI\\Password_PBKDF2 line, start container, grep its logs for temporary password, then re-run this script"
+        exit 0
+    fi
 fi
 
 # Apply the .env password + ensure localhost-bypass stays off.

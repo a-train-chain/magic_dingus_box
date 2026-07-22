@@ -611,8 +611,22 @@ else
             echo "  qBit was on default credentials — applying random password..."
         fi
     fi
+    # Fall back to the modern session temporary password: qBittorrent 5.x
+    # removed the adminadmin default entirely and instead prints
+    # "A temporary password is provided for this session: XXXX" in the
+    # container log at startup. Hit live on the first Pi 5 provisioning
+    # (2026-07-22) — without this, fresh installs pulling current images
+    # dead-end here.
     if [ "${LOGIN_OK}" -eq 0 ]; then
-        echo "  WARN: could not log in to qBit with either .env password or default."
+        QBIT_TMP_PW=$(docker logs mdb_qbittorrent 2>&1 | grep "temporary password" | tail -1 | awk '{print $NF}')
+        if [ -n "${QBIT_TMP_PW}" ] && curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+            -d "username=admin" --data-urlencode "password=${QBIT_TMP_PW}" 2>/dev/null | grep -q "Ok."; then
+            LOGIN_OK=1
+            echo "  qBit was on a session temporary password — applying random password..."
+        fi
+    fi
+    if [ "${LOGIN_OK}" -eq 0 ]; then
+        echo "  WARN: could not log in to qBit with .env password, default, or temporary password."
         echo "        qBit may have been hand-configured; verify manually."
     else
         # Apply password + disable localhost bypass. POST takes a
