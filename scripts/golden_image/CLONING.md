@@ -170,6 +170,14 @@ the first Pi 5 golden image:
   production Pi 4 has `gpio-shutdown` **commented out** — GPIO 3 is
   handled by `kiosk-standby-watcher.service` instead (unit + script
   are in the repo); carry the watcher, not the overlay.
+- **Disable the desktop on fresh installs**: `sudo systemctl
+  set-default multi-user.target && sudo systemctl disable lightdm`,
+  then reboot. On a stock desktop image the kiosk and lightdm RACE
+  for DRM master at every boot — the kiosk can win for many boots in
+  a row (it did, all afternoon on the first bench Pi 5) and then
+  lose one, failing with "Failed to set DRM master (Permission
+  denied)". Production images must never ship with a display
+  manager enabled.
 - **kiosk-standby-watcher caveat**: do NOT enable the watcher on a
   bench Pi with no switch harness attached — GPIO 3 floats HIGH
   (pull-up), which reads as "switch OFF" and the watcher stops the
