@@ -28,6 +28,9 @@ sudo apt install -y \
   libgles2-mesa-dev \
   libevdev-dev \
   libgpiod-dev \
+  libsystemd-dev \
+  pulseaudio \
+  pulseaudio-utils \
   libyaml-cpp-dev \
   libjsoncpp-dev \
   libgstreamer1.0-dev \
