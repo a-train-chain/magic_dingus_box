@@ -9,6 +9,13 @@ Group=magic
 WorkingDirectory=/opt/magic_dingus_box
 Environment=PYTHONPATH=/opt/magic_dingus_box
 Environment=MAGIC_DATA_DIR=/opt/magic_dingus_box/magic_dingus_box_cpp/data
+# Large playlist-package uploads are staged via tempfile.mkstemp, which
+# defaults to /tmp — a RAM-backed tmpfs capped at ~half of RAM on Pi OS
+# (~1 GB on the 2 GB boards). A ~1 GB package import fills it and the
+# upload dies with ENOSPC (observed live on the Pi 5 bench, 2026-07-22).
+# Point temp files at the SD card instead.
+Environment=TMPDIR=/opt/magic_dingus_box/tmp
+ExecStartPre=/bin/mkdir -p /opt/magic_dingus_box/tmp
 ExecStart=/usr/bin/python3 -u -m magic_dingus_box.web.wsgi
 Restart=always
 RestartSec=5
