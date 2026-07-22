@@ -841,6 +841,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "config_save_on_exit = \"false\"\n";
             script_file << "# CRITICAL: Single press to quit (don't require double press)\n";
             script_file << "quit_press_twice = \"false\"\n";
+            {
+                // Phone remote QUIT_GAME support (KEY_Z exit bind) —
+                // see retroarch::write_remote_quit_config().
+                std::ostringstream remote_quit;
+                retroarch::write_remote_quit_config(remote_quit);
+                script_file << remote_quit.str();
+            }
             script_file << "core_options_path = \"/tmp/retroarch_core_options.cfg\"\n";
             script_file << "# Audio settings - use ALSA to match GStreamer (simplified for reliability)\n";
             script_file << "audio_device = \"" << alsa_device << "\"\n";
@@ -1522,67 +1529,23 @@ void RetroArchLauncher::release_controllers() {
 }
 
 std::string RetroArchLauncher::detect_alsa_device() {
-    std::cout << "Detecting ALSA device (matching Pi game version priority)..." << std::endl;
-    
-    // PRIORITY 1: Try sysdefault:CARD=vc4hdmi0 (highest priority, matches Pi game version)
+    // Select the HDMI audio device by PCM NAME via the shared contract
+    // helper (see retroarch::pick_hdmi_alsa_device) — never by card
+    // number, which differs between Pi 4 and Pi 5.
+    std::string output_l;
     FILE* pipe_l = popen("aplay -L 2>&1", "r");
     if (pipe_l) {
         char buffer[256];
-        std::string output_l;
         while (fgets(buffer, sizeof(buffer), pipe_l) != nullptr) {
             output_l += buffer;
         }
         pclose(pipe_l);
-        
-        // Check for sysdefault:CARD=vc4hdmi0
-        std::regex sysdefault_vc4hdmi0_regex(R"(^sysdefault:CARD=vc4hdmi0)");
-        if (std::regex_search(output_l, sysdefault_vc4hdmi0_regex)) {
-            std::cout << "Found sysdefault:CARD=vc4hdmi0 (PRIORITY 1)" << std::endl;
-            return "sysdefault:CARD=vc4hdmi0";
-        }
-        
-        // Check for sysdefault:CARD=vc4hdmi1
-        std::regex sysdefault_vc4hdmi1_regex(R"(^sysdefault:CARD=vc4hdmi1)");
-        if (std::regex_search(output_l, sysdefault_vc4hdmi1_regex)) {
-            std::cout << "Found sysdefault:CARD=vc4hdmi1 (PRIORITY 1)" << std::endl;
-            return "sysdefault:CARD=vc4hdmi1";
-        }
+    } else {
+        std::cerr << "Warning: Failed to execute aplay -L, using legacy default" << std::endl;
     }
-    
-    // PRIORITY 2: Try plughw format (fallback, matches Pi game version)
-    FILE* pipe = popen("aplay -l 2>&1", "r");
-    if (!pipe) {
-        std::cerr << "Warning: Failed to execute aplay -l, using default device" << std::endl;
-        return "plughw:1,0";
-    }
-    
-    std::string output;
-    char buffer[128];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        output += buffer;
-    }
-    pclose(pipe);
-    
-    // Log the output for debugging
-    std::cout << "aplay -l output:" << std::endl << output << std::endl;
-    
-    // Look for vc4hdmi0 on card 1 - use plughw: format (PRIORITY 2, matches Pi game version)
-    std::regex vc4hdmi0_regex(R"(card\s+1.*vc4hdmi0)");
-    if (std::regex_search(output, vc4hdmi0_regex)) {
-        std::cout << "Found vc4hdmi0 on card 1, using plughw:1,0 (PRIORITY 2)" << std::endl;
-        return "plughw:1,0";
-    }
-    
-    // Look for vc4hdmi1 on card 2 - use plughw: format (PRIORITY 2)
-    std::regex vc4hdmi1_regex(R"(card\s+2.*vc4hdmi1)");
-    if (std::regex_search(output, vc4hdmi1_regex)) {
-        std::cout << "Found vc4hdmi1 on card 2, using plughw:2,0 (PRIORITY 2)" << std::endl;
-        return "plughw:2,0";
-    }
-    
-    // Default fallback - use plughw: format (matches Pi game version)
-    std::cout << "No specific HDMI device found, using default plughw:1,0" << std::endl;
-    return "plughw:1,0";
+    std::string device = retroarch::pick_hdmi_alsa_device(output_l);
+    std::cout << "Detected HDMI ALSA device: " << device << std::endl;
+    return device;
 }
 
 void RetroArchLauncher::stop_gstreamer_and_cleanup() {

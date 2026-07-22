@@ -122,6 +122,22 @@ bezels) and all controller mappings unchanged.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **Phone remote can now quit games** — the QUIT_GAME chord (KEY_Z +
+  Start on the virtual "MagicDingus Phone Remote" gamepad) was silently
+  ignored in-game: the virtual pad has no manual joypad binds and
+  autoconfig is disabled, so no RetroArch bind ever saw it. The launch
+  contract now emits `input_exit_emulator = "z"`
+  (`write_remote_quit_config()`), which RetroArch's udev keyboard path
+  delivers from the virtual device (verified on hardware). UI launch
+  test: 14/14 chord exits.
+- **Pi 5 game audio routed to the empty HDMI port** —
+  `detect_alsa_device()`'s PRIORITY-1 regex used a `^` anchor that
+  never matches mid-string in std::regex, so every launch fell through
+  to a hardcoded `plughw:1,0`: correct on Pi 4 only by card-ordering
+  luck (vc4hdmi0 = card 1 there) and silently wrong on Pi 5 (card 1 =
+  vc4hdmi1, the empty port). Now selects `sysdefault:CARD=vc4hdmi0` by
+  NAME via the tested `retroarch::pick_hdmi_alsa_device()`.
+
 - **Open (passwordless) Wi-Fi networks never connected** — the UI's
   empty-password path routed them through "activate saved profile",
   which always failed with "unknown connection" for a never-saved

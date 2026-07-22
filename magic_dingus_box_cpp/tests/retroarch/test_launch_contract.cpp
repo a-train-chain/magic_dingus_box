@@ -289,3 +289,53 @@ TEST_CASE("video contract is identical across Pi models until Pi 5 is benchmarke
     require_line(pi5_out.str(), "video_threaded = \"false\"");
     require_line(pi5_out.str(), "video_max_swapchain_images = \"2\"");
 }
+
+TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
+          "[retroarch][input]") {
+    // The phone remote's QUIT_GAME emits KEY_Z + BTN_START on the virtual
+    // "MagicDingus Phone Remote" gamepad. RetroArch's udev keyboard path
+    // reads that device's KEY_Z (verified live on the Pi 5 bench,
+    // 2026-07-22), so binding the exit hotkey to "z" makes the remote able
+    // to quit games — previously the chord was silently ignored because
+    // the virtual pad has no manual joypad binds and autoconfig is off.
+    std::ostringstream out;
+    retroarch::write_remote_quit_config(out);
+    const std::string config = out.str();
+    require_line(config, "input_exit_emulator = \"z\"");
+}
+
+TEST_CASE("HDMI ALSA device picks vc4hdmi0 by NAME on both Pi 4 and Pi 5",
+          "[retroarch][audio]") {
+    // Pi 5 layout: vc4hdmi0 is ALSA card 0 (captured from the bench Pi,
+    // 2026-07-22). The old detect_alsa_device() fell through to a
+    // hardcoded "plughw:1,0" — correct on Pi 4 only by card-ordering
+    // luck (its card 1 was vc4hdmi0, behind the Headphones card 0);
+    // on Pi 5 that lands on vc4hdmi1, the EMPTY HDMI port → silent games.
+    const char* pi5_aplay_L =
+        "null\n    Discard all samples\n"
+        "sysdefault\n    Default Audio Device\n"
+        "hw:CARD=vc4hdmi0,DEV=0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "plughw:CARD=vc4hdmi0,DEV=0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "hw:CARD=vc4hdmi1,DEV=0\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    REQUIRE(retroarch::pick_hdmi_alsa_device(pi5_aplay_L) == "sysdefault:CARD=vc4hdmi0");
+
+    // Pi 4 layout: Headphones card first, then the HDMI cards.
+    const char* pi4_aplay_L =
+        "null\n    Discard all samples\n"
+        "sysdefault:CARD=Headphones\n    bcm2835 Headphones, bcm2835 Headphones\n"
+        "sysdefault:CARD=vc4hdmi0\n    vc4-hdmi-0, MAI PCM i2s-hifi-0\n"
+        "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1, MAI PCM i2s-hifi-0\n";
+    REQUIRE(retroarch::pick_hdmi_alsa_device(pi4_aplay_L) == "sysdefault:CARD=vc4hdmi0");
+}
+
+TEST_CASE("HDMI ALSA device falls back to vc4hdmi1 then legacy default",
+          "[retroarch][audio]") {
+    REQUIRE(retroarch::pick_hdmi_alsa_device(
+                "sysdefault:CARD=vc4hdmi1\n    vc4-hdmi-1\n") ==
+            "sysdefault:CARD=vc4hdmi1");
+    // No vc4 cards at all (dev box, USB-only audio): keep the legacy
+    // fallback so behavior off-Pi is unchanged.
+    REQUIRE(retroarch::pick_hdmi_alsa_device("null\n    Discard\n") == "plughw:1,0");
+}

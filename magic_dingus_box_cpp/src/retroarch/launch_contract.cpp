@@ -38,6 +38,28 @@ bool is_ps1_core(const std::string& core_name) {
 
 }  // namespace
 
+void write_remote_quit_config(std::ostream& out) {
+    // See launch_contract.h. Keep in sync with QUIT_GAME in
+    // magic_dingus_box/web/remote/uinput_writer.py (KEY_Z = 44).
+    out << "input_exit_emulator = \"z\"\n";
+}
+
+std::string pick_hdmi_alsa_device(const std::string& aplay_L_output) {
+    // Plain substring checks: `aplay -L` prints one device name per
+    // line at column 0, and these exact PCM names cannot appear as a
+    // substring of another device name. (The previous implementation
+    // used std::regex with a `^` anchor, which only matches the start
+    // of the WHOLE string in ECMAScript mode — it never matched, and
+    // everything fell through to the card-number fallback.)
+    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi0") != std::string::npos) {
+        return "sysdefault:CARD=vc4hdmi0";
+    }
+    if (aplay_L_output.find("sysdefault:CARD=vc4hdmi1") != std::string::npos) {
+        return "sysdefault:CARD=vc4hdmi1";
+    }
+    return "plughw:1,0";
+}
+
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // --- Common video settings (apply to both modes) ---
     out << "video_driver = \"vulkan\"\n";
