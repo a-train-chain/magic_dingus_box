@@ -190,10 +190,14 @@ the first Pi 5 golden image:
   pre-loaded movie drive populates the kiosk Library automatically on
   fresh provisions, replacement SDs, or swapped drives. Both are
   installed by setup_services.sh; verify they're baked into the image.
-- **Quiet kiosk boot**: `systemctl disable getty@tty1` and append
-  `logo.nologo vt.global_cursor_default=0 loglevel=3` to cmdline.txt
-  (alongside stock `quiet splash`) so boots go straight to the intro
-  video with no console text, cursor, or login prompt.
+- **Quiet, branding-free kiosk boot**: `systemctl disable getty@tty1`;
+  in config.txt set `disable_splash=1` (removes the firmware rainbow);
+  in cmdline.txt remove the plymouth `splash` keyword and append
+  `logo.nologo vt.global_cursor_default=0 loglevel=3 plymouth.enable=0`
+  (alongside stock `quiet`). Result: power-on → plain black → the MDB
+  intro video, with NO Raspberry Pi OS splash, console text, cursor,
+  or login prompt. (fsck output still shows on a genuinely dirty boot
+  — that's intentional, it's a real-problem signal.)
 - **Cooling is mandatory for Pi 5 production units**: a bare bench
   board hit 85-88 °C and hard-throttled (`throttled=0xe0006`) under
   a single x264 encode. Decode-only playback is fine even throttled

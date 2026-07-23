@@ -57,9 +57,14 @@ services:
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/ping"]
-      interval: 30s
+      # 10s (not 30s) so the kiosk Movies section becomes reachable
+      # within seconds of a cold boot instead of up to a full poll
+      # cycle later. start_period keeps early startup pings from
+      # counting as failures while Radarr initializes.
+      interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:2.3.5
@@ -85,9 +90,10 @@ services:
     restart: always
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:9696/ping"]
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   gluetun:
     image: qmcgaw/gluetun:v3
