@@ -44,6 +44,18 @@ void write_remote_quit_config(std::ostream& out) {
     out << "input_exit_emulator = \"z\"\n";
 }
 
+Renderer renderer_for_core(const std::string& core_name) {
+    // The N64 cores render through GLideN64 (OpenGL/GLES) and must run on
+    // the GL context. Everything else the kiosk ships — including
+    // Dreamcast/flycast, which has a working Vulkan path on V3D — uses the
+    // native Vulkan/khr_display contract.
+    if (core_name.find("mupen64plus") != std::string::npos ||
+        core_name.find("parallel_n64") != std::string::npos) {
+        return Renderer::GL;
+    }
+    return Renderer::Vulkan;
+}
+
 std::string pick_hdmi_alsa_device(const std::string& aplay_L_output) {
     // Plain substring checks: `aplay -L` prints one device name per
     // line at column 0, and these exact PCM names cannot appear as a
@@ -61,7 +73,22 @@ std::string pick_hdmi_alsa_device(const std::string& aplay_L_output) {
 }
 
 void write_video_config(std::ostream& out, const LaunchOptions& options) {
-    // --- Common video settings (apply to both modes) ---
+    const bool vulkan = (options.renderer == Renderer::Vulkan);
+
+    // --- Driver + context: renderer-dependent ---
+    if (!vulkan) {
+        // GL path — N64/GLideN64 (mupen64plus_next / parallel_n64). Use
+        // video_driver=gl and DELIBERATELY leave video_context_driver
+        // EMPTY so RetroArch auto-selects the KMS/EGL/GBM context. Emitting
+        // "khr_display" (the Vulkan direct-display context) for a GL core
+        // black-screens it — confirmed in the Pi 5 emulation research.
+        // The Vulkan swapchain workarounds below are Vulkan-only, so they
+        // are skipped here. Threaded video is safe on GL (the swapchain
+        // thrash that forces it off was Vulkan-specific) and helps
+        // framepacing on the Pi 5's spare A76 cores.
+        out << "video_driver = \"gl\"\n";
+        out << "video_threaded = \"true\"\n";
+    } else {
     out << "video_driver = \"vulkan\"\n";
     // The kiosk and RetroArch both run without X11/Wayland. RetroArch's
     // Vulkan driver names its direct DRM/KMS context "khr_display" (the
@@ -94,6 +121,7 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // branch on options.pi_model here and update the parity test in
     // test_launch_contract.cpp ("identical across Pi models").
     out << "video_threaded = \"false\"\n";
+    }  // end vulkan-only driver/context block
     out << "video_fullscreen = \"true\"\n";
     out << "video_windowed_fullscreen = \"false\"\n";
     out << "video_gpu_screenshot = \"false\"\n";
@@ -132,8 +160,10 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // 2 (double-buffer) is the more stable swapchain depth for the V3D
     // KMS Vulkan path; 3 gave no measured benefit here and pairs with the
     // threaded-video thrash above. Belt-and-suspenders alongside
-    // video_threaded=false.
-    out << "video_max_swapchain_images = \"2\"\n";
+    // video_threaded=false. Vulkan-only — meaningless on the GL path.
+    if (vulkan) {
+        out << "video_max_swapchain_images = \"2\"\n";
+    }
     out << "video_shader_enable = \"false\"\n";
     out << "video_filter = \"\"\n";
     out << "video_frame_blend = \"false\"\n";

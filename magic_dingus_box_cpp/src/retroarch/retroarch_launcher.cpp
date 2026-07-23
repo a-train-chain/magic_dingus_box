@@ -774,8 +774,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "libretro_info_path = \"/usr/share/libretro/info\"\n";
             script_file << "core_info_savestate_bypass = \"true\"\n";
             
-            // Video config (driver, resolution, viewport, sync)
-            write_video_config(script_file, opts);
+            // Video config (driver, resolution, viewport, sync).
+            // Pick the renderer from the core: N64 (GLideN64) needs the GL
+            // path, everything else stays on Vulkan/khr_display. opts is
+            // const&, so copy it to stamp the renderer.
+            {
+                LaunchOptions video_opts = opts;
+                video_opts.renderer = renderer_for_core(core_name);
+                write_video_config(script_file, video_opts);
+            }
             // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
             // independently of brief emulation or Vulkan present stalls.
             script_file << "audio_driver = \"" << audio_driver_for_gameplay()

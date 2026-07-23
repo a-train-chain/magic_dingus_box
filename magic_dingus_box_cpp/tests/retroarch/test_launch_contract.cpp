@@ -339,3 +339,57 @@ TEST_CASE("HDMI ALSA device falls back to vc4hdmi1 then legacy default",
     // fallback so behavior off-Pi is unchanged.
     REQUIRE(retroarch::pick_hdmi_alsa_device("null\n    Discard\n") == "plughw:1,0");
 }
+
+TEST_CASE("GL renderer path emits video_driver=gl without Vulkan-only settings",
+          "[retroarch][video][gl]") {
+    // N64 (GLideN64) and other GL-only cores can't use the kiosk's default
+    // Vulkan/khr_display contract — emitting khr_display for a GL core
+    // black-screens it (verified in the Pi 5 emulation research). When
+    // LaunchOptions.renderer == GL, the video config must switch to
+    // video_driver=gl, drop khr_display (leave context empty for KMS/EGL/
+    // GBM auto-select), and NOT emit the Pi-4 Vulkan swapchain workarounds
+    // (video_threaded=false / video_max_swapchain_images=2), which are
+    // meaningless and can hurt on the GL path.
+    retroarch::LaunchOptions gl_opts;
+    gl_opts.display_mode = app::DisplayMode::MODERN_TV;
+    gl_opts.renderer = retroarch::Renderer::GL;
+
+    std::ostringstream out;
+    retroarch::write_video_config(out, gl_opts);
+    const std::string cfg = out.str();
+
+    require_line(cfg, "video_driver = \"gl\"");
+    REQUIRE(cfg.find("khr_display") == std::string::npos);
+    REQUIRE(cfg.find("video_max_swapchain_images") == std::string::npos);
+    REQUIRE(cfg.find("video_threaded = \"false\"") == std::string::npos);
+    // Mode-specific viewport must still be emitted (unchanged by renderer).
+    require_line(cfg, "video_fullscreen_x = \"1920\"");
+}
+
+TEST_CASE("default renderer stays Vulkan/khr_display with the swapchain workarounds",
+          "[retroarch][video][vulkan]") {
+    // Existing behavior must be untouched for the 2D/PS1-class cores.
+    retroarch::LaunchOptions vk_opts;  // renderer defaults to Vulkan
+    vk_opts.display_mode = app::DisplayMode::MODERN_TV;
+
+    std::ostringstream out;
+    retroarch::write_video_config(out, vk_opts);
+    const std::string cfg = out.str();
+
+    require_line(cfg, "video_driver = \"vulkan\"");
+    require_line(cfg, "video_context_driver = \"khr_display\"");
+    require_line(cfg, "video_threaded = \"false\"");
+    require_line(cfg, "video_max_swapchain_images = \"2\"");
+}
+
+TEST_CASE("renderer_for_core routes N64 cores to GL, others to Vulkan",
+          "[retroarch][video][gl]") {
+    using retroarch::Renderer;
+    REQUIRE(retroarch::renderer_for_core("mupen64plus_next_libretro") == Renderer::GL);
+    REQUIRE(retroarch::renderer_for_core("parallel_n64_libretro") == Renderer::GL);
+    // Everything the kiosk already ships stays on Vulkan, incl. Dreamcast.
+    REQUIRE(retroarch::renderer_for_core("flycast_libretro") == Renderer::Vulkan);
+    REQUIRE(retroarch::renderer_for_core("pcsx_rearmed_libretro") == Renderer::Vulkan);
+    REQUIRE(retroarch::renderer_for_core("snes9x2010_libretro") == Renderer::Vulkan);
+    REQUIRE(retroarch::renderer_for_core("fbneo_libretro") == Renderer::Vulkan);
+}

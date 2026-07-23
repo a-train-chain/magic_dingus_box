@@ -9,6 +9,17 @@
 
 namespace retroarch {
 
+// Which RetroArch video driver the core runs under. Most cores (2D,
+// PS1, Dreamcast/flycast) use the kiosk's native Vulkan/khr_display
+// path. GL-only cores — notably N64 via GLideN64 (mupen64plus_next /
+// parallel_n64) — must run video_driver=gl with an EMPTY context so
+// RetroArch auto-selects KMS/EGL/GBM; emitting khr_display for a GL
+// core black-screens it (Pi 5 emulation research, 2026-07-22).
+enum class Renderer {
+    Vulkan,
+    GL
+};
+
 struct LaunchOptions {
     app::DisplayMode display_mode = app::DisplayMode::CRT_NATIVE;
     std::string bezel_file;
@@ -17,7 +28,15 @@ struct LaunchOptions {
     // (pinned by test_launch_contract) — the Pi 4 V3D swapchain
     // workarounds are kept everywhere until re-benchmarked on Pi 5.
     platform::PiModel pi_model = platform::PiModel::Unknown;
+    // Video driver for this core. Set from the core name at launch
+    // (see renderer_for_core). Defaults to Vulkan for the existing
+    // 2D/PS1-class lineup.
+    Renderer renderer = Renderer::Vulkan;
 };
+
+// Pick the renderer a core needs. GL for the N64 cores (GLideN64),
+// Vulkan for everything else the kiosk ships (incl. Dreamcast/flycast).
+Renderer renderer_for_core(const std::string& core_name);
 
 void write_video_config(std::ostream& out, const LaunchOptions& options);
 
