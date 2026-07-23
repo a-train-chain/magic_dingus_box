@@ -65,6 +65,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+      # Poll every 3s DURING start_period so Radarr flips healthy the
+      # moment it's up (it can only start after gluetun is healthy, so
+      # every second saved here shortens the kiosk's cold Movies load).
+      start_interval: 3s
 
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:2.3.5
@@ -94,6 +98,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+      start_interval: 3s
 
   gluetun:
     image: qmcgaw/gluetun:v3
@@ -206,7 +211,15 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      # This is the cold-boot bottleneck: radarr/prowlarr/qbit share
+      # gluetun's netns and can't start until it's healthy. start_interval
+      # polls every 3s during start_period so gluetun flips healthy the
+      # instant the tunnel is up (~10-15s) instead of waiting for the first
+      # 60s-cadence check — WITHOUT weakening the deliberate 60s
+      # steady-state DNS-wedge detection. (start_period widened to 90s so
+      # a slow tunnel handshake isn't counted as a hard failure.)
+      start_period: 90s
+      start_interval: 3s
 
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:5.0.3
