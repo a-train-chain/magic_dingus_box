@@ -782,7 +782,30 @@ SCORE_MAP = {
     "HDR / Dolby Vision":              -200,
     "Remux / Raw-HD":                  -500,
     "x264 codec (BONUS)":               50,
-    "Trusted small-release groups":     30,
+    # Release-group policy, RETUNED FOR PI 5 (2026-07-26).
+    #
+    # These were ONE format ("Trusted small-release groups", +30) that
+    # lumped quality rips (RARBG/SURGE/EVO) together with groups whose
+    # entire identity is making SMALL files (YIFY/YTS/GalaxyRG/ION10).
+    # That bonus stacked with x264's +50, so a low-bitrate YIFY encode
+    # scored +80 and beat a genuinely better release at +50 — the rules
+    # were optimizing for file size while claiming to optimize quality.
+    # Correct on the Pi 4B (hardware H.264, tight storage); wrong now.
+    #
+    # Measured on Pi 5 (2026-07-26): 1080p software decode costs 36% of
+    # 400% CPU for H.264 and 41% for HEVC — roughly 3.5 of 4 cores idle.
+    # There is no decode headroom problem to protect against, and the
+    # library SSD had 175GB free. So prefer the better encode.
+    "Quality release groups":           30,
+    "Low-bitrate size-optimized groups": -30,
+    # LEGACY: the pre-split format. Boxes provisioned before 2026-07-26
+    # still have it in Radarr, and the profile reconciler below only
+    # touches formats named in this map — so it must stay here, scored
+    # 0, to neutralize it. Removing this line would leave those boxes
+    # silently running the old +30 small-file bias forever. It is
+    # deliberately absent from radarr_custom_formats.json so fresh
+    # provisions never create it.
+    "Trusted small-release groups":      0,
     # Scam-rejection formats: well below the -200 minFormatScore floor
     # so a single match makes a release uneligible regardless of other
     # bonuses. Observed in production tonight: trash indexers (TPB-via-

@@ -211,10 +211,29 @@ The Media Browser is a sub-mode of the kiosk that provides movie discovery, down
 1. **Quality profile "Any"** — only allows 720p/1080p HDTV/WEB/Bluray (no SD, no 4K, no Remux)
 2. **Custom Format scoring** (sums vs `minFormatScore = -200`):
    - AV1: -1000 / Remux: -500 / HEVC 1080p+: -250 / HDR: -200 (all rejected)
+   - **Release groups, RETUNED FOR PI 5 (2026-07-26)**: split into
+     `Quality release groups` (+30: RARBG/SURGE/EVO/FGT/TGx) and
+     `Low-bitrate size-optimized groups` (**-30**: YIFY/YTS/GalaxyRG/
+     ION10/QxR). These were ONE format at +30, which stacked with
+     x264's +50 so a low-bitrate YIFY encode scored +80 and beat a
+     better release at +50 — the rules optimized for file SIZE while
+     claiming to optimize quality. Correct on the Pi 4B (hardware
+     H.264, tight storage); wrong on Pi 5, where 1080p software decode
+     measured 36% of 400% CPU (H.264) / 41% (HEVC) — ~3.5 of 4 cores
+     idle. YIFY still nets +20 so it stays eligible when nothing
+     better exists; it just stops winning. The pre-split format name
+     is kept in `SCORE_MAP` scored **0** to neutralize it on boxes
+     provisioned before the split (the profile reconciler only
+     rescores formats named in the map, so removing the line would
+     leave those boxes on the old +30 bias forever).
    - **Scam executables: -10000** (regex matches `.exe/.bat/.scr/.cmd/.com/.vbs/.lnk/.msi/.ps1/.app/.jar/.hta` in title — observed live: malware .exe payloads posted by trash indexers for new theatrical releases)
    - **Scam aggregator branding: -10000** (regex matches `uindex.org`, `fxnow`, `123movies`, `fmovies`, `gomovies`, `putlocker` in title — these prefix patterns reliably correlate with content-is-garbage releases)
    - x264: +50 / Trusted groups (YIFY/GalaxyRG/RARBG/SURGE): +30 (preferred)
-3. **Quality definition size limits**: 720p ≤60 MB/min, 1080p ≤100 MB/min
+3. **Quality definition size limits**: 720p ≤60 MB/min, 1080p ≤100 MB/min.
+   *Preferred* sizes raised 2026-07-26 for Pi 5 (720p 25→40, 1080p
+   40→70 MB/min): the box is not decode-limited and the library SSD
+   had 175GB free, while actual grabs were landing at 2.5-3.4 Mbps
+   against a ~13 Mbps ceiling.
 4. **Post-completion auto-blocklist** (`magic-dingus-auto-blocklist.timer`): catches the long-tail of scams where the release title is legit-looking and slipped past layers 1-3, but the actual downloaded content is junk (executable file, "no videos in folder", "unsupported extension"). See Service operations below.
 
 Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, hardware-decoded smoothly. Scams that get past pre-grab filters are auto-blocklisted within 15 minutes post-completion.

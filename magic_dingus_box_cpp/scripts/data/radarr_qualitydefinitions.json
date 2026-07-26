@@ -132,7 +132,7 @@
     },
     "minSize": 0,
     "maxSize": 60,
-    "preferredSize": 25
+    "preferredSize": 40
   },
   {
     "quality": {
@@ -141,7 +141,7 @@
     },
     "minSize": 0,
     "maxSize": 60,
-    "preferredSize": 25
+    "preferredSize": 40
   },
   {
     "quality": {
@@ -150,7 +150,7 @@
     },
     "minSize": 0,
     "maxSize": 60,
-    "preferredSize": 25
+    "preferredSize": 40
   },
   {
     "quality": {
@@ -159,7 +159,7 @@
     },
     "minSize": 0,
     "maxSize": 60,
-    "preferredSize": 25
+    "preferredSize": 40
   },
   {
     "quality": {
@@ -168,7 +168,7 @@
     },
     "minSize": 0,
     "maxSize": 100,
-    "preferredSize": 40
+    "preferredSize": 70
   },
   {
     "quality": {
@@ -177,7 +177,7 @@
     },
     "minSize": 0,
     "maxSize": 100,
-    "preferredSize": 40
+    "preferredSize": 70
   },
   {
     "quality": {
@@ -186,7 +186,7 @@
     },
     "minSize": 0,
     "maxSize": 100,
-    "preferredSize": 40
+    "preferredSize": 70
   },
   {
     "quality": {
@@ -195,7 +195,7 @@
     },
     "minSize": 0,
     "maxSize": 100,
-    "preferredSize": 40
+    "preferredSize": 70
   },
   {
     "quality": {

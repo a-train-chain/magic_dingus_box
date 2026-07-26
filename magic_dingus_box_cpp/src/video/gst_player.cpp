@@ -1,4 +1,5 @@
 #include "gst_player.h"
+#include "decoder_policy.h"
 #include "gst_helpers.h"
 #include "../utils/logger.h"
 #include <iostream>
@@ -121,9 +122,21 @@ bool GstPlayer::initialize(const std::string& /*hwdec*/) {
     // hardware decoder the BCM2712 kept) is also driven through the
     // V4L2 stateless API with SAND output formats, so GStreamer 1.22
     // hits the same negotiation failure there.
+    // ...and that fix HAS now landed — but it does NOT make hardware
+    // HEVC worth using. GStreamer 1.26.2 (Trixie) negotiates
+    // v4l2slh265dec fine, yet the decoder's SAND tiled output must be
+    // detiled by videoconvert on the CPU, costing ~2x software decode
+    // end-to-end (RGBA: 87% vs 41% of 400%; I420: 73% vs 38%, measured
+    // 2026-07-26 on this bench, same file). So the disable stays, now
+    // for a performance reason rather than a negotiation failure.
+    // Full measurements and the revisit criteria are in
+    // video/decoder_policy.h — read that before re-enabling this.
+    static_assert(!video::hw_hevc_beneficial(),
+                  "see decoder_policy.h: hardware HEVC is 2x more "
+                  "expensive on this pipeline due to SAND detiling");
     disable_decoder("v4l2slh265dec",
-                    "V4L2 stateless HEVC: SAND-format mismatch with mainline GStreamer "
-                    "(MR gstreamer/gstreamer#9247 pending, Trixie-only)");
+                    "V4L2 stateless HEVC: negotiates on GStreamer 1.26+ but SAND "
+                    "detiling costs ~2x software decode (see decoder_policy.h)");
 
     // Create playbin with RAII wrapper
     auto playbin = make_element("playbin", "playbin");
