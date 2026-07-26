@@ -385,8 +385,12 @@ int main(int /* argc */, char* /* argv */[]) {
             "unknown board";
         std::cout << "Platform: " << model_name
                   << " (analog audio: " << (profile.has_analog_audio ? "yes" : "no")
+                  << ", rotary events/detent: " << profile.rotary_events_per_detent
                   << ")" << std::endl;
         state.audio_settings.sanitize_for_platform(profile.has_analog_audio);
+        // Match the encoder accumulator to this board's pulse rate, or the
+        // UI advances every other click (Pi 5) / skips items (Pi 4).
+        input.set_rotary_events_per_detent(profile.rotary_events_per_detent);
     }
 
     // Phone-remote status writer — writes kiosk_status.json at 5 Hz so the

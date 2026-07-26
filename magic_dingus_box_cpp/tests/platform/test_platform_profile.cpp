@@ -193,3 +193,28 @@ TEST_CASE("pick_gpiochip returns -1 when no known header chip exists") {
     REQUIRE(pick_gpiochip(chips, profile_for(PiModel::Unknown).gpiochip_labels) == -1);
     REQUIRE(pick_gpiochip({}, profile_for(PiModel::Pi5).gpiochip_labels) == -1);
 }
+
+// ---------------------------------------------------------------
+// Rotary encoder events-per-detent
+// ---------------------------------------------------------------
+
+TEST_CASE("rotary events-per-detent is 1 on Pi 5 (measured on hardware)") {
+    // Measured 2026-07-25 on the Pi 5 bench: 10 detent clicks produced
+    // exactly 10 EV_REL events, all value=+1. The kiosk's accumulator
+    // threshold must match or the UI advances only every other click.
+    REQUIRE(profile_for(PiModel::Pi5).rotary_events_per_detent == 1);
+}
+
+TEST_CASE("rotary events-per-detent stays 2 on Pi 4 (fielded behavior preserved)") {
+    // The accumulator has shipped with THRESHOLD=2 since the Pi 4B days
+    // ("Require accumulating 2 units (one detent click)"). Not yet
+    // re-measured on Pi 4 hardware, so keep the long-standing value —
+    // changing it blind would double scroll sensitivity on fielded boxes.
+    REQUIRE(profile_for(PiModel::Pi4).rotary_events_per_detent == 2);
+}
+
+TEST_CASE("rotary events-per-detent defaults conservatively on unknown boards") {
+    // Unknown board (incl. dev machines) keeps the historical default so
+    // an unrecognized platform can never regress existing behavior.
+    REQUIRE(profile_for(PiModel::Unknown).rotary_events_per_detent == 2);
+}

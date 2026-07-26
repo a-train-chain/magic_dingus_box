@@ -65,10 +65,12 @@ PlatformProfile profile_for(PiModel model) {
         case PiModel::Pi4:
             p.has_analog_audio = true;
             p.gpiochip_labels = {"pinctrl-bcm2711"};
+            p.rotary_events_per_detent = 2;  // long-shipped default
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
             p.gpiochip_labels = {"pinctrl-rp1"};
+            p.rotary_events_per_detent = 1;  // measured on hardware
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on

@@ -47,6 +47,13 @@ public:
     InputManager();
     ~InputManager();
 
+    // Set how many EV_REL events equal one detent click on this board
+    // (platform::PlatformProfile::rotary_events_per_detent). Values < 1
+    // are ignored so a bad profile can't disable the encoder.
+    void set_rotary_events_per_detent(int events_per_detent) {
+        if (events_per_detent >= 1) rotary_events_per_detent_ = events_per_detent;
+    }
+
     // Initialize - open evdev devices
     bool initialize();
     
@@ -102,6 +109,10 @@ private:
 
     // Rotary encoder state
     int rotary_accumulator_ = 0;
+    // EV_REL events required per UI step — must match how many the
+    // encoder emits per detent on THIS board. Defaults to the historical
+    // Pi 4 value; main() overrides it from the detected PlatformProfile.
+    int rotary_events_per_detent_ = 2;
     std::chrono::steady_clock::time_point last_rotary_event_time_;
 };
 

@@ -585,9 +585,13 @@ std::vector<InputEvent> InputManager::poll() {
             } else if (ev.type == EV_REL) {
                 // Handle Rotary Encoder (REL_X)
                 if (ev.code == REL_X) {
-                    // Software Accumulator to fix sensitivity and "skipping"
-                    // Require accumulating 2 units (one detent click) to trigger 1 step
-                    const int THRESHOLD = 2;
+                    // Software accumulator: require one detent's worth of
+                    // EV_REL events before advancing the UI one step.
+                    // How many that is depends on the board — Pi 4 emits 2
+                    // per detent, Pi 5 emits 1 (measured on hardware
+                    // 2026-07-25). Hardcoding 2 made the Pi 5 advance only
+                    // every OTHER click. Set from PlatformProfile in main().
+                    const int THRESHOLD = rotary_events_per_detent_;
 
                     rotary_accumulator_ += ev.value;
 

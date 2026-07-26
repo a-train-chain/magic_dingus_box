@@ -37,6 +37,18 @@ struct PlatformProfile {
     // (the Pi 5's RP1 chip has shifted between gpiochip4 and gpiochip0
     // across kernel releases).
     std::vector<std::string> gpiochip_labels;
+
+    // How many EV_REL events the rotary encoder emits per physical
+    // detent click. InputManager accumulates this many before advancing
+    // the UI one step, so a mismatch makes the menu move every OTHER
+    // click (too high) or skip items (too low).
+    //   Pi 5: 1  — MEASURED on hardware 2026-07-25 (10 clicks -> exactly
+    //              10 events, all value=+1).
+    //   Pi 4: 2  — the long-shipped default ("accumulate 2 units per
+    //              detent"). NOT re-measured on Pi 4 hardware; kept as-is
+    //              so fielded boxes cannot regress. If you ever bench a
+    //              Pi 4, run the same 10-click count and correct this.
+    int rotary_events_per_detent = 2;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing
