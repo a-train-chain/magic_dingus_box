@@ -218,3 +218,38 @@ TEST_CASE("rotary events-per-detent defaults conservatively on unknown boards") 
     // an unrecognized platform can never regress existing behavior.
     REQUIRE(profile_for(PiModel::Unknown).rotary_events_per_detent == 2);
 }
+
+// ---------------------------------------------------------------
+// Storage mount detection (movie drive present?)
+// ---------------------------------------------------------------
+
+// Real /proc/mounts shape from the Pi 5 with the MOVIES drive attached.
+static const char* kMountsWithDrive =
+    "/dev/mmcblk0p2 / ext4 rw,noatime 0 0\n"
+    "devtmpfs /dev devtmpfs rw,relatime 0 0\n"
+    "/dev/sda1 /mnt/ssd ext4 rw,relatime 0 0\n"
+    "/dev/mmcblk0p1 /boot/firmware vfat rw,relatime 0 0\n";
+
+static const char* kMountsNoDrive =
+    "/dev/mmcblk0p2 / ext4 rw,noatime 0 0\n"
+    "devtmpfs /dev devtmpfs rw,relatime 0 0\n"
+    "/dev/mmcblk0p1 /boot/firmware vfat rw,relatime 0 0\n";
+
+TEST_CASE("is_path_mounted finds the movie drive when attached") {
+    REQUIRE(is_path_mounted(kMountsWithDrive, "/mnt/ssd"));
+}
+
+TEST_CASE("is_path_mounted reports false when the drive is absent") {
+    REQUIRE_FALSE(is_path_mounted(kMountsNoDrive, "/mnt/ssd"));
+}
+
+TEST_CASE("is_path_mounted does not match a prefix of another mount point") {
+    // "/mnt/ssd" must not be satisfied by "/mnt/ssd2" — field-exact only,
+    // or a differently-named drive would masquerade as the movie drive.
+    const char* other = "/dev/sdb1 /mnt/ssd2 ext4 rw,relatime 0 0\n";
+    REQUIRE_FALSE(is_path_mounted(other, "/mnt/ssd"));
+}
+
+TEST_CASE("is_path_mounted handles empty input") {
+    REQUIRE_FALSE(is_path_mounted("", "/mnt/ssd"));
+}

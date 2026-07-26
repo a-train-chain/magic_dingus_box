@@ -4,6 +4,7 @@
 #include "virtual_keyboard.h"
 #include "../utils/config.h"
 #include "../utils/wifi_manager.h"
+#include "../platform/platform_profile.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>  // For std::max
@@ -358,6 +359,14 @@ void SettingsMenuManager::open() {
                 }
             }
             app_state_->media_browser_vpn_configured = found;
+
+            // Is the movie drive attached? The library lives on an
+            // external drive mounted at STORAGE_ROOT (/mnt/ssd); without
+            // it Radarr cannot start, so the Movies row would just vanish
+            // with no explanation. Re-checked on each open, same as the
+            // WireGuard probe above.
+            app_state_->media_browser_storage_present =
+                platform::is_storage_mounted();
         }
 
         // Rebuild the top-level menu on every open() so the "Movies" row
@@ -374,6 +383,13 @@ void SettingsMenuManager::open() {
                 // non-actionable (matches "Content Manager" row pattern below).
                 menu_items_.emplace_back("Movies (configure VPN)", MenuSection::INFO,
                                          "Drop WireGuard config in Content Manager");
+            } else if (!app_state_->media_browser_storage_present) {
+                // Movie drive unplugged. Checked BEFORE vpn_healthy: a
+                // missing drive also takes Radarr down, so both flags trip
+                // — but "connect the drive" is the specific, actionable
+                // cause and the one the owner can actually fix.
+                menu_items_.emplace_back("Movies (drive not connected)", MenuSection::INFO,
+                                         "Connect the movie drive, then restart");
             } else if (!app_state_->media_browser_vpn_healthy) {
                 // Layer 1+2 pass, Layer 3 fail: hide entirely. Toast (fired
                 // in main.cpp) is the user-visible signal; no row rendered

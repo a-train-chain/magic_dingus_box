@@ -85,6 +85,22 @@ enum class SinkChoice {
 std::optional<std::string> resolve_sink(const std::string& pactl_short_sinks,
                                         SinkChoice want);
 
+// --- Storage mount detection -----------------------------------------
+
+// True if `mount_point` appears as a mounted filesystem in the given
+// /proc/mounts content. Matches the mount-point field exactly so
+// "/mnt/ssd" is never satisfied by "/mnt/ssd2".
+bool is_path_mounted(const std::string& proc_mounts_content,
+                     const std::string& mount_point);
+
+// Convenience: read /proc/mounts and test `mount_point`. The Media
+// Browser's movie library lives on an external drive mounted at
+// STORAGE_ROOT (/mnt/ssd); when it is absent Radarr cannot start, so the
+// kiosk shows "Movies (drive not connected)" instead of silently hiding
+// the feature.
+bool is_storage_mounted(const std::string& mount_point = "/mnt/ssd",
+                        const std::string& proc_mounts_path = "/proc/mounts");
+
 // --- GPIO header chip selection --------------------------------------
 
 // Given the labels of /dev/gpiochip0..N (index == chip number) and the

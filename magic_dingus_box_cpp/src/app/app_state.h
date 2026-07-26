@@ -304,6 +304,13 @@ public:
     // "guilty until proven innocent" window.
     std::atomic<bool> media_browser_vpn_healthy{true};
 
+    // Is the external movie drive mounted at STORAGE_ROOT? Refreshed
+    // whenever the settings menu opens. When false the Movies row shows
+    // "drive not connected" instead of disappearing, since a missing
+    // drive also takes Radarr down and would otherwise look like an
+    // unexplained vanishing feature.
+    std::atomic<bool> media_browser_storage_present{true};
+
     // Active top-level screen. Only meaningful when media_browser_unlocked
     // is true; otherwise always MainMenu.
     AppScreen current_screen = AppScreen::MainMenu;

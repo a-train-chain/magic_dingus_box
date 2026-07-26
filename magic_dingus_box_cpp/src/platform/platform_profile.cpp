@@ -120,6 +120,31 @@ std::optional<std::string> resolve_sink(const std::string& pactl_short_sinks,
     return hdmi ? hdmi : analog;
 }
 
+bool is_path_mounted(const std::string& proc_mounts_content,
+                     const std::string& mount_point) {
+    // /proc/mounts lines are "<device> <mount point> <fstype> <opts> ...".
+    // Compare the second field exactly — a prefix match would let
+    // /mnt/ssd2 satisfy a query for /mnt/ssd.
+    std::istringstream iss(proc_mounts_content);
+    std::string line;
+    while (std::getline(iss, line)) {
+        std::istringstream ls(line);
+        std::string device, mp;
+        if (!(ls >> device >> mp)) continue;
+        if (mp == mount_point) return true;
+    }
+    return false;
+}
+
+bool is_storage_mounted(const std::string& mount_point,
+                        const std::string& proc_mounts_path) {
+    std::ifstream f(proc_mounts_path);
+    if (!f.is_open()) return false;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return is_path_mounted(ss.str(), mount_point);
+}
+
 int pick_gpiochip(const std::vector<std::string>& chip_labels,
                   const std::vector<std::string>& wanted_labels) {
     for (const auto& wanted : wanted_labels) {
