@@ -269,10 +269,12 @@ TEST_CASE("video contract is identical across Pi models until Pi 5 is benchmarke
           "[retroarch][video][platform]") {
     // LaunchOptions carries the detected board so Pi-5-specific tuning has
     // a single place to land. The two Pi-4-empirical workarounds
-    // (video_threaded=false, max_swapchain_images=2 — see the comments in
-    // write_video_config) are deliberately kept on BOTH boards until they
-    // are re-benchmarked on the Pi 5's V3D 7.1 Vulkan driver; this test
-    // pins that parity so a divergence is a conscious, tested decision.
+    // (video_threaded=false, max_swapchain_images=2) were RE-BENCHMARKED
+    // on Pi 5 / V3D 7.1 on 2026-07-25 and both were kept: threaded video
+    // still produces a swapchain failure the non-threaded path doesn't
+    // (1 vs 0), and swapchain depth made no measurable difference. See
+    // write_video_config() for the full data. This test pins the parity
+    // so any future divergence stays a conscious, measured decision.
     retroarch::LaunchOptions pi4_options;
     pi4_options.display_mode = app::DisplayMode::MODERN_TV;
     pi4_options.bezel_file = "mdb_kv19.png";

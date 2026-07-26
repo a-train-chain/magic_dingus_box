@@ -115,11 +115,24 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // speed single-threaded anyway. If a specific heavy title ever needs
     // it back, do it per-core, not globally.
     //
-    // Pi 5 note: this workaround (and max_swapchain_images=2 below) was
-    // measured on the Pi 4's V3D 4.2 Vulkan driver. The Pi 5's V3D 7.1
-    // driver may not need either — when a Pi 5 is available to bench,
-    // branch on options.pi_model here and update the parity test in
-    // test_launch_contract.cpp ("identical across Pi models").
+    // Pi 5 RE-BENCHMARKED 2026-07-25 on V3D 7.1 (cooled, 55-59C, no
+    // throttling), pcsx_rearmed, 40s per config:
+    //     threaded=OFF swap=2  ->  0 QueuePresent failures
+    //     threaded=ON  swap=2  ->  1 QueuePresent failure
+    //     threaded=OFF swap=3  ->  0
+    //     threaded=ON  swap=3  ->  1
+    // Threaded video is the only variable that matters; swapchain depth
+    // made no difference at all. The Pi 5 failure is much milder than the
+    // Pi 4's (one transient at the first SET_GEOMETRY resolution change,
+    // swapchain rebuilds, then ~10 further geometry changes with zero
+    // errors — it converges, unlike the Pi 4's runaway loop). But it is
+    // still one failure the non-threaded path does not produce, with no
+    // measured upside for 2D/PS1-class content, so BOTH settings stay as
+    // they are on both boards and the parity test still holds.
+    //
+    // NOT measured: framerate/framepacing. Threaded video may yet be
+    // worth the transient for genuinely heavy cores — re-test with N64
+    // (mupen64plus_next) or Dreamcast (flycast) when those are added.
     out << "video_threaded = \"false\"\n";
     }  // end vulkan-only driver/context block
     out << "video_fullscreen = \"true\"\n";
