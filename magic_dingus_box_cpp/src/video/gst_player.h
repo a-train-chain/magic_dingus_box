@@ -39,6 +39,12 @@ public:
     
     void cleanup() override;
 
+    // Monotonic count of load_file() calls — a "which stream is this"
+    // token. GstRenderer's StreamGate compares it across render ticks to
+    // suppress drawing the PREVIOUS stream's leftover frame while the
+    // new pipeline decodes its first one. 0 = nothing ever loaded.
+    uint64_t stream_generation() const { return stream_generation_; }
+
     // Set PulseAudio device on the audio sink (e.g. sink name)
     // Must be called after initialize(). Also stored for pipeline re-creation.
     void set_audio_device(const std::string& pulse_device);
@@ -72,6 +78,7 @@ private:
     // Deferred decoder inspection (counts down frames after playback starts)
     int decoder_inspect_frames_;
     bool decoder_inspected_ = false;  // Guard to run decoder inspection only once per pipeline
+    uint64_t stream_generation_ = 0;  // Bumped by every load_file(); see stream_generation()
 
     // QoS warning rate-limiter state (v1.6.x). GStreamer emits one QOS
     // bus message per late frame, each carrying the running total. Without

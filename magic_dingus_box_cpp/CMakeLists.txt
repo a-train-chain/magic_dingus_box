@@ -484,6 +484,17 @@ if(PLATFORM_TEST_SOURCES)
     add_test(NAME PlatformUnit COMMAND test_platform_unit)
 endif()
 
+# Stream-gate tests — stale-frame suppression between video streams.
+# Pure logic, no GL/GStreamer deps, runs on Mac.
+file(GLOB VIDEO_TEST_SOURCES "tests/video/*.cpp")
+if(VIDEO_TEST_SOURCES)
+    add_executable(test_video_unit ${VIDEO_TEST_SOURCES})
+    target_include_directories(test_video_unit PRIVATE src)
+    target_link_libraries(test_video_unit PRIVATE Catch2::Catch2WithMain)
+    target_compile_options(test_video_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME VideoUnit COMMAND test_video_unit)
+endif()
+
 # Phone remote tests
 file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
 if(PHONE_REMOTE_TEST_SOURCES)

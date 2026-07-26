@@ -447,6 +447,12 @@ bool GstPlayer::load_file(const std::string& path, double start, double /*end*/,
     stop();
     decoder_inspected_ = false;  // Re-inspect decoder for new media
 
+    // New stream boundary. stop() above flushed the appsink (pipeline to
+    // NULL), so any sample the renderer pulls after this bump belongs to
+    // the new stream. Bumped even if the load later fails — the previous
+    // stream's frame must not linger over an error state either.
+    ++stream_generation_;
+
     // Reset the QoS rate-limiter — the new file's pipeline starts with
     // a fresh dropped-frames counter (running total starts at 0), so
     // any "dropped" reading after this is genuinely from the new media.

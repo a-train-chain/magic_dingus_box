@@ -7,6 +7,8 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 
+#include "stream_gate.h"
+
 namespace video {
 
 class GstPlayer;
@@ -129,6 +131,13 @@ private:
     bool aspect_preserve_ = true;  // When false, stretch to fill (CRT_NATIVE behavior)
     bool swap_uv_ = false; // Swap U/V planes (fix for red video)
     bool frame_dirty_ = false;  // Set when new frame arrives from appsink
+
+    // Suppresses drawing across stream boundaries: the textures hold the
+    // PREVIOUS video's last frame until the new stream's first sample
+    // uploads, and painting them flashes that stale frame (the intro
+    // reappearing before a movie starts). See stream_gate.h.
+    StreamGate stream_gate_;
+    int suppressed_ticks_ = 0;  // Diagnostics: black frames drawn this boundary
     bool textures_allocated_ = false;  // Track if textures have been allocated
     int allocated_width_ = 0;
     int allocated_height_ = 0;

@@ -118,6 +118,10 @@ void GstRenderer::reset_gl() {
     // After an external app (like RetroArch) takes over the EGL context,
     // our GL resources are invalid. Delete them and mark for lazy re-init.
     LOG_DEBUG("GstRenderer: Resetting GL resources after external context takeover");
+
+    // Recreated textures hold undefined contents — suppress drawing until
+    // a real frame uploads (this was the "green rectangle" artifact).
+    stream_gate_.on_gl_reset();
     
     if (gl_initialized_) {
         // These resources may be invalid but try to delete for cleanliness
@@ -294,9 +298,47 @@ void GstRenderer::render() {
     // Pull sample (non-blocking)
     GstSample* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(appsink_), 0);
 
+    // Ask the gate BEFORE drawing: across a stream boundary the textures
+    // still hold the PREVIOUS video's last frame, and painting them here
+    // is what flashed the intro before movies. Repeat frames of the SAME
+    // stream must still draw (24/30fps content on a 60Hz loop).
+    const bool draw_allowed = stream_gate_.on_render_tick(
+        player_ != nullptr ? player_->stream_generation() : 0,
+        sample != nullptr);
+
     if (sample) {
         upload_frame(sample);
         gst_sample_unref(sample);
+    }
+
+    if (!draw_allowed) {
+        // Paint black instead of the stale quad. An explicit clear is
+        // required — skipping the draw would leave whatever the swap
+        // chain's back buffer held two frames ago, which is the same
+        // stale image. Scissor to the inset rect when one is active so
+        // Marquee playback's wood-frame overlay region isn't wiped.
+        if (render_inset_w_ > 0 && render_inset_h_ > 0) {
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(render_inset_x_, render_inset_y_,
+                      render_inset_w_, render_inset_h_);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+        } else {
+            glViewport(0, 0, static_cast<GLsizei>(width_),
+                       static_cast<GLsizei>(height_));
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        ++suppressed_ticks_;
+        return;
+    }
+
+    if (suppressed_ticks_ > 0) {
+        LOG_INFO("GstRenderer: new stream's first frame arrived after {} "
+                 "suppressed tick(s) — stale-frame flash prevented",
+                 suppressed_ticks_);
+        suppressed_ticks_ = 0;
     }
 
     render_quad();
