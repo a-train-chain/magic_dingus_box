@@ -99,6 +99,16 @@ namespace {
         std::string l_x_minus = "-0";
         std::string l_y_plus = "+1";
         std::string l_y_minus = "-1";
+
+        // Right analog stick. Empty = not emitted (every core the kiosk
+        // shipped before N64 was single-stick). Needed for N64, whose
+        // four C-buttons live on the RetroPad right stick by convention
+        // in mupen64plus_next / parallel_n64 — there is nowhere else to
+        // put them on a modern pad without stealing the face buttons.
+        std::string r_x_plus = "";
+        std::string r_x_minus = "";
+        std::string r_y_plus = "";
+        std::string r_y_minus = "";
         
         // D-Pad Axis Mappings (Explicit Analog-to-Dpad)
         std::string up_axis = "";
@@ -447,6 +457,63 @@ namespace {
             map.r_btn      = "5"; // R1 -> RetroPad R -> arcade 6 (HK)
             map.select_btn = "8";
             map.start_btn  = "9";
+
+        } else if (core_name.find("mupen64plus") != std::string::npos ||
+                   core_name.find("parallel_n64") != std::string::npos) {
+            // ---- Nintendo 64 -------------------------------------------
+            // The N64 pad has no modern equivalent: one analog stick, a
+            // D-pad, A/B, Z (underside trigger), L/R shoulders, Start, and
+            // a four-button C cluster. mupen64plus_next / parallel_n64
+            // expect the C buttons on the RetroPad RIGHT STICK, which is
+            // why ControllerMapping grew r_*_ fields.
+            //
+            // UNVALIDATED ON HARDWARE — button feel needs a real pad and a
+            // real ROM. Treat these as a considered starting point, not a
+            // finished mapping; verify before shipping.
+            map.name = "Nintendo 64 (PS-style)";
+            map.analog_dpad_mode = "0";   // real analog stick, not dpad-emulation
+
+            map.b_btn  = "2";   // Cross    -> RetroPad B -> N64 A (jump/confirm)
+            map.a_btn  = "1";   // Circle   -> RetroPad A -> N64 B (secondary)
+            map.l_btn  = "4";   // L1       -> N64 L
+            map.r_btn  = "5";   // R1       -> N64 R
+            map.l2_btn = "6";   // L2       -> N64 Z trigger (the underside one)
+            map.start_btn = "9";
+
+            // Left stick = N64 analog stick (1:1, no dpad emulation).
+            map.l_x_plus = "+0"; map.l_x_minus = "-0";
+            map.l_y_plus = "+1"; map.l_y_minus = "-1";
+            // Right stick = C-button cluster.
+            map.r_x_plus = "+2"; map.r_x_minus = "-2";
+            map.r_y_plus = "+3"; map.r_y_minus = "-3";
+            // D-pad stays on the hat; don't also drive it from the stick,
+            // or analog input would double as D-pad presses in-game.
+            map.up_axis = ""; map.down_axis = ""; map.left_axis = ""; map.right_axis = "";
+            map.up_btn = "h0up"; map.down_btn = "h0down";
+            map.left_btn = "h0left"; map.right_btn = "h0right";
+
+        } else if (core_name.find("flycast") != std::string::npos) {
+            // ---- Sega Dreamcast ----------------------------------------
+            // Maps cleanly onto a modern pad: A/B/X/Y, one analog stick,
+            // two analog triggers, Start. No Select — the DC controller
+            // genuinely has no equivalent, so it is left unbound.
+            //
+            // UNVALIDATED ON HARDWARE — see the N64 note above.
+            map.name = "Dreamcast (PS-style)";
+            map.analog_dpad_mode = "0";
+
+            map.b_btn  = "2";   // Cross    -> DC A
+            map.a_btn  = "1";   // Circle   -> DC B
+            map.y_btn  = "3";   // Square   -> DC X
+            map.x_btn  = "0";   // Triangle -> DC Y
+            map.l2_btn = "6";   // L2 -> DC left trigger (analog)
+            map.r2_btn = "7";   // R2 -> DC right trigger (analog)
+            map.start_btn = "9";
+
+            map.l_x_plus = "+0"; map.l_x_minus = "-0";
+            map.l_y_plus = "+1"; map.l_y_minus = "-1";
+            map.up_btn = "h0up"; map.down_btn = "h0down";
+            map.left_btn = "h0left"; map.right_btn = "h0right";
         }
         // else: leave map with defaults — shouldn't happen because every
         // shipped core matches one of the branches above.
@@ -961,7 +1028,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "input_player1_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
             script_file << "input_player1_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
             script_file << "input_player1_l_y_minus_axis = \"" << map.l_y_minus << "\"\n";
-            
+            // Right stick — only emitted when a mapping supplies it (N64
+            // C-buttons). Emitting empty values would unbind the stick.
+            if (!map.r_x_plus.empty()) {
+                script_file << "input_player1_r_x_plus_axis = \"" << map.r_x_plus << "\"\n";
+                script_file << "input_player1_r_x_minus_axis = \"" << map.r_x_minus << "\"\n";
+                script_file << "input_player1_r_y_plus_axis = \"" << map.r_y_plus << "\"\n";
+                script_file << "input_player1_r_y_minus_axis = \"" << map.r_y_minus << "\"\n";
+            }
+
             // 5. Apply D-Pad Axis Mappings
             script_file << "input_player1_up_axis = \"" << map.up_axis << "\"\n";
             script_file << "input_player1_down_axis = \"" << map.down_axis << "\"\n";
