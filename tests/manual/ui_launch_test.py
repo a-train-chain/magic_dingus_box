@@ -45,7 +45,18 @@ def sm(field, default=None):
     return node.get(field, s.get(field, default))
 
 def screen():
-    return status().get("screen", "")
+    """Current kiosk screen, or "" if the status file is STALE.
+
+    kiosk_status.json survives a kiosk restart, so a naive read returns
+    the PREVIOUS run's screen instantly and any "wait until ready" loop
+    gets a false positive. The kiosk rewrites this file at 5 Hz, so a ts
+    older than a couple of seconds means nobody is publishing it.
+    """
+    s = status()
+    ts = s.get("ts")
+    if ts is None or (time.time() - float(ts)) > 3.0:
+        return ""
+    return s.get("screen", "")
 
 def retroarch_core():
     try:

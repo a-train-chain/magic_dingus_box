@@ -566,6 +566,14 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
     std::vector<std::string> cmd = {
         retroarch_bin_.value(),
         "--config", "/tmp/retroarch_mdb.cfg",
+        // --appendconfig is applied AFTER the main config, so anything in
+        // here always wins. Needed because RetroArch can end up with its
+        // own defaults in the base file, and it takes the LAST value for
+        // a duplicated key — that silently clobbered our
+        // input_exit_emulator="z" with its default "escape", which is why
+        // the phone remote's QUIT_GAME chord did nothing in-game
+        // (verified on hardware 2026-07-26).
+        "--appendconfig", "/tmp/retroarch_mdb_override.cfg",
         "-L", core_name,
         game_info.rom_path,
         "--verbose"
@@ -758,6 +766,17 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // RetroArch's per-core .opt files override core_options_path
             script_file << "rm -f \"$HOME/.config/retroarch/config/PCSX-ReARMed/PCSX-ReARMed.opt\" 2>/dev/null\n";
             
+            // Override file, applied via --appendconfig AFTER the main
+            // config so these can never be clobbered by RetroArch's own
+            // defaults (see the --appendconfig note where cmd is built).
+            script_file << "cat > \"/tmp/retroarch_mdb_override.cfg\" << 'EOF'\n";
+            {
+                std::ostringstream remote_quit;
+                retroarch::write_remote_quit_config(remote_quit);
+                script_file << remote_quit.str();
+            }
+            script_file << "EOF\n";
+
             // Write the FULL config to our ISOLATED config location
             script_file << "cat > \"$UI_CONFIG\" << 'EOF'\n";
             script_file << "# DRM/KMS RetroArch config for Magic Dingus Box (Isolated)\n";
