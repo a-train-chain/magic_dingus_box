@@ -311,6 +311,13 @@ void Controller::update_state(AppState& state) {
         // This prevents resetting during playlist switches
         if (state.current_playlist_index < 0) {
             state.current_item_index = -1;
+            // Clear the published now-playing info too, so the phone
+            // remote doesn't keep showing a track that has stopped.
+            // Only on a real stop — the else-branch below is a playlist
+            // switch, where the next item overwrites these immediately.
+            state.now_playing_title.clear();
+            state.now_playing_subtitle.clear();
+            state.now_playing_kind.clear();
         } else {
             // If we have a valid playlist index but video stopped, keep the index
             // This handles the case where we're switching playlists
@@ -395,6 +402,24 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
     }
 
     const auto& item = playlist.items[item_index];
+
+    // Publish "what is playing" for StatusWriter -> kiosk_status.json ->
+    // the phone remote. These AppState fields were declared and
+    // serialized but never assigned anywhere, so remote.js's
+    // `np.title || '—'` always rendered the em-dash and the header fell
+    // back to the literal "Playlist". Set here because every playlist
+    // path (select, auto-advance, next/prev, retry-after-failed-load)
+    // funnels through this function.
+    state.current_playlist_name = playlist.title;
+    state.current_item_count    = static_cast<int>(playlist.items.size());
+    state.now_playing_title     = item.title;
+    if (item.source_type == "emulated_game") {
+        state.now_playing_kind     = "game";
+        state.now_playing_subtitle = item.emulator_system;
+    } else {
+        state.now_playing_kind     = "video";
+        state.now_playing_subtitle = item.artist;
+    }
 
     // Check for Master Shuffle (index 0 in playlist 0)
     if (playlist.title == "Master Shuffle") {
