@@ -71,6 +71,9 @@ PlatformProfile profile_for(PiModel model) {
             p.has_analog_audio = false;
             p.gpiochip_labels = {"pinctrl-rp1"};
             p.rotary_events_per_detent = 1;  // measured on hardware
+            // 1122MB free during 1080p playback with the stack running
+            // — pausing buys nothing and causes the post-movie flicker.
+            p.pause_services_during_movie = false;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on

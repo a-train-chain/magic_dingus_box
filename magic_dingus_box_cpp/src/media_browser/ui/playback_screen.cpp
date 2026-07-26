@@ -98,8 +98,20 @@ void PlaybackScreen::enter() {
     // because (a) the script is fixed-path / not derived from any
     // user-controllable input, (b) we don't care about the exit code
     // beyond a debug log line, (c) the script itself is idempotent.
-    (void)std::system(
-        "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
+    //
+    // Platform-gated: only boards that actually need the memory pay the
+    // cost. On Pi 5 there is 1122MB free of 2006MB during 1080p playback
+    // with the whole stack running (measured 2026-07-26), so pausing
+    // reclaims memory we don't need while the 20-40s restart on exit
+    // shows the user a false "tunnel down" toast and a blank library
+    // grid. Pi 4B still pauses — it genuinely needed it.
+    if (state_.platform_profile.pause_services_during_movie) {
+        (void)std::system(
+            "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
+    } else {
+        spdlog::info("[playback] skipping service pause "
+                     "(platform has memory headroom)");
+    }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
     // strategy in path_resolver. The path is already host-absolute (passed
@@ -191,10 +203,12 @@ void PlaybackScreen::leave() {
     }
 
     // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
-    // froze in enter(). Unconditional — the helper itself is idempotent
-    // (a no-op for un-paused or missing containers). We don't gate on a
-    // "we paused them" flag the way we do for qBit because the worst
-    // case (un-pausing something that was already running) is harmless.
+    // froze in enter(). Deliberately left UNCONDITIONAL even though
+    // enter() is now platform-gated: the helper is idempotent (a no-op
+    // for un-paused or missing containers), and keeping it unconditional
+    // means a box that was paused by an older build — or by the game
+    // quiet-mode path — always gets recovered. The worst case
+    // (un-pausing something already running) is harmless.
     (void)std::system(
         "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
 

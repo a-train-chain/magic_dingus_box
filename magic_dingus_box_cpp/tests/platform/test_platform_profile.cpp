@@ -253,3 +253,28 @@ TEST_CASE("is_path_mounted does not match a prefix of another mount point") {
 TEST_CASE("is_path_mounted handles empty input") {
     REQUIRE_FALSE(is_path_mounted("", "/mnt/ssd"));
 }
+
+// ---------------------------------------------------------------
+// Movie-playback service pause (Radarr/Prowlarr/Byparr)
+// ---------------------------------------------------------------
+
+TEST_CASE("Pi 5 does NOT pause media services during movie playback") {
+    // The pause exists purely to reclaim ~320MB (Radarr ~155 + Prowlarr
+    // ~165) on the memory-constrained Pi 4B. Measured on Pi 5
+    // 2026-07-26: 1122MB of 2006MB still available during 1080p
+    // playback WITH the whole Docker stack running — the pause buys
+    // nothing and costs a visible bug (20-40s container restart on exit
+    // produces a false "tunnel down" toast and a blank library grid).
+    REQUIRE_FALSE(profile_for(PiModel::Pi5).pause_services_during_movie);
+}
+
+TEST_CASE("Pi 4 keeps pausing media services during movie playback") {
+    // Pi 4B genuinely needed it: hardware-decoder DMA buffers plus the
+    // Docker stack produced "frozen frame, then 5-second catch-up burst".
+    // Fielded boxes must not regress.
+    REQUIRE(profile_for(PiModel::Pi4).pause_services_during_movie);
+}
+
+TEST_CASE("unknown boards keep the pause (conservative default)") {
+    REQUIRE(profile_for(PiModel::Unknown).pause_services_during_movie);
+}

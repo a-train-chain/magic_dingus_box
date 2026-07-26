@@ -49,6 +49,21 @@ struct PlatformProfile {
     //              so fielded boxes cannot regress. If you ever bench a
     //              Pi 4, run the same 10-click count and correct this.
     int rotary_events_per_detent = 2;
+
+    // Stop Radarr/Prowlarr/Byparr while a MOVIE plays? Purely a memory
+    // tactic from the Pi 4B, where the hardware decoder's DMA buffers
+    // plus the Docker stack caused "frozen frame, then 5-second
+    // catch-up burst". It frees ~320MB but costs a 20-40s container
+    // restart on exit, which surfaces as a false "tunnel down" toast
+    // and a blank library grid.
+    //   Pi 4: true  — genuinely needed, fielded behavior preserved.
+    //   Pi 5: false — MEASURED 2026-07-26: 1122MB of 2006MB still free
+    //                 during 1080p playback with the full stack up, so
+    //                 the pause buys nothing and only causes the bug.
+    // NOTE: this governs MOVIE playback only. Game launches keep their
+    // pause unconditionally (GameQuietMode in main.cpp) — that one also
+    // frees CPU, which CPU-bound emulators genuinely benefit from.
+    bool pause_services_during_movie = true;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing
