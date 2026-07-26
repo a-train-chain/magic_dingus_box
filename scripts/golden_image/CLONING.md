@@ -203,6 +203,20 @@ the first Pi 5 golden image:
   a single x264 encode. Decode-only playback is fine even throttled
   (1080p30 H.264 measured 6.1x realtime), but RetroArch-class
   sustained load needs the Active Cooler + enclosure airflow.
+  With the Active Cooler fitted, idle dropped to ~55 °C.
+- **Emulation overclock (validated 2026-07-26, in the shipping
+  enclosure with Active Cooler)**: `arm_freq=2600` + `v3d_freq=1000`
+  under a `[pi5]` filter. N64/Dreamcast are CPU-bound so clock ≈
+  emulation speed; this is +8% CPU for free.
+  - `2800` + `over_voltage_delta=50000` **FAILS** — 85 °C and
+    throttling within 4 min, clock sagging 2800→2601. The *overvolt*
+    is the problem, not the clock (power ~ V²×f); dropping it bought
+    back 6-7 °C.
+  - `2600` at **stock voltage** passes: stress-ng all-4-core worst
+    case peaked 80.1 °C and NEVER throttled; real PS1 emulation
+    peaked 63.1 °C / steady 59.3 °C — 22 °C below the 85 °C limit.
+  - Re-validate on the first production units: silicon varies board
+    to board, and a marginal overclock fails as random instability.
 - **`rotary-encoder` overlay**: NOT scripted anywhere — it is baked
   into the Pi 4 golden image's config.txt by hand. Captured from the
   production Pi 4B (2026-07-22); use this exact line:
