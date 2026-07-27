@@ -177,7 +177,13 @@ a { text-decoration: none; color: inherit; }
 .src { margin-left: auto; color: var(--dim); letter-spacing: .10em; font-size: 8px; }
 
 .art { flex: 1 1 auto; display: flex; align-items: center; gap: 14px; padding: 12px 2px 6px; }
-.artcube { width: 96px; height: 96px; flex: none; opacity: .95; }
+/* The real mark is 86x98 (a true isometric cube), so it must be sized on that
+   ratio — a square box would letterbox it and shift it off-centre. Sizing by
+   HEIGHT keeps the panel row's height governed by this element exactly as
+   before; the width drops 96 -> 84, which hands 12px back to the title.
+   opacity carries the watermark weight: the mark is drawn as filled outlines
+   rather than the old strokes, so it reads slightly denser at equal alpha. */
+.artcube { width: 84px; height: 96px; flex: none; color: var(--fg); opacity: .13; }
 .arttext { min-width: 0; }
 .kind { font-size: 8px; letter-spacing: .12em; color: var(--accent); }
 .big {
@@ -337,8 +343,14 @@ a { text-decoration: none; color: inherit; }
          width: var(--dpad); height: var(--dpad); }
 /* the etch is a TRUE regular hexagon (all six sides equal in a 240
    viewBox), so it must render in a SQUARE box or the projection skews */
-.etch { position: absolute; left: -14px; top: -14px;
-        width: calc(var(--dpad) + 28px); height: calc(var(--dpad) + 28px); opacity: .9; }
+/* Aspect-correct (86:98) and centred on the pad. The old square box let the
+   hand-drawn hexagon render 168x194 inside a 224 square; matching that
+   footprint with the real mark means height = --dpad and width = --dpad *
+   86/98, with the leftover (1 - 0.8776)/2 = 0.0612 split as a left offset so
+   the cube's vertical axis lands exactly on the pad's centre column. */
+.etch { position: absolute; top: 0; left: calc(var(--dpad) * 0.0612);
+        width: calc(var(--dpad) * 0.8776); height: var(--dpad);
+        color: var(--fg); opacity: .13; }
 .dpad { position: relative; width: var(--dpad); height: var(--dpad); }
 .d, .ok {
   position: absolute; background: linear-gradient(180deg, #39323A, #241F25);
@@ -464,7 +476,7 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
    controls get pushed off the bottom. Verified: 649 of 667 used. */
 @media (max-height: 700px) {
   .mark img { width: 186px; }
-  .artcube { width: 62px; height: 62px; }
+  .artcube { width: 54px; height: 62px; }
   .art { padding: 6px 2px 4px; gap: 10px; }
   .big { font-size: 15px; }
   .disp { margin: 10px 0 12px; padding: 10px 12px 11px; }
@@ -544,7 +556,7 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
   .mark img { width: 150px; }
   .mark { margin-top: 0; }
   .rule { display: none; }
-  .artcube { width: 64px; height: 64px; }
+  .artcube { width: 56px; height: 64px; }
   .big { font-size: 15px; }
   .g { font-size: 12px; }
   .lk, .lv { font-size: 8px; }
