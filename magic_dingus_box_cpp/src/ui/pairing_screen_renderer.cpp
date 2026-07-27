@@ -11,6 +11,7 @@
 #include "pairing_screen_renderer.h"
 #include "renderer.h"
 #include "pairing_screen.h"
+#include "pairing_url.h"
 #include "theme.h"
 #include "font_manager.h"
 
@@ -55,7 +56,9 @@ std::vector<PairedDevice> load_paired_devices(const std::string& path) {
 // ---------------------------------------------------------------------------
 
 void Renderer::render_pairing_screen(const PairingScreen& ps,
-                                     const std::vector<PairedDevice>& paired_devices) {
+                                     const std::vector<PairedDevice>& paired_devices,
+                                     const std::string& lan_ip,
+                                     const std::string& hostname) {
     const float vw = static_cast<float>(width_);
     const float vh = static_cast<float>(height_);
 
@@ -76,8 +79,17 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
     float qr_x    = (vw - qr_size) / 2.0f;
     float qr_y    = 120.0f;
     {
-        std::string url = "http://magicpi.local:5000/?pair=" + ps.current_code() + "&tab=remote";
-        render_qr_code(url, qr_x, qr_y, qr_size, 1.0f);
+        // Built from the box's ACTUAL address. This was hardcoded to
+        // "http://magicpi.local:5000/..." — a host that exists only on a
+        // Pi named exactly "magicpi", while first_boot.sh names every
+        // clone "magicpi-XXXX". The phone could not resolve it, no request
+        // ever reached the server, and the pairing audit log stayed empty
+        // with nothing to diagnose from. See ui/pairing_url.h.
+        const std::string url =
+            ui::build_pairing_url(lan_ip, hostname, ps.current_code());
+        if (!url.empty()) {
+            render_qr_code(url, qr_x, qr_y, qr_size, 1.0f);
+        }
     }
 
     // ---- 6-digit code -------------------------------------------------------
@@ -105,6 +117,18 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
         float sx = (vw - static_cast<float>(sw)) / 2.0f;
         float sy = code_y + 36.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
         draw_text(s, sx, sy, theme_->font_small_size, theme_->dim);
+
+        // The address in plain text. A QR is a single point of failure —
+        // bad lighting, a cracked lens, or a camera app that refuses
+        // http:// links all leave the operator stuck with no way in.
+        // Showing where to go makes a failed scan recoverable.
+        const std::string addr = ui::pairing_display_host(lan_ip, hostname);
+        if (!addr.empty()) {
+            int aw = body_font_manager_->get_text_width(addr, theme_->font_small_size);
+            float ax = (vw - static_cast<float>(aw)) / 2.0f;
+            float ay = sy + 26.0f;
+            draw_text(addr, ax, ay, theme_->font_small_size, theme_->dim);
+        }
     }
 
     // ---- Paired devices list ------------------------------------------------

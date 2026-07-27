@@ -425,8 +425,12 @@ private:
     // Phone Remote pairing screen — implemented in pairing_screen_renderer.cpp.
     // Draws QR code, 6-digit code, expiry countdown, and paired-devices list
     // on a full-screen overlay that replaces the regular settings panel.
+    // lan_ip/hostname decide the QR target — see ui/pairing_url.h for why
+    // this is passed in rather than hardcoded.
     void render_pairing_screen(const PairingScreen& ps,
-                               const std::vector<PairedDevice>& paired_devices);
+                               const std::vector<PairedDevice>& paired_devices,
+                               const std::string& lan_ip,
+                               const std::string& hostname);
     
     // Helper: format time as MM:SS
     std::string format_time(double seconds);

@@ -401,7 +401,21 @@ The phone's OS-keyboard "Search/Enter" key only dismisses the OS keyboard via `i
 
 ### Pairing flow
 
-`Settings → Phone Remote` on the kiosk shows a QR code and 6-digit code. Phone scans → opens `/pair?code=NNNNNN` → backend writes a paired-device record + sets HMAC-signed cookie. Pairings persist in `data/paired_remotes.json` (excluded from deploy rsync). The Flask process's HMAC secret lives in `data/flask_secret.key` (also excluded — wiping it would invalidate all paired phones).
+`Settings → Phone Remote` on the kiosk shows a QR code, a 6-digit code,
+and the box's address in plain text (so a failed scan is recoverable).
+**The QR target is built at runtime from the box's real address**
+(`ui/pairing_url.h`), preferring the LAN IP over `<hostname>.local` —
+mDNS is the fragile link (inconsistent Android support, routers that
+block multicast) while a literal IP works for any phone on the subnet,
+and a code lives ~2 min so the IP cannot go stale inside that window.
+This was hardcoded to `http://magicpi.local:5000/...` until 2026-07-26,
+which resolved on no box except one literally named `magicpi` — and
+`first_boot.sh` names every clone `magicpi-XXXX`, so pairing was broken
+on **every shipped unit**, silently: the phone could not resolve the
+host, so no request ever reached the server and `pairing_audit.log`
+stayed empty with nothing to diagnose from. If pairing ever fails again,
+check that log first — entries mean the phone reached the box (a code or
+auth problem); no entries mean it never arrived (address or network). Phone scans → opens `/pair?code=NNNNNN` → backend writes a paired-device record + sets HMAC-signed cookie. Pairings persist in `data/paired_remotes.json` (excluded from deploy rsync). The Flask process's HMAC secret lives in `data/flask_secret.key` (also excluded — wiping it would invalidate all paired phones).
 
 ## Additional Documentation
 

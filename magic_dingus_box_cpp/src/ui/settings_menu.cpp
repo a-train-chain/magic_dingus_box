@@ -1,4 +1,5 @@
 #include "settings_menu.h"
+#include <unistd.h>
 #include "pairing_screen.h"
 #include "toast.h"
 #include "virtual_keyboard.h"
@@ -20,6 +21,13 @@
 #include "../app/settings_persistence.h"
 
 namespace ui {
+
+// Defined further down in this namespace; declared here because
+// open_pairing_screen() appears earlier in the file and needs it to
+// resolve the box's real address for the pairing QR. Must be inside
+// namespace ui — a global-scope declaration binds to a different symbol
+// and fails at link time.
+static std::string get_interface_ipv4(const char* iface_name);
 
 SettingsMenuManager::SettingsMenuManager(app::AppState* state)
     // Init order MUST match the declaration order in the header
@@ -642,6 +650,23 @@ PairingScreen* SettingsMenuManager::pairing_screen() {
 void SettingsMenuManager::open_pairing_screen() {
     pairing_active_ = true;
     pairing_screen()->regenerate();
+
+    // Refresh the address the QR encodes. This MUST be read live rather
+    // than hardcoded: the QR used to point at a literal "magicpi.local",
+    // which exists only on a box named exactly that — and first_boot.sh
+    // names every cloned Pi "magicpi-XXXX", so the QR resolved to nothing
+    // on every shipped unit and the phone failed silently.
+    if (app_state_) {
+        std::string ip = get_interface_ipv4("wlan0");
+        if (ip.empty()) ip = get_interface_ipv4("eth0");
+        if (ip.empty()) ip = get_interface_ipv4("usb0");
+        app_state_->lan_ip = ip;
+
+        char host[256] = {0};
+        if (gethostname(host, sizeof(host) - 1) == 0) {
+            app_state_->hostname = host;
+        }
+    }
 }
 
 void SettingsMenuManager::close_pairing_screen() {

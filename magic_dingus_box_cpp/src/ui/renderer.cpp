@@ -1308,7 +1308,8 @@ void Renderer::render(app::AppState& state) {
                 config::get_data_path() + "/paired_remotes.json");
             ui::PairingScreen* ps = state.settings_menu->pairing_screen();
             if (ps) {
-                render_pairing_screen(*ps, cached_devices);
+                render_pairing_screen(*ps, cached_devices,
+                                      state.lan_ip, state.hostname);
             }
         } else {
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);

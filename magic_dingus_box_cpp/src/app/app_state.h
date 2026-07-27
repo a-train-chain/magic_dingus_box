@@ -788,6 +788,13 @@ public:
     std::string usb_url;            // USB URL (always http://192.168.7.1:5000)
     std::string content_manager_url; // Currently displayed URL (changes based on menu selection)
 
+    // Address the Phone Remote pairing QR should point at. Refreshed when
+    // the pairing screen opens, because the QR is only valid for the ~2
+    // minutes the code lives and the box may have changed IP since boot.
+    // Empty lan_ip falls back to <hostname>.local — see ui/pairing_url.h.
+    std::string lan_ip;
+    std::string hostname;
+
     // How many playlist rows the renderer is currently showing on screen.
     // Computed per-frame in render_playlist_list from height_ + item_height
     // and written here so main.cpp's input handler scrolls only when the
