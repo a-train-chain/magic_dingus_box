@@ -154,24 +154,56 @@ a { text-decoration: none; color: inherit; }
 .fil { height: 100%; background: linear-gradient(90deg, var(--accent), var(--hot)); }
 
 /* ── control cluster ───────────────────────────────────────────── */
-/* 288px wide, centred: (346 panel interior - 288) / 2 = 29px each side.
-   Geometry is absolute so the alignments are exact, not eyeballed:
-   MENU shares the GREEN key's column, and MENU's bottom edge lands on the
-   up-arrow's centre line. */
-.ctrl { position: relative; width: 288px; margin: 0 auto; flex: 0 0 366px; height: 366px; }
+/* Geometry is driven by four custom properties so the whole cluster
+ * rescales coherently per screen size while the ALIGNMENT RELATIONSHIPS
+ * survive untouched:
+ *     row width      = cap*3 + gap*2
+ *     MENU column    = flush with the GREEN key (row width - cap)
+ *     MENU bottom    = the up-arrow's CENTRE line
+ *     pad            = sits on the cluster floor
+ * Change --cap/--gap/--dpad/--arm and everything below follows.
+ */
+.ctrl {
+  --cap: 84px;          /* square keycap edge            */
+  --gap: 18px;          /* gap between the top-row keys  */
+  --dpad: 196px;        /* d-pad bounding box            */
+  --arm: 60px;          /* d-pad arm                     */
+  --vgap: 26px;         /* GREEN -> MENU vertical gap.
+                           Must clear the 5px well ring on BOTH caps or
+                           the two keys visually fuse into one column. */
+  --roww: calc(var(--cap) * 3 + var(--gap) * 2);
+  /* Cluster height = glyph strip + the two cap rows + the pad, measured
+     down to the pad's floor. --dpadtop subtracts --dpad and --menutop
+     adds --arm/2 back, so --arm/2 must be SUBTRACTED here or it lands
+     twice and the box carries --arm px of phantom height above the
+     glyphs (measured: 64px of dead air under the panel at 390w). Every
+     control keeps its absolute position; the panel reclaims the space. */
+  --clusterh: calc(var(--dpad) - var(--arm) / 2 + var(--cap) * 2 + var(--vgap) + 26px);
+  --dpadtop: calc(var(--clusterh) - var(--dpad));
+  --menutop: calc(var(--dpadtop) + var(--arm) / 2 - var(--cap));
+  --rowtop: calc(var(--menutop) - var(--vgap) - var(--cap));
 
-.glyphs { position: absolute; top: 40px; left: 0; width: 288px;
-          display: grid; grid-template-columns: repeat(3, 84px); gap: 18px; }
+  position: relative; width: var(--roww); margin: 0 auto;
+  flex: 0 0 var(--clusterh); height: var(--clusterh);
+}
+
+.glyphs {
+  position: absolute; top: calc(var(--rowtop) - 22px); left: 0; width: var(--roww);
+  display: grid; grid-template-columns: repeat(3, var(--cap)); gap: var(--gap);
+}
 .g  { text-align: center; font-size: 15px; line-height: 1; letter-spacing: 1px; }
 .gy { color: var(--accent) } .gr { color: var(--hot) } .gg { color: var(--success) }
 
-.row3 { position: absolute; top: 62px; left: 0; width: 288px;
-        display: grid; grid-template-columns: repeat(3, 84px); gap: 18px; }
+.row3 {
+  position: absolute; top: var(--rowtop); left: 0; width: var(--roww);
+  display: grid; grid-template-columns: repeat(3, var(--cap)); gap: var(--gap);
+}
 
 /* square caps in routed pockets */
 .cap {
-  position: relative; width: 84px; height: 84px; border-radius: 0;
-  display: flex; align-items: flex-start; justify-content: center; padding-top: 18px;
+  position: relative; width: var(--cap); height: var(--cap); border-radius: 0;
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: calc(var(--cap) * 0.22);
   box-shadow: 0 0 0 5px var(--well), 0 5px 0 5px rgba(0,0,0,.6), 0 9px 16px rgba(0,0,0,.6),
               inset 0 2px 0 rgba(255,255,255,.22), inset 0 -3px 0 rgba(0,0,0,.32);
   transition: transform .05s ease, box-shadow .05s ease;
@@ -181,7 +213,7 @@ a { text-decoration: none; color: inherit; }
 .cap.g { background: linear-gradient(180deg, #5E9A5B, #3D6B3C) }
 .cap.b { background: linear-gradient(180deg, #4A473F, #2C2A25) }
 
-.led { width: 40px; height: 11px; border-radius: 2px;
+.led { width: calc(var(--cap) * 0.48); height: 11px; border-radius: 2px;
        box-shadow: inset 0 1px 3px rgba(0,0,0,.75);
        transition: background .06s, box-shadow .06s; }
 .cap.y .led { background: #9C7F0D }
@@ -201,18 +233,23 @@ a { text-decoration: none; color: inherit; }
 .cap.g:active .led { background:#CFF7D8; box-shadow:0 0 12px 3px rgba(102,221,122,.95), inset 0 0 4px #e4fdea }
 .cap.b:active .led { background:#BFE2FF; box-shadow:0 0 12px 3px rgba(88,160,255,.95),  inset 0 0 4px #dff0ff }
 
-.cap.menu { position: absolute; top: 122px; left: 204px; }
+.cap.menu { position: absolute; top: var(--menutop); left: calc(var(--roww) - var(--cap)); }
 .mlabel {
-  font-family: "ZenDots", sans-serif; position: absolute; top: 215px; left: 204px;
-  width: 84px; text-align: center; font-size: 10px;
+  font-family: "ZenDots", sans-serif; position: absolute;
+  top: calc(var(--menutop) + var(--cap) + 9px); left: calc(var(--roww) - var(--cap));
+  width: var(--cap); text-align: center; font-size: 10px;
   color: var(--menu-blue); letter-spacing: .06em;
 }
 .mlabel b { font-weight: 400; }
 
-/* caption beside the pad, in the faceplate's own convention:
-   white keyword above a coloured value. 18px clear of the pad's right arm
-   (which ends at x=204) and right-aligned to the MENU column. */
-.legend { position: absolute; left: 222px; top: 250px; width: 66px; }
+/* caption beside the pad, in the faceplate's own convention: white keyword
+   above a coloured value. Right-aligned to the MENU column, and clear of
+   the pad's right arm (which ends at x = --dpad + 8). */
+.legend {
+  position: absolute; left: calc(var(--dpad) + 26px);
+  top: calc(var(--dpadtop) + var(--arm) + 20px);
+  width: calc(var(--roww) - var(--dpad) - 26px);
+}
 .lrow { margin-bottom: 11px; }
 .lk { display: block; font-size: 9px; color: var(--fg); letter-spacing: .04em; }
 .lv { display: block; font-family: "ZenDots", sans-serif; font-size: 9px;
@@ -221,33 +258,38 @@ a { text-decoration: none; color: inherit; }
 .lv.act { color: var(--accent) }
 
 /* Contextual centre key. During playback with the overlay hidden, SELECT
-   reveals the playlist overlay instead of selecting (main.cpp ~2622), so
-   the label says what it will actually do. One class on #app drives the
-   key label, the caption and the colour together. */
+   does not select — it reveals the playlist overlay and returns early
+   (main.cpp's SELECT handler). One class on #app drives the key label,
+   the caption and the colour together. */
 .lbl-browse { display: none }
 .playing .lbl-enter  { display: none }
 .playing .lbl-browse { display: inline }
 .playing .ok      { border-color: rgba(127,176,230,.75); color: var(--menu-blue) }
 .playing .lv.act  { color: var(--menu-blue) }
 
-.dwrap { position: absolute; left: 8px; top: 170px; width: 196px; height: 196px; }
-/* the etch is a TRUE regular hexagon (all six sides 104 in a 240 viewBox),
-   so it must render in a square box or the isometric projection skews */
-.etch { position: absolute; left: -14px; top: -14px; width: 224px; height: 224px; opacity: .9; }
-.dpad { position: relative; width: 196px; height: 196px; }
+.dwrap { position: absolute; left: 8px; top: var(--dpadtop);
+         width: var(--dpad); height: var(--dpad); }
+/* the etch is a TRUE regular hexagon (all six sides equal in a 240
+   viewBox), so it must render in a SQUARE box or the projection skews */
+.etch { position: absolute; left: -14px; top: -14px;
+        width: calc(var(--dpad) + 28px); height: calc(var(--dpad) + 28px); opacity: .9; }
+.dpad { position: relative; width: var(--dpad); height: var(--dpad); }
 .d, .ok {
   position: absolute; background: linear-gradient(180deg, #39323A, #241F25);
   box-shadow: 0 3px 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
   display: flex; align-items: center; justify-content: center;
   color: var(--accent); border-radius: 4px;
 }
-.d { width: 60px; height: 60px; }
+.d { width: var(--arm); height: var(--arm); }
 .d i { font-style: normal; font-size: 15px; }
-.up { top: 0; left: 68px }  .down { bottom: 0; left: 68px }
-.left { left: 0; top: 68px } .right { right: 0; top: 68px }
+.up    { top: 0;    left: calc((var(--dpad) - var(--arm)) / 2) }
+.down  { bottom: 0; left: calc((var(--dpad) - var(--arm)) / 2) }
+.left  { left: 0;   top:  calc((var(--dpad) - var(--arm)) / 2) }
+.right { right: 0;  top:  calc((var(--dpad) - var(--arm)) / 2) }
 .ok {
   font-family: "ZenDots", sans-serif;
-  left: 68px; top: 68px; width: 60px; height: 60px; border-radius: 50%;
+  left: calc((var(--dpad) - var(--arm)) / 2); top: calc((var(--dpad) - var(--arm)) / 2);
+  width: var(--arm); height: var(--arm); border-radius: 50%;
   background: radial-gradient(circle at 50% 35%, #403841, #221D22);
   border: 2px solid rgba(245,191,66,.5);
   font-size: 8px; font-weight: 400; letter-spacing: 0;
@@ -256,6 +298,12 @@ a { text-decoration: none; color: inherit; }
   transform: translateY(3px); box-shadow: 0 0 0 rgba(0,0,0,.5);
   background: linear-gradient(180deg, #4a4149, #2c262c);
 }
+
+/* ── idle state: no media loaded ───────────────────────────────── */
+/* Showing "NOW PLAYING / —" with 0:00 / 0:00 reads as a broken app rather
+   than an idle one, so the scrub bar is hidden until there is a duration. */
+.idle .scrub-row { visibility: hidden; }
+.idle .big { color: var(--dim); font-size: 15px; }
 
 /* ── RetroArch takeover overlay (unchanged) ────────────────────── */
 .ra-overlay {
@@ -331,10 +379,81 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
 .text-section__input:focus { border-color: rgba(255, 255, 255, 0.5); }
 .text-section__input:disabled { opacity: 0.5; }
 
-/* ── short screens (SE-class): let the panel give up space first ── */
+
+/* ── responsive: rescale the cluster, keep every alignment ─────── */
+/* Small phones (iPhone SE / mini, 375x667). The 84px cap plus the taller
+   cluster does not fit above the fold here, so step everything down. */
+@media (max-width: 389px), (max-height: 700px) {
+  .ctrl { --cap: 76px; --gap: 15px; --dpad: 178px; --arm: 56px; --vgap: 22px; }
+  .g { font-size: 13px; }
+  .d i { font-size: 13px; }
+  .ok { font-size: 7px; }
+  .mlabel { font-size: 9px; }
+  .lk, .lv { font-size: 8px; }
+  .screen { padding-bottom: calc(env(safe-area-inset-bottom) + 34px); }
+}
+
+/* Short screens (SE-class, 667pt). Even at the reduced cluster the panel
+   has ~110px to work with, so the artwork block has to give way or the
+   controls get pushed off the bottom. Verified: 649 of 667 used. */
 @media (max-height: 700px) {
-  .mark img { width: 190px; }
-  .art { padding: 6px 2px 4px; }
-  .artcube { width: 70px; height: 70px; }
-  .big { font-size: 16px; }
+  .mark img { width: 186px; }
+  .artcube { width: 62px; height: 62px; }
+  .art { padding: 6px 2px 4px; gap: 10px; }
+  .big { font-size: 15px; }
+  .disp { margin: 10px 0 12px; padding: 10px 12px 11px; }
+}
+
+/* Large phones (Pro Max / Plus, >= 430pt). Extra width is real estate —
+   grow the keys rather than leaving wide dead margins. */
+@media (min-width: 430px) and (min-height: 860px) {
+  .ctrl { --cap: 92px; --gap: 20px; --dpad: 212px; --arm: 64px; --vgap: 28px; }
+  .g { font-size: 16px; }
+  .d i { font-size: 16px; }
+  .ok { font-size: 9px; }
+  .mark img { width: 258px; }
+  .big { font-size: 21px; }
+}
+
+/* Tablets / very wide viewports: cap the panel so it stays a remote and
+   does not stretch into an unusable slab. */
+@media (min-width: 620px) {
+  .screen { max-width: 520px; margin: 0 auto; }
+}
+
+/* Landscape on a phone: the thumb zone assumption does not hold and the
+   cluster will not fit vertically. Shrink hard and let the panel collapse. */
+/* Landscape phones. Stacking header/panel/controls vertically cannot work
+   here: squeezing the cluster into ~390pt of height drives the pad span
+   below 3x the arm thickness, at which point the left/right arms collide
+   with the centre key. A wide-and-short viewport has spare WIDTH instead,
+   so go two-column — panel on the left, controls on the right — which
+   hands the cluster the full column height and lets it stay comfortable. */
+@media (orientation: landscape) and (max-height: 520px) {
+  .screen {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr);
+    column-gap: 26px;
+    max-width: 900px;
+    padding-top: calc(env(safe-area-inset-top) + 14px);
+    padding-bottom: calc(env(safe-area-inset-bottom) + 14px);
+    /* The panel spans nearly the full column here, so the default 22px
+       gutter runs it under the corner screws. Clear them. */
+    padding-left: calc(env(safe-area-inset-left) + 40px);
+    padding-right: calc(env(safe-area-inset-right) + 40px);
+  }
+  .hd   { grid-column: 1; grid-row: 1; }
+  .disp { grid-column: 1; grid-row: 2; margin: 12px 0 0; }
+  .ctrl { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+
+  .ctrl { --cap: 62px; --gap: 12px; --dpad: 146px; --arm: 50px; --vgap: 18px; }
+  .mark img { width: 150px; }
+  .mark { margin-top: 0; }
+  .rule { display: none; }
+  .artcube { width: 64px; height: 64px; }
+  .big { font-size: 15px; }
+  .g { font-size: 12px; }
+  .lk, .lv { font-size: 8px; }
+  .lv { white-space: nowrap; }
 }

@@ -177,19 +177,27 @@
     } else {
       npLabel.textContent = 'CONNECTED';
     }
-    npTitle.textContent = np.title || '—';
+    // Idle vs playing. "NOW PLAYING / —" over 0:00/0:00 reads as a broken
+    // app rather than an idle one, so say so plainly and hide the scrub.
+    const p = s.playback || {};
+    const hasMedia = (p.duration_sec || 0) > 0;
+    app.classList.toggle('idle', !hasMedia);
+
+    npTitle.textContent = hasMedia ? (np.title || '—') : 'Nothing playing';
     if (npSource) npSource.textContent = (np.subtitle || '').toUpperCase();
 
     if (s.playback) {
-      const p = s.playback;
-      const pct = p.duration_sec ? (100 * p.position_sec / p.duration_sec) : 0;
+      const pct = hasMedia ? (100 * p.position_sec / p.duration_sec) : 0;
       scrubFill.style.width = pct + '%';
       timeNow.textContent = fmt(p.position_sec);
       timeTotal.textContent = fmt(p.duration_sec);
-      // btn-red is now the GLYPH above the red keycap, not the cap itself
-      // — writing textContent onto the button would wipe its LED span.
-      // Show what the key will DO: ▶ when paused, ❚❚ when playing.
-      btnRed.textContent = p.is_paused ? '\u25B6' : '\u2759\u2759';
+      // btn-red is the GLYPH above the red keycap, not the cap itself —
+      // writing textContent onto the button would wipe its LED span.
+      // Show what the key will DO: ▶ resume, ❚❚ pause, and the neutral
+      // ▶❚ (as silkscreened on the panel) when there is nothing to act on.
+      btnRed.textContent = !hasMedia ? '\u25B6\u275A'
+                         : p.is_paused ? '\u25B6'
+                                       : '\u275A\u275A';
     }
 
     // Contextual centre key. While a video plays with the overlay hidden,
