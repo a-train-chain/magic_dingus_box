@@ -215,15 +215,18 @@ a { text-decoration: none; color: inherit; }
 .big {
   font-family: "ZenDots", sans-serif; font-size: 19px; font-weight: 400;
   letter-spacing: .5px; margin-top: 6px;
-  /* TWO-LINE TITLE. ZenDots is a wide display face (~0.65em average advance):
-     at 19px in the 202px left beside the 96px cube only ~15 characters fit per
+  /* THREE-LINE TITLE. ZenDots is a wide display face (~0.65em average advance):
+     at 19px in the 214px left beside the cube only ~16 characters fit per
      line, so "Thundercats - Exodus" (281px unwrapped) lost its whole second
-     half to the ellipsis.
+     half to the ellipsis on one line, and long film titles still lost their
+     tail on two. Three lines carries ~48 characters.
 
-     The second line is FREE. .art's height is set by the CUBE (96px; 62px at
-     max-height:700, 64px in landscape) and a two-line .arttext is only 59px,
-     so .art, .disp, the scrub row and the control cluster do not move at any
-     breakpoint. Keeping the cube is exactly what makes this cost nothing.
+     The extra lines are FREE at the default size: .art's height is set by the
+     CUBE (96px), and a three-line .arttext is 83px. At the two smaller cube
+     sizes (62px on short screens, 64px in landscape) a three-line block is
+     69px and does exceed the cube — but .art is flex:1 inside a .disp that
+     is itself flex:1, and both have slack there, so nothing reflows. Verified
+     by measurement at every breakpoint rather than by this arithmetic.
 
      white-space:nowrap MUST STAY DELETED. Leaving it in silently defeats the
      clamp — the text collapses back to one line with no error and no warning.
@@ -242,7 +245,7 @@ a { text-decoration: none; color: inherit; }
 
      overflow-wrap guards the 360pt case, where one long word ("Transformers",
      177px vs 172px available) would otherwise be clipped mid-glyph. */
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
   overflow: hidden; overflow-wrap: break-word;
 }
 
