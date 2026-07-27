@@ -142,7 +142,14 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
     }
 
     if (paired_devices.empty()) {
-        const std::string hint = "(none yet — scan the QR code with your phone)";
+        // Both paths, because they are not interchangeable: scanning the
+        // QR opens Safari, and on iOS an installed home-screen app has a
+        // SEPARATE cookie jar from Safari — so a scan can never
+        // authenticate the installed app. Someone using the app has to
+        // type the code. Naming only the QR sent app users down the one
+        // route that cannot work for them.
+        const std::string hint =
+            "(none yet — scan the QR, or type the code in the app)";
         int hw = body_font_manager_->get_text_width(hint, theme_->font_small_size);
         float hx = (vw - static_cast<float>(hw)) / 2.0f;
         float hy = list_top + 30.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
