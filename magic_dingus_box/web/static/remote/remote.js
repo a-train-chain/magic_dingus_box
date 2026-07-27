@@ -5,6 +5,7 @@
   const dot = document.getElementById('conn-dot');
   const npLabel = document.getElementById('np-label');
   const npTitle = document.getElementById('np-title');
+  const npSource = document.getElementById('np-source');
   const scrubFill = document.getElementById('scrub-fill');
   const timeNow = document.getElementById('time-now');
   const timeTotal = document.getElementById('time-total');
@@ -165,16 +166,19 @@
     }
 
     const np = s.now_playing || {};
+    // The status line now reads as a source/context strip; the title has
+    // its own large slot below it.
     if (s.screen === 'playback') {
-      npLabel.textContent = 'Now Playing';
+      npLabel.textContent = 'NOW PLAYING';
     } else if (s.screen === 'settings') {
-      npLabel.textContent = 'Settings';
+      npLabel.textContent = 'SETTINGS';
     } else if (s.playlist && s.playlist.name) {
-      npLabel.textContent = s.playlist.name;
+      npLabel.textContent = s.playlist.name.toUpperCase();
     } else {
-      npLabel.textContent = 'Playlist';
+      npLabel.textContent = 'CONNECTED';
     }
     npTitle.textContent = np.title || '—';
+    if (npSource) npSource.textContent = (np.subtitle || '').toUpperCase();
 
     if (s.playback) {
       const p = s.playback;
@@ -182,8 +186,21 @@
       scrubFill.style.width = pct + '%';
       timeNow.textContent = fmt(p.position_sec);
       timeTotal.textContent = fmt(p.duration_sec);
-      btnRed.textContent = p.is_paused ? 'PLAY' : 'PAUSE';
+      // btn-red is now the GLYPH above the red keycap, not the cap itself
+      // — writing textContent onto the button would wipe its LED span.
+      // Show what the key will DO: ▶ when paused, ❚❚ when playing.
+      btnRed.textContent = p.is_paused ? '\u25B6' : '\u2759\u2759';
     }
+
+    // Contextual centre key. While a video plays with the overlay hidden,
+    // SELECT reveals the playlist overlay rather than selecting (see
+    // main.cpp's SELECT handler), so the key and its caption say "Browse".
+    // One class drives label + caption + colour together.
+    const overlayHidden =
+      s.screen === 'playback' &&
+      s.playback && s.playback.duration_sec > 0 &&
+      s.overlay_visible === false;
+    app.classList.toggle('playing', !!overlayHidden);
 
     applyTextInput(s);
   }

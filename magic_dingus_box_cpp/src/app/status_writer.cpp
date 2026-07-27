@@ -50,6 +50,14 @@ void StatusWriter::write_now(const AppState& state) {
     playback["is_paused"]    = state.paused.load();
     root["playback"] = playback;
 
+    // Is the main UI drawn over the video right now? During playback with
+    // the overlay hidden, SELECT does NOT select — it reveals the overlay
+    // and returns early (see main.cpp's SELECT handler). The phone remote
+    // relabels its centre key "Browse" in that state so it advertises what
+    // the press will actually do, rather than claiming "Enter" and doing
+    // something else.
+    root["overlay_visible"] = state.ui_visible_when_playing;
+
     if (state.screen_mode.load() == ScreenMode::RetroArch) {
         Json::Value ra;
         ra["rom_name"] = state.retroarch_rom_name;

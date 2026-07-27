@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1F191F">
-<link rel="stylesheet" href="/static/remote/remote.css?v=2">
+<link rel="stylesheet" href="/static/remote/remote.css?v=3">
 <!-- Shared app manifest, scoped to "/" so the Content Manager and the
      remote install as ONE app rather than two. The old
      /static/remote/manifest.json declared start_url "/admin/remote" while
@@ -19,68 +19,132 @@
 <title>Magic Dingus Remote</title>
 </head>
 <body class="remote">
+<!--
+  Panel modelled on the physical faceplate: gold pinstripe + cream inner
+  rule, corner screws, SQUARE keycaps with LED light-pipe slots, and the
+  D-pad standing in for the rotary encoder inside its etched isometric
+  cube. Controls sit in the bottom ~45% so everything falls inside a right
+  thumb's arc; the display panel fills the space above.
+
+  EVERY id AND data-btn BELOW IS LOAD-BEARING — remote.js looks up 16
+  elements by id and binds all [data-btn]. Do not rename without checking
+  remote.js. In particular data-btn="OK" is the wire value the uinput
+  writer and InputManager agree on; only the visible label says "Enter".
+-->
 <div id="app" class="screen" data-mode="playlist">
-  <!-- Way back to the Content Manager. Essential in standalone mode:
-       an installed home-screen app has NO address bar and NO back
-       button, so without this the remote is a one-way trip and the only
-       escape is force-quitting the app. Same-origin and inside the
-       manifest scope, so it navigates within the app rather than
-       kicking out to Safari. -->
-  <a class="home-link" href="/" aria-label="Back to Content Manager">&larr; Manager</a>
 
-  <div class="now-playing">
-    <div class="dot" id="conn-dot" data-state="amber"></div>
-    <div class="text">
-      <div class="label" id="np-label">Now Playing</div>
-      <div class="title" id="np-title">&mdash;</div>
+  <span class="screw tl"></span><span class="screw tr"></span>
+  <span class="screw bl"></span><span class="screw br"></span>
+
+  <header class="hd">
+    <!-- Way out of the app. An installed PWA has no address bar and no
+         back button, so without this the remote is a one-way trip and the
+         only escape is force-quitting. Same-origin and inside the manifest
+         scope, so it navigates within the app. -->
+    <a class="back home-link" href="/" aria-label="Back to Content Manager">&larr; MANAGER</a>
+    <div class="mark"><img src="/static/remote/logo.png" alt="Magic Dingus Box"></div>
+    <div class="rule"><i></i></div>
+  </header>
+
+  <section class="disp">
+    <div class="statusline">
+      <span class="dot" id="conn-dot" data-state="amber"></span>
+      <span class="lbl" id="np-label">CONNECTING</span>
+      <span class="src" id="np-source"></span>
     </div>
-  </div>
 
-  <div class="scrub" id="scrub">
-    <div class="scrub-fill" id="scrub-fill" style="width:0%"></div>
-  </div>
-  <div class="scrub-time">
-    <span id="time-now">0:00</span><span id="time-total">0:00</span>
-  </div>
+    <div class="art">
+      <svg viewBox="0 0 240 240" aria-hidden="true" class="artcube">
+        <g fill="none" stroke="#F2E4D9" stroke-linejoin="round" stroke-opacity=".10">
+          <polygon points="120,16 210.07,68 210.07,172 120,224 29.93,172 29.93,68" stroke-width="1.5"/>
+          <path d="M120 120 L120 16 M120 120 L29.93 172 M120 120 L210.07 172" stroke-width="1.5"/>
+        </g>
+      </svg>
+      <div class="arttext">
+        <div class="kind">NOW PLAYING</div>
+        <div class="big" id="np-title">&mdash;</div>
+      </div>
+    </div>
 
-  <section id="text-section" hidden>
-    <header class="text-section__header">
-      <span id="text-title" class="text-section__title"></span>
-      <button id="text-clear" class="text-section__clear" type="button" aria-label="Clear">×</button>
-    </header>
-    <input
-      id="text-input"
-      class="text-section__input"
-      type="text"
-      autocomplete="off"
-      autocapitalize="none"
-      spellcheck="false"
-      enterkeyhint="search"
-      aria-label="Text input"
-    >
+    <div class="scrub-row">
+      <span class="t" id="time-now">0:00</span>
+      <div class="trk" id="scrub"><div class="fil" id="scrub-fill" style="width:0%"></div></div>
+      <span class="t" id="time-total">0:00</span>
+    </div>
+
+    <!-- Phone-keyboard text entry. Hidden until the kiosk reports an
+         active text field; body.text-mode reveals it. -->
+    <section id="text-section" hidden>
+      <header class="text-section__header">
+        <span id="text-title" class="text-section__title"></span>
+        <button id="text-clear" class="text-section__clear" type="button" aria-label="Clear">&times;</button>
+      </header>
+      <input
+        id="text-input"
+        class="text-section__input"
+        type="text"
+        autocomplete="off"
+        autocapitalize="none"
+        spellcheck="false"
+        enterkeyhint="search"
+        aria-label="Text input"
+      >
+    </section>
   </section>
 
-  <div class="dpad-wrap">
-    <div class="dpad">
-      <button class="arm up"    data-btn="UP"    aria-label="Up"></button>
-      <button class="arm down"  data-btn="DOWN"  aria-label="Down"></button>
-      <button class="arm left"  data-btn="LEFT"  aria-label="Left"></button>
-      <button class="arm right" data-btn="RIGHT" aria-label="Right"></button>
-      <button class="center"    data-btn="OK"    aria-label="Select">OK</button>
+  <section class="ctrl">
+    <!-- btn-red is the PLAY/PAUSE indicator. It lives on the GLYPH, not the
+         keycap: remote.js sets its textContent, which would wipe the LED
+         span if it were on the button itself. -->
+    <div class="glyphs">
+      <span class="g gy">&#9664;&#9664;</span>
+      <span class="g gr" id="btn-red">&#9654;&#10074;</span>
+      <span class="g gg">&#9654;&#9654;</span>
     </div>
-  </div>
+    <div class="row3">
+      <button class="cap y" data-btn="YELLOW" aria-label="Previous"><span class="led"></span></button>
+      <button class="cap r" data-btn="RED" aria-label="Play or pause"><span class="led"></span></button>
+      <button class="cap g" data-btn="GREEN" aria-label="Next"><span class="led"></span></button>
+    </div>
 
-  <div class="actions">
-    <button class="btn yellow" data-btn="YELLOW">PREV</button>
-    <button class="btn red"    data-btn="RED" id="btn-red">PAUSE</button>
-    <button class="btn green"  data-btn="GREEN">NEXT</button>
-    <button class="btn black"  data-btn="BLACK">MENU</button>
-  </div>
+    <button class="cap b menu" data-btn="BLACK" aria-label="Menu"><span class="led"></span></button>
+    <span class="mlabel">Menu <b>&#9776;</b></span>
+
+    <!-- Faceplate convention: short label on the control, meaning in the
+         caption beside it ("Press: Enter"). Keeps the centre key legible
+         while the caption carries the contextual change. -->
+    <div class="legend">
+      <div class="lrow"><span class="lk">Pad:</span><span class="lv nav">Nav &#8593;&#8595;</span></div>
+      <div class="lrow"><span class="lk">Press:</span>
+        <span class="lv act"><span class="lbl-enter">Enter &#9166;</span><span class="lbl-browse">Browse</span></span>
+      </div>
+    </div>
+
+    <div class="dwrap">
+      <svg class="etch" viewBox="0 0 240 240" aria-hidden="true">
+        <g fill="none" stroke="#F2E4D9" stroke-linejoin="round">
+          <polygon points="120,16 210.07,68 210.07,172 120,224 29.93,172 29.93,68"
+                   stroke-width="1" stroke-opacity=".24"/>
+          <path d="M120 120 L120 16 M120 120 L29.93 172 M120 120 L210.07 172"
+                stroke-width="1" stroke-opacity=".15"/>
+        </g>
+      </svg>
+      <div class="dpad">
+        <button class="d up"    data-btn="UP"    aria-label="Up"><i>&#9650;</i></button>
+        <button class="d left"  data-btn="LEFT"  aria-label="Left"><i>&#9664;</i></button>
+        <button class="ok" data-btn="OK" aria-label="Enter">
+          <span class="lbl-enter">Enter</span><span class="lbl-browse">Browse</span>
+        </button>
+        <button class="d right" data-btn="RIGHT" aria-label="Right"><i>&#9654;</i></button>
+        <button class="d down"  data-btn="DOWN"  aria-label="Down"><i>&#9660;</i></button>
+      </div>
+    </div>
+  </section>
 
   <div id="ra-overlay" class="ra-overlay" hidden>
     <div class="ra-title" id="ra-title">Game in progress</div>
     <button class="ra-quit" data-btn="QUIT_GAME">Quit Game</button>
   </div>
 </div>
-<script src="/static/remote/remote.js?v=2"></script>
+<script src="/static/remote/remote.js?v=3"></script>
 </body></html>

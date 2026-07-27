@@ -1,3 +1,36 @@
+/* Magic Dingus Box — phone remote.
+ *
+ * Styled after the physical faceplate: gold pinstripe + cream inner rule,
+ * corner screws, square keycaps sitting in routed pockets with LED
+ * light-pipe slots, and the D-pad standing in for the rotary encoder
+ * inside an etched isometric cube.
+ *
+ * Two things are deliberate and worth not "fixing":
+ *   1. All controls live in the bottom ~45% of the screen. A one-handed
+ *      right thumb pivots near the bottom-right corner; the top-left is
+ *      the hardest place to reach. The faceplate is LANDSCAPE with its
+ *      button row along the top, so copying it literally would put the
+ *      most-used controls where they cannot be reached.
+ *   2. Keycaps have NO corner radius, and the LED slot is a DARKER SHADE
+ *      OF THE CAP'S OWN COLOUR rather than black — both sampled from a
+ *      photo of the real panel (unlit yellow reads #AC8E11 under a
+ *      #E4B90B cap). The light pipe is tinted plastic, not a hole.
+ */
+
+/* The kiosk's own fonts — the exact files main.cpp hands to
+   Renderer::initialize(): Zen Dots for display, DejaVu Sans Mono for body.
+   Mono also keeps timecodes from shifting width as digits change. */
+@font-face {
+  font-family: "ZenDots";
+  src: url("/static/remote/ZenDots-Regular.ttf") format("truetype");
+  font-display: swap;
+}
+@font-face {
+  font-family: "DejaVuMono";
+  src: url("/static/remote/DejaVuSansMono.ttf") format("truetype");
+  font-display: swap;
+}
+
 :root {
   --bg: #1F191F;
   --bg-lift: #2A232A;
@@ -7,152 +40,224 @@
   --hot: #EA3A27;
   --success: #66DD7A;
   --action: #5884B1;
+  --menu-blue: #7FB0E6;
+  --well: #150F0A;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
 html, body {
   background: var(--bg); color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+  font-family: "DejaVuMono", ui-monospace, Menlo, monospace;
   height: 100%;
   overscroll-behavior: none;
   -webkit-touch-callout: none;
+  -webkit-font-smoothing: antialiased;
 }
-
 body.remote { user-select: none; }
 
+/* ── panel ─────────────────────────────────────────────────────── */
 .screen {
-  display: flex; flex-direction: column;
+  position: relative;
   width: 100%; min-height: 100dvh;
+  display: flex; flex-direction: column;
   padding:
-    calc(env(safe-area-inset-top) + 14px)
-    calc(env(safe-area-inset-right) + 14px)
-    calc(env(safe-area-inset-bottom) + 14px)
-    calc(env(safe-area-inset-left) + 14px);
+    calc(env(safe-area-inset-top) + 26px)
+    calc(env(safe-area-inset-right) + 22px)
+    calc(env(safe-area-inset-bottom) + 54px)
+    calc(env(safe-area-inset-left) + 22px);
+  background-image:
+    repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+    radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
+    radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
+}
+.screen::before {
+  content: ""; position: absolute; inset: 9px;
+  border: 1.5px solid var(--accent); border-radius: 11px;
+  box-shadow: 0 0 10px rgba(245,191,66,.13), inset 0 0 22px rgba(0,0,0,.5);
+  pointer-events: none; z-index: 5;
+}
+.screen::after {
+  content: ""; position: absolute; inset: 14px;
+  border: 1px solid rgba(242,228,217,.28); border-radius: 7px;
+  pointer-events: none; z-index: 5;
 }
 
-/* ---- Now Playing strip ---- */
-/* Back-to-Content-Manager link. An installed PWA has no browser chrome,
-   so this is the only exit from the remote screen. Kept visually quiet —
-   it must be reachable, not prominent. */
-.home-link {
-  display: inline-block; margin-bottom: 8px;
-  color: var(--dim); font-size: 13px; text-decoration: none;
-  padding: 6px 2px;            /* touch target without visual weight */
+.screw {
+  position: absolute; width: 11px; height: 11px; border-radius: 50%; z-index: 4;
+  background: radial-gradient(circle at 38% 32%, #4A443E, #1A1714 70%);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.14), 0 1px 2px rgba(0,0,0,.8);
 }
-.home-link:active { color: var(--fg); }
+.screw::after {
+  content: ""; position: absolute; inset: 3px;
+  border-top: 1.5px solid rgba(0,0,0,.75); transform: rotate(28deg);
+}
+.screw.tl { left: 24px; top: 24px }   .screw.tr { right: 24px; top: 24px }
+.screw.bl { left: 24px; bottom: 24px } .screw.br { right: 24px; bottom: 24px }
 
-.now-playing {
-  background: var(--bg-lift); border-radius: 10px;
-  padding: 10px 12px; display: flex; align-items: center; gap: 10px;
-}
-.now-playing .dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--success); flex: none;
-}
-.now-playing .dot[data-state="amber"] { background: var(--accent); }
-.now-playing .dot[data-state="red"]   { background: var(--hot); animation: pulse 1.2s infinite; }
-.now-playing .label {
-  color: var(--dim); font-size: 9px;
-  text-transform: uppercase; letter-spacing: 1px;
-}
-.now-playing .title {
-  font-size: 14px; font-weight: 500; margin-top: 2px;
-}
+button { appearance: none; -webkit-appearance: none; border: 0; background: none;
+         font: inherit; color: inherit; cursor: pointer; }
+a { text-decoration: none; color: inherit; }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+/* ── header ────────────────────────────────────────────────────── */
+.back {
+  display: inline-block; font-size: 9px; letter-spacing: .12em;
+  color: var(--dim); padding: 6px 9px 6px 0;
 }
-
-/* ---- Scrub bar ---- */
-.scrub {
-  height: 4px; background: var(--bg-lift); border-radius: 2px;
-  margin-top: 12px;
-  touch-action: manipulation; cursor: pointer;
+.back:active { color: var(--accent); }
+.mark { display: flex; justify-content: center; margin-top: 2px; }
+.mark img { width: 232px; height: auto; display: block;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,.65)); }
+.rule {
+  margin-top: 12px; height: 1px; position: relative;
+  background: linear-gradient(90deg, transparent,
+              rgba(242,228,217,.20) 12%, rgba(242,228,217,.20) 88%, transparent);
 }
-.scrub-fill {
-  background: var(--accent); height: 100%;
-  border-radius: 2px;
-  transition: width 0.1s linear;
-}
-.scrub-time {
-  display: flex; justify-content: space-between;
-  font-size: 9px; color: var(--dim); margin-top: 4px;
-  font-variant-numeric: tabular-nums;
+.rule i {
+  position: absolute; left: 50%; top: 50%; width: 5px; height: 5px;
+  margin: -2.5px 0 0 -2.5px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 7px rgba(245,191,66,.55);
 }
 
-/* Hide scrub in non-playback modes */
-.screen[data-mode="playlist"] .scrub,
-.screen[data-mode="playlist"] .scrub-time,
-.screen[data-mode="settings"] .scrub,
-.screen[data-mode="settings"] .scrub-time,
-.screen[data-mode="media_browser"] .scrub,
-.screen[data-mode="media_browser"] .scrub-time { visibility: hidden; }
+/* ── display panel (grows to fill above the controls) ──────────── */
+.disp {
+  flex: 1 1 auto; margin: 14px 0 16px; padding: 13px 14px 14px;
+  border-radius: 8px; border: 1px solid rgba(245,191,66,.20);
+  background: linear-gradient(180deg, #151115, #1B161B);
+  box-shadow: inset 0 2px 8px rgba(0,0,0,.75);
+  display: flex; flex-direction: column;
+}
+.statusline { display: flex; align-items: center; gap: 7px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none;
+       background: var(--success); box-shadow: 0 0 7px rgba(102,221,122,.8); }
+.dot[data-state="amber"] { background: var(--accent); box-shadow: 0 0 7px rgba(245,191,66,.8); }
+.dot[data-state="red"]   { background: var(--hot); box-shadow: 0 0 7px rgba(234,58,39,.8);
+                           animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .35 } }
+.lbl { color: var(--success); letter-spacing: .10em; font-size: 8px; }
+.src { margin-left: auto; color: var(--dim); letter-spacing: .10em; font-size: 8px; }
 
-/* ---- D-pad ---- */
-.dpad-wrap {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 14px 0;
+.art { flex: 1 1 auto; display: flex; align-items: center; gap: 14px; padding: 12px 2px 6px; }
+.artcube { width: 96px; height: 96px; flex: none; opacity: .95; }
+.arttext { min-width: 0; }
+.kind { font-size: 8px; letter-spacing: .12em; color: var(--accent); }
+.big {
+  font-family: "ZenDots", sans-serif; font-size: 19px; font-weight: 400;
+  letter-spacing: .5px; margin-top: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.dpad {
-  position: relative; width: 220px; height: 220px;
-}
-.dpad .arm {
-  position: absolute;
-  background: var(--bg-lift); border: none; border-radius: 10px;
-  color: var(--fg);
-  touch-action: manipulation;
-  transition: transform 70ms ease-out, background 70ms ease-out;
-}
-.dpad .arm:active { transform: scale(0.96); background: #3a323a; }
-.dpad .arm.up    { top: 0;    left: 75px;  width: 70px; height: 75px; }
-.dpad .arm.down  { bottom: 0; left: 75px;  width: 70px; height: 75px; }
-.dpad .arm.left  { left: 0;   top: 75px;   width: 75px; height: 70px; }
-.dpad .arm.right { right: 0;  top: 75px;   width: 75px; height: 70px; }
 
-/* Arrow indicators inside arms (CSS triangles) */
-.dpad .arm::before {
-  content: ""; position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  border: 11px solid transparent;
-}
-.dpad .arm.up::before    { border-bottom-color: var(--fg); border-top-width: 0; }
-.dpad .arm.down::before  { border-top-color: var(--fg); border-bottom-width: 0; }
-.dpad .arm.left::before  { border-right-color: var(--fg); border-left-width: 0; }
-.dpad .arm.right::before { border-left-color: var(--fg); border-right-width: 0; }
+.scrub-row { display: flex; align-items: center; gap: 9px; margin-top: auto; }
+.t { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.trk { flex: 1; height: 3px; border-radius: 2px; background: var(--bg-lift); overflow: hidden; }
+.fil { height: 100%; background: linear-gradient(90deg, var(--accent), var(--hot)); }
 
-/* OK center */
-.dpad .center {
-  position: absolute; top: 82px; left: 82px;
-  width: 56px; height: 56px;
-  background: var(--accent); color: var(--bg);
-  border: 4px solid var(--bg);  /* outer ring against the bg */
-  border-radius: 50%;
-  font-weight: 700; font-size: 12px; letter-spacing: 1px;
-  touch-action: manipulation;
-  transition: transform 70ms ease-out, filter 70ms ease-out;
-}
-.dpad .center:active { transform: scale(0.94); filter: brightness(0.9); }
+/* ── control cluster ───────────────────────────────────────────── */
+/* 288px wide, centred: (346 panel interior - 288) / 2 = 29px each side.
+   Geometry is absolute so the alignments are exact, not eyeballed:
+   MENU shares the GREEN key's column, and MENU's bottom edge lands on the
+   up-arrow's centre line. */
+.ctrl { position: relative; width: 288px; margin: 0 auto; flex: 0 0 366px; height: 366px; }
 
-/* ---- Action buttons row ---- */
-.actions {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
-  margin-top: 12px;
-}
-.actions .btn {
-  height: 48px; border: none; border-radius: 10px;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
-  touch-action: manipulation;
-  transition: transform 70ms ease-out, filter 70ms ease-out;
-}
-.actions .btn:active { transform: scale(0.96); filter: brightness(0.85); }
-.actions .btn.yellow { background: var(--accent); color: var(--bg); }
-.actions .btn.red    { background: var(--hot);    color: var(--fg); }
-.actions .btn.green  { background: var(--success);color: var(--bg); }
-.actions .btn.black  { background: var(--bg-lift);color: var(--fg); border: 1px solid var(--dim); }
+.glyphs { position: absolute; top: 40px; left: 0; width: 288px;
+          display: grid; grid-template-columns: repeat(3, 84px); gap: 18px; }
+.g  { text-align: center; font-size: 15px; line-height: 1; letter-spacing: 1px; }
+.gy { color: var(--accent) } .gr { color: var(--hot) } .gg { color: var(--success) }
 
-/* ---- RetroArch takeover ---- */
+.row3 { position: absolute; top: 62px; left: 0; width: 288px;
+        display: grid; grid-template-columns: repeat(3, 84px); gap: 18px; }
+
+/* square caps in routed pockets */
+.cap {
+  position: relative; width: 84px; height: 84px; border-radius: 0;
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 18px;
+  box-shadow: 0 0 0 5px var(--well), 0 5px 0 5px rgba(0,0,0,.6), 0 9px 16px rgba(0,0,0,.6),
+              inset 0 2px 0 rgba(255,255,255,.22), inset 0 -3px 0 rgba(0,0,0,.32);
+  transition: transform .05s ease, box-shadow .05s ease;
+}
+.cap.y { background: linear-gradient(180deg, #F0C81C, #C79E06) }
+.cap.r { background: linear-gradient(180deg, #D84234, #A82A20) }
+.cap.g { background: linear-gradient(180deg, #5E9A5B, #3D6B3C) }
+.cap.b { background: linear-gradient(180deg, #4A473F, #2C2A25) }
+
+.led { width: 40px; height: 11px; border-radius: 2px;
+       box-shadow: inset 0 1px 3px rgba(0,0,0,.75);
+       transition: background .06s, box-shadow .06s; }
+.cap.y .led { background: #9C7F0D }
+.cap.r .led { background: #6B1B14 }
+.cap.g .led { background: #2E5430 }
+.cap.b .led { background: #22201C }
+
+/* pressed: key travels and its light pipe lights in its own colour.
+   Black lights BLUE, matching the physical panel. */
+.cap:active {
+  transform: translateY(4px);
+  box-shadow: 0 0 0 5px var(--well), 0 1px 0 5px rgba(0,0,0,.6), 0 4px 9px rgba(0,0,0,.55),
+              inset 0 2px 0 rgba(255,255,255,.18), inset 0 -2px 0 rgba(0,0,0,.32);
+}
+.cap.y:active .led { background:#FFE9A8; box-shadow:0 0 12px 3px rgba(245,191,66,.95), inset 0 0 4px #fff6d8 }
+.cap.r:active .led { background:#FFC2B4; box-shadow:0 0 12px 3px rgba(234,58,39,.95),  inset 0 0 4px #ffd9d0 }
+.cap.g:active .led { background:#CFF7D8; box-shadow:0 0 12px 3px rgba(102,221,122,.95), inset 0 0 4px #e4fdea }
+.cap.b:active .led { background:#BFE2FF; box-shadow:0 0 12px 3px rgba(88,160,255,.95),  inset 0 0 4px #dff0ff }
+
+.cap.menu { position: absolute; top: 122px; left: 204px; }
+.mlabel {
+  font-family: "ZenDots", sans-serif; position: absolute; top: 215px; left: 204px;
+  width: 84px; text-align: center; font-size: 10px;
+  color: var(--menu-blue); letter-spacing: .06em;
+}
+.mlabel b { font-weight: 400; }
+
+/* caption beside the pad, in the faceplate's own convention:
+   white keyword above a coloured value. 18px clear of the pad's right arm
+   (which ends at x=204) and right-aligned to the MENU column. */
+.legend { position: absolute; left: 222px; top: 250px; width: 66px; }
+.lrow { margin-bottom: 11px; }
+.lk { display: block; font-size: 9px; color: var(--fg); letter-spacing: .04em; }
+.lv { display: block; font-family: "ZenDots", sans-serif; font-size: 9px;
+      margin-top: 3px; letter-spacing: 0; }
+.lv.nav { color: var(--accent) }
+.lv.act { color: var(--accent) }
+
+/* Contextual centre key. During playback with the overlay hidden, SELECT
+   reveals the playlist overlay instead of selecting (main.cpp ~2622), so
+   the label says what it will actually do. One class on #app drives the
+   key label, the caption and the colour together. */
+.lbl-browse { display: none }
+.playing .lbl-enter  { display: none }
+.playing .lbl-browse { display: inline }
+.playing .ok      { border-color: rgba(127,176,230,.75); color: var(--menu-blue) }
+.playing .lv.act  { color: var(--menu-blue) }
+
+.dwrap { position: absolute; left: 8px; top: 170px; width: 196px; height: 196px; }
+/* the etch is a TRUE regular hexagon (all six sides 104 in a 240 viewBox),
+   so it must render in a square box or the isometric projection skews */
+.etch { position: absolute; left: -14px; top: -14px; width: 224px; height: 224px; opacity: .9; }
+.dpad { position: relative; width: 196px; height: 196px; }
+.d, .ok {
+  position: absolute; background: linear-gradient(180deg, #39323A, #241F25);
+  box-shadow: 0 3px 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent); border-radius: 4px;
+}
+.d { width: 60px; height: 60px; }
+.d i { font-style: normal; font-size: 15px; }
+.up { top: 0; left: 68px }  .down { bottom: 0; left: 68px }
+.left { left: 0; top: 68px } .right { right: 0; top: 68px }
+.ok {
+  font-family: "ZenDots", sans-serif;
+  left: 68px; top: 68px; width: 60px; height: 60px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, #403841, #221D22);
+  border: 2px solid rgba(245,191,66,.5);
+  font-size: 8px; font-weight: 400; letter-spacing: 0;
+}
+.d:active, .ok:active {
+  transform: translateY(3px); box-shadow: 0 0 0 rgba(0,0,0,.5);
+  background: linear-gradient(180deg, #4a4149, #2c262c);
+}
+
+/* ── RetroArch takeover overlay (unchanged) ────────────────────── */
 .ra-overlay {
   position: fixed; inset: 0;
   background: rgba(31, 25, 31, 0.96);
@@ -160,119 +265,76 @@ body.remote { user-select: none; }
   gap: 32px; padding: 32px;
   padding-top: calc(env(safe-area-inset-top) + 32px);
   padding-bottom: calc(env(safe-area-inset-bottom) + 32px);
-  padding-left: calc(env(safe-area-inset-left) + 32px);
-  padding-right: calc(env(safe-area-inset-right) + 32px);
   z-index: 100;
 }
 .ra-overlay[hidden] { display: none; }
-.ra-title {
-  font-size: 18px; color: var(--dim);
-  text-align: center; max-width: 100%;
-  word-break: break-word;
-}
+.ra-title { font-size: 18px; color: var(--dim); text-align: center;
+            max-width: 100%; word-break: break-word; }
 .ra-quit {
-  background: var(--hot); color: var(--fg);
-  border: none; border-radius: 16px;
-  padding: 24px 40px;
-  font-size: 18px; font-weight: 700;
-  letter-spacing: 0.5px;
+  background: var(--hot); color: var(--fg); border: none; border-radius: 16px;
+  padding: 24px 40px; font-size: 18px; font-weight: 700; letter-spacing: 0.5px;
   box-shadow: 0 6px 16px rgba(234, 58, 39, 0.4);
-  touch-action: manipulation;
-  transition: transform 70ms ease-out;
+  touch-action: manipulation; transition: transform 70ms ease-out;
 }
 .ra-quit:active { transform: scale(0.96); }
 
-/* ---- iOS "Add to Home Screen" install hint ---- */
+/* ── iOS "Add to Home Screen" hint (unchanged) ─────────────────── */
 .install-toast {
   position: fixed; left: 16px; right: 16px;
   bottom: calc(16px + env(safe-area-inset-bottom));
   background: var(--bg-lift); color: var(--fg);
-  padding: 14px 16px;
-  border-radius: 12px;
-  border: 1px solid var(--accent);
-  font-size: 13px; line-height: 1.4;
-  z-index: 200;
-  cursor: pointer;
+  padding: 14px 16px; border-radius: 12px; border: 1px solid var(--accent);
+  font-size: 13px; line-height: 1.4; z-index: 200; cursor: pointer;
   animation: toast-in 220ms ease-out;
 }
 .install-toast strong { color: var(--accent); }
 @keyframes toast-in {
   from { transform: translateY(20px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(0);    opacity: 1; }
 }
 
-/* ── Phone Remote — text input section ──────────────────────────── */
-/* Mirrors the existing D-pad section's spacing/typography so the
-   transition between text-mode and D-pad-mode feels native. */
-
+/* ── phone-keyboard text entry (behaviour unchanged) ───────────── */
+/* Lives inside the display panel now, but the show/hide contract is the
+   same: hidden by default, revealed by body.text-mode. */
 #text-section {
-  /* Hidden by default; revealed when body.text-mode is set. */
   display: none;
-  margin: 0 1rem 1rem 1rem;
-  padding: 0.75rem 0.875rem;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
+  margin-top: 12px; padding: 10px 12px;
+  border-radius: 10px; background: rgba(255, 255, 255, 0.06);
   transition: opacity 150ms ease-out;
 }
-
-body.text-mode #text-section {
-  display: block;
-}
+body.text-mode #text-section { display: block; }
+body.text-mode .art { display: none; }   /* give the keyboard room */
 
 .text-section__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 0.5rem;
 }
-
 .text-section__title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: rgba(255, 255, 255, 0.85);
-  letter-spacing: 0.02em;
+  font-size: 0.8rem; font-weight: 600;
+  color: rgba(255, 255, 255, 0.85); letter-spacing: 0.02em;
 }
-
 .text-section__clear {
-  appearance: none;
-  border: none;
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 1.125rem;
-  font-weight: 600;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
+  appearance: none; border: none;
+  background: rgba(255, 255, 255, 0.1); color: rgba(255, 255, 255, 0.85);
+  font-size: 1.125rem; font-weight: 600;
+  width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
 }
-
-.text-section__clear:active {
-  background: rgba(255, 255, 255, 0.2);
-}
-
+.text-section__clear:active { background: rgba(255, 255, 255, 0.2); }
 .text-section__input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 0.625rem 0.75rem;
-  font-size: 1rem;
-  font-family: inherit;
-  border: 2px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  background: rgba(0, 0, 0, 0.3);
-  color: white;
-  outline: none;
+  width: 100%; box-sizing: border-box;
+  padding: 0.625rem 0.75rem; font-size: 1rem; font-family: inherit;
+  border: 2px solid rgba(255, 255, 255, 0.15); border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3); color: white; outline: none;
   transition: border-color 120ms ease-out;
 }
+.text-section__input:focus { border-color: rgba(255, 255, 255, 0.5); }
+.text-section__input:disabled { opacity: 0.5; }
 
-.text-section__input:focus {
-  border-color: rgba(255, 255, 255, 0.5);
-}
-
-.text-section__input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* ── short screens (SE-class): let the panel give up space first ── */
+@media (max-height: 700px) {
+  .mark img { width: 190px; }
+  .art { padding: 6px 2px 4px; }
+  .artcube { width: 70px; height: 70px; }
+  .big { font-size: 16px; }
 }
