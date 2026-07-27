@@ -125,26 +125,48 @@ int main(int /* argc */, char* /* argv */[]) {
         return 1;
     }
     
-    // Set display mode (auto-detect preferred mode)
-    // For Modern TV mode with bezels, we need a 16:9 resolution
-    // Try preferred resolution first, then fallbacks, then auto-detect
-    if (!display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT)) {
-        LOG_INFO("{}x{} not available, trying {}x{}...",
-                 config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT,
-                 config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1);
-        if (!display.set_mode(config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1)) {
-            LOG_INFO("{}x{} not available, trying {}x{} (CRT native)...",
-                     config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1,
-                     config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2);
-            if (!display.set_mode(config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2)) {
-                LOG_INFO("{}x{} not available, using auto-detect...",
-                         config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2);
-                if (!display.set_mode(0, 0)) {
-                    LOG_ERROR("Failed to set display mode");
-                    logging::shutdown();
-                    return 1;
-                }
-            }
+    // Set display mode. The target depends on the persisted display
+    // mode, so peek at just that one setting — the full load_settings()
+    // runs much later and needs AppState, which does not exist yet.
+    //
+    //   MODERN_TV  -> 1920x1080. The UI still draws into a 1280x720
+    //                 LOGICAL canvas (see config::display::logical_canvas
+    //                 and the resize_screen calls below), so the menus
+    //                 keep pixel-identical proportions; the extra
+    //                 resolution goes to video, which is where the Media
+    //                 Browser's true-1080p movies were being downscaled.
+    //   CRT_NATIVE -> 1280x720, unchanged. Pi 5 has no composite output,
+    //                 so CRT rigs run through an HDMI->composite
+    //                 converter; CRT_MAX_HEIGHT keeps it on a mode that
+    //                 converter accepts. 1080p is deliberately NOT in
+    //                 this branch's fallback chain.
+    const bool boot_crt_native = app::SettingsPersistence::peek_is_crt_native();
+    const config::display::Size boot_mode =
+        config::display::target_drm_mode(boot_crt_native);
+    LOG_INFO("Display mode setting: {} -> requesting {}x{}",
+             boot_crt_native ? "CRT_NATIVE" : "MODERN_TV",
+             boot_mode.w, boot_mode.h);
+
+    bool mode_ok = display.set_mode(boot_mode.w, boot_mode.h);
+    if (!mode_ok && !boot_crt_native) {
+        // Modern TV only: fall back to 720p before the CRT-safe sizes.
+        LOG_INFO("{}x{} not available, trying {}x{}...", boot_mode.w, boot_mode.h,
+                 config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT);
+        mode_ok = display.set_mode(config::display::PREFERRED_WIDTH,
+                                   config::display::PREFERRED_HEIGHT);
+    }
+    if (!mode_ok) {
+        LOG_INFO("Trying {}x{} (CRT native)...",
+                 config::display::FALLBACK_WIDTH_2, config::display::FALLBACK_HEIGHT_2);
+        mode_ok = display.set_mode(config::display::FALLBACK_WIDTH_2,
+                                   config::display::FALLBACK_HEIGHT_2);
+    }
+    if (!mode_ok) {
+        LOG_INFO("Using auto-detect...");
+        if (!display.set_mode(0, 0)) {
+            LOG_ERROR("Failed to set display mode");
+            logging::shutdown();
+            return 1;
         }
     }
 
@@ -1226,12 +1248,23 @@ int main(int /* argc */, char* /* argv */[]) {
     // bottom-left of the framebuffer instead of filling the screen.
     ui_renderer.set_framebuffer_size(mode.width, mode.height);
 
-    // For CRT Native, force logical 640x480 layout regardless of physical resolution
-    // This ensures large text and correct aspect ratio (assuming anamorphic squeeze)
-    if (state.display_settings.mode == app::DisplayMode::CRT_NATIVE) {
-        ui_renderer.resize_screen(640, 480);
-    } else {
-        ui_renderer.resize_screen(mode.width, mode.height);
+    // Force a LOGICAL layout canvas independent of the physical mode.
+    //
+    // CRT Native: 640x480 — large text, correct aspect under the
+    // anamorphic squeeze. Long-shipped, unchanged.
+    //
+    // Modern TV: 1280x720 even when the panel is driven at 1920x1080.
+    // Every layout constant in the app (theme.cpp fonts/margins, the
+    // Media Browser's literal 1280s) was authored against 720p; holding
+    // the logical canvas there means 1080p is a pure resolution
+    // increase, not a re-layout. The scale is exactly 1.5x in both axes
+    // with identical 16:9 aspect, so proportions are preserved bit for
+    // bit. Passing mode.width/mode.height here instead would shrink
+    // every menu element to 2/3 of its intended screen fraction.
+    {
+        const bool crt = (state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+        const config::display::Size canvas = config::display::logical_canvas(crt);
+        ui_renderer.resize_screen(canvas.w, canvas.h);
     }
     
     // Track current mode to detect changes at runtime
@@ -1417,25 +1450,54 @@ int main(int /* argc */, char* /* argv */[]) {
             std::cout << "Display Mode changed! Switching resolution..." << std::endl;
             current_display_mode = state.display_settings.mode;
             
+            // RESOLUTION CHANGES REQUIRE A RESTART.
+            //
+            // The GBM surface and its EGL window surface are created once
+            // at boot, sized to the boot mode, and never recreated; the
+            // DRM framebuffer cache is keyed on GBM buffer handles, and
+            // the drmModeModeInfo passed to drmModeSetCrtc is snapshotted
+            // once. Changing the CRTC mode underneath all of that renders
+            // GL into a buffer whose dimensions no longer match what the
+            // CRTC scans out — a torn or offset picture, with NO error
+            // logged anywhere. This was latent before because both toggle
+            // branches happened to land back on 1280x720; now that
+            // MODERN_TV boots 1920x1080 and CRT_NATIVE stays at 720p, a
+            // live toggle really would change resolution.
+            //
+            // So apply every UI-side change immediately (logical canvas,
+            // letterbox, bezel) and defer ONLY the mode switch. The
+            // setting is already persisted by the settings menu, so a
+            // restart completes it. Doing the full teardown here
+            // (frame_ctx.reset + GBM/EGL recreate + reset_gl on both
+            // renderers + re-snapshot mode_info) is possible, but it is
+            // by far the riskiest change available here and buys only the
+            // avoidance of one restart.
+            const config::display::Size want_mode =
+                config::display::target_drm_mode(
+                    current_display_mode == app::DisplayMode::CRT_NATIVE);
+            const bool resolution_would_change =
+                (static_cast<int>(mode.width)  != want_mode.w ||
+                 static_cast<int>(mode.height) != want_mode.h);
+
             bool ok = false;
-            if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
-                // Switch to Auto/Preferred (Native)
-                ok = display.set_mode(0, 0);
-                if (ok) {
-                     auto current = display.get_current_mode();
-                     if (current.height > config::display::CRT_MAX_HEIGHT) {
-                         std::cout << "Native resolution too high. Clamping to "
-                                   << config::display::PREFERRED_HEIGHT << "p." << std::endl;
-                         display.set_mode(config::display::PREFERRED_WIDTH,
-                                          config::display::PREFERRED_HEIGHT); // Best effort clamp
-                     }
-                }
+            if (resolution_would_change) {
+                LOG_INFO("Display mode -> {}; output resolution {}x{} -> {}x{} "
+                         "deferred to next restart",
+                         current_display_mode == app::DisplayMode::CRT_NATIVE
+                             ? "CRT_NATIVE" : "MODERN_TV",
+                         mode.width, mode.height, want_mode.w, want_mode.h);
+                ui::Toast::show("Restart to apply the new output resolution");
+                // Fall through with ok=false: the mode is untouched, but
+                // the UI-side updates below still need to run so the
+                // logical canvas / letterbox / bezel match the new mode.
+            } else if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
+                // Already at the CRT resolution — re-assert it defensively.
+                ok = display.set_mode(want_mode.w, want_mode.h);
             } else {
-                // Switch to preferred resolution for Modern TV
-                ok = display.set_mode(config::display::PREFERRED_WIDTH, config::display::PREFERRED_HEIGHT);
-                if (!ok) ok = display.set_mode(config::display::FALLBACK_WIDTH_1, config::display::FALLBACK_HEIGHT_1);
+                // Already at the Modern TV resolution.
+                ok = display.set_mode(want_mode.w, want_mode.h);
             }
-            
+
             if (ok) {
                 // Update mode info and notify renderers
                 mode = display.get_current_mode();
@@ -1448,17 +1510,26 @@ int main(int /* argc */, char* /* argv */[]) {
                 // CRT_NATIVE ↔ MODERN_TV at runtime would leave the
                 // scene FBO sized for the previous mode.
                 ui_renderer.set_framebuffer_size(mode.width, mode.height);
-
-                if (current_display_mode == app::DisplayMode::CRT_NATIVE) {
-                    ui_renderer.resize_screen(640, 480);
-                } else {
-                    ui_renderer.resize_screen(mode.width, mode.height);
-                }
-
-                // Ensure viewport is reset
-                glViewport(0, 0, mode.width, mode.height);
-                glClear(GL_COLOR_BUFFER_BIT);
             }
+
+            // The LOGICAL canvas follows the display mode even when the
+            // physical mode change was deferred to a restart — CRT_NATIVE
+            // draws into 640x480 and MODERN_TV into 1280x720 regardless
+            // of the framebuffer behind them. That is the whole point of
+            // the logical/physical split, and it means the operator sees
+            // the new mode's layout immediately; only the output
+            // resolution waits for the restart.
+            {
+                const bool crt =
+                    (current_display_mode == app::DisplayMode::CRT_NATIVE);
+                const config::display::Size canvas =
+                    config::display::logical_canvas(crt);
+                ui_renderer.resize_screen(canvas.w, canvas.h);
+            }
+
+            // Ensure viewport is reset
+            glViewport(0, 0, mode.width, mode.height);
+            glClear(GL_COLOR_BUFFER_BIT);
         }
         
         // uint64_t (was uint32_t) — at 60 fps a uint32_t overflows after
@@ -3066,7 +3137,25 @@ int main(int /* argc */, char* /* argv */[]) {
 #else
         bool letterbox_active = use_letterbox;
 #endif
+        // The 4:3 content rect exists in TWO coordinate spaces and they
+        // are no longer the same thing:
+        //
+        //   PHYSICAL (content_*)      -> glViewport, real framebuffer px
+        //   LOGICAL  (logical_content_*) -> set_content_viewport, which
+        //                                overwrites the renderer's
+        //                                projection size
+        //
+        // They coincided while the framebuffer was always 1280x720. In
+        // Modern TV at 1920x1080 they diverge by 1.5x, and feeding the
+        // PHYSICAL size to set_content_viewport would make the logical
+        // canvas 1440x1080 instead of 960x720 — every menu element would
+        // render at 2/3 of its intended screen fraction with dead margin
+        // right and bottom. The logical rect is derived from the UI's own
+        // logical canvas so it stays 960x720 at any output resolution.
         int content_x = 0, content_y = 0, content_w = mode.width, content_h = mode.height;
+        const config::display::Size ui_canvas = config::display::logical_canvas(
+            state.display_settings.mode == app::DisplayMode::CRT_NATIVE);
+        int logical_content_w = ui_canvas.w, logical_content_h = ui_canvas.h;
 
         if (letterbox_active) {
             // Calculate 4:3 content area centered in screen
@@ -3075,13 +3164,22 @@ int main(int /* argc */, char* /* argv */[]) {
             content_w = mode.height * 4 / 3;  // 4:3 aspect ratio
             content_x = (mode.width - content_w) / 2;  // Center horizontally
             content_y = 0;
-            
+
             // If calculated width is larger than screen, pillarbox based on width
             if (content_w > static_cast<int>(mode.width)) {
                 content_w = mode.width;
                 content_h = mode.width * 3 / 4;
                 content_x = 0;
                 content_y = (mode.height - content_h) / 2;
+            }
+
+            // Same 4:3 math, logical space. Integer-exact at both
+            // resolutions: 720 -> 960x720, 1080 -> 1440x1080.
+            logical_content_h = ui_canvas.h;
+            logical_content_w = ui_canvas.h * 4 / 3;
+            if (logical_content_w > ui_canvas.w) {
+                logical_content_w = ui_canvas.w;
+                logical_content_h = ui_canvas.w * 3 / 4;
             }
         }
         
@@ -3162,11 +3260,20 @@ int main(int /* argc */, char* /* argv */[]) {
                 // setting in MovieSettings → Library → Wood frame
                 // during playback). Inset the video INSIDE the frame
                 // so the cabinet art doesn't crop the movie.
-                constexpr int kPlaybackInsetPx = 40;
+                // The frame art is a 1280x720 PNG drawn as a full-screen
+                // quad in LOGICAL space, so its 40px border stretches
+                // with the framebuffer: at 1080p the inner edge lands at
+                // 60 physical px. set_render_inset() takes FRAMEBUFFER
+                // pixels, so the inset must scale to match or the
+                // cabinet art overlaps and crops ~20px off every side of
+                // the movie. Identity at 720p (40 -> 40).
+                const int inset_px = config::display::to_physical_px(
+                    40, static_cast<int>(mode.height),
+                    config::display::logical_canvas(false).h);
                 gst_renderer.set_render_inset(
-                    kPlaybackInsetPx, kPlaybackInsetPx,
-                    static_cast<int>(mode.width)  - 2 * kPlaybackInsetPx,
-                    static_cast<int>(mode.height) - 2 * kPlaybackInsetPx);
+                    inset_px, inset_px,
+                    static_cast<int>(mode.width)  - 2 * inset_px,
+                    static_cast<int>(mode.height) - 2 * inset_px);
                 glViewport(0, 0, mode.width, mode.height);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
@@ -3189,7 +3296,10 @@ int main(int /* argc */, char* /* argv */[]) {
             // Also update UI renderer's internal dimensions for proper projection matrix
             glViewport(content_x, content_y, content_w, content_h);
             if (letterbox_active) {
-                ui_renderer.set_content_viewport(content_w, content_h);
+                // LOGICAL size — see the two-coordinate-space note where
+                // these are computed. Passing content_w/content_h (the
+                // physical rect) here would shrink the whole main menu.
+                ui_renderer.set_content_viewport(logical_content_w, logical_content_h);
             }
 #ifdef MEDIA_BROWSER_ENABLED
             // Skip main kiosk UI when the Media Browser screen is active;
@@ -3263,17 +3373,29 @@ int main(int /* argc */, char* /* argv */[]) {
             // overlay; "green rect" garbage on Playback→Detail exit).
             ui_renderer.mb_begin_2d_state();
 
-            active_mb_screen->render(ui_renderer, mode.width, mode.height);
+            // LOGICAL canvas size, not the physical mode. mb_begin_2d_state
+            // pins the shader's screenSize uniform to the renderer's
+            // logical canvas, so the screens must lay out in that same
+            // space. These matched only because the framebuffer used to
+            // always be 1280x720; at 1920x1080 they diverge by 1.5x and
+            // every right-/bottom-anchored element (tab strip, footer
+            // hints, filter panel) would fly off-screen. This is also
+            // what keeps library_screen.cpp's literal 1280 constants and
+            // mb_filter_overlay.cpp's kScreenW correct with no edits.
+            const int mb_w = static_cast<int>(ui_renderer.get_width());
+            const int mb_h = static_cast<int>(ui_renderer.get_height());
+
+            active_mb_screen->render(ui_renderer, mb_w, mb_h);
 
             // "Exit Marquee?" confirm modal — rendered above the active MB
             // screen but below the wood frame and CRT effects so it reads
             // as a native UI element. No-op when the modal is not open.
-            mb_exit_modal.render(ui_renderer, mode.width, mode.height);
+            mb_exit_modal.render(ui_renderer, mb_w, mb_h);
 
             // Download-stall prompt modal — same compositing slot as the
             // exit modal. is_active() inside render() makes it a no-op
             // when not shown. Task 16.
-            mb_stall_modal.render(ui_renderer, mode.width, mode.height);
+            mb_stall_modal.render(ui_renderer, mb_w, mb_h);
 
             // Drain any completed poster fetches and upload them to GL.
             // Must happen on the GL-owning main thread. Without this

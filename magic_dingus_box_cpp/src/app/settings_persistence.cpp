@@ -317,6 +317,28 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
     return utils::Result<>::ok();
 }
 
+bool SettingsPersistence::peek_is_crt_native() {
+    // Deliberately duplicates a few lines of load_settings' file/parse
+    // handling rather than depending on AppState: this runs before the
+    // display exists, and must not pull in or mutate application state.
+    // Every failure path returns true (CRT_NATIVE) — the conservative
+    // answer, since that is the 720p path an HDMI->composite converter
+    // is known to accept.
+    std::ifstream file(get_settings_path());
+    if (!file.is_open()) return true;
+
+    Json::Value root;
+    Json::CharReaderBuilder builder;
+    std::string errors;
+    if (!Json::parseFromStream(builder, file, &root, &errors)) return true;
+
+    if (!root.isMember("display")) return true;
+    const Json::Value& display = root["display"];
+    if (!display.isMember("mode")) return true;
+
+    return display["mode"].asString() != "modern_tv";
+}
+
 utils::Result<> SettingsPersistence::load_settings(AppState& state) {
     std::string path = get_settings_path();
 

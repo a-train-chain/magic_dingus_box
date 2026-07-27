@@ -484,6 +484,16 @@ if(PLATFORM_TEST_SOURCES)
     add_test(NAME PlatformUnit COMMAND test_platform_unit)
 endif()
 
+# Display policy tests — resolution/logical-canvas policy. Pure logic.
+file(GLOB DISPLAY_TEST_SOURCES "tests/display/*.cpp")
+if(DISPLAY_TEST_SOURCES)
+    add_executable(test_display_unit ${DISPLAY_TEST_SOURCES} src/utils/config.cpp)
+    target_include_directories(test_display_unit PRIVATE src)
+    target_link_libraries(test_display_unit PRIVATE Catch2::Catch2WithMain)
+    target_compile_options(test_display_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME DisplayUnit COMMAND test_display_unit)
+endif()
+
 # Stream-gate tests — stale-frame suppression between video streams.
 # Pure logic, no GL/GStreamer deps, runs on Mac.
 file(GLOB VIDEO_TEST_SOURCES "tests/video/*.cpp")
