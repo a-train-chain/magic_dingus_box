@@ -400,6 +400,21 @@ int main(int /* argc */, char* /* argv */[]) {
     // HDMI instead of a nonexistent sink.
     {
         state.platform_profile = platform::detect_platform();
+
+        // Cache the box's own hostname once. Several screens tell the
+        // operator where to reach the box, and hardcoding a name is how
+        // both the pairing QR and the Wi-Fi screen ended up advertising
+        // "magicpi.local" — which resolves on no shipped unit, since
+        // first_boot.sh names every clone "magicpi-XXXX". The pairing
+        // screen refreshes this (and the IP) when it opens, because the
+        // address can change; this startup value makes it available to
+        // screens that render earlier.
+        {
+            char host[256] = {0};
+            if (gethostname(host, sizeof(host) - 1) == 0) {
+                state.hostname = host;
+            }
+        }
         const platform::PlatformProfile& profile = state.platform_profile;
         const char* model_name =
             (profile.model == platform::PiModel::Pi4) ? "Raspberry Pi 4" :

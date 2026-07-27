@@ -1482,10 +1482,28 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 // Plain dim fine-print at the bottom of the list. Stays
                 // un-bordered and non-focusable — handle_input() skips
                 // it when navigating.
+                // Host comes from the box itself. This read
+                // "(use magicpi.local)" until 2026-07-26 — a name that
+                // resolves on no shipped unit, because first_boot.sh
+                // gives every clone a "magicpi-XXXX" hostname. Third
+                // instance of the same hardcoded-host bug (the pairing
+                // QR and the Wi-Fi screen were the others), each one
+                // telling the operator to visit an address that cannot
+                // work. Prefer the live IP, which needs no mDNS at all.
+                std::string adv_host = state_.lan_ip;
+                if (adv_host.empty()) {
+                    adv_host = state_.hostname;
+                    if (!adv_host.empty() &&
+                        (adv_host.size() < 6 ||
+                         adv_host.compare(adv_host.size() - 6, 6, ".local") != 0)) {
+                        adv_host += ".local";
+                    }
+                }
                 const std::string hint =
                     "Advanced:  Radarr :7878  \xE2\x80\xA2  "
-                    "Prowlarr :9696  \xE2\x80\xA2  qBittorrent :8080  "
-                    "(use magicpi.local)";
+                    "Prowlarr :9696  \xE2\x80\xA2  qBittorrent :8080"
+                    + (adv_host.empty() ? std::string("")
+                                        : ("  (use " + adv_host + ")"));
                 int hint_size = th.font_small_size;
                 int hint_baseline = r.mb_text_baseline(hint_size);
                 int tw = r.mb_text_width(hint, hint_size);

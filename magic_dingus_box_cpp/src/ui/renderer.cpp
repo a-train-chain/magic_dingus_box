@@ -1395,7 +1395,21 @@ void Renderer::render(app::AppState& state) {
                 //     regardless of which interface is active
                 // Distinct color (highlight2) makes the URL pop visually
                 // since it's the actionable bit — eye is drawn to it.
-                std::string fallback_text = "or visit magicpi.local on any device";
+                // Built from the box's REAL hostname. This read "or visit
+                // magicpi.local on any device" until 2026-07-26 — a host
+                // that resolves on no shipped unit, because first_boot.sh
+                // names every clone "magicpi-XXXX". Same bug class that
+                // made the pairing QR unreachable on every box; it was
+                // telling operators to type an address that cannot work.
+                std::string mdns_host = state.hostname.empty()
+                    ? std::string("this box")
+                    : (state.hostname.size() >= 6 &&
+                       state.hostname.compare(state.hostname.size() - 6, 6, ".local") == 0
+                           ? state.hostname
+                           : state.hostname + ".local");
+                std::string fallback_text = state.hostname.empty()
+                    ? std::string("or type the address shown above")
+                    : ("or visit " + mdns_host + " on any device");
                 int fallback_width = body_font_manager_->get_text_width(fallback_text, theme_->font_small_size);
                 float fallback_x = menu_x + (static_cast<float>(menu_width) - fallback_width) / 2.0f;
                 float fallback_y = hint_y + 20.0f;
