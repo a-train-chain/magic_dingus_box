@@ -983,15 +983,43 @@ else:
     def item_name(item):
         return item.get("name") or (item.get("quality") or {}).get("name")
 
-    for item in any_profile.get("items", []):
-        # Group items have nested .items[]; their .name is the group
-        # label (e.g., "WEB 720p"). Solo items expose .quality.name.
-        nm = item_name(item)
-        want_allowed = nm in ALLOWED_QUALITY_NAMES if nm else False
-        if item.get("allowed") != want_allowed:
-            item["allowed"] = want_allowed
-            profile_changed = True
-            score_changes.append("%s.allowed=%s" % (nm, want_allowed))
+    def enforce_allowed(items, group_allowed=False):
+        # MUST recurse. Radarr nests real qualities inside group rows:
+        # "WEB 2160p" is a group whose children are WEBDL-2160p and
+        # WEBRip-2160p. Walking only the top level flips the GROUP to
+        # disallowed while its children stay allowed, so the
+        # 720p/1080p-only policy was never actually enforced for any
+        # grouped tier and 4K/SD releases stayed eligible. Caught by the
+        # weekly smoke test, which correctly inspects leaves:
+        #   "extra-allowed=WEBDL-2160p,WEBDL-480p,WEBRip-2160p,WEBRip-480p"
+        #
+        # NOTE ALLOWED_QUALITY_NAMES holds GROUP names ("WEB 720p"), not
+        # leaf names ("WEBDL-720p") — a leaf is allowed when its own name
+        # is listed OR its containing group is. Testing leaves against the
+        # group-name set alone disallows every WEB tier, which starves
+        # search results (WEB-DL is the most common source). Learned the
+        # hard way on hardware: an earlier version of this fix left only
+        # 4 qualities allowed.
+        changed = False
+        for item in items:
+            nm = item_name(item)
+            named = nm in ALLOWED_QUALITY_NAMES if nm else False
+            want_allowed = named or group_allowed
+            children = item.get("items") or []
+            if children:
+                if enforce_allowed(children, want_allowed):
+                    changed = True
+                # Group row reflects its leaves, so the Radarr UI checkbox
+                # never contradicts what is actually eligible.
+                want_allowed = any(c.get("allowed") for c in children)
+            if item.get("allowed") != want_allowed:
+                item["allowed"] = want_allowed
+                changed = True
+                score_changes.append("%s.allowed=%s" % (nm, want_allowed))
+        return changed
+
+    if enforce_allowed(any_profile.get("items", [])):
+        profile_changed = True
 
     if profile_changed:
         http("PUT", "/qualityprofile/%d" % any_profile["id"], any_profile)

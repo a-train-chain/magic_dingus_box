@@ -3392,12 +3392,42 @@ def create_app(data_dir: Path, config=None) -> Flask:
           border-radius: 16px; text-align: center; }
   h1 { margin: 0 0 12px; font-size: 22px; }
   p { color: #968B85; line-height: 1.5; }
+  form { margin: 22px 0 6px; }
+  input[name=pair] {
+    width: 100%; box-sizing: border-box; padding: 16px; font-size: 30px;
+    letter-spacing: 10px; text-align: center; border-radius: 12px;
+    border: 2px solid #4A414A; background: #1F191F; color: #F2E4D9;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  input[name=pair]:focus { outline: none; border-color: #EA3A27; }
+  button {
+    width: 100%; margin-top: 14px; padding: 16px; font-size: 17px;
+    font-weight: 600; border: 0; border-radius: 12px;
+    background: #EA3A27; color: #FFF; }
+  .home { display: inline-block; margin-top: 20px; color: #968B85;
+          font-size: 15px; text-decoration: none; }
+  .hint { font-size: 13px; margin-top: 4px; }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>Remote not paired</h1>
-  <p>On the kiosk, open <strong>Settings &rarr; Phone Remote</strong> and scan the QR code with your phone&#39;s camera.</p>
+  <h1>Pair this remote</h1>
+  <p>On the kiosk, open <strong>Settings &rarr; Phone Remote</strong> and enter the 6-digit code shown there.</p>
+  <!-- A form, not just instructions. Scanning the QR opens Safari, which
+       on iOS has a DIFFERENT cookie jar from an installed home-screen app
+       — so a QR scan can never authenticate this app, and telling the
+       user to scan it left them permanently stuck with no way out (there
+       is no address bar in standalone mode). Submitting here issues the
+       request from THIS jar, so the cookie lands where it is needed.
+       GET to "/" because that is where handle_pair_param lives; there is
+       no /pair route. -->
+  <form action="/" method="get" autocomplete="off">
+    <input name="pair" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+           placeholder="000000" aria-label="6-digit pairing code" autofocus>
+    <input type="hidden" name="tab" value="remote">
+    <button type="submit">Pair</button>
+  </form>
+  <p class="hint">The code changes every couple of minutes.</p>
+  <a class="home" href="/">&larr; Content Manager</a>
 </div>
 </body></html>
 """)

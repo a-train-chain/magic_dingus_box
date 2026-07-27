@@ -32,6 +32,16 @@ body.remote { user-select: none; }
 }
 
 /* ---- Now Playing strip ---- */
+/* Back-to-Content-Manager link. An installed PWA has no browser chrome,
+   so this is the only exit from the remote screen. Kept visually quiet —
+   it must be reachable, not prominent. */
+.home-link {
+  display: inline-block; margin-bottom: 8px;
+  color: var(--dim); font-size: 13px; text-decoration: none;
+  padding: 6px 2px;            /* touch target without visual weight */
+}
+.home-link:active { color: var(--fg); }
+
 .now-playing {
   background: var(--bg-lift); border-radius: 10px;
   padding: 10px 12px; display: flex; align-items: center; gap: 10px;
