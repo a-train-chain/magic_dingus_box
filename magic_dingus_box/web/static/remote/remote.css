@@ -59,7 +59,17 @@ body.remote { user-select: none; }
 /* ── panel ─────────────────────────────────────────────────────── */
 .screen {
   position: relative;
-  width: 100%; min-height: 100dvh;
+  /* min-height is 100%, NOT 100dvh. html and body are both height:100%, so
+     100% here resolves against the layout viewport exactly — while dvh is
+     resolved by WebKit from its own viewport bookkeeping, which is not yet
+     settled on the first paint after a same-app navigation (Content Manager
+     -> remote in an installed PWA). That produced a short .screen on first
+     open: the gold frame is inset from .screen, so it stopped early and left
+     a strip of bare background at the bottom. Nothing recomputed it until a
+     resize event fired — which is exactly why rotating to landscape and back
+     "fixed" it. Rotation was not correcting a layout bug; it was supplying
+     the resize that dvh needed. Percentage height has no such dependency. */
+  width: 100%; min-height: 100%;
   display: flex; flex-direction: column;
   /* The top pad is FLOORED at 46px. env(safe-area-inset-top) is ~59 in an
      installed PWA on a Dynamic Island phone and 20 on an SE, but it is 0 in
@@ -569,9 +579,28 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto minmax(0, 1fr);
     column-gap: 26px;
-    max-width: 900px;
-    padding-top: calc(env(safe-area-inset-top) + 14px);
-    padding-bottom: calc(env(safe-area-inset-bottom) + 14px);
+    /* row-gap, NOT a margin on .disp. The panel and the control cluster both
+       live in row 2; a margin-top on .disp alone shifted the panel down 20px
+       while .ctrl kept centring in the untouched row, so the cluster sat 10px
+       above the panel's centreline. A gap moves the row itself, keeping the
+       two columns aligned. */
+    row-gap: 20px;
+    /* max-width is explicitly CLEARED here. The `min-width: 620px` rule above
+       sets `max-width: 520px; margin: 0 auto`, and a landscape phone matches
+       it — this block used to override only the max-width (to 900px) and let
+       `margin: 0 auto` carry over, so a 932pt Pro Max got a 900px centred
+       panel with 16pt of dead space per side. Added to the frame's own 9px
+       inset, that put the gold line 25pt from the left and right edges while
+       top and bottom sat at 9pt — visibly lopsided, and the reason the side
+       margins read as too large. Full-bleed makes all four the same 9pt. */
+    max-width: none; margin: 0;
+    /* 20px, not 14px. .rule is hidden in this layout so the header is just the
+       22px-tall wordmark strip, and the back control's 44px tap box is centred
+       on it — overhanging 11px top and bottom. 14px left only 3px of daylight
+       above it and the .disp margin left 1px below. 20px on both sides gives
+       the tap box 9px of clearance either way. */
+    padding-top: calc(env(safe-area-inset-top) + 20px);
+    padding-bottom: calc(env(safe-area-inset-bottom) + 20px);
     /* The panel spans nearly the full column here, so the default 22px gutter
        runs it under the corner screws. Clear them. 44px, not 40px: the screws
        moved to 28px (spanning 28..39), and in LANDSCAPE safe-area-inset-top is
@@ -581,16 +610,45 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
     padding-left: calc(env(safe-area-inset-left) + 44px);
     padding-right: calc(env(safe-area-inset-right) + 44px);
   }
-  .hd   { grid-column: 1; grid-row: 1; }
-  .disp { grid-column: 1; grid-row: 2; margin: 12px 0 0; }
-  .ctrl { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  /* The header spans BOTH columns. Confined to column 1 it centred the
+     wordmark over the panel rather than the screen, which read as
+     off-centre — on a 932pt Pro Max the column centre is x=348 against a
+     viewport centre of 466. Spanning both puts it on the true centreline.
+     .ctrl consequently drops to row 2 only; it is still align-self:center,
+     so the cluster stays vertically centred in the space left below the
+     header (row 2 is 342pt against a 309pt cluster). */
+  .hd   { grid-column: 1 / span 2; grid-row: 1; }
+  .disp { grid-column: 1; grid-row: 2; margin: 0; }
+  .ctrl { grid-column: 2; grid-row: 2; align-self: center; }
 
-  .ctrl { --cap: 62px; --gap: 12px; --dpad: 146px; --arm: 50px; --vgap: 18px; }
-  .mark img { width: 150px; }
+  /* --dpad MUST exceed 3 * --arm. Every limb and the centre key are --arm
+     square, the limbs sit flush to the pad's edges and the key is centred, so
+     the daylight between an arrow and the key is exactly
+         (--dpad - 3 * --arm) / 2
+     146/50 gave -2px — the arrows literally overlapped the Enter key. 152/46
+     gives +7px, comparable to the default tier's +8 (196/60).
+
+     The pad SHRANK to buy that gap rather than growing. Going the other way
+     (166/50, also +8px) made the cluster 309px, and on the shorter landscape
+     phone (844x390) the budget after the 20px paddings, the header and the
+     row-gap is only 302px — it overflowed the page by 6px. 152/46 comes to
+     295px with 7px to spare, and both --arm and --cap stay at or above the
+     44pt touch minimum (46 and 62). */
+  .ctrl { --cap: 62px; --gap: 12px; --dpad: 152px; --arm: 46px; --vgap: 16px; }
+  .mark img { width: 190px; }
   .mark { margin-top: 0; }
   .rule { display: none; }
-  .artcube { width: 56px; height: 64px; }
-  .big { font-size: 15px; }
+  /* The panel occupies the ENTIRE left column in this layout — roughly
+     700x340pt on a Pro Max — so the portrait sizes left the title marooned in
+     the middle of a large empty field. Scaled to the space it actually gets
+     rather than inherited from the narrow portrait column. */
+  .artcube { width: 92px; height: 105px; }
+  .art { gap: 20px; padding: 14px 4px 8px; }
+  .kind { font-size: 9px; }
+  .big { font-size: 27px; }
+  .statusline { gap: 9px; }
+  .lbl, .src { font-size: 9px; }
+  .t { font-size: 10px; }
   .g { font-size: 12px; }
   .lk, .lv { font-size: 8px; }
   .lv { white-space: nowrap; }
