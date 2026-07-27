@@ -66,7 +66,15 @@ EXPECTED_CUSTOM_FORMATS=(
     "HDR / Dolby Vision"
     "Remux / Raw-HD"
     "x264 codec (BONUS)"
-    "Trusted small-release groups"
+    # Split from the old single "Trusted small-release groups" (+30) on
+    # 2026-07-26: that format lumped quality rips (RARBG/SURGE/EVO) in with
+    # groups whose whole identity is making SMALL files (YIFY/GalaxyRG), so
+    # a low-bitrate encode scored +80 and beat a better release at +50.
+    # The legacy name is deliberately NOT listed here — fresh provisions
+    # never create it (it is gone from radarr_custom_formats.json); it only
+    # lingers, scored 0, on boxes provisioned before the split.
+    "Quality release groups"
+    "Low-bitrate size-optimized groups"
 )
 
 # Catalog title used for live-search smoke test. "The Matrix" is
