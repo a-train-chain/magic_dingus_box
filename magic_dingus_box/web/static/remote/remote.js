@@ -165,10 +165,22 @@
       ra.hidden = true;
     }
 
+    // A film is LOADED (playing OR PAUSED). Do NOT use s.screen for this.
+    // main.cpp:3557 derives screen from controller.is_playing(), and
+    // GstPlayer::update_state() sets is_playing_ = (state == GST_STATE_PLAYING)
+    // — a PAUSED pipeline reports NOT playing, so `screen` collapses back to
+    // 'playlist' the instant the user pauses, even though a film is still up.
+    // Three separate things read that signal and all three were wrong while
+    // paused: the centre-key label, the status line, and tap-to-seek.
+    // duration_sec is the honest test: GstPlayer::stop() zeroes it, and
+    // entering/leaving the Media Browser both call controller.stop().
+    const pb = s.playback || {};
+    const mediaLoaded = (pb.duration_sec || 0) > 0;
+
     const np = s.now_playing || {};
     // The status line now reads as a source/context strip; the title has
     // its own large slot below it.
-    if (s.screen === 'playback') {
+    if (s.screen === 'playback' || mediaLoaded) {
       npLabel.textContent = 'NOW PLAYING';
     } else if (s.screen === 'settings') {
       npLabel.textContent = 'SETTINGS';
@@ -179,9 +191,9 @@
     }
     // Idle vs playing. "NOW PLAYING / —" over 0:00/0:00 reads as a broken
     // app rather than an idle one, so say so plainly and hide the scrub.
-    const p = s.playback || {};
-    const hasMedia = (p.duration_sec || 0) > 0;
-    app.classList.toggle('idle', !hasMedia);
+    const p = pb;
+    const hasMedia = mediaLoaded;
+    screen.classList.toggle('idle', !hasMedia);
 
     npTitle.textContent = hasMedia ? (np.title || '—') : 'Nothing playing';
     if (npSource) npSource.textContent = (np.subtitle || '').toUpperCase();
@@ -200,15 +212,17 @@
                                        : '\u275A\u275A';
     }
 
-    // Contextual centre key. While a video plays with the overlay hidden,
-    // SELECT reveals the playlist overlay rather than selecting (see
-    // main.cpp's SELECT handler), so the key and its caption say "Browse".
-    // One class drives label + caption + colour together.
-    const overlayHidden =
-      s.screen === 'playback' &&
-      s.playback && s.playback.duration_sec > 0 &&
-      s.overlay_visible === false;
-    app.classList.toggle('playing', !!overlayHidden);
+    // Contextual centre key. Whenever a film is loaded and the overlay is
+    // hidden, SELECT does not select — main.cpp's SELECT handler (2623-2627)
+    // reveals the overlay and returns early:
+    //     if (state.video_active && !state.ui_visible_when_playing) {
+    //         state.ui_visible_when_playing = true; ...; break; }
+    // so the key and its caption must read "Browse". Settings and RetroArch
+    // own the input while they are up and SELECT there really does select,
+    // so they are excluded. One class drives label + caption + colour.
+    const modal = s.screen === 'settings' || s.screen === 'retroarch';
+    const overlayHidden = mediaLoaded && !modal && s.overlay_visible === false;
+    screen.classList.toggle('playing', !!overlayHidden);
 
     applyTextInput(s);
   }
@@ -272,9 +286,14 @@
     }
   }, 500);
 
-  // Tap-to-seek (works only in playback mode; server-side action lands in Phase F).
+  // Tap-to-seek. Gated on "the scrub bar is actually showing", NOT on
+  // data-mode: `screen` collapses to 'playlist' while paused (see the
+  // mediaLoaded note above), which silently killed seeking in the one state
+  // where a user is most likely to want it — paused, scrubbing to a spot.
+  // .idle is set by the same status tick that hides the scrub row, so this
+  // is exactly "there is a duration to seek within".
   scrub.addEventListener('click', (e) => {
-    if (screen.dataset.mode !== 'playback') return;
+    if (screen.classList.contains('idle')) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const pos = (e.clientX - rect.left) / rect.width;
     send({ t: 'seek', pos: Math.max(0, Math.min(1, pos)) });

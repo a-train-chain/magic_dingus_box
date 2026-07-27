@@ -72,15 +72,41 @@ body.remote { user-select: none; }
     radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
     radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
 }
+/* The two faceplate rules are BEZELS. They are absolutely positioned, so
+ * `inset` resolves against .screen's padding box == its border box == the raw
+ * viewport edges: they deliberately bypass the safe-area padding that protects
+ * the content, which means they have to clear the iPhone's rounded display
+ * mask on their own. env(safe-area-inset-*) cannot help — those describe a
+ * safe RECTANGLE (left/right are both 0 in portrait) and encode nothing about
+ * the corners; adding them would also shove the bezel ~68px inward on the
+ * notch side in landscape.
+ *
+ * Containment rule for a rounded rect (inset i, outer radius r) inside the
+ * display's rounded rect (radius R):    r + 3.4142 * i  >=  R
+ * Display corner radii, in pt == CSS px at initial-scale=1:
+ *   SE/8 0 | X/XS/11Pro 39 | XR/11 41.5 | 12/13 mini 44 | 12/13/14 47.33
+ *   12PM/13PM/14Plus 53.33 | 14Pro/15/16 55 | 16Pro 62
+ * The old 9px/11px frame scored 41.7, so it was CLIPPED on everything from
+ * the mini up — the gold line simply vanished at all four corners. 46px
+ * scores 76.7 and clears every model, worst case +6.1px on the 16 Pro.
+ *
+ * DO NOT "fix" this by increasing the inset instead, even though inset is the
+ * ~3.4x cheaper lever: the Dynamic Island's top edge sits ~11pt down and the
+ * gold rail occupies y=9..10.5, so there is only ~0.5px of daylight there.
+ * The inset cannot move inward at all. Only the radius moves.
+ *
+ * 9px + 46px is exactly concentric with a 55pt display, so on a 14 Pro / 15 /
+ * 16 the gold-to-bezel gap is a uniform 9.0px the whole way around. The inner
+ * rule stays concentric with it: r_inner = r_outer - (14 - 9) = 41. */
 .screen::before {
   content: ""; position: absolute; inset: 9px;
-  border: 1.5px solid var(--accent); border-radius: 11px;
+  border: 1.5px solid var(--accent); border-radius: 46px;
   box-shadow: 0 0 10px rgba(245,191,66,.13), inset 0 0 22px rgba(0,0,0,.5);
   pointer-events: none; z-index: 5;
 }
 .screen::after {
   content: ""; position: absolute; inset: 14px;
-  border: 1px solid rgba(242,228,217,.28); border-radius: 7px;
+  border: 1px solid rgba(242,228,217,.28); border-radius: 41px;
   pointer-events: none; z-index: 5;
 }
 
@@ -93,8 +119,20 @@ body.remote { user-select: none; }
   content: ""; position: absolute; inset: 3px;
   border-top: 1.5px solid rgba(0,0,0,.75); transform: rotate(28deg);
 }
-.screw.tl { left: 24px; top: 24px }   .screw.tr { right: 24px; top: 24px }
-.screw.bl { left: 24px; bottom: 24px } .screw.br { right: 24px; bottom: 24px }
+/* 28px, not 24px — REQUIRED companion to the 46px radius above. At an 11px
+ * radius the screws sat in the rules' STRAIGHT-EDGE zone and clearance was
+ * trivial. At 46px the arc centre moves to (55,55) and the screws land inside
+ * the CORNER ARC, where the constraint is
+ *   (55 - s - 5.5) * sqrt(2) + 5.5 <= radius - border
+ *   s=24 -> 41.56 vs the cream rule's 40px inner edge = 1.6px OVERLAP.
+ * .screen::after is z-index 5 and .screw is z-index 4, so the cream hairline
+ * would paint across all four screw heads — trading a corner artefact that
+ * only shows on rounded phones for one that shows on every device.
+ *   s=28 -> 35.9: 4.1px clear of the cream rule (down from 9px, accepted),
+ *   8.6px clear of the gold. Still far inside the display mask: nearest point
+ *   41.9px from the corner vs a 25.7px boundary on a 62pt 16 Pro. */
+.screw.tl { left: 28px; top: 28px }   .screw.tr { right: 28px; top: 28px }
+.screw.bl { left: 28px; bottom: 28px } .screw.br { right: 28px; bottom: 28px }
 
 button { appearance: none; -webkit-appearance: none; border: 0; background: none;
          font: inherit; color: inherit; cursor: pointer; }
@@ -145,7 +183,35 @@ a { text-decoration: none; color: inherit; }
 .big {
   font-family: "ZenDots", sans-serif; font-size: 19px; font-weight: 400;
   letter-spacing: .5px; margin-top: 6px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* TWO-LINE TITLE. ZenDots is a wide display face (~0.65em average advance):
+     at 19px in the 202px left beside the 96px cube only ~15 characters fit per
+     line, so "Thundercats - Exodus" (281px unwrapped) lost its whole second
+     half to the ellipsis.
+
+     The second line is FREE. .art's height is set by the CUBE (96px; 62px at
+     max-height:700, 64px in landscape) and a two-line .arttext is only 59px,
+     so .art, .disp, the scrub row and the control cluster do not move at any
+     breakpoint. Keeping the cube is exactly what makes this cost nothing.
+
+     white-space:nowrap MUST STAY DELETED. Leaving it in silently defeats the
+     clamp — the text collapses back to one line with no error and no warning.
+     text-overflow is gone too: it only applies to single-line nowrap overflow,
+     and WebKit draws the clamp's own ellipsis on the last line. overflow:hidden
+     is REQUIRED — it is what triggers that ellipsis.
+
+     -webkit-box is deliberate, not legacy cruft: the standardised `line-clamp`
+     is too new to rely on in an installed iOS PWA, while -webkit-box +
+     -webkit-line-clamp is WebKit's original implementation and has shipped in
+     iOS Safari since iOS 5.
+
+     line-height is left at ZenDots' own normal (exactly 1.2em: upm 1000, typo
+     930/-270, USE_TYPO_METRICS set). Tightening it buys no height here and
+     eats descender clearance.
+
+     overflow-wrap guards the 360pt case, where one long word ("Transformers",
+     177px vs 172px available) would otherwise be clipped mid-glyph. */
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; overflow-wrap: break-word;
 }
 
 .scrub-row { display: flex; align-items: center; gap: 9px; margin-top: auto; }
@@ -404,6 +470,16 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
   .disp { margin: 10px 0 12px; padding: 10px 12px 11px; }
 }
 
+/* SE / SE2 / SE3 / 8 (375x667) have SQUARE display corners, so they need none
+   of the corner-clearance radius and the faceplate reads more faithfully with
+   its original near-square bezel. 375x812 (12/13 mini, R=44) genuinely DOES
+   need the big radius and is excluded here by the max-height; landscape phones
+   are excluded by the max-width. Concentric: r_inner = r_outer - 5. */
+@media (max-width: 389px) and (max-height: 700px) {
+  .screen::before { border-radius: 11px; }
+  .screen::after  { border-radius:  6px; }
+}
+
 /* Large phones (Pro Max / Plus, >= 430pt). Extra width is real estate —
    grow the keys rather than leaving wide dead margins. */
 @media (min-width: 430px) and (min-height: 860px) {
@@ -419,6 +495,19 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
    does not stretch into an unusable slab. */
 @media (min-width: 620px) {
   .screen { max-width: 520px; margin: 0 auto; }
+}
+
+/* Revert to the square faceplate bezel ONLY where the panel is genuinely a
+   centred card with no display corner near it — a tablet or a desktop browser.
+   The `min-height: 521px` is load-bearing, not decoration: it is the exact
+   complement of the landscape block's `max-height: 520px`. Without it a
+   844x390 phone in landscape matches `min-width: 620px`, yet that block raises
+   max-width to 900px so the panel is still FULL-BLEED — its frame would sit
+   9px from a 55pt rounded corner with an 11px radius and be clipped all over
+   again (11 + 3.4142*9 = 41.7 < 55). Landscape phones keep the 46px radius. */
+@media (min-width: 620px) and (min-height: 521px) {
+  .screen::before { border-radius: 11px; }
+  .screen::after  { border-radius:  6px; }
 }
 
 /* Landscape on a phone: the thumb zone assumption does not hold and the
@@ -438,10 +527,14 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
     max-width: 900px;
     padding-top: calc(env(safe-area-inset-top) + 14px);
     padding-bottom: calc(env(safe-area-inset-bottom) + 14px);
-    /* The panel spans nearly the full column here, so the default 22px
-       gutter runs it under the corner screws. Clear them. */
-    padding-left: calc(env(safe-area-inset-left) + 40px);
-    padding-right: calc(env(safe-area-inset-right) + 40px);
+    /* The panel spans nearly the full column here, so the default 22px gutter
+       runs it under the corner screws. Clear them. 44px, not 40px: the screws
+       moved to 28px (spanning 28..39), and in LANDSCAPE safe-area-inset-top is
+       0 and this block sets padding-top to +14px, so .back ("MANAGER") sits at
+       y=14..37 — the same vertical band as the screws. Only this horizontal
+       gutter separates them, and 40px would leave 1px where it used to be 5. */
+    padding-left: calc(env(safe-area-inset-left) + 44px);
+    padding-right: calc(env(safe-area-inset-right) + 44px);
   }
   .hd   { grid-column: 1; grid-row: 1; }
   .disp { grid-column: 1; grid-row: 2; margin: 12px 0 0; }
