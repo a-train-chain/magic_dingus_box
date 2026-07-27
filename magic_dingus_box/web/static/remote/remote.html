@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1F191F">
-<link rel="stylesheet" href="/static/remote/remote.css?v=8">
+<link rel="stylesheet" href="/static/remote/remote.css?v=9">
 <!-- Shared app manifest, scoped to "/" so the Content Manager and the
      remote install as ONE app rather than two. The old
      /static/remote/manifest.json declared start_url "/admin/remote" while
@@ -64,12 +64,26 @@
   <span class="screw bl"></span><span class="screw br"></span>
 
   <header class="hd">
-    <!-- Way out of the app. An installed PWA has no address bar and no
-         back button, so without this the remote is a one-way trip and the
-         only escape is force-quitting. Same-origin and inside the manifest
-         scope, so it navigates within the app. -->
-    <a class="back home-link" href="/" aria-label="Back to Content Manager">&larr; MANAGER</a>
-    <div class="mark"><img src="/static/remote/logo.png" alt="Magic Dingus Box"></div>
+    <!-- Way out of the app. An installed PWA has no address bar and no back
+         button, so without this the remote is a one-way trip and the only
+         escape is force-quitting. Same-origin and inside the manifest scope,
+         so it navigates within the app.
+
+         It lives INSIDE .mark, absolutely positioned to the left and centred
+         on the wordmark. That is what keeps it clear of the top-left faceplate
+         screw (x 28..39, y 28..39): sitting on the wordmark's centreline puts
+         it well below y=39 at every safe-area value, including 0 (Safari, and
+         landscape). Being absolute, it does not disturb the flex centring of
+         the wordmark itself. -->
+    <div class="mark">
+      <a class="back home-link" href="/" aria-label="Back to Content Manager">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M15 4.5 L7.5 12 L15 19.5" fill="none" stroke="currentColor"
+                stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </a>
+      <img src="/static/remote/logo.png" alt="Magic Dingus Box">
+    </div>
     <div class="rule"><i></i></div>
   </header>
 
@@ -161,5 +175,5 @@
     <button class="ra-quit" data-btn="QUIT_GAME">Quit Game</button>
   </div>
 </div>
-<script src="/static/remote/remote.js?v=8"></script>
+<script src="/static/remote/remote.js?v=9"></script>
 </body></html>

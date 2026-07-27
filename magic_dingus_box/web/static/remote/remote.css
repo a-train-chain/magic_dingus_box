@@ -61,8 +61,16 @@ body.remote { user-select: none; }
   position: relative;
   width: 100%; min-height: 100dvh;
   display: flex; flex-direction: column;
+  /* The top pad is FLOORED at 46px. env(safe-area-inset-top) is ~59 in an
+     installed PWA on a Dynamic Island phone and 20 on an SE, but it is 0 in
+     plain Safari — and at 0 the header rode up into the corner screws' band
+     (y 28..39), putting the back control on top of the top-left screw. 46px
+     is the screw's lower edge (39) plus a 7px margin, so the header clears it
+     at every safe-area value. On every real installed-PWA inset the max()
+     picks the env() branch and nothing moves. Landscape overrides padding-top
+     separately and is unaffected. */
   padding:
-    calc(env(safe-area-inset-top) + 26px)
+    max(env(safe-area-inset-top) + 26px, 46px)
     calc(env(safe-area-inset-right) + 22px)
     calc(env(safe-area-inset-bottom) + 54px)
     calc(env(safe-area-inset-left) + 22px);
@@ -139,12 +147,30 @@ button { appearance: none; -webkit-appearance: none; border: 0; background: none
 a { text-decoration: none; color: inherit; }
 
 /* ── header ────────────────────────────────────────────────────── */
+/* The way out of the app, sited ON the wordmark's centreline rather than in
+ * the corner above it. That placement is the fix for the faceplate screw
+ * (x 28..39, y 28..39, z-index 4) which used to paint straight over the old
+ * "MANAGER" text whenever env(safe-area-inset-top) was small — Safari, and
+ * landscape where it is 0. Anchored to the wordmark instead of the viewport
+ * top, the control sits comfortably below y=39 at EVERY safe-area value,
+ * so the collision cannot recur.
+ *
+ * Absolutely positioned inside .mark so it does not disturb the flex centring
+ * of the wordmark, and left:-11px so the 44x44 tap box (Apple's minimum)
+ * brackets the icon while the icon's own edge still lines up near the 22px
+ * screen gutter that .disp below it uses. */
 .back {
-  display: inline-block; font-size: 9px; letter-spacing: .12em;
-  color: var(--dim); padding: 6px 9px 6px 0;
+  position: absolute; z-index: 6;
+  left: -11px; top: 50%; transform: translateY(-50%);
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--dim);
+  -webkit-tap-highlight-color: transparent;
 }
+.back svg { width: 21px; height: 21px; display: block; }
 .back:active { color: var(--accent); }
-.mark { display: flex; justify-content: center; margin-top: 2px; }
+.mark { position: relative; display: flex; justify-content: center;
+        align-items: center; margin-top: 2px; }
 .mark img { width: 232px; height: auto; display: block;
             filter: drop-shadow(0 1px 2px rgba(0,0,0,.65)); }
 .rule {
@@ -308,7 +334,11 @@ a { text-decoration: none; color: inherit; }
 .cap.menu { position: absolute; top: var(--menutop); left: calc(var(--roww) - var(--cap)); }
 .mlabel {
   font-family: "ZenDots", sans-serif; position: absolute;
-  top: calc(var(--menutop) + var(--cap) + 9px); left: calc(var(--roww) - var(--cap));
+  /* 18px, not 9px. The keycap paints a 5px `well` ring outside its border box
+     (box-shadow spread), so a 9px raw offset left only 4px of VISIBLE daylight
+     between the black key and this label — the same well-ring trap that made
+     the green key and MENU look merged. 18px raw = 13px visible. */
+  top: calc(var(--menutop) + var(--cap) + 18px); left: calc(var(--roww) - var(--cap));
   width: var(--cap); text-align: center; font-size: 10px;
   color: var(--menu-blue); letter-spacing: .06em;
 }
