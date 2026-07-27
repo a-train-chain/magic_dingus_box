@@ -3346,6 +3346,24 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # ===== SERVE WEB INTERFACE =====
 
+    @app.get("/api/host-info")
+    def host_info():  # type: ignore[no-redef]
+        """The box's own addresses, for the install-coaching toast.
+
+        An installed home-screen app is pinned to the origin it was
+        installed from, permanently. If the phone arrived via the pairing
+        QR it is standing on a raw DHCP IP, and an icon made there breaks
+        at the next lease change. The toast uses this to offer the stable
+        <hostname>.local address instead.
+        """
+        import socket
+        try:
+            host = socket.gethostname()
+        except Exception:
+            host = ""
+        mdns = (host + ".local") if host and not host.endswith(".local") else host
+        return jsonify({"hostname": host, "mdns": mdns})
+
     @app.get("/")
     @app.get("/admin")
     def admin_interface():  # type: ignore[no-redef]

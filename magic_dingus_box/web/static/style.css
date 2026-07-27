@@ -3615,3 +3615,29 @@ header::after {
     border-left: 3px solid #F5BF42;
   }
 }
+
+/* ── Install coaching toast (Add to Home Screen) ─────────────────────
+   Mirrors .install-toast in remote/remote.css so the Content Manager and
+   the remote read as one product. Fixed to the bottom with a safe-area
+   inset so it clears the iPhone home indicator. */
+.install-toast {
+  position: fixed; left: 16px; right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  max-width: 560px; margin: 0 auto;
+  background: #2A232A; color: #F2E4D9;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #EA3A27;
+  font-size: 13px; line-height: 1.45;
+  z-index: 2000;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  animation: install-toast-in 220ms ease-out;
+}
+.install-toast strong { color: #EA3A27; }
+.install-toast a { color: #F5BF42; }
+.install-toast__sub { color: #968B85; font-size: 12px; }
+@keyframes install-toast-in {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

@@ -526,6 +526,94 @@ const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
 // ===== INITIALIZATION =====
 
+
+/* ── Install coaching (Add to Home Screen) ──────────────────────────
+ * Nothing in the product told a new owner that installing to the home
+ * screen is the intended first step, so it was tribal knowledge.
+ *
+ * Two things this deliberately gets right:
+ *
+ * 1. THE ADDRESS. iOS pins an installed app to the origin it was
+ *    installed FROM, permanently — no manifest key or redirect can move
+ *    it afterwards. The kiosk's pairing QR hands out the raw DHCP IP
+ *    (correct for pairing: a code lives ~2 minutes, far shorter than any
+ *    lease), which means the phone is standing on the worst possible
+ *    origin at exactly the moment someone would tap Add to Home Screen.
+ *    An icon made there dies at the next lease change and then points at
+ *    whatever device inherited the address. So: if we are on a bare IP,
+ *    coach the user to switch to the .local name FIRST rather than
+ *    encouraging an install that will silently rot.
+ *
+ * 2. THE REMOTE STILL NEEDS PAIRING. Scanning the QR authenticates
+ *    Safari, and on iOS an installed app has a separate cookie jar — so
+ *    the app must pair itself with the 6-digit code. Say so here, where
+ *    the user is deciding to install, rather than letting them discover
+ *    it as a dead end later.
+ */
+function maybeShowInstallHint() {
+    // Fetch the box's stable .local name first, so that if we are on a
+    // bare IP the toast can offer a working alternative rather than
+    // telling the user to go find one. Failure is fine — the toast just
+    // falls back to generic wording.
+    fetch('/api/host-info')
+        .then(r => r.ok ? r.json() : null)
+        .then(info => { if (info && info.mdns) window.MDB_MDNS_HOST = info.mdns; })
+        .catch(() => {})
+        .finally(() => renderInstallHint());
+}
+
+function renderInstallHint() {
+    try {
+        const isStandalone =
+            (typeof window.navigator.standalone !== 'undefined' && window.navigator.standalone === true) ||
+            window.matchMedia('(display-mode: standalone)').matches;
+        if (isStandalone) return;          // already installed — nothing to say
+
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
+        if (!isIOS && !isAndroid) return;  // desktop: installing adds nothing here
+
+        if (localStorage.getItem('mdb_install_hint_shown') === '1') return;
+
+        const host = location.hostname;
+        const onBareIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+
+        const el = document.createElement('div');
+        el.className = 'install-toast';
+
+        if (onBareIp) {
+            // Don't encourage an install that will break. Offer the stable
+            // address instead — same page, resolvable name.
+            const stable = window.MDB_MDNS_HOST || '';
+            el.innerHTML =
+                '<strong>Before installing</strong><br>' +
+                'This address (' + host + ') can change when your router ' +
+                'reassigns it, which would break a saved icon.' +
+                (stable
+                    ? ' Open <a href="http://' + stable + ':5000/">' + stable + ':5000</a> and install from there.'
+                    : ' Use the box&rsquo;s <em>.local</em> name shown on the kiosk instead.');
+        } else {
+            el.innerHTML =
+                '<strong>Add to Home Screen</strong> to use this as an app.<br>' +
+                'Tap ' + (isIOS ? 'the Share button' : 'the menu') + ' &rarr; Add to Home Screen.' +
+                '<br><span class="install-toast__sub">The remote pairs separately &mdash; ' +
+                'open it in the app and enter the code from the kiosk.</span>';
+        }
+
+        // Clicking anywhere on the toast dismisses it for good, except on
+        // the address link (which should navigate, not just dismiss).
+        el.addEventListener('click', (ev) => {
+            if (ev.target && ev.target.tagName === 'A') return;
+            el.remove();
+            localStorage.setItem('mdb_install_hint_shown', '1');
+        });
+        document.body.appendChild(el);
+    } catch (e) {
+        // Coaching is a nicety; never let it break the Content Manager.
+        console.warn('install hint skipped:', e);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // 1. Start discovery IMMEDIATELY - this is the most important thing
     discoverDevices();
@@ -542,6 +630,14 @@ document.addEventListener('DOMContentLoaded', () => {
         initializeCollapsibleSections();
     } catch (e) {
         console.error('Collapsible sections failed:', e);
+    }
+
+    // 4. Coach first-time phone visitors to install. Last, and wrapped,
+    //    so it can never delay or break the actual manager UI.
+    try {
+        maybeShowInstallHint();
+    } catch (e) {
+        console.warn('install hint failed:', e);
     }
 
     // Auto-refresh device list every 30 seconds
