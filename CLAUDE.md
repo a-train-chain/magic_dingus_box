@@ -284,6 +284,28 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
   - **Auto-recover from unhealthy**: On Gluetun `health_status: unhealthy` events, waits 5 minutes for confirmation (transient DNS blips self-recover), then if still unhealthy issues `docker restart mdb_gluetun`. The resulting `start` event re-enters the netns-relink branch above. Event-parsing uses `IFS= read -r line` + `event_action="${event_action// /}"` to normalize whitespace — Docker formats `health_status: healthy` (with space) which would otherwise miss the case-statement match.
 - **magic-dingus-clear-cooldowns.service** (systemd oneshot, on Pi host) — runs after `magic-dingus-services` on every boot. Stops Radarr, nulls out `IndexerStatus.DisabledTill / MostRecentFailure / InitialFailure` and resets `EscalationLevel` in `radarr.db`, restarts Radarr. Radarr persists per-indexer cooldowns up to 24 hours after consecutive failures; without this oneshot, a brief 3 AM network blip locks the indexer chain out until the next morning even though containers report healthy and smoke test passes. Idempotent — if no cooldowns are active the UPDATE affects 0 rows.
 - **magic-dingus-sync-qbit-password.service** (systemd oneshot, on Pi host) — runs after `magic-dingus-services` on every boot. Re-applies Step 7.5's qBit password sync logic: try login with `.env` value first (happy-path no-op), fall back to docker default `adminadmin`, then `setPreferences` to set the `.env` password and re-disable localhost-auth-bypass. Recovers from the drift state where `docker compose up -d` on a config change SIGKILL'd qBit before it flushed its pending password change to disk — the new container then comes up with the old persisted password and Radarr 401s.
+- **magic-dingus-storage-attach.service** (systemd oneshot, `WantedBy=mnt-ssd.mount`)
+  — re-links the media containers when the movie drive is attached AFTER
+  the Docker stack started. Radarr/qBittorrent bind SUBDIRECTORIES of
+  `${STORAGE_ROOT}` (`/library`, `/downloads`) and Docker resolves a bind
+  source once, at container start. If the stack came up with the drive
+  unplugged, those binds point at empty placeholder dirs on the SD card;
+  plugging the drive in later mounts it on the HOST but the running
+  containers keep seeing the empty dirs — Radarr reports an empty library
+  and imports fail with nothing in any log to explain it. **Mount
+  propagation cannot fix this**: the mount event is at the PARENT
+  (`/mnt/ssd`) while the binds are on its CHILDREN, and propagation
+  carries events down into a bind, never up from above. The unit fires on
+  every mount activation and is guarded to no-op unless genuinely stale
+  (host library has entries AND the container sees none), so the ordinary
+  drive-present boot costs one comparison. It uses explicit
+  `compose rm -s -f` + `up -d`, **never `--force-recreate`**: that works
+  by renaming the old container to a hash-prefixed name before removing
+  it, and a leftover rename makes every subsequent recreate die on
+  "Conflict. The container name ... is already in use" — observed on
+  hardware, and it would have made the re-link fail permanently and
+  silently. Orphaned renames are swept first so an affected box heals
+  itself.
 - **magic-dingus-auto-blocklist.timer** (systemd, on Pi host) — runs every 15 minutes (OnBootSec=90s for cold-boot catch-up). Scans Radarr's queue for items with `trackedDownloadStatus=warning` whose `statusMessages` contain known-bad signatures (executable extensions, "no videos in folder", "invalid video file", "unsupported extension", "sample file too large"). DELETEs matching items with `blocklist=true + removeFromClient=true` and triggers `MoviesSearch` for the affected movie so Radarr picks a real alternative. Plugs a gap in Radarr's failure handling: `autoRedownloadFailed=true` only kicks in for FAILED downloads (qBit errors, stalls), not WARNINGs (scam torrents that completed in qBit but have junk content). Without this, a single .exe/.txt scam blocks the queue indefinitely.
 - **magic-dingus-missing-search.timer** (systemd, on Pi host) — runs every 4 hours (OnBootSec=3min for cold-boot catch-up). POSTs `MissingMoviesSearch` to Radarr when any monitored movie has no file yet. Plugs the add-time-miss gap: "Add to Library" sets `addOptions.searchForMovie=true` so Radarr fires exactly ONE auto-search the instant a movie is added; if that single search comes up empty (good release not posted yet, indexer in transient cooldown, Byparr mid-Cloudflare-challenge), Radarr does not retry at a useful cadence (RSS sync only catches brand-new releases going forward). The title then sits with no download until the user manually opens the release picker. Observed live with "Wolfs (2024)" — the +50-scoring x264 YTS release the user later grabbed by hand simply wasn't available at the add-time search instant. This timer retries the missing backlog so those self-heal. Note the *selection* logic was already correct (x264 +50 preferred, HEVC/AV1/foreign/remux rejected by Custom Format scores below the `minFormatScore=-200` floor); the only gap was retry-on-empty. `missing_search.py` is idempotent — a run with zero missing movies is a no-op.
 - **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, Byparr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.

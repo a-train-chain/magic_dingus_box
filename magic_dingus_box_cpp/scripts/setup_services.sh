@@ -376,6 +376,28 @@ else
     echo "Note: cooldown-clear assets not found, skipping install."
 fi
 
+# 3.7b. Install + enable the movie-drive hot-plug re-link.
+# Radarr/qBittorrent bind SUBDIRECTORIES of ${STORAGE_ROOT}, and Docker
+# resolves a bind source once at container start. If the stack came up
+# while the drive was unplugged, those binds point at empty placeholder
+# directories on the SD card; plugging the drive in later mounts it on the
+# HOST but the running containers keep looking at the old empty dirs —
+# Radarr shows an empty library and imports fail silently. Mount
+# propagation can't help: the mount event is at the PARENT of the binds.
+# This unit is WantedBy=mnt-ssd.mount, so it fires on every attach; the
+# script no-ops unless the containers are genuinely stale.
+if [ -f "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" ] && \
+   [ -f "${SCRIPT_DIR}/storage_attach.sh" ]; then
+    sudo install -m 0644 \
+        "${SYSTEMD_DIR}/magic-dingus-storage-attach.service" \
+        /etc/systemd/system/magic-dingus-storage-attach.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable magic-dingus-storage-attach.service
+    echo "Movie-drive hot-plug re-link installed + enabled."
+else
+    echo "Note: storage-attach assets not found, skipping install."
+fi
+
 # 3.8. Install + enable boot-time qBittorrent password resync.
 # Background: qBit's WebUI password is persisted as a PBKDF2 hash in
 # qBittorrent.conf. When the docker container is RECREATED (which

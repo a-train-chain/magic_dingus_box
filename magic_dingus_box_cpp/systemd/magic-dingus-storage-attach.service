@@ -1,0 +1,30 @@
+[Unit]
+Description=Magic Dingus Box - re-link media containers when the movie drive attaches
+Documentation=file:/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/storage_attach.sh
+
+# Fires whenever /mnt/ssd becomes mounted, which with fstab's
+# x-systemd.automount means "whenever the operator plugs the drive in",
+# as well as the ordinary drive-present-at-boot case. The script is
+# guarded to no-op unless the containers are genuinely stale, so the
+# boot case costs one cheap comparison.
+After=mnt-ssd.mount docker.service
+Requires=mnt-ssd.mount
+
+# Skip entirely on an unprovisioned box (no Media Browser stack).
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/storage_attach.sh
+# Recreating two containers can take a moment on a cold page cache.
+TimeoutStartSec=180
+# A failure here must never block the mount or wedge boot — the operator
+# can still restart the stack by hand, and the kiosk shows "drive not
+# connected" rather than lying about an empty library.
+SuccessExitStatus=0 1
+
+[Install]
+# Bound to the mount unit, not to a target: systemd starts this every time
+# mnt-ssd.mount activates, which is exactly the hot-plug event.
+WantedBy=mnt-ssd.mount
