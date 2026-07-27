@@ -3373,6 +3373,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1F191F">
+<!-- Same installable-app tags as the other pages. Without these, adding
+     to the home screen from THIS page (a real possibility, since it is
+     where an expired pairing lands you) produces a generic Safari
+     bookmark with a screenshot icon instead of the app. -->
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Dingus">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 <title>Remote not paired</title>
 <style>
   html, body { margin: 0; padding: 0; background: #1F191F; color: #F2E4D9;

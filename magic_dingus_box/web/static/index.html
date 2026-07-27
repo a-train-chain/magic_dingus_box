@@ -3,9 +3,26 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- viewport-fit=cover is required in standalone mode: without it iOS
+         does not expose the notch / home-indicator safe-area insets and
+         content sits under them. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Magic Dingus Box - Content Manager</title>
-    <link rel="stylesheet" href="/static/style.css?v=32">
+
+    <!-- Installable-app tags. iOS ignores the manifest's icons array for
+         Add to Home Screen and uses apple-touch-icon, so BOTH are needed:
+         apple-touch-icon for iPhone/iPad, manifest icons for Android and
+         desktop Chrome. The icon must not have rounded corners baked in —
+         iOS applies its own squircle mask over it. -->
+    <link rel="manifest" href="/static/manifest.webmanifest">
+    <meta name="theme-color" content="#1F191F">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Dingus">
+    <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
+
+    <link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 
 <body>
