@@ -1,4 +1,5 @@
 #include "drm_display.h"
+#include "mode_selection.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -262,29 +263,30 @@ bool DrmDisplay::set_connector_mode(uint32_t width, uint32_t height) {
         return false;
     }
 
-    drmModeModeInfo* mode_to_set = nullptr;
-    bool auto_mode = (width == 0 || height == 0);
-
-    // Find matching mode
+    // Rank every advertised mode rather than taking the first size match.
+    // A 4K TV can advertise ELEVEN 1920x1080 modes (24/25/30/50/60 Hz and
+    // interlaced variants) and the kernel does not list them fastest-first.
+    // The main loop blocks on the DRM page-flip event, so picking a 24 or
+    // 30 Hz timing would clamp the entire kiosk — menus, video, animations
+    // — to that frame rate. See platform/mode_selection.h.
+    std::vector<platform::ModeCandidate> candidates;
+    candidates.reserve(static_cast<size_t>(conn->count_modes));
     for (int i = 0; i < conn->count_modes; i++) {
-        drmModeModeInfo* mode = &conn->modes[i];
-        
-        if (auto_mode) {
-            // Use preferred mode or first mode
-            if (mode->type & DRM_MODE_TYPE_PREFERRED) {
-                mode_to_set = mode;
-                break;
-            }
-            if (!mode_to_set) {
-                mode_to_set = mode;
-            }
-        } else {
-            // Match exact resolution
-            if (mode->hdisplay == width && mode->vdisplay == height) {
-                mode_to_set = mode;
-                break;
-            }
-        }
+        const drmModeModeInfo& m = conn->modes[i];
+        candidates.push_back(platform::ModeCandidate{
+            m.hdisplay, m.vdisplay, m.vrefresh,
+            (m.type & DRM_MODE_TYPE_PREFERRED) != 0});
+    }
+
+    const int chosen = platform::pick_mode(candidates, width, height);
+    drmModeModeInfo* mode_to_set =
+        (chosen >= 0) ? &conn->modes[chosen] : nullptr;
+
+    if (mode_to_set) {
+        std::cout << "Selected mode " << mode_to_set->hdisplay << "x"
+                  << mode_to_set->vdisplay << "@" << mode_to_set->vrefresh
+                  << "Hz (from " << conn->count_modes << " advertised)"
+                  << std::endl;
     }
 
     if (!mode_to_set) {
