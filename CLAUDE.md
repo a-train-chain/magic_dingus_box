@@ -121,7 +121,27 @@ This guarantees correct compositing without X11/compositor overhead.
 
 - `admin.py` - Flask routes for device discovery, playlist CRUD, content uploads, game ROM management
 - `static/manager.js` - Frontend: device discovery, drag-and-drop playlist builder, file uploads
-- Features: video transcoding (CRT 640x480 / Modern 720p presets), playlist package import/export (ZIP), system monitoring
+- Features: video transcoding, playlist package import/export (ZIP), system monitoring
+- **Transcode presets are MASTERS, not display formats** (retuned 2026-07-26).
+  The kiosk scales stored content to whichever display mode is active, so
+  keep the best master storage allows and let playback derive the rest.
+  Aspect matters as much as resolution: the main kiosk renders playlist
+  video into a **4:3** viewport (`vp_w = canvas_h*4/3` → 960x720 at 720p,
+  1440x1080 at 1080p output) — the deliberate CRT look — so a 16:9 master
+  gets letterboxed *inside* that pillarbox and ends up smaller on screen.
+  4:3 masters are therefore correct for playlist content even on a
+  widescreen TV.
+  | preset | size | aspect | use |
+  |---|---|---|---|
+  | `crt` | 640x480 | 4:3 | legacy / smallest files |
+  | **`crt_hd`** | **960x720** | **4:3** | **default** — 2.25x the old detail, 1:1 at 720p output |
+  | `crt_fhd` | 1440x1080 | 4:3 | max detail, 1:1 at 1080p output, ~2.25x the files |
+  | `modern` | 1280x720 | 16:9 | genuinely widescreen source material only |
+  Note 640x480 was never a pixel-exact CRT path: the Pi 5 has no composite
+  output, so CRT rigs go through an HDMI→composite converter and the signal
+  is downscaled regardless — a higher-resolution master is strictly better
+  for CRT too. Default changes affect NEW uploads only; existing files
+  cannot regain detail they never had.
 - Data directory: `/opt/magic_dingus_box/magic_dingus_box_cpp/data` (configurable via `MAGIC_DATA_DIR`)
 
 ## Key Dependencies

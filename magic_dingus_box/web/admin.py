@@ -1675,11 +1675,38 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     # ===== VIDEO TRANSCODING =====
 
-    # Resolution presets for transcoding
+    # Resolution presets for transcoding.
+    #
+    # These are MASTERS, not display formats: the kiosk scales whatever is
+    # stored to whichever display mode is active, so the right strategy is
+    # to keep the best master that storage allows and let playback derive
+    # the rest. Storing a display-resolution file is lossy in one direction
+    # only — you can always go down, never back up.
+    #
+    # Aspect matters as much as resolution. The main kiosk renders playlist
+    # video into a 4:3 viewport (gst_renderer letterbox: vp_w = canvas_h*4/3
+    # -> 960x720 at 720p, 1440x1080 at 1080p), which is the deliberate
+    # CRT look. A 16:9 master gets letterboxed INSIDE that pillarbox and
+    # ends up smaller on screen, so 4:3 masters are correct for playlist
+    # content even on a widescreen TV.
+    #
+    # 'crt_hd' is the default: 4:3 at 720p height. It is 2.25x the detail of
+    # the old 640x480 default, lands 1:1 in the 4:3 area at 720p output,
+    # upscales 1.5x at 1080p, and downscales cleanly for a real CRT through
+    # the HDMI->composite converter (which is a downscale either way — the
+    # Pi 5 has no composite out, so 640x480 was never a pixel-exact path).
     TRANSCODE_RESOLUTIONS = {
-        'crt': {'width': 640, 'height': 480},
-        'modern': {'width': 1280, 'height': 720},
+        # 4:3 masters — playlist content, both display modes
+        'crt':     {'width': 640,  'height': 480},   # legacy/smallest
+        'crt_hd':  {'width': 960,  'height': 720},   # DEFAULT
+        'crt_fhd': {'width': 1440, 'height': 1080},  # max detail, ~2.25x the files
+        # 16:9 master — only for genuinely widescreen source material
+        'modern':  {'width': 1280, 'height': 720},
     }
+
+    # Default master. Changing this affects NEW uploads only; existing
+    # files are untouched and cannot regain detail they never had.
+    DEFAULT_TRANSCODE = 'crt_hd'
 
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
@@ -1724,7 +1751,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
     def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False):
         """Background thread function to run FFmpeg transcoding."""
         job = transcode_jobs[job_id]
-        res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS['crt'])
+        res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS[DEFAULT_TRANSCODE])
         width, height = res['width'], res['height']
 
         # Bound concurrent encodes. Each transcode is a full libx264 encode;
@@ -1893,7 +1920,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return error_response("VALIDATION_ERROR", "File field required")
 
         f = request.files["file"]
-        resolution = request.form.get("resolution", "crt")
+        resolution = request.form.get("resolution", DEFAULT_TRANSCODE)
         # `normalize_audio` arrives as the string "true"/"false" (FormData
         # POST). Coerce to bool. Default ON because phone-uploaded clips
         # almost always have inconsistent levels — we'd rather opt-out
@@ -1969,7 +1996,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     def probe_video(file_path: Path, target_resolution: str) -> dict:
         """Probe video file to check if it needs transcoding."""
-        target = TRANSCODE_RESOLUTIONS.get(target_resolution, TRANSCODE_RESOLUTIONS['crt'])
+        target = TRANSCODE_RESOLUTIONS.get(target_resolution, TRANSCODE_RESOLUTIONS[DEFAULT_TRANSCODE])
         target_w, target_h = target['width'], target['height']
 
         try:
@@ -2044,7 +2071,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return error_response("VALIDATION_ERROR", "File field required")
 
         f = request.files["file"]
-        resolution = request.form.get("resolution", "crt")
+        resolution = request.form.get("resolution", DEFAULT_TRANSCODE)
         # See upload_and_transcode for normalize_audio default rationale.
         # Default ON here too so a phone upload of an already-720p clip
         # still gets its audio levels fixed even when the video itself
