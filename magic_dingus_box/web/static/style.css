@@ -9455,3 +9455,44 @@ html::after {
 body.faceplate .bottom-nav {
   box-shadow: 0 6px 0 0 var(--bg, #1F191F);
 }
+
+/* ============================================================================
+ * .view-header — New Playlist / Import symmetry
+ * ==========================================================================*/
+
+/* The Import button carried an inline `margin-left: 0.5rem`. That was spacing
+ * for the DESKTOP layout, where .view-header is a row with
+ * justify-content: space-between and the margin separates the two buttons.
+ *
+ * On mobile the same container becomes `flex-direction: column` with a
+ * 0.75rem gap, so the margin no longer separates anything — it just shifted
+ * Import 5px further right than New Playlist and pushed it 8px past the
+ * container's right edge. Being inline, it also beat the stylesheet's own
+ * 3px keycap margin, which is why only that one button was off.
+ *
+ * The spacing now comes from the container on both axes, so neither button
+ * carries a nudge of its own and the row layout keeps the same 0.5rem it had.
+ * The mobile breakpoint overrides this with its own 0.75rem gap. */
+.view-header {
+  gap: 0.5rem;
+}
+
+/* Full-width buttons plus a horizontal margin overflow their container: the
+ * global keycap margin is `3px 3px 6px 3px` (added so the well ring is not
+ * clipped) while `width: 100%` already consumes the whole line box, so every
+ * one of these sat 3px right of centre with its right edge past the parent.
+ * Invisible on its own, but it stacked with the inline margin above to make
+ * Import visibly lopsided.
+ *
+ * At this breakpoint .view-header is `align-items: stretch`, so dropping the
+ * explicit width lets flex size each button to the container MINUS its
+ * margins — equal on both sides, nothing overhanging. Scoped to this
+ * container so the desktop row, which relies on width:100% plus flex-shrink to
+ * share the line, is untouched. */
+@media (max-width: 600px) {
+  body.faceplate .view-header > button,
+  body.faceplate .view-header > .btn-primary,
+  body.faceplate .view-header > .btn-secondary {
+    width: auto;
+  }
+}
