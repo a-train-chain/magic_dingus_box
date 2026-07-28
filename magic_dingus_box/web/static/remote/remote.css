@@ -57,19 +57,32 @@ html, body {
 body.remote { user-select: none; }
 
 /* ── panel ─────────────────────────────────────────────────────── */
+/* position:fixed + inset:0 — NOT a height unit.
+ *
+ * The faceplate is a VIEWPORT ornament: the gold rule and the corner screws
+ * are positioned against .screen, so any shortfall in .screen's height ends
+ * the frame early and leaves a strip of bare background at the bottom of the
+ * phone. Two height units were tried and BOTH failed on device:
+ *
+ *   min-height: 100dvh — correct in the steady state, but WebKit had not
+ *     settled its viewport bookkeeping on the first paint after a same-app
+ *     navigation (Content Manager -> remote in an installed PWA), so the
+ *     first open came up short and only a resize fixed it. That is why
+ *     rotating to landscape and back appeared to "repair" the layout.
+ *   min-height: 100% — resolves against html/body height:100%, which in a
+ *     standalone PWA with viewport-fit=cover does not reliably equal the
+ *     full screen either. Still short, and now short PERMANENTLY rather
+ *     than only on first paint.
+ *
+ * A fixed element with inset:0 is defined against the viewport itself, so
+ * there is no intermediate box to resolve a percentage against and no
+ * bookkeeping to be stale. It is correct on the first paint and needs no
+ * resize. Safe here because this UI never scrolls — every breakpoint is
+ * verified at zero page overflow — and overflow-y:auto keeps the text-input
+ * mode usable if the OS keyboard ever does squeeze the content. */
 .screen {
-  position: relative;
-  /* min-height is 100%, NOT 100dvh. html and body are both height:100%, so
-     100% here resolves against the layout viewport exactly — while dvh is
-     resolved by WebKit from its own viewport bookkeeping, which is not yet
-     settled on the first paint after a same-app navigation (Content Manager
-     -> remote in an installed PWA). That produced a short .screen on first
-     open: the gold frame is inset from .screen, so it stopped early and left
-     a strip of bare background at the bottom. Nothing recomputed it until a
-     resize event fired — which is exactly why rotating to landscape and back
-     "fixed" it. Rotation was not correcting a layout bug; it was supplying
-     the resize that dvh needed. Percentage height has no such dependency. */
-  width: 100%; min-height: 100%;
+  position: fixed; inset: 0;
+  overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column;
   /* The top pad is FLOORED at 46px. env(safe-area-inset-top) is ~59 in an
      installed PWA on a Dynamic Island phone and 20 on an SE, but it is 0 in
