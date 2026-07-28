@@ -375,3 +375,59 @@
 
   connect();
 })();
+
+// ---------------------------------------------------------------------------
+// TEMPORARY DIAGNOSTIC. Reports once per load what THIS DEVICE actually says
+// about its viewport, so the persistent bottom-margin question can be settled
+// with measurements instead of a fifth guess.
+//
+// The decisive value is safeBottom. env(safe-area-inset-bottom) is non-zero
+// ONLY when viewport-fit=cover is in effect. So:
+//   safeBottom > 0  -> cover IS active, the layout viewport reaches the
+//                      physical bottom, and a fixed element at inset 9px is
+//                      genuinely 9px from the edge. Any visible gap is then a
+//                      real CSS bug worth hunting.
+//   safeBottom == 0 -> cover is NOT active. The layout viewport stops above
+//                      the home indicator and NOTHING positioned can paint
+//                      into that strip. No stylesheet can fix it; the app has
+//                      to be re-added to the Home Screen so iOS re-reads the
+//                      meta. That would explain why four CSS fixes failed.
+// Remove this block once the question is settled.
+// ---------------------------------------------------------------------------
+(function reportViewport() {
+  try {
+    var probe = document.createElement('div');
+    probe.style.cssText =
+      'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;' +
+      'padding-top:env(safe-area-inset-top,0px);' +
+      'padding-right:env(safe-area-inset-right,0px);' +
+      'padding-bottom:env(safe-area-inset-bottom,0px);' +
+      'padding-left:env(safe-area-inset-left,0px);';
+    document.body.appendChild(probe);
+    var cs = getComputedStyle(probe);
+    var scr = document.getElementById('app');
+    var r = scr ? scr.getBoundingClientRect() : {};
+    var data = {
+      standalone: !!(window.navigator.standalone) ||
+                  (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches),
+      innerW: window.innerWidth, innerH: window.innerHeight,
+      screenW: window.screen ? window.screen.width : null,
+      screenH: window.screen ? window.screen.height : null,
+      dpr: window.devicePixelRatio,
+      safeTop: cs.paddingTop, safeRight: cs.paddingRight,
+      safeBottom: cs.paddingBottom, safeLeft: cs.paddingLeft,
+      screenRectH: r.height ? Math.round(r.height) : null,
+      screenRectBottom: r.bottom ? Math.round(r.bottom) : null,
+      gapBelowScreen: (r.bottom != null) ? Math.round(window.innerHeight - r.bottom) : null,
+      visualViewportH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
+      orientation: (window.innerWidth > window.innerHeight) ? 'landscape' : 'portrait',
+      cssVersion: 'v16'
+    };
+    probe.remove();
+    fetch('/api/remote/diag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    }).catch(function () {});
+  } catch (e) { /* diagnostics must never break the remote */ }
+})();
