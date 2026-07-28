@@ -2202,7 +2202,15 @@ function filterMainLibrary(input) {
 
     rows.forEach(row => {
         const text = row.textContent.toLowerCase();
-        row.style.display = text.includes(query) ? 'table-row' : 'none';
+        // '' (remove the inline value), NOT 'table-row'. Behaviour is
+        // identical — matching rows show, non-matching hide — but hardcoding
+        // 'table-row' pinned every row to table layout and made the responsive
+        // card layout impossible: any CSS `display` for narrow screens lost to
+        // this inline style. Clearing it hands the decision back to the
+        // stylesheet, so rows are table-row on desktop and grid cards on a
+        // phone. The alternative was `display: grid !important` in CSS, which
+        // would have beaten this line and broken filtering outright.
+        row.style.display = text.includes(query) ? '' : 'none';
     });
 }
 

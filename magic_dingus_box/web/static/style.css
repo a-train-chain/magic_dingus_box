@@ -3709,23 +3709,23 @@ header::after {
 
 /* ============================================================================
  * FACEPLATE LAYER — CONTROLS
- * ----------------------------------------------------------------------------
- * Restyles buttons, inputs, selects and checkboxes in the phone remote's
- * faceplate language (remote.css): things you PRESS sit proud in a routed
- * `--well` pocket and travel on :active; things that HOLD information are sunk
- * into the panel.
- *
- * APPENDED rather than edited in place. The design called for replacing
- * specific line ranges, but line-range surgery on a 3600-line file is fragile
- * and destroys the original. Appending is cascade-correct — at equal
- * specificity the later rule wins — non-destructive, and revertible by
- * deleting this one block. Where a legacy rule declares a property this layer
- * does not, the legacy value deliberately survives.
- *
- * NOTHING here renames a class. `.btn-edit` and `.btn-remove` in particular
- * are live JS hooks (manager.js:3399, 3404, 4290 toggles them by name), which
- * is exactly why they are restyled rather than replaced.
- * ==========================================================================*/
+/* * ---------------------------------------------------------------------------- */
+/* * Restyles buttons, inputs, selects and checkboxes in the phone remote's */
+/* * faceplate language (remote.css): things you PRESS sit proud in a routed */
+/* * `--well` pocket and travel on :active; things that HOLD information are sunk */
+/* * into the panel. */
+/* * */
+/* * APPENDED rather than edited in place. The design called for replacing */
+/* * specific line ranges, but line-range surgery on a 3600-line file is fragile */
+/* * and destroys the original. Appending is cascade-correct — at equal */
+/* * specificity the later rule wins — non-destructive, and revertible by */
+/* * deleting this one block. Where a legacy rule declares a property this layer */
+/* * does not, the legacy value deliberately survives. */
+/* * */
+/* * NOTHING here renames a class. `.btn-edit` and `.btn-remove` in particular */
+/* * are live JS hooks (manager.js:3399, 3404, 4290 toggles them by name), which */
+/* * is exactly why they are restyled rather than replaced. */
+/* * ==========================================================================* / */
 /* === :root === */
 :root {
     /* ── Canonical faceplate palette — the names remote/remote.css:34-45 uses.
@@ -4198,7 +4198,7 @@ input[type="checkbox"]:checked:focus-visible {
          transform: scale(1.02);
          box-shadow: 0 0 20px rgba(102, 221, 122, 0.5);
      }
-   The old :hover made the button GROW and glow. A key does not grow. */
+/* The old :hover made the button GROW and glow. A key does not grow. * / */
 
 /* ── PRIMARY = the faceplate's GREEN key ──────────────────────────────
    Gradient is remote.css:392 (.cap.g) lifted into its LIT register. The
@@ -4272,20 +4272,20 @@ input[type="checkbox"]:checked:focus-visible {
          background: var(--bg-dark);
          color: var(--text-primary);
          border: 2px solid var(--border-color);   /* steel blue */
-         padding: 0.75rem 1.5rem;
-         font-family: inherit;
-         cursor: pointer;
-         border-radius: 4px;
-         transition: all 0.2s;
-         width: 100%;
-         min-height: 44px;
-     }
+/* padding: 0.75rem 1.5rem; */
+/* font-family: inherit; */
+/* cursor: pointer; */
+/* border-radius: 4px; */
+/* transition: all 0.2s; */
+/* width: 100%; */
+/* min-height: 44px; */
+/* }   <- stray closer from a quoted 'before' block */
      .btn-secondary:hover {
          border-color: var(--accent2);
          box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
      }
-   The 2px steel-blue border is the single loudest divergence from the
-   faceplate — the panel has no 2px lines and no steel blue anywhere. */
+/* The 2px steel-blue border is the single loudest divergence from the */
+/* faceplate — the panel has no 2px lines and no steel blue anywhere. * / */
 
 /* ── SECONDARY = the flat LIP tier, remote.css:469-474 (.d / .ok) ─────
    The D-pad itself does not translate to an admin UI, but .d/.ok is a second,
@@ -4361,11 +4361,11 @@ input[type="checkbox"]:checked:focus-visible {
        }
        .btn-edit:hover { background: #FFD05A; box-shadow: 0 0 12px rgba(245, 191, 66, 0.5); }
 
-   BOTH CLASS NAMES MUST SURVIVE — manager.js:3399 does
-   `saveBtn.className = 'btn-edit'`, manager.js:3404 does
-   `cancelBtn.className = 'btn-remove'`, and manager.js:4290 does
-   `e.target.classList.contains('btn-remove') || ...contains('btn-edit')`
-   as the touch-reorder guard. Restyled, never renamed. */
+/* BOTH CLASS NAMES MUST SURVIVE — manager.js:3399 does */
+/* `saveBtn.className = 'btn-edit'`, manager.js:3404 does */
+/* `cancelBtn.className = 'btn-remove'`, and manager.js:4290 does */
+/* `e.target.classList.contains('btn-remove') || ...contains('btn-edit')` */
+/* as the touch-reorder guard. Restyled, never renamed. * / */
 
 /* ── .btn-edit = the faceplate's YELLOW key ───────────────────────────
    Gradient is remote.css:390 (.cap.y) VERBATIM — nothing retuned, because
@@ -4474,11 +4474,11 @@ input[type="checkbox"]:checked:focus-visible {
          color: var(--bg-dark);
          box-shadow: 0 0 12px rgba(234, 58, 39, 0.5);
      }
-   NOTE this class currently matches ZERO elements —
-   `grep -c "btn-danger" index.html manager.js` → 0 / 0. It is styled here so
-   the destructive tier EXISTS, ready for the cm-structure audit's
-   recommendation to add class="btn-danger" to the playlist-card Delete
-   button. Until that lands this block is inert and changes nothing on screen. */
+/* NOTE this class currently matches ZERO elements — */
+/* `grep -c "btn-danger" index.html manager.js` → 0 / 0. It is styled here so */
+/* the destructive tier EXISTS, ready for the cm-structure audit's */
+/* recommendation to add class="btn-danger" to the playlist-card Delete */
+/* button. Until that lands this block is inert and changes nothing on screen. * / */
 
 /* ── DESTRUCTIVE = the faceplate's RED key ────────────────────────────
    remote.css:391 (.cap.r) is #D84234 -> #A82A20, which measures 3.55:1 with
@@ -4540,18 +4540,18 @@ input[type="checkbox"]:checked:focus-visible {
          width: 20px;
          height: 20px;
      }
-   Same specificity (0,1,1), so appending at the end of the file wins on source
-   order. Those five lines can then be deleted; leaving them is harmless.
+/* Same specificity (0,1,1), so appending at the end of the file wins on source */
+/* order. Those five lines can then be deleted; leaving them is harmless. */
 
    Five checkboxes exist in the whole app — #videoPlaylistLoop,
-   #gamePlaylistLoop, #hideUsedVideos, #hideUsedROMs, #normalizeAudio — plus
-   one generated at manager.js:4020 (#deleteVideosCheckbox), which carries an
-   inline `style="margin-right: 0.5rem"` that correctly keeps winning over the
-   `margin: 0` below.
+/* #gamePlaylistLoop, #hideUsedVideos, #hideUsedROMs, #normalizeAudio — plus */
+/* one generated at manager.js:4020 (#deleteVideosCheckbox), which carries an */
+/* inline `style="margin-right: 0.5rem"` that correctly keeps winning over the */
+/* `margin: 0` below. */
 
-   .form-group input[type="checkbox"] (style.css:586, specificity (0,2,1))
-   would outrank this — but .form-group matches zero elements in index.html and
-   zero in manager.js, so it is inert. */
+/* .form-group input[type="checkbox"] (style.css:586, specificity (0,2,1)) */
+/* would outrank this — but .form-group matches zero elements in index.html and */
+/* zero in manager.js, so it is inert. * / */
 
 /* ── Checkbox = the faceplate's BLACK key with an LED slot ────────────
    Cap is remote.css:393 (.cap.b); unlit slot is remote.css:401 (#22201C).
@@ -4643,12 +4643,12 @@ input[type="checkbox"]:active {
      .row-actions button.btn-delete:hover { color: var(--error); }
 
    The @media (pointer: coarse) block at style.css:2565-2575 (44x44 targets,
-   gap 0.5rem) is CORRECT and stays exactly as it is — do not touch it.
+/* gap 0.5rem) is CORRECT and stays exactly as it is — do not touch it. */
 
-   These take the LIP tier and NOT the pocket, deliberately: .row-actions has
-   `gap: 0.25rem` (4px) at style.css:2536, and two 3px --well rings in a 4px
-   gap would overlap. This is the same well-ring clearance trap remote.css:418-421
-   documents. The lip has zero horizontal footprint. */
+/* These take the LIP tier and NOT the pocket, deliberately: .row-actions has */
+/* `gap: 0.25rem` (4px) at style.css:2536, and two 3px --well rings in a 4px */
+/* gap would overlap. This is the same well-ring clearance trap remote.css:418-421 */
+/* documents. The lip has zero horizontal footprint. * / */
 .row-actions button {
     background: linear-gradient(180deg, #39323A, #241F25);   /* remote.css:470 */
     border: none;
@@ -4705,18 +4705,18 @@ input[type="checkbox"]:active {
        .btn-add-slot {
            background: transparent;
            border: 1px dashed var(--border-color);   /* steel blue */
-           color: var(--text-secondary);
-           padding: 0.375rem 0.75rem;
-           border-radius: 4px;
-           cursor: pointer;
-           font-size: 0.85rem;
-           transition: all 0.15s;
-       }
+/* color: var(--text-secondary); */
+/* padding: 0.375rem 0.75rem; */
+/* border-radius: 4px; */
+/* cursor: pointer; */
+/* font-size: 0.85rem; */
+/* transition: all 0.15s; */
+/* }   <- stray closer from a quoted 'before' block */
        .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
 
-   The dashed outline is the right IDEA — an empty socket you can fill — so it
-   survives; only the colour and the press behaviour change. An empty pocket
-   with nothing in it, in the panel's own gold. */
+/* The dashed outline is the right IDEA — an empty socket you can fill — so it */
+/* survives; only the colour and the press behaviour change. An empty pocket */
+/* with nothing in it, in the panel's own gold. * / */
 .btn-add-slot {
     background: var(--well-fill);
     border: 1px dashed rgba(245, 191, 66, .35);
