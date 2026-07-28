@@ -9409,3 +9409,49 @@ body.faceplate .search-bar input[type="text"] {
     bottom: calc(95px + max(env(safe-area-inset-bottom), 8px));
   }
 }
+
+/* ============================================================================
+ * Opaque matte outside the faceplate frame
+ * ==========================================================================*/
+
+/* Both bezel rings are borders with a transparent background
+ * (body.faceplate::before at inset 9px, ::after at inset 14px), so they draw a
+ * frame but do not fill anything. Page content scrolls underneath them and
+ * stays visible in the band outside the frame and in the strip below the
+ * bottom navigation rail — text sliding past the gold border, outside the
+ * device the faceplate is pretending to be.
+ *
+ * This fills everything outside the inner ring. The trick is a non-inset
+ * box-shadow with a very large spread: it paints OUTWARD from the element's
+ * border box, so a single fixed element masks all four edges at once, and
+ * because it follows border-radius it covers the rounded corners correctly —
+ * which four straight bars could not.
+ *
+ * z-index sits above page content and below the rings at 9998, so the gold
+ * border and the inner hairline still draw on top of the matte rather than
+ * being buried by it. pointer-events: none keeps it from eating taps.
+ *
+ * html::after because both of body's pseudo-elements are the two rings, and
+ * html::before is the bloom layer. */
+html::after {
+  content: "";
+  position: fixed;
+  inset: 14px;
+  border-radius: 41px;
+  pointer-events: none;
+  z-index: 9997;
+  box-shadow: 0 0 0 100vmax var(--bg, #1F191F);
+}
+
+/* The navigation rail sits at bottom: 16px while the matte above starts at
+ * 14px, leaving a 2px band directly beneath the rail where page content was
+ * still visible — the "content showing past the bottom bar" case.
+ *
+ * A solid, blur-free, offset box-shadow paints a copy of the rail's own shape
+ * a few pixels lower in the page colour, closing that band. Using the rail's
+ * shadow rather than moving the rail keeps its position and its rounded corner
+ * exactly as designed, and the overspill is harmless: it lands under the matte,
+ * which paints on top at z-index 9997. */
+body.faceplate .bottom-nav {
+  box-shadow: 0 6px 0 0 var(--bg, #1F191F);
+}
