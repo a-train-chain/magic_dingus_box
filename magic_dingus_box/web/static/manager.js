@@ -438,6 +438,9 @@ const MEDIA_CONFIG = {
         playlistAvailableId: 'libraryList',    // New library list
         playlistEmptyId: 'playlistEmptyState', // New empty state
         playlistCountId: 'playlistItemCount',  // "N items" under the table
+        // Second editable column. index.html:224 heads it "Artist".
+        secondaryField: 'artist',
+        secondaryLabel: 'Artist',
         editorTitleId: 'videoPlaylistTitle',   // Title is now an input
         titleInputId: 'videoPlaylistTitle',
         curatorInputId: 'videoPlaylistCurator',
@@ -471,6 +474,14 @@ const MEDIA_CONFIG = {
         playlistAvailableId: 'romLibraryList',     // New library list
         playlistEmptyId: 'gamePlaylistEmptyState', // New empty state
         playlistCountId: 'gamePlaylistItemCount',  // "N items" under the table
+        // index.html:383 heads this column "System", and game items carry
+        // emulator_system (set on add at manager.js:2548/3607/5094 and
+        // preserved by cleanPlaylistItems). The shared renderer hardcoded the
+        // video field, so the games editor showed an empty box placeholdered
+        // "Artist" under a "System" header, and typing a system into it wrote
+        // to an artist property the kiosk never reads.
+        secondaryField: 'emulator_system',
+        secondaryLabel: 'System',
         editorTitleId: 'gamePlaylistTitle',        // Title is now an input
         titleInputId: 'gamePlaylistTitle',
         curatorInputId: 'gamePlaylistCurator',
@@ -1284,7 +1295,8 @@ function renderPlaylistItems(type) {
         }
 
         const title = item.title || item.path?.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Untitled';
-        const artist = item.artist || '';
+        const secondaryField = config.secondaryField || 'artist';
+        const secondary = item[secondaryField] || '';
 
         return `
             <tr class="${rowClass}" data-index="${index}" data-playlist-type="${type}">
@@ -1300,8 +1312,8 @@ function renderPlaylistItems(type) {
                            placeholder="Title" onchange="updatePlaylistItem(${index}, 'title', this.value, '${type}')">
                 </td>
                 <td class="col-artist">
-                    <input type="text" class="inline-input" draggable="false" value="${escapeHtml(artist)}"
-                           placeholder="Artist" onchange="updatePlaylistItem(${index}, 'artist', this.value, '${type}')">
+                    <input type="text" class="inline-input" draggable="false" value="${escapeHtml(secondary)}"
+                           placeholder="${config.secondaryLabel || 'Artist'}" onchange="updatePlaylistItem(${index}, '${secondaryField}', this.value, '${type}')">
                 </td>
                 <td class="col-actions">
                     <div class="row-actions">
@@ -3245,9 +3257,15 @@ async function uploadPackage(file, type) {
                     `Imported "${data.playlist_title}": ${plural(data.item_count, 'item')}, ${plural(data.videos_imported, 'video')} uploaded`,
                     'success'
                 );
-                // Refresh both playlists and media lists
+                // Refresh the library the package actually belongs to. This
+                // called loadVideos() unconditionally, so importing a game
+                // package left the ROM list stale until a manual reload.
                 await loadExistingPlaylists();
-                await loadVideos();  // Refresh All Videos list after import
+                if (type === 'game') {
+                    await loadROMs();
+                } else {
+                    await loadVideos();
+                }
                 if (typeof loadMediaList === 'function') {
                     await loadMediaList();
                 }
@@ -3255,7 +3273,7 @@ async function uploadPackage(file, type) {
                 // Already exists - ask to overwrite
                 const err = JSON.parse(xhr.responseText);
                 if (confirm(`Playlist already exists. Overwrite it?\n\n(${plural(err.error?.details?.videos_imported, 'video')} already imported)`)) {
-                    await uploadPackageOverwriting(file);
+                    await uploadPackageOverwriting(file, type);
                 }
             } else {
                 try {
@@ -3281,7 +3299,12 @@ async function uploadPackage(file, type) {
     }
 }
 
-async function uploadPackageOverwriting(file) {
+/**
+ * Overwrite variant of uploadPackage. `type` is threaded through so the
+ * post-import refresh hits the right library; it was dropped here, so the
+ * overwrite path always refreshed videos.
+ */
+async function uploadPackageOverwriting(file, type) {
     const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
 
     const overlay = document.createElement('div');
@@ -3343,7 +3366,11 @@ async function uploadPackageOverwriting(file) {
                         'success'
                     );
                     await loadExistingPlaylists();
-                    await loadVideos();  // Refresh All Videos list after import
+                    if (type === 'game') {
+                        await loadROMs();
+                    } else {
+                        await loadVideos();
+                    }
                     if (typeof loadMediaList === 'function') {
                         await loadMediaList();
                     }
