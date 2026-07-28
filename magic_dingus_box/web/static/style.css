@@ -9740,3 +9740,72 @@ body.faceplate .bottom-nav {
     font-weight: 400;
   }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- Playlist cards: desktop density, and Edit/Delete at the foot -------
+   *
+   * TWO defects, both in the same component.
+   *
+   * 1. THE PHONE'S DENSITY WAS THE GLOBAL DENSITY. The block at
+   *    style.css:6883-6929 is captioned ".playlist-card rules inside
+   *    @media (max-width: 600px)" but the wrapper was never written — the
+   *    rules sit at file top level, so `padding: 13px 13px 12px` / `gap: 8px`
+   *    won at EVERY width and the real desktop values 40 lines earlier
+   *    (`15px 15px 13px` / `9px`, style.css:6073-6078) were dead code.
+   *    Measured at 1440x900 before this: computed padding 13px 13px 12px,
+   *    gap 8px. Retro-fitting the missing wrapper is NOT the fix — that
+   *    would hand the 601-1023px tier a density it has never had. The
+   *    desktop values are restated here instead, which changes only >=1024px.
+   *    The ::before pinstripe inset tracks the padding or the rule stops
+   *    lining up with the card's own edge, so it moves 13 -> 15 with it.
+   *
+   * 2. `margin-top: auto` ON .playlist-actions WAS INERT. It is written at
+   *    style.css:6178 to push the two keys to the bottom of the card, but
+   *    .playlist-actions is a child of .playlist-header (manager.js:2801-2807),
+   *    and .playlist-header is `display: block` (style.css:6123). An auto
+   *    margin only distributes free space in a flex or grid container, so it
+   *    computed to 0px and the buttons rendered between the title and the
+   *    meta line — reading as part of the heading rather than as the card's
+   *    actions. Cards in a row are equal height (grid stretch) but their
+   *    content is not, so the keys landed at four different heights across
+   *    one row: measured tops 548.9 / 548.9 / 529.4 / 529.4.
+   *
+   *    `display: contents` on .playlist-header dissolves the wrapper so the
+   *    h4 and the actions become items of the card's own grid, and explicit
+   *    grid-row puts them in reading order — title, meta, then actions —
+   *    rather than DOM order. The middle row takes 1fr, so it absorbs the
+   *    height difference and the keys sit on the card floor at a single
+   *    common baseline. Safe on a plain <div>: display:contents only strips
+   *    accessibility semantics from elements that HAVE an implicit role.
+   *
+   *    The ::before pinstripe is `position: absolute`, and an
+   *    absolutely-positioned child of a grid container is not a grid item,
+   *    so it creates no phantom track. */
+  body.faceplate .grid-list .playlist-card {
+    padding: 15px 15px 13px;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 9px;
+  }
+  body.faceplate .grid-list .playlist-card::before {
+    left: 15px;
+    right: 15px;
+  }
+  body.faceplate .grid-list .playlist-card .playlist-header {
+    display: contents;
+  }
+  body.faceplate .grid-list .playlist-card .playlist-header h4 {
+    grid-row: 1;
+  }
+  body.faceplate .grid-list .playlist-card .playlist-meta {
+    grid-row: 2;
+  }
+  body.faceplate .grid-list .playlist-card .playlist-actions {
+    grid-row: 3;
+    margin-top: 0;
+  }
+  body.faceplate .grid-list .playlist-card .playlist-actions button {
+    padding: 0 10px;
+  }
+}
