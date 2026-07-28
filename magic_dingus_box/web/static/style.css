@@ -9140,3 +9140,45 @@ body.faceplate button.btn-secondary:active::after {
   opacity: 1;
   box-shadow: 0 0 9px 2px currentColor, inset 0 0 3px rgba(255,255,255,.55);
 }
+
+/* Drag handle is now the ONLY way to reorder.
+ *
+ * The up/down arrows were removed at the user's request because touch drag is
+ * implemented (handlePlaylistTouchStart/Move/End, manager.js:4286-4288) and
+ * genuinely works on a phone — worth checking before removing the fallback,
+ * since HTML5 drag alone never fires on touch. With no fallback left, the
+ * handle has to advertise itself rather than sit as a faint glyph: it is the
+ * single affordance for the operation now. */
+body.faceplate .playlist-table .drag-handle {
+  color: var(--accent);
+  opacity: .75;
+  font-size: 15px;
+  letter-spacing: -1px;
+  cursor: grab;
+  border-radius: 3px;
+  transition: opacity .1s ease, background-color .1s ease;
+}
+body.faceplate .playlist-table .drag-handle:hover { opacity: 1; background: rgba(245,191,66,.10); }
+body.faceplate .playlist-table .drag-handle:active { cursor: grabbing; opacity: 1; background: rgba(245,191,66,.18); }
+body.faceplate .playlist-table tr.dragging { opacity: .55; }
+
+/* The actions column now holds a single key, so it no longer needs to be wide
+   enough for three. */
+body.faceplate .playlist-table .col-actions { width: 1%; white-space: nowrap; }
+body.faceplate .playlist-table .row-actions { justify-content: flex-end; }
+
+/* The handle's 44pt target is unconditional, not (pointer: coarse) only.
+ * It was scoped to coarse pointers when the arrows still existed as a
+ * fallback. They are gone, so this is the sole reorder affordance on every
+ * input type — including a laptop trackpad, where a 37px grab area is
+ * needlessly fiddly. */
+body.faceplate .playlist-table .col-handle,
+body.faceplate .playlist-table td:first-child {
+  min-width: 44px; width: 44px;
+  padding-left: 0; padding-right: 0;
+}
+body.faceplate .playlist-table .drag-handle {
+  display: flex; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 44px;
+  touch-action: none;
+}

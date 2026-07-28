@@ -1260,8 +1260,6 @@ function renderPlaylistItems(type) {
                     <td class="col-artist"></td>
                     <td class="col-actions">
                         <div class="row-actions">
-                            <button onclick="movePlaylistItem(${index}, -1, '${type}')" ${index === 0 ? 'disabled' : ''}>▲</button>
-                            <button onclick="movePlaylistItem(${index}, 1, '${type}')" ${index === items.length - 1 ? 'disabled' : ''}>▼</button>
                             <button class="btn-delete" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
                         </div>
                     </td>
@@ -1291,8 +1289,6 @@ function renderPlaylistItems(type) {
                 </td>
                 <td class="col-actions">
                     <div class="row-actions">
-                        <button onclick="movePlaylistItem(${index}, -1, '${type}')" ${index === 0 ? 'disabled' : ''}>▲</button>
-                        <button onclick="movePlaylistItem(${index}, 1, '${type}')" ${index === items.length - 1 ? 'disabled' : ''}>▼</button>
                         <button class="btn-delete" onclick="removePlaylistItem(${index}, '${type}')">✕</button>
                     </div>
                 </td>
