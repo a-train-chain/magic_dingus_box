@@ -54,6 +54,35 @@ html, body {
   -webkit-touch-callout: none;
   -webkit-font-smoothing: antialiased;
 }
+
+/* The root carries the SAME faceplate texture as .screen.
+ *
+ * This is what actually fixes the "bar along the bottom" that survived three
+ * attempts at re-sizing .screen (100dvh -> 100% -> position:fixed). Every one
+ * of those chased the SIZE of .screen and missed why a gap is visible at all:
+ * html/body painted flat var(--bg) while .screen painted a textured stack, so
+ * any strip .screen did not cover rendered as an obviously different flat
+ * block. The eye reads that as a bar, not as a few missing pixels.
+ *
+ * Rather than keep hunting the last pixel of viewport arithmetic — which on
+ * iOS depends on viewport-fit, the standalone/Safari distinction and the home
+ * indicator, and which I could not reproduce off-device — make the seam
+ * IMPOSSIBLE TO SEE. If .screen ever comes up short again, for any reason,
+ * what shows through is identical to what surrounds it.
+ *
+ * background-attachment: fixed pins the gradients to the viewport so the
+ * root's copy lines up with .screen's rather than sliding out of register.
+ * The layer order and values are copied verbatim from .screen — if you change
+ * one, change both. */
+html {
+  background-color: var(--bg);
+  background-attachment: fixed;
+  background-image:
+    repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+    radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
+    radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
+}
 body.remote { user-select: none; }
 
 /* ── panel ─────────────────────────────────────────────────────── */
