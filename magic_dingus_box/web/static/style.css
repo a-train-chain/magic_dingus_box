@@ -8892,3 +8892,58 @@ body.faceplate .tab .ic,
 body.faceplate .sub-tab .ic { margin-right: .35em; }
 body.faceplate .section-title .ic { color: var(--accent); margin-right: .4em; }
 body.faceplate .badge-icon .ic { width: 1em; height: 1em; }
+
+/* --- Corrections from walking every tab at 390x844 ------------------------ */
+
+/* iOS auto-zooms on focus for any text-entry field under 16px, and three
+ * survived the controls pass because they carry inline styles or ids rather
+ * than the classes that pass targeted: #mbConfigText (12.8px) is the textarea
+ * the operator pastes a WireGuard config into — real text entry, and the worst
+ * one to have zoom on. The file inputs do not zoom on iOS but are raised too so
+ * the whole form reads at one size. Scoped to (pointer: coarse) so desktop
+ * density is unaffected. */
+@media (pointer: coarse) {
+  body.faceplate #mbConfigText,
+  body.faceplate #mbConfigFile,
+  body.faceplate #mobileRestoreFile,
+  body.faceplate input[type="file"],
+  body.faceplate textarea { font-size: 16px; }
+}
+
+/* The version row put a fixed-width label against a right-aligned value, so
+ * "Current Version" wrapped to two lines while "Loading..." sat alone. Let the
+ * label take the space it needs and the value shrink instead. */
+body.faceplate .update-row,
+body.faceplate .version-row,
+body.faceplate .info-row {
+  display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap;
+}
+body.faceplate .update-row > :first-child,
+body.faceplate .version-row > :first-child,
+body.faceplate .info-row > :first-child { flex: 0 0 auto; white-space: nowrap; }
+body.faceplate .update-row > :last-child,
+body.faceplate .version-row > :last-child,
+body.faceplate .info-row > :last-child {
+  flex: 1 1 auto; min-width: 0; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* DejaVu Sans Mono is wider than the Share Tech Mono it replaced, so prose that
+ * fitted one line now takes two. A small step down on phones restores the
+ * density without touching the 16px floor on inputs. */
+@media (max-width: 700px) {
+  body.faceplate .section-body p,
+  body.faceplate .settings-card p,
+  body.faceplate .hint,
+  body.faceplate .help-text { font-size: 13px; line-height: 1.5; }
+}
+
+/* At 320px the five nav keys are 48px wide and "Settings" is the longest label,
+   which clipped at the right edge. Step the label down and let it use the full
+   key width; the icon and the 44pt target are untouched. */
+@media (max-width: 360px) {
+  body.faceplate .bottom-nav { left: 10px; right: 10px; }
+  body.faceplate .bottom-nav-item { padding-left: 2px; padding-right: 2px; }
+  body.faceplate .bottom-nav-item span,
+  body.faceplate .bottom-nav-item .nav-label { font-size: 10px; letter-spacing: 0; }
+}
