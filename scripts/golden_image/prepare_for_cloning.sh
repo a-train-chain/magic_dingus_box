@@ -221,12 +221,41 @@ fi
 #
 # Same tmpfs discipline as Step 2b: stash in RAM, overwrite in place, then
 # unlink. Restored by restore_after_cloning.sh.
+#   services/config/radarr/config.xml       Radarr API key
+#   services/config/prowlarr/config.xml     Prowlarr API key
+#   services/config/radarr/radarr.db        the qBittorrent WebUI username and
+#                                           password, in plaintext, inside
+#                                           DownloadClients.Settings
+#   services/config/prowlarr/prowlarr.db    the Radarr API key again, in the
+#                                           Applications row used for app sync
+#   services/config/qbittorrent/.../qBittorrent.conf
+#                                           WebUI\Password_PBKDF2 hash
+#
+# These four were missing from this list even though first_boot.sh Step 6 knows
+# about them and deletes services/config/* on the clone. That safety net has the
+# same limitation as everything else here: it protects the running unit, not the
+# .img.gz. So the qBittorrent password survived in radarr.db inside the artifact
+# even though the operator had just wiped the .env copy of the very same
+# password one line above.
+#
+# The SQLite -wal and -shm sidecars are listed explicitly. Removing a .db while
+# leaving its -wal behind would both leave the secret readable in the WAL and
+# corrupt the database on restore, since the two must travel together.
 SECRET_STASH="/dev/shm/mdb-secret-stash"
 SECRET_PATHS=(
     "/opt/magic_dingus_box/services/.env"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key"
+    "/opt/magic_dingus_box/services/config/radarr/config.xml"
+    "/opt/magic_dingus_box/services/config/radarr/radarr.db"
+    "/opt/magic_dingus_box/services/config/radarr/radarr.db-wal"
+    "/opt/magic_dingus_box/services/config/radarr/radarr.db-shm"
+    "/opt/magic_dingus_box/services/config/prowlarr/config.xml"
+    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db"
+    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-wal"
+    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-shm"
+    "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
 )
 
 log "[2c/5] Removing application secrets from the SD..."
@@ -238,13 +267,28 @@ chmod 600 "${SECRET_STASH}/manifest"
 for src in "${SECRET_PATHS[@]}"; do
     [[ -f "$src" ]] || continue
     # Flatten the path into a stash filename, recording the original so restore
-    # can put each file back exactly where it came from.
+    # can put each file back exactly where it came from — along with its mode
+    # and ownership. Restore used to hardcode `chown magic` + `chmod 600`, which
+    # silently changed these service files from their real 1000:1000 / 644 and
+    # is wrong for anything a container owns. Recording the real values keeps
+    # restore an exact inverse. Older stashes carry only two fields; restore
+    # falls back to its previous behaviour when mode/uid/gid are absent.
     key="$(printf '%s' "$src" | tr '/' '_')"
     cp -p "$src" "${SECRET_STASH}/${key}"
-    printf '%s\t%s\n' "$key" "$src" >> "${SECRET_STASH}/manifest"
+    mode="$(stat -c %a "$src" 2>/dev/null || echo '')"
+    uid="$(stat -c %u "$src" 2>/dev/null || echo '')"
+    gid="$(stat -c %g "$src" 2>/dev/null || echo '')"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$key" "$src" "$mode" "$uid" "$gid" \
+        >> "${SECRET_STASH}/manifest"
     sz=$(stat -c %s "$src" 2>/dev/null || echo 0)
     if [[ "$sz" -gt 0 ]]; then
-        dd if=/dev/zero of="$src" bs=1 count="$sz" conv=notrunc status=none 2>/dev/null || true
+        # Block size matters now that radarr.db (~2.6MB) and its WAL (~2.9MB)
+        # are on the list: bs=1 issues one write syscall per byte, which took
+        # milliseconds for a 500-byte key but would grind for minutes on a
+        # multi-megabyte database. Round up to whole 64K blocks — overshooting
+        # the end is harmless because the file is unlinked immediately after.
+        blocks=$(( (sz + 65535) / 65536 ))
+        dd if=/dev/zero of="$src" bs=64K count="$blocks" conv=notrunc status=none 2>/dev/null || true
         sync
     fi
     rm -f "$src"

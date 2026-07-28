@@ -113,17 +113,29 @@ SECRET_STASH="/dev/shm/mdb-secret-stash"
 
 if [[ -f "${SECRET_STASH}/manifest" ]]; then
     restored=0
-    while IFS=$'\t' read -r key dest; do
+    while IFS=$'\t' read -r key dest mode uid gid; do
         [[ -n "$key" && -n "$dest" ]] || continue
         [[ -f "${SECRET_STASH}/${key}" ]] || continue
         mkdir -p "$(dirname "$dest")"
         cp -p "${SECRET_STASH}/${key}" "$dest"
-        # These were created by the services that own them, not by root.
-        case "$dest" in
-            /home/magic/*) chown magic:magic "$dest" 2>/dev/null || true ;;
-            /opt/magic_dingus_box/*) chown magic:magic "$dest" 2>/dev/null || true ;;
-        esac
-        chmod 600 "$dest" 2>/dev/null || true
+        if [[ -n "$mode" && -n "$uid" && -n "$gid" ]]; then
+            # Exact inverse of prepare: put back the ownership and mode the file
+            # actually had. The Radarr/Prowlarr/qBittorrent files are owned by
+            # the container user (1000:1000, mode 644); blanket-chowning them to
+            # magic and forcing 600 — as this did before the manifest carried
+            # these fields — silently changed service state the clone then
+            # inherited.
+            chown "${uid}:${gid}" "$dest" 2>/dev/null || true
+            chmod "$mode" "$dest" 2>/dev/null || true
+        else
+            # Stash written by an older prepare_for_cloning.sh, which recorded
+            # only key and dest. Keep the previous behaviour for those.
+            case "$dest" in
+                /home/magic/*) chown magic:magic "$dest" 2>/dev/null || true ;;
+                /opt/magic_dingus_box/*) chown magic:magic "$dest" 2>/dev/null || true ;;
+            esac
+            chmod 600 "$dest" 2>/dev/null || true
+        fi
         restored=$((restored + 1))
     done < "${SECRET_STASH}/manifest"
     sync
