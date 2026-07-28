@@ -8947,3 +8947,40 @@ body.faceplate .info-row > :last-child {
   body.faceplate .bottom-nav-item span,
   body.faceplate .bottom-nav-item .nav-label { font-size: 10px; letter-spacing: 0; }
 }
+
+/* --- Corrections from rendering against the LIVE Pi API ------------------- */
+
+/* The screws sat at z-index 9997, above scrolling content, so headings passed
+ * UNDER them and the chunky 11px discs occluded text (the "M" of "My Video
+ * Playlists" as it scrolled by). On a real faceplate the screws are in the
+ * panel and the printed content sits on top of it, so drop them behind. The
+ * bezel stays above: it is a 1.5px line that reads as a frame rather than an
+ * obstruction, and content never reaches it horizontally anyway. */
+body.faceplate .screw { z-index: 1; }
+
+/* Video library rows measured 220px each; across 211 videos that is ~46000px
+ * of scrolling. Selectors below are the REAL ones, read off the rendered DOM —
+ * an earlier pass guessed td[data-label] and .row-actions, neither of which
+ * this markup uses, and moved the height by 7px.
+ *
+ * Row anatomy at 220px: 20 padding + title 28 (with a 10px bottom pad) +
+ * artist 16 + filename 32 (it WRAPS to two lines) + size 16 + usage 24 +
+ * actions 44 + 20 of gaps. The filename wrap and the title pad are the two
+ * cheapest wins; actions stay at 44 because that is the touch minimum. */
+@media (max-width: 700px) {
+  body.faceplate .video-library-table tbody tr { padding: 9px 12px; gap: 2px; }
+  body.faceplate .video-library-table .video-title {
+    padding-bottom: 0; margin-bottom: 3px; line-height: 1.25;
+  }
+  body.faceplate .video-library-table .video-artist,
+  body.faceplate .video-library-table .video-size { line-height: 1.3; }
+  /* One line, ellipsised — it repeats the title on most rows and its full value
+     is rarely what you are scanning for. */
+  body.faceplate .video-library-table .video-filename {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; color: var(--dim); line-height: 1.3;
+  }
+  body.faceplate .video-library-table .video-usage { line-height: 1.3; }
+  body.faceplate .video-library-table .video-actions { margin-top: 4px; }
+  body.faceplate .video-library-table .video-actions button { min-height: 44px; }
+}
