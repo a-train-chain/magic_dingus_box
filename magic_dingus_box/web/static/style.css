@@ -4109,7 +4109,7 @@ body.faceplate .resolution-select-compact option, body.faceplate #targetResoluti
 
 /* === .btn-primary, .btn-primary:hover  (REPLACES style.css:813-834) === */
 /* REPLACES, verbatim, style.css:813-834 —
-     /* Buttons */
+     Buttons
      body.faceplate .btn-primary {
          background: var(--success);
          color: var(--bg-dark);
@@ -4181,10 +4181,37 @@ body.faceplate .btn-primary::after {
    lightest possible tier: the pipe warms, the key does NOT move. A key that
    moves on hover is a key you have not pressed. */
 @media (hover: hover) and (pointer: fine) {
-    body.faceplate .btn-primary:hover { filter: brightness(1.08); }
+    /* transform: none cancels the legacy `.btn-primary:hover { transform:
+       scale(1.02) }` (style.css:894). Nothing in the faceplate layer declares
+       transform at rest, so that scale was the winning declaration and the key
+       still grew on hover — the exact thing the note above rules out. The
+       legacy glow beside it does NOT leak: `body.faceplate .btn-primary`
+       (0,2,1) outranks `.btn-primary:hover` (0,2,0) on box-shadow, since equal
+       class counts are broken by the element count. */
+    body.faceplate .btn-primary:hover { filter: brightness(1.08); transform: none; }
     body.faceplate .btn-primary:hover::after {
         background: #8FD79A;
         box-shadow: 0 0 8px 1px rgba(102, 221, 122, .50), inset 0 0 3px #e4fdea;
+    }
+}
+
+/* Same cancellation for every other key tier that has a legacy :hover
+   declaring transform or a coloured glow. Kept inside the hover guard so a
+   phone tap can never latch it. */
+@media (hover: hover) and (pointer: fine) {
+    body.faceplate .btn-secondary:hover,
+    body.faceplate .btn-danger:hover,
+    body.faceplate .btn-edit:hover,
+    body.faceplate .btn-add-slot:hover,
+    body.faceplate .row-actions button:hover,
+    body.faceplate .library-item .add-btn:hover {
+        transform: none;
+    }
+    /* The legacy secondary hover (style.css:913) paints a steel-blue glow, and
+       the faceplate replacement declares no box-shadow of its own, so this is
+       the only thing stopping it. Steel blue appears nowhere on the panel. */
+    body.faceplate .btn-secondary:hover {
+        box-shadow: 0 3px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
     }
 }
 
@@ -4203,7 +4230,7 @@ body.faceplate .btn-primary:active::after {
      .btn-secondary {
          background: var(--bg-dark);
          color: var(--text-primary);
-         border: 2px solid var(--border-color);   /* steel blue */
+         border: 2px solid var(--border-color);   (steel blue)
 /* padding: 0.75rem 1.5rem; */
 /* font-family: inherit; */
 /* cursor: pointer; */
@@ -4212,10 +4239,14 @@ body.faceplate .btn-primary:active::after {
 /* width: 100%; */
 /* min-height: 44px; */
 /* }   <- stray closer from a quoted 'before' block */
-     body.faceplate .btn-secondary:hover {
-         border-color: var(--accent2);
-         box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
-     }
+/*   body.faceplate .btn-secondary:hover {                                    */
+/*       border-color: var(--accent2);                                        */
+/*       box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);                        */
+/*   }                                                                        */
+/*   ^ Quoted "before" CSS that was executing. The real replacement at        */
+/*     style.css:4245 overrides border-color but declares no box-shadow, so   */
+/*     this leaked a steel-blue glow onto every secondary key on hover — and  */
+/*     being outside the (hover: hover) guard, it stuck on iOS taps too.      */
 /* The 2px steel-blue border is the single loudest divergence from the */
 /* faceplate — the panel has no 2px lines and no steel blue anywhere. * / */
 
@@ -4388,7 +4419,7 @@ body.faceplate .btn-remove:active {
 
 /* === .btn-danger, .btn-danger:hover  (REPLACES style.css:873-891) === */
 /* REPLACES, verbatim, style.css:873-891 —
-     /* Delete/Danger button - Red */
+     Delete/Danger button - Red
      body.faceplate .btn-danger {
          background: transparent;
          color: var(--error);
@@ -4557,7 +4588,7 @@ body.faceplate input[type="checkbox"]:active {
 
 /* === .row-actions button + .btn-delete  (REPLACES style.css:2540-2560) === */
 /* REPLACES, verbatim, style.css:2540-2560 —
-     /* Row action buttons */
+     Row action buttons
      body.faceplate .row-actions button {
          background: transparent;
          border: none;
@@ -4632,7 +4663,7 @@ body.faceplate .row-actions button.btn-delete:active {
 /* (a) REPLACES, verbatim, style.css:2605-2619 —
        .btn-add-slot {
            background: transparent;
-           border: 1px dashed var(--border-color);   /* steel blue */
+           border: 1px dashed var(--border-color);   (steel blue)
 /* color: var(--text-secondary); */
 /* padding: 0.375rem 0.75rem; */
 /* border-radius: 4px; */
@@ -7341,15 +7372,28 @@ input:disabled, body.faceplate select:disabled, body.faceplate textarea:disabled
 
 /* Kill every hover/active affordance while disabled — .btn-primary:hover
    (style.css:830) currently still scales and glows on a disabled button. */
-body.faceplate button:disabled:hover, body.faceplate button:disabled:active, body.faceplate /* button[disabled]:hover, body.faceplate */
-/* button[disabled]:active { */
+/* This rule's opening brace was inside a comment, so it never reached the
+   parser. CSS error recovery then scanned forward for a block to attach the
+   prelude to and consumed the next one it found — which was the `.notification`
+   rule further down. The entire toast restyle was discarded along with it, so
+   every toast in the app fell back to the hardcoded Bootstrap light-mode hexes
+   manager.js writes inline (#d4edda / #f8d7da / #fff3cd): pale pastel cards on
+   a #1F191F panel.
+
+   The damage was invisible to brace-balance checking, because the stray opener
+   and closer were both commented out and therefore balanced. Rewritten as a
+   well-formed rule; the declarations themselves are unchanged. */
+body.faceplate button:disabled:hover,
+body.faceplate button:disabled:active,
+body.faceplate button[disabled]:hover,
+body.faceplate button[disabled]:active {
     background: var(--bg-lift) !important;
     background-image: none !important;
     transform: none !important;
     box-shadow:
-/* inset 0 1px 0 rgba(255,255,255,.05), */
-/* inset 0 -2px 0 rgba(0,0,0,.30) !important; */
-/* }   <- stray closer from a quoted 'before' block */
+        inset 0 1px 0 rgba(255,255,255,.05),
+        inset 0 -2px 0 rgba(0,0,0,.30) !important;
+}
 
 /* --- .notification, .notification-{success,error,warning,info}, #notification-container --- */
 /* ADD at the END of style.css.
