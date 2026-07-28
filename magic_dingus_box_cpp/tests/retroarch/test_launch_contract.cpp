@@ -450,6 +450,17 @@ TEST_CASE("GL renderer path emits video_driver=gl without Vulkan-only settings",
     const std::string cfg = out.str();
 
     require_line(cfg, "video_driver = \"gl\"");
+    // Name the KMS/EGL/GBM context EXPLICITLY. Leaving this empty made
+    // RetroArch walk its context priority list, and on this headless box
+    // that means probing Wayland first and logging
+    //   [ERROR] [Wayland]: Failed to connect to Wayland server.
+    // before recovering with [GL]: Found GL context: "kms". Observed live
+    // on the Pi 5 launching Banjo-Kazooie: it worked, but the wasted probe
+    // put a spurious ERROR in the launcher log and tripped the emulator
+    // smoke test's fatal-video detector. "kms" is the GL/EGL context name
+    // ("khr_display" is the Vulkan one — emitting THAT for a GL core is
+    // what black-screens it).
+    require_line(cfg, "video_context_driver = \"kms\"");
     REQUIRE(cfg.find("khr_display") == std::string::npos);
     REQUIRE(cfg.find("video_max_swapchain_images") == std::string::npos);
     REQUIRE(cfg.find("video_threaded = \"false\"") == std::string::npos);

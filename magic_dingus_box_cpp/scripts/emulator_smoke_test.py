@@ -213,12 +213,20 @@ def launch_log_failure(log_text: str):
     for signature, message in fatal_signatures:
         if signature in log_text:
             return message
-    # RetroArch may probe Wayland before falling through to VK_KHR_display.
-    # That probe is harmless only when the same launch subsequently confirms
-    # the direct-display Vulkan context. A lone Wayland failure remains fatal.
+    # RetroArch may probe Wayland before falling through to a direct-display
+    # context. That probe is harmless only when the same launch subsequently
+    # confirms one. A lone Wayland failure remains fatal.
+    #
+    # There are TWO valid fallbacks, one per renderer, and this used to know
+    # only about the Vulkan one — so every healthy N64/Dreamcast launch on
+    # the GL path was reported as a fatal video error (observed on the Pi 5:
+    # Banjo-Kazooie launched, hit KMS at 1920x1080, and still came back
+    # FAIL). Vulkan cores land on "khr_display"; GL cores (mupen64plus_next,
+    # parallel_n64) land on "kms".
     if ("Failed to connect to Wayland server" in log_text and
-            'Found vulkan context: "khr_display"' not in log_text):
-        return "Wayland display connection failed without KHR display fallback"
+            'Found vulkan context: "khr_display"' not in log_text and
+            'Found GL context: "kms"' not in log_text):
+        return "Wayland display connection failed without KMS/KHR fallback"
     return None
 
 

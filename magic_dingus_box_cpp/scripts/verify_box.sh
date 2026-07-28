@@ -146,10 +146,21 @@ PY
 
 # Cores must be loadable, not merely present — a wrong-arch or
 # missing-dependency .so passes a file test and fails at launch.
-CORE_BAD=$(python3 - "$APP" <<'PY'
+#
+# Check the LIVE core directory (~/.config/retroarch/cores), which is what
+# RetroArch actually dlopens at launch — NOT $APP/libretro_cores, which is
+# only the staging copy deploy_cpp.sh rsyncs FROM the repo. Those two
+# diverge: the staging dir is inside the deploy tree, so `rsync --delete`
+# prunes it back to whatever the repo carries, while the live dir is
+# updated additively and keeps everything. Checking staging reported
+# "7 present" on a box that was happily running 10 — including the N64 and
+# Dreamcast cores the smoke test had just launched games on.
+CORE_DIR="$HOME/.config/retroarch/cores"
+[[ -d "$CORE_DIR" ]] || CORE_DIR="$APP/libretro_cores"
+CORE_BAD=$(python3 - "$CORE_DIR" <<'PY'
 import ctypes, glob, os, sys
 bad = []
-for so in sorted(glob.glob(os.path.join(sys.argv[1], "libretro_cores", "*.so"))):
+for so in sorted(glob.glob(os.path.join(sys.argv[1], "*.so"))):
     try:
         lib = ctypes.CDLL(so)
         lib.retro_api_version.restype = ctypes.c_uint
@@ -160,7 +171,7 @@ for so in sorted(glob.glob(os.path.join(sys.argv[1], "libretro_cores", "*.so")))
 print(",".join(bad))
 PY
 )
-CORE_N=$(ls "$APP"/libretro_cores/*.so 2>/dev/null | wc -l | tr -d ' ')
+CORE_N=$(ls "$CORE_DIR"/*.so 2>/dev/null | wc -l | tr -d ' ')
 if [[ -z "$CORE_BAD" && "$CORE_N" -gt 0 ]]; then pass "libretro cores: ${CORE_N} present, all load (API v1)"
 elif [[ "$CORE_N" == 0 ]]; then fail "no libretro cores installed"
 else fail "cores failing to load: ${CORE_BAD}"; fi
@@ -194,11 +205,19 @@ except Exception:
 PY
 
 # now_playing was published-but-never-assigned for a long time; the phone
-# remote showed a bare em-dash. Only meaningful while something plays.
+# remote showed a bare em-dash. Only meaningful while a PLAYLIST ITEM plays.
+#
+# item_index >= 0 is load-bearing, not belt-and-braces. The boot intro video
+# is played straight from main.cpp, not out of a playlist, so it never sets
+# now_playing_title (controller.cpp assigns it only when a playlist item
+# starts). Gating on duration alone therefore fired during the intro and
+# reported NOT SHIPPABLE for the first several seconds after every boot or
+# kiosk restart — seen twice on the Pi 5 before it was understood.
 NP=$(python3 -c "
 import json
 s=json.load(open('/opt/magic_dingus_box/magic_dingus_box_cpp/data/kiosk_status.json'))
-print(1 if s.get('playback',{}).get('duration_sec',0)>0 else 0, s.get('now_playing',{}).get('title',''))" 2>/dev/null)
+playing = s.get('playback',{}).get('duration_sec',0)>0 and s.get('playlist',{}).get('item_index',-1)>=0
+print(1 if playing else 0, s.get('now_playing',{}).get('title',''))" 2>/dev/null)
 if [[ "${NP%% *}" == "1" ]]; then
   [[ -n "${NP#* }" ]] && pass "now_playing populated: ${NP#* }" \
                       || fail "media playing but now_playing.title empty (phone remote shows '-')"

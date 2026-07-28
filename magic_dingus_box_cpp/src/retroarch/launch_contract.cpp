@@ -83,15 +83,26 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
     // --- Driver + context: renderer-dependent ---
     if (!vulkan) {
         // GL path — N64/GLideN64 (mupen64plus_next / parallel_n64). Use
-        // video_driver=gl and DELIBERATELY leave video_context_driver
-        // EMPTY so RetroArch auto-selects the KMS/EGL/GBM context. Emitting
-        // "khr_display" (the Vulkan direct-display context) for a GL core
-        // black-screens it — confirmed in the Pi 5 emulation research.
+        // video_driver=gl and name the KMS/EGL/GBM context EXPLICITLY as
+        // "kms". Emitting "khr_display" (the Vulkan direct-display context)
+        // for a GL core black-screens it — confirmed in the Pi 5 research.
+        //
+        // This was originally left EMPTY to let RetroArch auto-select.
+        // That does work, but only via a failed probe: measured live on the
+        // Pi 5 launching Banjo-Kazooie, RetroArch walks its context
+        // priority list, tries Wayland first on this headless box, logs
+        //   [ERROR] [Wayland]: Failed to connect to Wayland server.
+        // and only then settles on [GL]: Found GL context: "kms". The game
+        // ran fine, but the spurious ERROR line tripped the emulator smoke
+        // test's fatal-video detector and made a healthy N64 launch look
+        // like a crash. Naming the context makes the GL path deterministic
+        // instead of dependent on fallback ordering.
         // The Vulkan swapchain workarounds below are Vulkan-only, so they
         // are skipped here. Threaded video is safe on GL (the swapchain
         // thrash that forces it off was Vulkan-specific) and helps
         // framepacing on the Pi 5's spare A76 cores.
         out << "video_driver = \"gl\"\n";
+        out << "video_context_driver = \"kms\"\n";
         out << "video_threaded = \"true\"\n";
     } else {
     out << "video_driver = \"vulkan\"\n";
