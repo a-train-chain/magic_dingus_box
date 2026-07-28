@@ -9931,3 +9931,149 @@ body.faceplate .bottom-nav {
   body.faceplate #videoList .video-library-table th:nth-child(5) { width: 18%; }
   body.faceplate #videoList .video-library-table th:nth-child(6) { width: 10%; }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- The sub-navigation is a different product from the navigation above it
+   *
+   * FOUR findings, one component. Above 700px nothing in the faceplate layer
+   * touches `.sub-tabs` or `.sub-tab` — every appended rule for them sits
+   * inside a `max-width: 700px` block (style.css:8956, 8997) — so on a desktop
+   * this strip renders exactly as it did before the faceplate existed, 24px
+   * below a strip that was fully converted. Measured at 1440x900:
+   *
+   * 1. THE CONTAINER IS PRE-FACEPLATE CHROME.
+   *      .sub-tabs  background #261F26 flat, border rgba(88,132,177,.20),
+   *                 radius 10px, box-shadow none
+   *      .tabs      background linear-gradient(#151115,#1B161B),
+   *                 border rgba(245,191,66,.20), radius 8px,
+   *                 box-shadow inset 0 2px 8px rgba(0,0,0,.75)
+   *    rgba(88,132,177,…) is --accent2 steel blue — the exact colour
+   *    style.css:4251 records as removed because "the panel has no 2px lines
+   *    and no steel blue anywhere". 10px matches none of the three canonical
+   *    radii at style.css:3756-3758. The two strips are in two different
+   *    design languages on the same screen.
+   *
+   * 2. IT STRETCHES. <nav class="sub-tabs"> (index.html:173, 332) is
+   *    block-level with no width cap, so it spans the full 1200px content box
+   *    while its three keys measure 363px — 816px of empty steel-bordered box
+   *    to the right of "All Videos". It is given the width of its content, the
+   *    way a real group of keys occupies only the area it needs.
+   *
+   * 3. THE HIERARCHY IS INVERTED. `.sub-tab` resolves to 0.9rem = 14.4px at
+   *    weight 500; `.tab` directly above it is 13px at weight 400. The
+   *    SUBORDINATE strip was 1.4px larger and one nominal weight heavier than
+   *    the real navigation. The weight is doubly wrong: DejaVuMono ships
+   *    exactly one face, so `font-weight: 500` was a synthetic smear, not a
+   *    heavier cut. Restored as a real step — .tab 14px, .sub-tab 12.5px —
+   *    both at 400, with emphasis carried by colour and the lit pipe, which is
+   *    how this design signals everything else.
+   *
+   * 4. THE ACTIVE KEY IS A GOLD SLAB. style.css:8453-8456 states the law:
+   *    "WHY ACTIVE IS NOT A GOLD FILL: the faceplate does not repaint a key
+   *    when you select it, it lights the pipe." The top strip obeys it. The
+   *    sub-strip still runs the legacy `.sub-tab.active { background:
+   *    var(--accent) }`, measured live as a flat rgb(245,191,66) fill with
+   *    #1F191F text and no ::after at all (content: none). So on one screen,
+   *    24px apart, selection was signalled two contradictory ways.
+   *
+   *    The keycap recipe below is style.css:8483-8539 verbatim — same face
+   *    gradient, same pocket ring, same #4A3C12 unlit pipe (--accent
+   *    darkened, never black and never grey, per remote.css:395-401), same lit
+   *    treatment. `body.faceplate .sub-tab.active` is (0,3,1) and beats the
+   *    legacy (0,2,0) outright rather than relying on source order — the same
+   *    guard style.css:8531 documents for .tab.active, which was written after
+   *    a gold-on-gold 1.00-contrast bug caused by exactly that mistake.
+   *
+   *    Contrast, against #2E2A30 (midpoint of the face gradient):
+   *      --fg     #F2E4D9  11.33:1  inactive label
+   *      --accent #F5BF42   8.33:1  active label
+   *    Selection stays signalled twice — label colour AND lit pipe — so it is
+   *    never colour-only.
+   *
+   * min-height 40px against .tab's 44px keeps the strip subordinate; it is
+   * also a 4px INCREASE on the 36px these keys measure today, so no touch
+   * target shrinks. `position: relative` is restated rather than inherited
+   * from body.faceplate button (style.css:9189) because the pipe's absolute
+   * positioning depends on it. */
+  body.faceplate .sub-tabs {
+    width: max-content;
+    max-width: 100%;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 191, 66, .20);
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+  }
+
+  body.faceplate .tab {
+    font-size: 14px;
+    letter-spacing: .05em;
+  }
+
+  body.faceplate .sub-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 18px 10px;
+    font-size: 12.5px;
+    font-weight: 400;
+    letter-spacing: .06em;
+    color: var(--fg);
+    background: linear-gradient(180deg, #39323A, #241F25);
+    transition: transform .05s ease, box-shadow .05s ease, color .12s ease;
+  }
+
+  /* The LED light-pipe slot — style.css:8505-8518, `.tab::after`. */
+  body.faceplate .sub-tab::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 6px;
+    transform: translateX(-50%);
+    width: 40%;
+    min-width: 20px;
+    height: 4px;
+    border-radius: 2px;
+    background: #4A3C12;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;
+  }
+
+  body.faceplate .sub-tab.active {
+    background: linear-gradient(180deg, #39323A, #241F25);
+    color: var(--accent);
+    box-shadow: 0 0 0 3px var(--well), 0 3px 0 3px rgba(0, 0, 0, .6),
+                inset 0 1px 0 rgba(255, 255, 255, .10);
+  }
+
+  body.faceplate .sub-tab.active::after {
+    background: var(--accent);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), 0 0 8px rgba(245, 191, 66, .55);
+  }
+}
+
+/* The hover tier, mirroring style.css:8544-8556 exactly. `.sub-tab:hover`
+ * (style.css:1605) predates the faceplate layer and was never brought across,
+ * so it is the only hover in the file that is NOT pointer-gated — it washes
+ * the key with 8% gold, the pre-faceplate glassmorphism response, while the
+ * strip above lightens its keycap face. The `.active:hover` restatement keeps
+ * the selected key's label gold instead of inheriting the inactive cream —
+ * omitting it is what caused the .tab hover contrast bug documented at
+ * style.css:8546-8550.
+ *
+ * NOT FIXED HERE, deliberately: the ungated `.sub-tab:hover` at style.css:1605
+ * still applies on touch devices, where a tap can leave a key stuck in a hover
+ * state. Neutralising that means editing that shared unmediated rule, which
+ * would change phone rendering and is out of scope for a desktop-only pass. */
+@media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+  body.faceplate .sub-tab:hover {
+    background: linear-gradient(180deg, #443C45, #2B252C);
+    color: var(--fg);
+  }
+  body.faceplate .sub-tab:hover::after { background: #6B5518; }
+  body.faceplate .sub-tab.active:hover { color: var(--accent); }
+  body.faceplate .sub-tab.active:hover::after { background: var(--accent); }
+}
