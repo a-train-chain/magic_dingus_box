@@ -488,6 +488,38 @@ function titleForLibraryItem(entry) {
     return String((entry && entry.filename) || '').replace(/\.[^.]+$/, '');
 }
 
+/**
+ * Filename for a playlist title, safe as both a path segment and a URL segment.
+ *
+ * This was `title.toLowerCase().replace(/\s+/g, '_') + '.yaml'`, which only
+ * dealt with whitespace. A title containing a URL-significant character
+ * produced a filename that could not survive the round trip:
+ *   "AC/DC"       -> ac/dc.yaml     -> an extra path segment; the server's own
+ *                                      _sanitize_filename rejects separators
+ *   "Playlist #1" -> playlist_#1.yaml -> everything from '#' is a fragment and
+ *                                      never reaches the server
+ *   "Why Not?"    -> why_not?.yaml  -> everything from '?' becomes a query
+ * All three surfaced as a bare "Failed to save playlist" with no explanation.
+ *
+ * Keep the character class conservative: word characters, dot and dash only,
+ * which is a subset of what the server accepts, so anything this produces is
+ * guaranteed to pass _sanitize_filename.
+ */
+function playlistFilenameFor(title) {
+    const slug = String(title || '')
+        .normalize('NFD')             // split accented letters into base + mark
+        .replace(/[\u0300-\u036f]/g, '')   // ...and drop the marks, so
+                                            // "Ünïcodé" folds to "Unicode"
+                                            // rather than being stripped to
+                                            // "ncod" by the ASCII-only \w below
+        .toLowerCase()
+        .replace(/\s+/g, '_')
+        .replace(/[^\w.-]/g, '')     // drop anything path- or URL-significant
+        .replace(/_{2,}/g, '_')
+        .replace(/^[._-]+|[._-]+$/g, '');
+    return `${slug || 'untitled'}.yaml`;
+}
+
 const MEDIA_CONFIG = {
     video: {
         // Element IDs
@@ -1541,7 +1573,7 @@ async function loadVideos() {
         const videoUsageMap = {};
         for (const playlist of allPlaylists) {
             try {
-                const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
+                const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(playlist.filename)}`);
                 const detailResult = await detailResponse.json();
                 const fullData = detailResult.data || detailResult;
                 const items = Array.isArray(fullData.items) ? fullData.items : [];
@@ -2695,7 +2727,7 @@ async function loadExistingPlaylists() {
             } else {
                 // Fallback: Fetch full playlist to check item types
                 try {
-                    const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${pl.filename}`);
+                    const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(pl.filename)}`);
                     const detailResult = await detailResponse.json();
                     const fullData = detailResult.data || detailResult;
 
@@ -2817,7 +2849,7 @@ async function editPlaylist(filename, type) {
     if (!currentDevice) return;
 
     try {
-        const response = await fetch(`${currentDevice.url}/admin/playlists/${filename}`);
+        const response = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`);
         const result = await response.json();
         const playlistData = result.data || result;
 
@@ -2922,7 +2954,7 @@ async function performSavePlaylist(type) {
 
     // Determine filename
     const editingFile = saveBtn?.dataset.editingFile;
-    const filename = editingFile || `${title.toLowerCase().replace(/\s+/g, '_')}.yaml`;
+    const filename = editingFile || playlistFilenameFor(title);
 
     // For a NEW playlist (not editing an existing file), ask the server to
     // refuse if the derived filename already belongs to a different
@@ -2939,7 +2971,7 @@ async function performSavePlaylist(type) {
         let response;
         if (saveBtn) saveBtn.disabled = true;
         try {
-            response = await fetch(`${currentDevice.url}/admin/playlists/${filename}${qs}`, {
+            response = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${qs}`, {
                 method: 'POST',
                 headers: getCsrfHeaders(),
                 body: JSON.stringify(playlistData)
@@ -4136,7 +4168,7 @@ async function deletePlaylist(filename, type) {
 
     try {
         // Fetch playlist details to get video list
-        const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${filename}`);
+        const detailResponse = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`);
         const detailResult = await detailResponse.json();
         const playlistData = detailResult.data || detailResult;
 
@@ -4159,7 +4191,7 @@ async function deletePlaylist(filename, type) {
         const videosUsedElsewhere = new Set();
         for (const playlist of allPlaylists) {
             try {
-                const otherResponse = await fetch(`${currentDevice.url}/admin/playlists/${playlist.filename}`);
+                const otherResponse = await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(playlist.filename)}`);
                 const otherResult = await otherResponse.json();
                 const otherData = otherResult.data || otherResult;
                 (otherData.items || []).forEach(item => {
@@ -4210,7 +4242,7 @@ async function deletePlaylist(filename, type) {
             async () => {
                 try {
                     const deleteVideos = document.getElementById('deleteVideosCheckbox')?.checked || false;
-                    const url = `${currentDevice.url}/admin/playlists/${filename}${deleteVideos ? '?delete_videos=true' : ''}`;
+                    const url = `${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}${deleteVideos ? '?delete_videos=true' : ''}`;
 
                     const response = await fetch(url, {
                         method: 'DELETE',
@@ -4247,7 +4279,7 @@ async function deletePlaylist(filename, type) {
             `Delete playlist "${filename}"?`,
             async () => {
                 try {
-                    await fetch(`${currentDevice.url}/admin/playlists/${filename}`, {
+                    await fetch(`${currentDevice.url}/admin/playlists/${encodeURIComponent(filename)}`, {
                         method: 'DELETE',
                         headers: getCsrfHeaders(false)
                     });
