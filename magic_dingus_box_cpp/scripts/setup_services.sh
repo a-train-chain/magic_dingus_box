@@ -511,6 +511,45 @@ else
     echo "Note: auto-blocklist assets not found, skipping install."
 fi
 
+# 4.0. Install + enable the missing-movies-search timer.
+#
+# This was WRITTEN, DOCUMENTED and TESTED but never installed on any box.
+# Its unit files live in scripts/missing_search/ rather than in systemd/,
+# which is the only directory the install blocks above look in, so nothing
+# ever copied them into /etc/systemd/system. Caught by a repo audit:
+# `systemctl is-enabled magic-dingus-missing-search.timer` returned
+# "not-found" on a fully provisioned box while CLAUDE.md documented it as
+# running every 4 hours.
+#
+# What it plugs: "Add to Library" sets addOptions.searchForMovie=true, so
+# Radarr fires exactly ONE auto-search the instant a movie is added. If
+# that single search comes up empty (release not posted yet, indexer in
+# transient cooldown, Byparr mid-challenge), Radarr does not retry at a
+# useful cadence — RSS sync only catches brand-new releases going forward.
+# The title then sits with no download until someone opens the release
+# picker by hand. missing_search.py retries the missing backlog so those
+# self-heal; it is idempotent, and a run with nothing missing is a no-op.
+MISSING_SEARCH_DIR="${SCRIPT_DIR}/missing_search"
+if [ -f "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" ] && \
+   [ -f "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.timer" ] && \
+   [ -f "${MISSING_SEARCH_DIR}/missing_search.py" ]; then
+    # NOTE: no copy to /usr/local/bin. Unlike auto_blocklist_stuck_warnings.py,
+    # this unit's ExecStart points at the deployed repo path
+    # (/opt/magic_dingus_box/.../scripts/missing_search/missing_search.py), so a
+    # /usr/local/bin copy would never be executed and would silently go stale.
+    sudo install -m 0644 \
+        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.service" \
+        /etc/systemd/system/magic-dingus-missing-search.service
+    sudo install -m 0644 \
+        "${MISSING_SEARCH_DIR}/magic-dingus-missing-search.timer" \
+        /etc/systemd/system/magic-dingus-missing-search.timer
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now magic-dingus-missing-search.timer
+    echo "Missing-movies-search timer (every 4h) installed + active."
+else
+    echo "Note: missing-search assets not found, skipping install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the
