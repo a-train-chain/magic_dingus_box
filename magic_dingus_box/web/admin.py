@@ -1575,15 +1575,104 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                     # Find media files in the ZIP
                     media_files = []
+                    rom_files = []
                     for name in namelist:
-                        # Accept files in media/ folder or root level video files
                         lower_name = name.lower()
                         if lower_name.endswith(('.mp4', '.mkv', '.avi', '.mov', '.webm')):
+                            # Accept files in media/ folder or root level video files
                             media_files.append(name)
+                            continue
+                        # ROM entries are identified by LOCATION, not extension.
+                        # ROM extensions are wildly varied (.7z .z64 .n64 .v64
+                        # .sfc .smc .nes .md .gg .pce .a78 .bin .cue .iso .gdi
+                        # .chd) and .zip collides with the package itself, so a
+                        # suffix list would be both incomplete and ambiguous.
+                        # The archive layout mirrors the on-disk one:
+                        #     roms/<system>/<file>   or   data/roms/<system>/<file>
+                        # which is also exactly what a game playlist's own
+                        # `path:` values look like, so a package can be built by
+                        # copying the referenced files in at their stated paths.
+                        parts = name.split('/')
+                        if parts[:1] == ['data']:
+                            parts = parts[1:]
+                        if len(parts) >= 3 and parts[0] == 'roms' and parts[-1]:
+                            rom_files.append((name, parts[1], parts[-1]))
 
                     # Guard against ZIP bombs: limit total extracted size (default 10GB)
                     MAX_EXTRACT_BYTES = int(os.getenv("MAGIC_MAX_EXTRACT_MB", "10240")) * 1024 * 1024
                     total_extracted = 0
+
+                    def _stage_extract(member, dest_path):
+                        """Extract one ZIP member to dest_path, atomically.
+
+                        Stages into a temp file in the destination directory and
+                        only os.replace()s it into position once the whole entry
+                        is written and fsynced, so a failure never damages a file
+                        that is already there. Returns bytes written. Raises
+                        _ExtractTooLarge if the entry would exceed the cap.
+                        """
+                        nonlocal total_extracted
+                        written = 0
+                        remaining = MAX_EXTRACT_BYTES - total_extracted
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        fd, tmp_name = tempfile.mkstemp(
+                            dir=str(dest_path.parent),
+                            prefix=f".{dest_path.name}.",
+                            suffix=".part",
+                        )
+                        tmp = Path(tmp_name)
+                        try:
+                            with zf.open(member) as src, os.fdopen(fd, 'wb') as dst:
+                                while True:
+                                    chunk = src.read(64 * 1024)
+                                    if not chunk:
+                                        break
+                                    written += len(chunk)
+                                    if written > remaining:
+                                        raise _ExtractTooLarge()
+                                    dst.write(chunk)
+                                dst.flush()
+                                os.fsync(dst.fileno())
+                        except BaseException:
+                            tmp.unlink(missing_ok=True)
+                            raise
+                        os.chmod(tmp, 0o644)
+                        os.replace(tmp, dest_path)
+                        total_extracted += written
+                        return written
+
+                    # Extract ROM files. Placement matches upload_rom() exactly —
+                    # roms_dir/<system>/<file> — so a ROM that arrives in a
+                    # package is indistinguishable from one uploaded directly.
+                    roms_imported = 0
+                    roms_skipped = 0
+                    rom_renames = {}
+                    for rom_entry, rom_system, rom_name in rom_files:
+                        try:
+                            safe_system = _sanitize_filename(rom_system)
+                            safe_rom = _sanitize_filename(rom_name)
+                        except ValueError:
+                            continue
+
+                        rom_out = roms_dir / safe_system / safe_rom
+                        if not _is_within(rom_out.resolve(), roms_dir.resolve()):
+                            return error_response("VALIDATION_ERROR", "Invalid ROM path in package")
+
+                        if rom_out.exists() and not overwrite:
+                            roms_skipped += 1
+                            rom_renames[rom_name] = f"data/roms/{safe_system}/{safe_rom}"
+                            continue
+
+                        try:
+                            _stage_extract(rom_entry, rom_out)
+                        except _ExtractTooLarge:
+                            return error_response(
+                                "VALIDATION_ERROR",
+                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
+                                status=413
+                            )
+                        rom_renames[rom_name] = f"data/roms/{safe_system}/{safe_rom}"
+                        roms_imported += 1
 
                     # Extract media files
                     videos_imported = 0
@@ -1683,22 +1772,40 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                 # Update playlist paths to use sanitized filenames (matching what we saved)
                 for item in playlist_data.get('items', []):
-                    if 'path' in item:
-                        path = item['path']
-                        if item.get('source_type') == 'local':
-                            basename = os.path.basename(path)
-                            # Sanitize the basename the same way we sanitized the files
-                            safe_basename = re.sub(r'[^\w\s\-\.\[\]]', '', basename)
-                            safe_basename = safe_basename.strip()
-                            if safe_basename:
-                                item['path'] = f"media/{safe_basename}"
+                    if not isinstance(item, dict) or 'path' not in item:
+                        continue
+                    path = item['path']
+                    source_type = item.get('source_type')
+
+                    if source_type == 'emulated_game':
+                        # Point at wherever the ROM actually landed. Without
+                        # this the item keeps the packager's path, which is only
+                        # correct by luck.
+                        new_path = rom_renames.get(os.path.basename(path))
+                        if new_path:
+                            item['path'] = new_path
+                    elif source_type in (None, '', 'local', 'video'):
+                        # None/'' and the legacy 'video' alias are all treated as
+                        # local by playlist_loader.cpp (source_type defaults to
+                        # "local" when absent). This branch tested only for an
+                        # explicit 'local', so a third-party package that omitted
+                        # source_type had its videos copied onto the box while the
+                        # playlist kept pointing at the packager's original paths
+                        # — every item silently unplayable.
+                        basename = os.path.basename(path)
+                        # Sanitize the basename the same way we sanitized the files
+                        safe_basename = re.sub(r'[^\w\s\-\.\[\]]', '', basename)
+                        safe_basename = safe_basename.strip()
+                        if safe_basename:
+                            item['path'] = f"media/{safe_basename}"
 
                 # Format and save playlist
                 formatted_yaml = format_playlist_yaml(playlist_data)
                 _atomic_write_text(playlist_path, formatted_yaml)
 
                 item_count = len(playlist_data.get('items', []))
-                print(f"Imported package: {output_name} ({item_count} items, {videos_imported} videos)", file=sys.stderr)
+                print(f"Imported package: {output_name} ({item_count} items, "
+                      f"{videos_imported} videos, {roms_imported} ROMs)", file=sys.stderr)
 
                 return success_response(
                     data={
@@ -1706,9 +1813,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         "playlist_title": playlist_data.get('title', output_name),
                         "item_count": item_count,
                         "videos_imported": videos_imported,
+                        "roms_imported": roms_imported,
                         "videos_skipped": videos_skipped,
                     },
-                    message=f"Package imported: {item_count} playlist items, {videos_imported} videos uploaded"
+                    message=(f"Package imported: {item_count} playlist items, "
+                             f"{videos_imported} videos, {roms_imported} ROMs")
                 )
 
             except zipfile.BadZipFile:
