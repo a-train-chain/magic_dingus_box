@@ -2718,7 +2718,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "env_present": env_present,
             "services_running": services_running,
             "containers": containers,
-            "vpn_exit_ip": vpn["vpn_exit_ip"],
             "vpn_country": vpn["vpn_country"],
         })
 
@@ -2939,11 +2938,38 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=400,
             )
 
+        # DELIBERATELY does not return the key/password VALUES.
+        #
+        # The Content Manager has no authentication — it is reachable by any
+        # device on the customer's LAN, and GET /admin/csrf-token hands a token
+        # to anyone who asks, so the CSRF token authenticates nobody. This
+        # endpoint was therefore disclosing the qBittorrent admin password and
+        # both API keys to any LAN client: a guest phone, a compromised IoT
+        # device, or a malicious page via DNS rebinding.
+        #
+        # Nothing is lost by withholding them. The docstring's own use case is
+        # "operators use these to SSH-tunnel into the Pi" — and anyone with the
+        # shell access that presupposes can simply read services/.env directly.
+        # So the values only ever helped someone who already had them, while
+        # exposing them to everyone who did not.
+        #
+        # NOTE this is disclosure control, not authentication. The admin
+        # surface still needs a real credential; that is a separate designed
+        # change (a setup PIN shown on the kiosk screen, exchanged for a
+        # session cookie). It deliberately must NOT reuse the phone-remote
+        # pairing cookie: the Content Manager is opened from a laptop, which
+        # never pairs, and first_boot.sh wipes paired_remotes.json — so a
+        # pairing gate would 401 every fresh unit and break the documented
+        # no-SSH setup workflow.
         return success_response(data={
-            "radarr_api_key": radarr_key,
-            "prowlarr_api_key": prowlarr_key,
+            "radarr_url": "http://localhost:7878",
+            "prowlarr_url": "http://localhost:9696",
+            "qbittorrent_url": "http://localhost:8080",
             "qbittorrent_admin_username": env.get("QBITTORRENT_ADMIN_USERNAME", "admin"),
-            "qbittorrent_admin_password": qbit_password,
+            "credentials_hint": (
+                "Read secrets on the box: "
+                "sudo cat /opt/magic_dingus_box/services/.env"
+            ),
         })
 
     def _radarr_library_count(env: dict) -> int:

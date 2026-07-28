@@ -5565,12 +5565,8 @@ function _renderMediaBrowserStatus(data) {
     // VPN info
     const vpnEl = document.getElementById('mbVpnInfo');
     if (vpnEl) {
-        if (data.vpn_exit_ip) {
+        if (data.vpn_country) {
             vpnEl.innerHTML = `
-                <div class="health-row">
-                    <span class="health-label">VPN exit IP</span>
-                    <span class="health-value">${escapeHtml(data.vpn_exit_ip)}</span>
-                </div>
                 <div class="health-row">
                     <span class="health-label">VPN country</span>
                     <span class="health-value">${escapeHtml(data.vpn_country || '—')}</span>
@@ -6032,8 +6028,12 @@ function _renderCredentialsHTML(d) {
 
     const username = d.qbittorrent_admin_username || 'admin';
     return [
-        row('Radarr', 'http://localhost:7878  (via SSH tunnel)', d.radarr_api_key, 'Radarr'),
-        row('Prowlarr', 'http://localhost:9696  (via SSH tunnel)', d.prowlarr_api_key, 'Prowlarr'),
+        // API key VALUES are no longer sent by the backend. The Content Manager
+        // is unauthenticated on the LAN, so returning them disclosed them to
+        // any device on the customer's network. Show the URL and point at the
+        // box — anyone who can SSH can already read services/.env.
+        row('Radarr', d.radarr_url || 'http://localhost:7878', null, 'Radarr'),
+        row('Prowlarr', d.prowlarr_url || 'http://localhost:9696', null, 'Prowlarr'),
         // qBit username is non-secret — show it directly
         `<div style="margin-bottom: 1rem; padding: 0.75rem; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 4px;">
             <div style="font-weight: 600; color: var(--accent2); margin-bottom: 0.25rem;">qBittorrent</div>
@@ -6043,9 +6043,8 @@ function _renderCredentialsHTML(d) {
                 <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(username)}">📋 Copy</button>
             </div>
             <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace;">
-                <span style="flex: 1 1 200px;">Password: <span id="mbCredQbitPwDisplay">${'•'.repeat(Math.min(20, Math.max(8, (d.qbittorrent_admin_password || '').length)))}</span></span>
-                <button class="btn-secondary small" data-mb-toggle="QbitPw" data-mb-value="${escapeHtml(d.qbittorrent_admin_password || '')}" data-mb-revealed="0">👁 Show</button>
-                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(d.qbittorrent_admin_password || '')}">📋 Copy</button>
+                <span style="flex: 1 1 320px; opacity: .8;">Password: read it on the box &mdash;
+                    <code>sudo cat /opt/magic_dingus_box/services/.env</code></span>
             </div>
         </div>`,
     ].join('');
