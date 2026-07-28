@@ -3810,17 +3810,17 @@ header::after {
    #mbResetConfirmBtn is unaffected — index.html:555-556 sets
    `style="background: var(--error); border-color: var(--error);"` inline,
    which correctly keeps THAT confirm red. */
-#modalConfirm.btn-primary {
+body.faceplate #modalConfirm.btn-primary {
     background: linear-gradient(180deg, #F0C81C, #C79E06);
     color: var(--bg);
 }
-#modalConfirm.btn-primary::after            { background: #9C7F0D; }
-#modalConfirm.btn-primary:active::after {
+body.faceplate #modalConfirm.btn-primary::after            { background: #9C7F0D; }
+body.faceplate #modalConfirm.btn-primary:active::after {
     background: #FFE9A8;
     box-shadow: 0 0 12px 3px rgba(245, 191, 66, .95), inset 0 0 4px #fff6d8;
 }
 @media (hover: hover) and (pointer: fine) {
-    #modalConfirm.btn-primary:hover::after {
+    body.faceplate #modalConfirm.btn-primary:hover::after {
         background: #E6C755;
         box-shadow: 0 0 8px 1px rgba(245, 191, 66, .50), inset 0 0 3px #fff6d8;
     }
@@ -3839,10 +3839,7 @@ header::after {
    The faceplate translation is exact: --key-seated is the pocket ring with the
    stem and cast shadow removed, so the key sits flush in its socket. There is
    nothing to press. */
-button:disabled,
-input:disabled,
-select:disabled,
-textarea:disabled {
+body.faceplate button:disabled, body.faceplate input:disabled, body.faceplate select:disabled, body.faceplate textarea:disabled {
     box-shadow: var(--key-seated);
     filter: grayscale(.65) brightness(.72);
     opacity: .55;
@@ -3851,22 +3848,17 @@ textarea:disabled {
 }
 /* Belt and braces: no travel, no hover lift, and the light pipe goes dark —
    an unpowered indicator, which is the correct reading. */
-button:disabled:active,
-button:disabled:hover {
+body.faceplate button:disabled:active, body.faceplate button:disabled:hover {
     transform: none;
     filter: grayscale(.65) brightness(.72);
     box-shadow: var(--key-seated);
 }
-button:disabled::after,
-button:disabled:active::after,
-button:disabled:hover::after {
+body.faceplate button:disabled::after, body.faceplate button:disabled:active::after, body.faceplate button:disabled:hover::after {
     background: #1A1714;
     box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
 }
 /* Disabled wells lose their gold lip — nothing to type into. */
-input:disabled,
-select:disabled,
-textarea:disabled {
+body.faceplate input:disabled, body.faceplate select:disabled, body.faceplate textarea:disabled {
     border-color: rgba(150, 139, 133, .18);
 }
 
@@ -3885,13 +3877,7 @@ textarea:disabled {
    The ring is remote.css:164-165's gold pinstripe, quoted directly:
      border: 1.5px solid var(--accent);
      box-shadow: 0 0 10px rgba(245,191,66,.13); */
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-summary:focus-visible,
-[tabindex]:focus-visible {
+body.faceplate a:focus-visible, body.faceplate button:focus-visible, body.faceplate input:focus-visible, body.faceplate select:focus-visible, body.faceplate textarea:focus-visible, body.faceplate summary:focus-visible, body.faceplate [tabindex]:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: calc(var(--key-pocket) + 1px);   /* clears the routed pocket */
     border-radius: inherit;
@@ -3900,9 +3886,7 @@ summary:focus-visible,
 /* Gold-on-gold measures 1.02:1, so the two keys that are THEMSELVES gold get
    the ring inverted to the panel's own near-black. .btn-remove is included
    because its hover/active fill is red and the gold ring sits on the well. */
-.btn-edit:focus-visible,
-#modalConfirm.btn-primary:focus-visible,
-input[type="checkbox"]:checked:focus-visible {
+body.faceplate .btn-edit:focus-visible, body.faceplate #modalConfirm.btn-primary:focus-visible, body.faceplate input[type="checkbox"]:checked:focus-visible {
     outline-color: var(--well);
     box-shadow: var(--key-rest), 0 0 0 calc(var(--key-pocket) + 5px) rgba(245, 191, 66, .45);
 }
@@ -3925,14 +3909,7 @@ input[type="checkbox"]:checked:focus-visible {
      box-shadow: inset 0 2px 8px rgba(0,0,0,.75);
    Radius drops 8px -> --r-inset 4px because these are controls, not panels;
    the inset shadow tightens 8px -> 6px at the smaller scale. */
-.playlist-title-input,
-.playlist-curator-input,
-.playlist-desc-input,
-.library-search,
-.search-bar input,
-.playlist-table .inline-input,
-#mbResetConfirmInput,
-#mbConfigText {
+body.faceplate .playlist-title-input, body.faceplate .playlist-curator-input, body.faceplate .playlist-desc-input, body.faceplate .library-search, body.faceplate .search-bar input, body.faceplate .playlist-table .inline-input, body.faceplate #mbResetConfirmInput, body.faceplate #mbConfigText {
     background: var(--well-fill);
     border: var(--well-lip);
     border-radius: var(--r-inset);
@@ -3947,27 +3924,20 @@ input[type="checkbox"]:checked:focus-visible {
 
 /* --dim on the well measures 5.66:1 — the remote's own placeholder weight,
    and it clears AA, which `opacity` on --text-secondary never did. */
-.playlist-title-input::placeholder,
-.playlist-curator-input::placeholder,
-.playlist-desc-input::placeholder,
-.library-search::placeholder,
-.search-bar input::placeholder,
-.playlist-table .inline-input::placeholder,
-#mbResetConfirmInput::placeholder,
-#mbConfigText::placeholder {
+body.faceplate .playlist-title-input::placeholder, body.faceplate .playlist-curator-input::placeholder, body.faceplate .playlist-desc-input::placeholder, body.faceplate .library-search::placeholder, body.faceplate .search-bar input::placeholder, body.faceplate .playlist-table .inline-input::placeholder, body.faceplate #mbResetConfirmInput::placeholder, body.faceplate #mbConfigText::placeholder {
     color: var(--dim);
     opacity: 1;                      /* Firefox defaults this to .54 */
 }
 
 /* The playlist title keeps its gold identity — it is the one field that names
    the thing you are editing. --accent on the well fill measures 12.1:1. */
-.playlist-title-input { color: var(--accent); font-weight: bold; }
+body.faceplate .playlist-title-input { color: var(--accent); font-weight: bold; }
 
 /* The inline table inputs stay INVISIBLE until touched — they sit inside
    table rows and a full well on every cell would read as a grid of boxes.
    This preserves the existing transparent-at-rest behaviour at style.css:2514
    while giving the focused state the real well. */
-.playlist-table .inline-input {
+body.faceplate .playlist-table .inline-input {
     background: transparent;
     border-color: transparent;
     box-shadow: none;
@@ -3976,14 +3946,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* Focus = the gold pinstripe. remote.css:164-165 — the outer bloom plus the
    inset that darkens the surface toward its own edge, so the lip reads as a
    raised rim rather than a drawn line. Do not drop the inset. */
-.playlist-title-input:focus,
-.playlist-curator-input:focus,
-.playlist-desc-input:focus,
-.library-search:focus,
-.search-bar input:focus,
-.playlist-table .inline-input:focus,
-#mbResetConfirmInput:focus,
-#mbConfigText:focus {
+body.faceplate .playlist-title-input:focus, body.faceplate .playlist-curator-input:focus, body.faceplate .playlist-desc-input:focus, body.faceplate .library-search:focus, body.faceplate .search-bar input:focus, body.faceplate .playlist-table .inline-input:focus, body.faceplate #mbResetConfirmInput:focus, body.faceplate #mbConfigText:focus {
     outline: none;
     background: var(--well-fill);
     border-color: var(--accent);
@@ -3992,7 +3955,7 @@ input[type="checkbox"]:checked:focus-visible {
 
 /* #mbConfigText is a WireGuard config — a code surface, so it takes the panel
    radius (remote.css:243) rather than the control radius. */
-#mbConfigText {
+body.faceplate #mbConfigText {
     border-radius: var(--r-panel);
     padding: 0.75rem;
     line-height: 1.5;
@@ -4010,9 +3973,7 @@ input[type="checkbox"]:checked:focus-visible {
    fetch anything, and this file's Google Fonts @import at style.css:3 is
    already a render-blocking request to a host that is unreachable on the USB
    gadget link — do not add a second network dependency here. */
-.resolution-select-compact,
-#targetResolution,
-#systemSelect {
+body.faceplate .resolution-select-compact, body.faceplate #targetResolution, body.faceplate #systemSelect {
     appearance: none;
     -webkit-appearance: none;
     background-color: transparent;
@@ -4034,14 +3995,10 @@ input[type="checkbox"]:checked:focus-visible {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .resolution-select-compact:hover,
-    #targetResolution:hover,
-    #systemSelect:hover { border-color: rgba(245, 191, 66, .40); }
+    body.faceplate .resolution-select-compact:hover, body.faceplate #targetResolution:hover, body.faceplate #systemSelect:hover { border-color: rgba(245, 191, 66, .40); }
 }
 
-.resolution-select-compact:focus,
-#targetResolution:focus,
-#systemSelect:focus {
+body.faceplate .resolution-select-compact:focus, body.faceplate #targetResolution:focus, body.faceplate #systemSelect:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: var(--well-shadow), 0 0 0 2px rgba(245, 191, 66, .28);
@@ -4050,9 +4007,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* REQUIRED, not decoration: on Windows/Linux Chrome the popup list does NOT
    inherit the select's colours, so a dark select with unstyled options gives
    white-on-white. iOS uses its own native picker and ignores this — harmless. */
-.resolution-select-compact option,
-#targetResolution option,
-#systemSelect option {
+body.faceplate .resolution-select-compact option, body.faceplate #targetResolution option, body.faceplate #systemSelect option {
     background: var(--bg-lift);
     color: var(--fg);
 }
@@ -4076,18 +4031,7 @@ input[type="checkbox"]:checked:focus-visible {
    of index.html:9 — a WCAG 1.4.4 violation on a text-dense admin app. That
    meta edit is not proposed here; only the reason for it is removed. */
 @media (pointer: coarse) {
-    .playlist-title-input,
-    .playlist-curator-input,
-    .playlist-desc-input,
-    .library-search,
-    .search-bar input,
-    .playlist-table .inline-input,
-    #mbResetConfirmInput,
-    #mbConfigText,
-    .resolution-select-compact,
-    #targetResolution,
-    #systemSelect,
-    textarea {
+    body.faceplate .playlist-title-input, body.faceplate .playlist-curator-input, body.faceplate .playlist-desc-input, body.faceplate .library-search, body.faceplate .search-bar input, body.faceplate .playlist-table .inline-input, body.faceplate #mbResetConfirmInput, body.faceplate #mbConfigText, body.faceplate .resolution-select-compact, body.faceplate #targetResolution, body.faceplate #systemSelect, body.faceplate textarea {
         font-size: 16px;
         min-height: 44px;
     }
@@ -4098,27 +4042,22 @@ input[type="checkbox"]:checked:focus-visible {
        non-!important rule, so CSS alone cannot reach it. The clean fix is to
        delete those two cssText lines — suggestion S5. Scoped to one selector
        inside one media query. */
-    .edit-input { font-size: 16px !important; }
+    body.faceplate .edit-input { font-size: 16px !important; }
 
     /* 44px is the WCAG 2.5.5 target size and Apple's HIG floor. The existing
        coarse blocks already cover .row-actions button (style.css:2565) and
        .library-item .add-btn (style.css:2755) — these are the ones they miss. */
-    .btn-edit,
-    .btn-remove,
-    .btn-danger,
-    .btn-add-slot {
+    body.faceplate .btn-edit, body.faceplate .btn-remove, body.faceplate .btn-danger, body.faceplate .btn-add-slot {
         min-height: 44px;
         padding-left: 1rem;
         padding-right: 1rem;
     }
 
-    .upload-zone-compact { min-height: 44px; }
+    body.faceplate .upload-zone-compact { min-height: 44px; }
 
     /* --key-travel is 3px; a touch press wants a touch more commitment.
        Still inside the 50ms tier, so it stays mechanical. */
-    .btn-primary:active,
-    .btn-edit:active,
-    .btn-danger:active { transform: translateY(4px); }
+    body.faceplate .btn-primary:active, body.faceplate .btn-edit:active, body.faceplate .btn-danger:active { transform: translateY(4px); }
 }
 
 /* === @media (max-width: 360px) — the small-phone tier === */
@@ -4163,14 +4102,7 @@ input[type="checkbox"]:checked:focus-visible {
    press feedback is preserved rather than removed. Same reasoning the remote
    applies to .ra-quit, which scales rather than travels. */
 @media (prefers-reduced-motion: reduce) {
-    .btn-primary:active,
-    .btn-secondary:active,
-    .btn-edit:active,
-    .btn-danger:active,
-    .btn-add-slot:active,
-    .row-actions button:active,
-    .library-item .add-btn:active,
-    input[type="checkbox"]:active {
+    body.faceplate .btn-primary:active, body.faceplate .btn-secondary:active, body.faceplate .btn-edit:active, body.faceplate .btn-danger:active, body.faceplate .btn-add-slot:active, body.faceplate .row-actions button:active, body.faceplate .library-item .add-btn:active, body.faceplate input[type="checkbox"]:active {
         transform: none;
     }
 }
@@ -4178,7 +4110,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* === .btn-primary, .btn-primary:hover  (REPLACES style.css:813-834) === */
 /* REPLACES, verbatim, style.css:813-834 —
      /* Buttons */
-     .btn-primary {
+     body.faceplate .btn-primary {
          background: var(--success);
          color: var(--bg-dark);
          border: none;
@@ -4193,7 +4125,7 @@ input[type="checkbox"]:checked:focus-visible {
          min-height: 44px;
          box-shadow: 0 0 12px rgba(102, 221, 122, 0.3);
      }
-     .btn-primary:hover {
+     body.faceplate .btn-primary:hover {
          background: #7AE88E;
          transform: scale(1.02);
          box-shadow: 0 0 20px rgba(102, 221, 122, 0.5);
@@ -4205,7 +4137,7 @@ input[type="checkbox"]:checked:focus-visible {
    remote's own #5E9A5B/#3D6B3C measures 5.19:1 / 2.82:1 against --bg and the
    dark end fails AA — the remote never had to care because its caps carry no
    text. #7FCB86/#4F9E5C is the same hue at 8.93:1 / 5.28:1. */
-.btn-primary {
+body.faceplate .btn-primary {
     position: relative;                 /* containing block for the light pipe */
     background: linear-gradient(180deg, #7FCB86, #4F9E5C);
     color: var(--bg);
@@ -4229,7 +4161,7 @@ input[type="checkbox"]:checked:focus-visible {
    The law, which is counter-intuitive and easy to "fix" wrongly: an UNLIT
    indicator is the HOST colour DARKENED, never black and never grey. It is
    tinted plastic, not a hole. #2E5430 is remote.css:400, .cap.g .led unlit. */
-.btn-primary::after {
+body.faceplate .btn-primary::after {
     content: "";
     position: absolute;
     left: 50%;
@@ -4249,19 +4181,19 @@ input[type="checkbox"]:checked:focus-visible {
    lightest possible tier: the pipe warms, the key does NOT move. A key that
    moves on hover is a key you have not pressed. */
 @media (hover: hover) and (pointer: fine) {
-    .btn-primary:hover { filter: brightness(1.08); }
-    .btn-primary:hover::after {
+    body.faceplate .btn-primary:hover { filter: brightness(1.08); }
+    body.faceplate .btn-primary:hover::after {
         background: #8FD79A;
         box-shadow: 0 0 8px 1px rgba(102, 221, 122, .50), inset 0 0 3px #e4fdea;
     }
 }
 
-.btn-primary:active {
+body.faceplate .btn-primary:active {
     transform: translateY(var(--key-travel));
     box-shadow: var(--key-down);
 }
 /* Pressed, the pipe lights in its own colour — remote.css:412. */
-.btn-primary:active::after {
+body.faceplate .btn-primary:active::after {
     background: #CFF7D8;
     box-shadow: 0 0 12px 3px rgba(102, 221, 122, .95), inset 0 0 4px #e4fdea;
 }
@@ -4280,7 +4212,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* width: 100%; */
 /* min-height: 44px; */
 /* }   <- stray closer from a quoted 'before' block */
-     .btn-secondary:hover {
+     body.faceplate .btn-secondary:hover {
          border-color: var(--accent2);
          box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
      }
@@ -4293,7 +4225,7 @@ input[type="checkbox"]:checked:focus-visible {
    declarations: the gradient, the 0 3px 0 lip, and gold text. No pocket ring
    here — the lip tier sits ON the panel rather than IN it, which is exactly
    what makes it read as subordinate to .btn-primary. */
-.btn-secondary {
+body.faceplate .btn-secondary {
     background: linear-gradient(180deg, #39323A, #241F25);
     color: var(--accent);
     border: 1px solid rgba(245, 191, 66, .28);
@@ -4310,14 +4242,14 @@ input[type="checkbox"]:checked:focus-visible {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .btn-secondary:hover {
+    body.faceplate .btn-secondary:hover {
         background: linear-gradient(180deg, #453D46, #2C262C);
         border-color: rgba(245, 191, 66, .45);
     }
 }
 
 /* remote.css:489-492 — the lip flattens and the face lightens. */
-.btn-secondary:active {
+body.faceplate .btn-secondary:active {
     transform: translateY(3px);
     box-shadow: 0 0 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
     background: linear-gradient(180deg, #4a4149, #2c262c);
@@ -4347,7 +4279,7 @@ input[type="checkbox"]:checked:focus-visible {
 
    (b) style.css:854-871, verbatim —
        /* Edit button - Yellow */
-       .btn-edit {
+       body.faceplate .btn-edit {
            background: var(--accent);
            color: var(--bg-dark);
            border: none;
@@ -4359,7 +4291,7 @@ input[type="checkbox"]:checked:focus-visible {
            transition: all 0.2s;
            font-size: 0.85rem;
        }
-       .btn-edit:hover { background: #FFD05A; box-shadow: 0 0 12px rgba(245, 191, 66, 0.5); }
+       body.faceplate .btn-edit:hover { background: #FFD05A; box-shadow: 0 0 12px rgba(245, 191, 66, 0.5); }
 
 /* BOTH CLASS NAMES MUST SURVIVE — manager.js:3399 does */
 /* `saveBtn.className = 'btn-edit'`, manager.js:3404 does */
@@ -4370,7 +4302,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* ── .btn-edit = the faceplate's YELLOW key ───────────────────────────
    Gradient is remote.css:390 (.cap.y) VERBATIM — nothing retuned, because
    --bg on it already measures 10.71:1 at the top and 6.89:1 at the bottom. */
-.btn-edit {
+body.faceplate .btn-edit {
     position: relative;
     background: linear-gradient(180deg, #F0C81C, #C79E06);
     color: var(--bg);
@@ -4388,7 +4320,7 @@ input[type="checkbox"]:checked:focus-visible {
 }
 /* Light pipe, unlit = #9C7F0D (remote.css:398). Smaller than the primary's
    because this key is smaller — 18px, not 22px. */
-.btn-edit::after {
+body.faceplate .btn-edit::after {
     content: "";
     position: absolute;
     left: 50%;
@@ -4403,18 +4335,18 @@ input[type="checkbox"]:checked:focus-visible {
     pointer-events: none;
 }
 @media (hover: hover) and (pointer: fine) {
-    .btn-edit:hover { filter: brightness(1.08); }
-    .btn-edit:hover::after {
+    body.faceplate .btn-edit:hover { filter: brightness(1.08); }
+    body.faceplate .btn-edit:hover::after {
         background: #E6C755;
         box-shadow: 0 0 8px 1px rgba(245, 191, 66, .50), inset 0 0 3px #fff6d8;
     }
 }
-.btn-edit:active {
+body.faceplate .btn-edit:active {
     transform: translateY(var(--key-travel));
     box-shadow: var(--key-down);
 }
 /* remote.css:410 */
-.btn-edit:active::after {
+body.faceplate .btn-edit:active::after {
     background: #FFE9A8;
     box-shadow: 0 0 12px 3px rgba(245, 191, 66, .95), inset 0 0 4px #fff6d8;
 }
@@ -4425,7 +4357,7 @@ input[type="checkbox"]:checked:focus-visible {
    library Delete. A recessed red-lipped well says "reversible, secondary"
    where a solid red key says "this is the primary destructive action" —
    that role belongs to .btn-danger (Change 5). */
-.btn-remove {
+body.faceplate .btn-remove {
     background: var(--well-fill);
     color: var(--hot);
     border: 1px solid rgba(234, 58, 39, .45);
@@ -4441,14 +4373,14 @@ input[type="checkbox"]:checked:focus-visible {
     transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 @media (hover: hover) and (pointer: fine) {
-    .btn-remove:hover {
+    body.faceplate .btn-remove:hover {
         background: linear-gradient(180deg, #B4362A, #8E241B);
         border-color: #B4362A;
         color: var(--fg);
         box-shadow: var(--key-rest);
     }
 }
-.btn-remove:active {
+body.faceplate .btn-remove:active {
     background: linear-gradient(180deg, #8E241B, #6E1B14);
     color: var(--fg);
     box-shadow: var(--well-shadow);
@@ -4457,7 +4389,7 @@ input[type="checkbox"]:checked:focus-visible {
 /* === .btn-danger, .btn-danger:hover  (REPLACES style.css:873-891) === */
 /* REPLACES, verbatim, style.css:873-891 —
      /* Delete/Danger button - Red */
-     .btn-danger {
+     body.faceplate .btn-danger {
          background: transparent;
          color: var(--error);
          border: 1px solid var(--error);
@@ -4469,7 +4401,7 @@ input[type="checkbox"]:checked:focus-visible {
          transition: all 0.2s;
          font-size: 0.85rem;
      }
-     .btn-danger:hover {
+     body.faceplate .btn-danger:hover {
          background: var(--error);
          color: var(--bg-dark);
          box-shadow: 0 0 12px rgba(234, 58, 39, 0.5);
@@ -4485,7 +4417,7 @@ input[type="checkbox"]:checked:focus-visible {
    --fg on it and 2.50:1 with --bg — it fails BOTH ways, because the remote's
    red cap carries no label. Darkened to #B4362A -> #8E241B, --fg now measures
    4.86:1 / 6.99:1. Same hue, same construction, legible. */
-.btn-danger {
+body.faceplate .btn-danger {
     position: relative;
     background: linear-gradient(180deg, #B4362A, #8E241B);
     color: var(--fg);
@@ -4502,7 +4434,7 @@ input[type="checkbox"]:checked:focus-visible {
     transition: transform .05s ease, box-shadow .05s ease, filter .12s ease;
 }
 /* Light pipe, unlit = #6B1B14 (remote.css:399, .cap.r .led). */
-.btn-danger::after {
+body.faceplate .btn-danger::after {
     content: "";
     position: absolute;
     left: 50%;
@@ -4517,18 +4449,18 @@ input[type="checkbox"]:checked:focus-visible {
     pointer-events: none;
 }
 @media (hover: hover) and (pointer: fine) {
-    .btn-danger:hover { filter: brightness(1.10); }
-    .btn-danger:hover::after {
+    body.faceplate .btn-danger:hover { filter: brightness(1.10); }
+    body.faceplate .btn-danger:hover::after {
         background: #C8615A;
         box-shadow: 0 0 8px 1px rgba(234, 58, 39, .50), inset 0 0 3px #ffd9d0;
     }
 }
-.btn-danger:active {
+body.faceplate .btn-danger:active {
     transform: translateY(var(--key-travel));
     box-shadow: var(--key-down);
 }
 /* remote.css:411 */
-.btn-danger:active::after {
+body.faceplate .btn-danger:active::after {
     background: #FFC2B4;
     box-shadow: 0 0 12px 3px rgba(234, 58, 39, .95), inset 0 0 4px #ffd9d0;
 }
@@ -4536,28 +4468,27 @@ input[type="checkbox"]:checked:focus-visible {
 /* === input[type="checkbox"]  (supersedes style.css:3400-3404, the pointer:coarse 20px sizing) === */
 /* SUPERSEDES style.css:3400-3404, verbatim —
      /* Better spacing for checkboxes */
-     input[type="checkbox"] {
+     body.faceplate input[type="checkbox"] {
          width: 20px;
          height: 20px;
      }
 /* Same specificity (0,1,1), so appending at the end of the file wins on source */
 /* order. Those five lines can then be deleted; leaving them is harmless. */
 
-   Five checkboxes exist in the whole app — #videoPlaylistLoop,
-/* #gamePlaylistLoop, #hideUsedVideos, #hideUsedROMs, #normalizeAudio — plus */
-/* one generated at manager.js:4020 (#deleteVideosCheckbox), which carries an */
+   body.faceplate Five checkboxes exist in the whole app — #videoPlaylistLoop, body.faceplate /* #gamePlaylistLoop, body.faceplate #hideUsedVideos, body.faceplate #hideUsedROMs, body.faceplate #normalizeAudio — plus */
+/* one generated at manager.js:4020 (#deleteVideosCheckbox), body.faceplate which carries an */
 /* inline `style="margin-right: 0.5rem"` that correctly keeps winning over the */
 /* `margin: 0` below. */
 
-/* .form-group input[type="checkbox"] (style.css:586, specificity (0,2,1)) */
+/* .form-group input[type="checkbox"] (style.css:586, body.faceplate specificity (0, body.faceplate 2, body.faceplate 1)) */
 /* would outrank this — but .form-group matches zero elements in index.html and */
-/* zero in manager.js, so it is inert. * / */
+/* zero in manager.js, body.faceplate so it is inert. * / */
 
 /* ── Checkbox = the faceplate's BLACK key with an LED slot ────────────
    Cap is remote.css:393 (.cap.b); unlit slot is remote.css:401 (#22201C).
-   Checked, the whole key lifts to the YELLOW cap (remote.css:390) and the
+   Checked, body.faceplate the whole key lifts to the YELLOW cap (remote.css:390) and the
    slot fires in the lit-amber register (remote.css:410). That is a large
-   LUMINANCE change on both the cap and the indicator, not a hue-only one, so
+   LUMINANCE change on both the cap and the indicator, body.faceplate not a hue-only one, body.faceplate so
    checked/unchecked does not depend on colour perception. */
 input[type="checkbox"] {
     appearance: none;
@@ -4582,7 +4513,7 @@ input[type="checkbox"] {
 }
 
 /* The light pipe. Unlit is the CAP's colour darkened — remote.css:401. */
-input[type="checkbox"]::after {
+body.faceplate input[type="checkbox"]::after {
     content: "";
     width: 12px;
     height: 4px;
@@ -4592,15 +4523,15 @@ input[type="checkbox"]::after {
     transition: background .06s, box-shadow .06s;
 }
 
-input[type="checkbox"]:checked {
+body.faceplate input[type="checkbox"]:checked {
     background: linear-gradient(180deg, #F0C81C, #C79E06);   /* remote.css:390 */
 }
-input[type="checkbox"]:checked::after {
+body.faceplate input[type="checkbox"]:checked::after {
     background: #FFE9A8;                                     /* remote.css:410 */
     box-shadow: 0 0 9px 2px rgba(245, 191, 66, .90), inset 0 0 3px #fff6d8;
 }
 
-input[type="checkbox"]:active {
+body.faceplate input[type="checkbox"]:active {
     transform: translateY(2px);
     box-shadow:
         0 0 0 2px var(--well),
@@ -4615,9 +4546,7 @@ input[type="checkbox"]:active {
    click-to-toggle behaviour are untouched. .normalize-row is index.html:229;
    `grep -n "normalize-row" manager.js` returns nothing. */
 @media (pointer: coarse) {
-    .playlist-loop-label,
-    .library-filter-checkbox,
-    .normalize-row label {
+    body.faceplate .playlist-loop-label, body.faceplate .library-filter-checkbox, body.faceplate .normalize-row label {
         min-height: 44px;
         display: flex;
         align-items: center;
@@ -4629,7 +4558,7 @@ input[type="checkbox"]:active {
 /* === .row-actions button + .btn-delete  (REPLACES style.css:2540-2560) === */
 /* REPLACES, verbatim, style.css:2540-2560 —
      /* Row action buttons */
-     .row-actions button {
+     body.faceplate .row-actions button {
          background: transparent;
          border: none;
          color: var(--text-secondary);
@@ -4639,14 +4568,13 @@ input[type="checkbox"]:active {
          border-radius: 3px;
          transition: all 0.15s;
      }
-     .row-actions button:hover { background: var(--bg-mid); color: var(--text-primary); }
-     .row-actions button.btn-delete:hover { color: var(--error); }
+     body.faceplate .row-actions button:hover { background: var(--bg-mid); color: var(--text-primary); }
+     body.faceplate .row-actions button.btn-delete:hover { color: var(--error); }
 
-   The @media (pointer: coarse) block at style.css:2565-2575 (44x44 targets,
-/* gap 0.5rem) is CORRECT and stays exactly as it is — do not touch it. */
+/*    The @media (pointer: coarse) block at style.css:2565-2575 (44x44 targets, / * gap 0.5rem) is CORRECT and stays exactly as it is — do not touch it. * / */
 
-/* These take the LIP tier and NOT the pocket, deliberately: .row-actions has */
-/* `gap: 0.25rem` (4px) at style.css:2536, and two 3px --well rings in a 4px */
+/* These take the LIP tier and NOT the pocket, body.faceplate deliberately: .row-actions has */
+/* `gap: 0.25rem` (4px) at style.css:2536, body.faceplate and two 3px --well rings in a 4px */
 /* gap would overlap. This is the same well-ring clearance trap remote.css:418-421 */
 /* documents. The lip has zero horizontal footprint. * / */
 .row-actions button {
@@ -4663,13 +4591,13 @@ input[type="checkbox"]:active {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .row-actions button:hover {
+    body.faceplate .row-actions button:hover {
         background: linear-gradient(180deg, #453D46, #2C262C);
     }
 }
 
 /* remote.css:489-492 — lip flattens, face lightens. */
-.row-actions button:active {
+body.faceplate .row-actions button:active {
     transform: translateY(2px);
     box-shadow: 0 0 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
     background: linear-gradient(180deg, #4a4149, #2c262c);
@@ -4685,16 +4613,16 @@ input[type="checkbox"]:active {
    brief forbids inventing parallel tokens. Flagged as suggestion S3 for the
    palette owner. Red-at-rest is still strictly better than the status quo,
    where the destructive control is identical to its neighbours on every phone. */
-.row-actions button.btn-delete {
+body.faceplate .row-actions button.btn-delete {
     color: var(--hot);
     background: linear-gradient(180deg, #2E262E, #1E1A1E);
 }
-.row-actions button.btn-delete:active {
+body.faceplate .row-actions button.btn-delete:active {
     background: linear-gradient(180deg, #8E241B, #6E1B14);
     color: var(--fg);
 }
 @media (hover: hover) and (pointer: fine) {
-    .row-actions button.btn-delete:hover {
+    body.faceplate .row-actions button.btn-delete:hover {
         background: linear-gradient(180deg, #B4362A, #8E241B);
         color: var(--fg);
     }
@@ -4712,12 +4640,12 @@ input[type="checkbox"]:active {
 /* font-size: 0.85rem; */
 /* transition: all 0.15s; */
 /* }   <- stray closer from a quoted 'before' block */
-       .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
+       body.faceplate .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
 
 /* The dashed outline is the right IDEA — an empty socket you can fill — so it */
 /* survives; only the colour and the press behaviour change. An empty pocket */
 /* with nothing in it, in the panel's own gold. * / */
-.btn-add-slot {
+body.faceplate .btn-add-slot {
     background: var(--well-fill);
     border: 1px dashed rgba(245, 191, 66, .35);
     border-radius: var(--r-inset);
@@ -4731,9 +4659,9 @@ input[type="checkbox"]:active {
     transition: border-color .12s ease, color .12s ease, transform .05s ease;
 }
 @media (hover: hover) and (pointer: fine) {
-    .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
+    body.faceplate .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
 }
-.btn-add-slot:active { transform: translateY(2px); color: var(--accent); }
+body.faceplate .btn-add-slot:active { transform: translateY(2px); color: var(--accent); }
 
 /* (b) POCKET CLEARANCE. REPLACES style.css:2355-2358 —
        .playlist-actions { display: flex; gap: 0.5rem; }
@@ -4744,7 +4672,7 @@ input[type="checkbox"]:active {
    SCOPED SAFELY: .playlist-card .playlist-actions declares its own
    `gap: 0.375rem` at style.css:1076, specificity (0,2,0), so the cards keep
    theirs and only the editor's Cancel/Save pair moves. */
-.playlist-actions {
+body.faceplate .playlist-actions {
     display: flex;
     gap: 0.75rem;
 }
@@ -4752,12 +4680,12 @@ input[type="checkbox"]:active {
 /* (c) The library +Add control. ADDITIVE — the reveal-on-hover logic at
    style.css:2745-2752 and the 44px coarse target at style.css:2755-2761 are
    both correct and are NOT touched; this only recolours and adds the press. */
-.library-item .add-btn {
+body.faceplate .library-item .add-btn {
     color: var(--success);
     border-radius: var(--r-inset);
     transition: opacity .15s, transform .05s ease, color .06s;
 }
-.library-item .add-btn:active {
+body.faceplate .library-item .add-btn:active {
     transform: translateY(2px);
     color: #CFF7D8;                    /* remote.css:412, the lit green pipe */
     text-shadow: 0 0 10px rgba(102, 221, 122, .8);
@@ -4769,7 +4697,7 @@ input[type="checkbox"]:active {
  * so the playlist editor's inline fields — the primary editing control in the
  * app — would have been left with no visible focus indicator for keyboard
  * users. Matching the original specificity and restoring the ring. */
-.playlist-table .inline-input:focus-visible {
+body.faceplate .playlist-table .inline-input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--accent);
@@ -4787,12 +4715,12 @@ input[type="checkbox"]:active {
  * common phone task on this box, so the control you tap to do it should not
  * be the smallest thing on the screen. */
 @media (pointer: coarse) {
-  input[type="file"] {
+  body.faceplate input[type="file"] {
     font-size: 16px;
     min-height: 44px;
     width: 100%;
   }
-  input[type="file"]::file-selector-button {
+  body.faceplate input[type="file"]::file-selector-button {
     font-size: 15px;
     min-height: 40px;
     padding: 0 0.9rem;
@@ -4803,7 +4731,7 @@ input[type="checkbox"]:active {
     color: var(--fg);
     box-shadow: 0 0 0 2px var(--well), 0 2px 0 2px rgba(0,0,0,.55);
   }
-  input[type="file"]::file-selector-button:active {
+  body.faceplate input[type="file"]::file-selector-button:active {
     transform: translateY(2px);
     box-shadow: 0 0 0 2px var(--well);
   }
@@ -4874,11 +4802,7 @@ input[type="checkbox"]:active {
    near-identical flat rules. The four later ones are trimmed to their
    layout-only declarations in the changes that follow, so nothing here is
    overridden by source order. */
-.collapsible-section,
-.settings-card,
-.settings-section-mobile,
-.playlist-panel-main,
-.library-panel {
+body.faceplate .collapsible-section, body.faceplate .settings-card, body.faceplate .settings-section-mobile, body.faceplate .playlist-panel-main, body.faceplate .library-panel {
     background-color: var(--bg-lift);
     background-image:
         repeating-linear-gradient(45deg, rgba(242, 228, 217, .013) 0 1px, transparent 1px 3px),
@@ -4897,7 +4821,7 @@ input[type="checkbox"]:active {
     transition: border-color .12s ease;
 }
 
-.collapsible-section {
+body.faceplate .collapsible-section {
     margin-bottom: 1rem;
 }
 
@@ -4910,8 +4834,7 @@ input[type="checkbox"]:active {
    120ms is the remote's state-reveal tier (remote.css:568,
    `transition: border-color 120ms ease-out`). */
 @media (hover: hover) and (pointer: fine) {
-    .collapsible-section:hover,
-    .settings-card:hover {
+    body.faceplate .collapsible-section:hover, body.faceplate .settings-card:hover {
         border-color: rgba(245, 191, 66, .38);
     }
 }
@@ -4937,7 +4860,7 @@ input[type="checkbox"]:active {
    merely edited: they sit LATER in the file at equal specificity (0,1,0), so
    any `background` / `border` / `border-radius` left here would win over the
    plate. */
-.settings-card {
+body.faceplate .settings-card {
     padding: 1.25rem;
 }
 
@@ -4958,7 +4881,7 @@ input[type="checkbox"]:active {
    Deliberately NO padding: this panel is full-bleed by design (header strip,
    options row, table well, footer strip all run edge to edge), and the
    recessed children below inset themselves with margin instead. */
-.playlist-panel-main {
+body.faceplate .playlist-panel-main {
     display: flex;
     flex-direction: column;
 }
@@ -4976,7 +4899,7 @@ input[type="checkbox"]:active {
      }
 */
 
-.library-panel {
+body.faceplate .library-panel {
     display: flex;
     flex-direction: column;
 }
@@ -4996,7 +4919,7 @@ input[type="checkbox"]:active {
 /* Eight instances — the four Settings blocks (index.html:565, 577, 593, 603)
    and the four Media Browser state panels (index.html:417, 424, 464, 487).
    Surface from the grouped plate rule at style.css:158. */
-.settings-section-mobile {
+body.faceplate .settings-section-mobile {
     margin-bottom: 1rem;
 }
 
@@ -5040,10 +4963,7 @@ input[type="checkbox"]:active {
    (l.2636), .library-upload-section .upload-header (l.2769).
    .playlist-header is handled separately below because it carries CONTROLS,
    not a title, and must not put a display face near its inputs. */
-.section-header,
-.settings-section-mobile .section-title,
-.library-header,
-.library-upload-section .upload-header {
+body.faceplate .section-header, body.faceplate .settings-section-mobile .section-title, body.faceplate .library-header, body.faceplate .library-upload-section .upload-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -5068,16 +4988,14 @@ input[type="checkbox"]:active {
 
 /* Only two of the four are click targets. Keeping cursor/user-select off the
    other two stops them advertising an interaction they do not have. */
-.section-header,
-.library-upload-section .upload-header {
+body.faceplate .section-header, body.faceplate .library-upload-section .upload-header {
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .section-header:hover,
-    .library-upload-section .upload-header:hover {
+    body.faceplate .section-header:hover, body.faceplate .library-upload-section .upload-header:hover {
         color: var(--text-primary);
         background-color: rgba(245, 191, 66, .05);
     }
@@ -5115,9 +5033,7 @@ input[type="checkbox"]:active {
    This also retires `color: var(--accent2)` on headings: the ux-a11y audit
    measured #5884B1 at 4.10:1 on --bg-mid, below the 4.5:1 floor. --accent
    (#F5BF42, inherited from the plate) is 9.6:1 on the same surface. */
-.section-header h2,
-.section-header h3,
-.section-header h4 {
+body.faceplate .section-header h2, body.faceplate .section-header h3, body.faceplate .section-header h4 {
     margin: 0;
     font: inherit;
     color: inherit;
@@ -5158,7 +5074,7 @@ input[type="checkbox"]:active {
    the body is the panel's interior and also holds buttons and paragraphs.
    Its information children (.health-info, .update-info, .update-status …)
    are the wells, per the grouped rule below. */
-.settings-section-mobile .section-body {
+body.faceplate .settings-section-mobile .section-body {
     padding: 1rem;
     color: var(--text-primary);
 }
@@ -5172,7 +5088,7 @@ input[type="checkbox"]:active {
          color: var(--text-primary);
      }
 */
-.library-header h4 {
+body.faceplate .library-header h4 {
     margin: 0;
     font: inherit;
     color: inherit;
@@ -5191,7 +5107,7 @@ input[type="checkbox"]:active {
    much wider per em than Share Tech Mono, so the phone step goes up only
    slightly from the 0.72rem desktop size, not to 16px. */
 @media (max-width: 600px) {
-    .library-header h4 {
+    body.faceplate .library-header h4 {
         font-size: 0.76rem;
     }
 }
@@ -5233,11 +5149,11 @@ input[type="checkbox"]:active {
    and line 2769 it outranks the plate's own (0,2,0) selector at line 173.
    Its hairline is the plate's own bottom gradient, so the section no longer
    needs a border-top of its own weight. */
-.library-upload-section {
+body.faceplate .library-upload-section {
     border-top: 1px solid rgba(242, 228, 217, .10);
 }
 
-.library-upload-section .toggle-icon {
+body.faceplate .library-upload-section .toggle-icon {
     color: var(--accent);
     transition: transform .12s ease;
 }
@@ -5255,7 +5171,7 @@ input[type="checkbox"]:active {
    that test — it reads the inline style only — but declaring one here would
    tempt a future edit into `display: flex`, which the inline 'block' would
    then fight. Leave it out. */
-.library-upload-section .upload-content {
+body.faceplate .library-upload-section .upload-content {
     margin: 0.75rem;
     padding: 0.75rem;
 }
@@ -5281,7 +5197,7 @@ input[type="checkbox"]:active {
    font-family from an ancestor by default, so this is belt-and-braces — but
    the form-control rule further down sets an explicit mono stack rather than
    `font-family: inherit` precisely so that stays true.) */
-.playlist-header {
+body.faceplate .playlist-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -5311,7 +5227,7 @@ input[type="checkbox"]:active {
    A shadowed channel between the control plate above and the table well
    below — darker than the plate, lighter than the well, so the three
    surfaces read as three distinct depths. */
-.playlist-options-row {
+body.faceplate .playlist-options-row {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -5332,7 +5248,7 @@ input[type="checkbox"]:active {
          border-top: 1px solid var(--border-color);
      }
 */
-.playlist-footer {
+body.faceplate .playlist-footer {
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -5366,13 +5282,7 @@ input[type="checkbox"]:active {
    The rule of the system: anything that HOLDS INFORMATION is sunk into the
    plate, anything you PRESS stands proud of it. These seven are the
    information containers in this scope. */
-.health-info,
-.update-info,
-.update-notes,
-.library-filters,
-.library-list,
-.library-upload-section .upload-content,
-.playlist-table-container {
+body.faceplate .health-info, body.faceplate .update-info, body.faceplate .update-notes, body.faceplate .library-filters, body.faceplate .library-list, body.faceplate .library-upload-section .upload-content, body.faceplate .playlist-table-container {
     border-radius: 8px;
     background: linear-gradient(180deg, #151115, #1B161B);
     box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
@@ -5381,12 +5291,7 @@ input[type="checkbox"]:active {
 /* Every well EXCEPT .playlist-table-container takes its lip as a real
    border. That one takes it as an inset ring instead — see the note on it
    below; a border there shifts the drag-and-drop indicator. */
-.health-info,
-.update-info,
-.update-notes,
-.library-filters,
-.library-list,
-.library-upload-section .upload-content {
+body.faceplate .health-info, body.faceplate .update-info, body.faceplate .update-notes, body.faceplate .library-filters, body.faceplate .library-list, body.faceplate .library-upload-section .upload-content {
     border: 1px solid rgba(245, 191, 66, .20);
 }
 
@@ -5431,7 +5336,7 @@ input[type="checkbox"]:active {
    Also inert to the two absolutely-positioned children this element anchors:
    .playlist-drop-indicator (style.css:2476-2486, left/right: 0) and
    .playlist-empty-state (style.css:2571-2580, top/left 50% + translate). */
-.playlist-table-container {
+body.faceplate .playlist-table-container {
     flex: 1;
     overflow-y: auto;
     position: relative;
@@ -5470,7 +5375,7 @@ input[type="checkbox"]:active {
    --dim on #151115 measures 6.9:1, well clear of AA — this is the one place
    in the scope where --dim is safe, because it sits on the well fill rather
    than on the lighter --bg-lift plate (4.61:1, no headroom). */
-.playlist-table th {
+body.faceplate .playlist-table th {
     background: #151115;
     color: var(--dim);
     font-family: 'Zen Dots', 'ZenDots', sans-serif;
@@ -5495,7 +5400,7 @@ input[type="checkbox"]:active {
          font-size: 0.875rem;
      }
 */
-.health-info {
+body.faceplate .health-info {
     padding: 0.875rem 1rem;
     margin-bottom: 1rem;
     font-size: 0.875rem;
@@ -5515,7 +5420,7 @@ input[type="checkbox"]:active {
    stacked inside one dark well is the densest concentration of the old
    palette anywhere in the app. The cream hairline at 10% is the faceplate's
    own divider. */
-.health-row {
+body.faceplate .health-row {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
@@ -5534,7 +5439,7 @@ input[type="checkbox"]:active {
          margin-bottom: 1rem;
      }
 */
-.update-info {
+body.faceplate .update-info {
     padding: 0.875rem 1rem;
     margin-bottom: 1rem;
 }
@@ -5551,7 +5456,7 @@ input[type="checkbox"]:active {
    Was a full-bleed band closed by a steel rule; now a discrete well inset
    from the plate edge, so the search field and its checkbox read as one
    recessed control group. */
-.library-filters {
+body.faceplate .library-filters {
     margin: 0.75rem 0.75rem 0;
     padding: 0.75rem;
 }
@@ -5565,7 +5470,7 @@ input[type="checkbox"]:active {
          padding: 0.5rem;
      }
 */
-.library-list {
+body.faceplate .library-list {
     flex: 1;
     overflow-y: auto;
     margin: 0.75rem;
@@ -5596,7 +5501,7 @@ input[type="checkbox"]:active {
 
    @keyframes update-glow (style.css:2155-2158) becomes unreferenced. It is
    inert — delete it in a separate cleanup if you want the lines back. */
-.update-status {
+body.faceplate .update-status {
     margin: 1rem 0;
     padding: 0.875rem 1rem;
     border: 1px solid rgba(245, 191, 66, .35);
@@ -5627,11 +5532,11 @@ input[type="checkbox"]:active {
    signals state by RECOLOURING ONE THING and changing nothing else — see
    .dot[data-state] at remote.css:249-253, where a single element's colour
    and glow key off an attribute. Here that one thing is the lip. */
-.update-status.complete {
+body.faceplate .update-status.complete {
     border-color: rgba(102, 221, 122, .55);
 }
 
-.update-status.error {
+body.faceplate .update-status.error {
     border-color: rgba(234, 58, 39, .55);
 }
 
@@ -5653,7 +5558,7 @@ input[type="checkbox"]:active {
          margin-bottom: 1rem;
      }
 */
-.update-available {
+body.faceplate .update-available {
     padding: 0.875rem 1rem;
     margin-bottom: 1rem;
     border: 1px solid rgba(102, 221, 122, .45);
@@ -5683,7 +5588,7 @@ input[type="checkbox"]:active {
    All five class names are preserved verbatim. Only declarations change:
    one well, one lip, one text colour per state — the .dot[data-state]
    pattern from remote.css:249-253 applied to a block. */
-.restore-status {
+body.faceplate .restore-status {
     margin-top: 1rem;
     padding: 0.75rem 0.875rem;
     border-radius: 8px;
@@ -5694,21 +5599,21 @@ input[type="checkbox"]:active {
     box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
 }
 
-.restore-status.visible {
+body.faceplate .restore-status.visible {
     display: block;
 }
 
-.restore-status.success {
+body.faceplate .restore-status.success {
     border-color: rgba(102, 221, 122, .55);
     color: var(--success);
 }
 
-.restore-status.error {
+body.faceplate .restore-status.error {
     border-color: rgba(234, 58, 39, .55);
     color: var(--error);
 }
 
-.restore-status.loading {
+body.faceplate .restore-status.loading {
     border-color: rgba(245, 191, 66, .45);
     color: var(--accent);
 }
@@ -5746,7 +5651,7 @@ input[type="checkbox"]:active {
    manager.js:5653 writes `dropZone.style.borderColor = 'var(--accent)'`
    imperatively on dragover for #mbDropZone (there is no .drag-over class),
    and an inline border-color needs a border to land on. */
-.upload-zone-compact {
+body.faceplate .upload-zone-compact {
     position: relative;
     text-align: center;
     padding: 0.875rem;
@@ -5758,7 +5663,7 @@ input[type="checkbox"]:active {
     transition: border-color .12s ease, background-color .12s ease;
 }
 
-.upload-label-compact {
+body.faceplate .upload-label-compact {
     font-size: 0.85rem;
     color: var(--text-secondary);
     cursor: pointer;
@@ -5766,12 +5671,12 @@ input[type="checkbox"]:active {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .upload-zone-compact:hover {
+    body.faceplate .upload-zone-compact:hover {
         border-color: var(--accent);
         background-color: rgba(245, 191, 66, .04);
     }
 
-    .upload-zone-compact:hover .upload-label-compact {
+    body.faceplate .upload-zone-compact:hover .upload-label-compact {
         color: var(--accent);
     }
 }
@@ -5807,8 +5712,7 @@ input[type="checkbox"]:active {
 /* input[type="number"], */
 /* input[type="password"], */
 /* input[type="url"], */
-select,
-textarea {
+body.faceplate select, body.faceplate textarea {
     background: linear-gradient(180deg, #151115, #1B161B);
     border: 1px solid rgba(245, 191, 66, .20);
     border-radius: 4px;
@@ -5820,8 +5724,7 @@ textarea {
     transition: border-color .12s ease;
 }
 
-input::placeholder,
-textarea::placeholder {
+body.faceplate input::placeholder, body.faceplate textarea::placeholder {
     color: var(--dim);
     opacity: 1;   /* Firefox applies its own opacity to ::placeholder */
 }
@@ -5832,7 +5735,7 @@ textarea::placeholder {
    choice. The arrow is an inline data-URI triangle in --accent's literal
    value (a data URI cannot read a custom property), matched to the
    .collapse-icon / .toggle-icon colour so all three disclosure marks agree. */
-select {
+body.faceplate select {
     -webkit-appearance: none;
     appearance: none;
     padding-right: 2rem;
@@ -5855,19 +5758,12 @@ select {
    :focus-visible only, so pointer and touch behaviour is completely
    unchanged — a mouse click still shows no ring. The faceplate's attention
    colour is the gold pinstripe, lit. */
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-summary:focus-visible,
-.section-header:focus-visible,
-.upload-header:focus-visible {
+body.faceplate input:focus-visible, body.faceplate select:focus-visible, body.faceplate textarea:focus-visible, body.faceplate summary:focus-visible, body.faceplate .section-header:focus-visible, body.faceplate .upload-header:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
 
-input:focus,
-select:focus,
-textarea:focus {
+body.faceplate input:focus, body.faceplate select:focus, body.faceplate textarea:focus {
     border-color: rgba(245, 191, 66, .55);
 }
 
@@ -5909,7 +5805,7 @@ textarea:focus {
        "Modern 1280x720". Stacked is the only layout that survives 320px.
        The label also becomes a small tracked cap in --dim on the well fill
        (6.9:1) — the remote's own label idiom, .lk / .mlabel. */
-    .resolution-row {
+    body.faceplate .resolution-row {
         display: flex;
         flex-direction: column;
         align-items: stretch;
@@ -5918,7 +5814,7 @@ textarea:focus {
         font-size: 0.85rem;
     }
 
-    .resolution-row > label {
+    body.faceplate .resolution-row > label {
         color: var(--dim);
         font-size: 0.7rem;
         letter-spacing: .10em;
@@ -5928,7 +5824,7 @@ textarea:focus {
     /* 12.8px today (0.8rem, style.css:2807) with NO phone override anywhere
        in the file, and ~24px tall. Both fixed: 16px is the iOS auto-zoom
        floor, 44px is the WCAG 2.5.5 / Apple HIG target. */
-    .resolution-select-compact {
+    body.faceplate .resolution-select-compact {
         width: 100%;
         min-height: 44px;
         font-size: 1rem;
@@ -5941,14 +5837,14 @@ textarea:focus {
        `width: 100%` on the section but leaves flex-direction: row, so the two
        inputs flex-shrink to ~123px each (294 - 32 header padding - 12 gap,
        halved) and BOTH placeholders truncate. Column is the fix. */
-    .playlist-title-section {
+    body.faceplate .playlist-title-section {
         flex-direction: column;
         gap: 0.5rem;
     }
 
     /* Same problem one row down: a description field and a Loop checkbox
        competing for 262px. */
-    .playlist-options-row {
+    body.faceplate .playlist-options-row {
         flex-direction: column;
         align-items: stretch;
         gap: 0.5rem;
@@ -5963,13 +5859,7 @@ textarea:focus {
        #mbResetConfirmInput and #mbConfigText carry inline width/padding which
        still win — min-height and font-size are not in their inline sets, so
        those apply. */
-    .playlist-title-input,
-    .playlist-curator-input,
-    .playlist-desc-input,
-    .library-search,
-    .search-bar input,
-    #mbResetConfirmInput,
-    #mbConfigText {
+    body.faceplate .playlist-title-input, body.faceplate .playlist-curator-input, body.faceplate .playlist-desc-input, body.faceplate .library-search, body.faceplate .search-bar input, body.faceplate #mbResetConfirmInput, body.faceplate #mbConfigText {
         width: 100%;
         min-height: 44px;
         font-size: 1rem;
@@ -5979,9 +5869,7 @@ textarea:focus {
     /* The three checkbox rows are <label>s, so the whole row is the tap
        target. style.css:3401 already sizes the BOX to 20px under
        pointer:coarse; this gives the ROW its 44px. */
-    .playlist-loop-label,
-    .library-filter-checkbox,
-    .normalize-row > label {
+    body.faceplate .playlist-loop-label, body.faceplate .library-filter-checkbox, body.faceplate .normalize-row > label {
         display: flex;
         align-items: center;
         gap: 0.625rem;
@@ -5997,14 +5885,14 @@ textarea:focus {
        the optional markup change) and the rest applies too. */
 
     /* <div onclick="toggleLibraryUpload()"> — index.html:217, 370. ~38px. */
-    .library-upload-section .upload-header {
+    body.faceplate .library-upload-section .upload-header {
         min-height: 48px;
     }
 
     /* The ONLY route to adding media from a phone: HTML5 drag-and-drop does
        not fire on iOS touch, so this zone and .library-item .add-btn are the
        whole upload story. It gets more than the 44px minimum. */
-    .upload-zone-compact {
+    body.faceplate .upload-zone-compact {
         min-height: 72px;
         display: flex;
         align-items: center;
@@ -6012,12 +5900,12 @@ textarea:focus {
         padding: 1rem;
     }
 
-    .upload-label-compact {
+    body.faceplate .upload-label-compact {
         font-size: 0.95rem;
     }
 
     /* ~30px today (padding .375rem/.75rem, style.css:2609). */
-    .btn-add-slot {
+    body.faceplate .btn-add-slot {
         min-height: 44px;
         padding: 0.625rem 1rem;
         font-size: 0.95rem;
@@ -6025,29 +5913,20 @@ textarea:focus {
 
     /* Recover horizontal room: at 296px the wells' 0.75rem margins plus the
        body's 1rem padding cost 56px of the 294px interior. */
-    .settings-section-mobile .section-body,
-    .settings-card {
+    body.faceplate .settings-section-mobile .section-body, body.faceplate .settings-card {
         padding: 0.75rem;
     }
 
-    .playlist-table-container,
-    .library-list,
-    .library-upload-section .upload-content {
+    body.faceplate .playlist-table-container, body.faceplate .library-list, body.faceplate .library-upload-section .upload-content {
         margin: 0.5rem;
     }
 
-    .library-filters {
+    body.faceplate .library-filters {
         margin: 0.5rem 0.5rem 0;
     }
 
     /* Panel strips get one more step of padding back. */
-    .section-header,
-    .settings-section-mobile .section-title,
-    .library-header,
-    .library-upload-section .upload-header,
-    .playlist-header,
-    .playlist-options-row,
-    .playlist-footer {
+    body.faceplate .section-header, body.faceplate .settings-section-mobile .section-title, body.faceplate .library-header, body.faceplate .library-upload-section .upload-header, body.faceplate .playlist-header, body.faceplate .playlist-options-row, body.faceplate .playlist-footer {
         padding-left: 0.75rem;
         padding-right: 0.75rem;
     }
@@ -6130,7 +6009,7 @@ textarea:focus {
    spread + offset, remote.css:386) — 6px of side gutter clears the ring and
    10px at the bottom clears ring + drop. Used by #videoPlaylistsList
    (index.html:139) and #gamePlaylistsList (index.html:292) only. */
-.grid-list {
+body.faceplate .grid-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     gap: 16px;
@@ -6160,7 +6039,7 @@ textarea:focus {
        target affordable without the card growing.
    The five-part shadow is remote.css:386-387 (.cap) with the well ring
    reduced 5px -> 4px for admin density. */
-.playlist-card {
+body.faceplate .playlist-card {
     position: relative;
     display: flex;
     flex-direction: column;
@@ -6181,7 +6060,7 @@ textarea:focus {
 
 /* The gold pinstripe, inset from the corners the way remote.css:162-172
    insets the bezel from the shell edge. */
-.playlist-card::before {
+body.faceplate .playlist-card::before {
     content: "";
     position: absolute;
     left: 15px;
@@ -6200,7 +6079,7 @@ textarea:focus {
    only); the Content Manager is also driven from a laptop, so one is
    invented here — but guarded, so a phone never gets a stuck hover state. */
 @media (hover: hover) and (pointer: fine) {
-    .playlist-card:hover {
+    body.faceplate .playlist-card:hover {
         border-color: rgba(245, 191, 66, 0.45);
         box-shadow:
             0 0 0 4px var(--well, #150F0A),
@@ -6210,13 +6089,13 @@ textarea:focus {
     }
 }
 
-.playlist-card .playlist-header {
+body.faceplate .playlist-card .playlist-header {
     display: block;
     margin: 0;
     position: static;
 }
 
-.playlist-card .playlist-header h4 {
+body.faceplate .playlist-card .playlist-header h4 {
     font-family: "ZenDots", 'Zen Dots', 'Orbitron', sans-serif;
     font-size: 15px;
     font-weight: 400;
@@ -6228,7 +6107,7 @@ textarea:focus {
     overflow-wrap: anywhere;
 }
 
-.playlist-meta {
+body.faceplate .playlist-meta {
     font-size: 12px;
     line-height: 1.5;
     letter-spacing: 0.02em;
@@ -6239,11 +6118,11 @@ textarea:focus {
     overflow-wrap: anywhere;
 }
 
-.playlist-meta span {
+body.faceplate .playlist-meta span {
     margin-right: 0.75rem;
 }
 
-.playlist-meta em {
+body.faceplate .playlist-meta em {
     display: block;
     margin-top: 6px;
     color: rgba(242, 228, 217, 0.62);
@@ -6261,7 +6140,7 @@ textarea:focus {
    these key off :first-child / :last-child. The .btn-edit / .btn-danger
    selectors are kept alongside so that IF someone later adds the classes
    (the cm-structure audit recommends it) nothing changes visually. */
-.playlist-card .playlist-actions {
+body.faceplate .playlist-card .playlist-actions {
     position: static;
     display: flex;
     gap: 8px;
@@ -6270,7 +6149,7 @@ textarea:focus {
     z-index: 2;
 }
 
-.playlist-card .playlist-actions button {
+body.faceplate .playlist-card .playlist-actions button {
     flex: 1 1 0;
     min-width: 0;
     min-height: 44px;
@@ -6295,7 +6174,7 @@ textarea:focus {
 }
 
 /* The key travels down and its drop collapses — remote.css:487-488. */
-.playlist-card .playlist-actions button:active {
+body.faceplate .playlist-card .playlist-actions button:active {
     transform: translateY(3px);
     box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
                 inset 0 1px 0 rgba(255, 255, 255, 0.10);
@@ -6303,8 +6182,7 @@ textarea:focus {
 }
 
 /* Edit — gold */
-.playlist-card .playlist-actions button.btn-edit,
-.playlist-card .playlist-actions button:first-child {
+body.faceplate .playlist-card .playlist-actions button.btn-edit, body.faceplate .playlist-card .playlist-actions button:first-child {
     color: var(--accent, #F5BF42);
     border-color: rgba(245, 191, 66, 0.42);
     background: linear-gradient(180deg, #39323A, #241F25);
@@ -6313,8 +6191,7 @@ textarea:focus {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .playlist-card .playlist-actions button.btn-edit:hover,
-    .playlist-card .playlist-actions button:first-child:hover {
+    body.faceplate .playlist-card .playlist-actions button.btn-edit:hover, body.faceplate .playlist-card .playlist-actions button:first-child:hover {
         border-color: rgba(245, 191, 66, 0.85);
         background: linear-gradient(180deg, #423A42, #2A242A);
         color: var(--accent, #F5BF42);
@@ -6329,8 +6206,7 @@ textarea:focus {
    plain var() is first so a browser without color-mix() still gets the hot
    hue rather than falling back to the inherited cream. No new token is
    introduced — the mix is derived from --hot and --fg. */
-.playlist-card .playlist-actions button.btn-danger,
-.playlist-card .playlist-actions button:last-child {
+body.faceplate .playlist-card .playlist-actions button.btn-danger, body.faceplate .playlist-card .playlist-actions button:last-child {
     color: var(--hot, #EA3A27);
     color: color-mix(in srgb, var(--hot, #EA3A27) 62%, var(--fg, #F2E4D9));
     border-color: rgba(234, 58, 39, 0.42);
@@ -6341,8 +6217,7 @@ textarea:focus {
    A ::before, never a child element: manager.js:4290 tests
    `e.target.classList.contains(...)` on button clicks and a real child would
    become the event target. Pseudo-elements never are. */
-.playlist-card .playlist-actions button.btn-danger::before,
-.playlist-card .playlist-actions button:last-child::before {
+body.faceplate .playlist-card .playlist-actions button.btn-danger::before, body.faceplate .playlist-card .playlist-actions button:last-child::before {
     content: "";
     flex: none;
     width: 6px;
@@ -6353,23 +6228,20 @@ textarea:focus {
     transition: background 60ms, box-shadow 60ms;
 }
 
-.playlist-card .playlist-actions button.btn-danger:active::before,
-.playlist-card .playlist-actions button:last-child:active::before {
+body.faceplate .playlist-card .playlist-actions button.btn-danger:active::before, body.faceplate .playlist-card .playlist-actions button:last-child:active::before {
     background: #FFC2B4;
     box-shadow: 0 0 10px 2px rgba(234, 58, 39, 0.9),
                 inset 0 0 4px #FFD9D0;
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .playlist-card .playlist-actions button.btn-danger:hover,
-    .playlist-card .playlist-actions button:last-child:hover {
+    body.faceplate .playlist-card .playlist-actions button.btn-danger:hover, body.faceplate .playlist-card .playlist-actions button:last-child:hover {
         border-color: rgba(234, 58, 39, 0.85);
         background: linear-gradient(180deg, #423A42, #2A242A);
         box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
                     inset 0 1px 0 rgba(255, 255, 255, 0.10);
     }
-    .playlist-card .playlist-actions button.btn-danger:hover::before,
-    .playlist-card .playlist-actions button:last-child:hover::before {
+    body.faceplate .playlist-card .playlist-actions button.btn-danger:hover::before, body.faceplate .playlist-card .playlist-actions button:last-child:hover::before {
         background: #A3291D;
     }
 }
@@ -6400,7 +6272,7 @@ textarea:focus {
    (index.html:405, filled at manager.js:2254). `.video-artist` is the Artist
    column in one and the System column in the other. */
 
-.video-library-table {
+body.faceplate .video-library-table {
     width: 100%;
     border-collapse: collapse;
     background: transparent;
@@ -6409,7 +6281,7 @@ textarea:focus {
     font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
 }
 
-.video-library-table thead {
+body.faceplate .video-library-table thead {
     background: transparent;
 }
 
@@ -6417,7 +6289,7 @@ textarea:focus {
    heavily tracked, uppercase, gold. This is the faceplate's label voice and
    it recurs below as the mobile card's generated field label, so the two
    layouts read as the same object. */
-.video-library-table th {
+body.faceplate .video-library-table th {
     padding: 0 10px 9px;
     text-align: left;
     font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
@@ -6432,7 +6304,7 @@ textarea:focus {
     border-bottom: 1px solid rgba(245, 191, 66, 0.22);
 }
 
-.video-library-table td {
+body.faceplate .video-library-table td {
     padding: 11px 10px;
     font-size: 13px;
     line-height: 1.45;
@@ -6444,7 +6316,7 @@ textarea:focus {
     overflow-wrap: anywhere;
 }
 
-.video-library-table tbody tr {
+body.faceplate .video-library-table tbody tr {
     transition: background 120ms ease, box-shadow 120ms ease;
 }
 
@@ -6453,35 +6325,35 @@ textarea:focus {
    reads as the panel lighting up under the pointer rather than as a
    different colour being painted on. */
 @media (hover: hover) and (pointer: fine) {
-    .video-library-table tbody tr:hover {
+    body.faceplate .video-library-table tbody tr:hover {
         background: rgba(245, 191, 66, 0.05);
         box-shadow: inset 3px 0 0 rgba(245, 191, 66, 0.55);
     }
 }
 
-.video-library-table tbody tr:last-child td {
+body.faceplate .video-library-table tbody tr:last-child td {
     border-bottom: none;
 }
 
-.video-title {
+body.faceplate .video-title {
     font-weight: 400;
     color: var(--fg, #F2E4D9);
     letter-spacing: 0.01em;
 }
 
-.video-artist {
+body.faceplate .video-artist {
     color: var(--dim, #968B85);
     font-style: normal;          /* italic monospace is illegible at 13px */
     letter-spacing: 0.04em;
 }
 
-.video-filename {
+body.faceplate .video-filename {
     font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
     font-size: 12px;
     color: var(--dim, #968B85);
 }
 
-.video-size {
+body.faceplate .video-size {
     text-align: right;
     font-size: 12px;
     color: var(--dim, #968B85);
@@ -6489,7 +6361,7 @@ textarea:focus {
     white-space: nowrap;
 }
 
-.video-usage {
+body.faceplate .video-usage {
     text-align: left;
 }
 
@@ -6504,7 +6376,7 @@ textarea:focus {
      unlit var(--dim)     on var(--well)  =  5.73:1
    The ✓ / ⚠ glyphs are inside the text manager.js emits (lines 1521-1522),
    so the non-colour cue survives untouched. */
-.usage-badge {
+body.faceplate .usage-badge {
     display: inline-flex;
     align-items: center;
     max-width: 100%;
@@ -6519,15 +6391,15 @@ textarea:focus {
     overflow-wrap: anywhere;
 }
 
-.usage-badge.in-use {
+body.faceplate .usage-badge.in-use {
     color: var(--success, #66DD7A);
 }
 
-.usage-badge.unused {
+body.faceplate .usage-badge.unused {
     color: var(--dim, #968B85);
 }
 
-.video-actions {
+body.faceplate .video-actions {
     text-align: right;
     white-space: nowrap;
 }
@@ -6540,7 +6412,7 @@ textarea:focus {
    The pip is a ::before, never a child: manager.js:4290 reads
    `e.target.classList.contains('btn-remove')`, and a child element would
    become the event target. */
-.video-library-table .btn-remove {
+body.faceplate .video-library-table .btn-remove {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -6563,7 +6435,7 @@ textarea:focus {
                 border-color 120ms ease;
 }
 
-.video-library-table .btn-remove::before {
+body.faceplate .video-library-table .btn-remove::before {
     content: "";
     flex: none;
     width: 6px;
@@ -6574,26 +6446,26 @@ textarea:focus {
     transition: background 60ms, box-shadow 60ms;
 }
 
-.video-library-table .btn-remove:active {
+body.faceplate .video-library-table .btn-remove:active {
     transform: translateY(3px);
     box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
                 inset 0 1px 0 rgba(255, 255, 255, 0.10);
     background: linear-gradient(180deg, #4A4149, #2C262C);
 }
 
-.video-library-table .btn-remove:active::before {
+body.faceplate .video-library-table .btn-remove:active::before {
     background: #FFC2B4;
     box-shadow: 0 0 10px 2px rgba(234, 58, 39, 0.9),
                 inset 0 0 4px #FFD9D0;
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .video-library-table .btn-remove:hover {
+    body.faceplate .video-library-table .btn-remove:hover {
         border-color: rgba(234, 58, 39, 0.85);
         background: linear-gradient(180deg, #423A42, #2A242A);
         color: color-mix(in srgb, var(--hot, #EA3A27) 62%, var(--fg, #F2E4D9));
     }
-    .video-library-table .btn-remove:hover::before {
+    body.faceplate .video-library-table .btn-remove:hover::before {
         background: #A3291D;
     }
 }
@@ -6605,16 +6477,16 @@ textarea:focus {
    320px a scrolling table is 2.6 screens of panning PER ROW. Cards win. */
 @media (max-width: 768px) {
 
-    .video-library-table {
+    body.faceplate .video-library-table {
         display: block;
         border: 0;
     }
 
-    .video-library-table thead {
+    body.faceplate .video-library-table thead {
         display: none;
     }
 
-    .video-library-table tbody {
+    body.faceplate .video-library-table tbody {
         display: block;
     }
 
@@ -6629,7 +6501,7 @@ textarea:focus {
        var(--well) with zero blur (remote.css:386, reduced from 5px), a 3px
        hard drop, and the 1px top highlight. Cards are RAISED because you act
        on them; the panel they sit in is recessed. */
-    .video-library-table tr {
+    body.faceplate .video-library-table tr {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
         gap: 4px 12px;
@@ -6645,11 +6517,11 @@ textarea:focus {
             inset 0 1px 0 rgba(255, 255, 255, 0.08);
     }
 
-    .video-library-table tbody tr:last-child {
+    body.faceplate .video-library-table tbody tr:last-child {
         margin-bottom: 4px;
     }
 
-    .video-library-table td {
+    body.faceplate .video-library-table td {
         display: block;
         min-width: 0;
         padding: 0 !important;
@@ -6666,7 +6538,7 @@ textarea:focus {
        caption, in the same `.kind` voice as the desktop <th>. No `content`
        here on purpose — a cell with no matching content rule below renders
        no pseudo-element at all. */
-    .video-library-table td::before {
+    body.faceplate .video-library-table td::before {
         display: block;
         margin-bottom: 2px;
         font-size: 9px;
@@ -6678,17 +6550,17 @@ textarea:focus {
 
     /* Disambiguated by container: `.video-artist` is Artist in the video
        table (manager.js:1516) and System in the ROM table (manager.js:2287). */
-    #videoList .video-library-table td.video-artist::before   { content: "Artist"; }
-    #videoList .video-library-table td.video-filename::before { content: "File"; }
-    #videoList .video-library-table td.video-usage::before    { content: "Used in"; }
-    #romsList  .video-library-table td.video-artist::before    { content: "System"; }
-    .video-library-table td.video-size::before                { content: "Size"; }
+    body.faceplate #videoList .video-library-table td.video-artist::before   { content: "Artist"; }
+    body.faceplate #videoList .video-library-table td.video-filename::before { content: "File"; }
+    body.faceplate #videoList .video-library-table td.video-usage::before    { content: "Used in"; }
+    body.faceplate #romsList  .video-library-table td.video-artist::before    { content: "System"; }
+    body.faceplate .video-library-table td.video-size::before                { content: "Size"; }
 
     /* Card headline. ZenDots earns its width here in a way it never does in a
        dense desktop row. The divider is remote.css:229-232 (`.rule`) — a
        cream hairline that fades out at the trailing edge — drawn as a
        background layer so no extra element is needed. */
-    .video-library-table td.video-title {
+    body.faceplate .video-library-table td.video-title {
         grid-column: 1 / -1;
         font-family: "ZenDots", 'Zen Dots', sans-serif;
         font-size: 15px;
@@ -6706,35 +6578,35 @@ textarea:focus {
         background-position: 0 100%;
     }
 
-    .video-library-table td.video-title::before {
+    body.faceplate .video-library-table td.video-title::before {
         content: none;
     }
 
-    .video-library-table td.video-size {
+    body.faceplate .video-library-table td.video-size {
         text-align: left !important;
     }
 
-    .video-library-table td.video-usage {
+    body.faceplate .video-library-table td.video-usage {
         grid-column: 1 / -1;
         margin-top: 6px;
     }
 
-    .video-library-table td.video-usage .usage-badge {
+    body.faceplate .video-library-table td.video-usage .usage-badge {
         display: inline-flex;
     }
 
     /* Actions: full-width bar at the foot of the card, above the 44px floor. */
-    .video-library-table td.video-actions {
+    body.faceplate .video-library-table td.video-actions {
         grid-column: 1 / -1;
         margin-top: 12px;
         text-align: left !important;
     }
 
-    .video-library-table td.video-actions::before {
+    body.faceplate .video-library-table td.video-actions::before {
         content: none;
     }
 
-    .video-library-table .btn-remove {
+    body.faceplate .video-library-table .btn-remove {
         display: flex;
         width: 100%;
         min-height: 44px;
@@ -6755,7 +6627,7 @@ textarea:focus {
    `opacity: 0.7` on the hint is deleted: multiplying opacity into an already
    muted colour landed it at ~4.1:1. --dim on this surface is 5.38:1 at full
    opacity. */
-.playlist-empty-state {
+body.faceplate .playlist-empty-state {
     position: absolute;
     top: 50%;
     left: 50%;
@@ -6771,7 +6643,7 @@ textarea:focus {
     pointer-events: none;          /* it sits over the drop target */
 }
 
-.playlist-empty-state p {
+body.faceplate .playlist-empty-state p {
     margin: 0 0 7px;
     font-family: "ZenDots", 'Zen Dots', sans-serif;
     font-size: 12px;
@@ -6780,7 +6652,7 @@ textarea:focus {
     color: var(--fg, #F2E4D9);
 }
 
-.playlist-empty-state .hint {
+body.faceplate .playlist-empty-state .hint {
     font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
     font-size: 11px;
     letter-spacing: 0.08em;
@@ -6798,7 +6670,7 @@ textarea:focus {
    Containers: #libraryList (index.html:212) and #romLibraryList
    (index.html:365); manager.js reaches them only via getElementById(...)
    .innerHTML at 4718 and 4872. */
-.library-list {
+body.faceplate .library-list {
     flex: 1;
     overflow-y: auto;
     padding: 8px;
@@ -6812,7 +6684,7 @@ textarea:focus {
    remote.css:395-401's law applies: the pipe's UNLIT colour is the host
    surface darkened (#22201C, which is `.cap.b .led` verbatim), never black
    and never grey — tinted plastic, not a hole. */
-.library-item {
+body.faceplate .library-item {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -6831,7 +6703,7 @@ textarea:focus {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .library-item:hover {
+    body.faceplate .library-item:hover {
         border-color: rgba(245, 191, 66, 0.42);
         background: linear-gradient(180deg, #322A32, #241E24);
     }
@@ -6840,25 +6712,25 @@ textarea:focus {
 /* Already in the playlist: the pipe LIGHTS, and the row dims so it is
    visibly not the next thing to act on. Two independent cues, one of which
    is not colour. */
-.library-item.in-playlist {
+body.faceplate .library-item.in-playlist {
     opacity: 0.55;
     box-shadow: inset 3px 0 0 var(--success, #66DD7A),
                 inset 0 1px 0 rgba(255, 255, 255, 0.07),
                 0 2px 0 rgba(0, 0, 0, 0.45);
 }
 
-.library-item.hidden {
+body.faceplate .library-item.hidden {
     display: none;
 }
 
-.library-item .video-icon {
+body.faceplate .library-item .video-icon {
     flex: none;
     margin-right: 0;
     font-size: 13px;
     line-height: 1;
 }
 
-.library-item .video-name {
+body.faceplate .library-item .video-name {
     flex: 1;
     min-width: 0;
     font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
@@ -6876,7 +6748,7 @@ textarea:focus {
    @media (pointer: coarse) block at style.css:2756-2762 applies
    `min-width: 44px; min-height: 44px`, and min-* outranks width/height, so a
    phone gets a real 44x44 target with no change to that block. */
-.library-item .add-btn {
+body.faceplate .library-item .add-btn {
     flex: none;
     width: 30px;
     height: 30px;
@@ -6904,7 +6776,7 @@ textarea:focus {
                 border-color 120ms ease;
 }
 
-.library-item .add-btn:active {
+body.faceplate .library-item .add-btn:active {
     transform: translateY(3px);
     box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
                 inset 0 1px 0 rgba(255, 255, 255, 0.10);
@@ -6912,7 +6784,7 @@ textarea:focus {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .library-item .add-btn:hover {
+    body.faceplate .library-item .add-btn:hover {
         border-color: rgba(102, 221, 122, 0.85);
         background: linear-gradient(180deg, #423A42, #2A242A);
     }
@@ -6941,18 +6813,17 @@ textarea:focus {
          · `.video-library-table .btn-icon` (was l.3055) — `.btn-icon` appears
            zero times in index.html and zero times in manager.js. Dead. */
 
-    #videoList,
-    #romsList {
+    body.faceplate #videoList, body.faceplate #romsList {
         padding: 8px;
     }
 
-    .video-library-table tr {
+    body.faceplate .video-library-table tr {
         padding: 12px;
         gap: 4px 10px;
         margin-bottom: 14px;
     }
 
-    .video-library-table td.video-title {
+    body.faceplate .video-library-table td.video-title {
         font-size: 14px;
     }
 
@@ -6970,21 +6841,21 @@ textarea:focus {
        (manager.js:2628-2631), so no generic @media (pointer: coarse) rule in
        this file has ever reached them. 44px is the WCAG 2.5.5 / Apple HIG
        floor. */
-    .playlist-card {
+    body.faceplate .playlist-card {
         padding: 13px 13px 12px;
         gap: 8px;
     }
 
-    .playlist-card::before {
+    body.faceplate .playlist-card::before {
         left: 13px;
         right: 13px;
     }
 
-    .playlist-card .playlist-meta {
+    body.faceplate .playlist-card .playlist-meta {
         padding-bottom: 0;
     }
 
-    .playlist-card .playlist-actions button {
+    body.faceplate .playlist-card .playlist-actions button {
         min-height: 44px;
         font-size: 11px;
         padding: 0 8px;
@@ -7021,7 +6892,7 @@ textarea:focus {
    and no backdrop left to tap. Measured at 320x640: modal-content height
    812.4, top -86.2, bottom 726.2. */
 
-.modal {
+body.faceplate .modal {
     display: none;
     position: fixed;
     z-index: 1000;
@@ -7046,7 +6917,7 @@ textarea:focus {
         calc(env(safe-area-inset-left) + 16px);
 }
 
-.modal.active {
+body.faceplate .modal.active {
     display: flex;
 }
 
@@ -7069,7 +6940,7 @@ textarea:focus {
    the full two-ring bezel from remote.css:162-172 and the four-layer panel
    texture from remote.css:130-134. */
 
-.modal-content {
+body.faceplate .modal-content {
     position: relative;
     flex: none;
     /* auto margins centre with room, collapse to 0 without. See .modal above. */
@@ -7107,7 +6978,7 @@ textarea:focus {
 
 /* INNER RULE — the cream hairline, concentric with the gold at r-5
    (remote.css:168-172). */
-.modal-content::before {
+body.faceplate .modal-content::before {
     content: "";
     position: absolute;
     inset: 5px;
@@ -7136,10 +7007,7 @@ textarea:focus {
    a pseudo-element cannot have its own pseudo-element. Everything else is
    the reference exactly. */
 
-.modal-content > h3::before,
-.modal-content > h3::after,
-.modal-content .modal-actions::before,
-.modal-content .modal-actions::after {
+body.faceplate .modal-content > h3::before, body.faceplate .modal-content > h3::after, body.faceplate .modal-content .modal-actions::before, body.faceplate .modal-content .modal-actions::after {
     content: "";
     position: absolute;
     width: 11px;
@@ -7151,10 +7019,10 @@ textarea:focus {
     z-index: 1;
 }
 
-.modal-content > h3::before            { left: 13px;  top: 13px; }
-.modal-content > h3::after             { right: 13px; top: 13px; }
-.modal-content .modal-actions::before  { left: 13px;  bottom: 13px; }
-.modal-content .modal-actions::after   { right: 13px; bottom: 13px; }
+body.faceplate .modal-content > h3::before            { left: 13px;  top: 13px; }
+body.faceplate .modal-content > h3::after             { right: 13px; top: 13px; }
+body.faceplate .modal-content .modal-actions::before  { left: 13px;  bottom: 13px; }
+body.faceplate .modal-content .modal-actions::after   { right: 13px; bottom: 13px; }
 
 /* --- @keyframes modalPop, .modal-content h3, .modal-content p --- */
 /* REPLACES style.css:1747-1769, which currently reads:
@@ -7178,7 +7046,7 @@ textarea:focus {
     to   { transform: translateY(0);    opacity: 1; }
 }
 
-.modal-content h3 {
+body.faceplate .modal-content h3 {
     font-family: "ZenDots", "Zen Dots", sans-serif;
     font-weight: 400;
     font-size: 17px;
@@ -7188,18 +7056,18 @@ textarea:focus {
     margin: 0 0 14px;
 }
 
-.modal-content p {
+body.faceplate .modal-content p {
     font-size: 13px;
     line-height: 1.55;
     color: var(--fg);
     margin: 0 0 18px;
 }
 
-.modal-content p:last-of-type {
+body.faceplate .modal-content p:last-of-type {
     margin-bottom: 22px;
 }
 
-.modal-content p strong {
+body.faceplate .modal-content p strong {
     color: var(--accent);
     font-weight: 400;
 }
@@ -7213,14 +7081,14 @@ textarea:focus {
    .modal-actions must stay position-static so its ::before/::after screws
    resolve against .modal-content. Do not add position:relative here. */
 
-.modal-actions {
+body.faceplate .modal-actions {
     display: flex;
     gap: 14px;
     justify-content: flex-end;
     align-items: stretch;
 }
 
-.modal-actions button {
+body.faceplate .modal-actions button {
     flex: 0 1 auto;
     width: auto;              /* .btn-primary/.btn-secondary carry width:100% */
     min-width: 104px;
@@ -7238,11 +7106,11 @@ textarea:focus {
    flex-direction: column, NOT column-reverse — visual order must keep matching
    DOM order (Cancel first), WCAG 1.3.2. */
 @media (max-width: 400px) {
-    .modal-actions {
+    body.faceplate .modal-actions {
         flex-direction: column;
         gap: 12px;
     }
-    .modal-actions button {
+    body.faceplate .modal-actions button {
         width: 100%;
         min-height: 50px;
     }
@@ -7262,16 +7130,14 @@ textarea:focus {
    the dialogs only. If the controls pass lands an equivalent .btn-* keycap
    tier, DELETE these two blocks and let the class rules apply instead. */
 
-#modalCancel,
-#mbResetCancelBtn {
+body.faceplate #modalCancel, body.faceplate #mbResetCancelBtn {
     background: linear-gradient(180deg, #39323A, #241F25);
     color: var(--accent);
     border: 0;
     border-radius: 4px;
     box-shadow: 0 3px 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
 }
-#modalCancel:active,
-#mbResetCancelBtn:active {
+body.faceplate #modalCancel:active, body.faceplate #mbResetCancelBtn:active {
     transform: translateY(3px);
     box-shadow: 0 0 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
 }
@@ -7282,7 +7148,7 @@ textarea:focus {
    'safe, go' is therefore indefensible. Gold is the faceplate's attention
    colour and is neutral between constructive and destructive.
    Gradient is .cap.y verbatim, remote.css:389. */
-#modalConfirm {
+body.faceplate #modalConfirm {
     background: linear-gradient(180deg, #F0C81C, #C79E06);
     color: var(--bg);
     border: 0;
@@ -7296,7 +7162,7 @@ textarea:focus {
         inset 0 2px 0 rgba(255,255,255,.22),/* 4. top bevel */
         inset 0 -3px 0 rgba(0,0,0,.32);     /* 5. bottom shade */
 }
-#modalConfirm:active {
+body.faceplate #modalConfirm:active {
     transform: translateY(4px);
     box-shadow:
         0 0 0 4px var(--well),
@@ -7315,20 +7181,20 @@ textarea:focus {
    6169 clears it when the typed text uppercases to 'RESET').
 
    RULE 1 — a destructive dialog wears a HOT bezel instead of a gold one. */
-#mbResetModal .modal-content {
+body.faceplate #mbResetModal .modal-content {
     border-color: var(--hot);
     box-shadow:
         0 0 10px rgba(234, 58, 39, .16),
         inset 0 0 22px rgba(0, 0, 0, .5),
         0 18px 44px rgba(0, 0, 0, .70);
 }
-#mbResetModal .modal-content::before {
+body.faceplate #mbResetModal .modal-content::before {
     border-color: rgba(234, 58, 39, .26);
 }
-#mbResetModal .modal-content h3 {
+body.faceplate #mbResetModal .modal-content h3 {
     color: var(--hot);
 }
-#mbResetModal .modal-content p strong {
+body.faceplate #mbResetModal .modal-content p strong {
     color: var(--hot);
 }
 
@@ -7342,7 +7208,7 @@ textarea:focus {
    text-transform is VISUAL ONLY — input.value is unchanged, and manager.js:6169
    already compares `input.value.trim().toUpperCase() !== 'RESET'`, so lowercase
    entry was always accepted. No semantic change. */
-#mbResetConfirmInput {
+body.faceplate #mbResetConfirmInput {
     background: linear-gradient(180deg, #151115, #1B161B) !important;
     border: 1px solid rgba(245, 191, 66, .20) !important;
     border-radius: 8px !important;
@@ -7356,11 +7222,11 @@ textarea:focus {
     text-transform: uppercase;
     transition: border-color 120ms ease-out, box-shadow 120ms ease-out;
 }
-#mbResetConfirmInput::placeholder {
+body.faceplate #mbResetConfirmInput::placeholder {
     color: var(--dim);
     letter-spacing: .12em;
 }
-#mbResetConfirmInput:focus {
+body.faceplate #mbResetConfirmInput:focus {
     outline: none;
     border-color: var(--accent) !important;
     box-shadow: inset 0 2px 8px rgba(0,0,0,.75), 0 0 0 2px rgba(245,191,66,.35);
@@ -7374,7 +7240,7 @@ textarea:focus {
 
    !important on background is required because index.html:552 carries
    inline `style="background: var(--error); border-color: var(--error);"`. */
-#mbResetConfirmBtn:not(:disabled) {
+body.faceplate #mbResetConfirmBtn:not(:disabled) {
     background: linear-gradient(180deg, #D84234, #A82A20) !important;
     color: var(--fg);
     border: 0;
@@ -7386,7 +7252,7 @@ textarea:focus {
         inset 0 2px 0 rgba(255,255,255,.22),
         inset 0 -3px 0 rgba(0,0,0,.32);
 }
-#mbResetConfirmBtn:not(:disabled):active {
+body.faceplate #mbResetConfirmBtn:not(:disabled):active {
     transform: translateY(4px);
     box-shadow:
         0 0 0 4px var(--well),
@@ -7400,11 +7266,11 @@ textarea:focus {
    inline-styles #mbResetBtn red; give it the hot recess instead of a flat
    outline so the destructive control is distinguishable AT REST, not only
    on :hover (which never fires on touch). */
-#mbResetBtn {
+body.faceplate #mbResetBtn {
     background: var(--well);
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
 }
-#mbResetBtn:hover {
+body.faceplate #mbResetBtn:hover {
     box-shadow: inset 0 1px 3px rgba(0,0,0,.75), 0 0 0 1px rgba(234,58,39,.45);
 }
 
@@ -7427,11 +7293,8 @@ textarea:focus {
    (#mbResetConfirmBtn index.html:552, #mbResetBtn index.html:529) carry
    inline background/colour. */
 
-button:disabled,
-/* button[disabled], */
-input:disabled,
-select:disabled,
-textarea:disabled {
+body.faceplate button:disabled, body.faceplate /* button[disabled], body.faceplate */
+input:disabled, body.faceplate select:disabled, body.faceplate textarea:disabled {
     cursor: not-allowed;
     color: var(--dim) !important;
     background: var(--bg-lift) !important;
@@ -7448,9 +7311,7 @@ textarea:disabled {
 
 /* Kill every hover/active affordance while disabled — .btn-primary:hover
    (style.css:830) currently still scales and glows on a disabled button. */
-button:disabled:hover,
-button:disabled:active,
-/* button[disabled]:hover, */
+body.faceplate button:disabled:hover, body.faceplate button:disabled:active, body.faceplate /* button[disabled]:hover, body.faceplate */
 /* button[disabled]:active { */
     background: var(--bg-lift) !important;
     background-image: none !important;
@@ -8872,3 +8733,162 @@ header::before {
     outline: 2px solid var(--accent);
     outline-offset: 4px;
 }
+
+/* ============================================================================
+ * FACEPLATE SHELL — the visual identity itself
+ * ----------------------------------------------------------------------------
+ * This is what was missing. The earlier layers restyled COMPONENTS but never
+ * built the faceplate: the textured panel, the gold pinstripe bezel, the cream
+ * inner rule and the corner screws. Two of those are not CSS-only — the remote
+ * builds them from real DOM — and every markup proposal was dropped during
+ * sanitising, so those rules had nothing to attach to.
+ *
+ * The bezel is drawn with body::before / body::after (position: fixed, so it
+ * frames the VIEWPORT and does not scroll away), which needs no markup at all.
+ * Only the four screws are real elements, and they are inert direct children
+ * of <body> — no wrapper, so no parentNode/closest() relationship changes.
+ *
+ * Gated on body.faceplate throughout, so the whole identity can be toggled off
+ * by removing one class if it ever needs to be.
+ * ==========================================================================*/
+body.faceplate {
+  background-color: var(--bg);
+  background-image:
+    repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+    radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
+    radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
+  background-attachment: fixed;
+  /* Room for the bezel so content never sits under the gold line. */
+  padding-left: max(env(safe-area-inset-left), 14px);
+  padding-right: max(env(safe-area-inset-right), 14px);
+}
+/* Gold pinstripe. 46px radius clears the rounded display mask on every iPhone
+   (the containment rule is r + 3.4142*i >= R; at inset 9 that needs r >= 25 for
+   a 55pt corner, and 46 clears even a 62pt 16 Pro). pointer-events:none so it
+   can never intercept a tap. */
+body.faceplate::before {
+  content: ""; position: fixed; inset: 9px;
+  border: 1.5px solid var(--accent); border-radius: 46px;
+  box-shadow: 0 0 10px rgba(245,191,66,.13), inset 0 0 22px rgba(0,0,0,.5);
+  pointer-events: none; z-index: 9998;
+}
+/* Cream inner rule, concentric with the gold: r_inner = r_outer - (14 - 9). */
+body.faceplate::after {
+  content: ""; position: fixed; inset: 14px;
+  border: 1px solid rgba(242,228,217,.28); border-radius: 41px;
+  pointer-events: none; z-index: 9998;
+}
+body.faceplate .screw {
+  position: fixed; width: 11px; height: 11px; border-radius: 50%;
+  z-index: 9997; pointer-events: none;
+  background: radial-gradient(circle at 38% 32%, #4A443E, #1A1714 70%);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,.14), 0 1px 2px rgba(0,0,0,.8);
+}
+body.faceplate .screw::after {
+  content: ""; position: absolute; inset: 3px;
+  border-top: 1.5px solid rgba(0,0,0,.75); transform: rotate(28deg);
+}
+body.faceplate .screw.tl { left: 28px; top: 28px }
+body.faceplate .screw.tr { right: 28px; top: 28px }
+body.faceplate .screw.bl { left: 28px; bottom: 28px }
+body.faceplate .screw.br { right: 28px; bottom: 28px }
+
+/* Square keycaps. The legacy pill radius (.btn-secondary etc. at 0,1,0) beat
+   the unscoped layer rules; body.faceplate lifts these to (0,2,1) so they win
+   without !important. */
+body.faceplate button,
+body.faceplate .btn,
+body.faceplate .btn-primary,
+body.faceplate .btn-secondary,
+body.faceplate .tab {
+  border-radius: 3px;
+  box-shadow: 0 0 0 3px var(--well), 0 3px 0 3px rgba(0,0,0,.6),
+              inset 0 1px 0 rgba(255,255,255,.10);
+  transition: transform .05s ease, box-shadow .05s ease;
+}
+body.faceplate button:active,
+body.faceplate .btn:active,
+body.faceplate .btn-primary:active,
+body.faceplate .btn-secondary:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 3px var(--well), 0 0 0 3px rgba(0,0,0,.6),
+              inset 0 1px 0 rgba(255,255,255,.10);
+}
+/* The bezel is fixed, so the bottom nav must clear it and the home indicator. */
+body.faceplate .bottom-nav {
+  bottom: 0;
+  padding-bottom: max(env(safe-area-inset-bottom), 10px);
+}
+
+/* ============================================================================
+ * FACEPLATE CORRECTIONS — applied after visual inspection on a 390px viewport
+ * ==========================================================================*/
+
+/* The Content Manager ALREADY had a mobile pattern: hide the top tab strip at
+ * <=600px and navigate from the bottom rail. A layer rule re-showed
+ * `.tabs, [role="tablist"]` as a horizontal scroller at <=700px, so phones got
+ * BOTH — and the tab strip then scrolled off the right edge (scrollWidth 636
+ * against clientWidth 324), which is what read as "cut off". The bottom rail is
+ * the phone navigation; restore the original behaviour. */
+@media (max-width: 700px) {
+  body.faceplate .tabs,
+  body.faceplate [role="tablist"] { display: none; }
+}
+
+/* The keycap treatment adds a 3px --well ring on every side. Inside the tight
+ * flex rows of the sub-tab strip that is 6px of extra width per key, which is
+ * what pushed "All Videos" and "ROMs & Games" past the edge. Drop the ring to a
+ * hairline for keys that live in a scrolling/flex strip — they keep the square
+ * corners and the press travel, just without the routed pocket. */
+@media (max-width: 700px) {
+  body.faceplate .sub-tab,
+  body.faceplate .view-toggle button,
+  body.faceplate .toggle-btn {
+    box-shadow: 0 0 0 1px var(--well), 0 2px 0 1px rgba(0,0,0,.55),
+                inset 0 1px 0 rgba(255,255,255,.08);
+    min-width: 0;
+  }
+}
+
+/* The bezel is position:fixed at inset 9/14px, so a full-bleed bottom rail runs
+ * underneath it. Inset the rail to sit inside the cream rule and keep clear of
+ * the home indicator. */
+body.faceplate .bottom-nav {
+  left: 16px; right: 16px; bottom: 16px;
+  border-radius: 4px;
+  padding-bottom: max(env(safe-area-inset-bottom), 8px);
+}
+
+/* Nothing may exceed the bezel horizontally. */
+body.faceplate .container { max-width: 100%; overflow-x: hidden; }
+
+/* nav.sub-tabs measured 373px of keys inside a 324px strip at 390 wide, so
+ * "All Videos" fell off the right. Let the three share the row equally instead
+ * of sizing to their text: flex-basis 0 with min-width 0 (the min-width is
+ * load-bearing — flex items default to min-width:auto and refuse to shrink
+ * below their content). Padding tightens and the label ellipsises rather than
+ * overflowing. */
+@media (max-width: 700px) {
+  body.faceplate .sub-tabs { overflow-x: visible; gap: 4px; }
+  body.faceplate .sub-tab {
+    flex: 1 1 0; min-width: 0; padding-left: 6px; padding-right: 6px;
+    font-size: 12px; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+}
+
+/* Faceplate icons. Sized to the current font so they sit on the text baseline
+   wherever an emoji used to, and stroked in currentColor so each instance
+   picks up its context colour with no per-icon rules. */
+body.faceplate .ic {
+  width: 1.15em; height: 1.15em;
+  vertical-align: -0.2em;
+  flex: none;
+  color: inherit;
+}
+body.faceplate .bottom-nav .ic { width: 22px; height: 22px; vertical-align: 0; display: block; margin: 0 auto 2px; }
+body.faceplate .tab .ic,
+body.faceplate .sub-tab .ic { margin-right: .35em; }
+body.faceplate .section-title .ic { color: var(--accent); margin-right: .4em; }
+body.faceplate .badge-icon .ic { width: 1em; height: 1em; }
