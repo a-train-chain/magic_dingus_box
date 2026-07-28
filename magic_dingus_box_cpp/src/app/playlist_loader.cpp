@@ -64,6 +64,15 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
             pl.curator = node["curator"].as<std::string>();
         }
         
+        // Per-playlist loop. Absent means false; see Playlist::loop.
+        if (node["loop"]) {
+            try {
+                pl.loop = node["loop"].as<bool>();
+            } catch (const std::exception&) {
+                pl.loop = false;  // non-bool value: treat as not looping
+            }
+        }
+
         if (node["items"]) {
             for (const auto& item : node["items"]) {
                 PlaylistItem playlist_item;
@@ -101,6 +110,32 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
                         playlist_item.artist = "";  // Empty if not provided
                     }
                     // Parse emulator fields (for games)
+                    // Trim points. Both are optional and default to 0.0.
+                    // A malformed value must not take the whole playlist down,
+                    // so parse defensively — yaml-cpp throws on a bad cast.
+                    if (item["start"]) {
+                        try {
+                            playlist_item.start = item["start"].as<double>();
+                        } catch (const std::exception&) {
+                            playlist_item.start = 0.0;
+                        }
+                    }
+                    if (item["end"]) {
+                        try {
+                            playlist_item.end = item["end"].as<double>();
+                        } catch (const std::exception&) {
+                            playlist_item.end = 0.0;
+                        }
+                    }
+                    // An end at or before start would stop playback instantly;
+                    // treat that as "no trim" rather than an unplayable item.
+                    if (playlist_item.end > 0.0 && playlist_item.end <= playlist_item.start) {
+                        std::cerr << "Warning: ignoring end <= start for '"
+                                  << playlist_item.title << "' in " << path << std::endl;
+                        playlist_item.end = 0.0;
+                    }
+                    if (playlist_item.start < 0.0) playlist_item.start = 0.0;
+
                     if (item["emulator_core"]) {
                         playlist_item.emulator_core = item["emulator_core"].as<std::string>();
                     } else {

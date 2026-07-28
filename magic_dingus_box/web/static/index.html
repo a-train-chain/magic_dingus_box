@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=82">
+    <link rel="stylesheet" href="/static/style.css?v=83">
 </head>
 
 <body class="faceplate">
@@ -368,9 +368,17 @@
                         <div class="playlist-options-row">
                             <input type="text" id="gamePlaylistDesc" class="playlist-desc-input"
                                 placeholder="Description (optional)">
-                            <label class="playlist-loop-label">
-                                <input type="checkbox" id="gamePlaylistLoop"> Loop
-                            </label>
+                            <!-- No Loop control for game playlists. Selecting a
+                                 game hands off to RetroArch rather than running
+                                 through the video pipeline, so there is nothing
+                                 to loop; the kiosk ignores the `loop:` key for
+                                 game playlists entirely (controller.cpp keeps
+                                 the global setting for them). The hidden input
+                                 stays so MEDIA_CONFIG.game.loopCheckboxId and
+                                 every getElementById on it keep resolving —
+                                 removing it outright would make those return
+                                 null and throw mid-save. -->
+                            <input type="checkbox" id="gamePlaylistLoop" hidden>
                         </div>
 
                         <div class="playlist-table-container">
@@ -774,7 +782,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=99"></script>
+    <script src="/static/manager.js?v=100"></script>
 
 </body>
 

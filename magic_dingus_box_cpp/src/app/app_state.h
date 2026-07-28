@@ -96,6 +96,11 @@ struct PlaylistItem {
     std::string artist;  // Artist name
     std::string emulator_core;  // RetroArch core name (for games)
     std::string emulator_system;  // System name (NES, SNES, etc.)
+    // In/out points in seconds. 0.0 means "not set": start 0 is the natural
+    // beginning anyway, and an end of 0 would be a zero-length clip, so neither
+    // loses a meaningful value by using 0 as the sentinel.
+    double start = 0.0;
+    double end = 0.0;
 };
 
 struct Playlist {
@@ -103,6 +108,10 @@ struct Playlist {
     std::string curator;
     std::string path;
     std::vector<PlaylistItem> items;
+    // Per-playlist loop, from the `loop:` key. Applies to VIDEO playlists only —
+    // a game playlist hands off to RetroArch rather than running through the
+    // video pipeline, so there is nothing for it to loop.
+    bool loop = false;
     
     // Check if this playlist contains only games (no videos)
     bool is_game_playlist() const {

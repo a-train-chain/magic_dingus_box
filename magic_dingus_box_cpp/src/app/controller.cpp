@@ -227,6 +227,27 @@ double Controller::get_volume() const {
     return 100.0;
 }
 
+namespace {
+
+// The PlaylistItem currently playing, or nullptr if the indices do not point at
+// one. Both indices are free-running ints that are legitimately -1 between
+// items and during a playlist switch, so every access needs the same bounds
+// check used further down in this file rather than trusting them.
+const PlaylistItem* current_item(const AppState& state) {
+    if (state.current_playlist_index < 0 ||
+        state.current_playlist_index >= static_cast<int>(state.playlists.size())) {
+        return nullptr;
+    }
+    const auto& pl = state.playlists[state.current_playlist_index];
+    if (state.current_item_index < 0 ||
+        state.current_item_index >= static_cast<int>(pl.items.size())) {
+        return nullptr;
+    }
+    return &pl.items[state.current_item_index];
+}
+
+}  // namespace
+
 void Controller::update_state(AppState& state) {
     if (!player_) {
         return;
@@ -286,12 +307,23 @@ void Controller::update_state(AppState& state) {
     
     // Check if video has ended (for auto-advancing to next item in playlist)
     bool video_ended = false;
-    if (state.video_active && cur_duration > 0.0) {
+    // An item's `end` trims playback short: treat it as the effective duration
+    // so the existing auto-advance path fires there instead of at the real end
+    // of the file. Clamped to the real duration, because an `end` past the end
+    // of the media would otherwise never be reached and would hang the item.
+    double effective_duration = cur_duration;
+    {
+        const PlaylistItem* cur = current_item(state);
+        if (cur && cur->end > 0.0 && cur->end < cur_duration) {
+            effective_duration = cur->end;
+        }
+    }
+    if (state.video_active && effective_duration > 0.0) {
         // Check if we're at or past the end (with small tolerance for rounding)
         // Also check if mpv reports end-of-file
-        if (cur_position >= cur_duration - 0.5) {
+        if (cur_position >= effective_duration - 0.5) {
             video_ended = true;
-        } else if (cur_position < cur_duration - 1.0) {
+        } else if (cur_position < effective_duration - 1.0) {
             // Video is playing normally and not near the end
             // Mark playback as started - this confirms we are playing the NEW video
             // and not seeing stale state from the previous video
@@ -439,7 +471,10 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         // Load the new file
         std::cout << "Loading file: " << item.path << std::endl;
-        auto load_result = load_file_with_resolution(item.path, playlist_directory, 0.0, 0.0, false);
+        // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
+        // playlist authored with in/out points played every item in full.
+        auto load_result = load_file_with_resolution(item.path, playlist_directory,
+                                                     item.start, item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
 
@@ -481,7 +516,10 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         wait_with_callback(200, progress_callback);
 
         std::cout << "Loading file: " << item.path << std::endl;
-        auto load_result = load_file_with_resolution(item.path, playlist_directory, 0.0, 0.0, false);
+        // Trim points from the playlist. These were hardcoded to 0.0/0.0, so a
+        // playlist authored with in/out points played every item in full.
+        auto load_result = load_file_with_resolution(item.path, playlist_directory,
+                                                     item.start, item.end, false);
         if (load_result) {
             std::cout << "File loaded successfully, starting playback..." << std::endl;
             play();
@@ -825,7 +863,14 @@ void Controller::load_next_item(AppState& state, const std::string& playlist_dir
         
         // Check if we've reached the end of the playlist
         if (next_index >= playlist_size) {
-            if (state.playlist_loop) {
+            // Per-playlist loop wins for VIDEO playlists; game playlists keep
+            // the global setting, since the `loop:` key is meaningless for them
+            // (selecting a game hands off to RetroArch rather than running
+            // through the video pipeline).
+            const bool effective_loop = playlist.is_game_playlist()
+                                            ? state.playlist_loop
+                                            : playlist.loop;
+            if (effective_loop) {
                 // Loop back to start
                 next_index = 0;
             } else {

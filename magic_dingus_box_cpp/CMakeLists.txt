@@ -479,9 +479,13 @@ if(APP_TEST_SOURCES)
     add_executable(test_app_unit
         ${APP_TEST_SOURCES}
         src/app/rom_title.cpp
+        # playlist_loader is here for the trim/loop parsing tests; it pulls in
+        # yaml-cpp, hence the extra include/link directories below.
+        src/app/playlist_loader.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src)
-    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain)
+    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS})
+    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS})
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES})
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
