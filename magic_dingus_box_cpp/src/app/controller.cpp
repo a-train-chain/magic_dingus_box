@@ -511,7 +511,15 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             return utils::Result<>::fail(error);
         }
         
-        // Resolve "auto" core based on system
+        // Resolve "auto" core based on system.
+        //
+        // Keep in sync with ROM_CORE_MAP in magic_dingus_box/web/static/manager.js.
+        // These two lists drifted apart: the web admin wrote emulator_core:
+        // 'auto' for any system it did not know, and this resolver knew the same
+        // seven systems, so an N64 ROM added from the ROM library produced a
+        // playlist entry that looked correct everywhere until the user selected
+        // it and got "Could not resolve auto core for system: n64".
+        // Note the names here carry no _libretro suffix; the playlist YAML does.
         if (core_name == "auto") {
             std::string system = item.emulator_system;
             if (system == "genesis") {
@@ -528,6 +536,13 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 core_name = "mednafen_pce_fast";
             } else if (system == "arcade") {
                 core_name = "fbneo";
+            } else if (system == "n64") {
+                // Both mupen64plus_next and parallel_n64 are installed; next is
+                // the one the emulator smoke test exercises and the one the
+                // shipped N64 playlist uses.
+                core_name = "mupen64plus_next";
+            } else if (system == "dreamcast") {
+                core_name = "flycast";
             } else {
                 std::string error = "Could not resolve auto core for system: " + system;
                 std::cerr << "Error: " << error << std::endl;

@@ -429,6 +429,47 @@ const UPLOAD_CONFIG = {
 
 // ===== MEDIA TYPE CONFIGURATION =====
 // Unified configuration for video and game media types
+/**
+ * System → libretro core. The single source of truth for the web admin.
+ *
+ * This existed as three byte-identical copies (the ROM upload auto-add, and
+ * both "add to playlist" paths). All three had drifted out of step with the
+ * cores actually installed: n64 and dreamcast were missing, so adding an N64
+ * ROM from the library wrote `emulator_core: 'auto'`.
+ *
+ * 'auto' is not a safe fallback. playlist_loader.cpp only skips an item when
+ * emulator_core is EMPTY, so 'auto' passes validation and reaches
+ * app/controller.cpp:515, whose own resolver knows the same seven systems and
+ * ends at "Could not resolve auto core for system: n64" — the game fails to
+ * launch, after the user has already selected it.
+ *
+ * Keep in sync with controller.cpp:515. Note the kiosk spells these WITHOUT the
+ * _libretro suffix; the suffix belongs in the playlist YAML, which is what this
+ * map feeds.
+ */
+const ROM_CORE_MAP = {
+    'nes': 'nestopia_libretro',
+    'snes': 'snes9x2010_libretro',
+    'genesis': 'genesis_plus_gx_libretro',
+    'ps1': 'pcsx_rearmed_libretro',
+    'atari7800': 'prosystem_libretro',
+    'pcengine': 'mednafen_pce_fast_libretro',
+    'arcade': 'fbneo_libretro',
+    'n64': 'mupen64plus_next_libretro',
+    'dreamcast': 'flycast_libretro'
+};
+
+/**
+ * Resolve a system to its core, or null when we genuinely do not know.
+ *
+ * Returning null rather than 'auto' means the caller can refuse to write an
+ * item the kiosk would reject at launch time, instead of writing a plausible
+ * looking playlist entry that dies on selection.
+ */
+function coreForSystem(system) {
+    return ROM_CORE_MAP[String(system || '').toLowerCase()] || null;
+}
+
 const MEDIA_CONFIG = {
     video: {
         // Element IDs
@@ -2541,24 +2582,21 @@ function uploadSingleROM(file, system, progressBar, autoAddToPlaylist) {
                     try {
                         const result = JSON.parse(xhr.responseText);
 
-                        if (autoAddToPlaylist) {
-                            // Define core map for uploads too
-                            const coreMap = {
-                                'nes': 'nestopia_libretro',
-                                'snes': 'snes9x2010_libretro',
-                                'genesis': 'genesis_plus_gx_libretro',
-                                'ps1': 'pcsx_rearmed_libretro',
-                                'atari7800': 'prosystem_libretro',
-                                'pcengine': 'mednafen_pce_fast_libretro',
-                                'arcade': 'fbneo_libretro'
-                            };
-
+                        const uploadCore = coreForSystem(system);
+                        if (autoAddToPlaylist && !uploadCore) {
+                            // The ROM itself uploaded fine; only the playlist
+                            // auto-add is skipped, so say so rather than
+                            // silently dropping it.
+                            showNotification(
+                                `Uploaded, but no emulator core is configured for "${system}" — not added to the playlist.`,
+                                'warning');
+                        } else if (autoAddToPlaylist) {
                             const playlistItem = {
                                 title: file.name.replace(/\.[^/.]+$/, ""),
                                 source_type: 'emulated_game',
                                 path: result.path || `data/roms/${system}/${file.name}`,
                                 emulator_system: system,
-                                emulator_core: coreMap[system] || 'auto'
+                                emulator_core: uploadCore
                             };
 
                             const config = MEDIA_CONFIG['game'];
@@ -3613,16 +3651,14 @@ function addItemToPlaylist(draggedItem, type) {
         const rom = draggedItem.data;
         const system = draggedItem.system;
 
-        // Auto-detect emulator core (using 64-bit compatible cores)
-        const coreMap = {
-            'nes': 'nestopia_libretro',
-            'snes': 'snes9x2010_libretro',
-            'genesis': 'genesis_plus_gx_libretro',
-            'ps1': 'pcsx_rearmed_libretro',
-            'atari7800': 'prosystem_libretro',
-            'pcengine': 'mednafen_pce_fast_libretro',
-            'arcade': 'fbneo_libretro'
-        };
+        // Refuse rather than write an item the kiosk will reject at launch.
+        const core = coreForSystem(system);
+        if (!core) {
+            showNotification(
+                `No emulator core is configured for "${system}" — cannot add this ROM.`,
+                'error');
+            return;
+        }
 
         // Only include fields that have values (matches YAML format)
         item = {
@@ -3630,7 +3666,7 @@ function addItemToPlaylist(draggedItem, type) {
             artist: '',  // Empty artist field (games don't typically have artists)
             source_type: 'emulated_game',
             path: rom.path,
-            emulator_core: coreMap[system] || 'auto',
+            emulator_core: core,
             emulator_system: system // Keep lowercase for consistency
         };
     }
@@ -5126,29 +5162,27 @@ function addROMToPlaylist(system, index) {
     const rom = availableROMs[system]?.[index];
     if (!rom) return;
 
+    // Refuse rather than write an item the kiosk will reject at launch.
+    const core = coreForSystem(system);
+    if (!core) {
+        showNotification(
+            `No emulator core is configured for "${system}" — cannot add this ROM.`,
+            'error');
+        return;
+    }
+
     const config = MEDIA_CONFIG['game'];
     const items = config.getItems();
 
     // Find first empty slot or add to end
     const emptySlotIndex = items.findIndex(item => item.isEmpty);
 
-    // Auto-detect emulator core (using 64-bit compatible cores)
-    const coreMap = {
-        'nes': 'nestopia_libretro',
-        'snes': 'snes9x2010_libretro',
-        'genesis': 'genesis_plus_gx_libretro',
-        'ps1': 'pcsx_rearmed_libretro',
-        'atari7800': 'prosystem_libretro',
-        'pcengine': 'mednafen_pce_fast_libretro',
-        'arcade': 'fbneo_libretro'
-    };
-
     const newItem = {
         source_type: 'emulated_game',
         path: rom.path,  // Use actual path from server
         title: rom.filename.replace(/\.[^.]+$/, ''),
         emulator_system: system,
-        emulator_core: coreMap[system] || 'auto'
+        emulator_core: core
     };
 
     if (emptySlotIndex >= 0) {
