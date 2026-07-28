@@ -6787,9 +6787,15 @@ body.faceplate .library-item.hidden {
 body.faceplate .library-item .video-icon {
     flex: none;
     margin-right: 0;
-    font-size: 13px;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    color: var(--dim);
 }
+/* font-size: 13px removed: it sized the 📹 / 🎮 text glyph these rows used to
+   render. They now emit the sprite (manager.js renderLibraryPanel /
+   renderGamePlaylistAvailable), which `body.faceplate .ic` sizes at 1.15em —
+   a fixed 13px here would have shrunk it against every other icon. */
 
 body.faceplate .library-item .video-name {
     flex: 1;

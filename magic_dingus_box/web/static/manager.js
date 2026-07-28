@@ -456,7 +456,7 @@ const MEDIA_CONFIG = {
         endpoint: '/admin/media',
         uploadEndpoint: '/admin/upload',
         // Display
-        icon: '📹',
+        icon: spriteIcon('ic-videos'),
         sourceType: 'local',
         emptyMessage: 'No videos available',
         allAddedMessage: 'All videos have been added to the playlist',
@@ -489,7 +489,7 @@ const MEDIA_CONFIG = {
         endpoint: '/admin/roms',
         uploadEndpoint: (system) => `/admin/upload/rom/${system}`,
         // Display
-        icon: '🎮',
+        icon: spriteIcon('ic-games'),
         sourceType: 'emulated_game',
         emptyMessage: 'No ROMs available',
         allAddedMessage: 'All ROMs have been added to the playlist',
@@ -786,7 +786,7 @@ function updateMobileSettingsView() {
             mobileDeviceList.innerHTML = `
                 <div class="device-card selected">
                     <div class="device-info">
-                        <h4>📺 ${escapeHtml(currentDevice.device_name)}</h4>
+                        <h4>${spriteIcon('ic-crt')} ${escapeHtml(currentDevice.device_name)}</h4>
                         <div class="meta">${escapeHtml(currentDevice.local_ip)} • ${escapeHtml(currentDevice.hostname)}</div>
                     </div>
                     <div class="device-stats">
@@ -932,7 +932,7 @@ function displayDevices() {
         <div class="device-card ${currentDevice && currentDevice.device_id === device.device_id ? 'selected' : ''}" 
              onclick="selectDevice(${index})">
             <div class="device-info">
-                <h4>📺 ${escapeHtml(device.device_name)}</h4>
+                <h4>${spriteIcon('ic-crt')} ${escapeHtml(device.device_name)}</h4>
                 <div class="meta">
                     ${escapeHtml(device.local_ip)} • ${escapeHtml(device.hostname)}
                 </div>
@@ -1003,7 +1003,12 @@ function updateConnectionBadge() {
             /\/\/10\.55\.0\.\d+[:\/]/.test(deviceUrl)
         );
         const connectionType = isUSB ? 'USB' : 'WiFi';
-        const icon = isUSB ? '🔌' : '📶';
+        // Sprite markup, not an emoji glyph. index.html:78 ships
+        // <span class="badge-icon"><svg class="ic"><use href="#ic-bolt"/></svg></span>,
+        // and writing .textContent below deletes that <svg> outright — so the
+        // header chip, which is visible on every tab, lost its sprite the moment
+        // updateConnectionBadge() first ran and showed a colour emoji instead.
+        const icon = isUSB ? 'ic-plug' : 'ic-antenna';
 
         // Update badge classes
         badge.classList.remove('disconnected');
@@ -1012,13 +1017,13 @@ function updateConnectionBadge() {
         badge.classList.add(isUSB ? 'usb' : 'wifi');
 
         // Update badge content
-        badge.querySelector('.badge-icon').textContent = icon;
+        badge.querySelector('.badge-icon').innerHTML = spriteIcon(icon);
         badgeText.textContent = `${currentDevice.device_name} • ${connectionType}`;
     } else {
         // Not connected
         badge.classList.add('disconnected');
         badge.classList.remove('connected', 'wifi', 'usb');
-        badge.querySelector('.badge-icon').textContent = '⚡';
+        badge.querySelector('.badge-icon').innerHTML = spriteIcon('ic-bolt');
         badgeText.textContent = 'Not Connected';
     }
 }
@@ -1583,7 +1588,7 @@ async function handleDirectUpload(input) {
 
     // Show batch status immediately with uploading state
     if (statusEl) statusEl.style.display = 'block';
-    if (iconEl) iconEl.textContent = '⬆️';  // Upload icon
+    if (iconEl) iconEl.innerHTML = spriteIcon('ic-upload');
     if (labelEl) labelEl.textContent = `Uploading ${files.length} file${files.length > 1 ? 's' : ''}`;
     if (progressEl) progressEl.style.width = '0%';
     if (detailsEl) detailsEl.textContent = 'Preparing upload...';
@@ -1684,7 +1689,7 @@ async function handleDirectUpload(input) {
     // Now poll for pending transcoding jobs
     if (pendingJobs.length > 0) {
         // Change icon and label for transcoding phase
-        if (iconEl) iconEl.textContent = '⚙️';  // Transcoding icon
+        if (iconEl) iconEl.innerHTML = spriteIcon('ic-hourglass');
         if (labelEl) labelEl.textContent = `Transcoding ${pendingJobs.length} file${pendingJobs.length > 1 ? 's' : ''}`;
 
         while (pendingJobs.length > 0) {
@@ -1845,7 +1850,9 @@ async function processVideoFile(file, resolution, autoAddToPlaylist) {
             if (state) statusEl.classList.add(state);
         }
         if (iconEl) {
-            iconEl.textContent = state === 'error' ? '❌' : state === 'complete' ? '✓' : '⚙️';
+            iconEl.innerHTML = spriteIcon(state === 'error' ? 'ic-warning'
+                                        : state === 'complete' ? 'ic-check'
+                                        : 'ic-hourglass');
         }
     };
 
@@ -2692,6 +2699,20 @@ async function loadExistingPlaylists() {
     } catch (e) {
         console.error('Failed to load playlists:', e);
     }
+}
+
+/**
+ * Markup for one icon from the inline sprite in index.html.
+ *
+ * Use this anywhere JS writes an icon into the DOM. The sprite is stroked in
+ * currentColor so each instance picks up its context colour, and `.ic` sizes it
+ * to 1.15em — neither of which an emoji glyph can do.
+ *
+ * @param {string} id sprite symbol id, e.g. 'ic-videos'
+ * @returns {string} HTML
+ */
+function spriteIcon(id) {
+    return `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`;
 }
 
 /**
@@ -4849,7 +4870,7 @@ function renderLibraryPanel() {
                  data-path="${escapeHtml(path)}"
                  ondragstart="handleLibraryDragStart(event)"
                  ondragend="handleDragEnd(event)">
-                <span class="video-icon">📹</span>
+                <span class="video-icon">${spriteIcon('ic-videos')}</span>
                 <span class="video-name">${escapeHtml(name)}</span>
                 <button class="add-btn" onclick="addVideoToPlaylist(${index})" title="Add to playlist">+</button>
             </div>
@@ -5008,7 +5029,7 @@ function renderROMLibraryPanel() {
                  data-path="${escapeHtml(rom.path)}"
                  ondragstart="handleROMLibraryDragStart(event)"
                  ondragend="handleDragEnd(event)">
-                <span class="video-icon">🎮</span>
+                <span class="video-icon">${spriteIcon('ic-games')}</span>
                 <span class="video-name">${escapeHtml(name)}</span>
                 <span style="font-size: 0.7rem; color: var(--text-secondary); margin-left: 0.5rem;">${systemLabel}</span>
                 <button class="add-btn" onclick="addROMToPlaylist('${rom.system}', ${rom.originalIndex})" title="Add to playlist">+</button>
@@ -5150,7 +5171,7 @@ async function checkForUpdates() {
 
     if (labelEl) labelEl.textContent = 'Checking for updates...';
     if (progressEl) progressEl.style.width = '50%';
-    if (iconEl) iconEl.textContent = '🔍';
+    if (iconEl) iconEl.innerHTML = spriteIcon('ic-search');
     if (detailsEl) detailsEl.textContent = '';
 
     try {
@@ -5703,7 +5724,7 @@ function _setupMediaBrowserDropZone() {
         button.disabled = !(haveFile || haveText);
         if (haveFile) {
             mbConfigPayload = { file: fileInput.files[0] };
-            if (dropLabel) dropLabel.textContent = `📄 ${fileInput.files[0].name}`;
+            if (dropLabel) dropLabel.innerHTML = `${spriteIcon('ic-doc')} ${escapeHtml(fileInput.files[0].name)}`;
         } else if (haveText) {
             mbConfigPayload = { text: textArea.value };
         } else {
@@ -6101,8 +6122,8 @@ function _renderCredentialsHTML(d) {
             ${url ? `<div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><code>${escapeHtml(url)}</code></div>` : ''}
             <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace;">
                 <span id="mbCred${idSuffix}Display" style="flex: 1 1 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${'•'.repeat(Math.min(20, Math.max(8, safeValue.length)))}</span>
-                ${showCopyOnly ? '' : `<button class="btn-secondary small" data-mb-toggle="${idSuffix}" data-mb-value="${escapeHtml(safeValue)}" data-mb-revealed="0">👁 Show</button>`}
-                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(safeValue)}">📋 Copy</button>
+                ${showCopyOnly ? '' : `<button class="btn-secondary small" data-mb-toggle="${idSuffix}" data-mb-value="${escapeHtml(safeValue)}" data-mb-revealed="0">${spriteIcon('ic-eye')} Show</button>`}
+                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(safeValue)}">${spriteIcon('ic-copy')} Copy</button>
             </div>
         </div>`;
     };
@@ -6121,7 +6142,7 @@ function _renderCredentialsHTML(d) {
             <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;"><code>http://localhost:8080  (via SSH tunnel)</code></div>
             <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace; margin-bottom: 0.5rem;">
                 <span style="flex: 1 1 200px;">Username: <strong>${escapeHtml(username)}</strong></span>
-                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(username)}">📋 Copy</button>
+                <button class="btn-secondary small" data-mb-copy="1" data-mb-value="${escapeHtml(username)}">${spriteIcon('ic-copy')} Copy</button>
             </div>
             <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-family: monospace;">
                 <span style="flex: 1 1 320px; opacity: .8;">Password: read it on the box &mdash;
@@ -6139,11 +6160,11 @@ function _toggleCredentialReveal(btn) {
     if (revealed) {
         const len = (btn.dataset.mbValue || '').length;
         display.textContent = '•'.repeat(Math.min(20, Math.max(8, len)));
-        btn.textContent = '👁 Show';
+        btn.innerHTML = `${spriteIcon('ic-eye')} Show`;
         btn.dataset.mbRevealed = '0';
     } else {
         display.textContent = btn.dataset.mbValue || '';
-        btn.textContent = '🙈 Hide';
+        btn.innerHTML = `${spriteIcon('ic-eye-off')} Hide`;
         btn.dataset.mbRevealed = '1';
     }
 }
