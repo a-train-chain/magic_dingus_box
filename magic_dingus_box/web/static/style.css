@@ -9004,3 +9004,51 @@ body.faceplate .screw { z-index: 1; }
  * functional change to row rendering rather than a restyle, so it is out of
  * scope here. The stacked row is correct and readable; it is merely tall.
  * Verified: ROM rows 141px, video rows 189px, actions at the 44pt floor. */
+
+/* Media Browser health rows.
+ *
+ * .health-row is a space-between flex of .health-label + .health-value, and
+ * with a 99px label against a 155px value in a 324px well the value wrapped
+ * mid-phrase — "Up 10 hours" on one line and "(healthy)" alone on the next,
+ * ragged against the row's start alignment. Reads as a broken line rather than
+ * a status.
+ *
+ * Give the label a stable lane, let the value take the rest and align it to
+ * the right so a wrap breaks cleanly under itself instead of centring. */
+@media (max-width: 700px) {
+  body.faceplate .health-row { align-items: baseline; gap: 10px; }
+  body.faceplate .health-row .health-label {
+    flex: 0 0 auto; min-width: 0; white-space: nowrap;
+  }
+  body.faceplate .health-row .health-value {
+    flex: 1 1 auto; min-width: 0; text-align: right; line-height: 1.35;
+  }
+}
+
+/* Playlist editor: the fixed Save/Cancel bar.
+ *
+ * The audit predicted this one and it is real: the bar is
+ * `position: fixed; bottom: 0` with no env(safe-area-inset-bottom), so on a
+ * phone with a home indicator the primary Save action sits under the system
+ * gesture area — and now also under the faceplate bezel, which is fixed at
+ * inset 9/14px. Inset it to clear both. */
+body.faceplate .playlist-editor-container .playlist-header .playlist-actions,
+body.faceplate .playlist-actions-fixed,
+body.faceplate .editor-action-bar {
+  left: 16px; right: 16px; bottom: 16px;
+  padding-bottom: max(env(safe-area-inset-bottom), 8px);
+  border-radius: 4px;
+}
+
+/* Drag handles were below the touch minimum. They are the ONLY way to reorder
+   by dragging, so they need a real target — widened via padding so the glyph
+   stays visually small while the hit area does not. */
+@media (pointer: coarse) {
+  body.faceplate .drag-handle,
+  body.faceplate .playlist-table .handle,
+  body.faceplate .playlist-table td:first-child {
+    min-width: 44px; min-height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    touch-action: none;   /* let the drag start instead of the page scrolling */
+  }
+}
