@@ -4808,3 +4808,4067 @@ input[type="checkbox"]:active {
     box-shadow: 0 0 0 2px var(--well);
   }
 }
+
+
+/* ============================================================================
+ * FACEPLATE LAYER — PANELS & FORMS
+ * ----------------------------------------------------------------------------
+ * Raised plate for containers; sunk well for anything holding information.
+ *
+ * Appended, not edited in place: cascade-correct at equal specificity,
+ * non-destructive, revertible by deleting this block. No class or id renamed —
+ * manager.js binds to many by name. :root untouched; five design areas each
+ * proposed a divergent rewrite, so the additive alias block above stays the
+ * single source of truth. Prose and quoted 'before' blocks from the generator
+ * have been wrapped as comments.
+ * ==========================================================================*/
+/* --- .collapsible-section, .collapsible-section:hover  (style.css:158-171) --- */
+/* REPLACES style.css:158-171, which currently reads:
+
+     .collapsible-section {
+         background: var(--bg-card);
+         border: 2px solid var(--border-color);
+         margin-bottom: 1rem;
+         border-radius: 8px;
+         overflow: hidden;
+         transition: all 0.3s;
+         width: 100%;
+         box-sizing: border-box;
+     }
+
+     .collapsible-section:hover {
+         border-color: var(--accent);
+     }
+*/
+
+/* ── FACEPLATE PLATE ──────────────────────────────────────────────────
+   Every content panel is a plate of the physical faceplate. Three layers,
+   all lifted from the remote:
+     1. TEXTURE — the four-layer stack from remote.css:130-134, verbatim and
+        in painting order: a 45deg cream weave at 1.3% alpha, an opposing
+        -45deg black weave at 20%, a top amber bloom, a bottom shade. The two
+        weaves crossing at 90deg are what read as a machined surface rather
+        than noise; drop either and it turns to grain. The gradient stops are
+        percentages, so the stack scales from a 932px screen to a 296px card
+        without retuning.
+     2. PINSTRIPE — 1px of --accent at 20%, the admin-scale reduction of
+        .screen::before (remote.css:162-167). Not the 2px steel-blue outline
+        this file uses in five places; the faceplate has no 2px lines.
+     3. THE LIP SHADOW — `inset 0 0 22px rgba(0,0,0,.5)`, straight off
+        .screen::before. It darkens the plate toward its own edge so the gold
+        ring reads as a raised lip rather than a drawn line. This is the one
+        declaration that must not be dropped; without it the border looks
+        like a stroke in a mockup.
+
+   background-color and background-image are set as SEPARATE longhands on
+   purpose. manager.js writes `element.style.background = '...'` on drag
+   targets (manager.js:4208, 4212, 4236); the shorthand resets
+   background-image to none. Those writes currently target the <tbody>
+   (MEDIA_CONFIG.playlistItemsId === 'playlistTableBody', manager.js:437/469)
+   so none of these five panels is affected today — but keeping the longhands
+   documents which layer any future inline write would destroy.
+
+   One grouped rule, five call sites: .collapsible-section (l.158),
+   .settings-card (l.1792), .settings-section-mobile (l.3355),
+   .playlist-panel-main (l.2301), .library-panel (l.2627) were five
+   near-identical flat rules. The four later ones are trimmed to their
+   layout-only declarations in the changes that follow, so nothing here is
+   overridden by source order. */
+.collapsible-section,
+.settings-card,
+.settings-section-mobile,
+.playlist-panel-main,
+.library-panel {
+    background-color: var(--bg-lift);
+    background-image:
+        repeating-linear-gradient(45deg, rgba(242, 228, 217, .013) 0 1px, transparent 1px 3px),
+        repeating-linear-gradient(-45deg, rgba(0, 0, 0, .20) 0 1px, transparent 1px 3px),
+        radial-gradient(130% 62% at 50% -8%, rgba(245, 191, 66, .05), transparent 60%),
+        radial-gradient(120% 55% at 50% 108%, rgba(0, 0, 0, .5), transparent 60%);
+    border: 1px solid rgba(245, 191, 66, .20);
+    border-radius: 8px;
+    box-shadow:
+        inset 0 0 22px rgba(0, 0, 0, .5),
+        inset 0 1px 0 rgba(242, 228, 217, .05),
+        0 2px 6px rgba(0, 0, 0, .45);
+    overflow: hidden;
+    width: 100%;
+    box-sizing: border-box;
+    transition: border-color .12s ease;
+}
+
+.collapsible-section {
+    margin-bottom: 1rem;
+}
+
+/* The remote has NO hover states at all — it is a touch-only control
+   surface, and the design-system audit calls this out as the one tier the
+   Content Manager has to invent because it is also driven from a laptop.
+   The invention is minimal and physical: the pinstripe catches more light.
+   Nothing moves, nothing glows, nothing scales. Guarded so it can never
+   fire on a phone, where a latched :hover after a tap is a real bug.
+   120ms is the remote's state-reveal tier (remote.css:568,
+   `transition: border-color 120ms ease-out`). */
+@media (hover: hover) and (pointer: fine) {
+    .collapsible-section:hover,
+    .settings-card:hover {
+        border-color: rgba(245, 191, 66, .38);
+    }
+}
+
+/* --- .settings-card, .settings-card:hover  (style.css:1792-1802) --- */
+/* REPLACES style.css:1792-1802, which currently reads:
+
+     .settings-card {
+         background: var(--bg-dark);
+         border: 2px solid var(--border-color);
+         border-radius: 8px;
+         padding: 1.5rem;
+         transition: all 0.2s;
+     }
+
+     .settings-card:hover {
+         border-color: var(--accent);
+     }
+*/
+
+/* Surface and hover now come from the grouped plate rule at style.css:158.
+   Only the padding is card-specific. Both blocks above must be DELETED, not
+   merely edited: they sit LATER in the file at equal specificity (0,1,0), so
+   any `background` / `border` / `border-radius` left here would win over the
+   plate. */
+.settings-card {
+    padding: 1.25rem;
+}
+
+/* --- .playlist-panel-main  (style.css:2301-2308) --- */
+/* REPLACES style.css:2301-2308, which currently reads:
+
+     .playlist-panel-main {
+         display: flex;
+         flex-direction: column;
+         background: var(--bg-card);
+         border-radius: 8px;
+         border: 1px solid var(--accent2);
+         overflow: hidden;
+     }
+*/
+
+/* Layout only — surface comes from the grouped plate rule at style.css:158.
+   Deliberately NO padding: this panel is full-bleed by design (header strip,
+   options row, table well, footer strip all run edge to edge), and the
+   recessed children below inset themselves with margin instead. */
+.playlist-panel-main {
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- .library-panel  (style.css:2627-2634) --- */
+/* REPLACES style.css:2627-2634, which currently reads:
+
+     .library-panel {
+         display: flex;
+         flex-direction: column;
+         background: var(--bg-card);
+         border-radius: 8px;
+         border: 1px solid var(--border-color);
+         overflow: hidden;
+     }
+*/
+
+.library-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- .settings-section-mobile  (style.css:3355-3361) --- */
+/* REPLACES style.css:3355-3361, which currently reads:
+
+     .settings-section-mobile {
+         background: var(--bg-card);
+         border: 2px solid var(--border-color);
+         border-radius: 8px;
+         margin-bottom: 1rem;
+         overflow: hidden;
+     }
+*/
+
+/* Eight instances — the four Settings blocks (index.html:565, 577, 593, 603)
+   and the four Media Browser state panels (index.html:417, 424, 464, 487).
+   Surface from the grouped plate rule at style.css:158. */
+.settings-section-mobile {
+    margin-bottom: 1rem;
+}
+
+/* --- .section-header, .section-header:hover  (style.css:173-187) --- */
+/* REPLACES style.css:173-187, which currently reads:
+
+     .section-header {
+         padding: 1rem 1.5rem;
+         cursor: pointer;
+         user-select: none;
+         background: var(--bg-mid);
+         transition: all 0.2s;
+         display: flex;
+         align-items: center;
+         width: 100%;
+         box-sizing: border-box;
+     }
+
+     .section-header:hover {
+         background: var(--bg-card);
+     }
+*/
+
+/* ── PANEL LABEL PLATE ────────────────────────────────────────────────
+   The strip that names a panel. Two stacked background layers:
+     • bottom 1px — the remote's cream hairline. remote.css:229-233 draws
+       `.rule` as linear-gradient(90deg, transparent, rgba(242,228,217,.20)
+       12%, ... 88%, transparent) precisely so it FADES OUT at both ends
+       instead of butting into the panel edge. Reproduced here as a
+       1px-tall background layer rather than a border-bottom, which is the
+       only way to keep the fade.
+     • the plate step — a shallow light-to-dark vertical, so the strip reads
+       as milled slightly proud of the panel behind it.
+   Display type is Zen Dots at the remote's tracking (remote.css uses
+   letter-spacing on 11 rules, .04-.12em; .mlabel at :425 is 10px/.06em).
+   0.72rem = 11.5px, which is the admin floor for an all-caps display face —
+   the remote's own 8-10px chrome type does not survive on a laptop.
+
+   Four call sites, all of which carry a TITLE: .section-header (l.173),
+   .settings-section-mobile .section-title (l.3363), .library-header
+   (l.2636), .library-upload-section .upload-header (l.2769).
+   .playlist-header is handled separately below because it carries CONTROLS,
+   not a title, and must not put a display face near its inputs. */
+.section-header,
+.settings-section-mobile .section-title,
+.library-header,
+.library-upload-section .upload-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    min-height: 44px;
+    padding: 0.625rem 1rem;
+    box-sizing: border-box;
+    background:
+        linear-gradient(90deg, transparent,
+                        rgba(242, 228, 217, .16) 12%,
+                        rgba(242, 228, 217, .16) 88%, transparent)
+            bottom left / 100% 1px no-repeat,
+        linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(0, 0, 0, .28));
+    color: var(--accent);
+    font-family: 'Zen Dots', 'ZenDots', sans-serif;
+    font-size: 0.72rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    transition: color .12s ease, background-color .12s ease;
+}
+
+/* Only two of the four are click targets. Keeping cursor/user-select off the
+   other two stops them advertising an interaction they do not have. */
+.section-header,
+.library-upload-section .upload-header {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .section-header:hover,
+    .library-upload-section .upload-header:hover {
+        color: var(--text-primary);
+        background-color: rgba(245, 191, 66, .05);
+    }
+}
+
+/* --- .section-header h2, .section-header h3, .section-header h4  (style.css:189-209) --- */
+/* REPLACES style.css:189-209, which currently reads:
+
+     .section-header h2,
+     .section-header h3 {
+         margin: 0;
+         font-size: clamp(1.125rem, 3vw, 1.5rem);
+         color: var(--accent2);
+         display: flex;
+         align-items: center;
+         gap: 0.75rem;
+         width: 100%;
+         flex-wrap: wrap;
+         word-wrap: break-word;
+         overflow-wrap: break-word;
+     }
+
+     .section-header h4 {
+         margin: 0;
+         font-size: 1rem;
+         color: var(--accent2);
+         word-wrap: break-word;
+         overflow-wrap: break-word;
+     }
+*/
+
+/* The plate owns the type now, so the heading inherits rather than
+   re-declaring. `font: inherit` also clears the UA's bold, which the display
+   face does not need — Zen Dots ships one weight.
+   This also retires `color: var(--accent2)` on headings: the ux-a11y audit
+   measured #5884B1 at 4.10:1 on --bg-mid, below the 4.5:1 floor. --accent
+   (#F5BF42, inherited from the plate) is 9.6:1 on the same surface. */
+.section-header h2,
+.section-header h3,
+.section-header h4 {
+    margin: 0;
+    font: inherit;
+    color: inherit;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    flex-wrap: wrap;
+    overflow-wrap: break-word;
+}
+
+/* --- .settings-section-mobile .section-title, .settings-section-mobile .section-body  (style.css:3363-3373) --- */
+/* REPLACES style.css:3363-3373, which currently reads:
+
+     .settings-section-mobile .section-title {
+         padding: 1rem;
+         background: var(--bg-mid);
+         color: var(--accent2);
+         font-weight: bold;
+         font-size: 1rem;
+     }
+
+     .settings-section-mobile .section-body {
+         padding: 1rem;
+     }
+*/
+
+/* The .section-title block is DELETED, not edited. It is at specificity
+   (0,2,0) and sits at line 3363 — LATER than the label-plate group at line
+   173, whose own `.settings-section-mobile .section-title` selector is the
+   same (0,2,0). Leaving any of `padding` / `background` / `color` /
+   `font-size` here would win on source order and silently cancel the plate.
+   This is the highest-risk ordering trap in the whole proposal, because the
+   two selectors are byte-identical in specificity and the loser is decided
+   purely by line number.
+
+   .section-body is NOT a well. The well is for things that hold information;
+   the body is the panel's interior and also holds buttons and paragraphs.
+   Its information children (.health-info, .update-info, .update-status …)
+   are the wells, per the grouped rule below. */
+.settings-section-mobile .section-body {
+    padding: 1rem;
+    color: var(--text-primary);
+}
+
+/* --- .library-header h4  (style.css:2645-2649)  and its phone override (style.css:3178-3180) --- */
+/* REPLACES style.css:2645-2649, which currently reads:
+
+     .library-header h4 {
+         margin: 0;
+         font-size: 0.9rem;
+         color: var(--text-primary);
+     }
+*/
+.library-header h4 {
+    margin: 0;
+    font: inherit;
+    color: inherit;
+}
+
+
+/* REPLACES style.css:3178-3180, inside the existing @media (max-width: 600px)
+   block, which currently reads:
+
+     .library-header h4 {
+         font-size: 1rem;
+     }
+
+   1rem of an all-caps display face in a 296px panel wraps "VIDEO LIBRARY"
+   onto two lines and pushes the count badge off the strip. Zen Dots sets
+   much wider per em than Share Tech Mono, so the phone step goes up only
+   slightly from the 0.72rem desktop size, not to 16px. */
+@media (max-width: 600px) {
+    .library-header h4 {
+        font-size: 0.76rem;
+    }
+}
+
+/* --- .library-upload-section, .library-upload-section .upload-header, :hover, .toggle-icon, .upload-content  (style.css:2765-2791) --- */
+/* REPLACES style.css:2765-2791, which currently reads:
+
+     .library-upload-section {
+         border-top: 1px solid var(--border-color);
+     }
+
+     .library-upload-section .upload-header {
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         padding: 0.75rem 1rem;
+         background: var(--bg-mid);
+         cursor: pointer;
+         font-size: 0.85rem;
+         color: var(--text-secondary);
+     }
+
+     .library-upload-section .upload-header:hover {
+         color: var(--text-primary);
+     }
+
+     .library-upload-section .toggle-icon {
+         transition: transform 0.2s;
+     }
+
+     .library-upload-section .upload-content {
+         padding: 0.75rem;
+         background: var(--bg-dark);
+     }
+*/
+
+/* .upload-header now comes entirely from the label-plate group (style.css:173
+   after the replacement above) — the block here MUST go, because at (0,2,0)
+   and line 2769 it outranks the plate's own (0,2,0) selector at line 173.
+   Its hairline is the plate's own bottom gradient, so the section no longer
+   needs a border-top of its own weight. */
+.library-upload-section {
+    border-top: 1px solid rgba(242, 228, 217, .10);
+}
+
+.library-upload-section .toggle-icon {
+    color: var(--accent);
+    transition: transform .12s ease;
+}
+
+/* The upload panel is a WELL — it holds settings, it is not something you
+   press. Inset by margin so the recess reads as cut INTO the plate rather
+   than butting against its edge; the fill / lip / inset shadow come from the
+   grouped well rule below.
+
+   CRITICAL: no `display` declaration here. toggleLibraryUpload() and
+   toggleROMLibraryUpload() (manager.js:4840-4866) and the auto-expand in
+   handleDirectUpload() (manager.js:1556-1561) drive this element by writing
+   `content.style.display = 'block' | 'none'` and testing
+   `content.style.display === 'none'`. Any CSS display value is invisible to
+   that test — it reads the inline style only — but declaring one here would
+   tempt a future edit into `display: flex`, which the inline 'block' would
+   then fight. Leave it out. */
+.library-upload-section .upload-content {
+    margin: 0.75rem;
+    padding: 0.75rem;
+}
+
+/* --- .playlist-header (2310-2318), .playlist-options-row (2360-2367), .playlist-footer (2596-2603) --- */
+/* REPLACES style.css:2310-2318:
+
+     .playlist-header {
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         padding: 0.75rem 1rem;
+         background: linear-gradient(135deg, var(--bg-mid) 0%, var(--bg-card) 100%);
+         border-bottom: 2px solid var(--accent2);
+         color: var(--text-primary);
+     }
+*/
+
+/* ── CONTROL PLATE ────────────────────────────────────────────────────
+   Same milled strip as the label plate, but WITHOUT the display type. This
+   strip carries inputs and buttons, not a title, and Zen Dots must not reach
+   the two <input>s inside .playlist-title-section. (Inputs do not inherit
+   font-family from an ancestor by default, so this is belt-and-braces — but
+   the form-control rule further down sets an explicit mono stack rather than
+   `font-family: inherit` precisely so that stays true.) */
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background:
+        linear-gradient(90deg, transparent,
+                        rgba(242, 228, 217, .16) 12%,
+                        rgba(242, 228, 217, .16) 88%, transparent)
+            bottom left / 100% 1px no-repeat,
+        linear-gradient(180deg, rgba(255, 255, 255, .045), rgba(0, 0, 0, .28));
+    color: var(--text-primary);
+}
+
+
+/* REPLACES style.css:2360-2367:
+
+     .playlist-options-row {
+         display: flex;
+         align-items: center;
+         gap: 1rem;
+         padding: 0.5rem 1rem;
+         background: var(--bg-mid);
+         border-bottom: 1px solid var(--border-color);
+     }
+
+   A shadowed channel between the control plate above and the table well
+   below — darker than the plate, lighter than the well, so the three
+   surfaces read as three distinct depths. */
+.playlist-options-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.625rem 1rem;
+    background: rgba(0, 0, 0, .18);
+    border-bottom: 1px solid rgba(242, 228, 217, .10);
+}
+
+
+/* REPLACES style.css:2596-2603:
+
+     .playlist-footer {
+         display: flex;
+         justify-content: space-between;
+         align-items: center;
+         padding: 0.75rem 1rem;
+         background: var(--bg-mid);
+         border-top: 1px solid var(--border-color);
+     }
+*/
+.playlist-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;          /* at 296px "+ Add Empty Slot" at a 44px target
+                                 and "12 items" both fit on one line, but a
+                                 longer count string must wrap, not overflow */
+    gap: 0.5rem;
+    padding: 0.625rem 1rem;
+    background: rgba(0, 0, 0, .18);
+    border-top: 1px solid rgba(242, 228, 217, .10);
+}
+
+/* --- grouped inset-well recipe  (insert immediately after the block that replaces style.css:158-171) --- */
+/* ── INSET WELL ───────────────────────────────────────────────────────
+   remote.css:241-247, `.disp`:
+
+       .disp {
+         flex: 1 1 auto; margin: 14px 0 16px; padding: 13px 14px 14px;
+         border-radius: 8px; border: 1px solid rgba(245,191,66,.20);
+         background: linear-gradient(180deg, #151115, #1B161B);
+         box-shadow: inset 0 2px 8px rgba(0,0,0,.75);
+         display: flex; flex-direction: column;
+       }
+
+   Geometry copied verbatim: 8px radius, --accent at 20% for the recess lip,
+   the #151115 -> #1B161B vertical fill, and the inset top shadow that makes
+   the upper edge read as an undercut rather than a stroke. The two literal
+   hexes are the remote's own — they are not tokens there either, so writing
+   them out here invents no parallel vocabulary.
+
+   The rule of the system: anything that HOLDS INFORMATION is sunk into the
+   plate, anything you PRESS stands proud of it. These seven are the
+   information containers in this scope. */
+.health-info,
+.update-info,
+.update-notes,
+.library-filters,
+.library-list,
+.library-upload-section .upload-content,
+.playlist-table-container {
+    border-radius: 8px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+/* Every well EXCEPT .playlist-table-container takes its lip as a real
+   border. That one takes it as an inset ring instead — see the note on it
+   below; a border there shifts the drag-and-drop indicator. */
+.health-info,
+.update-info,
+.update-notes,
+.library-filters,
+.library-list,
+.library-upload-section .upload-content {
+    border: 1px solid rgba(245, 191, 66, .20);
+}
+
+/* --- .playlist-table-container  (style.css:2389-2393) --- */
+/* REPLACES style.css:2389-2393, which currently reads:
+
+     .playlist-table-container {
+         flex: 1;
+         overflow-y: auto;
+         position: relative;
+     }
+
+   The duplicate at style.css:2472-2475 — `.playlist-table-container {
+   position: relative; }` with its own "anchor for the absolute-positioned
+   indicator" comment — can stay. It is redundant but harmless. Do NOT add
+   anything to it. */
+
+/* THE ONE WELL THAT MUST NOT HAVE A BORDER OR PADDING.
+
+   This is the playlist builder's drag-and-drop scroll region. manager.js
+   positions the drop indicator like this (manager.js:3661-3674):
+
+       function positionIndicatorAbove(indicator, container, row) {
+           const containerRect = container.getBoundingClientRect();
+           const rowRect = row.getBoundingClientRect();
+           indicator.style.top = `${rowRect.top - containerRect.top}px`;
+           indicator.style.display = 'block';
+       }
+
+   getBoundingClientRect() returns the BORDER box. `top` on the
+   absolutely-positioned .playlist-drop-indicator resolves against this
+   element's PADDING box (it is the containing block — position: relative).
+   Add a 1px border or any padding-top and every drop indicator lands that
+   many pixels low, permanently and on every drag.
+
+   Margin is inert to the calculation: it moves the border box and the
+   padding box together, so their difference is unchanged. box-shadow is
+   inert because it has no layout effect at all. So the lip is drawn as
+   `inset 0 0 0 1px` — visually identical to a 1px border, arithmetically
+   invisible.
+
+   Also inert to the two absolutely-positioned children this element anchors:
+   .playlist-drop-indicator (style.css:2476-2486, left/right: 0) and
+   .playlist-empty-state (style.css:2571-2580, top/left 50% + translate). */
+.playlist-table-container {
+    flex: 1;
+    overflow-y: auto;
+    position: relative;
+    margin: 0.75rem;
+    box-shadow:
+        inset 0 0 0 1px rgba(245, 191, 66, .20),
+        inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+/* --- .playlist-table th  (style.css:2400-2409) --- */
+/* REPLACES style.css:2400-2409, which currently reads:
+
+     .playlist-table th {
+         background: var(--bg-mid);
+         color: var(--text-secondary);
+         font-size: 0.75rem;
+         text-transform: uppercase;
+         padding: 0.5rem;
+         text-align: left;
+         position: sticky;
+         top: 0;
+     }
+*/
+
+/* The header row is `position: sticky; top: 0` inside the well above. An
+   inset box-shadow paints above the background but BELOW the content, so an
+   opaque var(--bg-mid) th would sit on top of the well's top lip and cut it.
+   Painting the th in the well's own top stop (#151115) makes the sticky row
+   read as part of the recess rather than a card floating on it, and the lip
+   stays continuous.
+
+   Deliberately NO z-index: the original had none, and adding one would put
+   this above .playlist-empty-state (style.css:2571, position: absolute,
+   z-index auto) which shares the same stacking context.
+
+   --dim on #151115 measures 6.9:1, well clear of AA — this is the one place
+   in the scope where --dim is safe, because it sits on the well fill rather
+   than on the lighter --bg-lift plate (4.61:1, no headroom). */
+.playlist-table th {
+    background: #151115;
+    color: var(--dim);
+    font-family: 'Zen Dots', 'ZenDots', sans-serif;
+    font-size: 0.6rem;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    padding: 0.625rem 0.5rem;
+    text-align: left;
+    position: sticky;
+    top: 0;
+    box-shadow: inset 0 -1px 0 rgba(242, 228, 217, .12);
+}
+
+/* --- .health-info (1855-1861), .health-row (1868-1873), .update-info (2139-2144), .library-filters (2659-2663), .library-list (2685-2689) --- */
+/* REPLACES style.css:1855-1861:
+
+     .health-info {
+         background: var(--bg-card);
+         border-radius: 4px;
+         padding: 1rem;
+         margin-bottom: 1rem;
+         font-size: 0.875rem;
+     }
+*/
+.health-info {
+    padding: 0.875rem 1rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+}
+
+
+/* REPLACES style.css:1868-1873:
+
+     .health-row {
+         display: flex;
+         justify-content: space-between;
+         padding: 0.375rem 0;
+         border-bottom: 1px solid var(--border-color);
+     }
+
+   var(--border-color) is var(--accent2) = #5884B1. Sixteen steel-blue rules
+   stacked inside one dark well is the densest concentration of the old
+   palette anywhere in the app. The cream hairline at 10% is the faceplate's
+   own divider. */
+.health-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.4375rem 0;
+    border-bottom: 1px solid rgba(242, 228, 217, .10);
+}
+
+
+/* REPLACES style.css:2139-2144:
+
+     .update-info {
+         background: var(--bg-card);
+         border-radius: 4px;
+         padding: 1rem;
+         margin-bottom: 1rem;
+     }
+*/
+.update-info {
+    padding: 0.875rem 1rem;
+    margin-bottom: 1rem;
+}
+
+
+/* REPLACES style.css:2659-2663:
+
+     .library-filters {
+         padding: 0.75rem;
+         background: var(--bg-dark);
+         border-bottom: 1px solid var(--border-color);
+     }
+
+   Was a full-bleed band closed by a steel rule; now a discrete well inset
+   from the plate edge, so the search field and its checkbox read as one
+   recessed control group. */
+.library-filters {
+    margin: 0.75rem 0.75rem 0;
+    padding: 0.75rem;
+}
+
+
+/* REPLACES style.css:2685-2689:
+
+     .library-list {
+         flex: 1;
+         overflow-y: auto;
+         padding: 0.5rem;
+     }
+*/
+.library-list {
+    flex: 1;
+    overflow-y: auto;
+    margin: 0.75rem;
+    padding: 0.5rem;
+}
+
+/* --- .update-status (2146-2153), .update-status.complete (2260-2264), .update-status.error (2275-2279) --- */
+/* REPLACES style.css:2146-2153:
+
+     .update-status {
+         margin: 1rem 0;
+         padding: 1rem;
+         background: linear-gradient(135deg, rgba(88, 132, 177, 0.15) 0%, var(--bg-mid) 100%);
+         border: 2px solid var(--accent2);
+         border-radius: 8px;
+         animation: update-glow 2s ease-in-out infinite alternate;
+     }
+*/
+
+/* The remote's ENTIRE motion inventory is 50-60ms press feedback, 70ms
+   scale, 120-150ms state reveal, 220ms toast entrance, and one 1.2s pulse
+   reserved for a RED fault dot (remote.css:252-254). There is no ambient
+   animation on any healthy surface. This rule ran `update-glow 2s infinite
+   alternate` on a 2px steel border — and #mbConfiguringStatus reuses this
+   exact component (index.html:467), so the pulse is on screen for the entire
+   60-120s of a Media Browser provisioning run. Replaced with a static well
+   plus an amber lip, which says "live" without breathing.
+
+   @keyframes update-glow (style.css:2155-2158) becomes unreferenced. It is
+   inert — delete it in a separate cleanup if you want the lines back. */
+.update-status {
+    margin: 1rem 0;
+    padding: 0.875rem 1rem;
+    border: 1px solid rgba(245, 191, 66, .35);
+    border-radius: 8px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+
+/* REPLACES style.css:2260-2264:
+
+     .update-status.complete {
+         border-color: var(--success);
+         background: linear-gradient(135deg, rgba(102, 221, 122, 0.15) 0%, var(--bg-mid) 100%);
+         animation: none;
+     }
+
+   and style.css:2275-2279:
+
+     .update-status.error {
+         border-color: var(--error);
+         background: linear-gradient(135deg, rgba(234, 58, 39, 0.15) 0%, var(--bg-mid) 100%);
+         animation: none;
+     }
+
+   Both MUST be replaced, not just the base: they are (0,2,0) and later in
+   the file, so their `background` would beat the well fill. The remote
+   signals state by RECOLOURING ONE THING and changing nothing else — see
+   .dot[data-state] at remote.css:249-253, where a single element's colour
+   and glow key off an attribute. Here that one thing is the lip. */
+.update-status.complete {
+    border-color: rgba(102, 221, 122, .55);
+}
+
+.update-status.error {
+    border-color: rgba(234, 58, 39, .55);
+}
+
+/* LEAVE UNTOUCHED, and they must stay: manager.js toggles `complete`/`error`
+   on #updateStatus at lines 5059, 5111, 5119, 5128, 5159, 5254, 5294, 5329,
+   5358, and style.css:2266-2273 / 2281-2288 stop the icon spinner and
+   recolour .update-progress-fill off those same classes. All five class
+   names — update-status, complete, error, update-label, update-icon,
+   update-progress-fill — are preserved verbatim. */
+
+/* --- .update-available (2212-2218) and the .restore-status family (1824-1852) --- */
+/* REPLACES style.css:2212-2218:
+
+     .update-available {
+         background: rgba(102, 221, 122, 0.1);
+         border: 2px solid var(--success);
+         border-radius: 8px;
+         padding: 1rem;
+         margin-bottom: 1rem;
+     }
+*/
+.update-available {
+    padding: 0.875rem 1rem;
+    margin-bottom: 1rem;
+    border: 1px solid rgba(102, 221, 122, .45);
+    border-radius: 8px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+
+/* REPLACES style.css:1824-1852:
+
+     .restore-status {
+         margin-top: 1rem;
+         padding: 0.75rem;
+         border-radius: 4px;
+         font-size: 0.875rem;
+         display: none;
+     }
+     .restore-status.visible { display: block; }
+     .restore-status.success { background: rgba(102, 221, 122, 0.15); border: 1px solid var(--success); color: var(--success); }
+     .restore-status.error   { background: rgba(234, 58, 39, 0.15);   border: 1px solid var(--error);   color: var(--error); }
+     .restore-status.loading { background: rgba(88, 132, 177, 0.15);  border: 1px solid var(--accent2); color: var(--accent2); }
+
+   `display: none` plus `.visible { display: block }` is the styling hook
+   manager.js:4536 drives with
+       statusEl.className = 'restore-status visible ' + type;
+   All five class names are preserved verbatim. Only declarations change:
+   one well, one lip, one text colour per state — the .dot[data-state]
+   pattern from remote.css:249-253 applied to a block. */
+.restore-status {
+    margin-top: 1rem;
+    padding: 0.75rem 0.875rem;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    display: none;
+    border: 1px solid rgba(245, 191, 66, .20);
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+.restore-status.visible {
+    display: block;
+}
+
+.restore-status.success {
+    border-color: rgba(102, 221, 122, .55);
+    color: var(--success);
+}
+
+.restore-status.error {
+    border-color: rgba(234, 58, 39, .55);
+    color: var(--error);
+}
+
+.restore-status.loading {
+    border-color: rgba(245, 191, 66, .45);
+    color: var(--accent);
+}
+
+/* --- .upload-zone-compact + :hover + .upload-label-compact  (style.css:2810-2816 and 2828-2840) --- */
+/* REPLACES style.css:2810-2816 and 2828-2840. The input rule at 2818-2826 is
+   UNCHANGED and must stay exactly as it is — it is what makes the whole zone
+   tappable:
+
+     .upload-zone-compact input[type="file"] {
+         position: absolute; width: 100%; height: 100%;
+         top: 0; left: 0; opacity: 0; cursor: pointer;
+     }
+
+   Replaced:
+
+     .upload-zone-compact {
+         border: 1px dashed var(--border-color);
+         border-radius: 4px;
+         position: relative;
+         text-align: center;
+         padding: 0.75rem;
+     }
+     .upload-label-compact { font-size: 0.85rem; color: var(--text-secondary); cursor: pointer; }
+     .upload-zone-compact:hover { border-color: var(--accent); }
+     .upload-zone-compact:hover .upload-label-compact { color: var(--accent); }
+*/
+
+/* The drop zone is the one surface that is neither a plate nor a well: it is
+   an EMPTY POCKET waiting to be filled. It keeps the dashed rule — the only
+   honest way to say "nothing here yet" — but in the panel's gold rather than
+   steel blue, over the well fill so the emptiness reads as depth.
+
+   `border` is kept as a REAL border, not converted to an inset ring:
+   manager.js:5653 writes `dropZone.style.borderColor = 'var(--accent)'`
+   imperatively on dragover for #mbDropZone (there is no .drag-over class),
+   and an inline border-color needs a border to land on. */
+.upload-zone-compact {
+    position: relative;
+    text-align: center;
+    padding: 0.875rem;
+    min-height: 44px;
+    border: 1px dashed rgba(245, 191, 66, .35);
+    border-radius: 8px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+    transition: border-color .12s ease, background-color .12s ease;
+}
+
+.upload-label-compact {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    letter-spacing: .02em;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .upload-zone-compact:hover {
+        border-color: var(--accent);
+        background-color: rgba(245, 191, 66, .04);
+    }
+
+    .upload-zone-compact:hover .upload-label-compact {
+        color: var(--accent);
+    }
+}
+
+/* --- form controls — base well and focus ring  (append at the END of style.css, before the appended media block below) --- */
+/* ── FORM CONTROLS ARE WELLS AT SMALL SCALE ───────────────────────────
+   There is currently NO base form-control rule in this file:
+       grep -nE '^\s*(input|select|textarea)\s*[,{]' style.css   ->  no matches
+   so the "Search all videos…" field at index.html:268 — which has neither a
+   class nor an id, and whose only rule is `.search-bar input { width: 100% }`
+   inside @media (max-width: 600px) at style.css:3088 — renders as a native
+   white box on a #1F191F page at every width above 600px.
+
+   Element selectors on purpose. Specificity (0,0,1) makes this a FLOOR:
+   every existing class rule still wins wherever it declares something —
+   .library-search (l.2665), .playlist-title-input (l.2326),
+   .playlist-curator-input (l.2341), .playlist-desc-input (l.2369),
+   .resolution-select-compact (l.2801), and critically
+   `.playlist-table .inline-input { background: transparent; border: 1px
+   solid transparent }` (l.2514) at (0,2,0), whose invisible-until-focus
+   treatment is deliberate and is preserved untouched.
+
+   font-family is an EXPLICIT mono stack, not `inherit`. `inherit` would pull
+   Zen Dots into any input sitting inside a label plate. Lead with DejaVuMono
+   so this converges with the remote once the @font-face declarations land;
+   until then it falls through to the same stack body already uses
+   (style.css:41). Input types are enumerated rather than using a bare
+   `input` so checkbox and file inputs are excluded — the file inputs inside
+   .upload-zone-compact are opacity:0 overlays and must stay untouched. */
+/* input[type="text"], */
+/* input[type="search"], */
+/* input[type="email"], */
+/* input[type="number"], */
+/* input[type="password"], */
+/* input[type="url"], */
+select,
+textarea {
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border: 1px solid rgba(245, 191, 66, .20);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: 'DejaVuMono', 'Share Tech Mono', 'IBM Plex Mono', monospace;
+    font-size: 0.9rem;
+    padding: 0.5rem 0.625rem;
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, .6);
+    transition: border-color .12s ease;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--dim);
+    opacity: 1;   /* Firefox applies its own opacity to ::placeholder */
+}
+
+/* Safari ignores `background` on a <select> unless appearance is cleared, so
+   the native chevron has to be REPLACED rather than merely overpainted — a
+   select with no visible affordance is a functional regression, not a style
+   choice. The arrow is an inline data-URI triangle in --accent's literal
+   value (a data URI cannot read a custom property), matched to the
+   .collapse-icon / .toggle-icon colour so all three disclosure marks agree. */
+select {
+    -webkit-appearance: none;
+    appearance: none;
+    padding-right: 2rem;
+    background-image:
+        url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath fill='%23F5BF42' d='M0 0h10L5 6z'/%3E%3C/svg%3E"),
+        linear-gradient(180deg, #151115, #1B161B);
+    background-repeat: no-repeat, no-repeat;
+    background-position: right 0.75rem center, 0 0;
+    background-size: 10px 6px, auto;
+}
+
+/* ── KEYBOARD FOCUS ───────────────────────────────────────────────────
+   grep -c "focus-visible" style.css  ->  0
+   grep -n ":focus" style.css         ->  4 hits (579, 580, 1948, 2524), and
+   three of them open with `outline: none`, while one of the four targets
+   `.resolution-select` — a class that appears in neither index.html nor
+   manager.js (the live class is .resolution-select-compact). So keyboard
+   focus is effectively invisible across the whole app today.
+
+   :focus-visible only, so pointer and touch behaviour is completely
+   unchanged — a mouse click still shows no ring. The faceplate's attention
+   colour is the gold pinstripe, lit. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+.section-header:focus-visible,
+.upload-header:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: rgba(245, 191, 66, .55);
+}
+
+/* --- @media (max-width: 600px) — forms on a phone  (append at the very END of style.css) --- */
+/* ── FORMS ON A PHONE ─────────────────────────────────────────────────
+   Appended at the END of the file, AFTER the existing
+   @media (max-width: 600px) block (style.css:2857-3241) and after the
+   (max-width: 700px) block that closes at 3617, so equal-specificity ties
+   resolve here. No new breakpoint threshold is introduced — 600px is already
+   the file's phone tier. This is deliberate: the file has eight width
+   thresholds with later blocks silently cancelling earlier ones purely on
+   line number (`.tabs { display: none }` at 2896 vs `.tabs, [role="tablist"]
+   { display: flex }` at 3573), and appending sidesteps that entirely.
+
+   Reference width for every comment below is 320px:
+     320  viewport
+     -24  .container padding 0.75rem x2   (style.css:2867)
+     ---
+     296  panel outer width
+     -2   plate borders
+     ---
+     294  panel interior
+*/
+@media (max-width: 600px) {
+
+    /* ── 1. LABEL PLACEMENT ───────────────────────────────────────────
+       .resolution-row is `display: flex; align-items: center; gap: .5rem`
+       (style.css:2793-2799), holding a bare <label> beside a <select>:
+
+         <label>Format:</label>
+         <select id="targetResolution" class="resolution-select-compact">
+                                                       — index.html:222-228
+         <label>System:</label>
+         <select id="systemSelect" class="resolution-select-compact">
+                                                       — index.html:375-386
+
+       Inside the .upload-content well inside the 296px library panel the
+       label eats ~60px and the select gets ~180px, which truncates
+       "Modern 1280x720". Stacked is the only layout that survives 320px.
+       The label also becomes a small tracked cap in --dim on the well fill
+       (6.9:1) — the remote's own label idiom, .lk / .mlabel. */
+    .resolution-row {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.375rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.85rem;
+    }
+
+    .resolution-row > label {
+        color: var(--dim);
+        font-size: 0.7rem;
+        letter-spacing: .10em;
+        text-transform: uppercase;
+    }
+
+    /* 12.8px today (0.8rem, style.css:2807) with NO phone override anywhere
+       in the file, and ~24px tall. Both fixed: 16px is the iOS auto-zoom
+       floor, 44px is the WCAG 2.5.5 / Apple HIG target. */
+    .resolution-select-compact {
+        width: 100%;
+        min-height: 44px;
+        font-size: 1rem;
+        padding: 0.625rem 2rem 0.625rem 0.75rem;
+    }
+
+    /* ── 2. STACK THE PAIRED FIELDS ───────────────────────────────────
+       .playlist-title-section is `display: flex; gap: .75rem; flex: 1`
+       (style.css:2320-2324) with 200px + 140px children. style.css:3159 sets
+       `width: 100%` on the section but leaves flex-direction: row, so the two
+       inputs flex-shrink to ~123px each (294 - 32 header padding - 12 gap,
+       halved) and BOTH placeholders truncate. Column is the fix. */
+    .playlist-title-section {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+
+    /* Same problem one row down: a description field and a Loop checkbox
+       competing for 262px. */
+    .playlist-options-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+
+    /* ── 3. 16px FLOOR + 44px TARGETS ON EVERY FIELD IN SCOPE ────────────
+       Measured today: .search-bar input 13.33px (no rule at all),
+       #mbResetConfirmInput 13.33px (inline-styled, index.html:551),
+       .resolution-select-compact 12.8px. index.html:9 currently masks all of
+       this with `maximum-scale=1, user-scalable=no`; when that mask is lifted
+       the zoom becomes visible, so this floor must land with or before it.
+       #mbResetConfirmInput and #mbConfigText carry inline width/padding which
+       still win — min-height and font-size are not in their inline sets, so
+       those apply. */
+    .playlist-title-input,
+    .playlist-curator-input,
+    .playlist-desc-input,
+    .library-search,
+    .search-bar input,
+    #mbResetConfirmInput,
+    #mbConfigText {
+        width: 100%;
+        min-height: 44px;
+        font-size: 1rem;
+        padding: 0.625rem 0.75rem;
+    }
+
+    /* The three checkbox rows are <label>s, so the whole row is the tap
+       target. style.css:3401 already sizes the BOX to 20px under
+       pointer:coarse; this gives the ROW its 44px. */
+    .playlist-loop-label,
+    .library-filter-checkbox,
+    .normalize-row > label {
+        display: flex;
+        align-items: center;
+        gap: 0.625rem;
+        min-height: 44px;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+
+    /* NB .normalize-row's label carries an inline
+       style="display:flex; align-items:center; gap:.5rem; cursor:pointer;
+       font-size:.9rem" (index.html:230-231) which wins on everything except
+       min-height — so the 44px still lands. Strip the inline attribute (see
+       the optional markup change) and the rest applies too. */
+
+    /* <div onclick="toggleLibraryUpload()"> — index.html:217, 370. ~38px. */
+    .library-upload-section .upload-header {
+        min-height: 48px;
+    }
+
+    /* The ONLY route to adding media from a phone: HTML5 drag-and-drop does
+       not fire on iOS touch, so this zone and .library-item .add-btn are the
+       whole upload story. It gets more than the 44px minimum. */
+    .upload-zone-compact {
+        min-height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+    }
+
+    .upload-label-compact {
+        font-size: 0.95rem;
+    }
+
+    /* ~30px today (padding .375rem/.75rem, style.css:2609). */
+    .btn-add-slot {
+        min-height: 44px;
+        padding: 0.625rem 1rem;
+        font-size: 0.95rem;
+    }
+
+    /* Recover horizontal room: at 296px the wells' 0.75rem margins plus the
+       body's 1rem padding cost 56px of the 294px interior. */
+    .settings-section-mobile .section-body,
+    .settings-card {
+        padding: 0.75rem;
+    }
+
+    .playlist-table-container,
+    .library-list,
+    .library-upload-section .upload-content {
+        margin: 0.5rem;
+    }
+
+    .library-filters {
+        margin: 0.5rem 0.5rem 0;
+    }
+
+    /* Panel strips get one more step of padding back. */
+    .section-header,
+    .settings-section-mobile .section-title,
+    .library-header,
+    .library-upload-section .upload-header,
+    .playlist-header,
+    .playlist-options-row,
+    .playlist-footer {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+}
+
+/* --- SUGGESTIONS — behaviour changes NOT made, recorded rather than done --- */
+/* Five things I did not do, because each would change behaviour and the
+   brief is explicit that this is a restyle only.
+
+   S1. BUMP THE CACHE-BUSTER. index.html:25 is
+         <link rel="stylesheet" href="/static/style.css?v=34">
+       Every operator's phone has v=34 cached. Without a bump to v=35 the
+       whole restyle will appear not to have shipped. Not a design change,
+       but it is the single most likely reason a correct restyle looks
+       broken on the device that matters.
+
+   S2. .grid-list holds .playlist-card, which is authored as a full-width
+       LIST ROW — `border-left: 3px solid var(--accent)`, `margin-bottom:
+       0.75rem`, `:hover { transform: translateX(4px) }` (style.css:1015-1049)
+       — but #videoPlaylistsList / #gamePlaylistsList are
+       `grid-template-columns: repeat(auto-fill, minmax(200px, 1fr))`
+       (style.css:496). A list row inside a grid cell. The faceplate reading
+       wants these as plates in a single column, which is also what the phone
+       rules already force (`1fr !important`, style.css:2861). One
+       declaration would do it, but it changes desktop layout: not done.
+
+   S3. .playlist-table-container is `overflow-y: auto` and inherits
+       `min-height: 500px` from the desktop .playlist-editor-container rule
+       (style.css:2297; the 900px block at 2844-2847 clears `height` but not
+       `min-height`). On a phone that becomes a ~343px inner scroller nested
+       inside the page scroll, directly above a fixed action bar. Letting the
+       page own the scroll would be better and is one rule, but it is a
+       scroll-behaviour change: not done.
+
+   S4. The playlist Save/Cancel bar is `position: fixed` at the bottom on
+       phones (style.css:2913-2927) with no env(safe-area-inset-bottom)
+       padding, so on a notched iPhone the buttons sit under the home
+       indicator. `padding-bottom: calc(0.75rem + env(safe-area-inset-bottom))`
+       fixes it and env() resolves to 0 elsewhere — but it changes hit
+       geometry on the app's most destructive control pair and belongs to the
+       mobile-layout pass: flagged, not done.
+
+   S5. static/table_styles.css is DEAD. `grep -rn "table_styles" web/`
+       returns nothing and index.html:25 loads only style.css, yet
+       table_styles.css:3-148 is byte-identical to style.css:1368-1514. Do
+       not edit it — editing it produces zero visible change and burns a
+       review cycle. Recommend deleting it in a separate commit. */
+
+
+/* ============================================================================
+ * FACEPLATE LAYER — LISTS & TABLES
+ * ----------------------------------------------------------------------------
+ * Rows become cards on narrow screens, paired with the manager.js:2205 fix so
+ * search filtering and the card layout stop fighting each other.
+ *
+ * Appended, not edited in place: cascade-correct at equal specificity,
+ * non-destructive, revertible by deleting this block. No class or id renamed —
+ * manager.js binds to many by name. :root untouched; five design areas each
+ * proposed a divergent rewrite, so the additive alias block above stays the
+ * single source of truth. Prose and quoted 'before' blocks from the generator
+ * have been wrapped as comments.
+ * ==========================================================================*/
+/* --- .grid-list  (REPLACES style.css:495-507) --- */
+/* Grid List - responsive grid */
+/* WAS:
+   .grid-list {
+       display: grid;
+       grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+       gap: 1rem;
+       margin-top: 1rem;
+       width: 100%;
+       overflow: visible;
+       padding: 0.5rem;
+       box-sizing: border-box;
+   }
+   200px was too narrow for a card that now carries a ZenDots title plus two
+   44px action buttons in normal flow; at 200px the buttons wrapped. The
+   padding is asymmetric now because .playlist-card paints a 4px routed-pocket
+   ring OUTSIDE its border box plus a 4px hard drop below it (box-shadow
+   spread + offset, remote.css:386) — 6px of side gutter clears the ring and
+   10px at the bottom clears ring + drop. Used by #videoPlaylistsList
+   (index.html:139) and #gamePlaylistsList (index.html:292) only. */
+.grid-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+    gap: 16px;
+    margin-top: 1rem;
+    width: 100%;
+    overflow: visible;
+    padding: 6px 6px 10px;
+    box-sizing: border-box;
+}
+
+/* --- .playlist-card and all its descendants  (REPLACES style.css:1014-1140, i.e. the comment "/ * Playlist Cards - Sleek Design * /" through the end of the `.playlist-meta em` rule) --- */
+/* ── Playlist cards — raised plates in routed pockets ──────────────────
+   REPLACES style.css:1014-1140 in full. What is deliberately gone:
+     · `border-left: 3px solid var(--accent)` (was l.1018) — a list-row idiom
+       on an element that is rendered into a CSS grid. Replaced by a top
+       pinstripe, which reads as a bezel edge rather than a row marker.
+     · `transform: translateX(4px)` on hover (was l.1043) — the faceplate has
+       no sliding surfaces. Controls travel DOWN when pressed, nothing else.
+     · `backdrop-filter: blur(4px)` (was l.1025-1026) — an expensive
+       compositing layer per card on a phone, buying a blur of a flat colour.
+     · `box-shadow: 0 0 10px …` neon halos on the two buttons (was l.1103,
+       l.1117) — replaced by the LED light-pipe pip, which is the panel's own
+       way of saying "armed".
+     · `position: absolute` on .playlist-actions (was l.1072) and the
+       `padding-bottom: 1.5rem` reserve it forced on .playlist-meta (l.1126).
+       Both buttons are now in normal flow, which is what makes the 44px touch
+       target affordable without the card growing.
+   The five-part shadow is remote.css:386-387 (.cap) with the well ring
+   reduced 5px -> 4px for admin density. */
+.playlist-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 15px 15px 13px;
+    margin-bottom: 0;
+    border-radius: 4px;
+    border: 1px solid rgba(245, 191, 66, 0.18);
+    background: linear-gradient(180deg, #2A232A, #1E191E);
+    box-shadow:
+        0 0 0 4px var(--well, #150F0A),
+        0 4px 0 4px rgba(0, 0, 0, 0.55),
+        0 8px 14px rgba(0, 0, 0, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+    overflow: visible;
+}
+
+/* The gold pinstripe, inset from the corners the way remote.css:162-172
+   insets the bezel from the shell edge. */
+.playlist-card::before {
+    content: "";
+    position: absolute;
+    left: 15px;
+    right: 15px;
+    top: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+                transparent,
+                rgba(245, 191, 66, 0.45) 18%,
+                rgba(245, 191, 66, 0.45) 82%,
+                transparent);
+    pointer-events: none;
+}
+
+/* Hover is desktop-only. The remote has no hover tier at all (it is touch
+   only); the Content Manager is also driven from a laptop, so one is
+   invented here — but guarded, so a phone never gets a stuck hover state. */
+@media (hover: hover) and (pointer: fine) {
+    .playlist-card:hover {
+        border-color: rgba(245, 191, 66, 0.45);
+        box-shadow:
+            0 0 0 4px var(--well, #150F0A),
+            0 4px 0 4px rgba(0, 0, 0, 0.55),
+            0 10px 20px rgba(0, 0, 0, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    }
+}
+
+.playlist-card .playlist-header {
+    display: block;
+    margin: 0;
+    position: static;
+}
+
+.playlist-card .playlist-header h4 {
+    font-family: "ZenDots", 'Zen Dots', 'Orbitron', sans-serif;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+    color: var(--fg, #F2E4D9);
+    margin: 0;
+    text-shadow: none;
+    overflow-wrap: anywhere;
+}
+
+.playlist-meta {
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0.02em;
+    color: var(--dim, #968B85);
+    position: relative;
+    z-index: 1;
+    padding-bottom: 0;
+    overflow-wrap: anywhere;
+}
+
+.playlist-meta span {
+    margin-right: 0.75rem;
+}
+
+.playlist-meta em {
+    display: block;
+    margin-top: 6px;
+    color: rgba(242, 228, 217, 0.62);
+    font-style: normal;
+    opacity: 1;
+}
+
+/* ── The two action buttons ────────────────────────────────────────────
+   remote.css:471-474 (.d/.ok) is the panel's SECOND, lighter control tier —
+   a flat lip with a 3px hard drop that collapses on press. That is exactly
+   what a card action wants: unmistakably pressable, but not competing with
+   the keycaps.
+   manager.js:2628-2631 and 2650-2653 emit these two buttons with NO class
+   attribute, in the order Edit, Delete — which is why both the old rules and
+   these key off :first-child / :last-child. The .btn-edit / .btn-danger
+   selectors are kept alongside so that IF someone later adds the classes
+   (the cm-structure audit recommends it) nothing changes visually. */
+.playlist-card .playlist-actions {
+    position: static;
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+    padding-top: 2px;
+    z-index: 2;
+}
+
+.playlist-card .playlist-actions button {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: linear-gradient(180deg, #39323A, #241F25);
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    transition: transform 60ms ease, box-shadow 60ms ease,
+                border-color 120ms ease;
+}
+
+/* The key travels down and its drop collapses — remote.css:487-488. */
+.playlist-card .playlist-actions button:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, #4A4149, #2C262C);
+}
+
+/* Edit — gold */
+.playlist-card .playlist-actions button.btn-edit,
+.playlist-card .playlist-actions button:first-child {
+    color: var(--accent, #F5BF42);
+    border-color: rgba(245, 191, 66, 0.42);
+    background: linear-gradient(180deg, #39323A, #241F25);
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .playlist-card .playlist-actions button.btn-edit:hover,
+    .playlist-card .playlist-actions button:first-child:hover {
+        border-color: rgba(245, 191, 66, 0.85);
+        background: linear-gradient(180deg, #423A42, #2A242A);
+        color: var(--accent, #F5BF42);
+        box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    }
+}
+
+/* Delete — hot, with an unlit light pipe that lights when armed.
+   TWO `color` declarations on purpose: --hot #EA3A27 measures only 3.61:1 on
+   this button's own surface (#2C262C), so the mix lifts it to 5.38:1. The
+   plain var() is first so a browser without color-mix() still gets the hot
+   hue rather than falling back to the inherited cream. No new token is
+   introduced — the mix is derived from --hot and --fg. */
+.playlist-card .playlist-actions button.btn-danger,
+.playlist-card .playlist-actions button:last-child {
+    color: var(--hot, #EA3A27);
+    color: color-mix(in srgb, var(--hot, #EA3A27) 62%, var(--fg, #F2E4D9));
+    border-color: rgba(234, 58, 39, 0.42);
+}
+
+/* remote.css:395-401 — the light pipe is the HOST colour darkened, never
+   black and never grey. Unlit red is #6B1B14 (remote.css:399, `.cap.r .led`).
+   A ::before, never a child element: manager.js:4290 tests
+   `e.target.classList.contains(...)` on button clicks and a real child would
+   become the event target. Pseudo-elements never are. */
+.playlist-card .playlist-actions button.btn-danger::before,
+.playlist-card .playlist-actions button:last-child::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: #6B1B14;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.75);
+    transition: background 60ms, box-shadow 60ms;
+}
+
+.playlist-card .playlist-actions button.btn-danger:active::before,
+.playlist-card .playlist-actions button:last-child:active::before {
+    background: #FFC2B4;
+    box-shadow: 0 0 10px 2px rgba(234, 58, 39, 0.9),
+                inset 0 0 4px #FFD9D0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .playlist-card .playlist-actions button.btn-danger:hover,
+    .playlist-card .playlist-actions button:last-child:hover {
+        border-color: rgba(234, 58, 39, 0.85);
+        background: linear-gradient(180deg, #423A42, #2A242A);
+        box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    }
+    .playlist-card .playlist-actions button.btn-danger:hover::before,
+    .playlist-card .playlist-actions button:last-child:hover::before {
+        background: #A3291D;
+    }
+}
+
+/* --- the whole "/ * ===== VIDEO LIBRARY TABLE STYLES ===== * /" section and its @media (max-width: 768px) block  (REPLACES style.css:1368-1514 inclusive — from the section comment down to the closing brace of the 768px block, immediately before "/ * Sub Navigation * /" at line 1516) --- */
+/* ===== VIDEO / ROM LIBRARY TABLE — faceplate ===============================
+   REPLACES style.css:1368-1514 in full (the `.video-library-table` block, the
+   `.video-*` cell classes, `.usage-badge`, and the entire
+   `@media (max-width: 768px)` stacking block).
+
+   The old desktop table drew its own chrome — `border: 2px solid
+   var(--border-color)` (steel blue) with `background: var(--bg-dark)`. In the
+   faceplate that job belongs to the PANEL, not the table: see the
+   `#videoList, #romsList` rule in the appended block, which sinks the
+   container using remote.css:241-247. The table itself is now transparent.
+
+   The old 768px block is deleted rather than adjusted because its central
+   mechanism does not work: `td { padding-left: 50% }` (was l.1489) paired with
+   `td:before { content: attr(data-label) }` (was l.1493) assumes a data-label
+   attribute that manager.js never emits — the two renderers write plain
+   `<td class="video-title">` (manager.js:1515-1526) and
+   `<td class="video-title">` (manager.js:2286-2291). Between 601px and 768px
+   that produced a 50%-wide blank gutter on every cell with no label in it.
+   Labels are generated from the cell CLASSES below instead.
+
+   Both tables share the same class names, so the two containers disambiguate
+   them: #videoList (index.html:271, filled at manager.js:1436) and #romsList
+   (index.html:405, filled at manager.js:2254). `.video-artist` is the Artist
+   column in one and the System column in the other. */
+
+.video-library-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+}
+
+.video-library-table thead {
+    background: transparent;
+}
+
+/* Column captions use remote.css:264 (`.kind`) verbatim in grammar: tiny,
+   heavily tracked, uppercase, gold. This is the faceplate's label voice and
+   it recurs below as the mobile card's generated field label, so the two
+   layouts read as the same object. */
+.video-library-table th {
+    padding: 0 10px 9px;
+    text-align: left;
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent, #F5BF42);
+    white-space: nowrap;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(245, 191, 66, 0.22);
+}
+
+.video-library-table td {
+    padding: 11px 10px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--fg, #F2E4D9);
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(242, 228, 217, 0.10);
+    vertical-align: middle;
+    overflow-wrap: anywhere;
+}
+
+.video-library-table tbody tr {
+    transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+/* Desktop-only hover. rgba(245,191,66,.05) is the same alpha the panel
+   texture uses for its top amber bloom (remote.css:132), so a hovered row
+   reads as the panel lighting up under the pointer rather than as a
+   different colour being painted on. */
+@media (hover: hover) and (pointer: fine) {
+    .video-library-table tbody tr:hover {
+        background: rgba(245, 191, 66, 0.05);
+        box-shadow: inset 3px 0 0 rgba(245, 191, 66, 0.55);
+    }
+}
+
+.video-library-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.video-title {
+    font-weight: 400;
+    color: var(--fg, #F2E4D9);
+    letter-spacing: 0.01em;
+}
+
+.video-artist {
+    color: var(--dim, #968B85);
+    font-style: normal;          /* italic monospace is illegible at 13px */
+    letter-spacing: 0.04em;
+}
+
+.video-filename {
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--dim, #968B85);
+}
+
+.video-size {
+    text-align: right;
+    font-size: 12px;
+    color: var(--dim, #968B85);
+    font-variant-numeric: tabular-nums;   /* remote.css:305, `.t` */
+    white-space: nowrap;
+}
+
+.video-usage {
+    text-align: left;
+}
+
+/* ── The usage badge as a light-pipe slot ──────────────────────────────
+   Was a solid pill: `.in-use { background: var(--success) }` /
+   `.unused { background: var(--error) }` at 12px radius (old l.1437-1453).
+   Two things were wrong with it in this language. The panel has no filled
+   pills, and "not in a playlist" is not an error — it is an UNLIT state.
+   remote.css:395-401 gives the recipe: a recessed slot whose contents are
+   the host colour, lit or darkened.
+     lit   var(--success) on var(--well)  = 11.03:1
+     unlit var(--dim)     on var(--well)  =  5.73:1
+   The ✓ / ⚠ glyphs are inside the text manager.js emits (lines 1521-1522),
+   so the non-colour cue survives untouched. */
+.usage-badge {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 4px 9px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: var(--well, #150F0A);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.75);
+    overflow-wrap: anywhere;
+}
+
+.usage-badge.in-use {
+    color: var(--success, #66DD7A);
+}
+
+.usage-badge.unused {
+    color: var(--dim, #968B85);
+}
+
+.video-actions {
+    text-align: right;
+    white-space: nowrap;
+}
+
+/* ── Delete: the lip button, remote.css:471-474 ────────────────────────
+   SCOPED to .video-library-table on purpose. `.btn-remove` is reused outside
+   tables — manager.js:3404 `cancelBtn.className = 'btn-remove'` — so the
+   generic rule at style.css:803 must keep working. Specificity here is
+   (0,2,0) and cannot leak.
+   The pip is a ::before, never a child: manager.js:4290 reads
+   `e.target.classList.contains('btn-remove')`, and a child element would
+   become the event target. */
+.video-library-table .btn-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(234, 58, 39, 0.42);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    background: linear-gradient(180deg, #39323A, #241F25);
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    color: var(--hot, #EA3A27);
+    color: color-mix(in srgb, var(--hot, #EA3A27) 62%, var(--fg, #F2E4D9));
+    transition: transform 60ms ease, box-shadow 60ms ease,
+                border-color 120ms ease;
+}
+
+.video-library-table .btn-remove::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+    background: #6B1B14;                       /* remote.css:399, unlit red */
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.75);
+    transition: background 60ms, box-shadow 60ms;
+}
+
+.video-library-table .btn-remove:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, #4A4149, #2C262C);
+}
+
+.video-library-table .btn-remove:active::before {
+    background: #FFC2B4;
+    box-shadow: 0 0 10px 2px rgba(234, 58, 39, 0.9),
+                inset 0 0 4px #FFD9D0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .video-library-table .btn-remove:hover {
+        border-color: rgba(234, 58, 39, 0.85);
+        background: linear-gradient(180deg, #423A42, #2A242A);
+        color: color-mix(in srgb, var(--hot, #EA3A27) 62%, var(--fg, #F2E4D9));
+    }
+    .video-library-table .btn-remove:hover::before {
+        background: #A3291D;
+    }
+}
+
+
+/* ===== <= 768px — one card per row ========================================
+   Not horizontal scroll. The video table's own declared minimums
+   (manager.js:1495-1500: 150 + 120 + 200 + 80 + 200 + 80) total 830px, so at
+   320px a scrolling table is 2.6 screens of panning PER ROW. Cards win. */
+@media (max-width: 768px) {
+
+    .video-library-table {
+        display: block;
+        border: 0;
+    }
+
+    .video-library-table thead {
+        display: none;
+    }
+
+    .video-library-table tbody {
+        display: block;
+    }
+
+    /* THE CARD. `display: grid` — the !important is load-bearing
+       and is inherited from the rule this replaces (was style.css:2958
+       `display: flex !important`), NOT newly introduced. filterMainLibrary
+       (manager.js:2199-2207) writes `row.style.display = 'table-row'` as an
+       INLINE style on every search keystroke; without !important the card
+       collapses back into a table row mid-search.
+
+       The shadow is the keycap pocket at admin scale: a hard 3px ring of
+       var(--well) with zero blur (remote.css:386, reduced from 5px), a 3px
+       hard drop, and the 1px top highlight. Cards are RAISED because you act
+       on them; the panel they sit in is recessed. */
+    .video-library-table tr {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+        gap: 4px 12px;
+        align-content: start;
+        padding: 13px 14px 12px;
+        margin: 0 0 16px;
+        border: 1px solid rgba(245, 191, 66, 0.16);
+        border-radius: 4px;
+        background: linear-gradient(180deg, #2A232A, #1E191E);
+        box-shadow:
+            0 0 0 3px var(--well, #150F0A),
+            0 3px 0 3px rgba(0, 0, 0, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+
+    .video-library-table tbody tr:last-child {
+        margin-bottom: 4px;
+    }
+
+    .video-library-table td {
+        display: block;
+        min-width: 0;
+        padding: 0 !important;
+        border: 0 !important;
+        text-align: left !important;
+        background: none;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--fg, #F2E4D9);
+        overflow-wrap: anywhere;
+    }
+
+    /* FIELD LABELS. The header row is hidden, so every value needs its own
+       caption, in the same `.kind` voice as the desktop <th>. No `content`
+       here on purpose — a cell with no matching content rule below renders
+       no pseudo-element at all. */
+    .video-library-table td::before {
+        display: block;
+        margin-bottom: 2px;
+        font-size: 9px;
+        font-weight: 400;
+        letter-spacing: 0.10em;
+        text-transform: uppercase;
+        color: var(--dim, #968B85);
+    }
+
+    /* Disambiguated by container: `.video-artist` is Artist in the video
+       table (manager.js:1516) and System in the ROM table (manager.js:2287). */
+    #videoList .video-library-table td.video-artist::before   { content: "Artist"; }
+    #videoList .video-library-table td.video-filename::before { content: "File"; }
+    #videoList .video-library-table td.video-usage::before    { content: "Used in"; }
+    #romsList  .video-library-table td.video-artist::before    { content: "System"; }
+    .video-library-table td.video-size::before                { content: "Size"; }
+
+    /* Card headline. ZenDots earns its width here in a way it never does in a
+       dense desktop row. The divider is remote.css:229-232 (`.rule`) — a
+       cream hairline that fades out at the trailing edge — drawn as a
+       background layer so no extra element is needed. */
+    .video-library-table td.video-title {
+        grid-column: 1 / -1;
+        font-family: "ZenDots", 'Zen Dots', sans-serif;
+        font-size: 15px;
+        line-height: 1.3;
+        letter-spacing: 0.01em;
+        color: var(--fg, #F2E4D9);
+        margin-bottom: 10px;
+        padding-bottom: 10px !important;
+        background-image: linear-gradient(90deg,
+                          rgba(242, 228, 217, 0.20),
+                          rgba(242, 228, 217, 0.20) 84%,
+                          transparent);
+        background-repeat: no-repeat;
+        background-size: 100% 1px;
+        background-position: 0 100%;
+    }
+
+    .video-library-table td.video-title::before {
+        content: none;
+    }
+
+    .video-library-table td.video-size {
+        text-align: left !important;
+    }
+
+    .video-library-table td.video-usage {
+        grid-column: 1 / -1;
+        margin-top: 6px;
+    }
+
+    .video-library-table td.video-usage .usage-badge {
+        display: inline-flex;
+    }
+
+    /* Actions: full-width bar at the foot of the card, above the 44px floor. */
+    .video-library-table td.video-actions {
+        grid-column: 1 / -1;
+        margin-top: 12px;
+        text-align: left !important;
+    }
+
+    .video-library-table td.video-actions::before {
+        content: none;
+    }
+
+    .video-library-table .btn-remove {
+        display: flex;
+        width: 100%;
+        min-height: 44px;
+        font-size: 12px;
+    }
+}
+
+/* --- .playlist-empty-state / .playlist-empty-state p / .playlist-empty-state .hint  (REPLACES style.css:2575-2593, i.e. the "/ * Empty state * /" comment through the `.hint` rule) --- */
+/* ── Playlist editor empty state ───────────────────────────────────────
+   REPLACES style.css:2575-2593. The old rule was three lines of centred grey
+   text. Markup (index.html:185-188 and 338-341, unchanged) is:
+       <div class="playlist-empty-state" id="playlistEmptyState">
+         <p>Drag videos here from the library</p>
+         <p class="hint">or click "Add Empty Slot" below</p>
+       </div>
+   manager.js only ever sets `emptyState.style.display` on it (manager.js:1242),
+   so it is inert to restyle.
+   `opacity: 0.7` on the hint is deleted: multiplying opacity into an already
+   muted colour landed it at ~4.1:1. --dim on this surface is 5.38:1 at full
+   opacity. */
+.playlist-empty-state {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(340px, 88%);
+    text-align: center;
+    padding: 96px 16px 16px;
+    color: var(--dim, #968B85);
+    background-image: var(--mdb-cube);
+    background-repeat: no-repeat;
+    background-position: center 6px;
+    background-size: auto 74px;
+    pointer-events: none;          /* it sits over the drop target */
+}
+
+.playlist-empty-state p {
+    margin: 0 0 7px;
+    font-family: "ZenDots", 'Zen Dots', sans-serif;
+    font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: 0.03em;
+    color: var(--fg, #F2E4D9);
+}
+
+.playlist-empty-state .hint {
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 1;
+    color: var(--dim, #968B85);
+}
+
+/* --- .library-list and .library-item + descendants  (REPLACES style.css:2685-2744 — from `.library-list {` through the closing brace of `.library-item .add-btn`. The two media blocks that follow at 2746-2762 are NOT touched.) --- */
+/* ── Library list — a recessed rack of routed slots ────────────────────
+   REPLACES style.css:2685-2744. The two media blocks immediately after
+   (style.css:2746-2753 hover-reveal, 2755-2762 coarse-pointer 44px) are
+   DELIBERATELY LEFT IN PLACE — both carry a documented rationale about iOS
+   drag-and-drop and both still do the right thing against these rules.
+   Containers: #libraryList (index.html:212) and #romLibraryList
+   (index.html:365); manager.js reaches them only via getElementById(...)
+   .innerHTML at 4718 and 4872. */
+.library-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.75);
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+/* Each row is a small raised plate with a light pipe down its leading edge.
+   remote.css:395-401's law applies: the pipe's UNLIT colour is the host
+   surface darkened (#22201C, which is `.cap.b .led` verbatim), never black
+   and never grey — tinted plastic, not a hole. */
+.library-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 6px 6px 6px 11px;
+    margin-bottom: 6px;
+    border: 1px solid rgba(245, 191, 66, 0.14);
+    border-radius: 3px;
+    cursor: grab;
+    background: linear-gradient(180deg, #2A232A, #201B20);
+    box-shadow: inset 3px 0 0 #22201C,
+                inset 0 1px 0 rgba(255, 255, 255, 0.07),
+                0 2px 0 rgba(0, 0, 0, 0.45);
+    transition: border-color 120ms ease, background 120ms ease,
+                box-shadow 120ms ease, opacity 120ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .library-item:hover {
+        border-color: rgba(245, 191, 66, 0.42);
+        background: linear-gradient(180deg, #322A32, #241E24);
+    }
+}
+
+/* Already in the playlist: the pipe LIGHTS, and the row dims so it is
+   visibly not the next thing to act on. Two independent cues, one of which
+   is not colour. */
+.library-item.in-playlist {
+    opacity: 0.55;
+    box-shadow: inset 3px 0 0 var(--success, #66DD7A),
+                inset 0 1px 0 rgba(255, 255, 255, 0.07),
+                0 2px 0 rgba(0, 0, 0, 0.45);
+}
+
+.library-item.hidden {
+    display: none;
+}
+
+.library-item .video-icon {
+    flex: none;
+    margin-right: 0;
+    font-size: 13px;
+    line-height: 1;
+}
+
+.library-item .video-name {
+    flex: 1;
+    min-width: 0;
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    letter-spacing: 0.01em;
+    color: var(--fg, #F2E4D9);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The lip button again, remote.css:471-474 — this time in green, because it
+   is constructive. 30px here is the MOUSE size; the untouched
+   @media (pointer: coarse) block at style.css:2756-2762 applies
+   `min-width: 44px; min-height: 44px`, and min-* outranks width/height, so a
+   phone gets a real 44x44 target with no change to that block. */
+.library-item .add-btn {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(102, 221, 122, 0.42);
+    border-radius: 3px;
+    cursor: pointer;
+    background: linear-gradient(180deg, #39323A, #241F25);
+    box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    color: var(--success, #66DD7A);
+    font-family: "DejaVuMono", 'Share Tech Mono', ui-monospace, monospace;
+    font-size: 16px;
+    line-height: 1;
+    /* Visible by default. The reveal-on-hover treatment below is applied
+       ONLY on true hover-capable (mouse) devices — on touch there is no
+       :hover, so hiding it made the +Add-to-playlist button (the only way
+       to add an item on a phone, since HTML5 drag-and-drop doesn't fire on
+       iOS touch) completely invisible and the core flow unusable. */
+    opacity: 1;
+    transition: opacity 0.15s, transform 60ms ease, box-shadow 60ms ease,
+                border-color 120ms ease;
+}
+
+.library-item .add-btn:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    background: linear-gradient(180deg, #4A4149, #2C262C);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .library-item .add-btn:hover {
+        border-color: rgba(102, 221, 122, 0.85);
+        background: linear-gradient(180deg, #423A42, #2A242A);
+    }
+}
+
+/* --- the "/ * ===== MOBILE LIBRARY CARD LAYOUT ===== * /" section inside @media (max-width: 600px)  (REPLACES style.css:2955-3059 — from that comment through the closing brace of `.video-library-table .btn-icon`, immediately before `.sub-tab {` at line 3060) --- */
+    /* ===== NARROW-PHONE TIGHTENING FOR THE LIBRARY CARDS =================
+       REPLACES style.css:2955-3059. That block was a SECOND, competing card
+       implementation; the card is now built once, at <= 768px, in the
+       .video-library-table section above. Only the things that genuinely
+       differ at phone width live here.
+
+       Everything deleted and why:
+         · `td:before { display: none !important }` (was l.2981) — it killed
+           the field labels. Labels are now generated per cell class.
+         · `td:not(:last-child):not(:first-child) { display: inline-block
+           !important }` (was l.2990) — ran Artist, File, Size and Usage
+           together on one line with nothing naming them. Replaced by the
+           two-track grid.
+         · `td:nth-child(2):has(img)` (was l.3020) — neither renderer emits an
+           <img>; `grep -n "<img" manager.js` finds nothing in either table
+           template. Dead.
+         · `td:first-child` / `td:last-child` positional rules (was l.3035,
+           l.3045) — replaced by class-based rules, which survive a column
+           order change.
+         · `.video-library-table .btn-icon` (was l.3055) — `.btn-icon` appears
+           zero times in index.html and zero times in manager.js. Dead. */
+
+    #videoList,
+    #romsList {
+        padding: 8px;
+    }
+
+    .video-library-table tr {
+        padding: 12px;
+        gap: 4px 10px;
+        margin-bottom: 14px;
+    }
+
+    .video-library-table td.video-title {
+        font-size: 14px;
+    }
+
+/* --- .playlist-card rules inside @media (max-width: 600px)  (REPLACES style.css:3092-3117 — the "/ * Playlist cards: full width with better spacing …* /" comment through the closing brace of `.playlist-card .playlist-actions button`) --- */
+    /* Playlist cards on a phone. .grid-list already forces a single column
+       (`grid-template-columns: 1fr !important`, style.css:2860), so only
+       density changes here.
+       The 3.5rem `padding-bottom` reserve this block used to put on
+       .playlist-meta is GONE: it existed solely to keep a long description
+       from running under the absolutely-positioned Edit/Delete buttons, and
+       those buttons are now in normal flow (see the .playlist-card rule
+       above). Keeping it would leave 56px of dead space at the foot of every
+       card.
+       40px -> 44px on the buttons: these two carry no class attribute
+       (manager.js:2628-2631), so no generic @media (pointer: coarse) rule in
+       this file has ever reached them. 44px is the WCAG 2.5.5 / Apple HIG
+       floor. */
+    .playlist-card {
+        padding: 13px 13px 12px;
+        gap: 8px;
+    }
+
+    .playlist-card::before {
+        left: 13px;
+        right: 13px;
+    }
+
+    .playlist-card .playlist-meta {
+        padding-bottom: 0;
+    }
+
+    .playlist-card .playlist-actions button {
+        min-height: 44px;
+        font-size: 11px;
+        padding: 0 8px;
+    }
+
+
+/* ============================================================================
+ * FACEPLATE LAYER — FEEDBACK & OVERLAYS
+ * ----------------------------------------------------------------------------
+ * Modals, toasts, progress, badges. Fixes a modal that overflowed off-screen
+ * at 320x640 with no max-height or scroll.
+ *
+ * Appended, not edited in place: cascade-correct at equal specificity,
+ * non-destructive, revertible by deleting this block. No class or id renamed —
+ * manager.js binds to many by name. :root untouched; five design areas each
+ * proposed a divergent rewrite, so the additive alias block above stays the
+ * single source of truth. Prose and quoted 'before' blocks from the generator
+ * have been wrapped as comments.
+ * ==========================================================================*/
+/* --- .modal, .modal.active --- */
+/* REPLACES style.css:1719-1734, which currently reads:
+
+     .modal {
+         display: none; position: fixed; z-index: 1000;
+         left: 0; top: 0; width: 100%; height: 100%;
+         background-color: rgba(0, 0, 0, 0.7);
+         align-items: center; justify-content: center;
+     }
+     .modal.active { display: flex; }
+
+   align-items:center with no overflow is the unanswerable-dialog bug: a
+   taller-than-viewport dialog overflows EQUALLY in both directions, putting
+   the title above y=0 and both buttons below the fold with nothing to scroll
+   and no backdrop left to tap. Measured at 320x640: modal-content height
+   812.4, top -86.2, bottom 726.2. */
+
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    inset: 0;
+    /* --bg at 82%, matching remote.css:503 .ra-overlay rgba(31,25,31,0.96).
+       The faceplate's overlay is warm near-black, never neutral #000. */
+    background-color: rgba(31, 25, 31, 0.82);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    /* flex-start + margin:auto on the child (next block). Auto margins cannot
+       resolve negative, so the dialog centres when there is room and pins to
+       the top — scrollable — when there is not. align-items:center cannot. */
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding:
+        max(env(safe-area-inset-top) + 16px, 24px)
+        calc(env(safe-area-inset-right) + 16px)
+        calc(env(safe-area-inset-bottom) + 24px)
+        calc(env(safe-area-inset-left) + 16px);
+}
+
+.modal.active {
+    display: flex;
+}
+
+/* --- .modal-content  (+ ::before cream rule) --- */
+/* REPLACES style.css:1736-1745, which currently reads:
+
+     .modal-content {
+         background: var(--bg-card);
+         border: 2px solid var(--accent2);
+         border-radius: 8px;
+         padding: 2rem;
+         max-width: 500px;
+         width: 90%;
+         box-shadow: 0 0 30px rgba(0, 0, 0, 0.5);
+         animation: modalPop 0.3s cubic-bezier(0.175,0.885,0.32,1.275);
+     }
+
+   The dialog is the one Content Manager surface that genuinely IS a faceplate:
+   bounded, floating, and where the product asks a serious question. It gets
+   the full two-ring bezel from remote.css:162-172 and the four-layer panel
+   texture from remote.css:130-134. */
+
+.modal-content {
+    position: relative;
+    flex: none;
+    /* auto margins centre with room, collapse to 0 without. See .modal above. */
+    margin: auto;
+    width: 100%;
+    max-width: 500px;
+    /* 28px clears the corner screws (13..24px) by 4px on every side. */
+    padding: 30px 28px;
+
+    background-color: var(--bg-lift);
+    /* remote.css:130-134, verbatim, in painting order:
+       L1 45deg cream hairlines  — the brushed highlight
+       L2 -45deg black hairlines — the opposing weave; L1xL2 at 90deg is what
+                                   reads as machined metal rather than noise
+       L3 top amber bloom        — single light source, upper area
+       L4 bottom black vignette  — sits the panel into the page */
+    background-image:
+        repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
+        repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+        radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
+        radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
+
+    /* OUTER RING — the gold pinstripe. The inset shadow is load-bearing: it
+       darkens the panel toward its own edge so the ring reads as a raised lip
+       rather than a drawn line (remote.css:165). Do not drop it. */
+    border: 1.5px solid var(--accent);
+    border-radius: 10px;
+    box-shadow:
+        0 0 10px rgba(245, 191, 66, .13),
+        inset 0 0 22px rgba(0, 0, 0, .5),
+        0 18px 44px rgba(0, 0, 0, .70);
+
+    animation: modalPop 220ms ease-out;
+}
+
+/* INNER RULE — the cream hairline, concentric with the gold at r-5
+   (remote.css:168-172). */
+.modal-content::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border: 1px solid rgba(242, 228, 217, .28);
+    border-radius: 5px;
+    pointer-events: none;
+}
+
+/* --- .modal-content h3::before/::after, .modal-actions::before/::after  — corner screws --- */
+/* ADD immediately after the .modal-content block above.
+
+   Four corner screws with NO markup change. The remote uses four empty
+   <span class="screw"> elements; here the four pseudo-elements of two
+   elements that exist in BOTH dialogs (an <h3> and a .modal-actions) stand in.
+   They are position:absolute against .modal-content, so out-of-flow: they do
+   not become flex items of .modal-actions and cannot disturb its layout.
+
+   JS SAFETY: showConfirmModal does `titleEl.textContent = title`
+   (manager.js:3825). textContent removes child NODES; pseudo-elements are not
+   nodes, so the two top screws survive every re-render.
+
+   Recipe is remote.css:175-178 verbatim — an 11px disc with an off-centre
+   radial highlight at 38%/32% (upper-left light source, agreeing with the
+   panel texture's L3 top bloom), a 1px inner white top-highlight and a 1px
+   black drop. The rotated ::after slot from remote.css:179-182 is omitted:
+   a pseudo-element cannot have its own pseudo-element. Everything else is
+   the reference exactly. */
+
+.modal-content > h3::before,
+.modal-content > h3::after,
+.modal-content .modal-actions::before,
+.modal-content .modal-actions::after {
+    content: "";
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 32%, #4A443E, #1A1714 70%);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,.14), 0 1px 2px rgba(0,0,0,.8);
+    pointer-events: none;
+    z-index: 1;
+}
+
+.modal-content > h3::before            { left: 13px;  top: 13px; }
+.modal-content > h3::after             { right: 13px; top: 13px; }
+.modal-content .modal-actions::before  { left: 13px;  bottom: 13px; }
+.modal-content .modal-actions::after   { right: 13px; bottom: 13px; }
+
+/* --- @keyframes modalPop, .modal-content h3, .modal-content p --- */
+/* REPLACES style.css:1747-1769, which currently reads:
+
+     @keyframes modalPop {
+         from { transform: scale(0.8); opacity: 0; }
+         to   { transform: scale(1);   opacity: 1; }
+     }
+     .modal-content h3 { color: var(--accent); margin-bottom: 1rem; font-size: 1.5rem; }
+     .modal-content p  { margin-bottom: 2rem; color: var(--text-primary); line-height: 1.5; }
+
+   The name modalPop is KEPT so nothing else in the file breaks.
+   `grep -n modalPop manager.js` -> no output, so the timing is JS-inert.
+   220ms rise + fade is the remote's surface-entrance step (remote.css:530
+   @keyframes toast-in). A scale overshoot also makes every measurement taken
+   during the animation wrong, which is what made the 320px overflow bug hard
+   to reproduce. */
+
+@keyframes modalPop {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+}
+
+.modal-content h3 {
+    font-family: "ZenDots", "Zen Dots", sans-serif;
+    font-weight: 400;
+    font-size: 17px;
+    line-height: 1.35;
+    letter-spacing: .04em;
+    color: var(--accent);
+    margin: 0 0 14px;
+}
+
+.modal-content p {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--fg);
+    margin: 0 0 18px;
+}
+
+.modal-content p:last-of-type {
+    margin-bottom: 22px;
+}
+
+.modal-content p strong {
+    color: var(--accent);
+    font-weight: 400;
+}
+
+/* --- .modal-actions, .modal-actions button --- */
+/* REPLACES style.css:1771-1779, which currently reads:
+
+     .modal-actions { display: flex; gap: 1rem; justify-content: flex-end; }
+     .modal-actions button { min-width: 100px; }
+
+   .modal-actions must stay position-static so its ::before/::after screws
+   resolve against .modal-content. Do not add position:relative here. */
+
+.modal-actions {
+    display: flex;
+    gap: 14px;
+    justify-content: flex-end;
+    align-items: stretch;
+}
+
+.modal-actions button {
+    flex: 0 1 auto;
+    width: auto;              /* .btn-primary/.btn-secondary carry width:100% */
+    min-width: 104px;
+    min-height: 48px;         /* > 44px floor, WCAG 2.5.5 / Apple HIG */
+    padding: 0 20px;
+    font-family: inherit;
+    font-size: 13px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: transform .05s ease, box-shadow .05s ease, background .12s ease;
+}
+
+/* Below 400px two buttons plus 'Confirm Reset' no longer fit on one row.
+   flex-direction: column, NOT column-reverse — visual order must keep matching
+   DOM order (Cancel first), WCAG 1.3.2. */
+@media (max-width: 400px) {
+    .modal-actions {
+        flex-direction: column;
+        gap: 12px;
+    }
+    .modal-actions button {
+        width: 100%;
+        min-height: 50px;
+    }
+}
+
+/* --- #modalCancel, #mbResetCancelBtn, #modalConfirm  — the two remote button tiers --- */
+/* ADD after the .modal-actions block.
+
+   The remote ships exactly two control tiers and both land here:
+     LIP  (.d / .ok, remote.css:469-476) — flat, 4px radius, 3px hard drop.
+           The lighter secondary tier. -> Cancel.
+     CAP  (.cap, remote.css:382-393)     — square, five-part shadow with a
+           routed --well pocket, travels 4px on :active.   -> Confirm.
+
+   id selectors (0,1,0,0) are used deliberately: they beat .btn-primary /
+   .btn-secondary without touching those shared classes, so this is scoped to
+   the dialogs only. If the controls pass lands an equivalent .btn-* keycap
+   tier, DELETE these two blocks and let the class rules apply instead. */
+
+#modalCancel,
+#mbResetCancelBtn {
+    background: linear-gradient(180deg, #39323A, #241F25);
+    color: var(--accent);
+    border: 0;
+    border-radius: 4px;
+    box-shadow: 0 3px 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
+}
+#modalCancel:active,
+#mbResetCancelBtn:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.10);
+}
+
+/* #modalConfirm is SHARED by Save Playlist and by every Delete flow
+   (manager.js:3900 / 3928 / 4041 all route through showConfirmModal, and
+   manager.js:3833 rebinds this one button's onclick each time). Green =
+   'safe, go' is therefore indefensible. Gold is the faceplate's attention
+   colour and is neutral between constructive and destructive.
+   Gradient is .cap.y verbatim, remote.css:389. */
+#modalConfirm {
+    background: linear-gradient(180deg, #F0C81C, #C79E06);
+    color: var(--bg);
+    border: 0;
+    border-radius: 0;              /* remote.css:14-17: the square corner was
+                                      sampled from the real panel. Load-bearing. */
+    font-weight: 400;
+    box-shadow:
+        0 0 0 4px var(--well),              /* 1. the routed pocket */
+        0 4px 0 4px rgba(0,0,0,.6),         /* 2. the key's own side wall */
+        0 8px 14px rgba(0,0,0,.6),          /* 3. cast shadow into the pocket */
+        inset 0 2px 0 rgba(255,255,255,.22),/* 4. top bevel */
+        inset 0 -3px 0 rgba(0,0,0,.32);     /* 5. bottom shade */
+}
+#modalConfirm:active {
+    transform: translateY(4px);
+    box-shadow:
+        0 0 0 4px var(--well),
+        0 1px 0 4px rgba(0,0,0,.6),
+        0 4px 9px rgba(0,0,0,.55),
+        inset 0 2px 0 rgba(255,255,255,.18),
+        inset 0 -2px 0 rgba(0,0,0,.32);
+}
+
+/* --- #mbResetModal …  — THE DESTRUCTIVE-ACTION CONFIRMATION PATTERN --- */
+/* ADD after the button tiers.
+
+   The whole pattern is CSS-only. No markup, no JS. It works because the
+   destructive dialog already has its own id and manager.js already toggles
+   `disabled` on its confirm button (manager.js:6151 sets it true on open,
+   6169 clears it when the typed text uppercases to 'RESET').
+
+   RULE 1 — a destructive dialog wears a HOT bezel instead of a gold one. */
+#mbResetModal .modal-content {
+    border-color: var(--hot);
+    box-shadow:
+        0 0 10px rgba(234, 58, 39, .16),
+        inset 0 0 22px rgba(0, 0, 0, .5),
+        0 18px 44px rgba(0, 0, 0, .70);
+}
+#mbResetModal .modal-content::before {
+    border-color: rgba(234, 58, 39, .26);
+}
+#mbResetModal .modal-content h3 {
+    color: var(--hot);
+}
+#mbResetModal .modal-content p strong {
+    color: var(--hot);
+}
+
+/* RULE 2 — the type-to-arm field is a recessed well (remote.css:241-247)
+   with monospaced, tracked-out caps, so RESET reads like a panel legend.
+
+   !important is required on background/border/color/font-family/padding ONLY
+   because index.html:551 carries a 5-property inline style block on this
+   input. Everything else needs no !important.
+
+   text-transform is VISUAL ONLY — input.value is unchanged, and manager.js:6169
+   already compares `input.value.trim().toUpperCase() !== 'RESET'`, so lowercase
+   entry was always accepted. No semantic change. */
+#mbResetConfirmInput {
+    background: linear-gradient(180deg, #151115, #1B161B) !important;
+    border: 1px solid rgba(245, 191, 66, .20) !important;
+    border-radius: 8px !important;
+    color: var(--fg) !important;
+    font-family: "DejaVuMono", ui-monospace, Menlo, monospace !important;
+    padding: 11px 13px !important;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+    font-size: 16px;          /* iOS auto-zoom floor. Currently unset -> 13.33px. */
+    min-height: 44px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    transition: border-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+#mbResetConfirmInput::placeholder {
+    color: var(--dim);
+    letter-spacing: .12em;
+}
+#mbResetConfirmInput:focus {
+    outline: none;
+    border-color: var(--accent) !important;
+    box-shadow: inset 0 2px 8px rgba(0,0,0,.75), 0 0 0 2px rgba(245,191,66,.35);
+}
+
+/* RULE 3 — THE ARMING. This is the whole pattern in six lines.
+   Disabled, the confirm button is a dead, unlit key (see the :disabled block
+   below, which greys it out over its inline red). The moment manager.js:6169
+   clears `disabled`, it lights as the RED KEYCAP — .cap.r verbatim,
+   remote.css:391 — and gains 4px of travel. The button visibly ARMS.
+
+   !important on background is required because index.html:552 carries
+   inline `style="background: var(--error); border-color: var(--error);"`. */
+#mbResetConfirmBtn:not(:disabled) {
+    background: linear-gradient(180deg, #D84234, #A82A20) !important;
+    color: var(--fg);
+    border: 0;
+    border-radius: 0;
+    box-shadow:
+        0 0 0 4px var(--well),
+        0 4px 0 4px rgba(0,0,0,.6),
+        0 8px 14px rgba(0,0,0,.6),
+        inset 0 2px 0 rgba(255,255,255,.22),
+        inset 0 -3px 0 rgba(0,0,0,.32);
+}
+#mbResetConfirmBtn:not(:disabled):active {
+    transform: translateY(4px);
+    box-shadow:
+        0 0 0 4px var(--well),
+        0 1px 0 4px rgba(0,0,0,.6),
+        0 4px 9px rgba(0,0,0,.55),
+        inset 0 2px 0 rgba(255,255,255,.18),
+        inset 0 -2px 0 rgba(0,0,0,.32);
+}
+
+/* RULE 4 — extend the same pattern to the trigger. index.html:529 already
+   inline-styles #mbResetBtn red; give it the hot recess instead of a flat
+   outline so the destructive control is distinguishable AT REST, not only
+   on :hover (which never fires on touch). */
+#mbResetBtn {
+    background: var(--well);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+}
+#mbResetBtn:hover {
+    box-shadow: inset 0 1px 3px rgba(0,0,0,.75), 0 0 0 1px rgba(234,58,39,.45);
+}
+
+/* --- :disabled / [disabled]  — currently ZERO disabled styling in 3643 lines --- */
+/* ADD near the button rules (anywhere after style.css:874 is fine; source
+   order does not matter because these carry !important).
+
+   `grep -n ":disabled\|\[disabled\]" style.css` -> no output. Every button in
+   this file sets its own background and colour, which fully overrides the UA's
+   default disabled look, so a disabled button today is indistinguishable from
+   a live one. manager.js toggles `.disabled` in 30 places — including
+   #mbConfigureBtn (manager.js:5622), which is disabled on load and is the
+   first control a new operator taps.
+
+   FACEPLATE LOGIC: a disabled key is a key with no travel and an unlit light
+   pipe. It keeps its pocket; it loses its face and its motion.
+
+   !important is required and correct here — the whole point of a disabled
+   style is that it must win, and two of the affected buttons
+   (#mbResetConfirmBtn index.html:552, #mbResetBtn index.html:529) carry
+   inline background/colour. */
+
+button:disabled,
+/* button[disabled], */
+input:disabled,
+select:disabled,
+textarea:disabled {
+    cursor: not-allowed;
+    color: var(--dim) !important;
+    background: var(--bg-lift) !important;
+    background-image: none !important;
+    border-color: rgba(150, 139, 133, .22) !important;
+    text-shadow: none !important;
+    /* pocket kept, face and travel removed */
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.05),
+        inset 0 -2px 0 rgba(0,0,0,.30) !important;
+    transform: none !important;
+    opacity: 1;
+}
+
+/* Kill every hover/active affordance while disabled — .btn-primary:hover
+   (style.css:830) currently still scales and glows on a disabled button. */
+button:disabled:hover,
+button:disabled:active,
+/* button[disabled]:hover, */
+/* button[disabled]:active { */
+    background: var(--bg-lift) !important;
+    background-image: none !important;
+    transform: none !important;
+    box-shadow:
+/* inset 0 1px 0 rgba(255,255,255,.05), */
+/* inset 0 -2px 0 rgba(0,0,0,.30) !important; */
+/* }   <- stray closer from a quoted 'before' block */
+
+/* --- .notification, .notification-{success,error,warning,info}, #notification-container --- */
+/* ADD at the END of style.css.
+
+   `grep -c "notification" style.css` -> 0. There are currently NO rules for
+   the toast at all; it is painted entirely by
+   `notification.style.cssText = ...` (manager.js:229-244) using twelve
+   hardcoded Bootstrap LIGHT-MODE hexes — #d4edda / #f8d7da / #fff3cd /
+   #d1ecf1 (manager.js:221-226). Those twelve are the only hardcoded colours
+   in all 236KB of manager.js, and they are the single most off-brand thing
+   in the Content Manager: pale pastel cards on a #1F191F panel.
+
+   WHY !important: author !important beats non-important inline style, so this
+   restyles the toast with NO JS edit. It is deliberately applied ONLY to paint
+   properties. `animation` is never declared outside the reduced-motion block
+   below, because manager.js:281 and :291 write
+   `notification.style.animation = 'slideOut 0.3s ease-in'` to dismiss — an
+   !important animation would freeze the exit.
+
+   See the SUGGESTION note: deleting the `colors` object and the cssText
+   assignment would let all of this drop the !important. That is a JS edit and
+   is out of scope here.
+
+   Model is .install-toast (remote.css:521-528): --bg-lift surface, 1px hued
+   border, 13px body, 12px radius. */
+
+.notification {
+    background: var(--bg-lift) !important;
+    background-image:
+        radial-gradient(120% 100% at 0% 0%, rgba(255,255,255,.03), transparent 60%) !important;
+    border: 1px solid rgba(242, 228, 217, .10) !important;
+    border-left: 3px solid var(--dim) !important;
+    color: var(--fg) !important;
+    padding: 12px 15px !important;
+    border-radius: 12px !important;
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+    max-width: 360px !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .45) !important;
+    /* whole toast is the dismiss target (manager.js:288) */
+    min-height: 44px;
+    letter-spacing: .01em;
+}
+
+/* Type accents. The left rule is the state; the icon carries the same hue.
+   No !important needed on the icon: manager.js:256 gives that span an inline
+   font-size and font-weight but NOT a colour, so a matching rule wins over
+   inheritance on its own. */
+.notification-success { border-left-color: var(--success) !important; }
+.notification-error   { border-left-color: var(--hot) !important; }
+.notification-warning { border-left-color: var(--accent) !important; }
+.notification-info    { border-left-color: var(--menu-blue) !important; }
+
+.notification > span:first-child {
+    font-size: 15px !important;
+    font-weight: 400 !important;
+    line-height: 1;
+    flex: none;
+    text-shadow: 0 0 8px currentColor;
+}
+.notification-success > span:first-child { color: var(--success); }
+.notification-error   > span:first-child { color: var(--hot); }
+.notification-warning > span:first-child { color: var(--accent); }
+.notification-info    > span:first-child { color: var(--menu-blue); }
+
+/* MOBILE. The container is inline-styled `top:20px; right:20px` with no left
+   (manager.js:204-213) and its child is max-width 350px, so at 320px the toast
+   starts at x = -50 and hangs off the left edge. Pin it to both gutters and
+   clear the notch. */
+@media (max-width: 600px) {
+    #notification-container {
+        left: 12px !important;
+        right: 12px !important;
+        top: calc(env(safe-area-inset-top) + 12px) !important;
+    }
+    .notification {
+        max-width: none !important;
+    }
+}
+
+/* --- .install-toast and friends --- */
+/* REPLACES style.css:3623-3643. The current block is correct in shape but
+   pastes six raw hexes that are token values:
+
+     background: #2A232A;  color: #F2E4D9;   <- --bg-lift, --fg
+     border: 1px solid #EA3A27;              <- --hot
+     .install-toast strong { color: #EA3A27; }
+     .install-toast a      { color: #F5BF42; }
+     .install-toast__sub   { color: #968B85; ... }   <- --dim
+
+   Same pixels, expressed in the shared vocabulary, so a future palette change
+   reaches it. Also aligns the border hue with remote.css:526, which uses
+   var(--accent) rather than the alarm colour for a coaching hint. */
+
+.install-toast {
+  position: fixed; left: 16px; right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  max-width: 560px; margin: 0 auto;
+  background: var(--bg-lift); color: var(--fg);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--accent);
+  font-size: 13px; line-height: 1.45;
+  z-index: 2000;
+  cursor: pointer;
+  min-height: 44px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  animation: install-toast-in 220ms ease-out;
+}
+.install-toast strong { color: var(--accent); font-weight: 400; }
+.install-toast a { color: var(--accent); text-decoration: underline; }
+.install-toast__sub { color: var(--dim); font-size: 12px; }
+@keyframes install-toast-in {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* --- all five progress-bar / progress-fill pairs --- */
+/* ADD at the END of style.css.
+
+   Five near-identical implementations exist (style.css:898, 992, 2009, 2183,
+   3475); .update-progress-fill and .transcode-progress-fill are byte-identical
+   including a duplicated @keyframes progress-shimmer. This unifies them
+   WITHOUT renaming anything, so all five querySelector sites keep working:
+     manager.js:1566,1819  '.transcode-progress-fill'
+     manager.js:2013,2378  '.batch-progress-fill'
+     manager.js:5066,5167,5366 '.update-progress-fill'
+     manager.js:3716-3748  fill.className = 'progress-fill …'
+
+   SOURCE-ORDER NOTE: appending at EOF is safe. Every state modifier
+   (.progress-fill.complete, .update-status.complete .update-progress-fill, …)
+   has specificity >= 0,2,0 and still wins over these 0,1,0 base rules.
+
+   THE TRACK IS A LIGHT-PIPE SLOT. remote.css:395-397 .led — a --well recess
+   with `inset 0 1px 3px rgba(0,0,0,.75)` — is exactly the right primitive:
+   a progress bar IS a light pipe filling up. */
+
+.progress-bar,
+.batch-progress-bar,
+.transcode-progress-bar,
+.update-progress-bar,
+.upload-progress-bar {
+    background: var(--well);
+    border: 1px solid rgba(245, 191, 66, .20);
+    border-radius: 2px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+}
+
+/* .progress-bar KEEPS its 40px height (style.css:902): createProgressBar
+   writes the filename INTO the fill as textContent (manager.js:3717), so
+   shrinking the track would clip the label. */
+
+.progress-fill,
+.batch-progress-fill,
+.transcode-progress-fill,
+.update-progress-fill,
+.upload-progress-fill {
+    background: var(--accent);
+    border-radius: 0;
+    /* lit light pipe: hot core + bloom, INSET so it survives overflow:hidden.
+       The old `box-shadow: 0 0 10px var(--accent)` on .progress-fill was
+       clipped by the track and never rendered. */
+    box-shadow: inset 0 0 4px rgba(255, 246, 216, .55);
+    transition: width .3s ease-out;
+}
+
+.progress-fill {
+    color: var(--bg);
+    font-weight: 400;
+    font-size: 13px;
+    letter-spacing: .04em;
+}
+
+/* Keeps the EXISTING @keyframes progress-shimmer (background-position
+   200% -> -200%) but swaps the blue/gold/green rainbow for a single specular
+   highlight travelling down a gold pipe. Nothing new is declared. */
+.transcode-progress-fill,
+.update-progress-fill {
+    background-color: var(--accent);
+    background-image: linear-gradient(90deg,
+        rgba(255,246,216,0) 0%, rgba(255,246,216,.45) 50%, rgba(255,246,216,0) 100%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: progress-shimmer 2s ease-in-out infinite;
+}
+
+/* THE UNLIT LAW (remote.css:397 .cap.y .led = #9C7F0D). An idle indicator is
+   the host colour DARKENED — tinted plastic, not a hole and not grey. This
+   replaces `.progress-fill.queued { background: var(--text-secondary) }`. */
+.progress-fill.queued {
+    background: #9C7F0D;
+    opacity: 1;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6);
+}
+
+.progress-fill.complete,
+.update-status.complete .update-progress-fill,
+.transcode-status.complete .transcode-progress-fill {
+    background: var(--success);
+    background-image: none;
+    box-shadow: inset 0 0 4px rgba(228, 253, 234, .60);
+}
+
+.progress-fill.error,
+.update-status.error .update-progress-fill {
+    background: var(--hot);
+    background-image: none;
+    box-shadow: inset 0 0 4px rgba(255, 217, 208, .55);
+}
+
+/* Barber-pole indeterminate, re-hued to the faceplate. width:100%!important
+   at style.css:3493 is untouched. */
+.upload-progress-fill.indeterminate {
+    background: repeating-linear-gradient(45deg,
+        #9C7F0D, #9C7F0D 10px, var(--accent) 10px, var(--accent) 20px);
+    background-size: 28px 28px;
+}
+
+/* --- .transcode-status, .update-status  — remove the pulsing halos --- */
+/* ADD at the END of style.css, immediately after the progress block.
+
+   style.css:1962 and 2146 both give these panels
+     animation: transcode-glow / update-glow 2s ease-in-out infinite alternate
+   which pulses a blue box-shadow from 5px to 15px forever. The faceplate has
+   no halos anywhere — grep for radial-gradient in remote.css finds only the
+   panel bloom and the screw heads, never a glow around a box. These become
+   recessed information wells (.disp, remote.css:241-247).
+
+   SOURCE-ORDER NOTE: .transcode-status.complete / .update-status.complete /
+   .error (style.css:2044+, 2260+) are 0,2,0 and still win, so the green and
+   red state tints survive exactly as they are. Only the base changes.
+   `animation: none` here also fixes a real bug: .transcode-status.complete
+   never sets animation:none, so the blue halo keeps pulsing after a
+   transcode has finished. */
+
+.transcode-status,
+.update-status {
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border: 1px solid rgba(245, 191, 66, .20);
+    border-radius: 8px;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+    animation: none;
+    padding: 13px 14px 14px;
+}
+
+.transcode-label,
+.update-label {
+    font-size: 13px;
+    font-weight: 400;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.transcode-details,
+.update-details {
+    font-size: 12px;
+    color: var(--dim);
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The spinning emoji stays (it is the only liveness cue on a long job) but
+   loses the extra pulse layered on top of it at style.css:2045. */
+.transcode-icon,
+.update-icon {
+    font-size: 15px;
+    filter: saturate(.8);
+}
+
+/* --- .connection-badge and its four state modifiers --- */
+/* REPLACES style.css:101-143 in full, which currently reads:
+
+     .connection-badge { ... border-radius: 20px; ... }
+     .connection-badge.disconnected { background: rgba(234,58,39,.15);
+                                      border: 1px solid rgba(234,58,39,.4);
+                                      color: var(--error); }
+     .connection-badge.connected    { ... rgba(102,221,122,...) ... }
+     .connection-badge.connected.wifi { ... rgba(88,132,177,...) ... }
+     .connection-badge.connected.usb  { ... rgba(245,191,66,...) ... }
+     .connection-badge .badge-icon { font-size: 1rem; }
+     .connection-badge.connected .badge-icon { animation: pulse 2s ease-in-out infinite; }
+
+   This is the .statusline component from remote.html:98-102 /
+   remote.css:248-256, applied to its direct Content Manager counterpart.
+   Three parts, consistent grammar: DOT (state) + LABEL (what) + a recessed
+   chip holding them.
+
+   JS SAFETY: updateConnectionBadge (manager.js:980-1010) does only
+     badge.classList.remove('disconnected'); .add('connected');
+     .remove('wifi','usb'); .add(isUSB ? 'usb' : 'wifi');
+     badge.querySelector('.badge-icon').textContent = icon;
+   All five class names and the .badge-icon element are preserved verbatim.
+   The dot I add is a ::before PSEUDO-element — not a DOM node — so
+   querySelector('.badge-icon') still returns the same span (index.html:34).
+
+   CONTRAST: --hot #EA3A27 on --well #150F0A measures 4.30:1, under the 4.5
+   floor at 12px. So the disconnected LABEL is --fg (13.9:1) and the DOT
+   carries the red. The other three states pass on --well easily
+   (--success 10.9:1, --accent 11.2:1, --menu-blue 8.5:1) and keep their hue. */
+
+.connection-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 0.75rem;
+    min-height: 34px;
+    padding: 6px 14px 6px 12px;
+    border-radius: 4px;                     /* was 20px — no pills on a faceplate */
+    background: var(--well);
+    border: 1px solid rgba(242, 228, 217, .10);
+    box-shadow: inset 0 2px 6px rgba(0, 0, 0, .75);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--fg);
+    transition: color 120ms ease-out, border-color 120ms ease-out;
+}
+
+/* THE DOT — remote.css:249-253 verbatim in geometry and glow. */
+.connection-badge::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--dim);
+    box-shadow: 0 0 7px rgba(150, 139, 133, .5);
+    transition: background 120ms, box-shadow 120ms;
+}
+
+/* Red is the ONLY state that animates — remote.css:252-253. */
+.connection-badge.disconnected {
+    border-color: rgba(234, 58, 39, .35);
+    color: var(--fg);
+}
+.connection-badge.disconnected::before {
+    background: var(--hot);
+    box-shadow: 0 0 7px rgba(234, 58, 39, .8);
+    animation: mdb-dot-pulse 1.2s infinite;
+}
+
+.connection-badge.connected {
+    border-color: rgba(102, 221, 122, .30);
+    color: var(--success);
+}
+.connection-badge.connected::before {
+    background: var(--success);
+    box-shadow: 0 0 7px rgba(102, 221, 122, .8);
+    animation: none;
+}
+
+.connection-badge.connected.wifi {
+    border-color: rgba(127, 176, 230, .30);
+    color: var(--menu-blue);
+}
+.connection-badge.connected.wifi::before {
+    background: var(--menu-blue);
+    box-shadow: 0 0 7px rgba(127, 176, 230, .8);
+}
+
+.connection-badge.connected.usb {
+    border-color: rgba(245, 191, 66, .35);
+    color: var(--accent);
+}
+.connection-badge.connected.usb::before {
+    background: var(--accent);
+    box-shadow: 0 0 7px rgba(245, 191, 66, .8);
+}
+
+/* The emoji stays (JS writes it) but stops competing with the dot, and stops
+   pulsing — motion is reserved for the alarm state. */
+.connection-badge .badge-icon {
+    font-size: 13px;
+    line-height: 1;
+    flex: none;
+    filter: saturate(.85);
+}
+
+@keyframes mdb-dot-pulse { 50% { opacity: .35 } }
+
+/* --- .count-badge, .library-count, .update-badge, .usage-badge, .restore-status, .health-value --- */
+/* ADD at the END of style.css.
+
+   Every one of these holds INFORMATION, so under the faceplate's one rule
+   they are all recessed, never raised. Same primitive as the progress track:
+   --well fill, 20-30% accent hairline, inset 0 1px 3px rgba(0,0,0,.75).
+
+   SOURCE ORDER: these are appended, so at equal specificity they win over
+   .usage-badge.in-use (style.css:1445), .restore-status.success (1836) and
+   .health-value.error (1896). Nothing is renamed; manager.js:1521-1522
+   (usage-badge), :4536 (restore-status className) and :4583-4647
+   (health-value) all keep emitting the same strings. */
+
+/* ── counter chips ───────────────────────────────────────────── */
+.count-badge,
+.library-count,
+.update-badge {
+    background: var(--well);
+    color: var(--accent);
+    border: 1px solid rgba(245, 191, 66, .28);
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: .06em;
+    font-variant-numeric: tabular-nums;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+}
+/* .count-badge's margin-left:auto (style.css:250) is NOT restated, so it
+   survives untouched. */
+.update-badge {
+    color: var(--success);
+    border-color: rgba(102, 221, 122, .30);
+    text-transform: uppercase;
+}
+
+/* ── usage badges ────────────────────────────────────────────── */
+.usage-badge {
+    display: inline-block;
+    background: var(--well);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    padding: 3px 9px;
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: .04em;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+}
+.usage-badge.in-use {
+    background: var(--well);
+    color: var(--success);
+    border-color: rgba(102, 221, 122, .30);
+}
+/* was `background: var(--error); color: var(--bg-dark)` — a solid ALARM-red
+   fill for the benign fact that a video is not in a playlist. --accent is the
+   faceplate's attention colour and matches the ⚠ glyph manager.js:1522
+   already emits. */
+.usage-badge.unused {
+    background: var(--well);
+    color: var(--accent);
+    border-color: rgba(245, 191, 66, .28);
+}
+
+/* ── restore / action status panes ───────────────────────────── */
+/* The .disp well plus a status dot. `display` is deliberately NOT declared:
+   .restore-status.visible { display: block } (style.css:1832) must keep
+   working, and #mbActionStatus / #mbConfigError are display-managed inline by
+   JS (manager.js:6104 `status.style.display = 'block'`). The dot is
+   inline-block so it renders correctly in a block OR a flex container. */
+.restore-status {
+    padding: 11px 13px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border: 1px solid rgba(245, 191, 66, .20);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+    color: var(--fg);
+}
+.restore-status::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+    margin-right: 9px;
+    vertical-align: 1px;
+    background: var(--dim);
+}
+.restore-status.success {
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border-color: rgba(102, 221, 122, .35);
+    color: var(--fg);
+}
+.restore-status.success::before {
+    background: var(--success);
+    box-shadow: 0 0 7px rgba(102, 221, 122, .8);
+}
+.restore-status.error {
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border-color: rgba(234, 58, 39, .35);
+    color: var(--fg);
+}
+.restore-status.error::before {
+    background: var(--hot);
+    box-shadow: 0 0 7px rgba(234, 58, 39, .8);
+    animation: mdb-dot-pulse 1.2s infinite;
+}
+.restore-status.loading {
+    background: linear-gradient(180deg, #151115, #1B161B);
+    border-color: rgba(245, 191, 66, .28);
+    color: var(--fg);
+}
+.restore-status.loading::before {
+    background: var(--accent);
+    box-shadow: 0 0 7px rgba(245, 191, 66, .8);
+    animation: mdb-dot-pulse 1.6s infinite;
+}
+
+/* ── health values ───────────────────────────────────────────── */
+/* Same dot vocabulary, so 'CPU 82.4°C' carries a red pip rather than being
+   distinguishable only by hue. --hot on --bg-card measures 3.72:1 as text, so
+   the error VALUE moves to --fg and the dot carries the alarm; --success
+   (10.4:1) and --accent (8.0:1) pass and keep their hue. */
+.health-value {
+    color: var(--fg);
+    font-weight: 400;
+    letter-spacing: .04em;
+    font-variant-numeric: tabular-nums;
+}
+.health-value.good::before,
+.health-value.warning::before,
+.health-value.error::before {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 7px;
+    vertical-align: 1px;
+}
+.health-value.good           { color: var(--success); }
+.health-value.good::before    { background: var(--success); box-shadow: 0 0 7px rgba(102,221,122,.8); }
+.health-value.warning        { color: var(--accent); }
+.health-value.warning::before { background: var(--accent);  box-shadow: 0 0 7px rgba(245,191,66,.8); }
+.health-value.error          { color: var(--fg); }
+.health-value.error::before   { background: var(--hot);     box-shadow: 0 0 7px rgba(234,58,39,.8);
+                                animation: mdb-dot-pulse 1.2s infinite; }
+.health-label { color: var(--dim); letter-spacing: .04em; }
+.health-row { border-bottom-color: rgba(242, 228, 217, .08); }
+
+/* --- .loading-overlay, .loading-spinner, .loading-title/.loading-status/.loading-details --- */
+/* ADD at the END of style.css.
+
+   Five call sites create these (manager.js:2939, 3006, 3081, 3207, 3960) and
+   all five are write-only — `overlay.className = 'loading-overlay'` then
+   innerHTML then appendChild. Nothing is ever read back:
+   `grep -n "getComputedStyle" manager.js` returns no output for the whole file. */
+
+.loading-overlay {
+    background-color: rgba(31, 25, 31, .96);   /* --bg at 96%, remote.css:503 */
+    background-image:
+        repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
+        repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+        radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
+        radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
+    padding:
+        calc(env(safe-area-inset-top) + 24px)
+        calc(env(safe-area-inset-right) + 20px)
+        calc(env(safe-area-inset-bottom) + 24px)
+        calc(env(safe-area-inset-left) + 20px);
+}
+
+/* The ring runs in the light-pipe recess and lights gold, rather than being a
+   grey ring with a gold notch. */
+.loading-spinner {
+    width: 56px;
+    height: 56px;
+    border: 3px solid var(--well);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,.75), 0 0 14px rgba(245, 191, 66, .25);
+    animation: spin 1s linear infinite;
+}
+
+.loading-title {
+    font-family: "ZenDots", "Zen Dots", sans-serif;
+    font-weight: 400;
+    font-size: clamp(16px, 4vw, 19px);
+    letter-spacing: .04em;
+    color: var(--accent);
+}
+.loading-status  { font-size: 13px; color: var(--fg); letter-spacing: .02em; }
+.loading-details { font-size: 12px; color: var(--dim); word-break: break-word; }
+
+/* Two of the five call sites (manager.js:2942 and 3009) skip .loading-content
+   entirely and emit `<div style="margin-top:1rem; color:white">Importing
+   playlist...</div>`. That white is inline, so !important on colour is the
+   only way to reach it without editing JS — and it is inert, because nothing
+   reads the element. The selector matches only class-less children, so it
+   cannot touch .loading-spinner or .loading-content. */
+.loading-overlay > div:not([class]) {
+    color: var(--fg) !important;
+    font-size: 13px;
+    letter-spacing: .02em;
+    text-align: center;
+    max-width: 90vw;
+}
+
+.upload-progress-text    { font-size: 12px; color: var(--dim); letter-spacing: .04em; }
+.upload-progress-percent { color: var(--accent); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+/* --- :focus-visible (scoped) and @media (prefers-reduced-motion: reduce) --- */
+/* ADD at the VERY END of style.css.
+
+   FOCUS: `grep -c "focus-visible" style.css` -> 0, and the only three
+   `outline: none` declarations (l.581, 1949, 2527) have no replacement. This
+   is scoped to the components in this pass so it cannot conflict with a
+   global rule from the design-system pass — if one lands, delete this block.
+   The ring is --fg, not --accent: gold on a gold keycap measures 1.02:1, so a
+   gold ring would be invisible on #modalConfirm. Cream reads on both the gold
+   cap and the dark panel. */
+.modal-content button:focus-visible,
+.modal-content input:focus-visible,
+.notification:focus-visible,
+.install-toast:focus-visible {
+    outline: 2px solid var(--fg);
+    outline-offset: 3px;
+    border-radius: 2px;
+}
+
+/* MOTION. The remote's whole animation inventory is five entries; this keeps
+   the app honest under the OS setting without removing the ONE piece of
+   motion that carries information. */
+@media (prefers-reduced-motion: reduce) {
+    .modal-content { animation: none; }
+
+    /* Blocks slideIn AND the JS-written slideOut (manager.js:281, 291). The
+       toast still disappears: the setTimeout removes it from the DOM after
+       300ms regardless of whether the animation ran. */
+    .notification { animation: none !important; }
+    .install-toast { animation: none; }
+
+    .connection-badge::before,
+    .restore-status.error::before,
+    .restore-status.loading::before,
+    .health-value.error::before { animation: none; }
+
+    .transcode-progress-fill,
+    .update-progress-fill { animation: none; background-image: none; }
+
+    .upload-progress-fill.indeterminate { animation: none; }
+
+    /* .loading-spinner DELIBERATELY keeps spinning. It is the only signal
+       that a multi-gigabyte upload is still alive; freezing it makes the app
+       look hung, which is worse than the motion. */
+}
+
+
+/* ============================================================================
+ * FACEPLATE LAYER — SHELL & NAV
+ * ----------------------------------------------------------------------------
+ * Bottom nav rail on phones — reachable one-handed, fits five keys at 320px.
+ *
+ * Appended, not edited in place: cascade-correct at equal specificity,
+ * non-destructive, revertible by deleting this block. No class or id renamed —
+ * manager.js binds to many by name. :root untouched; five design areas each
+ * proposed a divergent rewrite, so the additive alias block above stays the
+ * single source of truth. Prose and quoted 'before' blocks from the generator
+ * have been wrapped as comments.
+ * ==========================================================================*/
+/* --- body — style.css:38-45 --- */
+/* REPLACING style.css:38-45:
+     body {
+         background: var(--bg-dark);
+         color: var(--text-primary);
+         font-family: 'Share Tech Mono', 'IBM Plex Mono', 'DejaVu Sans Mono', monospace;
+         line-height: 1.6;
+         min-height: 100vh;
+         overflow-x: hidden;
+     }
+   Two changes only: the body face leads with the kiosk's own DejaVuMono
+   instead of Google's Share Tech Mono, and `background` moves off body onto
+   html (next block) so body cannot paint over the panel texture. Everything
+   else — line-height, min-height, overflow-x — is untouched; overflow-x:hidden
+   in particular is load-bearing and must stay. */
+body {
+    color: var(--fg);
+    font-family: "DejaVuMono", ui-monospace, Menlo, "DejaVu Sans Mono", monospace;
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* --- html, body::before — ADD immediately after the body rule --- */
+/* ── Faceplate surface, layer 1: the weave ─────────────────────────────
+   remote.css:130-134 paints all four texture layers on one element. Here the
+   stack is SPLIT by how each layer behaves when the document is 6000px tall:
+
+   The two repeating-linear-gradients TILE at a 3px period, so document height
+   is irrelevant — they go on the root, whose background propagates to the
+   canvas and covers overscroll. L1 is a 45deg cream hairline at 1.3% alpha,
+   L2 the opposing -45deg black weave at 20%; crossing at 90deg is what reads
+   as a machined surface rather than noise. Do not drop either.
+
+   remote.css:58-76 warns about two mis-registered copies of the texture. That
+   cannot happen here: exactly one element carries each layer. */
+html {
+    background-color: var(--bg);
+    background-image:
+        repeating-linear-gradient(45deg,  rgba(242, 228, 217, .013) 0 1px, transparent 1px 3px),
+        repeating-linear-gradient(-45deg, rgba(0, 0, 0, .20)        0 1px, transparent 1px 3px);
+}
+
+/* ── Faceplate surface, layer 2: the blooms ────────────────────────────
+   The two radial-gradients from remote.css:133-134 are VIEWPORT-registered —
+   a top amber bloom and a bottom shadow. Stretched over a 6000px document
+   they become invisible smears, so they ride a fixed pseudo-element instead
+   of background-attachment: fixed (which iOS Safari repaints badly on every
+   scroll frame).
+
+   z-index: -1 puts it above the canvas and below every in-flow child of body.
+   pointer-events: none means it can never intercept a tap. A pseudo-element
+   cannot be selected by querySelector, so this is invisible to manager.js. */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+        radial-gradient(130% 62% at 50% -8%,  rgba(245, 191, 66, .05), transparent 60%),
+        radial-gradient(120% 55% at 50% 108%, rgba(0, 0, 0, .5),       transparent 60%);
+}
+
+/* --- body::after — ADD immediately after body::before --- */
+/* ── The bezel: gold pinstripe + cream inner rule + four corner screws ──
+   Geometry lifted verbatim from remote.css:162-199 because it is already
+   proven against the iPhone display mask on this exact hardware class.
+
+   WHY FIXED, NOT AROUND .container: remote.css draws this on .screen, which
+   is min-height:100lvh — a bounded box. The Content Manager's document is
+   unbounded (#romsList renders hundreds of rows), so an absolute ring on
+   .container would be thousands of px tall and the bottom screws would land
+   far below the fold. Anchored to the viewport, the frame behaves like a real
+   bezel: content scrolls behind it and it never leaves.
+
+   WHY radius 46 AT inset 9: containment for a rounded rect inside the
+   display's rounded rect is  r + 3.4142*i >= R  (remote.css:136-160).
+   46 + 30.7 = 76.7, clearing every model up to the 16 Pro's 62pt. This app
+   is installable (index.html:19 apple-mobile-web-app-capable) and uses
+   viewport-fit=cover (index.html:9), so it genuinely runs edge-to-edge.
+
+   WHY outline FOR THE CREAM RULE: remote.css:168-172 uses a second absolute
+   element at inset 14 / radius 41. `outline-offset: -5px` draws exactly that
+   — 5px inside the 9px ring = 14px, and browsers keep outline radii
+   concentric, giving 46 - 5 = 41. One element, two rings, no extra markup.
+
+   WHY z-index 10001: above .loading-overlay (style.css:3426, z 10000), the
+   sticky mobile action bar and .install-toast (both z 2000), and .modal
+   (z 1000). The machine's frame is the frontmost thing on the panel, and with
+   pointer-events:none it can never block a control. */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 9px;
+    z-index: 10001;
+    pointer-events: none;
+    border: 1.5px solid var(--accent);
+    border-radius: 46px;
+    box-shadow: 0 0 10px rgba(245, 191, 66, .13), inset 0 0 22px rgba(0, 0, 0, .5);
+    outline: 1px solid rgba(242, 228, 217, .28);
+    outline-offset: -5px;
+
+    /* Four corner screws, remote.css:174-199 rebuilt as one inline SVG.
+       background-origin: border-box makes 19px here resolve to 28px from the
+       viewport — the remote's exact inset, which remote.css:187-196 proves
+       clears the cream rule by 4.1px inside the 46px corner arc.
+       The 28deg slot rotation is what keeps four screws from reading as four
+       dots. fill-opacity/stroke-opacity rather than rgba(): rgba() in an SVG
+       presentation attribute is outside SVG 1.1. */
+    background-origin: border-box;
+    background-repeat: no-repeat;
+    background-size: 12px 12px;
+    background-position: 19px 19px, right 19px top 19px, 19px bottom 19px, right 19px bottom 19px;
+    background-image:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E");
+}
+
+/* A 46px radius on a 2560px-wide window reads as a rounded television, not a
+   rack panel. Above phone widths the frame squares up; the screws are then
+   far inside the straight-edge zone so their clearance only improves. */
+@media (min-width: 701px) {
+    body::after { border-radius: 10px; }
+}
+
+/* --- @media (prefers-color-scheme: dark) — style.css:1290-1295 — MANDATORY, the texture does not survive without this --- */
+/* DELETE style.css:1290-1295 entirely:
+
+     /* Dark mode enhancements for OLED screens *\/
+     @media (prefers-color-scheme: dark) {
+         body {
+             background: #000;
+         }
+     }
+
+   Nearly every phone reports prefers-color-scheme: dark, so on the devices
+   this app is actually driven from, body paints an opaque #000 layer directly
+   over the html weave — the entire faceplate surface disappears. It also
+   silently replaces --bg #1F191F, the colour the whole design is built on,
+   with a value that is in neither palette. The app has exactly one theme and
+   --bg IS the OLED-friendly value. Replace with nothing. */
+
+/* --- header, header::before, header::after — style.css:56-82 --- */
+/* REPLACING style.css:56-82:
+
+     /* Header - scales based on screen size *\/
+     header {
+         text-align: center;
+         padding: 1.5rem 0 1rem;
+         border-bottom: 1px solid rgba(88, 132, 177, 0.3);
+         margin-bottom: 1.25rem;
+         position: relative;
+         background: transparent;
+     }
+     header::before,
+     header::after {
+         content: '';
+         position: absolute;
+         width: 60px;
+         height: 2px;
+         background: linear-gradient(90deg, transparent, var(--accent), transparent);
+         bottom: -1px;
+     }
+     header::before { left: 15%; }
+     header::after  { right: 15%; }
+
+   The steel-blue border-bottom and the two floating 60px gold dashes are
+   replaced by the remote's own header idiom: remote.html:93-97 pairs the
+   wordmark with .rule, a cream gradient hairline carrying a single gold pip
+   at centre (remote.css:233-241). Same two pseudo-elements, re-tasked. */
+header {
+    position: relative;
+    text-align: center;
+    padding: 1.5rem 0 1.25rem;
+    margin-bottom: 1.5rem;
+    background: transparent;
+    border-bottom: 0;
+}
+
+/* remote.css:233-237 — the rule */
+header::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent,
+        rgba(242, 228, 217, .20) 12%, rgba(242, 228, 217, .20) 88%, transparent);
+}
+
+/* remote.css:238-241 — the pip sitting on the rule */
+header::before {
+    content: '';
+    position: absolute;
+    left: 50%; bottom: 0;
+    width: 5px; height: 5px;
+    margin: 0 0 -2px -2.5px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 7px rgba(245, 191, 66, .55);
+    z-index: 1;
+}
+
+/* --- .header-logo — style.css:84-90 --- */
+/* REPLACING style.css:84-90:
+
+     /* Header logo image *\/
+     .header-logo {
+         max-width: clamp(250px, 55vw, 500px);
+         height: auto;
+         margin-bottom: 0.5rem;
+         filter: drop-shadow(0 0 20px rgba(245, 191, 66, 0.35));
+     }
+
+   Two changes.
+
+   (a) The 20px gold bloom goes. The faceplate has no halos anywhere —
+       remote.css:222 gives the wordmark drop-shadow(0 1px 2px rgba(0,0,0,.65)),
+       a physical drop shadow, which is what a silkscreened mark on a panel
+       actually does.
+
+   (b) The floor drops 250 -> 196px. This is a COLLISION FIX, not taste. At a
+       320px viewport the old clamp resolves to its 250px minimum; centred,
+       that spans x = 35..285, and the top-left corner screw occupies
+       x = 28..39 / y = 28..39 — a 4px overlap. 196px spans x = 62..258 and
+       clears it. 196 also lands near the remote's own 232px wordmark
+       (remote.css:222), so the two pages read at a comparable scale. */
+.header-logo {
+    display: block;
+    margin: 0 auto 10px;
+    max-width: clamp(196px, 56vw, 380px);
+    height: auto;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .65));
+}
+
+/* --- .subtitle — style.css:92-99 --- */
+/* REPLACING style.css:92-99:
+
+     .subtitle {
+         font-size: clamp(0.8rem, 2vw, 0.95rem);
+         color: var(--accent2);
+         letter-spacing: 0.15em;
+         text-transform: uppercase;
+         font-weight: 500;
+     }
+
+   --accent2 #5884B1 measures 4.40:1 on --bg and 3.59:1 on a panel face —
+   below the 4.5 body floor everywhere it is used as text. --dim is the
+   remote's own label colour and measures 5.20:1 on --bg. Fixed 11px rather
+   than a clamp: remote.css uses twelve integer px sizes and zero clamps for
+   type, stepping at breakpoints instead of scaling fluidly. */
+.subtitle {
+    font-family: "DejaVuMono", ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    color: var(--dim);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    font-weight: 400;
+}
+
+/* --- .connection-badge and its four state variants — style.css:100-135 --- */
+/* REPLACING style.css:100-135 (.connection-badge and the .disconnected /
+   .connected / .connected.wifi / .connected.usb variants). The base rule was:
+
+     .connection-badge {
+         display: inline-flex; align-items: center; gap: 0.5rem;
+         margin-top: 0.75rem; padding: 0.5rem 1rem;
+         border-radius: 20px; font-size: 0.85rem; font-weight: 500;
+         transition: all 0.3s ease;
+     }
+     .connection-badge.disconnected {
+         background: rgba(234, 58, 39, 0.15);
+         border: 1px solid rgba(234, 58, 39, 0.4);
+         color: var(--error);
+     }
+     ... .connected / .connected.wifi / .connected.usb the same shape ...
+
+   Two problems. The 20px pill is one of only two pill radii in a design
+   language whose keys are explicitly square. And --error on its own .15 tint
+   measures 3.65:1 — the WORST contrast in the app, on the indicator that
+   says "Not Connected".
+
+   The fix follows remote.css's own status grammar (remote.css:248-256): the
+   STATE lives in the colour of a marker, the TEXT stays legible. Label goes
+   to --fg (13.86:1 on the well fill) and the state colour moves to a 3px left
+   rail + the border, where a 3:1 non-text ratio is the correct bar and every
+   variant passes. The chip itself becomes the recessed .disp well
+   (remote.css:241-247) — a status readout is information, and in this system
+   information is sunk into the panel, not raised off it.
+
+   Every class name is preserved exactly: manager.js:1002-1006 does
+   classList.remove('disconnected') / add('connected') / remove('wifi','usb') /
+   add(isUSB ? 'usb' : 'wifi'). None of those strings changes. */
+.connection-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    min-height: 30px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    border: 1px solid rgba(245, 191, 66, .20);
+    border-left-width: 3px;
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+    color: var(--fg);
+    font-family: "DejaVuMono", ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    transition: border-color .12s ease;
+}
+
+.connection-badge.disconnected {
+    border-color: rgba(234, 58, 39, .35);
+    border-left-color: var(--hot);
+}
+
+.connection-badge.connected {
+    border-color: rgba(102, 221, 122, .35);
+    border-left-color: var(--success);
+}
+
+.connection-badge.connected.wifi {
+    border-color: rgba(88, 132, 177, .35);
+    border-left-color: var(--action);
+}
+
+.connection-badge.connected.usb {
+    border-color: rgba(245, 191, 66, .35);
+    border-left-color: var(--accent);
+}
+
+/* KEEP style.css:137-143 (.badge-icon font-size and the .connected pulse)
+   exactly as they are — manager.js:1008 and :1014 do
+   badge.querySelector('.badge-icon').textContent = icon, so the element and
+   its class must survive and its content is an emoji set from script. Only
+   the size is nudged to sit on the 11px label's cap height. */
+.connection-badge .badge-icon {
+    font-size: 13px;
+    line-height: 1;
+}
+
+/* --- .tabs, .tab, .tab:hover, .tab.active — style.css:364-399 (the top tab strip; desktop/tablet only after the mobile fix below) --- */
+/* REPLACING style.css:364-399:
+
+     /* Tab Navigation - horizontal scroll on mobile, regular on desktop *\/
+     .tabs {
+         display: flex; gap: 0.5rem; margin-bottom: 1.5rem;
+         overflow-x: auto; -webkit-overflow-scrolling: touch;
+         padding-bottom: 0.5rem;
+     }
+     .tab {
+         background: var(--bg-card); color: var(--text-primary);
+         border: 2px solid var(--border-color); padding: 0.75rem 1.5rem;
+         cursor: pointer; font-family: inherit; font-size: 1rem;
+         white-space: nowrap; transition: all 0.2s; flex-shrink: 0;
+         min-height: 44px;
+     }
+     .tab:hover {
+         background: var(--accent); color: var(--bg-dark);
+         box-shadow: 0 0 10px var(--accent);
+     }
+     .tab.active {
+         background: var(--accent); color: var(--bg-dark);
+         box-shadow: 0 0 15px var(--accent);
+     }
+
+   .tabs becomes the ROUTED POCKET the keys sit in — the .disp recessed-surface
+   recipe from remote.css:241-247 (accent-at-20% lip, #151115->#1B161B fill,
+   inset 0 2px 8px black). .tab becomes a keycap.
+
+   WHY THE LIP TIER, NOT THE FULL .cap: remote.css:382-393's five-layer cap is
+   built for a 62-96px key. At 44px in a dense admin nav its 5px pocket ring
+   and 9px 16px blur dominate. remote.css:469-472 already defines the lighter
+   second tier (.d / .ok) — linear-gradient(180deg,#39323A,#241F25) with
+   0 3px 0 rgba(0,0,0,.5) — and that is exactly the right weight here. The
+   var(--well) pocket ring is kept but reduced 5px -> 3px for the same reason.
+
+   WHY border-radius: 0: remote.css:14-17 records that the square corner was
+   sampled from a photograph of the real panel and is deliberate.
+
+   WHY ACTIVE IS NOT A GOLD FILL: the faceplate does not repaint a key when
+   you select it, it lights the pipe. remote.css:395-401 plus its comment give
+   the law — an unlit indicator is the HOST colour DARKENED, never black and
+   never grey. #4A3C12 is --accent darkened; lit is --accent with a bloom.
+
+   CONTRAST, measured against #2E2A30 (the midpoint of the face gradient):
+     --fg     #F2E4D9  11.33:1  <- inactive label
+     --accent #F5BF42   8.33:1  <- active label
+     --dim    #968B85   4.25:1  <- FAILS, which is why --dim is not used here
+   Selection is signalled twice (label colour AND lit pipe), so it is never
+   colour-only. */
+.tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 1.5rem;
+    padding: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 191, 66, .20);
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+}
+
+.tabs::-webkit-scrollbar { display: none; }
+
+.tab {
+    position: relative;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 18px 10px;
+    border: 0;
+    border-radius: 0;
+    background: linear-gradient(180deg, #39323A, #241F25);
+    color: var(--fg);
+    font-family: "DejaVuMono", ui-monospace, Menlo, monospace;
+    font-size: 13px;
+    letter-spacing: .06em;
+    white-space: nowrap;
+    cursor: pointer;
+    box-shadow:
+        0 0 0 3px var(--well),                 /* the routed pocket */
+        0 3px 0 3px rgba(0, 0, 0, .55),        /* the key's own height */
+        inset 0 1px 0 rgba(255, 255, 255, .10),/* top light catch */
+        inset 0 -2px 0 rgba(0, 0, 0, .30);     /* bottom face shading */
+    transition: transform .05s ease, box-shadow .05s ease, color .12s ease;
+}
+
+/* The LED light-pipe slot. remote.css:395-401 — tinted plastic, not a hole. */
+.tab::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 6px;
+    transform: translateX(-50%);
+    width: 40%;
+    min-width: 22px;
+    height: 4px;
+    border-radius: 2px;
+    background: #4A3C12;                        /* --accent, darkened = unlit */
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;
+}
+
+.tab.active { color: var(--accent); }
+
+.tab.active::after {
+    background: var(--accent);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), 0 0 8px rgba(245, 191, 66, .55);
+}
+
+/* The hover tier does not exist in remote.css — the remote is touch-only.
+   Invented here because the Content Manager is also driven from a laptop, and
+   gated so a phone tap can never leave a key stuck in a hover state. */
+@media (hover: hover) and (pointer: fine) {
+    .tab:hover           { background: linear-gradient(180deg, #443C45, #2B252C); }
+    .tab:hover::after    { background: #6B5518; }
+    .tab.active:hover::after { background: var(--accent); }
+}
+
+/* The key TRAVELS DOWN. 50ms is the remote's press tier (remote.css:392) —
+   deliberately faster than every other transition so it feels mechanical. */
+.tab:active {
+    transform: translateY(3px);
+    box-shadow:
+        0 0 0 3px var(--well),
+        0 0 0 3px rgba(0, 0, 0, .55),
+        inset 0 1px 0 rgba(255, 255, 255, .10),
+        inset 0 -2px 0 rgba(0, 0, 0, .30);
+}
+
+/* --- the two tab rules inside @media (max-width: 700px) — style.css:3573-3591 ONLY (leave the rest of that block alone) --- */
+/* REPLACING exactly these two rules at style.css:3573-3591, and nothing else
+   in that media block:
+
+     .tabs, [role="tablist"] {
+       display: flex;
+       gap: 8px;
+       overflow-x: auto;
+       padding: 8px 12px;
+       scroll-snap-type: x mandatory;
+       -webkit-overflow-scrolling: touch;
+       /* Hide horizontal scrollbar on phone *\/
+       scrollbar-width: none;
+     }
+     .tabs::-webkit-scrollbar, [role="tablist"]::-webkit-scrollbar { display: none; }
+     .tabs .tab, [role="tab"] {
+       flex: none;
+       scroll-snap-align: start;
+       min-height: 44px;
+       padding: 0 16px;
+       border-radius: 22px;
+       white-space: nowrap;
+     }
+
+   THIS IS THE BUG. `display: flex` here has specificity (0,1,0) and lives at
+   line 3573; `.tabs { display: none }` at line 2898 inside @media
+   (max-width: 600px) has the SAME specificity and comes EARLIER. Later wins,
+   so on every phone the top strip renders anyway and the user gets two
+   complete navigations for the same five destinations at once — a ~60px strip
+   plus an ~81px bottom bar, 22% of a 640px screen spent on redundant chrome.
+   The author's intended escape hatch is dead: `grep -rn "hide-mobile"` over
+   the whole web/ tree returns only style.css:3331 and style.css:3377, never
+   any HTML or JS.
+
+   Dropping `display` from this rule is the whole fix. .tabs then resolves to
+   `none` below 600 (line 2898) and inherits `flex` from the base rule above
+   601. No override, no !important, no new selector.
+
+   Also dropping: border-radius 22px (the second pill in the file, and this
+   band 601-700px now shows real keycaps), the padding (the base rule owns it),
+   and the [role="tablist"] / [role="tab"] halves. Those match zero elements
+   today — `grep -n "role=" index.html` returns four decorative hits, none of
+   them tab roles — and leaving them in is a trap: the moment anyone adds
+   role="tab" to .bottom-nav-item for accessibility, the bottom nav would
+   silently inherit a 22px pill radius and 0 16px padding from a rule written
+   for a different component. */
+@media (max-width: 700px) {
+  .tabs {
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs .tab {
+    scroll-snap-align: start;
+  }
+}
+
+/* --- .bottom-nav and .bottom-nav-item — style.css:3272-3330 (inside @media (max-width: 600px)); keep style.css:3266-3268 `.bottom-nav { display: none }` exactly as is --- */
+/* REPLACING style.css:3272-3330. The old block was glassmorphism — a blurred
+   translucent slab with steel-blue trim and 12px-radius pills:
+
+     .bottom-nav {
+         display: flex; position: fixed; bottom: 0; left: 0; right: 0;
+         background: rgba(43, 35, 43, 0.92);
+         backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+         border-top: 1px solid rgba(88, 132, 177, 0.4);
+         box-shadow: 0 -4px 20px rgba(0,0,0,0.4), 0 -1px 0 rgba(245,191,66,0.15);
+         z-index: 100; padding: 0.5rem 0.75rem; gap: 0.5rem;
+     }
+     .bottom-nav-item {
+         flex: 1; ... padding: 0.5rem 0.25rem; background: transparent;
+         border: none; color: var(--text-secondary); font-size: 0.75rem;
+         font-weight: 500; transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+         min-height: 56px; border-radius: 12px;
+     }
+     .bottom-nav-item:hover,
+     .bottom-nav-item.active {
+         color: var(--accent); background: rgba(38, 31, 38, 0.8);
+         box-shadow: inset 0 0 0 1px rgba(245, 191, 66, 0.2);
+     }
+     .bottom-nav-item.active {
+         background: rgba(245, 191, 66, 0.1);
+         box-shadow: inset 0 0 0 1px rgba(245,191,66,0.3), 0 0 12px rgba(245,191,66,0.15);
+     }
+     .bottom-nav-item .nav-icon { font-size: 1.4rem; margin-bottom: 0.3rem;
+                                  transition: transform 0.2s ease; }
+     .bottom-nav-item.active .nav-icon { transform: scale(1.1); }
+     .tabs.hide-mobile { display: none; }
+
+   Note that grouping :hover WITH .active is a live bug on touch: after a tap
+   the :hover state sticks on iOS, so the previously-tapped item keeps a gold
+   highlight next to the real one. The new hover tier is gated behind
+   (hover: hover) and (pointer: fine) and cannot do that.
+
+   Everything else mirrors the top strip: same lip gradient, same 3px
+   var(--well) pocket, same square corner, same LED pipe, same 3px travel —
+   because these are the same five destinations, and on a phone this IS the
+   navigation. .tabs.hide-mobile is dropped: `grep -rn "hide-mobile"` over the
+   whole web/ tree hits only CSS, never HTML or JS. */
+@media (max-width: 600px) {
+
+    /* The panel edge. Same weave as the page so the rail reads as part of the
+       same moulding, one step lighter (--bg-lift) so it reads as raised. The
+       gold hairline replaces the steel-blue one. */
+    .bottom-nav {
+        display: flex;
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 100;
+        gap: 8px;
+        /* 16px bottom (not 8) so the bezel's cream inner rule at 14px from the
+           viewport edge lands in padding rather than across the keys. env()
+           resolves to 0 on non-notched devices, so this is a no-op there —
+           and on an iPhone it is the only thing keeping the rail off the home
+           indicator. Today `grep -n "safe-area" style.css` returns exactly one
+           hit in the whole file (line 3625, .install-toast). */
+        padding: 8px 8px calc(16px + env(safe-area-inset-bottom));
+        background-color: var(--bg-lift);
+        background-image:
+            repeating-linear-gradient(45deg,  rgba(242, 228, 217, .013) 0 1px, transparent 1px 3px),
+            repeating-linear-gradient(-45deg, rgba(0, 0, 0, .20)        0 1px, transparent 1px 3px);
+        border-top: 1px solid rgba(245, 191, 66, .22);
+        box-shadow: 0 -1px 0 rgba(242, 228, 217, .08), 0 -10px 26px rgba(0, 0, 0, .55);
+    }
+
+    .bottom-nav-item {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        overflow: hidden;              /* clips a long label; box-shadow is ink
+                                          overflow and is unaffected */
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        min-height: 50px;
+        padding: 6px 2px 12px;
+        border: 0;
+        border-radius: 0;
+        background: linear-gradient(180deg, #39323A, #241F25);
+        color: var(--fg);
+        font-family: "DejaVuMono", ui-monospace, Menlo, monospace;
+        /* Fluid, floored at 9px. DejaVu Sans Mono advances 0.60205em, so the
+           longest label "Settings" is 8 x 0.60205 x fs. At 320px each item
+           gets 50.4px of content width and 9px gives 43.3px — 7px of slack.
+           At 414px the clamp tops out at 11px for 53.0px in 69.2px. */
+        font-size: clamp(9px, 2.7vw, 11px);
+        letter-spacing: .02em;
+        line-height: 1.1;
+        white-space: nowrap;
+        cursor: pointer;
+        box-shadow:
+            0 0 0 3px var(--well),
+            0 3px 0 3px rgba(0, 0, 0, .55),
+            inset 0 1px 0 rgba(255, 255, 255, .10),
+            inset 0 -2px 0 rgba(0, 0, 0, .30);
+        transition: transform .05s ease, box-shadow .05s ease, color .12s ease;
+    }
+
+    .bottom-nav-item::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: 5px;
+        transform: translateX(-50%);
+        width: 44%;
+        height: 3px;
+        border-radius: 2px;
+        background: #4A3C12;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, .75);
+        transition: background .06s, box-shadow .06s;
+    }
+
+    .bottom-nav-item.active { color: var(--accent); }
+
+    .bottom-nav-item.active::after {
+        background: var(--accent);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35), 0 0 8px rgba(245, 191, 66, .6);
+    }
+
+    .bottom-nav-item:active {
+        transform: translateY(3px);
+        box-shadow:
+            0 0 0 3px var(--well),
+            0 0 0 3px rgba(0, 0, 0, .55),
+            inset 0 1px 0 rgba(255, 255, 255, .10),
+            inset 0 -2px 0 rgba(0, 0, 0, .30);
+    }
+
+    /* The scale(1.1) on the active icon goes — the faceplate does not grow
+       things, it lights them. The pipe does that job. */
+    .bottom-nav-item .nav-icon {
+        font-size: 19px;
+        line-height: 1;
+    }
+}
+
+/* --- .container and header inside @media (max-width: 600px) — style.css:2865-2883 --- */
+/* REPLACING style.css:2865-2883:
+
+     /* Wider container margins *\/
+     .container { padding: 0.75rem; }
+
+     /* Compact header *\/
+     header { padding: 1rem 0; margin-bottom: 0.75rem; }
+
+     header h1 { font-size: 1.5rem; }
+
+     .subtitle { font-size: 0.875rem; }
+
+   The top padding is SCREW CLEARANCE, computed the same way remote.css:117-124
+   computes its own. The corner screws occupy y = 28..39 from the viewport.
+   With 30px of container padding the header box starts at 30 and its 1rem of
+   own padding puts the wordmark at y = 46 — exactly the floor remote.css picks,
+   and 7px clear of the screw's lower edge. In an installed PWA, where
+   env(safe-area-inset-top) is ~59 on a Dynamic Island phone, the max() takes
+   the env branch and nothing collides there either. In plain Safari the inset
+   is 0 and the 30px floor is what saves it — which is precisely the failure
+   mode remote.css:117-124 documents.
+
+   Side padding 18px rather than 12px so content clears the bezel's cream inner
+   rule at 14px with 4px of daylight. Costs 12px of the 320px width; nothing
+   depends on it — every wide region (both library tables, the tab strip) is
+   already inside its own overflow-x: auto container.
+
+   `header h1` is deleted: the header contains an <img>, a <p> and a <div>
+   (index.html:31-36). There has never been an h1 for it to match.
+
+   The .subtitle override is deleted so the 11px base size holds on phones. */
+@media (max-width: 600px) {
+    .container {
+        padding: max(env(safe-area-inset-top) + 10px, 30px) 18px 0.75rem;
+    }
+
+    header {
+        padding: 1rem 0 1rem;
+        margin-bottom: 1rem;
+    }
+}
+
+/* --- body and .container bottom padding inside @media (max-width: 600px) — style.css:3335-3343 --- */
+/* REPLACING style.css:3335-3343:
+
+     /* Add padding at bottom for fixed nav *\/
+     body { padding-bottom: 70px; }
+     .container { padding-bottom: 80px; }
+
+   The rail is now 8 (pad) + 3 (pocket ring) + 50 (key) + 3 + 3 (ring + drop)
+   + 16 (pad) = 83px plus the home-indicator inset, up from a measured 80.8px
+   flat. The old figures were already 10px short of the measured height AND
+   ignored the inset entirely, so the last row of any list sat under the rail
+   on a notched iPhone. */
+@media (max-width: 600px) {
+    body      { padding-bottom: 0; }
+    .container { padding-bottom: calc(95px + env(safe-area-inset-bottom)); }
+}
+
+/* --- .tab:focus-visible, .bottom-nav-item:focus-visible — ADD at the very end of style.css --- */
+/* ── Keyboard focus on the navigation ──────────────────────────────────
+   `grep -c "focus-visible" style.css` returns 0 for the whole file, and the
+   three :focus rules that do exist (lines 579, 1948, 2524) all begin with
+   `outline: none` — and only one of the three matches a selector that is on
+   the page. Tab focus is currently invisible, which the brief's "preserve
+   accessibility" constraint does not survive.
+
+   :focus-visible rather than :focus, so pointer and touch behaviour is exactly
+   unchanged — a mouse click on a key still shows no ring.
+
+   offset 4px clears the 3px var(--well) pocket ring, which is a spread-only
+   box-shadow and paints outside the border box. Gold is the faceplate's
+   attention colour and measures 10.2:1 on --bg. */
+.tab:focus-visible,
+.bottom-nav-item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+}
