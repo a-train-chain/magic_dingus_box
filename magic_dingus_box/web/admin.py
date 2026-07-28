@@ -286,6 +286,24 @@ def _validate_csrf_token(token: str | None) -> bool:
     return token in _csrf_tokens
 
 
+def _canonical_playlist_name(safe_name: str) -> str:
+    """Force a playlist filename to .yaml.
+
+    playlist_loader.cpp scans data/playlists/ with
+    `entry.path().extension() == ".yaml"` — a hard equality, so a .yml file is
+    invisible to the kiosk. The web admin accepted both, which meant a .yml
+    playlist saved with 200 OK, appeared in the Content Manager list, and then
+    simply never showed up on the TV, with nothing anywhere explaining why.
+
+    Normalising on WRITE keeps one canonical spelling on disk. The read and
+    delete paths deliberately do NOT call this: they must still be able to find
+    and remove a .yml file that predates this change.
+    """
+    if safe_name.lower().endswith(".yml"):
+        return safe_name[: -len(".yml")] + ".yaml"
+    return safe_name
+
+
 class _ExtractTooLarge(Exception):
     """Internal signal: a ZIP entry would push extraction past the byte cap.
 
@@ -1048,7 +1066,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                         # Sanitize filename
                         try:
-                            safe_name = _sanitize_filename(playlist_name, allowed_extensions=['.yaml', '.yml'])
+                            safe_name = _canonical_playlist_name(
+                                _sanitize_filename(playlist_name, allowed_extensions=['.yaml', '.yml']))
                         except ValueError:
                             errors.append(f"Invalid playlist filename: {playlist_name}")
                             continue
@@ -1182,7 +1201,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         try:
             print(f"Saving playlist: {name}", file=sys.stderr)
             # Sanitize filename to prevent path traversal
-            safe_name = _sanitize_filename(name, allowed_extensions=['.yaml', '.yml'])
+            safe_name = _canonical_playlist_name(
+                _sanitize_filename(name, allowed_extensions=['.yaml', '.yml']))
 
             # Accept JSON or YAML
             if request.is_json:
@@ -1406,7 +1426,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 output_name = original_filename
             
             try:
-                safe_name = _sanitize_filename(output_name, allowed_extensions=['.yaml', '.yml'])
+                safe_name = _canonical_playlist_name(
+                    _sanitize_filename(output_name, allowed_extensions=['.yaml', '.yml']))
             except ValueError as e:
                 return error_response("VALIDATION_ERROR", str(e))
             
