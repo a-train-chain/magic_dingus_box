@@ -286,6 +286,78 @@ def _validate_csrf_token(token: str | None) -> bool:
     return token in _csrf_tokens
 
 
+def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8",
+                       mode: int = 0o644) -> None:
+    """Write `content` to `path` so an interrupted write cannot corrupt it.
+
+    This matters more here than in an ordinary web app. The Magic Dingus Box is
+    a plug-it-in appliance with no shutdown ritual — it is powered off by pulling
+    the cord, routinely, and that can land in the middle of a save. A bare
+    Path.write_text() truncates the target and *then* streams into it, so losing
+    power part-way leaves a half-written playlist on the SD card.
+
+    The failure is silent, which is what makes it nasty: playlist_loader.cpp
+    parses each file in a try/catch and only logs to stderr on a parse error
+    (magic_dingus_box_cpp/src/app/playlist_loader.cpp), so a truncated playlist
+    does not surface an error anywhere the user can see — the playlist simply
+    stops appearing on the kiosk.
+
+    The sequence:
+      1. Write to a temp file in the SAME directory. os.replace is only atomic
+         within one filesystem, so /tmp is not a valid staging area.
+      2. fsync the file, so the bytes are actually on the card before anything
+         points at them.
+      3. os.replace onto the target — atomic, so a reader sees either the whole
+         old file or the whole new one, never a mixture.
+      4. fsync the *directory*, so the rename itself survives power loss. This
+         is the step most implementations omit; without it the rename can still
+         be lost even though the data was synced.
+
+    Args:
+        path: Destination file.
+        content: Text to write.
+        encoding: Text encoding.
+        mode: Permission bits. mkstemp creates 0600, which would make files
+            unreadable to other accounts; 0644 matches what write_text produced
+            under the default umask, so behaviour is unchanged for readers.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Never leave the staging file behind on failure — the directory these
+        # land in is scanned for playlists, and the dot-prefix plus .tmp suffix
+        # keeps a stray one from being mistaken for content even if unlink fails.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+    # Durability of the rename. Best-effort: some filesystems refuse to open a
+    # directory for fsync, and failing to sync is not a reason to fail a save
+    # that has already landed.
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
 def _sanitize_filename(name: str, allowed_extensions: Optional[list[str]] = None) -> str:
     """Sanitize filename to prevent path traversal attacks.
     
@@ -614,8 +686,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         app.config["SECRET_KEY"] = secret_path.read_text().strip()
     else:
         new_secret = secrets.token_hex(32)
-        secret_path.write_text(new_secret)
-        secret_path.chmod(0o600)  # readable only by the magic user
+        # mode=0600 from the moment it is visible. Writing then chmod-ing left a
+        # window in which the HMAC signing secret existed at the default 0644 —
+        # and this is the key that authenticates every paired phone. mkstemp
+        # creates at 0600 and the file only appears under its real name via the
+        # rename, so there is no such window here.
+        _atomic_write_text(secret_path, new_secret, mode=0o600)
         app.config["SECRET_KEY"] = new_secret
 
     # Phone Remote — status broadcaster (kiosk_status.json → WS push).
@@ -752,7 +828,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 info = {'device_id': str(uuid.uuid4())}
 
             info['device_name'] = new_name
-            device_info_file.write_text(json.dumps(info, indent=2))
+            _atomic_write_text(device_info_file, json.dumps(info, indent=2))
             return success_response(data={"device_name": new_name}, message="Device name updated")
         except Exception as e:
             return error_response("INTERNAL_ERROR", str(e), status=500)
@@ -1132,8 +1208,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     f"A playlist named '{safe_name}' already exists.",
                     status=409)
 
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(yaml_content)
+            _atomic_write_text(p, yaml_content)
             print(f"Successfully saved playlist: {safe_name} ({len(yaml_content)} bytes)", file=sys.stderr)
             return success_response(data={"filename": safe_name}, message="Playlist saved")
         except ValueError as e:
@@ -1338,8 +1413,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
             formatted_yaml = format_playlist_yaml(data)
             
             # Save
-            playlists_dir.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(formatted_yaml)
+            _atomic_write_text(output_path, formatted_yaml)
             
             item_count = len(data.get('items', []))
             print(f"Imported playlist: {safe_name} ({item_count} items)", file=sys.stderr)
@@ -1565,8 +1639,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
                 # Format and save playlist
                 formatted_yaml = format_playlist_yaml(playlist_data)
-                playlists_dir.mkdir(parents=True, exist_ok=True)
-                playlist_path.write_text(formatted_yaml)
+                _atomic_write_text(playlist_path, formatted_yaml)
 
                 item_count = len(playlist_data.get('items', []))
                 print(f"Imported package: {output_name} ({item_count} items, {videos_imported} videos)", file=sys.stderr)
@@ -2576,14 +2649,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write to a tempfile in the same dir, then atomic rename, so a crash
         # mid-write can't leave a partial .env.
-        tmp = path.with_suffix(path.suffix + ".tmp")
         lines = [f"{k}={v}" for k, v in env.items()]
-        tmp.write_text("\n".join(lines) + "\n")
-        try:
-            os.chmod(tmp, 0o600)
-        except Exception:
-            pass
-        tmp.replace(path)
+        # Was already tmp+rename, but with no fsync: the rename could survive a
+        # power cut while the contents behind it did not. This file holds the
+        # WireGuard private key and the qBittorrent password.
+        _atomic_write_text(path, "\n".join(lines) + "\n", mode=0o600)
 
     def _detect_timezone() -> str:
         """Best-effort host timezone detection; falls back to UTC."""
@@ -3536,9 +3606,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if d["id"] == device_id:
                     d["nickname"] = nickname
                     break
-            tmp_path = paired_path.parent / (paired_path.name + ".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2))
-            os.replace(tmp_path, paired_path)
+            _atomic_write_text(paired_path, json.dumps(data, indent=2))
             target = request.args.get("tab", "remote")
             return redirect(f"/?tab={target}", code=303)
 
