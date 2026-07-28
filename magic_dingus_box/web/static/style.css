@@ -6626,21 +6626,51 @@ body.faceplate .video-library-table .btn-remove:active::before {
    so it is inert to restyle.
    `opacity: 0.7` on the hint is deleted: multiplying opacity into an already
    muted colour landed it at ~4.1:1. --dim on this surface is 5.38:1 at full
-   opacity. */
+   opacity.
+
+   LAYOUT — this must stay IN FLOW. It was `position: absolute; top/left: 50%;
+   transform: translate(-50%,-50%)`, centring it over a container whose height
+   is set by the 35px header alone when there are no rows. The result was the
+   hint printing on top of the #/TITLE/ACTIONS row, with `padding-top: 96px`
+   added as a failed attempt to push clear of it.
+   In flow it is simply a sibling after <table>, so it lands below the header
+   and the container grows to fit — no overlap to correct for.
+   Note transform is reset explicitly: it applies to static elements too, so
+   merely changing `position` leaves the -50%/-50% shift behind and the box
+   still lands outside its parent. */
 body.faceplate .playlist-empty-state {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: min(340px, 88%);
+    position: static;
+    transform: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-height: 96px;
+    margin: 8px;
     text-align: center;
-    padding: 96px 16px 16px;
+    padding: 22px 16px;
+    border: 1px dashed rgba(245,191,66,.28);
+    border-radius: 4px;
+    background-color: rgba(0,0,0,.18);
     color: var(--dim, #968B85);
-    background-image: var(--mdb-cube);
-    background-repeat: no-repeat;
-    background-position: center 6px;
-    background-size: auto 74px;
-    pointer-events: none;          /* it sits over the drop target */
+    pointer-events: none;          /* never swallow the drop */
+}
+/* The cube art that used to sit above this text is gone: it was
+   `background-image: var(--mdb-cube)`, and --mdb-cube is defined nowhere in
+   this stylesheet — the single reference here was its only mention. So the
+   image resolved to `none` while `padding-top: 88px` went on reserving a
+   block of empty space for it, which read as the drop zone being oddly
+   top-heavy. Padding is now symmetric around the text that actually renders. */
+
+/* Belt and braces: if a row exists but JS has not yet cleared the hint, the
+   presence of a <tr> hides it. Deliberately :has(tbody tr) and NOT
+   :has(tbody:empty) — this tbody holds a comment plus whitespace (3 child
+   nodes), so :empty never matches it and the rule would silently never fire.
+   No !important: manager.js:1242 toggles display inline, and !important would
+   beat that and pin the hint on screen once items exist. */
+body.faceplate .playlist-table-container:has(tbody tr) .playlist-empty-state {
+    display: none;
 }
 
 body.faceplate .playlist-empty-state p {
@@ -9181,4 +9211,74 @@ body.faceplate .playlist-table .drag-handle {
   display: flex; align-items: center; justify-content: center;
   min-width: 44px; min-height: 44px;
   touch-action: none;
+}
+
+/* ============================================================================
+ * PLAYLIST EDITOR — action bar overflow and cramped rows
+ * ==========================================================================*/
+
+/* The fixed Save/Cancel bar ran 16px past the right edge. Measured:
+ * position fixed with left:16px AND right:16px, but an inherited `width: 100%`
+ * won — so instead of computing 390-32=358 it took the full 390 starting at
+ * x=16 and ended at 406. left/right can only size an element when width is
+ * auto; that is the whole fix. */
+
+
+/* The global keycap margin (3px 3px 6px, added so the well ring is not clipped)
+ * must not apply inside this bar: it stacks on top of the bar's own 12px flex
+ * gap and 16px padding, squeezing the keys and contributing to the overflow.
+ * The bar manages its own spacing, so it joins the exclusion list alongside the
+ * bottom rail and the table row actions. */
+body.faceplate .playlist-actions button,
+body.faceplate .playlist-header button { margin: 0; }
+
+/* Keys share the bar evenly rather than Save taking double width — at 390 wide
+ * `flex: 2` made Save 211px against Cancel's 123px, which read as lopsided
+ * rather than emphatic. Emphasis comes from the green face and the lit pipe. */
+body.faceplate .playlist-actions button { flex: 1 1 0; min-width: 0; }
+
+/* The sticky editor bar, at a specificity that actually wins.
+ *
+ * style.css:2977 is `.playlist-editor-container .playlist-header
+ * .playlist-actions` — (0,3,0) — declaring `left: 0; width: 100%`. An earlier
+ * attempt used `body.faceplate .playlist-actions` (0,2,1) and lost, which is
+ * why the bar kept measuring 390px starting at x=16 and ending at 406 on a
+ * 390 viewport. Matching the original chain and adding the body class gives
+ * (0,4,1), so this wins without !important.
+ *
+ * `width: auto` is the actual fix: left/right can only size a fixed element
+ * when width is auto. Everything else here is bezel and home-indicator
+ * clearance, which the original rule predates. */
+body.faceplate .playlist-editor-container .playlist-header .playlist-actions {
+  left: 16px;
+  right: 16px;
+  width: auto;
+  bottom: 16px;
+  border-radius: 4px;
+  padding-bottom: max(env(safe-area-inset-bottom), 8px);
+}
+/* The bar owns its own 12px gap and 16px padding; the global keycap margin
+   would stack on top and squeeze the keys. */
+body.faceplate .playlist-editor-container .playlist-header .playlist-actions button {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Search-field magnifier.
+ *
+ * This icon was briefly authored as `placeholder="<svg ...> Search ROMs..."`.
+ * An attribute value cannot contain markup — the nested double quote in
+ * `class="ic"` closed the placeholder early, so the field literally rendered
+ * `<svg class=` as its placeholder and the rest leaked out as body text. An
+ * <input> is a void element with no children, so an icon here has to come from
+ * CSS. Data URI rather than a <use> ref because background-image cannot
+ * reference a sprite symbol, and the fill is a literal (#968B85 = --dim);
+ * currentColor does not resolve inside a data URI. */
+body.faceplate .library-search {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23968B85' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='M15.5 15.5 21 21'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: 11px center;
+    background-size: 15px 15px;
+    padding-left: 34px;
 }

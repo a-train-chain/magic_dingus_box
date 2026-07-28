@@ -437,6 +437,7 @@ const MEDIA_CONFIG = {
         playlistItemsId: 'playlistTableBody',  // New table body
         playlistAvailableId: 'libraryList',    // New library list
         playlistEmptyId: 'playlistEmptyState', // New empty state
+        playlistCountId: 'playlistItemCount',  // "N items" under the table
         editorTitleId: 'videoPlaylistTitle',   // Title is now an input
         titleInputId: 'videoPlaylistTitle',
         curatorInputId: 'videoPlaylistCurator',
@@ -469,6 +470,7 @@ const MEDIA_CONFIG = {
         playlistItemsId: 'gamePlaylistTableBody',  // New table body
         playlistAvailableId: 'romLibraryList',     // New library list
         playlistEmptyId: 'gamePlaylistEmptyState', // New empty state
+        playlistCountId: 'gamePlaylistItemCount',  // "N items" under the table
         editorTitleId: 'gamePlaylistTitle',        // Title is now an input
         titleInputId: 'gamePlaylistTitle',
         curatorInputId: 'gamePlaylistCurator',
@@ -1226,7 +1228,11 @@ function renderPlaylistItems(type) {
     const config = MEDIA_CONFIG[type];
     const container = document.getElementById(config.playlistItemsId);
     const emptyState = document.getElementById(config.playlistEmptyId);
-    const countEl = document.getElementById('playlistItemCount');
+    // Per-type, not hardcoded: this function is shared by both editors, so a
+    // literal 'playlistItemCount' here wrote the VIDEO counter even when
+    // rendering games — leaving the games editor's own counter permanently
+    // reading "0 items" no matter how many ROMs were in the playlist.
+    const countEl = document.getElementById(config.playlistCountId);
     const items = config.getItems();
 
     // Update count
