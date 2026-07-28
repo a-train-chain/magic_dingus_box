@@ -9640,3 +9640,52 @@ body.faceplate .bottom-nav {
     gap: 20px;
   }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- The frame reads as a giant phone, and draws itself twice -----------
+   *
+   * Three separate defects, all in the bezel, all found by the desktop audit.
+   *
+   * 1. RADIUS. body.faceplate::before/::after carry 46px/41px corners. That is
+   *    a phone bezel, and at 1440x900 the console looks like an enormous
+   *    handset rather than a piece of equipment. An earlier author already
+   *    reached for 10px in a `@media (min-width: 701px)` rule targeting
+   *    `body::after` — but body.faceplate::after (0,2,1) outranks body::after
+   *    (0,0,1), so that rule never applied and the intent was lost. Restating
+   *    it at faceplate specificity finally lands it. 10 and 5 keep the two
+   *    rings concentric: the outer sits at inset 9, the inner at 14, so the
+   *    inner radius is the outer minus that 5px difference.
+   *
+   * 2. DOUBLE SCREWS. The screw heads are painted twice, ~5px apart — once by
+   *    the real .screw elements and once by a background-image on ::after. The
+   *    background positions were computed when that pseudo-element sat at a
+   *    different inset; moving it to 14px broke the arithmetic. The real
+   *    elements are the ones the slot rotation and z-order were tuned for, so
+   *    the painted copies go.
+   *
+   * 3. A THIRD HAIRLINE. The frame is meant to be two rings. A surviving
+   *    `outline` on ::after adds a duplicate cream ring just inside the inner
+   *    one, which is why the border looks thick and slightly muddled rather
+   *    than crisp. */
+  body.faceplate::before { border-radius: 10px; }
+  body.faceplate::after  {
+    border-radius: 5px;
+    background-image: none;
+    outline: 0;
+  }
+  /* The opaque matte must follow the inner ring exactly, or the corners show a
+   * sliver of page content outside the frame. */
+  html::after { border-radius: 5px; }
+
+  /* --- The loading scrim buried the whole faceplate -----------------------
+   * Both rings sit at z-index 9998 while .loading-overlay is 10000, so during
+   * an upload the scrim painted over the gold border and the console lost its
+   * frame entirely. Lifting the rings above it keeps the frame drawn while the
+   * scrim dims the content inside it, which is what a modal over a device
+   * panel should look like. The matte stays below the scrim so it still masks
+   * content, but never covers the rings. */
+  body.faceplate::before,
+  body.faceplate::after { z-index: 10001; }
+  html::after { z-index: 10000; }
+}
