@@ -1309,6 +1309,13 @@ function renderPlaylistItems(type) {
     const tbody = container;
     tbody.ondragover = function(event) { handlePlaylistDragOver(event, type); };
     tbody.ondrop     = function(event) { handlePlaylistDrop(event, type); };
+
+    // Touch equivalent of the above. HTML5 dnd does not fire on touch at all,
+    // so without this the ⋮⋮ handle is inert on a phone and — with the up/down
+    // arrows removed — there is no way to reorder a playlist on the device this
+    // page is primarily used from. Idempotent (on* properties), so re-running
+    // on every render rebinds rather than stacking handlers.
+    setupPlaylistTouchHandlers(type);
 }
 
 /**
@@ -4306,19 +4313,51 @@ function handleContentTouchEnd(e, playlistType) {
     }
 }
 
+/**
+ * Wire touch reordering for a playlist editor.
+ *
+ * This is the ONLY way to reorder on a phone — the rows carry `ondragstart`,
+ * and HTML5 drag-and-drop never fires on touch — so with the up/down arrows
+ * removed in favour of dragging, this path failing means a playlist cannot be
+ * reordered on the device the Content Manager is actually used from.
+ *
+ * It was failing two ways at once: this function was never called from
+ * anywhere, and it queried `.playlist-item`, a class the renderer does not
+ * emit (rows are `<tr data-index>`), so even when called it bound nothing.
+ *
+ * Delegated on the tbody rather than per row: renderPlaylistItems() replaces
+ * container.innerHTML on every change, which would drop per-row listeners
+ * after the first reorder. The tbody itself survives, so one binding holds.
+ *
+ * addEventListener, NOT `panel.ontouchstart = ...` as the sibling dragover/drop
+ * wiring uses. Touch on* properties are only real event-handler attributes when
+ * the UA has touch events enabled; where they are not, the assignment silently
+ * creates an ordinary expando — `typeof panel.ontouchstart` reads "function"
+ * and nothing ever fires. That is not merely a harness artifact: it makes the
+ * binding untestable anywhere without a touch stack, which is how this whole
+ * path went unnoticed in the first place.
+ *
+ * Bound once and latched on a data attribute, because addEventListener does
+ * stack: this runs on every render, and without the latch a playlist would
+ * accumulate one handler set per re-render and reorder N times per drag.
+ *
+ * @param {string} type - 'video' or 'game'
+ */
 function setupPlaylistTouchHandlers(type) {
-    // Add touch handlers for reordering playlist items in the specific panel
-    const panelId = MEDIA_CONFIG[type].playlistItemsId;
-    const panel = document.getElementById(panelId);
-    if (!panel) return;
+    const panel = document.getElementById(MEDIA_CONFIG[type].playlistItemsId);
+    if (!panel || panel.dataset.touchReorderBound === type) return;
 
-    const playlistItems = panel.querySelectorAll('.playlist-item');
+    panel.addEventListener('touchstart', (e) => handlePlaylistTouchStart(e, type), { passive: false });
+    panel.addEventListener('touchmove', (e) => handlePlaylistTouchMove(e, type), { passive: false });
+    panel.addEventListener('touchend', (e) => handlePlaylistTouchEnd(e, type), { passive: false });
+    panel.addEventListener('touchcancel', (e) => handlePlaylistTouchEnd(e, type), { passive: false });
 
-    playlistItems.forEach(item => {
-        item.addEventListener('touchstart', (e) => handlePlaylistTouchStart(e, type), { passive: false });
-        item.addEventListener('touchmove', (e) => handlePlaylistTouchMove(e, type), { passive: false });
-        item.addEventListener('touchend', (e) => handlePlaylistTouchEnd(e, type), { passive: false });
-    });
+    panel.dataset.touchReorderBound = type;
+}
+
+/** The row a touch gesture is acting on, resolved from the event target. */
+function playlistRowFromTouch(e) {
+    return e.target.closest ? e.target.closest('tr[data-index]') : null;
 }
 
 let touchReorderStartIndex = null;
@@ -4326,98 +4365,87 @@ let touchReorderCurrentIndex = null;
 let touchReorderType = null;
 
 function handlePlaylistTouchStart(e, type) {
-    // Don't start drag if tapping remove or edit buttons
-    if (e.target.classList.contains('btn-remove') || e.target.classList.contains('btn-edit')) {
-        return;
-    }
+    // Drags start ONLY from the ⋮⋮ handle. The row also holds the title and
+    // artist <input>s, and a press-anywhere drag would fight the keyboard —
+    // touching a field to type would arm a reorder instead. The handle is also
+    // the only element with `touch-action: none` (style.css), so it is the only
+    // place the browser will hand us the gesture rather than scrolling.
+    if (!e.target.closest || !e.target.closest('.drag-handle')) return;
 
-    const item = e.currentTarget;
-
-    // Start long press timer for reordering
-    longPressTimer = setTimeout(() => {
-        isDragging = true;
-        touchDragElement = item;
-        touchReorderStartIndex = parseInt(item.dataset.index);
-        touchReorderCurrentIndex = touchReorderStartIndex;
-        touchReorderType = type;
-
-        // Visual feedback
-        item.style.opacity = '0.5';
-        item.classList.add('dragging');
-
-        // Haptic feedback
-        if (navigator.vibrate) {
-            navigator.vibrate(50);
-        }
-
-        // Create floating clone
-        touchDragClone = item.cloneNode(true);
-        touchDragClone.style.position = 'fixed';
-        touchDragClone.style.pointerEvents = 'none';
-        touchDragClone.style.zIndex = '10000';
-        touchDragClone.style.opacity = '0.9';
-        touchDragClone.style.boxShadow = '0 10px 30px rgba(64, 255, 200, 0.5)';
-
-        const touch = e.touches[0];
-        touchDragClone.style.left = (touch.pageX - item.offsetWidth / 2) + 'px';
-        touchDragClone.style.top = (touch.pageY - item.offsetHeight / 2) + 'px';
-        touchDragClone.style.width = item.offsetWidth + 'px';
-
-        document.body.appendChild(touchDragClone);
-
-    }, 300);
+    const item = playlistRowFromTouch(e);
+    if (!item) return;
 
     const touch = e.touches[0];
     touchStartX = touch.pageX;
     touchStartY = touch.pageY;
+
+    // Start immediately rather than after a long press: the handle is a
+    // deliberate affordance, so a press on it is already an unambiguous intent
+    // to drag, and touch-action:none means it cannot be the start of a scroll.
+    isDragging = true;
+    touchDragElement = item;
+    touchReorderStartIndex = parseInt(item.dataset.index);
+    touchReorderCurrentIndex = touchReorderStartIndex;
+    touchReorderType = type;
+
+    item.style.opacity = '0.5';
+    item.classList.add('dragging');
+
+    if (navigator.vibrate) {
+        navigator.vibrate(50);
+    }
+
+    // Floating clone that follows the finger.
+    touchDragClone = item.cloneNode(true);
+    touchDragClone.style.position = 'fixed';
+    touchDragClone.style.pointerEvents = 'none';
+    touchDragClone.style.zIndex = '10000';
+    touchDragClone.style.opacity = '0.9';
+    touchDragClone.style.boxShadow = '0 10px 30px rgba(64, 255, 200, 0.5)';
+    // clientX/clientY, NOT pageX/pageY: the clone is position:fixed, so its
+    // coordinates are viewport-relative. Page coordinates include scroll
+    // offset, which would fling the clone off-screen by exactly scrollY on any
+    // scrolled page — and this list is normally reached by scrolling.
+    touchDragClone.style.left = (touch.clientX - item.offsetWidth / 2) + 'px';
+    touchDragClone.style.top = (touch.clientY - item.offsetHeight / 2) + 'px';
+    touchDragClone.style.width = item.offsetWidth + 'px';
+
+    document.body.appendChild(touchDragClone);
 }
 
 function handlePlaylistTouchMove(e, type) {
-    if (longPressTimer && !isDragging) {
-        const touch = e.touches[0];
-        const deltaX = Math.abs(touch.pageX - touchStartX);
-        const deltaY = Math.abs(touch.pageY - touchStartY);
+    if (!isDragging || !touchDragClone) return;
 
-        if (deltaX > 10 || deltaY > 10) {
-            clearTimeout(longPressTimer);
-            longPressTimer = null;
-        }
-        return;
-    }
+    e.preventDefault();
 
-    if (isDragging && touchDragClone) {
-        e.preventDefault();
+    const touch = e.touches[0];
+    touchDragClone.style.left = (touch.clientX - touchDragClone.offsetWidth / 2) + 'px';
+    touchDragClone.style.top = (touch.clientY - touchDragClone.offsetHeight / 2) + 'px';
 
-        const touch = e.touches[0];
-        touchDragClone.style.left = (touch.pageX - touchDragClone.offsetWidth / 2) + 'px';
-        touchDragClone.style.top = (touch.pageY - touchDragClone.offsetHeight / 2) + 'px';
+    const panel = document.getElementById(MEDIA_CONFIG[type].playlistItemsId);
+    if (!panel) return;
 
-        // Find which playlist item we're over (in the correct panel)
-        const panelId = MEDIA_CONFIG[type].playlistItemsId;
-        const panel = document.getElementById(panelId);
-        if (!panel) return;
+    // clientY against getBoundingClientRect(): both viewport-relative. This
+    // compared pageY (document-relative) with rect.top (viewport-relative), so
+    // once the page was scrolled at all the hit test pointed at a row scrollY
+    // pixels away from the finger — and this list sits well below the fold.
+    panel.querySelectorAll('tr[data-index]').forEach(item => {
+        const rect = item.getBoundingClientRect();
 
-        const playlistItemsElements = panel.querySelectorAll('.playlist-item');
+        if (touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+            const overIndex = parseInt(item.dataset.index);
 
-        playlistItemsElements.forEach(item => {
-            const rect = item.getBoundingClientRect();
-
-            if (touch.pageY >= rect.top && touch.pageY <= rect.bottom) {
-                const overIndex = parseInt(item.dataset.index);
-
-                if (overIndex !== touchReorderCurrentIndex && overIndex !== touchReorderStartIndex) {
-                    // Highlight potential drop position
-                    item.style.borderTop = '3px solid var(--accent2)';
-                } else {
-                    item.style.borderTop = '';
-                }
-
-                touchReorderCurrentIndex = overIndex;
+            if (overIndex !== touchReorderCurrentIndex && overIndex !== touchReorderStartIndex) {
+                item.style.borderTop = '3px solid var(--accent2)';
             } else {
                 item.style.borderTop = '';
             }
-        });
-    }
+
+            touchReorderCurrentIndex = overIndex;
+        } else {
+            item.style.borderTop = '';
+        }
+    });
 }
 
 function handlePlaylistTouchEnd(e, type) {
@@ -4466,7 +4494,7 @@ function handlePlaylistTouchEnd(e, type) {
         const panelId = MEDIA_CONFIG[type].playlistItemsId;
         const panel = document.getElementById(panelId);
         if (panel) {
-            panel.querySelectorAll('.playlist-item').forEach(item => {
+            panel.querySelectorAll('tr[data-index]').forEach(item => {
                 item.style.opacity = '';
                 item.style.borderTop = '';
                 item.classList.remove('dragging');
