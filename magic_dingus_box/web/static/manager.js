@@ -785,9 +785,9 @@ function updateMobileSettingsView() {
                         <div class="meta">${escapeHtml(currentDevice.local_ip)} • ${escapeHtml(currentDevice.hostname)}</div>
                     </div>
                     <div class="device-stats">
-                        <div>${currentDevice.stats?.playlists || 0} playlists</div>
-                        <div>${currentDevice.stats?.videos || 0} videos</div>
-                        <div>${currentDevice.stats?.roms || 0} ROMs</div>
+                        <div>${plural(currentDevice.stats?.playlists, 'playlist')}</div>
+                        <div>${plural(currentDevice.stats?.videos, 'video')}</div>
+                        <div>${plural(currentDevice.stats?.roms, 'ROM')}</div>
                     </div>
                 </div>
             `;
@@ -933,9 +933,9 @@ function displayDevices() {
                 </div>
             </div>
             <div class="device-stats">
-                <div>${device.stats?.playlists || 0} playlists</div>
-                <div>${device.stats?.videos || 0} videos</div>
-                <div>${device.stats?.roms || 0} ROMs</div>
+                <div>${plural(device.stats?.playlists, 'playlist')}</div>
+                <div>${plural(device.stats?.videos, 'video')}</div>
+                <div>${plural(device.stats?.roms, 'ROM')}</div>
             </div>
         </div>
     `).join('');
@@ -1733,7 +1733,7 @@ async function handleDirectUpload(input) {
         // to retry. Keep the panel up longer when something failed.
         detailsEl.textContent = failedNames.length
             ? `${parts.join(', ')} — ${failedNames.join('; ')}`
-            : (parts.join(', ') || `${completed} files processed`);
+            : (parts.join(', ') || `${plural(completed, 'file')} processed`);
     }
 
     // Wait a moment then hide — longer when there were errors to read.
@@ -2641,7 +2641,7 @@ async function loadExistingPlaylists() {
                         </div>
                     </div>
                     <div class="playlist-meta">
-                        By ${escapeHtml(pl.curator)} • ${pl.item_count} items
+                        ${playlistMetaLine(pl)}
                         ${pl.description ? `<br><em>${escapeHtml(pl.description)}</em>` : ''}
                     </div>
                 </div>
@@ -2663,7 +2663,7 @@ async function loadExistingPlaylists() {
                         </div>
                     </div>
                     <div class="playlist-meta">
-                        By ${escapeHtml(pl.curator)} • ${pl.item_count} items
+                        ${playlistMetaLine(pl)}
                         ${pl.description ? `<br><em>${escapeHtml(pl.description)}</em>` : ''}
                     </div>
                 </div>
@@ -2672,6 +2672,36 @@ async function loadExistingPlaylists() {
     } catch (e) {
         console.error('Failed to load playlists:', e);
     }
+}
+
+/**
+ * "1 item" / "2 items" — counts were interpolated as `${n} items` throughout,
+ * so every single-item case read "1 items".
+ *
+ * @param {number} n
+ * @param {string} noun singular form
+ * @returns {string}
+ */
+function plural(n, noun) {
+    const c = Number(n) || 0;
+    return `${c} ${noun}${c === 1 ? '' : 's'}`;
+}
+
+/**
+ * Byline + item count for a playlist card.
+ *
+ * Curator is optional and most imported playlists have none, which rendered a
+ * bare "By  • 5 items" — the word "By" attributed to nobody, with the stray
+ * separator still there. Drop the whole byline when there is no curator rather
+ * than leaving the label stranded.
+ *
+ * @param {{curator?: string, item_count: number}} pl
+ * @returns {string} HTML-safe meta line
+ */
+function playlistMetaLine(pl) {
+    const curator = (pl.curator || '').trim();
+    const byline = curator ? `By ${escapeHtml(curator)} &bull; ` : '';
+    return `${byline}${plural(pl.item_count, 'item')}`;
 }
 
 async function editPlaylist(filename, type) {
@@ -3151,9 +3181,9 @@ async function uploadPackage(file, type) {
                         let timeStr = "";
 
                         if (estSeconds > 60) {
-                            timeStr = `~${Math.ceil(estSeconds / 60)} mins`;
+                            timeStr = `~${plural(Math.ceil(estSeconds / 60), 'min')}`;
                         } else {
-                            timeStr = `~${estSeconds} seconds`;
+                            timeStr = `~${plural(estSeconds, 'second')}`;
                         }
 
                         statusEl.textContent = `Processing on device... (Est. time: ${timeStr})`;
@@ -3171,7 +3201,7 @@ async function uploadPackage(file, type) {
                 const response = JSON.parse(xhr.responseText);
                 const data = response.data;
                 showNotification(
-                    `Imported "${data.playlist_title}": ${data.item_count} items, ${data.videos_imported} videos uploaded`,
+                    `Imported "${data.playlist_title}": ${plural(data.item_count, 'item')}, ${plural(data.videos_imported, 'video')} uploaded`,
                     'success'
                 );
                 // Refresh both playlists and media lists
@@ -3183,7 +3213,7 @@ async function uploadPackage(file, type) {
             } else if (xhr.status === 409) {
                 // Already exists - ask to overwrite
                 const err = JSON.parse(xhr.responseText);
-                if (confirm(`Playlist already exists. Overwrite it?\n\n(${err.error?.details?.videos_imported || 0} videos were already imported)`)) {
+                if (confirm(`Playlist already exists. Overwrite it?\n\n(${plural(err.error?.details?.videos_imported, 'video')} already imported)`)) {
                     await uploadPackageOverwriting(file);
                 }
             } else {
@@ -3268,7 +3298,7 @@ async function uploadPackageOverwriting(file) {
                     const response = JSON.parse(xhr.responseText);
                     const data = response.data;
                     showNotification(
-                        `Imported "${data.playlist_title}": ${data.item_count} items, ${data.videos_imported} videos`,
+                        `Imported "${data.playlist_title}": ${plural(data.item_count, 'item')}, ${plural(data.videos_imported, 'video')}`,
                         'success'
                     );
                     await loadExistingPlaylists();
@@ -4654,7 +4684,7 @@ function displayHealthInfo(data) {
     if (data.content) {
         html += `<div class="health-row">
             <span class="health-label">Content</span>
-            <span class="health-value">${data.content.playlists} playlists, ${data.content.videos} videos, ${data.content.roms} ROMs</span>
+            <span class="health-value">${plural(data.content.playlists, 'playlist')}, ${plural(data.content.videos, 'video')}, ${plural(data.content.roms, 'ROM')}</span>
         </div>`;
     }
 

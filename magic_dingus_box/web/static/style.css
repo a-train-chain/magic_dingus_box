@@ -8899,11 +8899,23 @@ body.faceplate .container { max-width: 100%; overflow-x: hidden; }
  * load-bearing — flex items default to min-width:auto and refuse to shrink
  * below their content). Padding tightens and the label ellipsises rather than
  * overflowing. */
+/* The label must FIT, not merely ellipsise gracefully.
+ *
+ * At a fixed 12px, "My Playlists" measures 86.7px and needs 98.7px with the
+ * 6px padding, against the 98px a third of the strip gives at 375 wide — 0.7px
+ * over. So the ellipsis fired on a label that all but fits, and the tab read
+ * "My Playlis…". At 320 wide the share drops to ~80px and it clips hard.
+ *
+ * The strip gives each tab (100vw - 80px)/3. Scaling the type with the
+ * viewport keeps the longest label inside that at every width: 3.05vw is
+ * ~9.8px at 320 (text 70.5 + 8 padding = 78.5 of 80) and clamps to 12px from
+ * ~394 up, where there is room to spare. Padding tightens to 4px to buy the
+ * margin back. ellipsis stays as a backstop for a longer label in future. */
 @media (max-width: 700px) {
   body.faceplate .sub-tabs { overflow-x: visible; gap: 4px; }
   body.faceplate .sub-tab {
-    flex: 1 1 0; min-width: 0; padding-left: 6px; padding-right: 6px;
-    font-size: 12px; text-align: center;
+    flex: 1 1 0; min-width: 0; padding-left: 4px; padding-right: 4px;
+    font-size: clamp(9.5px, 3.05vw, 12px); text-align: center;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 }
