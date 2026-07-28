@@ -286,6 +286,44 @@ def _validate_csrf_token(token: str | None) -> bool:
     return token in _csrf_tokens
 
 
+def _derive_playlist_type(data: dict) -> str:
+    """Classify a playlist as 'game' or 'video' from its ITEMS.
+
+    The kiosk never reads the top-level `playlist_type` key — magic_dingus_box_cpp
+    /src/app/app_state.h derives everything from item source_types via
+    is_game_playlist() / is_video_playlist(), and main.cpp routes on those. The
+    web admin, by contrast, trusted `data.get('playlist_type', 'video')`, which
+    is only as good as the key being present.
+
+    It usually was not. Seven of the eight game playlists on the box carry no
+    playlist_type at all, so they all defaulted to "video" and appeared in the
+    Videos tab of the Content Manager. games_n64.yaml was the lone exception —
+    it was written later, with the key — which is why N64 was the only console
+    that showed up in the right place.
+
+    Mirrors is_game_playlist() exactly: a playlist is a game playlist when it has
+    items and EVERY item is emulated_game. A mixed playlist is a video playlist,
+    matching the kiosk, which sends it to the main video screen.
+
+    An empty playlist matches neither predicate on the kiosk (it appears
+    nowhere), so there is nothing to mirror; fall back to whatever the file
+    declares, and to 'video' if it declares nothing.
+    """
+    items = data.get('items') or []
+    if not isinstance(items, list) or not items:
+        declared = data.get('playlist_type')
+        return declared if declared in ('video', 'game') else 'video'
+
+    for item in items:
+        # A bare string item is a path, which playlist_loader.cpp forces to
+        # source_type "local" — i.e. a video.
+        if not isinstance(item, dict):
+            return 'video'
+        if item.get('source_type') != 'emulated_game':
+            return 'video'
+    return 'game'
+
+
 def _canonical_playlist_name(safe_name: str) -> str:
     """Force a playlist filename to .yaml.
 
@@ -501,7 +539,10 @@ def format_playlist_yaml(data: dict) -> str:
     
     # Playlist type (video or game). Quote like every other user-supplied
     # field — an unquoted value could inject newlines / extra YAML keys.
-    lines.append(f"playlist_type: {yaml_quote(data.get('playlist_type', 'video'))}")
+    # Derive rather than default to 'video'. Writing 'video' onto a playlist
+    # whose items are all games is what produced the mismatch this key is
+    # supposed to describe.
+    lines.append(f"playlist_type: {yaml_quote(data.get('playlist_type') or _derive_playlist_type(data))}")
     
     # Loop as lowercase boolean
     loop_value = 'true' if data.get('loop', False) else 'false'
@@ -1158,7 +1199,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     'description': data.get('description', ''),
                     'item_count': len(data.get('items', [])),
                     'loop': data.get('loop', False),
-                    'playlist_type': data.get('playlist_type', 'video'),
+                    'playlist_type': _derive_playlist_type(data),
                 })
             except Exception:
                 playlists.append({
