@@ -170,6 +170,95 @@ TEST_CASE("non-PS1 core emits no PCSX-ReARMed options",
     REQUIRE(output.str().empty());
 }
 
+// --- N64 -----------------------------------------------------------------
+// Every option key and value below was read out of the shipped
+// mupen64plus_next_libretro.so string table, not from memory. An invalid
+// value is silently ignored by the core, which would look like "the setting
+// did nothing" rather than an error — so these must stay exact.
+
+TEST_CASE("N64 core pins GLideN64 and the ARM64 dynarec",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Super Mario 64 (USA).z64");
+    const std::string config = output.str();
+
+    // GLideN64 (GLES3) is the only viable RDP path on V3D.
+    require_line(config, "mupen64plus-rdp-plugin = \"gliden64\"");
+    // ParaLLEl-RDP is a Vulkan compute renderer measured ~7x slower than the
+    // CPU on V3DV, and Angrylion is a software rasterizer. Either one turns
+    // a playable game into a slideshow, so neither may ever be selected.
+    REQUIRE(config.find("angrylion") == std::string::npos);
+    REQUIRE(config.find("parallel") == std::string::npos);
+
+    require_line(config, "mupen64plus-cpucore = \"dynamic_recompiler\"");
+    // Emulation speed is CPU-bound here; the spare A76 cores are free.
+    require_line(config, "mupen64plus-ThreadedRenderer = \"True\"");
+    require_line(config, "mupen64plus-Framerate = \"Original\"");
+}
+
+TEST_CASE("N64 core keeps framebuffer emulation on",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Conker's Bad Fur Day (USA).z64");
+    const std::string config = output.str();
+
+    // Conker, DK64, Perfect Dark, Majora's Mask and GoldenEye all render
+    // core effects through the framebuffer. With this off they don't render
+    // slightly wrong — they render not at all.
+    require_line(config, "mupen64plus-EnableFBEmulation = \"True\"");
+    require_line(config, "mupen64plus-EnableLODEmulation = \"True\"");
+}
+
+TEST_CASE("N64 core leaves the 8MB Expansion Pak enabled",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Donkey Kong 64 (USA).z64");
+    // Donkey Kong 64 and Majora's Mask REFUSE TO BOOT without the Expansion
+    // Pak, and Perfect Dark loses most of its content. Disabling extra
+    // memory must never be the default.
+    require_line(output.str(), "mupen64plus-ForceDisableExtraMem = \"False\"");
+}
+
+TEST_CASE("N64 renders at a Pi-5-safe internal resolution",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Mario Kart 64 (USA).z64");
+    const std::string config = output.str();
+    // 2x native (N64 is 320x240). The kiosk scales this into its 4:3
+    // viewport anyway, and N64 is the thermally sensitive tier on this
+    // board — resolution is the first thing to give back.
+    require_line(config, "mupen64plus-43screensize = \"640x480\"");
+    require_line(config, "mupen64plus-BilinearMode = \"standard\"");
+}
+
+TEST_CASE("parallel_n64 backup core gets the same N64 contract",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "parallel_n64_libretro",
+                                  "data/roms/n64/GoldenEye 007 (USA).z64");
+    const std::string config = output.str();
+    require_line(config, "mupen64plus-rdp-plugin = \"gliden64\"");
+    require_line(config, "mupen64plus-cpucore = \"dynamic_recompiler\"");
+    require_line(config, "mupen64plus-ForceDisableExtraMem = \"False\"");
+}
+
+TEST_CASE("N64 and PS1 option sets never bleed into each other",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream n64_out;
+    retroarch::write_core_options(n64_out, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Paper Mario (USA).z64");
+    REQUIRE(n64_out.str().find("pcsx_rearmed") == std::string::npos);
+
+    std::ostringstream ps1_out;
+    retroarch::write_core_options(ps1_out, "pcsx_rearmed_libretro",
+                                  "data/roms/ps1/Tekken 3 (USA).chd");
+    REQUIRE(ps1_out.str().find("mupen64plus") == std::string::npos);
+}
+
 TEST_CASE("PS1 cores use underrun-safe audio latency",
           "[retroarch][audio]") {
     REQUIRE(retroarch::audio_latency_ms_for_core("pcsx_rearmed_libretro") ==

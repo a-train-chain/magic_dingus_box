@@ -1,5 +1,7 @@
 #include "playlist_loader.h"
 
+#include "rom_title.h"
+
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <iostream>
@@ -70,15 +72,10 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
                     // Simple string path - assume it's a local video
                     playlist_item.path = item.as<std::string>();
                     playlist_item.source_type = "local";
-                    // Extract title from filename (without extension)
-                    std::string path_str = playlist_item.path;
-                    size_t last_slash = path_str.find_last_of("/\\");
-                    size_t last_dot = path_str.find_last_of(".");
-                    if (last_dot != std::string::npos && (last_slash == std::string::npos || last_dot > last_slash)) {
-                        playlist_item.title = path_str.substr((last_slash == std::string::npos ? 0 : last_slash + 1), last_dot - (last_slash == std::string::npos ? 0 : last_slash + 1));
-                    } else {
-                        playlist_item.title = path_str.substr(last_slash == std::string::npos ? 0 : last_slash + 1);
-                    }
+                    // Derive a DISPLAY title from the filename: drops the
+                    // No-Intro region/revision tags so the UI shows
+                    // "Super Mario 64", not "Super Mario 64 (USA)".
+                    playlist_item.title = title_from_rom_path(playlist_item.path);
                     playlist_item.artist = "";  // No artist for simple path format
                 } else {
                     // Object with path and potentially source_type, title, artist
@@ -94,15 +91,9 @@ Playlist PlaylistLoader::load_playlist(const std::string& path) {
                     if (item["title"]) {
                         playlist_item.title = item["title"].as<std::string>();
                     } else {
-                        // Extract title from filename if not provided
-                        std::string path_str = playlist_item.path;
-                        size_t last_slash = path_str.find_last_of("/\\");
-                        size_t last_dot = path_str.find_last_of(".");
-                        if (last_dot != std::string::npos && (last_slash == std::string::npos || last_dot > last_slash)) {
-                            playlist_item.title = path_str.substr((last_slash == std::string::npos ? 0 : last_slash + 1), last_dot - (last_slash == std::string::npos ? 0 : last_slash + 1));
-                        } else {
-                            playlist_item.title = path_str.substr(last_slash == std::string::npos ? 0 : last_slash + 1);
-                        }
+                        // No explicit title — derive one from the filename,
+                        // minus the No-Intro region/revision tags.
+                        playlist_item.title = title_from_rom_path(playlist_item.path);
                     }
                     if (item["artist"]) {
                         playlist_item.artist = item["artist"].as<std::string>();

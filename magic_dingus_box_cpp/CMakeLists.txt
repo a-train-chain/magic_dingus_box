@@ -127,6 +127,7 @@ set(APP_SOURCES
     src/app/game_launch_recovery.cpp
     src/app/game_quiet_mode.cpp
     src/app/playlist_loader.cpp
+    src/app/rom_title.cpp
     src/app/controller.cpp
     src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
@@ -144,6 +145,7 @@ set(RETROARCH_SOURCES
     src/retroarch/launch_contract.cpp
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
+    src/retroarch/controller_mapping.cpp
 )
 
 set(ALL_SOURCES
@@ -462,12 +464,26 @@ if(RETROARCH_TEST_SOURCES)
         src/app/game_launch_recovery.cpp
         src/app/game_quiet_mode.cpp
         src/retroarch/launch_contract.cpp
+        src/retroarch/controller_mapping.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_retroarch_unit PRIVATE src)
     target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain pthread)
     target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
+endif()
+
+# App-layer pure-logic tests (ROM display titles, etc). No Linux-only deps.
+file(GLOB APP_TEST_SOURCES "tests/app/*.cpp")
+if(APP_TEST_SOURCES)
+    add_executable(test_app_unit
+        ${APP_TEST_SOURCES}
+        src/app/rom_title.cpp
+    )
+    target_include_directories(test_app_unit PRIVATE src)
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain)
+    target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
 
 # Platform profile tests — Pi model detection + sink/gpiochip resolution.
@@ -517,6 +533,7 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/retroarch/launch_contract.cpp
         src/retroarch/retroarch_launcher.cpp
         src/retroarch/controller_detector.cpp
+        src/retroarch/controller_mapping.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})

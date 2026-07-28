@@ -102,6 +102,7 @@ magic_dingus_box/web/test_files/
 
 # Local Mac build tree for Media Browser dev
 build-mac/
+build-test/
 
 # Media Browser V2 — service secrets (never commit)
 magic_dingus_box_cpp/services/.env

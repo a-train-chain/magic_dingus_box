@@ -174,6 +174,7 @@ rsync -avz --checksum \
     --filter 'P data/thumbnails/atari7800' \
     --filter 'P data/thumbnails/pcengine' \
     --filter 'P data/thumbnails/n64' \
+    --filter 'P data/thumbnails/dreamcast' \
     --exclude 'dev_data/roms/*' \
     --exclude 'dev_data/media/*' \
     "${CPP_DIR}/" \

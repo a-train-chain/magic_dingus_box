@@ -36,6 +36,11 @@ bool is_ps1_core(const std::string& core_name) {
            core_name.find("swanstation") != std::string::npos;
 }
 
+bool is_n64_core(const std::string& core_name) {
+    return core_name.find("mupen64plus") != std::string::npos ||
+           core_name.find("parallel_n64") != std::string::npos;
+}
+
 }  // namespace
 
 void write_remote_quit_config(std::ostream& out) {
@@ -268,10 +273,65 @@ const Ps1TitleOverride* find_ps1_override(const std::string& rom_path) {
     return nullptr;
 }
 
+// Nintendo 64 (mupen64plus_next / parallel_n64).
+//
+// EVERY key and value here was read out of the shipped
+// mupen64plus_next_libretro.so string table rather than recalled. That
+// matters more than usual: RetroArch silently ignores a core option value
+// the core doesn't recognize, so a typo produces "the setting had no
+// effect" with nothing in any log — indistinguishable from the setting
+// being wrong for the hardware.
+//
+// Deliberately NOT set here:
+//   - mupen64plus-rsp-plugin: the core default is already HLE, which is the
+//     fast path. Naming it buys nothing and risks an invalid literal.
+//   - mupen64plus-EnableCopyColorToRDRAM and friends: GLideN64 ships a
+//     per-game ini that sets these correctly per title. Forcing one global
+//     value would override that curated database with a worse guess.
+void write_n64_core_options(std::ostream& out) {
+    // GLideN64 (GLES3) is the ONLY viable RDP path on this board. The
+    // alternatives are not "slower", they are unusable: ParaLLEl-RDP is a
+    // Vulkan compute renderer measured ~7x slower than the CPU on V3DV, and
+    // Angrylion is a pure software rasterizer.
+    out << "mupen64plus-rdp-plugin = \"gliden64\"\n";
+    // ARM64 dynamic recompilation. Emulation speed here is CPU-bound, so
+    // this is the single largest performance lever.
+    out << "mupen64plus-cpucore = \"dynamic_recompiler\"\n";
+    // The Pi 5's spare A76 cores are idle during emulation; handing the
+    // renderer its own thread is close to free. (Note this is the CORE's
+    // internal threading, unrelated to RetroArch's video_threaded, which
+    // stays off on the Vulkan path for swapchain reasons.)
+    out << "mupen64plus-ThreadedRenderer = \"True\"\n";
+    // Native N64 timing rather than uncapped — matches the kiosk's 60Hz
+    // vsync contract instead of fighting it.
+    out << "mupen64plus-Framerate = \"Original\"\n";
+    // Framebuffer effects are not cosmetic on this ROM set: Conker, DK64,
+    // Perfect Dark, Majora's Mask and GoldenEye render core effects through
+    // the framebuffer and lose them entirely when this is off.
+    out << "mupen64plus-EnableFBEmulation = \"True\"\n";
+    out << "mupen64plus-EnableLODEmulation = \"True\"\n";
+    // 8MB Expansion Pak. Donkey Kong 64 and Majora's Mask REFUSE TO BOOT
+    // without it and Perfect Dark loses most of its content, so extra
+    // memory must stay available. ("False" = do not force-disable.)
+    out << "mupen64plus-ForceDisableExtraMem = \"False\"\n";
+    // 2x native (the N64 renders at 320x240). The kiosk scales this into
+    // its 4:3 viewport regardless, and N64 is the thermally sensitive tier
+    // on this board — internal resolution is the first thing to give back
+    // if a title runs hot. Raise per-title only after measuring on the Pi.
+    out << "mupen64plus-43screensize = \"640x480\"\n";
+    out << "mupen64plus-BilinearMode = \"standard\"\n";
+    // Controller Pak in slot 1 so games that save to it can.
+    out << "mupen64plus-pak1 = \"memory\"\n";
+}
+
 }  // namespace
 
 void write_core_options(std::ostream& out, const std::string& core_name,
                         const std::string& rom_path) {
+    if (is_n64_core(core_name)) {
+        write_n64_core_options(out);
+        return;
+    }
     if (!is_ps1_core(core_name)) {
         return;
     }
