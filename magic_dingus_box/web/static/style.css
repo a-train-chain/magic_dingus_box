@@ -9496,3 +9496,143 @@ body.faceplate .bottom-nav {
     width: auto;
   }
 }
+
+/* ============================================================================
+ * DESKTOP CONSOLE — everything below is gated at >=1024px
+ * ==========================================================================*/
+
+/* The desktop layout was the phone layout stretched to the window: one column,
+ * phone-sized type, and controls at width:100% running 580px wide. The
+ * faceplate identity is a piece of HARDWARE — a front panel — and a panel has a
+ * fixed size with zones on it. It does not grow to fill whatever room it is in.
+ * So the desktop treatment is about giving the console a deliberate measure and
+ * a real type scale, not about adding ornament.
+ *
+ * Every rule here is inside @media (min-width: 1024px). Every mobile tier in
+ * this stylesheet is a max-width query at 1024px or below, so none of this can
+ * reach a phone. Selectors carry the `body.faceplate` prefix (0,2,0+) because
+ * media queries contribute NO specificity and the unmediated faceplate rules
+ * would otherwise win.
+ * ==========================================================================*/
+
+@media (min-width: 1024px) {
+
+  /* --- Measure ------------------------------------------------------------
+   * The base .container caps at 1400px but body.faceplate overrides it to
+   * 100%, so content ran the full window — 1412px at a 1440 viewport, which is
+   * why a button could be 580px wide. 1280 is the widest this content earns:
+   * it keeps the editor's two panes comfortable while stopping single-column
+   * views from turning into 1400px-long lines. */
+  body.faceplate .container {
+    max-width: 1280px;
+    margin-inline: auto;
+    padding-inline: 40px;
+  }
+
+  /* --- Type scale ---------------------------------------------------------
+   * Phone sizes were carried straight to a 1440px window, so a section title,
+   * a label and body copy all landed within a couple of px of each other and
+   * nothing read as dominant. This sets three clear steps. Restrained on
+   * purpose: this is an operator console, not a marketing page. */
+  body.faceplate .container h2,
+  body.faceplate .view-header h3 {
+    font-size: 20px;
+    letter-spacing: 0.02em;
+    line-height: 1.25;
+  }
+  body.faceplate .section-title {
+    font-size: 15px;
+    letter-spacing: 0.10em;
+  }
+  body.faceplate .settings-description,
+  body.faceplate .playlist-meta {
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  /* --- View header --------------------------------------------------------
+   * `justify-content: space-between` with three flex children and no
+   * flex-basis let the two buttons claim ~580px each while the h3 was squeezed
+   * until "My Video Playlists" wrapped onto two lines. The heading is the most
+   * important thing in the row; it should never be the thing that gives.
+   * Buttons size to their content instead of filling. */
+  body.faceplate .view-header {
+    gap: 16px;
+  }
+  body.faceplate .view-header h3 {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    margin-right: auto;
+  }
+  body.faceplate .view-header > button,
+  body.faceplate .view-header > .btn-primary,
+  body.faceplate .view-header > .btn-secondary {
+    width: auto;
+    flex: 0 0 auto;
+    min-width: 168px;
+    padding-inline: 22px;
+  }
+}
+
+@media (min-width: 1024px) {
+
+  /* --- Settings: pair the panels ------------------------------------------
+   * Four sections stacked in one 1200px column ran 1753px — just under two
+   * full screens of scrolling on a 900px-tall window, with the right half of
+   * every card empty. None of them contains a table or anything else that
+   * needs the full measure, so they pair.
+   *
+   * align-items: start rather than the default stretch: the tallest card
+   * (System Health, 477px) sits beside the shortest (Software Updates, 222px),
+   * and stretching the short one to match would just be a taller box with the
+   * same content floating at the top of it. Ragged bottoms are the honest
+   * result of unequal content. */
+  body.faceplate #settings .settings-section-mobile {
+    margin: 0;
+  }
+  body.faceplate #settings > .sub-view,
+  body.faceplate #settings {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 20px;
+  }
+  /* The tab pane itself must not become a grid — only the settings body does,
+   * and only when it is the direct parent of the cards. Reset anything that is
+   * a full-width child so it spans both columns. */
+  body.faceplate #settings > h2,
+  body.faceplate #settings > .view-header,
+  body.faceplate #settings > .restore-status {
+    grid-column: 1 / -1;
+  }
+
+  /* --- Playlist editor ----------------------------------------------------
+   * The title field is a hardcoded 200px inside a 591px flex section, so a
+   * third of the header row was dead space while long playlist titles scrolled
+   * inside a short box. Let the two fields share the row they are already in. */
+  body.faceplate .playlist-title-section {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  body.faceplate .playlist-title-section > input#videoPlaylistTitle,
+  body.faceplate .playlist-title-section > input#gamePlaylistTitle {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+  body.faceplate .playlist-title-section > input#videoPlaylistCurator,
+  body.faceplate .playlist-title-section > input#gamePlaylistCurator {
+    flex: 0 1 220px;
+    width: auto;
+    min-width: 0;
+  }
+
+  /* The library pane was a fixed 320px, which truncated most titles
+   * ("Amazing Curly Chalker S…"). 360px clears the common case without
+   * starving the playlist pane, which keeps everything left of it. */
+  body.faceplate .playlist-editor-container {
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 20px;
+  }
+}
