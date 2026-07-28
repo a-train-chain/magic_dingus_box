@@ -72,6 +72,67 @@ if [[ -f "$BACKUP_DIR/hosts" ]]; then
     log "[1/4] Restored /etc/hosts"
 fi
 
+# Boot-partition cloud-init files that prepare_for_cloning.sh Step 2b removed
+# so the operator's Wi-Fi PSK, the `magic` password hash and the operator's
+# SSH public key would not be captured by the dd.
+#
+# The stash is in /dev/shm (RAM) rather than $BACKUP_DIR precisely because
+# $BACKUP_DIR is on the SD card and would have been captured by the dd —
+# putting the secret straight back into the image it was removed from.
+#
+# Consequence worth knowing: /dev/shm does not survive a reboot. If the source
+# Pi is rebooted between prepare and restore, these are gone for good. That is
+# not data loss in any meaningful sense — cloud-init has already applied them,
+# the live Wi-Fi config lives in /etc/NetworkManager, and the box keeps
+# working — but the files will not come back. prepare_for_cloning.sh's header
+# already warns against rebooting between the two scripts.
+BOOT_FW="/boot/firmware"
+BOOT_STASH="/dev/shm/mdb-boot-stash"
+
+if [[ -d "$BOOT_STASH" ]]; then
+    restored=0
+    for f in user-data network-config meta-data; do
+        if [[ -f "${BOOT_STASH}/${f}" ]]; then
+            cp -p "${BOOT_STASH}/${f}" "${BOOT_FW}/${f}" 2>/dev/null && restored=$((restored + 1))
+        fi
+    done
+    sync
+    # Wipe the RAM stash so the credentials do not linger in /dev/shm, which
+    # is world-readable by default.
+    rm -rf "$BOOT_STASH"
+    log "[1/4] Restored ${restored} boot-partition file(s) and cleared the stash"
+else
+    log "[1/4] No boot-partition stash found (nothing to restore)"
+fi
+
+# Application secrets removed by prepare_for_cloning.sh Step 2c so the .img.gz
+# artifact would not carry the ProtonVPN private key, the phone-remote HMAC
+# secret or the TMDB key. The manifest records each file's original path so
+# they go back exactly where they came from, with their ownership.
+SECRET_STASH="/dev/shm/mdb-secret-stash"
+
+if [[ -f "${SECRET_STASH}/manifest" ]]; then
+    restored=0
+    while IFS=$'\t' read -r key dest; do
+        [[ -n "$key" && -n "$dest" ]] || continue
+        [[ -f "${SECRET_STASH}/${key}" ]] || continue
+        mkdir -p "$(dirname "$dest")"
+        cp -p "${SECRET_STASH}/${key}" "$dest"
+        # These were created by the services that own them, not by root.
+        case "$dest" in
+            /home/magic/*) chown magic:magic "$dest" 2>/dev/null || true ;;
+            /opt/magic_dingus_box/*) chown magic:magic "$dest" 2>/dev/null || true ;;
+        esac
+        chmod 600 "$dest" 2>/dev/null || true
+        restored=$((restored + 1))
+    done < "${SECRET_STASH}/manifest"
+    sync
+    rm -rf "$SECRET_STASH"
+    log "[1/4] Restored ${restored} application secret(s) and cleared the stash"
+else
+    log "[1/4] No application-secret stash found (nothing to restore)"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 2: Disable magic-first-boot.service
 # ---------------------------------------------------------------------------

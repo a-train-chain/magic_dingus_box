@@ -1,7 +1,12 @@
 [Unit]
 Description=Magic Dingus Box First Boot Setup
 After=local-fs.target systemd-udev-settle.service
-Before=magic-dingus-box-cpp.service magic-dingus-web.service
+# magic-dingus-services is included deliberately: first_boot.sh Step 6 wipes
+# services/.env, and without this ordering the cloned Pi's Docker stack can
+# start FIRST — briefly dialling ProtonVPN on the source operator's key.
+# docker.service is deliberately NOT listed: Step 6 runs `docker compose down`
+# itself, and ordering before docker would deadlock that call.
+Before=magic-dingus-box-cpp.service magic-dingus-web.service magic-dingus-services.service
 ConditionPathExists=/opt/magic_dingus_box/scripts/golden_image/first_boot.sh
 
 [Service]

@@ -43,23 +43,61 @@ log "=== Magic Dingus Box first-boot setup starting ==="
 # ---------------------------------------------------------------------------
 log "[1/7] Regenerating SSH host keys..."
 
-if ls /etc/ssh/ssh_host_* &>/dev/null; then
-    log "[1/7] SSH host keys already exist, skipping regeneration"
-else
-    ssh-keygen -A
-    log "[1/7] SSH host keys regenerated"
+# UNCONDITIONAL rotation. This block used to skip when keys already existed,
+# which made it DEAD CODE: a raw `dd` clone always carries the source's
+# /etc/ssh/ssh_host_* , and prepare_for_cloning.sh deliberately leaves them in
+# place (the operator's live SSH session to the source box needs them valid
+# until restore_after_cloning.sh runs). So the "else" branch never once
+# executed on a real clone, and every unit shipped with byte-identical SSH
+# host PRIVATE keys.
+#
+# Why that matters: the shared material is the private key, sitting on an SD
+# card in the customer's hands. Anyone who buys one unit extracts it and can
+# then impersonate or MITM the SSH service of every other unit ever shipped.
+# Trust-on-first-use offers no protection, because the presented key genuinely
+# matches. The old "trusted LAN" justification was a bench assumption and does
+# not survive contact with a shipping product.
+#
+# Removing first, rather than relying on ssh-keygen -A (which only fills in
+# MISSING types), guarantees rotation of the types that are already present.
+rm -f /etc/ssh/ssh_host_*
+ssh-keygen -A
+log "[1/7] SSH host keys rotated (fresh per-unit identity)"
 
-    # Restart sshd to pick up new keys
-    if systemctl is-active sshd.service &>/dev/null; then
-        systemctl restart sshd.service
-        log "[1/7] sshd restarted with new host keys"
-    elif systemctl is-active ssh.service &>/dev/null; then
-        systemctl restart ssh.service
-        log "[1/7] ssh restarted with new host keys"
-    else
-        log "[1/7] Warning: sshd not running, keys will be used on next start"
-    fi
+# Restart sshd so the running daemon serves the new keys immediately rather
+# than at next boot. Debian names the unit ssh.service; some images use sshd.
+if systemctl is-active sshd.service &>/dev/null; then
+    systemctl restart sshd.service
+    log "[1/7] sshd restarted with new host keys"
+elif systemctl is-active ssh.service &>/dev/null; then
+    systemctl restart ssh.service
+    log "[1/7] ssh restarted with new host keys"
+else
+    log "[1/7] Warning: sshd not running, keys will be used on next start"
 fi
+
+# ---------------------------------------------------------------------------
+# Step 1b: Regenerate /etc/machine-id
+# ---------------------------------------------------------------------------
+# Nothing in the repo referenced machine-id before this, so every cloned unit
+# carried the source Pi's. systemd derives the DHCP DUID from it by default,
+# so two Magic Dingus Boxes on the same LAN present the same DUID and fight
+# over one lease — one box intermittently loses its address. To a customer
+# that looks like the kiosk randomly dropping off the network and the phone
+# remote losing pairing, with nothing in any log to explain it.
+#
+# Done here rather than in prepare_for_cloning.sh so the SOURCE box keeps its
+# identity: truncating it there would change the source's DHCP identity too.
+# Deliberately placed BEFORE the filesystem expand — the expand reboots on
+# some paths, and a duplicate machine-id must not survive even one DHCP
+# exchange.
+log "[1b/7] Regenerating machine-id..."
+rm -f /etc/machine-id /var/lib/dbus/machine-id
+systemd-machine-id-setup >/dev/null 2>&1 || true
+# Debian symlinks the dbus copy at /var/lib/dbus/machine-id; recreate it so
+# dbus and systemd agree rather than drifting to two different ids.
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
+log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
 
 # ---------------------------------------------------------------------------
 # Step 2: Expand root filesystem to fill SD card
@@ -303,6 +341,30 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
         log "    wiped: ${f}"
     fi
 done
+
+# The build tree carries a SECOND, byte-identical copy of the same per-Pi
+# state — build/data/ is populated when the C++ tests run and was never in
+# the loop above, so a clone kept a working copy of the source box's Flask
+# HMAC secret and its paired-phone records. A phone paired to the source
+# would have authenticated against the clone.
+BUILD_DATA_DIR="${CPP_DIR}/build/data"
+if [[ -d "$BUILD_DATA_DIR" ]]; then
+    for f in paired_remotes.json pairing_session.json pairing_audit.log flask_secret.key; do
+        if [[ -f "${BUILD_DATA_DIR}/${f}" ]]; then
+            rm -f "${BUILD_DATA_DIR}/${f}"
+            log "    wiped: build/data/${f}"
+        fi
+    done
+fi
+
+# Operator's personal TMDB API key. Nothing wiped this before, so every unit
+# made Media Browser metadata calls against one person's key — rate limits are
+# per key, so the whole fleet shared one quota and one attribution.
+TMDB_KEY="/home/magic/.config/magic_dingus_box/tmdb_api_key"
+if [[ -f "$TMDB_KEY" ]]; then
+    rm -f "$TMDB_KEY"
+    log "    wiped: tmdb_api_key"
+fi
 
 # Step 6c and 6d run UNCONDITIONALLY — they are the most important
 # anti-leak steps for cloned Pis (inherited WiFi credentials and the

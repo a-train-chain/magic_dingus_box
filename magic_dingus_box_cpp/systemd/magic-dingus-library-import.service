@@ -6,6 +6,12 @@ Description=Magic Dingus Box — import attached MOVIES-drive library into Radar
 Requires=mnt-ssd.mount
 After=mnt-ssd.mount
 
+# Skip entirely on an unprovisioned unit. Every sibling Media Browser unit
+# carries this guard; this one did not, so on a clone with no VPN configured
+# it fired on every MOVIES-drive mount and failed against a Radarr that is not
+# running — noise in `systemctl --failed` on a box that is working correctly.
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+
 [Service]
 Type=oneshot
 ExecStart=/bin/bash /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/import_library_movies.sh
