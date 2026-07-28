@@ -9590,8 +9590,12 @@ body.faceplate .bottom-nav {
   body.faceplate #settings .settings-section-mobile {
     margin: 0;
   }
-  body.faceplate #settings > .sub-view,
-  body.faceplate #settings {
+  /* MUST be gated on .active. `#settings` is a .tab-content, which is hidden
+   * with `display: none` when its tab is not selected. Setting `display: grid`
+   * on the bare id (0,1,0 + the body.faceplate prefix) beat that, so the whole
+   * Settings pane rendered underneath every other tab. Matching .active means
+   * the rule only ever applies to the pane that is already being shown. */
+  body.faceplate #settings.tab-content.active {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
