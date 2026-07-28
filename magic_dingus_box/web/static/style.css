@@ -9052,3 +9052,91 @@ body.faceplate .editor-action-bar {
     touch-action: none;   /* let the drag start instead of the page scrolling */
   }
 }
+
+/* ============================================================================
+ * KEYCAP PRESS + LED — make every button behave like a faceplate key
+ * ==========================================================================*/
+
+/* The LED slot already exists as button::after (a bar in a darker shade of the
+ * cap's own colour, matching remote.css:216-234 where an unlit yellow cap reads
+ * #AC8E11 under a #E4B90B face). What was missing is the LIT state: on the real
+ * panel the light pipe glows when the key is down. currentColor makes each key
+ * light in its own colour with no per-variant rules — gold keys glow gold, the
+ * destructive key glows red, the primary key green. */
+body.faceplate button,
+body.faceplate .btn,
+body.faceplate .bottom-nav-item {
+  position: relative;
+  transition: transform .06s ease, box-shadow .06s ease;
+}
+body.faceplate button::after,
+body.faceplate .btn::after {
+  transition: background-color .07s ease, box-shadow .07s ease, opacity .07s ease;
+}
+
+/* Pressed: the cap travels down into its pocket and the pipe lights. The
+ * shadow collapses from `0 3px 0 3px` to `0 0 0 3px` so the key looks seated
+ * rather than floating — same trick as remote.css:226-229. */
+body.faceplate button:active,
+body.faceplate .btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 3px var(--well),
+              0 0 0 3px rgba(0,0,0,.6),
+              inset 0 1px 0 rgba(255,255,255,.10);
+}
+body.faceplate button:active::after,
+body.faceplate .btn:active::after {
+  background-color: currentColor;
+  box-shadow: 0 0 9px 2px currentColor, inset 0 0 3px rgba(255,255,255,.6);
+  opacity: 1;
+}
+
+/* Keys must sit clear of their container's edge.
+ *
+ * The well ring is an OUTSET shadow (0 0 0 3px var(--well)) plus a 3px drop, so
+ * it paints 3-6px beyond the button box. Several panels clip — measured
+ * .playlist-panel-main with overflow:hidden — which sliced the ring off any key
+ * near an edge and made the cap look like it ran into the border. A small
+ * uniform margin reserves that space so the pocket is always fully drawn. */
+body.faceplate button,
+body.faceplate .btn {
+  margin: 3px 3px 6px;
+}
+/* Except where a container manages its own spacing and the margin would break
+   the grid it has already laid out. */
+body.faceplate .bottom-nav button,
+body.faceplate .bottom-nav-item,
+body.faceplate .sub-tabs button,
+body.faceplate .tabs button,
+body.faceplate .video-actions button,
+body.faceplate .playlist-table button { margin: 0; }
+
+/* .btn-secondary gets a light pipe too.
+ *
+ * The controls pass gave secondary keys a "lip" tier — square and pressable but
+ * with no pocket and no LED — to keep a visual hierarchy. Brief is that EVERY
+ * key should read as a faceplate key, so they get the pipe as well; hierarchy
+ * still reads from the face colour and the pocket depth.
+ *
+ * Rest colour is currentColor at low alpha rather than a hardcoded shade, so a
+ * secondary key lights in its own colour (gold here, red on a destructive
+ * variant) exactly like the moulded caps, where an unlit pipe is a darker
+ * version of the cap rather than black. padding-bottom reserves the pipe's lane
+ * so it never collides with a descender. */
+body.faceplate .btn-secondary,
+body.faceplate button.btn-secondary { padding-bottom: 14px; }
+body.faceplate .btn-secondary::after,
+body.faceplate button.btn-secondary::after {
+  content: "";
+  position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%);
+  width: 22px; height: 3px; border-radius: 1px;
+  background-color: currentColor; opacity: .26;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.65);
+  transition: opacity .07s ease, box-shadow .07s ease;
+  pointer-events: none;
+}
+body.faceplate .btn-secondary:active::after,
+body.faceplate button.btn-secondary:active::after {
+  opacity: 1;
+  box-shadow: 0 0 9px 2px currentColor, inset 0 0 3px rgba(255,255,255,.55);
+}
