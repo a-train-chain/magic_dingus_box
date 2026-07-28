@@ -9689,3 +9689,54 @@ body.faceplate .bottom-nav {
   body.faceplate::after { z-index: 10001; }
   html::after { z-index: 10000; }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- Buttons stop being full-bleed ------------------------------------
+   * Only .view-header's buttons were sized earlier. Everywhere else
+   * `body.faceplate .btn-primary/.btn-secondary { width: 100% }` still won —
+   * it outranks the legacy `@media (min-width: 768px) { .btn-* { width:auto } }`
+   * because media queries add no specificity — so every key in Settings
+   * measured 556px. A 556px "Refresh" reads as a banner, not a control, and
+   * gives the eye no sense of which action is primary.
+   *
+   * Sized to content with a floor, and left-aligned in their rows: these are
+   * controls on a panel, and a panel's controls sit where the hand expects
+   * them, not stretched across the enclosure. */
+  body.faceplate .btn-primary,
+  body.faceplate .btn-secondary,
+  body.faceplate .btn-danger {
+    width: auto;
+    min-width: 190px;
+  }
+
+  /* .small was a dead modifier: every declaration in it lost to the unmediated
+   * base rules, so "Refresh" rendered at the same 556px and the same 16px type
+   * as "Download Backup". It means something again. */
+  body.faceplate .btn-primary.small,
+  body.faceplate .btn-secondary.small {
+    min-width: 150px;
+    font-size: 13px;
+    letter-spacing: .05em;
+  }
+
+  /* The action rows are flex; without this the keys still stretch to fill. */
+  body.faceplate .update-actions,
+  body.faceplate .settings-section-mobile .section-body {
+    align-items: flex-start;
+  }
+  body.faceplate .update-actions button { flex: 0 0 auto; }
+
+  /* --- No synthetic bold --------------------------------------------------
+   * Zen Dots and Share Tech Mono each ship exactly ONE weight. Asking for 700
+   * makes the browser smear the single face algorithmically, which is why
+   * emphasis here looks slightly muddy rather than strong. Emphasis in this
+   * design comes from colour, the lit pipe under a key, and the gold rule —
+   * it never needed a second weight. */
+  body.faceplate .btn-primary,
+  body.faceplate .btn-danger,
+  body.faceplate .settings-section-mobile .section-title,
+  body.faceplate .view-header h3 {
+    font-weight: 400;
+  }
+}
