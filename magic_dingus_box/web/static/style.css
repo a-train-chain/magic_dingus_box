@@ -1,6 +1,47 @@
 /* Mobile-first responsive design with retro CRT aesthetic */
-/* Google fonts: Zen Dots (header), Share Tech Mono (body) */
-@import url('https://fonts.googleapis.com/css2?family=Zen+Dots&family=Share+Tech+Mono&display=swap');
+
+/* SELF-HOSTED FONTS — replaces an @import from fonts.googleapis.com.
+ *
+ * That import was a real bug, not just a consistency nit: this box is
+ * administered over the LAN and over the USB gadget at http://10.55.0.1:5000,
+ * where there is NO route to the internet. The fonts silently failed to load
+ * and the whole UI fell back to system monospace/sans — offline, which is a
+ * normal operating mode for this product, the typography simply did not exist.
+ *
+ * The files already ship for the phone remote and are served by the existing
+ * `/static/<path:filename>` route (admin.py) — the path converter matches
+ * slashes, so the remote/ subdirectory needs no new route. Verified live:
+ * both return HTTP 200.
+ *
+ * Each face is declared under BOTH names on purpose. The Google names
+ * ('Zen Dots', 'Share Tech Mono') are what the ~3600 lines below already ask
+ * for, so they keep resolving with zero edits; the remote's names
+ * ('ZenDots', 'DejaVuMono') let new faceplate-styled rules use the same
+ * vocabulary as remote.css. One file, two aliases, no rename churn.
+ *
+ * NOTE: the body face genuinely changes — Share Tech Mono was condensed,
+ * DejaVu Sans Mono is wider. That is deliberate: it is what the remote uses,
+ * and converging is the point. Wider glyphs mean tight layouts need checking. */
+@font-face {
+  font-family: 'Zen Dots';
+  src: url('/static/remote/ZenDots-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'ZenDots';
+  src: url('/static/remote/ZenDots-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Share Tech Mono';
+  src: url('/static/remote/DejaVuSansMono.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'DejaVuMono';
+  src: url('/static/remote/DejaVuSansMono.ttf') format('truetype');
+  font-display: swap;
+}
 
 :root {
     /* New palette (user-provided) */
@@ -27,6 +68,29 @@
     --glow-gold: 0 0 15px rgba(245, 191, 66, 0.4);
     --glow-blue: 0 0 12px rgba(88, 132, 177, 0.3);
     --glow-subtle: 0 0 8px rgba(245, 191, 66, 0.2);
+
+    /* ---- Phone-remote canonical token names -------------------------------
+     * The Content Manager is not on a different palette from the remote — it is
+     * on the SAME palette under different names. Six of the remote's ten values
+     * are already present verbatim. These aliases let new faceplate-styled
+     * rules use remote.css's vocabulary without renaming anything: every
+     * declaration above keeps its current value and all existing call sites are
+     * untouched.
+     *
+     * --dim is the one genuine divergence and is deliberately NOT aliased onto
+     * --text-secondary. The remote's --dim is #968B85; the CM's
+     * --text-secondary is #B0A8A3, and it has 21 call sites. Re-pointing it
+     * would silently darken secondary text across the whole app, so --dim is
+     * introduced as its own token for new surfaces only. Converging the two is
+     * a deliberate decision to make later, not a side effect. */
+    --bg:        var(--bg-dark);
+    --bg-lift:   #2A232A;
+    --fg:        var(--text-primary);
+    --dim:       #968B85;
+    --hot:       var(--error);
+    --action:    var(--accent2);
+    --menu-blue: #7FB0E6;
+    --well:      #150F0A;
 }
 
 * {
@@ -3640,4 +3704,1107 @@ header::after {
 @keyframes install-toast-in {
   from { transform: translateY(20px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
+}
+
+
+/* ============================================================================
+ * FACEPLATE LAYER — CONTROLS
+ * ----------------------------------------------------------------------------
+ * Restyles buttons, inputs, selects and checkboxes in the phone remote's
+ * faceplate language (remote.css): things you PRESS sit proud in a routed
+ * `--well` pocket and travel on :active; things that HOLD information are sunk
+ * into the panel.
+ *
+ * APPENDED rather than edited in place. The design called for replacing
+ * specific line ranges, but line-range surgery on a 3600-line file is fragile
+ * and destroys the original. Appending is cascade-correct — at equal
+ * specificity the later rule wins — non-destructive, and revertible by
+ * deleting this one block. Where a legacy rule declares a property this layer
+ * does not, the legacy value deliberately survives.
+ *
+ * NOTHING here renames a class. `.btn-edit` and `.btn-remove` in particular
+ * are live JS hooks (manager.js:3399, 3404, 4290 toggles them by name), which
+ * is exactly why they are restyled rather than replaced.
+ * ==========================================================================*/
+/* === :root === */
+:root {
+    /* ── Canonical faceplate palette — the names remote/remote.css:34-45 uses.
+       ADDED, never renamed: --bg-dark/--bg-mid/--bg-card/--text-primary/
+       --text-secondary/--accent2/--error/--border-color all stay exactly as
+       they are, so none of the other ~3600 lines change meaning. --accent
+       (#F5BF42, style.css:16) and --success (#66DD7A, style.css:19) already
+       hold the remote's exact values and are NOT redeclared here. */
+    --bg:        #1F191F;
+    --bg-lift:   #2A232A;
+    --fg:        #F2E4D9;
+    --dim:       #968B85;
+    --hot:       #EA3A27;
+    --action:    #5884B1;
+    --menu-blue: #7FB0E6;
+    --well:      #150F0A;
+
+    /* ── Control geometry: ONE seed pair, everything derived.
+       remote.css:339-363 derives eleven dimensions from --cap; the same method
+       here means a responsive tier restates two declarations and every key on
+       the page re-derives itself (see Change 16).
+       5px pocket / 4px travel on an 84px cap (remote.css:386) is the same
+       ratio as 3px / 3px at admin scale. */
+    --key-pocket: 3px;
+    --key-travel: 3px;
+
+    /* Three radii, replacing the ten currently in the file.
+       0 on keys is NOT a simplification — remote.css:14-17: "Keycaps have NO
+       corner radius ... sampled from a photo of the real panel". */
+    --r-key:   0;      /* keycaps           — remote.css:383 */
+    --r-inset: 4px;    /* lip buttons, wells — remote.css:473 (.d/.ok) */
+    --r-panel: 8px;    /* recessed panels    — remote.css:243 (.disp) */
+
+    /* The five-part keycap stack, decomposed exactly as remote.css:386-387.
+       Reuse it by scaling the numbers; never by deleting a layer.
+         1 routed pocket (spread-only, paints OUTSIDE the border box)
+         2 seat shadow   (the key sitting on its stem)
+         3 cast shadow   (the key floating above the panel)
+         4 top highlight (light from upper-left, agreeing with the panel bloom)
+         5 bottom shade  (the moulded lower lip) */
+    --key-rest:
+        0 0 0 var(--key-pocket) var(--well),
+        0 var(--key-travel) 0 var(--key-pocket) rgba(0, 0, 0, .60),
+        0 calc(var(--key-travel) * 2 + 2px) 10px rgba(0, 0, 0, .50),
+        inset 0 2px 0 rgba(255, 255, 255, .20),
+        inset 0 -2px 0 rgba(0, 0, 0, .32);
+
+    /* Pressed: the seat collapses to zero and the cast shortens, so the key
+       genuinely descends into the pocket — remote.css:407-408. */
+    --key-down:
+        0 0 0 var(--key-pocket) var(--well),
+        0 0 0 var(--key-pocket) rgba(0, 0, 0, .60),
+        0 2px 5px rgba(0, 0, 0, .45),
+        inset 0 2px 0 rgba(255, 255, 255, .16),
+        inset 0 -1px 0 rgba(0, 0, 0, .32);
+
+    /* Fully seated with no stem: a key that CANNOT travel. This is what
+       disabled means on a physical panel, and it is the whole of Change 7. */
+    --key-seated:
+        0 0 0 var(--key-pocket) var(--well),
+        inset 0 1px 0 rgba(255, 255, 255, .06);
+
+    /* The .disp recess (remote.css:241-247) at control scale. The single most
+       transferable primitive in the system: anything that HOLDS information is
+       sunk into the panel; anything you PRESS stands proud of it. */
+    --well-fill:   linear-gradient(180deg, #151115, #1B161B);
+    --well-lip:    1px solid rgba(245, 191, 66, .20);
+    --well-shadow: inset 0 2px 6px rgba(0, 0, 0, .75);
+}
+
+/* === #modalConfirm.btn-primary === */
+/* ── The shared confirm key ───────────────────────────────────────────
+   #modalConfirm is ONE button reused by Save Playlist AND by every Delete
+   flow — manager.js:3812 `const confirmBtn = document.getElementById('modalConfirm')`,
+   reached from :3900, :3928 and :4041 (Delete Playlist). Green reads as
+   "safe, go" and is indefensible on a delete. Gold is the faceplate's
+   ATTENTION colour and is neutral between commit and destroy — the yellow key
+   on the real panel is the one that means "are you sure".
+
+   Specificity (1,1,0) beats .btn-primary (0,1,0), so this is a surgical
+   retint of one button; every other .btn-primary stays green.
+   #mbResetConfirmBtn is unaffected — index.html:555-556 sets
+   `style="background: var(--error); border-color: var(--error);"` inline,
+   which correctly keeps THAT confirm red. */
+#modalConfirm.btn-primary {
+    background: linear-gradient(180deg, #F0C81C, #C79E06);
+    color: var(--bg);
+}
+#modalConfirm.btn-primary::after            { background: #9C7F0D; }
+#modalConfirm.btn-primary:active::after {
+    background: #FFE9A8;
+    box-shadow: 0 0 12px 3px rgba(245, 191, 66, .95), inset 0 0 4px #fff6d8;
+}
+@media (hover: hover) and (pointer: fine) {
+    #modalConfirm.btn-primary:hover::after {
+        background: #E6C755;
+        box-shadow: 0 0 8px 1px rgba(245, 191, 66, .50), inset 0 0 3px #fff6d8;
+    }
+}
+
+/* === button:disabled, input:disabled, select:disabled, textarea:disabled === */
+/* ── Disabled: a key that cannot travel ───────────────────────────────
+   `grep -n ":disabled\\|\\[disabled\\]" style.css` returns ZERO hits today, while
+   manager.js sets .disabled in 15 places — manager.js:5622
+   `button.disabled = !(haveFile || haveText)` on #mbConfigureBtn (disabled on
+   load, the FIRST thing a new operator taps), :6151 and :6187 on the reset
+   confirm, :5063/:5162/:5361 on the update buttons. Because every button rule
+   in this file sets its own background and colour, the UA's default disabled
+   appearance is fully overridden and those buttons look completely live.
+
+   The faceplate translation is exact: --key-seated is the pocket ring with the
+   stem and cast shadow removed, so the key sits flush in its socket. There is
+   nothing to press. */
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+    box-shadow: var(--key-seated);
+    filter: grayscale(.65) brightness(.72);
+    opacity: .55;
+    cursor: not-allowed;
+    transform: none;
+}
+/* Belt and braces: no travel, no hover lift, and the light pipe goes dark —
+   an unpowered indicator, which is the correct reading. */
+button:disabled:active,
+button:disabled:hover {
+    transform: none;
+    filter: grayscale(.65) brightness(.72);
+    box-shadow: var(--key-seated);
+}
+button:disabled::after,
+button:disabled:active::after,
+button:disabled:hover::after {
+    background: #1A1714;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
+}
+/* Disabled wells lose their gold lip — nothing to type into. */
+input:disabled,
+select:disabled,
+textarea:disabled {
+    border-color: rgba(150, 139, 133, .18);
+}
+
+/* === :focus-visible (global) + filled-key inversion === */
+/* ── Keyboard focus: the gold pinstripe ───────────────────────────────
+   `grep -c "focus-visible" style.css` → 0. Only three :focus rules exist in
+   the whole file (style.css:581, 1949, 2527) and ALL THREE begin with
+   `outline: none` with no adequate replacement — so keyboard focus is
+   currently invisible on every button, every tab, both search fields and
+   every checkbox. The brief requires accessibility be preserved; there is
+   nothing to preserve until this exists.
+
+   :focus-visible only, so pointer and touch behaviour is completely unchanged
+   — a mouse click still shows no ring.
+
+   The ring is remote.css:164-165's gold pinstripe, quoted directly:
+     border: 1.5px solid var(--accent);
+     box-shadow: 0 0 10px rgba(245,191,66,.13); */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: calc(var(--key-pocket) + 1px);   /* clears the routed pocket */
+    border-radius: inherit;
+}
+
+/* Gold-on-gold measures 1.02:1, so the two keys that are THEMSELVES gold get
+   the ring inverted to the panel's own near-black. .btn-remove is included
+   because its hover/active fill is red and the gold ring sits on the well. */
+.btn-edit:focus-visible,
+#modalConfirm.btn-primary:focus-visible,
+input[type="checkbox"]:checked:focus-visible {
+    outline-color: var(--well);
+    box-shadow: var(--key-rest), 0 0 0 calc(var(--key-pocket) + 5px) rgba(245, 191, 66, .45);
+}
+
+/* === Text inputs + textareas — the .disp well at control scale (append at END of style.css) === */
+/* ── Form-control wells ───────────────────────────────────────────────
+   APPEND AT THE END OF style.css. Every selector below is listed explicitly
+   at a specificity that MATCHES the rule it supersedes, so source order
+   decides and nothing is deleted:
+     .playlist-table .inline-input   (0,2,0) vs style.css:2514  (0,2,0) — order wins
+     .playlist-title-input           (0,1,0) vs style.css:2326  (0,1,0) — order wins
+     .library-search                 (0,1,0) vs style.css:2665  (0,1,0) — order wins
+     .search-bar input               (0,1,1) — has NO desktop rule at all today
+     #mbResetConfirmInput            (1,0,0) — needs Change 15's markup fix too
+
+   The recipe is remote.css:241-247 (.disp), the recessed-surface primitive:
+     border-radius: 8px;
+     border: 1px solid rgba(245,191,66,.20);
+     background: linear-gradient(180deg, #151115, #1B161B);
+     box-shadow: inset 0 2px 8px rgba(0,0,0,.75);
+   Radius drops 8px -> --r-inset 4px because these are controls, not panels;
+   the inset shadow tightens 8px -> 6px at the smaller scale. */
+.playlist-title-input,
+.playlist-curator-input,
+.playlist-desc-input,
+.library-search,
+.search-bar input,
+.playlist-table .inline-input,
+#mbResetConfirmInput,
+#mbConfigText {
+    background: var(--well-fill);
+    border: var(--well-lip);
+    border-radius: var(--r-inset);
+    box-shadow: var(--well-shadow);
+    color: var(--fg);
+    font-family: inherit;
+    padding: 0.5rem 0.65rem;
+    /* 120ms — remote.css's state-reveal tier, deliberately slower than the
+       50ms press so a field settling reads differently from a key firing. */
+    transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+}
+
+/* --dim on the well measures 5.66:1 — the remote's own placeholder weight,
+   and it clears AA, which `opacity` on --text-secondary never did. */
+.playlist-title-input::placeholder,
+.playlist-curator-input::placeholder,
+.playlist-desc-input::placeholder,
+.library-search::placeholder,
+.search-bar input::placeholder,
+.playlist-table .inline-input::placeholder,
+#mbResetConfirmInput::placeholder,
+#mbConfigText::placeholder {
+    color: var(--dim);
+    opacity: 1;                      /* Firefox defaults this to .54 */
+}
+
+/* The playlist title keeps its gold identity — it is the one field that names
+   the thing you are editing. --accent on the well fill measures 12.1:1. */
+.playlist-title-input { color: var(--accent); font-weight: bold; }
+
+/* The inline table inputs stay INVISIBLE until touched — they sit inside
+   table rows and a full well on every cell would read as a grid of boxes.
+   This preserves the existing transparent-at-rest behaviour at style.css:2514
+   while giving the focused state the real well. */
+.playlist-table .inline-input {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+/* Focus = the gold pinstripe. remote.css:164-165 — the outer bloom plus the
+   inset that darkens the surface toward its own edge, so the lip reads as a
+   raised rim rather than a drawn line. Do not drop the inset. */
+.playlist-title-input:focus,
+.playlist-curator-input:focus,
+.playlist-desc-input:focus,
+.library-search:focus,
+.search-bar input:focus,
+.playlist-table .inline-input:focus,
+#mbResetConfirmInput:focus,
+#mbConfigText:focus {
+    outline: none;
+    background: var(--well-fill);
+    border-color: var(--accent);
+    box-shadow: var(--well-shadow), 0 0 0 2px rgba(245, 191, 66, .28);
+}
+
+/* #mbConfigText is a WireGuard config — a code surface, so it takes the panel
+   radius (remote.css:243) rather than the control radius. */
+#mbConfigText {
+    border-radius: var(--r-panel);
+    padding: 0.75rem;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+/* === select.resolution-select-compact, #targetResolution, #systemSelect, option === */
+/* ── Selects: a well with a gold caret ────────────────────────────────
+   Two live selects, both .resolution-select-compact — #targetResolution
+   (index.html:224) and #systemSelect (index.html:377). NOTE .resolution-select
+   (style.css:1931) and .system-selector select (style.css:483) match ZERO
+   elements; do not bother with them.
+
+   The caret is an inline data: URI. A strict-CSP / offline-LAN box cannot
+   fetch anything, and this file's Google Fonts @import at style.css:3 is
+   already a render-blocking request to a host that is unreachable on the USB
+   gadget link — do not add a second network dependency here. */
+.resolution-select-compact,
+#targetResolution,
+#systemSelect {
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: transparent;
+    background-image:
+        url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23F5BF42' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>"),
+        var(--well-fill);
+    background-repeat: no-repeat, no-repeat;
+    background-position: right 0.7rem center, 0 0;
+    background-size: 10px 6px, auto;
+    border: var(--well-lip);
+    border-radius: var(--r-inset);
+    box-shadow: var(--well-shadow);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 0.85rem;
+    padding: 0.45rem 2rem 0.45rem 0.65rem;   /* right pad clears the caret */
+    cursor: pointer;
+    transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .resolution-select-compact:hover,
+    #targetResolution:hover,
+    #systemSelect:hover { border-color: rgba(245, 191, 66, .40); }
+}
+
+.resolution-select-compact:focus,
+#targetResolution:focus,
+#systemSelect:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--well-shadow), 0 0 0 2px rgba(245, 191, 66, .28);
+}
+
+/* REQUIRED, not decoration: on Windows/Linux Chrome the popup list does NOT
+   inherit the select's colours, so a dark select with unstyled options gives
+   white-on-white. iOS uses its own native picker and ignores this — harmless. */
+.resolution-select-compact option,
+#targetResolution option,
+#systemSelect option {
+    background: var(--bg-lift);
+    color: var(--fg);
+}
+
+/* === @media (pointer: coarse) — 16px text floor + 44px targets === */
+/* ── TOUCH FLOOR ──────────────────────────────────────────────────────
+   The predicate is (pointer: coarse), NOT max-width: 700px. An iPhone in
+   LANDSCAPE is 844px wide and still auto-zooms; an iPad at 1024px still
+   auto-zooms. Width-keyed rules miss both. Desktop mouse density is untouched.
+
+   16px is a FLOOR, not a style choice: iOS Safari zooms the viewport on focus
+   for any text-entry control or select below it. Measured offenders today
+   (root font-size 16px, so 1rem = 16px):
+     .playlist-table .inline-input  14.4px  (style.css:2519, 0.9rem)
+     .search-bar input              13.33px (no rule exists at all)
+     #mbResetConfirmInput           13.33px (inline style sets no font-size)
+     .resolution-select-compact     12.8px  (style.css:2806, 0.8rem)
+     #mbConfigText                  12.8px  (inline 0.8rem — see Change 15)
+     .edit-input                    14.4px  (inline cssText, manager.js:3386)
+   Fixing the CAUSE is what lets `maximum-scale=1, user-scalable=no` come out
+   of index.html:9 — a WCAG 1.4.4 violation on a text-dense admin app. That
+   meta edit is not proposed here; only the reason for it is removed. */
+@media (pointer: coarse) {
+    .playlist-title-input,
+    .playlist-curator-input,
+    .playlist-desc-input,
+    .library-search,
+    .search-bar input,
+    .playlist-table .inline-input,
+    #mbResetConfirmInput,
+    #mbConfigText,
+    .resolution-select-compact,
+    #targetResolution,
+    #systemSelect,
+    textarea {
+        font-size: 16px;
+        min-height: 44px;
+    }
+
+    /* The ONE place !important is unavoidable. manager.js:3386 and :3393 build
+       these inputs with an inline `style.cssText` that hardcodes
+       `font-size: 0.9rem` / `0.85rem`; an inline declaration beats every
+       non-!important rule, so CSS alone cannot reach it. The clean fix is to
+       delete those two cssText lines — suggestion S5. Scoped to one selector
+       inside one media query. */
+    .edit-input { font-size: 16px !important; }
+
+    /* 44px is the WCAG 2.5.5 target size and Apple's HIG floor. The existing
+       coarse blocks already cover .row-actions button (style.css:2565) and
+       .library-item .add-btn (style.css:2755) — these are the ones they miss. */
+    .btn-edit,
+    .btn-remove,
+    .btn-danger,
+    .btn-add-slot {
+        min-height: 44px;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+
+    .upload-zone-compact { min-height: 44px; }
+
+    /* --key-travel is 3px; a touch press wants a touch more commitment.
+       Still inside the 50ms tier, so it stays mechanical. */
+    .btn-primary:active,
+    .btn-edit:active,
+    .btn-danger:active { transform: translateY(4px); }
+}
+
+/* === @media (max-width: 360px) — the small-phone tier === */
+/* ── Small-phone tier ─────────────────────────────────────────────────
+   TWO DECLARATIONS for the whole tier. Because every control shadow derives
+   from --key-pocket and --key-travel (Change 1), restating the seed pair
+   re-derives all eleven of them. This is the remote's breakpoint discipline
+   verbatim: remote.css:578-585 restates six declarations and nothing else;
+   remote.css:603-606 restates two. No breakpoint in this system ever
+   re-lays-out anything.
+
+   Why it is needed at 320px: the pocket is a spread-only box-shadow, so it
+   costs zero layout but paints 3px outside the border box. Verified against
+   every container a key sits in at 320px —
+     .container padding 1rem (16px)                     -> 13px spare
+     .library-filters / .upload-content 0.75rem (12px)  ->  9px spare
+     mobile sticky action bar (style.css:2913) gap 0.75rem -> 6px daylight
+     .modal-actions gap 1rem                            -> 10px daylight
+     .playlist-actions gap 0.75rem after Change 12      ->  6px daylight
+   All clear at 3px, but .modal-actions' two `min-width: 100px` buttons
+   (style.css:1777-1779) plus a 16px gap total 216px inside a 224px content
+   box at 320px — only 8px of slack. Dropping to 2px keeps the pockets from
+   painting over the modal's own padding edge. */
+@media (max-width: 360px) {
+    :root {
+        --key-pocket: 2px;
+        --key-travel: 2px;
+    }
+}
+
+/* === @media (prefers-reduced-motion: reduce) — suppress key travel only === */
+/* ── Reduced motion ───────────────────────────────────────────────────
+   The existing block at style.css:1298-1303 already kills every transition
+   with `* { transition: none !important }`, so the 50ms press degrades to an
+   INSTANT state swap rather than vanishing — :active still applies --key-down
+   and the light pipe still fires. That behaviour is correct and needs no
+   change from me.
+
+   What this adds is suppressing the TRANSLATION specifically. A key that
+   physically jumps 3-4px is the part that can trigger vestibular discomfort;
+   the shadow collapse alone still reads unambiguously as "pressed", so the
+   press feedback is preserved rather than removed. Same reasoning the remote
+   applies to .ra-quit, which scales rather than travels. */
+@media (prefers-reduced-motion: reduce) {
+    .btn-primary:active,
+    .btn-secondary:active,
+    .btn-edit:active,
+    .btn-danger:active,
+    .btn-add-slot:active,
+    .row-actions button:active,
+    .library-item .add-btn:active,
+    input[type="checkbox"]:active {
+        transform: none;
+    }
+}
+
+/* === .btn-primary, .btn-primary:hover  (REPLACES style.css:813-834) === */
+/* REPLACES, verbatim, style.css:813-834 —
+     /* Buttons */
+     .btn-primary {
+         background: var(--success);
+         color: var(--bg-dark);
+         border: none;
+         padding: 1rem 2rem;
+         font-size: 1.125rem;
+         font-family: inherit;
+         font-weight: bold;
+         cursor: pointer;
+         border-radius: 8px;
+         transition: all 0.2s;
+         width: 100%;
+         min-height: 44px;
+         box-shadow: 0 0 12px rgba(102, 221, 122, 0.3);
+     }
+     .btn-primary:hover {
+         background: #7AE88E;
+         transform: scale(1.02);
+         box-shadow: 0 0 20px rgba(102, 221, 122, 0.5);
+     }
+   The old :hover made the button GROW and glow. A key does not grow. */
+
+/* ── PRIMARY = the faceplate's GREEN key ──────────────────────────────
+   Gradient is remote.css:392 (.cap.g) lifted into its LIT register. The
+   remote's own #5E9A5B/#3D6B3C measures 5.19:1 / 2.82:1 against --bg and the
+   dark end fails AA — the remote never had to care because its caps carry no
+   text. #7FCB86/#4F9E5C is the same hue at 8.93:1 / 5.28:1. */
+.btn-primary {
+    position: relative;                 /* containing block for the light pipe */
+    background: linear-gradient(180deg, #7FCB86, #4F9E5C);
+    color: var(--bg);
+    border: none;
+    border-radius: var(--r-key);
+    padding: 0.85rem 2rem 1rem;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: bold;
+    letter-spacing: .06em;              /* remote.css uses tracking on all chrome type */
+    cursor: pointer;
+    width: 100%;
+    min-height: 44px;
+    box-shadow: var(--key-rest);
+    /* 50ms is the remote's press tier (remote.css:388) — deliberately faster
+       than anything else on the page so the key feels mechanical, not animated. */
+    transition: transform .05s ease, box-shadow .05s ease, filter .12s ease;
+}
+
+/* THE LIGHT PIPE — remote.css:395-401 and :410-413.
+   The law, which is counter-intuitive and easy to "fix" wrongly: an UNLIT
+   indicator is the HOST colour DARKENED, never black and never grey. It is
+   tinted plastic, not a hole. #2E5430 is remote.css:400, .cap.g .led unlit. */
+.btn-primary::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 5px;
+    transform: translateX(-50%);
+    width: 22px;
+    height: 3px;
+    border-radius: 2px;
+    background: #2E5430;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;   /* remote.css:397 */
+    pointer-events: none;
+}
+
+/* Hover is INVENTED — remote.css has no :hover anywhere because the remote is
+   touch-only, but the Content Manager is also driven from a laptop. Kept as the
+   lightest possible tier: the pipe warms, the key does NOT move. A key that
+   moves on hover is a key you have not pressed. */
+@media (hover: hover) and (pointer: fine) {
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-primary:hover::after {
+        background: #8FD79A;
+        box-shadow: 0 0 8px 1px rgba(102, 221, 122, .50), inset 0 0 3px #e4fdea;
+    }
+}
+
+.btn-primary:active {
+    transform: translateY(var(--key-travel));
+    box-shadow: var(--key-down);
+}
+/* Pressed, the pipe lights in its own colour — remote.css:412. */
+.btn-primary:active::after {
+    background: #CFF7D8;
+    box-shadow: 0 0 12px 3px rgba(102, 221, 122, .95), inset 0 0 4px #e4fdea;
+}
+
+/* === .btn-secondary, .btn-secondary:hover  (REPLACES style.css:836-852) === */
+/* REPLACES, verbatim, style.css:836-852 —
+     .btn-secondary {
+         background: var(--bg-dark);
+         color: var(--text-primary);
+         border: 2px solid var(--border-color);   /* steel blue */
+         padding: 0.75rem 1.5rem;
+         font-family: inherit;
+         cursor: pointer;
+         border-radius: 4px;
+         transition: all 0.2s;
+         width: 100%;
+         min-height: 44px;
+     }
+     .btn-secondary:hover {
+         border-color: var(--accent2);
+         box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
+     }
+   The 2px steel-blue border is the single loudest divergence from the
+   faceplate — the panel has no 2px lines and no steel blue anywhere. */
+
+/* ── SECONDARY = the flat LIP tier, remote.css:469-474 (.d / .ok) ─────
+   The D-pad itself does not translate to an admin UI, but .d/.ok is a second,
+   lighter button tier the Content Manager badly needs and it is only three
+   declarations: the gradient, the 0 3px 0 lip, and gold text. No pocket ring
+   here — the lip tier sits ON the panel rather than IN it, which is exactly
+   what makes it read as subordinate to .btn-primary. */
+.btn-secondary {
+    background: linear-gradient(180deg, #39323A, #241F25);
+    color: var(--accent);
+    border: 1px solid rgba(245, 191, 66, .28);
+    border-radius: var(--r-inset);
+    padding: 0.7rem 1.5rem;
+    font-family: inherit;
+    font-size: 0.95rem;
+    letter-spacing: .04em;
+    cursor: pointer;
+    width: 100%;
+    min-height: 44px;
+    box-shadow: 0 3px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
+    transition: transform .05s ease, box-shadow .05s ease, background .12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .btn-secondary:hover {
+        background: linear-gradient(180deg, #453D46, #2C262C);
+        border-color: rgba(245, 191, 66, .45);
+    }
+}
+
+/* remote.css:489-492 — the lip flattens and the face lightens. */
+.btn-secondary:active {
+    transform: translateY(3px);
+    box-shadow: 0 0 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
+    background: linear-gradient(180deg, #4a4149, #2c262c);
+}
+
+/* === .btn-edit / .btn-remove  (REPLACES style.css:783-811 AND style.css:854-871) === */
+/* REPLACES TWO separate blocks. .btn-edit is currently defined TWICE and the
+   later one wins for everything except min-height, which leaks from the first.
+
+   (a) style.css:783-811, verbatim —
+       .btn-edit,
+       .btn-remove {
+           cursor: pointer;
+           padding: 0.25rem 0.75rem;
+           border: 2px solid var(--border-color);
+           border-radius: 4px;
+           background: var(--bg-mid);
+           color: var(--text-primary);
+           font-family: inherit;
+           font-size: 0.875rem;
+           transition: all 0.2s;
+           min-height: 32px;
+       }
+       .btn-edit:hover { border-color: var(--accent2); background: var(--accent2); color: var(--bg-dark); }
+       .btn-remove { border-color: var(--error); color: var(--error); }
+       .btn-remove:hover { background: var(--error); color: var(--bg-dark); }
+
+   (b) style.css:854-871, verbatim —
+       /* Edit button - Yellow */
+       .btn-edit {
+           background: var(--accent);
+           color: var(--bg-dark);
+           border: none;
+           padding: 0.5rem 1rem;
+           font-family: inherit;
+           font-weight: 600;
+           cursor: pointer;
+           border-radius: 4px;
+           transition: all 0.2s;
+           font-size: 0.85rem;
+       }
+       .btn-edit:hover { background: #FFD05A; box-shadow: 0 0 12px rgba(245, 191, 66, 0.5); }
+
+   BOTH CLASS NAMES MUST SURVIVE — manager.js:3399 does
+   `saveBtn.className = 'btn-edit'`, manager.js:3404 does
+   `cancelBtn.className = 'btn-remove'`, and manager.js:4290 does
+   `e.target.classList.contains('btn-remove') || ...contains('btn-edit')`
+   as the touch-reorder guard. Restyled, never renamed. */
+
+/* ── .btn-edit = the faceplate's YELLOW key ───────────────────────────
+   Gradient is remote.css:390 (.cap.y) VERBATIM — nothing retuned, because
+   --bg on it already measures 10.71:1 at the top and 6.89:1 at the bottom. */
+.btn-edit {
+    position: relative;
+    background: linear-gradient(180deg, #F0C81C, #C79E06);
+    color: var(--bg);
+    border: none;
+    border-radius: var(--r-key);
+    padding: 0.45rem 1rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    cursor: pointer;
+    min-height: 34px;
+    box-shadow: var(--key-rest);
+    transition: transform .05s ease, box-shadow .05s ease, filter .12s ease;
+}
+/* Light pipe, unlit = #9C7F0D (remote.css:398). Smaller than the primary's
+   because this key is smaller — 18px, not 22px. */
+.btn-edit::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    transform: translateX(-50%);
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    background: #9C7F0D;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;
+    pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+    .btn-edit:hover { filter: brightness(1.08); }
+    .btn-edit:hover::after {
+        background: #E6C755;
+        box-shadow: 0 0 8px 1px rgba(245, 191, 66, .50), inset 0 0 3px #fff6d8;
+    }
+}
+.btn-edit:active {
+    transform: translateY(var(--key-travel));
+    box-shadow: var(--key-down);
+}
+/* remote.css:410 */
+.btn-edit:active::after {
+    background: #FFE9A8;
+    box-shadow: 0 0 12px 3px rgba(245, 191, 66, .95), inset 0 0 4px #fff6d8;
+}
+
+/* ── .btn-remove = a WELL, not a key ──────────────────────────────────
+   Deliberately NOT the red keycap. manager.js:3404 uses this class for a
+   cancel "✕", not only for Delete, and manager.js:1525/2290 use it for the
+   library Delete. A recessed red-lipped well says "reversible, secondary"
+   where a solid red key says "this is the primary destructive action" —
+   that role belongs to .btn-danger (Change 5). */
+.btn-remove {
+    background: var(--well-fill);
+    color: var(--hot);
+    border: 1px solid rgba(234, 58, 39, .45);
+    border-radius: var(--r-inset);
+    padding: 0.45rem 1rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    cursor: pointer;
+    min-height: 34px;
+    box-shadow: var(--well-shadow);
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+    .btn-remove:hover {
+        background: linear-gradient(180deg, #B4362A, #8E241B);
+        border-color: #B4362A;
+        color: var(--fg);
+        box-shadow: var(--key-rest);
+    }
+}
+.btn-remove:active {
+    background: linear-gradient(180deg, #8E241B, #6E1B14);
+    color: var(--fg);
+    box-shadow: var(--well-shadow);
+}
+
+/* === .btn-danger, .btn-danger:hover  (REPLACES style.css:873-891) === */
+/* REPLACES, verbatim, style.css:873-891 —
+     /* Delete/Danger button - Red */
+     .btn-danger {
+         background: transparent;
+         color: var(--error);
+         border: 1px solid var(--error);
+         padding: 0.5rem 1rem;
+         font-family: inherit;
+         font-weight: 600;
+         cursor: pointer;
+         border-radius: 4px;
+         transition: all 0.2s;
+         font-size: 0.85rem;
+     }
+     .btn-danger:hover {
+         background: var(--error);
+         color: var(--bg-dark);
+         box-shadow: 0 0 12px rgba(234, 58, 39, 0.5);
+     }
+   NOTE this class currently matches ZERO elements —
+   `grep -c "btn-danger" index.html manager.js` → 0 / 0. It is styled here so
+   the destructive tier EXISTS, ready for the cm-structure audit's
+   recommendation to add class="btn-danger" to the playlist-card Delete
+   button. Until that lands this block is inert and changes nothing on screen. */
+
+/* ── DESTRUCTIVE = the faceplate's RED key ────────────────────────────
+   remote.css:391 (.cap.r) is #D84234 -> #A82A20, which measures 3.55:1 with
+   --fg on it and 2.50:1 with --bg — it fails BOTH ways, because the remote's
+   red cap carries no label. Darkened to #B4362A -> #8E241B, --fg now measures
+   4.86:1 / 6.99:1. Same hue, same construction, legible. */
+.btn-danger {
+    position: relative;
+    background: linear-gradient(180deg, #B4362A, #8E241B);
+    color: var(--fg);
+    border: none;
+    border-radius: var(--r-key);
+    padding: 0.45rem 1rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    cursor: pointer;
+    min-height: 34px;
+    box-shadow: var(--key-rest);
+    transition: transform .05s ease, box-shadow .05s ease, filter .12s ease;
+}
+/* Light pipe, unlit = #6B1B14 (remote.css:399, .cap.r .led). */
+.btn-danger::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 4px;
+    transform: translateX(-50%);
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    background: #6B1B14;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;
+    pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+    .btn-danger:hover { filter: brightness(1.10); }
+    .btn-danger:hover::after {
+        background: #C8615A;
+        box-shadow: 0 0 8px 1px rgba(234, 58, 39, .50), inset 0 0 3px #ffd9d0;
+    }
+}
+.btn-danger:active {
+    transform: translateY(var(--key-travel));
+    box-shadow: var(--key-down);
+}
+/* remote.css:411 */
+.btn-danger:active::after {
+    background: #FFC2B4;
+    box-shadow: 0 0 12px 3px rgba(234, 58, 39, .95), inset 0 0 4px #ffd9d0;
+}
+
+/* === input[type="checkbox"]  (supersedes style.css:3400-3404, the pointer:coarse 20px sizing) === */
+/* SUPERSEDES style.css:3400-3404, verbatim —
+     /* Better spacing for checkboxes */
+     input[type="checkbox"] {
+         width: 20px;
+         height: 20px;
+     }
+   Same specificity (0,1,1), so appending at the end of the file wins on source
+   order. Those five lines can then be deleted; leaving them is harmless.
+
+   Five checkboxes exist in the whole app — #videoPlaylistLoop,
+   #gamePlaylistLoop, #hideUsedVideos, #hideUsedROMs, #normalizeAudio — plus
+   one generated at manager.js:4020 (#deleteVideosCheckbox), which carries an
+   inline `style="margin-right: 0.5rem"` that correctly keeps winning over the
+   `margin: 0` below.
+
+   .form-group input[type="checkbox"] (style.css:586, specificity (0,2,1))
+   would outrank this — but .form-group matches zero elements in index.html and
+   zero in manager.js, so it is inert. */
+
+/* ── Checkbox = the faceplate's BLACK key with an LED slot ────────────
+   Cap is remote.css:393 (.cap.b); unlit slot is remote.css:401 (#22201C).
+   Checked, the whole key lifts to the YELLOW cap (remote.css:390) and the
+   slot fires in the lit-amber register (remote.css:410). That is a large
+   LUMINANCE change on both the cap and the indicator, not a hue-only one, so
+   checked/unchecked does not depend on colour perception. */
+input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 22px;
+    height: 22px;
+    flex: none;
+    margin: 0;
+    border: none;
+    border-radius: var(--r-key);
+    background: linear-gradient(180deg, #4A473F, #2C2A25);
+    /* A 2px pocket, not 3px — these sit inside label flex rows with 6px gaps. */
+    box-shadow:
+        0 0 0 2px var(--well),
+        0 2px 0 2px rgba(0, 0, 0, .60),
+        inset 0 1px 0 rgba(255, 255, 255, .18),
+        inset 0 -2px 0 rgba(0, 0, 0, .32);
+    display: inline-grid;
+    place-content: center;
+    cursor: pointer;
+    transition: transform .05s ease, box-shadow .05s ease, background .06s;
+}
+
+/* The light pipe. Unlit is the CAP's colour darkened — remote.css:401. */
+input[type="checkbox"]::after {
+    content: "";
+    width: 12px;
+    height: 4px;
+    border-radius: 2px;
+    background: #22201C;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .75);
+    transition: background .06s, box-shadow .06s;
+}
+
+input[type="checkbox"]:checked {
+    background: linear-gradient(180deg, #F0C81C, #C79E06);   /* remote.css:390 */
+}
+input[type="checkbox"]:checked::after {
+    background: #FFE9A8;                                     /* remote.css:410 */
+    box-shadow: 0 0 9px 2px rgba(245, 191, 66, .90), inset 0 0 3px #fff6d8;
+}
+
+input[type="checkbox"]:active {
+    transform: translateY(2px);
+    box-shadow:
+        0 0 0 2px var(--well),
+        0 0 0 2px rgba(0, 0, 0, .60),
+        inset 0 1px 0 rgba(255, 255, 255, .14),
+        inset 0 -1px 0 rgba(0, 0, 0, .32);
+}
+
+/* The 22px key stays 22px on touch — a 44px checkbox is grotesque. The LABEL
+   carries the tap target instead, which is what the user actually aims at.
+   All three labels wrap their input, so the association and the
+   click-to-toggle behaviour are untouched. .normalize-row is index.html:229;
+   `grep -n "normalize-row" manager.js` returns nothing. */
+@media (pointer: coarse) {
+    .playlist-loop-label,
+    .library-filter-checkbox,
+    .normalize-row label {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+    }
+}
+
+/* === .row-actions button + .btn-delete  (REPLACES style.css:2540-2560) === */
+/* REPLACES, verbatim, style.css:2540-2560 —
+     /* Row action buttons */
+     .row-actions button {
+         background: transparent;
+         border: none;
+         color: var(--text-secondary);
+         cursor: pointer;
+         padding: 0.25rem;
+         font-size: 0.9rem;
+         border-radius: 3px;
+         transition: all 0.15s;
+     }
+     .row-actions button:hover { background: var(--bg-mid); color: var(--text-primary); }
+     .row-actions button.btn-delete:hover { color: var(--error); }
+
+   The @media (pointer: coarse) block at style.css:2565-2575 (44x44 targets,
+   gap 0.5rem) is CORRECT and stays exactly as it is — do not touch it.
+
+   These take the LIP tier and NOT the pocket, deliberately: .row-actions has
+   `gap: 0.25rem` (4px) at style.css:2536, and two 3px --well rings in a 4px
+   gap would overlap. This is the same well-ring clearance trap remote.css:418-421
+   documents. The lip has zero horizontal footprint. */
+.row-actions button {
+    background: linear-gradient(180deg, #39323A, #241F25);   /* remote.css:470 */
+    border: none;
+    border-radius: var(--r-inset);
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.9rem;
+    line-height: 1;
+    box-shadow: 0 2px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
+    transition: transform .05s ease, box-shadow .05s ease, background .12s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .row-actions button:hover {
+        background: linear-gradient(180deg, #453D46, #2C262C);
+    }
+}
+
+/* remote.css:489-492 — lip flattens, face lightens. */
+.row-actions button:active {
+    transform: translateY(2px);
+    box-shadow: 0 0 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .10);
+    background: linear-gradient(180deg, #4a4149, #2c262c);
+}
+
+/* ✕ IS DESTRUCTIVE AT REST, not on hover. It sits between two benign arrows
+   and colouring it only on :hover means it is never distinguished on touch —
+   which is precisely the mis-tap (delete instead of move) the pointer:coarse
+   block at style.css:2562-2575 was written to prevent.
+   HONEST MEASUREMENT: --hot on the lip gradient is 3.00:1 and on the row's
+   own --bg it is 4.22:1 — under the 4.5:1 text floor. Reaching AA would need
+   a lifted red (~#F26150) that is NOT one of the remote's ten tokens, and the
+   brief forbids inventing parallel tokens. Flagged as suggestion S3 for the
+   palette owner. Red-at-rest is still strictly better than the status quo,
+   where the destructive control is identical to its neighbours on every phone. */
+.row-actions button.btn-delete {
+    color: var(--hot);
+    background: linear-gradient(180deg, #2E262E, #1E1A1E);
+}
+.row-actions button.btn-delete:active {
+    background: linear-gradient(180deg, #8E241B, #6E1B14);
+    color: var(--fg);
+}
+@media (hover: hover) and (pointer: fine) {
+    .row-actions button.btn-delete:hover {
+        background: linear-gradient(180deg, #B4362A, #8E241B);
+        color: var(--fg);
+    }
+}
+
+/* === .btn-add-slot / .btn-add-slot:hover (REPLACES style.css:2605-2619) + .playlist-actions gap + .library-item .add-btn === */
+/* (a) REPLACES, verbatim, style.css:2605-2619 —
+       .btn-add-slot {
+           background: transparent;
+           border: 1px dashed var(--border-color);   /* steel blue */
+           color: var(--text-secondary);
+           padding: 0.375rem 0.75rem;
+           border-radius: 4px;
+           cursor: pointer;
+           font-size: 0.85rem;
+           transition: all 0.15s;
+       }
+       .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
+
+   The dashed outline is the right IDEA — an empty socket you can fill — so it
+   survives; only the colour and the press behaviour change. An empty pocket
+   with nothing in it, in the panel's own gold. */
+.btn-add-slot {
+    background: var(--well-fill);
+    border: 1px dashed rgba(245, 191, 66, .35);
+    border-radius: var(--r-inset);
+    color: var(--dim);
+    padding: 0.4rem 0.85rem;
+    font-family: inherit;
+    font-size: 0.85rem;
+    letter-spacing: .04em;
+    cursor: pointer;
+    box-shadow: var(--well-shadow);
+    transition: border-color .12s ease, color .12s ease, transform .05s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+    .btn-add-slot:hover { border-color: var(--accent); color: var(--accent); }
+}
+.btn-add-slot:active { transform: translateY(2px); color: var(--accent); }
+
+/* (b) POCKET CLEARANCE. REPLACES style.css:2355-2358 —
+       .playlist-actions { display: flex; gap: 0.5rem; }
+   8px minus two 3px --well rings leaves 2px of visible daylight between
+   Cancel and Save — the exact merge remote.css:418-421 documents ("a 9px raw
+   offset left only 4px of VISIBLE daylight ... the same well-ring trap that
+   made the green key and MENU look merged"). 12px leaves 6px.
+   SCOPED SAFELY: .playlist-card .playlist-actions declares its own
+   `gap: 0.375rem` at style.css:1076, specificity (0,2,0), so the cards keep
+   theirs and only the editor's Cancel/Save pair moves. */
+.playlist-actions {
+    display: flex;
+    gap: 0.75rem;
+}
+
+/* (c) The library +Add control. ADDITIVE — the reveal-on-hover logic at
+   style.css:2745-2752 and the 44px coarse target at style.css:2755-2761 are
+   both correct and are NOT touched; this only recolours and adds the press. */
+.library-item .add-btn {
+    color: var(--success);
+    border-radius: var(--r-inset);
+    transition: opacity .15s, transform .05s ease, color .06s;
+}
+.library-item .add-btn:active {
+    transform: translateY(2px);
+    color: #CFF7D8;                    /* remote.css:412, the lit green pipe */
+    text-shadow: 0 0 10px rgba(102, 221, 122, .8);
+}
+
+/* === BLOCKING-ISSUE FIX: playlist inline inputs keep a focus ring ===
+ * style.css:2524 is `.playlist-table .inline-input:focus { ... outline: none }`
+ * at specificity (0,3,0). A global `input:focus-visible` is (0,1,1) and loses,
+ * so the playlist editor's inline fields — the primary editing control in the
+ * app — would have been left with no visible focus indicator for keyboard
+ * users. Matching the original specificity and restoring the ring. */
+.playlist-table .inline-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+
+/* === Coarse-pointer coverage for FILE inputs ===
+ * The controls pass covered every text-entry control but not the five
+ * type="file" inputs (restoreFile, videoUpload, romUpload, mbConfigFile,
+ * mobileRestoreFile), which sat at 13.3px.
+ *
+ * These do NOT cause the iOS focus-zoom bug — tapping one opens the system
+ * picker rather than focusing a text caret — so this is purely a tap-target
+ * and legibility fix, not a zoom fix. Uploading content is the single most
+ * common phone task on this box, so the control you tap to do it should not
+ * be the smallest thing on the screen. */
+@media (pointer: coarse) {
+  input[type="file"] {
+    font-size: 16px;
+    min-height: 44px;
+    width: 100%;
+  }
+  input[type="file"]::file-selector-button {
+    font-size: 15px;
+    min-height: 40px;
+    padding: 0 0.9rem;
+    margin-right: 0.75rem;
+    border: 0;
+    border-radius: 3px;
+    background: var(--bg-lift);
+    color: var(--fg);
+    box-shadow: 0 0 0 2px var(--well), 0 2px 0 2px rgba(0,0,0,.55);
+  }
+  input[type="file"]::file-selector-button:active {
+    transform: translateY(2px);
+    box-shadow: 0 0 0 2px var(--well);
+  }
 }
