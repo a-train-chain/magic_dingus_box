@@ -463,7 +463,10 @@ def format_playlist_yaml(data: dict) -> str:
     
     # Top-level fields in expected order (always include for consistency)
     lines.append(f"title: {yaml_quote(data.get('title', 'Untitled'))}")
-    lines.append(f"curator: {yaml_quote(data.get('curator', 'Unknown'))}")
+    # Default to blank, not the literal "Unknown". A playlist with no curator
+    # should render with no byline (the cards omit it entirely when empty),
+    # rather than being permanently attributed to a person called Unknown.
+    lines.append(f"curator: {yaml_quote(data.get('curator', ''))}")
     
     # Always include description field (blank if empty, for consistency)
     description = data.get('description', '')

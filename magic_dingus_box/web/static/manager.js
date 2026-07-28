@@ -470,6 +470,24 @@ function coreForSystem(system) {
     return ROM_CORE_MAP[String(system || '').toLowerCase()] || null;
 }
 
+/**
+ * Display title for a library entry being added to a playlist.
+ *
+ * The "+" button and drag-and-drop derived this differently: "+" preferred the
+ * server-supplied title and otherwise stripped the extension, while drag used
+ * the raw filename. So the same video added two ways showed either
+ * "A DAY IN THE MALL - 1991" or "A DAY IN THE MALL - 1991 [VLX2_eOKev4].mp4" —
+ * and that string is what the TV and the phone remote display.
+ *
+ * ROM entries carry no .title, so they fall through to filename-minus-extension,
+ * which is what addROMToPlaylist already did.
+ */
+function titleForLibraryItem(entry) {
+    const given = (entry && entry.title || '').trim();
+    if (given) return given;
+    return String((entry && entry.filename) || '').replace(/\.[^.]+$/, '');
+}
+
 const MEDIA_CONFIG = {
     video: {
         // Element IDs
@@ -2887,7 +2905,11 @@ async function performSavePlaylist(type) {
     // Clean up playlist data
     const playlistData = {
         title,
-        curator: curator || 'Unknown',
+        // Blank stays blank. This wrote the literal string 'Unknown', so merely
+        // opening one of the imported playlists and saving it permanently
+        // changed its byline from nothing to "By Unknown". An empty curator is
+        // a legitimate value the kiosk and the playlist cards both handle.
+        curator: curator,
         loop,
         playlist_type: type, // 'game' or 'video'
         items: cleanPlaylistItems(items)
@@ -3642,7 +3664,7 @@ function addItemToPlaylist(draggedItem, type) {
         const video = draggedItem.data;
         // Only include fields that have values (matches YAML format)
         item = {
-            title: video.filename,
+            title: titleForLibraryItem(video),
             artist: '',  // Empty artist field, user can edit later
             source_type: 'local',
             path: video.path
@@ -3662,7 +3684,7 @@ function addItemToPlaylist(draggedItem, type) {
 
         // Only include fields that have values (matches YAML format)
         item = {
-            title: rom.filename,
+            title: titleForLibraryItem(rom),
             artist: '',  // Empty artist field (games don't typically have artists)
             source_type: 'emulated_game',
             path: rom.path,
@@ -5003,7 +5025,7 @@ function addVideoToPlaylist(index) {
     const newItem = {
         source_type: 'local',
         path: video.path || `media/${video.filename}`,
-        title: video.title || video.filename.replace(/\.[^.]+$/, ''),
+        title: titleForLibraryItem(video),
         artist: ''
     };
 
@@ -5180,7 +5202,7 @@ function addROMToPlaylist(system, index) {
     const newItem = {
         source_type: 'emulated_game',
         path: rom.path,  // Use actual path from server
-        title: rom.filename.replace(/\.[^.]+$/, ''),
+        title: titleForLibraryItem(rom),
         emulator_system: system,
         emulator_core: core
     };
