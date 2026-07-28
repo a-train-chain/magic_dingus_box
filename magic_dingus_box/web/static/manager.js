@@ -734,9 +734,14 @@ function initializeEventListeners() {
     // File uploads - video upload is handled by inline onchange="handleDirectUpload(this)"
     // (which routes through server-side transcoding)
 
-    document.getElementById('romUpload').addEventListener('change', (e) => {
-        if (e.target.files.length > 0) uploadROMs();
-    });
+    // NOTE: no 'change' listener for #romUpload here. index.html:432 already
+    // carries onchange="handleDirectROMUpload(this)", and this listener called
+    // uploadROMs() on the same event — so every ROM picked was uploaded TWICE,
+    // once per handler. On a phone over WiFi that doubled the time and data for
+    // a multi-hundred-MB PS1 image, and the second run wiped the first's
+    // progress bars. The inline handler is the one to keep: it matches the
+    // video path (handleDirectUpload) and passes autoAddToPlaylist=true, which
+    // this listener's bare uploadROMs() dropped.
 
     // Video playlist save/cancel
     document.getElementById('saveVideoPlaylist').addEventListener('click', () => savePlaylist('video'));
@@ -2207,7 +2212,15 @@ function filterVideoLibrary() {
 
 function filterMainLibrary(input) {
     const query = input.value.toLowerCase();
-    const rows = document.querySelectorAll('.video-library-table tbody tr');
+    // Scoped to the input's own tab, NOT the whole document. Both the video
+    // library (#videoList, manager.js:1502) and the ROM library (#romsList,
+    // manager.js:2291) render `<table class="video-library-table">`, so a
+    // document-wide query let the All Videos box hide every ROM row too. The
+    // ROM Library has no search of its own to clear it, so switching to
+    // ROMs & Games afterwards showed column headers and nothing else, with no
+    // visible cause.
+    const scope = input.closest('.tab-content') || document;
+    const rows = scope.querySelectorAll('.video-library-table tbody tr');
 
     rows.forEach(row => {
         const text = row.textContent.toLowerCase();

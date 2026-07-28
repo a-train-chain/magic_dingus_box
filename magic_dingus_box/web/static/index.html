@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=70">
+    <link rel="stylesheet" href="/static/style.css?v=71">
 </head>
 
 <body class="faceplate">
@@ -309,7 +309,13 @@
                 <div class="view-header">
                     <h3>All Videos <span class="count-badge" id="videoCount">0</span></h3>
                     <div class="search-bar">
-                        <input type="text" placeholder="Search all videos..." onkeyup="filterMainLibrary(this)">
+                        <!-- oninput, not onkeyup: keyup misses every phone text-entry
+                             path that is not a physical keypress — tapping an iOS
+                             QuickType suggestion, long-press Paste, and dictation all
+                             change the value without a keyup, leaving the list
+                             unfiltered. The two editor search boxes already listen on
+                             'input' (manager.js:6339, 6351); this was the odd one out. -->
+                        <input type="text" placeholder="Search all videos..." oninput="filterMainLibrary(this)">
                     </div>
                 </div>
                 <div id="videoList"></div>
@@ -742,7 +748,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=87"></script>
+    <script src="/static/manager.js?v=88"></script>
 
 </body>
 
