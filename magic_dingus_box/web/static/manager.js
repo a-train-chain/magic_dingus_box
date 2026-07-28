@@ -482,6 +482,42 @@ function coreForSystem(system) {
  * ROM entries carry no .title, so they fall through to filename-minus-extension,
  * which is what addROMToPlaylist already did.
  */
+/**
+ * Attach dragover/drop to a playlist's row body AND its surrounding container.
+ *
+ * Two reasons the container matters, not just the tbody:
+ *
+ *  - An EMPTY playlist has a zero-height tbody. There is nothing to aim at, so
+ *    dragging a video into a new playlist appeared to do nothing at all. The
+ *    visible affordance is .playlist-empty-state, the dashed "Drag videos here"
+ *    pocket — but that is a SIBLING of <table> and is pointer-events: none (so
+ *    it never swallows a drop), which means events over it reach neither the
+ *    tbody nor anything that bubbles to it. The container sits underneath both
+ *    and does have area.
+ *  - Even with rows, dragging near the edges — above the first row or below the
+ *    last — lands on the container rather than the tbody. The comment at this
+ *    call site claimed that was already handled; it was not. `const tbody =
+ *    container` bound the same element twice.
+ *
+ * Assigning to on* properties rather than addEventListener keeps this
+ * idempotent, so re-running it on every render rebinds instead of stacking
+ * duplicate handlers.
+ */
+function bindPlaylistDropTargets(container, type) {
+    if (!container) return;
+    const over = function(event) { handlePlaylistDragOver(event, type); };
+    const drop = function(event) { handlePlaylistDrop(event, type); };
+
+    container.ondragover = over;
+    container.ondrop = drop;
+
+    const shell = container.closest('.playlist-table-container');
+    if (shell && shell !== container) {
+        shell.ondragover = over;
+        shell.ondrop = drop;
+    }
+}
+
 function titleForLibraryItem(entry) {
     const given = (entry && entry.title || '').trim();
     if (given) return given;
@@ -1351,6 +1387,12 @@ function renderPlaylistItems(type) {
     const actualItems = items.filter(item => !item.isEmpty);
     if (countEl) countEl.textContent = `${actualItems.length} item${actualItems.length !== 1 ? 's' : ''}`;
 
+    // Bind the drop handlers BEFORE the empty-playlist early return below.
+    // They used to be bound only at the end of this function, which an empty
+    // playlist never reaches — so dragging a video into a brand new playlist
+    // had no target at all and silently did nothing.
+    bindPlaylistDropTargets(container, type);
+
     if (items.length === 0) {
         container.innerHTML = '';
         if (emptyState) emptyState.style.display = 'block';
@@ -1415,13 +1457,9 @@ function renderPlaylistItems(type) {
         `;
     }).join('');
 
-    // Delegate dragover/drop to the tbody so the drop indicator can track
-    // pointer position across all rows in a single handler. Also listen at
-    // the table container level so dragging near the edges (above first row,
-    // below last row) still fires events.
-    const tbody = container;
-    tbody.ondragover = function(event) { handlePlaylistDragOver(event, type); };
-    tbody.ondrop     = function(event) { handlePlaylistDrop(event, type); };
+    // Drop targets are bound near the top of this function so they also exist
+    // for an empty playlist; re-bound here because innerHTML replaced the rows.
+    bindPlaylistDropTargets(container, type);
 
     // Touch equivalent of the above. HTML5 dnd does not fire on touch at all,
     // so without this the ⋮⋮ handle is inert on a phone and — with the up/down
@@ -3665,9 +3703,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setupPlaylistDropZone(type) {
     const panelId = MEDIA_CONFIG[type].playlistItemsId;
-    const panel = document.getElementById(panelId);
+    const tbody = document.getElementById(panelId);
 
-    if (panel) {
+    // Bind to the surrounding container as well, not just the tbody.
+    //
+    // An EMPTY playlist has a zero-height tbody, so there was literally nothing
+    // on screen to drop a library item onto — dragging a video into a brand new
+    // playlist did nothing, with no feedback. The visible affordance is
+    // .playlist-empty-state, the dashed "Drag videos here" pocket, but that is a
+    // SIBLING of <table> and is pointer-events: none (deliberately, so it never
+    // swallows a drop), so events over it reach neither the tbody nor anything
+    // that bubbles to it. The container sits underneath both and has real area.
+    //
+    // Binding both is safe: a drop lands on whichever is under the pointer, and
+    // the handler is the same. Events that hit a row still bubble to the tbody
+    // first, so row-level behaviour is unchanged.
+    const shell = tbody ? tbody.closest('.playlist-table-container') : null;
+    const panels = [tbody, shell && shell !== tbody ? shell : null].filter(Boolean);
+
+    for (const panel of panels) {
         panel.addEventListener('dragover', (e) => {
             e.preventDefault();
             panel.style.background = 'var(--bg-mid)';
