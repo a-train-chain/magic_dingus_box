@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=76">
+    <link rel="stylesheet" href="/static/style.css?v=78">
 </head>
 
 <body class="faceplate">
@@ -647,6 +647,13 @@
                             onchange="handleRestoreUpload(this)">
                         <button class="btn-secondary"
                             onclick="document.getElementById('mobileRestoreFile').click()">Select Backup File</button>
+                        <!-- The only visible restore status. Its counterpart
+                             #restoreStatus lives inside #settingsSectionWrapper,
+                             which is inline display:none and is never unhidden
+                             (showSettingsSection() is defined but called from
+                             nowhere) — so restoring a backup reported nothing on
+                             screen at all. -->
+                        <div id="mobileRestoreStatus" class="restore-status"></div>
                     </div>
                 </div>
             </div>
@@ -759,7 +766,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=93"></script>
+    <script src="/static/manager.js?v=95"></script>
 
 </body>
 

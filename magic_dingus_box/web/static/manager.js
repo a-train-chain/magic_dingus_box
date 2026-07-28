@@ -4658,16 +4658,25 @@ async function handleRestoreUpload(input) {
  * @param {string} message - The message to display
  */
 function showRestoreStatus(type, message) {
-    const statusEl = document.getElementById('restoreStatus');
-    if (!statusEl) return;
+    // Writes to EVERY status element, not just #restoreStatus. That one lives
+    // inside #settingsSectionWrapper (index.html), which carries an inline
+    // display:none and is never unhidden — showSettingsSection() is defined but
+    // called from nowhere in the codebase. So restoring a backup produced no
+    // on-screen feedback whatsoever: no "Restoring…", no success, no error.
+    const els = ['restoreStatus', 'mobileRestoreStatus']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+    if (!els.length) return;
 
-    statusEl.textContent = message;
-    statusEl.className = 'restore-status visible ' + type;
+    els.forEach(el => {
+        el.textContent = message;
+        el.className = 'restore-status visible ' + type;
+    });
 
     // Auto-hide success/error messages after 5 seconds
     if (type !== 'loading') {
         setTimeout(() => {
-            statusEl.classList.remove('visible');
+            els.forEach(el => el.classList.remove('visible'));
         }, 5000);
     }
 }
@@ -4677,20 +4686,29 @@ function showRestoreStatus(type, message) {
 /**
  * Refresh and display system health information
  */
+/** Every System Health panel currently in the DOM (desktop card + phone card). */
+function healthElements() {
+    return ['healthInfo', 'mobileHealthInfo']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+}
+
 async function refreshHealthInfo() {
     if (!currentDevice) return;
 
-    const healthEl = document.getElementById('healthInfo');
-    if (!healthEl) return;
+    const healthEls = healthElements();
+    if (!healthEls.length) return;
 
-    healthEl.innerHTML = '<span class="loading">Loading...</span>';
+    healthEls.forEach(el => { el.innerHTML = '<span class="loading">Loading...</span>'; });
 
     try {
         const data = await apiGet(`${currentDevice.url}/admin/health/detailed`);
         displayHealthInfo(data);
     } catch (e) {
         console.error('Health check failed:', e);
-        healthEl.innerHTML = `<span class="loading">Failed to load health info</span>`;
+        healthEls.forEach(el => {
+            el.innerHTML = '<span class="loading">Failed to load health info</span>';
+        });
     }
 }
 
@@ -4699,8 +4717,12 @@ async function refreshHealthInfo() {
  * @param {object} data - Health data from the API
  */
 function displayHealthInfo(data) {
-    const healthEl = document.getElementById('healthInfo');
-    if (!healthEl) return;
+    // Both cards, for the same reason as showRestoreStatus: #healthInfo is
+    // inside the permanently hidden #settingsSectionWrapper, while the phone's
+    // Settings tab renders #mobileHealthInfo. Writing only to the former meant
+    // the mobile "Refresh" button appeared to do nothing.
+    const healthEls = healthElements();
+    if (!healthEls.length) return;
 
     let html = '';
 
@@ -4777,7 +4799,7 @@ function displayHealthInfo(data) {
         </div>`;
     }
 
-    healthEl.innerHTML = html;
+    healthEls.forEach(el => { el.innerHTML = html; });
 }
 
 /**
@@ -4916,7 +4938,13 @@ function handleLibraryDragStart(event) {
         type: 'local',
         data: availableVideos[index],
         path: path,
-        source: 'library'
+        source: 'library',
+        // The drop guards (manager.js setupPlaylistDropZone / the touch drop)
+        // require draggedItem.playlistType to match the target panel's type,
+        // so that a video cannot be dropped into a game playlist. Neither live
+        // dragstart handler set it, so the guard compared undefined === 'video'
+        // and every library drag silently added nothing.
+        playlistType: 'video'
     };
 
     event.target.classList.add('dragging');
@@ -5083,7 +5111,8 @@ function handleROMLibraryDragStart(event) {
         data: rom,
         system: system,
         path: path,
-        source: 'library'
+        source: 'library',
+        playlistType: 'game'   // see handleLibraryDragStart
     };
 
     event.target.classList.add('dragging');
