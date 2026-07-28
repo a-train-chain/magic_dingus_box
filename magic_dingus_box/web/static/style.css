@@ -9809,3 +9809,125 @@ body.faceplate .bottom-nav {
     padding: 0 10px;
   }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- The library tables were never given the panel they were written for --
+   *
+   * style.css:6286-6290 says, of the old table chrome: "In the faceplate that
+   * job belongs to the PANEL, not the table: see the `#videoList, #romsList`
+   * rule in the appended block, which sinks the container using
+   * remote.css:241-247. The table itself is now transparent." The table WAS
+   * made transparent (style.css:6306-6313) — but that container rule was never
+   * written. The only `#videoList, #romsList` rule in the file is the phone
+   * density block at style.css:6883 and all it carries is `padding: 8px`.
+   * Measured at 1440x900 before this: background rgba(0,0,0,0), box-shadow
+   * none, border 0px none, border-radius 0px. So All Videos and ROM Library —
+   * the two densest screens in the console — were bare rows floating on the
+   * page while every other information container in the app (health, updates,
+   * library filters, the playlist table) sits in a well.
+   *
+   * This is the file's own inset-well recipe (style.css:5319-5325, itself
+   * remote.css:241-247 verbatim): 8px radius, --accent at 20% for the recess
+   * lip, the #151115 -> #1B161B fill, and the inset top shadow that reads as an
+   * undercut. The rule of the system, stated at style.css:5313: anything that
+   * HOLDS INFORMATION is sunk into the plate. A 180-row ROM list is the most
+   * information on any screen here.
+   *
+   * --- and they ran auto table-layout, so the DATA set the grid -------------
+   *
+   * `table-layout: auto` sizes columns from content, which means the widest
+   * string in any column dictates the whole grid and the grid moves whenever
+   * the library changes. Measured consequences at 1440x900:
+   *
+   *   ROM Library:  Filename 826px for content whose 99th percentile is 598px
+   *                 and whose median is 211px — a ~600px void on the median
+   *                 row before the eye reaches System, while System and Size
+   *                 were squeezed to 117px each.
+   *   All Videos:   the six columns landed 266/175/323/90/224/105 purely by
+   *                 content accident; renaming one playlist re-lays out every
+   *                 column in the table.
+   *
+   * Fixed layout with declared widths makes the grid a decision instead of a
+   * side effect. The run-away was reproduced directly: with auto layout, giving
+   * ONE video a long "Used In Playlists" value moved four other columns —
+   *     Title 261 -> 228, Artist 173 -> 157, Filename 318 -> 283,
+   *     Used In  223 -> 307
+   * i.e. 84px taken from the identity columns by one rename. Under fixed
+   * layout the same edit moves nothing: 275/164/333/88/199/111 before and
+   * after.
+   *
+   * The percentages are not guesses — each column was probed against the live
+   * library and the allocation chosen on measured wrapping:
+   *
+   *   ROM Library, wrapped filenames out of 180:
+   *     auto layout        0/180, Filename 826px
+   *     58/16/13/13        1/180, Filename 680px  (still above the p99 598px)
+   *   Table height 10285 -> 10292px, i.e. one extra wrapped line in 180 rows,
+   *   in exchange for 146px less eye travel on every row and a grid that no
+   *   longer moves when a ROM is added.
+   *
+   *   All Videos, wrapped cells (title/artist/filename/usage) out of 31 each,
+   *   at 1440x900:
+   *     auto layout          9 / 7 / 20 / 14 = 50   table 1997px tall
+   *     23/13.5/28/7.5/18/10 9 / 8 / 17 / 14 = 48   table 2010px tall
+   *   Two of the six columns are sized to a hard floor rather than to taste:
+   *     · "Used In Playlists" 18% — the badge has a wrapping cliff at 199px
+   *       (14 wrapped at 199, 25 wrapped at 193). 18% clears it at the NARROW
+   *       end of the gate too, where a scrollbar takes the table down to
+   *       1134px: 204px there, 211px at 1440. 17% measured fine at 1440 and
+   *       fell off the cliff at 1280 — sizing to the wide case only would have
+   *       shipped a defect nobody would have looked for.
+   *     · Actions 10% — the Delete key is 85.3px and does not shrink. 10%
+   *       leaves 8.1px of slack at the narrow end, 11.7px at 1440. 9.5% left
+   *       2.4px, which is inside the margin of a different platform's
+   *       scrollbar width.
+   *
+   * The two tables share the .video-library-table class and do NOT share a
+   * column list (six columns vs four), so the widths hang off the container
+   * ids. */
+  body.faceplate #videoList,
+  body.faceplate #romsList {
+    padding: 14px 14px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 191, 66, .20);
+    background: linear-gradient(180deg, #151115, #1B161B);
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, .75);
+  }
+
+  /* ROM Library — Filename, System, Size, Actions. Four columns fit at every
+   * desktop width: measured at the 1024px floor the grid is 509/140/114/114
+   * and the 85.3px Delete key still clears its 94px cell. */
+  body.faceplate #romsList .video-library-table { table-layout: fixed; }
+  body.faceplate #romsList .video-library-table th:nth-child(1) { width: 58%; }
+  body.faceplate #romsList .video-library-table th:nth-child(2) { width: 16%; }
+  body.faceplate #romsList .video-library-table th:nth-child(3) { width: 13%; }
+  body.faceplate #romsList .video-library-table th:nth-child(4) { width: 13%; }
+}
+
+/* All Videos carries SIX columns, and six do not fit below ~1280px. This is
+ * measured, not cautious: at a 1024px viewport the table is 878px wide, and
+ * the six columns' comfortable widths sum to ~1008px. Auto layout copes with
+ * that deficit intelligently — it protects the two `white-space: nowrap`
+ * columns (Size 90px, Actions 105px) and takes the shortfall out of the three
+ * wrapping text columns. A static allocation cannot: the same percentages that
+ * measure best at 1440 give Actions only 83px at 1024, and the 85.3px Delete
+ * key then overflows its cell.
+ *
+ * So the declared grid starts where the deficit ends. `.container` is capped at
+ * max-width 1280px, so at and above a 1280px viewport the table is a CONSTANT
+ * 1170px no matter how wide the window gets — the percentages resolve to the
+ * same pixels every time, which is exactly the regime a fixed grid is for.
+ * Below 1280 the table is genuinely width-starved and auto layout's
+ * need-based reallocation is the better algorithm. Nested inside the desktop
+ * tier, so this still cannot reach a phone. */
+@media (min-width: 1280px) {
+  /* Title, Artist, Filename, Size, Used In Playlists, Actions */
+  body.faceplate #videoList .video-library-table { table-layout: fixed; }
+  body.faceplate #videoList .video-library-table th:nth-child(1) { width: 23%; }
+  body.faceplate #videoList .video-library-table th:nth-child(2) { width: 13.5%; }
+  body.faceplate #videoList .video-library-table th:nth-child(3) { width: 28%; }
+  body.faceplate #videoList .video-library-table th:nth-child(4) { width: 7.5%; }
+  body.faceplate #videoList .video-library-table th:nth-child(5) { width: 18%; }
+  body.faceplate #videoList .video-library-table th:nth-child(6) { width: 10%; }
+}
