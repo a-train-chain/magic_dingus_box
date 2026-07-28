@@ -286,6 +286,15 @@ def _validate_csrf_token(token: str | None) -> bool:
     return token in _csrf_tokens
 
 
+class _ExtractTooLarge(Exception):
+    """Internal signal: a ZIP entry would push extraction past the byte cap.
+
+    Raised from inside the streaming loop so the staging temp file is cleaned up
+    by one handler rather than at each bail-out point. Never escapes the import
+    endpoint.
+    """
+
+
 def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8",
                        mode: int = 0o644) -> None:
     """Write `content` to `path` so an interrupted write cannot corrupt it.
@@ -1597,33 +1606,56 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # deletes the partial file if any single entry would
                         # push us past MAX_EXTRACT_BYTES — defends against ZIP
                         # bombs that lie in the central directory's file_size.
+                        # Stage into a temp file in the SAME directory and only
+                        # move it into place once the whole entry is written.
+                        #
+                        # This used to open(output_path, 'wb') directly, which
+                        # truncates an existing video the instant it is called —
+                        # before anything has verified the replacement. Both
+                        # bail-out paths below then unlink()ed it. So an operator
+                        # re-importing with overwrite=true against a package that
+                        # trips the size cap lost videos that were already on the
+                        # box and got nothing back: the original was destroyed at
+                        # open() and the partial was deleted on abort.
+                        #
+                        # Staging makes every failure a no-op for the existing
+                        # file, and makes the swap atomic so a reader never sees
+                        # a half-written video.
                         actual_written = 0
                         remaining = MAX_EXTRACT_BYTES - total_extracted
+                        tmp_fd, tmp_name = tempfile.mkstemp(
+                            dir=str(output_path.parent),
+                            prefix=f".{output_path.name}.",
+                            suffix=".part",
+                        )
+                        tmp_media = Path(tmp_name)
                         try:
-                            with zf.open(media_file) as src, open(output_path, 'wb') as dst:
+                            with zf.open(media_file) as src, os.fdopen(tmp_fd, 'wb') as dst:
                                 while True:
                                     chunk = src.read(64 * 1024)
                                     if not chunk:
                                         break
                                     actual_written += len(chunk)
                                     if actual_written > remaining:
-                                        dst.close()
-                                        try:
-                                            output_path.unlink()
-                                        except OSError:
-                                            pass
-                                        return error_response(
-                                            "VALIDATION_ERROR",
-                                            f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
-                                            status=413
-                                        )
+                                        raise _ExtractTooLarge()
                                     dst.write(chunk)
-                        except Exception:
-                            try:
-                                output_path.unlink()
-                            except OSError:
-                                pass
+                                dst.flush()
+                                os.fsync(dst.fileno())
+                        except _ExtractTooLarge:
+                            tmp_media.unlink(missing_ok=True)
+                            return error_response(
+                                "VALIDATION_ERROR",
+                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
+                                status=413
+                            )
+                        except BaseException:
+                            tmp_media.unlink(missing_ok=True)
                             raise
+
+                        # mkstemp creates 0600; media must stay readable by the
+                        # kiosk process, matching what f.save() produced before.
+                        os.chmod(tmp_media, 0o644)
+                        os.replace(tmp_media, output_path)
 
                         total_extracted += actual_written
                         videos_imported += 1
