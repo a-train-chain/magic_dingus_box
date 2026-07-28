@@ -395,6 +395,22 @@
 // Remove this block once the question is settled.
 // ---------------------------------------------------------------------------
 (function reportViewport() {
+  // The fix retries up to 5 times at 120ms, so measuring synchronously would
+  // capture the PRE-fix height and prove nothing. Report from inside the
+  // settle callback instead, with a timeout backstop so a fix that never
+  // settles still produces a reading rather than silence.
+  var sent = false;
+  function send(info) {
+    if (sent) return; sent = true;
+    try { measureAndPost(info || {}); } catch (e) {}
+  }
+  fixStandaloneViewport(function (beforeH, afterH, kicks) {
+    send({ before: beforeH, after: afterH, kicks: kicks });
+  });
+  setTimeout(function () { send({ before: null, after: window.innerHeight, kicks: -1 }); }, 1500);
+})();
+
+function measureAndPost(fixInfo) {
   try {
     var probe = document.createElement('div');
     probe.style.cssText =
@@ -421,7 +437,43 @@
       gapBelowScreen: (r.bottom != null) ? Math.round(window.innerHeight - r.bottom) : null,
       visualViewportH: window.visualViewport ? Math.round(window.visualViewport.height) : null,
       orientation: (window.innerWidth > window.innerHeight) ? 'landscape' : 'portrait',
-      cssVersion: 'v16'
+      cssVersion: 'v25-lvh',
+      // Resolve the viewport units on the DEVICE. On iOS these differ:
+      // svh/vh track the SMALL viewport, lvh the LARGE one. If lvh comes back
+      // larger than vh, .screen is now sized to the full screen and the strip
+      // is filled. Equal values mean the platform draws no distinction here.
+      unitLVH: (function(){var t=document.createElement('div');
+        t.style.cssText='position:absolute;height:100lvh;visibility:hidden;top:0';
+        document.body.appendChild(t);var h=Math.round(t.getBoundingClientRect().height);t.remove();return h;})(),
+      unitVH: (function(){var t=document.createElement('div');
+        t.style.cssText='position:absolute;height:100vh;visibility:hidden;top:0';
+        document.body.appendChild(t);var h=Math.round(t.getBoundingClientRect().height);t.remove();return h;})(),
+      screenRenderedH: (function(){var e=document.querySelector('.screen');
+        return e?Math.round(e.getBoundingClientRect().height):null;})(),
+      fixBefore: fixInfo.before,
+      fixAfter: fixInfo.after,
+      fixKicks: fixInfo.kicks,
+      // WHERE the web view sits on the physical screen. The shortfall is
+      // exactly safe-area-inset-top, which is consistent with BOTH "web view
+      // at y=0, 59px dead at the bottom" and "web view at y=59, reaching the
+      // bottom" — opposite problems needing opposite fixes. screenY/screenTop
+      // is the offset of the viewport from the top of the display and tells
+      // them apart outright.
+      screenY: (typeof window.screenY === 'number') ? window.screenY : null,
+      screenTop: (typeof window.screenTop === 'number') ? window.screenTop : null,
+      availH: (window.screen && window.screen.availHeight) || null,
+      clientH: document.documentElement.clientHeight,
+      displayMode: (window.matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen'
+                 : window.matchMedia('(display-mode: standalone)').matches ? 'standalone'
+                 : window.matchMedia('(display-mode: minimal-ui)').matches ? 'minimal-ui' : 'browser'),
+      // Absolute screen position of the gold frame's bottom edge, which is the
+      // thing that actually looks wrong.
+      frameBottomOnScreen: (function () {
+        var el = document.querySelector('.screen');
+        if (!el) return null;
+        var b = el.getBoundingClientRect().bottom - 9;
+        return Math.round(b + ((typeof window.screenY === 'number') ? window.screenY : 0));
+      })()
     };
     probe.remove();
     fetch('/api/remote/diag', {
@@ -430,4 +482,79 @@
       body: JSON.stringify(data)
     }).catch(function () {});
   } catch (e) { /* diagnostics must never break the remote */ }
-})();
+}
+
+// ---------------------------------------------------------------------------
+// iOS standalone viewport re-evaluation.
+//
+// Measured on an installed PWA (iPhone, iOS 18.7): screen.height 932,
+// window.screenY 0, innerHeight 873. The web view is top-aligned and 59px
+// SHORT of the display — exactly safe-area-inset-top — leaving dead space
+// along the bottom that no stylesheet can reach, because a fixed element
+// cannot paint outside the layout viewport. That is why resizing .screen
+// (100dvh -> 100% -> position:fixed) never helped: .screen was filling its
+// viewport perfectly the whole time; the VIEWPORT was wrong.
+//
+// The metas are correct (viewport-fit=cover + black-translucent, verified
+// served). iOS simply computes the standalone window height once at launch,
+// gets it wrong, and only recomputes on a resize. Hence the long-standing
+// workaround of rotating to landscape and back: the rotation supplies the
+// resize, and the window snaps to the full 932.
+//
+// So supply that resize ourselves. Detaching and re-appending the viewport
+// meta makes WebKit re-parse the viewport configuration, which is the
+// programmatic equivalent of the rotation without moving the phone.
+// Guarded on being short by a real margin so it is a no-op on devices and
+// browsers that were correct to begin with, and bounded so it cannot loop.
+// ---------------------------------------------------------------------------
+function fixStandaloneViewport(onSettled) {
+  var standalone = !!window.navigator.standalone ||
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  var before = window.innerHeight;
+  if (!standalone || !window.screen || !window.screen.height) {
+    if (onSettled) onSettled(before, window.innerHeight, 0);
+    return;
+  }
+  var tries = 0;
+  (function kick() {
+    // 10px of slack: some devices legitimately differ by a pixel or two, and
+    // we must not thrash on those.
+    if (window.innerHeight >= window.screen.height - 10 || tries >= 5) {
+      if (onSettled) onSettled(before, window.innerHeight, tries);
+      return;
+    }
+    tries++;
+    var m = document.querySelector('meta[name="viewport"]');
+    if (!m) { if (onSettled) onSettled(before, window.innerHeight, tries); return; }
+    var content = m.getAttribute('content');
+    var parent = m.parentNode;
+    parent.removeChild(m);
+    // Force a layout flush so WebKit actually drops the stale viewport config
+    // rather than coalescing the remove+append into no change at all.
+    void document.documentElement.offsetHeight;
+    var n = document.createElement('meta');
+    n.setAttribute('name', 'viewport');
+    n.setAttribute('content', content);
+    parent.appendChild(n);
+    setTimeout(kick, 120);
+  })();
+}
+
+// Re-run when the app is restored from the background: iOS re-creates the
+// window on resume and can reintroduce the same stale height.
+window.addEventListener('pageshow', function () { fixStandaloneViewport(null); });
+
+// ---------------------------------------------------------------------------
+// Gesture guard. The shortfall-compensation experiment that used to live here
+// is gone: extending .screen below the layout viewport clipped the gold rule
+// and the D-pad instead of filling the strip. Only the root BACKGROUND
+// propagates into that region (which the texture rule already exploits);
+// content and borders are clipped to the viewport regardless.
+// ---------------------------------------------------------------------------
+
+
+// iOS-specific pinch events; belt-and-braces alongside user-scalable=no and
+// touch-action, because a remote must never zoom.
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) {
+  document.addEventListener(t, function (e) { e.preventDefault(); }, { passive: false });
+});

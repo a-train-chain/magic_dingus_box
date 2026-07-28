@@ -55,62 +55,63 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* The root carries the SAME faceplate texture as .screen.
+/* The root carries the faceplate's BASE COLOUR only — deliberately not the
+ * texture stack.
  *
- * This is what actually fixes the "bar along the bottom" that survived three
- * attempts at re-sizing .screen (100dvh -> 100% -> position:fixed). Every one
- * of those chased the SIZE of .screen and missed why a gap is visible at all:
- * html/body painted flat var(--bg) while .screen painted a textured stack, so
- * any strip .screen did not cover rendered as an obviously different flat
- * block. The eye reads that as a bar, not as a few missing pixels.
+ * It used to carry the full four-layer stack with background-attachment:
+ * fixed, added back when .screen was position:fixed and fell 59px short: the
+ * idea was that if .screen could not reach the bottom strip, the root's
+ * background would paint it and hide the seam.
  *
- * Rather than keep hunting the last pixel of viewport arithmetic — which on
- * iOS depends on viewport-fit, the standalone/Safari distinction and the home
- * indicator, and which I could not reproduce off-device — make the seam
- * IMPOSSIBLE TO SEE. If .screen ever comes up short again, for any reason,
- * what shows through is identical to what surrounds it.
+ * That is now actively harmful. .screen is normal-flow at 100lvh and genuinely
+ * covers the whole screen, so the root's copy is never needed — and because
+ * `fixed` sizes it to the VIEWPORT (873) while .screen sizes to the full
+ * screen (932), the two copies of
+ *     radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%)
+ * centre 63px apart (943 vs 1007). Near the bottom they disagree, and that
+ * mismatch reads as a line where the texture "cuts off" and the colour shifts.
  *
- * background-attachment: fixed pins the gradients to the viewport so the
- * root's copy lines up with .screen's rather than sliding out of register.
- * The layer order and values are copied verbatim from .screen — if you change
- * one, change both. */
-html {
-  background-color: var(--bg);
-  background-attachment: fixed;
-  background-image:
-    repeating-linear-gradient(45deg, rgba(242,228,217,.013) 0 1px, transparent 1px 3px),
-    repeating-linear-gradient(-45deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
-    radial-gradient(130% 62% at 50% -8%, rgba(245,191,66,.05), transparent 60%),
-    radial-gradient(120% 55% at 50% 108%, rgba(0,0,0,.5), transparent 60%);
-}
+ * Flat --bg here: it is the splash/overscroll colour and nothing more. One
+ * element owns the texture, so there is no second copy to fall out of
+ * register. */
+html { background-color: var(--bg); }
 body.remote { user-select: none; }
+/* manipulation = pan + tap only: kills pinch-zoom and the double-tap zoom
+   heuristic. The remote is a control surface; zooming it is never intended.
+   Backed up by user-scalable=no in the meta (honoured in home-screen apps)
+   and gesture* preventDefault in remote.js. */
+html, body { touch-action: manipulation; }
 
 /* ── panel ─────────────────────────────────────────────────────── */
-/* position:fixed + inset:0 — NOT a height unit.
+/* NORMAL FLOW + 100lvh — deliberately NOT position:fixed.
  *
- * The faceplate is a VIEWPORT ornament: the gold rule and the corner screws
- * are positioned against .screen, so any shortfall in .screen's height ends
- * the frame early and leaves a strip of bare background at the bottom of the
- * phone. Two height units were tried and BOTH failed on device:
+ * This is the fix, and the clue was that other Content Manager pages have a
+ * nav bar that renders INTO the strip at the bottom of the phone while the
+ * remote could not. Those pages are normal-flow documents; .screen was
+ * position:fixed. On iOS a FIXED element is sized to the SMALL viewport
+ * (measured 873 on a 932pt screen — short by exactly safe-area-inset-top),
+ * whereas normal-flow content fills the LARGE viewport, the full 932. So the
+ * strip was always reachable; fixed positioning was what opted out of it.
  *
- *   min-height: 100dvh — correct in the steady state, but WebKit had not
- *     settled its viewport bookkeeping on the first paint after a same-app
- *     navigation (Content Manager -> remote in an installed PWA), so the
- *     first open came up short and only a resize fixed it. That is why
- *     rotating to landscape and back appeared to "repair" the layout.
- *   min-height: 100% — resolves against html/body height:100%, which in a
- *     standalone PWA with viewport-fit=cover does not reliably equal the
- *     full screen either. Still short, and now short PERMANENTLY rather
- *     than only on first paint.
+ * lvh is the large-viewport unit: the height with any retractable system UI
+ * treated as RETRACTED, i.e. the full screen. That is precisely the box we
+ * want, and unlike dvh it does not shrink, so there is no first-paint
+ * bookkeeping to be stale (which is what made 100dvh fail).
  *
- * A fixed element with inset:0 is defined against the viewport itself, so
- * there is no intermediate box to resolve a percentage against and no
- * bookkeeping to be stale. It is correct on the first paint and needs no
- * resize. Safe here because this UI never scrolls — every breakpoint is
- * verified at zero page overflow — and overflow-y:auto keeps the text-input
- * mode usable if the OS keyboard ever does squeeze the content. */
+ * History, so none of this gets re-tried:
+ *   100dvh   — short on first paint after a same-app navigation; a resize
+ *              fixed it, which is why rotating to landscape and back worked.
+ *   100%     — resolves against html/body height:100%, itself the small
+ *              viewport. Short permanently.
+ *   fixed    — pinned to the small viewport by definition. Short permanently,
+ *              and opts out of the strip entirely.
+ *   bottom:-59px on the fixed box — pushed the gold rule and the D-pad past
+ *              the clip boundary; they stopped rendering.
+ * 100vh is kept first as a fallback for anything without lvh support. */
 .screen {
-  position: fixed; inset: 0;
+  position: relative;
+  min-height: 100vh;
+  min-height: 100lvh;
   overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column;
   /* The top pad is FLOORED at 46px. env(safe-area-inset-top) is ~59 in an
@@ -317,14 +318,39 @@ a { text-decoration: none; color: inherit; }
  * Change --cap/--gap/--dpad/--arm and everything below follows.
  */
 .ctrl {
-  --cap: 84px;          /* square keycap edge            */
-  --gap: 18px;          /* gap between the top-row keys  */
-  --dpad: 196px;        /* d-pad bounding box            */
-  --arm: 60px;          /* d-pad arm                     */
-  --vgap: 26px;         /* GREEN -> MENU vertical gap.
-                           Must clear the 5px well ring on BOTH caps or
-                           the two keys visually fuse into one column. */
+  /* FLUID CLUSTER. Every dimension derives from --cap, and --cap derives from
+     the viewport, so the whole control cluster scales continuously instead of
+     jumping between fixed breakpoints — no size can fall between tiers and
+     overflow.
+
+     min(21.5vw, 11.4vh) picks whichever axis is scarcer: width-bound on tall
+     phones, height-bound on short ones. Reproduces the approved sizes within
+     ~1px (375x667 -> 76, 390x844 -> 84, 430x932 -> 92), so the look you signed
+     off on is preserved rather than re-tuned.
+
+     The ratios are taken from that approved 84/18/196/60/26 default. Because
+     they are all proportional to --cap, the D-pad cross gap is
+     (dpad - 3*arm)/2 = --cap * 0.0952 — structurally positive at EVERY size,
+     so the arrows can never collide with the centre key again.
+
+     Floor 62px is not cosmetic: --arm is 0.7143*cap, so 62 is the smallest cap
+     that keeps the D-pad limbs at Apple's 44pt touch minimum. Ceiling 96px
+     stops the cluster ballooning on tablets. */
+  --cap: clamp(62px, min(21.5vw, 11.4vh), 96px);
+  --gap:  calc(var(--cap) * 0.2143);
+  --dpad: calc(var(--cap) * 2.3333);
+  --arm:  calc(var(--cap) * 0.7143);
+  --vgap: calc(var(--cap) * 0.3095);
   --roww: calc(var(--cap) * 3 + var(--gap) * 2);
+  /* Centre the D-pad on the midpoint between the YELLOW and RED caps rather
+     than on the cluster. Yellow's centre is --cap/2 and red's is
+     1.5*--cap + --gap, so their midpoint is --cap + --gap/2 — which is also
+     the centre of the gap between them. Subtract half the pad to get its left
+     edge. The old value was a flat 8px, which left the pad ~13px right of
+     that mark. Resolves slightly negative (about -5px at the default tier),
+     i.e. the pad overhangs the cluster box a touch on the left; that is
+     intentional and .ctrl does not clip. */
+  --dpadleft: calc(var(--cap) + var(--gap) / 2 - var(--dpad) / 2);
   /* Cluster height = glyph strip + the two cap rows + the pad, measured
      down to the pad's floor. --dpadtop subtracts --dpad and --menutop
      adds --arm/2 back, so --arm/2 must be SUBTRACTED here or it lands
@@ -403,9 +429,12 @@ a { text-decoration: none; color: inherit; }
    above a coloured value. Right-aligned to the MENU column, and clear of
    the pad's right arm (which ends at x = --dpad + 8). */
 .legend {
-  position: absolute; left: calc(var(--dpad) + 26px);
+  /* Anchored to the PAD, not to the cluster's left edge — otherwise moving the
+     pad changes this gap as a side effect. 26px of daylight from the pad's
+     right arm, whatever --dpadleft resolves to. */
+  position: absolute; left: calc(var(--dpadleft) + var(--dpad) + 26px);
   top: calc(var(--dpadtop) + var(--arm) + 20px);
-  width: calc(var(--roww) - var(--dpad) - 26px);
+  width: calc(var(--roww) - var(--dpadleft) - var(--dpad) - 26px);
 }
 .lrow { margin-bottom: 11px; }
 .lk { display: block; font-size: 9px; color: var(--fg); letter-spacing: .04em; }
@@ -424,7 +453,7 @@ a { text-decoration: none; color: inherit; }
 .playing .ok      { border-color: rgba(127,176,230,.75); color: var(--menu-blue) }
 .playing .lv.act  { color: var(--menu-blue) }
 
-.dwrap { position: absolute; left: 8px; top: var(--dpadtop);
+.dwrap { position: absolute; left: var(--dpadleft); top: var(--dpadtop);
          width: var(--dpad); height: var(--dpad); }
 /* the etch is a TRUE regular hexagon (all six sides equal in a 240
    viewBox), so it must render in a SQUARE box or the projection skews */
@@ -547,7 +576,6 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
 /* Small phones (iPhone SE / mini, 375x667). The 84px cap plus the taller
    cluster does not fit above the fold here, so step everything down. */
 @media (max-width: 389px), (max-height: 700px) {
-  .ctrl { --cap: 76px; --gap: 15px; --dpad: 178px; --arm: 56px; --vgap: 22px; }
   .g { font-size: 13px; }
   .d i { font-size: 13px; }
   .ok { font-size: 7px; }
@@ -580,7 +608,6 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
 /* Large phones (Pro Max / Plus, >= 430pt). Extra width is real estate —
    grow the keys rather than leaving wide dead margins. */
 @media (min-width: 430px) and (min-height: 860px) {
-  .ctrl { --cap: 92px; --gap: 20px; --dpad: 212px; --arm: 64px; --vgap: 28px; }
   .g { font-size: 16px; }
   .d i { font-size: 16px; }
   .ok { font-size: 9px; }
@@ -642,7 +669,10 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
        above it and the .disp margin left 1px below. 20px on both sides gives
        the tap box 9px of clearance either way. */
     padding-top: calc(env(safe-area-inset-top) + 20px);
-    padding-bottom: calc(env(safe-area-inset-bottom) + 20px);
+    /* +12, not +20. In LANDSCAPE env(safe-area-inset-bottom) is already ~21px
+       for the home indicator, so +20 on top of it reserved ~41px of dead space
+       and was the single biggest consumer of the height budget. */
+    padding-bottom: calc(env(safe-area-inset-bottom) + 12px);
     /* The panel spans nearly the full column here, so the default 22px gutter
        runs it under the corner screws. Clear them. 44px, not 40px: the screws
        moved to 28px (spanning 28..39), and in LANDSCAPE safe-area-inset-top is
@@ -676,7 +706,30 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
      row-gap is only 302px — it overflowed the page by 6px. 152/46 comes to
      295px with 7px to spare, and both --arm and --cap stay at or above the
      44pt touch minimum (46 and 62). */
-  .ctrl { --cap: 62px; --gap: 12px; --dpad: 152px; --arm: 46px; --vgap: 16px; }
+  /* 58/12/148/44/14 -> cluster 282px against a 289px budget on the shortest
+     landscape phone (844x390) once the REAL ~21px home-indicator inset is
+     counted. The previous 62/12/152/46/16 came to 295 and overflowed by 13px.
+     It did not scroll before only because .screen was position:fixed and
+     silently CLIPPED the overflow; normal flow (needed for the 100lvh fix)
+     surfaces it as scroll instead. Cross gap stays healthy at +8, and --arm 44
+     is exactly the touch-target minimum. */
+  /* FLUID, height-bound. Landscape is a two-column layout, so height is the
+     scarce axis and width is not. calc(25vh - 39.5px) is the line through the
+     two verified points (390 -> 58, 430 -> 68), so both keep their approved
+     sizes while everything between and beyond scales smoothly.
+
+     --arm takes max(44px, ...) to hold the touch minimum on short phones, and
+     --dpad then takes max(3*arm + 8px, 2.4*cap) so the cross gap stays >= 4px
+     BY CONSTRUCTION even when that floor kicks in. Without the first term a
+     44pt arm on a 58px cap would leave the arrows overlapping the centre key,
+     which is the exact bug fixed earlier by hand. */
+  .ctrl {
+    --cap:  clamp(44px, calc(25vh - 39.5px), 84px);
+    --gap:  calc(var(--cap) * 0.2069);
+    --arm:  max(44px, calc(var(--cap) * 0.72));
+    --dpad: max(calc(3 * var(--arm) + 8px), calc(var(--cap) * 2.4));
+    --vgap: calc(var(--cap) * 0.2414);
+  }
   .mark img { width: 190px; }
   .mark { margin-top: 0; }
   .rule { display: none; }
@@ -694,4 +747,61 @@ body.text-mode .art { display: none; }   /* give the keyboard room */
   .g { font-size: 12px; }
   .lk, .lv { font-size: 8px; }
   .lv { white-space: nowrap; }
+}
+
+/* Taller landscape phones (430pt+ tall: Pro Max / Plus class).
+ *
+ * The base landscape tier is sized for the SHORTEST landscape phone we
+ * support — 844x390, where the cluster budget is only
+ *   390 - 40 padding - 28 header - 20 row-gap = 302px
+ * and 62px caps are what fits. On a 932x430 that budget is 342px, so the
+ * same 210px-wide cluster left the buttons looking cramped against the D-pad
+ * with visible slack to their right.
+ *
+ * 68/14 widens the row 210 -> 232px and the pad grows with it, cross gap
+ * (160 - 3*48)/2 = +8px, cluster height 314.
+ *
+ * SIZED AGAINST THE REAL BUDGET, WHICH IS SMALLER THAN IT LOOKS. A desktop
+ * browser reports env(safe-area-inset-bottom) as 0, but an iPhone in
+ * LANDSCAPE reports ~21px for the home indicator, and this block's
+ * padding-bottom is calc(env(safe-area-inset-bottom) + 20px). So the real
+ * budget on a 932x430 is
+ *   430 - 20 (top) - 33 (bottom: 21 inset + 12) - 28 (header) - 20 (row-gap)
+ *   = 329px,  not the 342 a zero-inset harness suggests.
+ * A first pass at 74/14 measured 335 — zero overflow in the harness, but 14px
+ * of scroll on the actual phone. 314 leaves 7px of genuine slack.
+ *
+ * It would still OVERFLOW the 390-tall phone, which is why this stays gated
+ * on min-height rather than folded into the base tier.
+ *
+ * The extra width comes from the panel (608 -> 568), which has it to spare.
+ * It does NOT come from the 44px right gutter: that is screw clearance —
+ * the corner screws span 28..39 from the edge, so content must stop at 44. */
+/* Very short landscape (<=360pt tall: SE1/5s class, 568x320).
+ *
+ * Here --cap has already hit its 44px floor — it cannot shrink further without
+ * dropping the D-pad limbs below the 44pt touch minimum — and the cluster
+ * still ran 11px past the bottom. So the space comes out of the CHROME rather
+ * than the controls: a smaller wordmark, tighter top padding and a tighter
+ * row-gap. The artwork block goes entirely; at this height the panel is barely
+ * two lines tall and the cube was crowding the title. */
+@media (orientation: landscape) and (max-height: 360px) {
+  .screen { padding-top: calc(env(safe-area-inset-top) + 10px); row-gap: 10px; }
+  .mark img { width: 132px; }
+  .art { display: none; }
+  .big { font-size: 17px; }
+  .kind { font-size: 8px; }
+  .lk, .lv { font-size: 8px; }
+}
+
+@media (orientation: landscape) and (min-height: 400px) and (max-height: 520px) {
+  /* --cap is fluid now and already resolves to ~68 at this height, so only the
+     type and artwork scale up here. */
+  .artcube { width: 98px; height: 112px; }
+  .big { font-size: 29px; }
+  .g { font-size: 13px; }
+  .d i { font-size: 14px; }
+  .ok { font-size: 8px; }
+  .mlabel { font-size: 10px; }
+  .lk, .lv { font-size: 9px; }
 }

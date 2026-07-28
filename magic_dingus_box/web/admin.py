@@ -460,8 +460,15 @@ NICKNAME_PROMPT_HTML = """
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1F191F">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<!-- Matches the faceplate's BOTTOM edge (#131013), not --bg. iOS paints the
+     region outside the web view with theme-color, and on a standalone launch
+     that region is real: the layout viewport comes up ~59px short of the
+     screen. The strip cannot be drawn into (only the root BACKGROUND
+     propagates past the viewport, not content or borders), so the only way to
+     hide the seam is to make iOS paint it the same colour the faceplate ends
+     on. The bottom radial gradient darkens #1F191F to #131013 there. -->
+<meta name="theme-color" content="#131013">
 <title>Name your remote</title>
 <style>
   * { box-sizing: border-box; }
@@ -3437,8 +3444,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1F191F">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<!-- Faceplate BOTTOM-edge colour (#131013), not --bg. iOS paints the region
+     outside the web view with theme-color, and on a standalone launch that
+     region is real: the layout viewport comes up ~59px short of the screen.
+     It cannot be drawn into (only the root BACKGROUND propagates past the
+     viewport; content and borders are clipped), so matching the colour the
+     faceplate ends on is the only way to hide the seam. -->
+<meta name="theme-color" content="#131013">
 <!-- Same installable-app tags as the other pages. Without these, adding
      to the home screen from THIS page (a real possibility, since it is
      where an expired pairing lands you) produces a generic Safari
