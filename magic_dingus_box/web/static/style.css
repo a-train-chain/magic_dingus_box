@@ -8457,7 +8457,21 @@ header::before {
     transition: background .06s, box-shadow .06s;
 }
 
-.tab.active { color: var(--accent); }
+/* The active key is a LIT key, not a gold slab: dark keycap face, gold label,
+ * lit LED pipe. `background` has to be restated here because the legacy
+ * `.tab.active` (style.css:458) declares `background: var(--accent)` at the
+ * same (0,2,0) specificity as the old `.tab.active { color }` below it — so
+ * source order handed `color` to the faceplate rule and `background` to the
+ * legacy one. The result was #F5BF42 text on #F5BF42: contrast 1.00, the
+ * selected tab rendering as a blank gold rectangle with its label invisible.
+ * Measured live at 1280 wide before this fix.
+ *
+ * Scoped with body.faceplate for (0,3,1) so it beats the legacy rule outright
+ * rather than relying on source order for some properties and not others. */
+body.faceplate .tab.active {
+    background: linear-gradient(180deg, #39323A, #241F25);
+    color: var(--accent);
+}
 
 .tab.active::after {
     background: var(--accent);
@@ -8468,7 +8482,14 @@ header::before {
    Invented here because the Content Manager is also driven from a laptop, and
    gated so a phone tap can never leave a key stuck in a hover state. */
 @media (hover: hover) and (pointer: fine) {
-    .tab:hover           { background: linear-gradient(180deg, #443C45, #2B252C); }
+    /* `color` is restated for the same reason as .tab.active above: the legacy
+       `.tab:hover` (style.css:452) pairs its gold fill with `color:
+       var(--bg-dark)`. This rule replaces the fill with a dark gradient but
+       inherited the dark label, leaving #1F191F on #443C45 — about 1.7:1, so
+       hovering any tab made its own label nearly unreadable. The label stays
+       light on hover, and gold on the active key. */
+    body.faceplate .tab:hover        { background: linear-gradient(180deg, #443C45, #2B252C); color: var(--fg); }
+    body.faceplate .tab.active:hover { color: var(--accent); }
     .tab:hover::after    { background: #6B5518; }
     .tab.active:hover::after { background: var(--accent); }
 }
