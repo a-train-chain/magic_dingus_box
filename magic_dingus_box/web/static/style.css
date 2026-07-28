@@ -3019,7 +3019,7 @@ header::after {
     /* ===== MOBILE LIBRARY CARD LAYOUT ===== */
     /* Transform tables into cards for better readability */
     .video-library-table tr {
-        display: flex !important;
+        display: flex;
         flex-direction: column;
         background: var(--bg-card) !important;
         padding: 1rem;
@@ -8984,3 +8984,23 @@ body.faceplate .screw { z-index: 1; }
   body.faceplate .video-library-table .video-actions { margin-top: 4px; }
   body.faceplate .video-library-table .video-actions button { min-height: 44px; }
 }
+
+/* Library rows stay a single stacked column.
+ *
+ * Two attempts to park the action key beside the text were reverted, and the
+ * reasons are worth keeping so neither is tried again:
+ *
+ *  1. GRID (`.video-actions { grid-column: 2; grid-row: 1/-1 }`) collapsed the
+ *     second column to 0px. `-1` resolves against the EXPLICIT grid, which has
+ *     no rows here, so the key fell back into column 1. Fixed row numbers are
+ *     not usable either: ROM rows carry 4 fields, video rows 6.
+ *  2. ABSOLUTE positioning put the key ON TOP of the meta lines. .video-actions
+ *     is itself a flex container whose button stretches to fill it, so taking
+ *     it out of flow gave it no width constraint and it covered the system and
+ *     size text.
+ *
+ * Doing this properly needs a wrapper element around the text fields, i.e. a
+ * markup change to the row template in manager.js — worth doing, but it is a
+ * functional change to row rendering rather than a restyle, so it is out of
+ * scope here. The stacked row is correct and readable; it is merely tall.
+ * Verified: ROM rows 141px, video rows 189px, actions at the 44pt floor. */
