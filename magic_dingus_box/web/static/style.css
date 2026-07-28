@@ -8107,8 +8107,18 @@ html {
 
    z-index: -1 puts it above the canvas and below every in-flow child of body.
    pointer-events: none means it can never intercept a tap. A pseudo-element
-   cannot be selected by querySelector, so this is invisible to manager.js. */
-body::before {
+   cannot be selected by querySelector, so this is invisible to manager.js.
+
+   ON html::before, NOT body::before. body::before is also claimed by the gold
+   bezel ring (style.css:8871), and `body.faceplate::before` (0,2,1) beats
+   `body::before` (0,0,1) on every property it declares — but it declares no
+   background-image, so these gradients survived onto the bezel element and
+   inherited ITS `z-index: 9998`. The bottom gradient is rgba(0,0,0,.5), so a
+   ~38% black veil was painting over the top of the whole UI, most visibly
+   across the bottom navigation rail. Two different layers cannot share one
+   pseudo-element; the blooms move up to html, which is otherwise only carrying
+   the weave. */
+html::before {
     content: "";
     position: fixed;
     inset: 0;
@@ -9371,4 +9381,31 @@ body.faceplate .search-bar input[type="text"] {
     background-position: 11px center;
     background-size: 15px 15px;
     padding-left: 34px;
+}
+
+/* ============================================================================
+ * Install toast vs. the bottom navigation rail
+ * ==========================================================================*/
+
+/* .install-toast is fixed at left:16px right:16px bottom:16px with z-index
+ * 2000. body.faceplate .bottom-nav is fixed at left:16px right:16px
+ * bottom:16px. Identical footprint, and the toast wins the stack — so on a
+ * first visit from a phone the "Add to Home Screen" coaching card landed
+ * exactly on the rail and covered all five navigation keys. The toast is
+ * dismissed by tapping it, so this was recoverable, but until then the app had
+ * no visible navigation at all.
+ *
+ * Lift it clear of the rail on the tier where the rail exists (<=700px; above
+ * that the top tab strip is the navigation and the rail is display:none).
+ * The offset is built from the rail's own geometry so the two cannot drift:
+ *   16px  rail's own bottom offset
+ * + 69px  rail height excluding its safe-area padding (icon + label + padding)
+ * + max(env(safe-area-inset-bottom), 8px)  the rail's padding-bottom
+ * + 10px  breathing room
+ * Measured: rail occupies 93px from the viewport bottom at 375x812 with a zero
+ * inset, so the toast sits at 103px and clears it by 10. */
+@media (max-width: 700px) {
+  .install-toast {
+    bottom: calc(95px + max(env(safe-area-inset-bottom), 8px));
+  }
 }
