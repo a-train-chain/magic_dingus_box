@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -283,6 +284,55 @@ TEST_CASE("profiles round-trip through JSON", "[controller_profile][json]") {
     REQUIRE(q.binding(LogicalControl::DPAD_UP)->direction == -1);
 }
 
+// Regression test for Fix 1: profiles_from_json used to key its result map
+// by the RAW JSON object key text rather than the canonical
+// vidpid_key(vid, pid) it had just parsed that key into. vidpid_key() always
+// emits lowercase hex, and resolve_mapping_for_pad's lookup
+// (controller_mapping.cpp) always builds its lookup key the same way -- but
+// the key parser above accepts upper- and lower-case hex equally. Before the
+// fix, an uppercase-hex key parsed successfully but was silently unreachable
+// by lookup, so resolution fell all the way through to the built-in/legacy
+// mapping with no error.
+TEST_CASE("a profile captured under an uppercase-hex key is still found by "
+          "resolve_mapping_for_pad, and beats the built-in profile",
+          "[controller_profile][json]") {
+    // 0x0e6d:0x111d is the built-in N64 adapter's vid/pid, and both hex
+    // fields contain letters (e, d), so upper- vs. lower-case actually
+    // differs in the on-disk key text.
+    const char* j = R"({"version":1,"profiles":{
+      "0E6D:111D":{"name":"Rewired N64 pad","style":"n64_style","captured_at":"",
+        "controls":{"n64_a":{"kind":"button","code":999,"token":"77"}}}}})";
+    const auto store = profiles_from_json(j);
+    REQUIRE(store.size() == 1);
+    // Canonicalized to vidpid_key()'s lowercase form, not the raw file key.
+    REQUIRE(store.count("0e6d:111d") == 1);
+    REQUIRE(store.count("0E6D:111D") == 0);
+
+    const auto m = resolve_mapping_for_pad(0x0e6d, 0x111d, store, "snes9x2010_libretro");
+    // The built-in N64 adapter profile's N64_A token is "2" (see
+    // builtin_n64_adapter_profile()); seeing "77" instead proves the
+    // captured profile above was found by lookup and won, not the built-in.
+    REQUIRE(m.a_btn == "77");
+}
+
+// Fix 1's serializer half: profiles_to_json must not trust the caller's map
+// key either, or a non-canonical (or simply wrong) map key would be
+// faithfully written back out to disk, reproducing the read-side bug on the
+// very next load. The serializer derives the on-disk key from the profile's
+// own vid/pid fields instead.
+TEST_CASE("profiles_to_json derives the on-disk key from the profile's own "
+          "vid/pid, ignoring a wrong caller-supplied map key",
+          "[controller_profile][json]") {
+    std::map<std::string, PhysicalProfile> in;
+    PhysicalProfile p = builtin_dragonrise_profile();
+    p.vid = 0x0810; p.pid = 0xe501;
+    in["this-is-not-a-vidpid-key-at-all"] = p;
+    const auto out = profiles_from_json(profiles_to_json(in));
+    REQUIRE(out.size() == 1);
+    REQUIRE(out.count("0810:e501") == 1);
+    REQUIRE(out.count("this-is-not-a-vidpid-key-at-all") == 0);
+}
+
 TEST_CASE("malformed JSON degrades to an empty store", "[controller_profile][json]") {
     REQUIRE(profiles_from_json("").empty());
     REQUIRE(profiles_from_json("not json at all").empty());
@@ -324,6 +374,69 @@ TEST_CASE("profiles_from_json never throws on well-formed-but-wrong-shaped JSON"
     REQUIRE(b->direction == 0);
 }
 
+// Fix 2: controller_profile.h and the code comments enumerate six
+// degrade-gracefully categories (malformed text, non-object "profiles" node,
+// bad map key, unknown style, unknown control key, unknown binding kind),
+// but only "malformed text" and "unknown control key" were actually
+// exercised by a test that reaches the guard it's meant to cover. The four
+// tests below close that gap; each is shaped to genuinely reach its guard
+// rather than short-circuiting earlier (the existing {"x":42} malformed-JSON
+// case, for example, never reaches key parsing at all, since it fails the
+// earlier !jp.isObject() check).
+
+TEST_CASE("a well-formed profile object under a non-hex map key is dropped, "
+          "not thrown", "[controller_profile][json]") {
+    // "zzzz:zzzz" has the right SHAPE (9 chars, colon at index 4) to clear
+    // the isObject()/length/colon checks, so this genuinely drives an
+    // object-shaped profile entry into parse_hex4_field's std::stoul call --
+    // the specific throw risk called out in the brief -- rather than being
+    // rejected earlier for some other reason.
+    const char* j = R"({"version":1,"profiles":{
+      "zzzz:zzzz":{"name":"T","style":"ps_style","captured_at":"","controls":{}}}})";
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(j));
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("a well-formed profile object under a wrong-length map key is dropped",
+          "[controller_profile][json]") {
+    const char* j = R"({"version":1,"profiles":{
+      "0810:e5010":{"name":"T","style":"ps_style","captured_at":"","controls":{}}}})";
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(j));
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("an unknown style value drops that profile", "[controller_profile][json]") {
+    const char* j = R"({"version":1,"profiles":{
+      "0810:e501":{"name":"T","style":"warp_style","captured_at":"","controls":{}}}})";
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(j));
+    REQUIRE(out.empty());
+}
+
+TEST_CASE("an unknown binding kind drops just that control, not the whole profile",
+          "[controller_profile][json]") {
+    const char* j = R"({"version":1,"profiles":{
+      "0810:e501":{"name":"T","style":"ps_style","captured_at":"",
+        "controls":{"cross":{"kind":"warp_drive","code":1,"token":"x"}}}}})";
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(j));
+    REQUIRE(out.size() == 1);                          // profile itself survives
+    REQUIRE(out.at("0810:e501").controls.empty());     // bad control dropped
+}
+
+TEST_CASE("a non-object profiles node degrades to an empty store",
+          "[controller_profile][json]") {
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(R"({"version":1,"profiles":"not an object"})"));
+    REQUIRE(out.empty());
+    REQUIRE_NOTHROW(out = profiles_from_json(R"({"version":1,"profiles":[1,2,3]})"));
+    REQUIRE(out.empty());
+    REQUIRE_NOTHROW(out = profiles_from_json(R"({"version":1,"profiles":42})"));
+    REQUIRE(out.empty());
+}
+
 TEST_CASE("resolution order: captured > builtin > N64 fallback", "[controller_profile]") {
     std::map<std::string, PhysicalProfile> store;
     // 1. Unknown pad, empty store -> N64 fallback (legacy behavior)
@@ -355,4 +468,28 @@ TEST_CASE("store save/load round-trips through a temp file", "[controller_profil
     REQUIRE(save_profile_store(in));
     REQUIRE(load_profile_store().size() == 1);
     ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
+}
+
+// Regression test for Fix 4: save_profile_store's "config directory does not
+// exist yet" branch (std::filesystem::create_directories) was never
+// exercised -- the test above points at /tmp, whose parent always exists.
+// This points at a multi-level nested path under a directory tree that does
+// not exist at all yet, so the save must create it before the atomic
+// tmp-file-then-rename write can succeed.
+TEST_CASE("save_profile_store creates missing parent directories",
+          "[controller_profile][store]") {
+    const std::string base_dir = "/tmp/mdb_test_profiles_missing_dir";
+    const std::string nested_path = base_dir + "/a/b/c/profiles.json";
+    std::filesystem::remove_all(base_dir);   // clean slate: base_dir must not exist yet
+    REQUIRE_FALSE(std::filesystem::exists(base_dir));
+
+    ::setenv("MAGIC_CONTROLLER_PROFILES_FILE", nested_path.c_str(), 1);
+    std::map<std::string, PhysicalProfile> in;
+    in["0810:e501"] = builtin_dragonrise_profile();
+    REQUIRE(save_profile_store(in));
+    REQUIRE(std::filesystem::exists(nested_path));
+    REQUIRE(load_profile_store().size() == 1);   // round-trips after directory creation
+
+    ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
+    std::filesystem::remove_all(base_dir);       // clean up what this test created
 }

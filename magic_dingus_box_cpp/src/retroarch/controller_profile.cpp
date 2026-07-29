@@ -217,6 +217,7 @@ std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profi
     root["version"] = 1;
     Json::Value& out = root["profiles"] = Json::Value(Json::objectValue);
     for (const auto& [key, p] : profiles) {
+        (void)key;  // see the canonical-key comment below -- the map key itself is not trusted
         Json::Value jp;
         jp["name"] = p.name;
         jp["style"] = controller_style_key(p.style);
@@ -230,7 +231,17 @@ std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profi
             jb["token"] = b.token;
             jc[logical_control_key(control)] = jb;
         }
-        out[key] = jp;
+        // Derive the on-disk key from the profile's OWN vid/pid fields
+        // rather than trusting the caller's map key. profiles_to_json takes
+        // whatever std::map<std::string, PhysicalProfile> a caller hands
+        // it, and nothing enforces that the caller's key matches
+        // vidpid_key(p.vid, p.pid) -- a hand-built map, or a future writer
+        // that keys by something else, would otherwise faithfully persist a
+        // non-canonical (or simply wrong) key to disk, reproducing the same
+        // silent-lookup-miss bug profiles_from_json's canonicalization
+        // fixes on the read side. Deriving from the profile itself makes
+        // the round trip self-healing regardless of what the map key was.
+        out[vidpid_key(p.vid, p.pid)] = jp;
     }
     Json::StreamWriterBuilder w;
     w["indentation"] = "  ";
@@ -301,7 +312,16 @@ std::map<std::string, PhysicalProfile> profiles_from_json(const std::string& tex
                 p.controls[*control] = b;
             }
         }
-        result[key] = p;
+        // Key by the CANONICAL vidpid_key derived from the parsed vid/pid,
+        // not by the raw JSON key text. vidpid_key() always emits lowercase
+        // hex, and resolve_mapping_for_pad's lookup (controller_mapping.cpp)
+        // always builds its lookup key the same way -- but the parser above
+        // accepts upper- and lower-case hex equally. Without this, a
+        // profile stored under an uppercase-hex key (e.g. hand-edited, or
+        // written by some future non-canonical writer) parses successfully
+        // but is silently unreachable by lookup: resolution falls all the
+        // way through to the legacy/builtin fallback with no error.
+        result[vidpid_key(*vid, *pid)] = p;
     }
     return result;
 }

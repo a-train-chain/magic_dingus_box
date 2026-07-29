@@ -55,8 +55,15 @@ const PhysicalProfile& builtin_dragonrise_profile();
 std::string vidpid_key(uint16_t vid, uint16_t pid);  // "0079:0006"
 
 // Serialize captured profiles to/from the on-disk JSON schema (see
-// config::get_controller_profiles_file()). profiles_from_json NEVER throws
-// and never propagates a parse failure -- malformed text, a non-object
+// config::get_controller_profiles_file()). Both directions key by the
+// CANONICAL vidpid_key(vid, pid) (lowercase "vvvv:pppp"), never by a raw
+// caller/file-supplied string: profiles_to_json derives the on-disk key
+// from each profile's own vid/pid fields (ignoring the input map's key),
+// and profiles_from_json keys its result map the same way (ignoring the
+// JSON object's key text once parsed) -- so an uppercase-hex or otherwise
+// non-canonical key can never desync from vidpid_key() and silently defeat
+// resolve_mapping_for_pad's lookup. profiles_from_json NEVER throws and
+// never propagates a parse failure -- malformed text, a non-object
 // "profiles" node, a bad map key, an unknown style, an unknown control key,
 // or an unknown binding kind all degrade to skipping that piece (or an
 // empty store), so a corrupt profiles file can never prevent the kiosk from

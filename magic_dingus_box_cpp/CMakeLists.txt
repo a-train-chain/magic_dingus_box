@@ -151,6 +151,27 @@ set(RETROARCH_SOURCES
     src/retroarch/joydev_index.cpp
 )
 
+# Retroarch sources shared by BOTH test_retroarch_unit and
+# test_phone_remote_unit, below. Those two targets used to maintain fully
+# independent source lists even though both compile controller_mapping.cpp,
+# which is not self-contained (it delegates to controller_profile.cpp /
+# controller_detector.cpp / logical_controls.cpp / launch_contract.cpp) --
+# so a new dependency added to any of those files had to be added to BOTH
+# targets by hand, and it silently didn't happen once (test_phone_remote_unit
+# failed to LINK, not compile, with undefined symbols, while
+# test_retroarch_unit kept passing). Defining the shared subset once and
+# having both targets consume this variable makes that class of drift
+# structurally impossible instead of relying on someone reading a comment.
+# (retroarch_launcher.cpp and joydev_index.cpp are deliberately NOT in this
+# list -- they're each needed by only one of the two targets.)
+set(RETROARCH_TESTABLE_SOURCES
+    src/retroarch/launch_contract.cpp
+    src/retroarch/controller_detector.cpp
+    src/retroarch/controller_mapping.cpp
+    src/retroarch/logical_controls.cpp
+    src/retroarch/controller_profile.cpp
+)
+
 set(ALL_SOURCES
     src/main.cpp
     ${PLATFORM_SOURCES}
@@ -466,11 +487,7 @@ if(RETROARCH_TEST_SOURCES)
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
         src/app/game_quiet_mode.cpp
-        src/retroarch/launch_contract.cpp
-        src/retroarch/controller_mapping.cpp
-        src/retroarch/logical_controls.cpp
-        src/retroarch/controller_profile.cpp
-        src/retroarch/controller_detector.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/joydev_index.cpp
         src/utils/config.cpp
     )
@@ -535,14 +552,16 @@ endif()
 
 # Phone remote tests
 #
-# NOTE: this target compiles src/retroarch/controller_mapping.cpp, which is
-# NOT self-contained -- get_mapping()/resolve_mapping_for_pad() delegate to
-# the built-in physical controller profiles. If controller_mapping.cpp grows
-# a new dependency (as it did when it started calling into
-# controller_profile.cpp), this source list must gain that new source too,
-# or this target fails to LINK (not compile) with undefined symbols. Do not
-# assume test_retroarch_unit passing means this target still builds -- it
-# lists controller_mapping.cpp independently and has drifted before.
+# This target compiles src/retroarch/controller_mapping.cpp, which is NOT
+# self-contained -- get_mapping()/resolve_mapping_for_pad() delegate to the
+# built-in physical controller profiles and other retroarch/ sources. It
+# shares those sources with test_retroarch_unit via RETROARCH_TESTABLE_SOURCES
+# (defined above, near RETROARCH_SOURCES) instead of listing them
+# independently, so a new dependency added to any of those files reaches both
+# test targets automatically -- this target used to list its own copy of the
+# source list and had silently drifted out of sync with test_retroarch_unit
+# before (a LINK failure, not a compile failure, since the missing piece is
+# an undefined symbol).
 file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
 if(PHONE_REMOTE_TEST_SOURCES)
     add_executable(test_phone_remote_unit
@@ -551,12 +570,8 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
         src/app/controller_text_input.cpp
-        src/retroarch/launch_contract.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/retroarch_launcher.cpp
-        src/retroarch/controller_detector.cpp
-        src/retroarch/controller_mapping.cpp
-        src/retroarch/controller_profile.cpp
-        src/retroarch/logical_controls.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
