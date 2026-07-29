@@ -103,8 +103,20 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                         vh * 0.40f, theme_->font_medium_size, theme_->fg);
             center_text("Phone remote and box buttons keep working for everything else",
                         vh * 0.40f + 46.0f, theme_->font_small_size, theme_->dim);
+            // PARTIAL MITIGATION for identical pads. A capture is keyed by
+            // USB VID/PID, and two pads of the same model report the same
+            // one — so on a two-pad box both feed this session and either can
+            // answer a prompt, producing a profile stitched from two devices
+            // with nothing to warn the operator. Distinguishing them needs
+            // per-device identity the kiosk does not currently carry (evdev
+            // uniq is empty on these pads, and the /dev/input node is not
+            // stable). Saying so here is the honest half of the fix; see the
+            // final-review report for the rest.
+            center_text("Plugged in two of the same controller? Unplug one first — "
+                        "they share an ID",
+                        vh * 0.40f + 74.0f, theme_->font_small_size, theme_->dim);
             if (!wiz.status_line().empty()) {
-                center_text(wiz.status_line(), vh * 0.40f + 86.0f,
+                center_text(wiz.status_line(), vh * 0.40f + 112.0f,
                             theme_->font_small_size, theme_->highlight2);
             }
             footer(kCancelHint);

@@ -282,6 +282,11 @@ TEST_CASE("CAPTURE reports a duplicate instead of advancing", "[wizard]") {
     press_button(w, kBtn0);           // same button again
     CHECK(w.step_index() == 1);
     CHECK(w.status_line().find("DPAD UP") != std::string::npos);
+    // ...and the message names the way forward. On pads that share one axis
+    // pair between the d-pad and the left stick, EVERY stick step is a
+    // legitimate duplicate and skipping is the only correct answer; the
+    // operator should not have to work that out.
+    CHECK(w.status_line().find("skip") != std::string::npos);
 }
 
 TEST_CASE("CAPTURE skip and redo move the cursor", "[wizard]") {

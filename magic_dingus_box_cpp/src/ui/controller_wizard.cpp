@@ -133,8 +133,17 @@ void ControllerWizard::on_raw_event(const platform::RawInputEvent& ev) {
                     sync_captured_();
                     break;
                 case retroarch::CaptureSession::FeedResult::DUPLICATE:
+                    // Name the way forward, not just the problem. The common
+                    // case is not a mis-press: on pads that share one axis
+                    // pair between the d-pad and the left stick (the 8-bit
+                    // DragonRise class), the stick steps are ALWAYS rejected
+                    // as duplicates of the d-pad already captured, and
+                    // skipping them is the only correct answer. Refusing the
+                    // capture is right; leaving the operator to work out that
+                    // skipping is legitimate is not.
                     status_ = "Already used for " +
-                              short_control_label(session_->last_duplicate_of());
+                              short_control_label(session_->last_duplicate_of()) +
+                              " - press Red to skip this one";
                     break;
                 case retroarch::CaptureSession::FeedResult::DONE:
                     status_.clear();
