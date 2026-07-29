@@ -304,36 +304,104 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     m.core_option_pad_type = sem.core_option_pad_type;
     m.extra_config = sem.extra_config;
 
-    auto put = [&](std::string ControllerMapping::*field,
-                   const std::optional<LogicalControl>& slot) {
-        if (slot) m.*field = profile.token(*slot);
+    using Kind = PhysicalBinding::Kind;
+    auto kind_is = [&](LogicalControl c, Kind want) {
+        const PhysicalBinding* b = profile.binding(c);
+        return b && b->kind == want;
     };
-    put(&ControllerMapping::b_btn, sem.b);
-    put(&ControllerMapping::y_btn, sem.y);
-    put(&ControllerMapping::select_btn, sem.select);
-    put(&ControllerMapping::start_btn, sem.start);
-    put(&ControllerMapping::a_btn, sem.a);
-    put(&ControllerMapping::x_btn, sem.x);
-    put(&ControllerMapping::l_btn, sem.l);
-    put(&ControllerMapping::r_btn, sem.r);
-    put(&ControllerMapping::l2_btn, sem.l2);
-    put(&ControllerMapping::r2_btn, sem.r2);
-    put(&ControllerMapping::up_btn, sem.up);
-    put(&ControllerMapping::down_btn, sem.down);
-    put(&ControllerMapping::left_btn, sem.left);
-    put(&ControllerMapping::right_btn, sem.right);
+
+    // THE FIELD FIXES THE FORM; THE PROFILE SUPPLIES THE KIND. These two must
+    // agree or the emitted config is not merely unbound, it is WRONG:
+    //
+    //   *_btn  accepts a digital source only. RetroArch's parser reads any
+    //          value that does not start with 'h' as a NUMERIC BUTTON INDEX,
+    //          so an axis token dropped here ("-0", "+0") silently resolves
+    //          to physical button 0 -- and "+0"/"-0" collide on the same
+    //          button. BUTTON and HAT are the two digital kinds; both are
+    //          fine. Anything else emits "" -- unbound is honest, mis-bound
+    //          is not.
+    //   *_axis accepts a signed axis token ("+2"/"-3") only. A button or hat
+    //          token fails RetroArch's axis parse outright, so it is already
+    //          inert; emitting "" says so out loud instead of leaving a value
+    //          that reads as configured.
+    //
+    // The right-stick block below has always followed the profile's kind.
+    // These two helpers extend the same contract to every other slot.
+    auto put_btn = [&](std::string ControllerMapping::*field,
+                       const std::optional<LogicalControl>& slot) {
+        if (!slot) return;
+        m.*field = kind_is(*slot, Kind::AXIS) ? std::string() : profile.token(*slot);
+    };
+    auto axis_token = [&](const std::optional<LogicalControl>& slot) {
+        return (slot && kind_is(*slot, Kind::AXIS)) ? profile.token(*slot)
+                                                    : std::string();
+    };
+
+    put_btn(&ControllerMapping::b_btn, sem.b);
+    put_btn(&ControllerMapping::y_btn, sem.y);
+    put_btn(&ControllerMapping::select_btn, sem.select);
+    put_btn(&ControllerMapping::start_btn, sem.start);
+    put_btn(&ControllerMapping::a_btn, sem.a);
+    put_btn(&ControllerMapping::x_btn, sem.x);
+    put_btn(&ControllerMapping::l_btn, sem.l);
+    put_btn(&ControllerMapping::r_btn, sem.r);
+    put_btn(&ControllerMapping::l2_btn, sem.l2);
+    put_btn(&ControllerMapping::r2_btn, sem.r2);
+
+    // D-pad: the binding's kind decides WHICH FIELD, not just the value. On
+    // pads that overload ABS_X/ABS_Y for the d-pad and carry no hat at all
+    // (the 8-bit DragonRise/Microntek class this wizard exists to support),
+    // a captured d-pad direction is AXIS-kind and belongs in
+    // up/down/left/right_axis. Resolved per direction rather than
+    // all-or-nothing like the right stick: there, four fields describe one
+    // two-axis control in two mutually exclusive forms; here, _btn and _axis
+    // are independent RetroArch settings for each direction, so a mixed-kind
+    // d-pad still yields four working binds instead of none.
+    struct DpadSlot {
+        std::string ControllerMapping::*btn;
+        std::string ControllerMapping::*axis;
+        const std::optional<LogicalControl>* slot;
+    };
+    const DpadSlot dpad[4] = {
+        {&ControllerMapping::up_btn,    &ControllerMapping::up_axis,    &sem.up},
+        {&ControllerMapping::down_btn,  &ControllerMapping::down_axis,  &sem.down},
+        {&ControllerMapping::left_btn,  &ControllerMapping::left_axis,  &sem.left},
+        {&ControllerMapping::right_btn, &ControllerMapping::right_axis, &sem.right},
+    };
+    std::string dpad_axis[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!*dpad[i].slot) continue;
+        if (kind_is(**dpad[i].slot, Kind::AXIS)) {
+            // Clear the _btn field: its struct default is a hat token for a
+            // hat this pad does not have.
+            m.*dpad[i].btn = "";
+            dpad_axis[i] = profile.token(**dpad[i].slot);
+        } else {
+            m.*dpad[i].btn = profile.token(**dpad[i].slot);
+        }
+    }
 
     if (sem.left_stick) {
-        m.l_x_plus  = sem.stick_right ? profile.token(*sem.stick_right) : "";
-        m.l_x_minus = sem.stick_left  ? profile.token(*sem.stick_left)  : "";
-        m.l_y_plus  = sem.stick_down  ? profile.token(*sem.stick_down)  : "";
-        m.l_y_minus = sem.stick_up    ? profile.token(*sem.stick_up)    : "";
+        m.l_x_plus  = axis_token(sem.stick_right);
+        m.l_x_minus = axis_token(sem.stick_left);
+        m.l_y_plus  = axis_token(sem.stick_down);
+        m.l_y_minus = axis_token(sem.stick_up);
     }
     if (sem.stick_to_dpad) {
-        m.right_axis = sem.stick_right ? profile.token(*sem.stick_right) : "";
-        m.left_axis  = sem.stick_left  ? profile.token(*sem.stick_left)  : "";
-        m.down_axis  = sem.stick_down  ? profile.token(*sem.stick_down)  : "";
-        m.up_axis    = sem.stick_up    ? profile.token(*sem.stick_up)    : "";
+        m.right_axis = axis_token(sem.stick_right);
+        m.left_axis  = axis_token(sem.stick_left);
+        m.down_axis  = axis_token(sem.stick_down);
+        m.up_axis    = axis_token(sem.stick_up);
+    }
+    // Applied AFTER the stick_to_dpad block, deliberately. When a pad shares
+    // one axis pair between its d-pad and its left stick, CaptureSession
+    // rejects the stick steps as duplicates of the d-pad, so stick_* comes
+    // out unbound and stick_to_dpad would otherwise overwrite a real d-pad
+    // bind with "". The d-pad also wins outright on a pad that has both: an
+    // unbound d-pad is dead, whereas a stick that merely stops doubling as a
+    // d-pad still works through l_x_*/l_y_*.
+    for (int i = 0; i < 4; ++i) {
+        if (!dpad_axis[i].empty()) m.*dpad[i].axis = dpad_axis[i];
     }
 
     // Right stick / C cluster: axis vs button form follows the PROFILE's
@@ -368,8 +436,10 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
         }
     }
 
-    if (sem.hotkey_enable) m.enable_hotkey_btn = profile.token(*sem.hotkey_enable);
-    if (sem.menu_toggle)   m.menu_toggle_btn   = profile.token(*sem.menu_toggle);
+    // Hotkeys are emitted as input_enable_hotkey_btn / input_menu_toggle_btn,
+    // i.e. the same digital-only form as the face buttons above.
+    put_btn(&ControllerMapping::enable_hotkey_btn, sem.hotkey_enable);
+    put_btn(&ControllerMapping::menu_toggle_btn, sem.menu_toggle);
     return m;
 }
 

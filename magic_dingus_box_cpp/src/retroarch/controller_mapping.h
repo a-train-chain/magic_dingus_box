@@ -29,6 +29,10 @@ struct ControllerMapping {
 
     // Settings
     std::string analog_dpad_mode = "1"; // 0=Digital, 1=Left Analog
+    // ACCEPTED DEBT: nothing reads this. It is kept because it is frozen into
+    // the [mapping_snapshot] golden format ("drv=udev" on every one of the 33
+    // entries), and deleting it would move all 33 goldens -- destabilizing the
+    // safety net for the whole mapping layer to retire one unused string.
     std::string input_driver = "udev";
 
     // Core-specific options (e.g., for config file)
@@ -108,17 +112,27 @@ struct SemanticMapping {
     std::string extra_config = "";
 
     // RetroPad button slots. RESIDUAL: an unset slot here still emits
-    // ControllerMapping's literal struct default (e.g. select_btn="10"),
-    // which is a physical button INDEX, not a logical control -- so on a
+    // ControllerMapping's literal struct default, which for the EIGHT
+    // index-defaulting slots (b=1, y=3, select=10, start=2, a=0, x=4, l=5,
+    // r=6) is a physical button INDEX, not a logical control -- so on a
     // captured pad with more buttons than the built-ins, a legacy branch
     // that never bound this RetroPad function can end up binding whatever
-    // stray physical button happens to sit at that index. The d-pad and
-    // stick slot classes below were made explicit (routed through the
-    // profile) precisely to close this gap for those classes; the button
-    // slots were deliberately left alone, because for these the legacy
-    // tables genuinely never bound some of them, and normalizing them
-    // would change shipped behavior on fielded boxes (would fail the
-    // golden snapshot). Accepted as a known gap for Task 5+ to revisit.
+    // stray physical button happens to sit at that index. l2 and r2 are NOT
+    // part of that gap: they default to "" and so are simply unbound when
+    // unset. The d-pad and stick slot classes below were made explicit
+    // (routed through the profile) precisely to close this gap for those
+    // classes; the button slots were deliberately left alone, because for
+    // these the legacy tables genuinely never bound some of them, and
+    // normalizing them would change shipped behavior on fielded boxes
+    // (would fail the golden snapshot).
+    //
+    // PERMANENTLY ACCEPTED. Not a deferred to-do: closing it means moving
+    // goldens for the two known pads, which is exactly the destabilization
+    // the snapshot exists to prevent. What DID need fixing was the adjacent
+    // hazard this gap made reachable -- a captured binding's kind being
+    // ignored, so an analog control's token landed in a *_btn field and was
+    // mis-parsed as a button index. build_mapping() is now kind-aware; see
+    // the "THE FIELD FIXES THE FORM" block in controller_mapping.cpp.
     std::optional<LogicalControl> b, y, select, start, a, x, l, r, l2, r2;
     // RetroPad digital d-pad slots
     std::optional<LogicalControl> up, down, left, right;

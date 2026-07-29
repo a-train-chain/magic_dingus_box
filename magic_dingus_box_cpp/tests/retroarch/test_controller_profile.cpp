@@ -172,6 +172,15 @@ TEST_CASE("build_mapping unbinds slots the profile lacks", "[build_mapping]") {
 // with the built-in DragonRise profile, whose d-pad really is a hat bound
 // to those exact tokens, but would silently break a captured pad whose
 // d-pad is an axis pair instead of a hat.
+//
+// AMENDED (final review, C1): this used to assert the axis tokens landed in
+// up_btn/down_btn/left_btn/right_btn. They must not -- RetroArch's *_btn
+// parser reads any value not starting with 'h' as a numeric button index, so
+// "-0" and "+0" there both resolve to physical button 0. The guarantee Fix 1
+// was actually after ("the struct default must not survive a profile that
+// says otherwise") is unchanged and still asserted; only the destination
+// field is corrected. See tests/retroarch/test_mapping_kinds.cpp for the
+// full kind-routing contract.
 TEST_CASE("build_mapping resolves the d-pad through the profile even when "
           "the core never binds it explicitly",
           "[build_mapping]") {
@@ -187,11 +196,16 @@ TEST_CASE("build_mapping resolves the d-pad through the profile even when "
 
     const auto sem = get_semantic_mapping(ControllerStyle::PS_STYLE, "nestopia_libretro");
     const auto m = build_mapping(sem, profile);
-    REQUIRE(m.up_btn == "-1");
+    // The struct default is gone...
     REQUIRE(m.up_btn != "h0up");
-    REQUIRE(m.down_btn == "+1");
-    REQUIRE(m.left_btn == "-0");
-    REQUIRE(m.right_btn == "+0");
+    REQUIRE(m.down_btn != "h0down");
+    REQUIRE(m.left_btn != "h0left");
+    REQUIRE(m.right_btn != "h0right");
+    // ...and the profile's tokens landed in the fields that can express them.
+    REQUIRE(m.up_axis == "-1");
+    REQUIRE(m.down_axis == "+1");
+    REQUIRE(m.left_axis == "-0");
+    REQUIRE(m.right_axis == "+0");
 }
 
 // Regression test for Fix 1's stick half: semantic_n64_style's nestopia
