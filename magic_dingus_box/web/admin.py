@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import io
+import ipaddress
 import json
 import posixpath
 from urllib.parse import urlsplit
@@ -656,14 +657,84 @@ NICKNAME_PROMPT_HTML = """
 """
 
 
-def _parse_wireguard_config(text: str) -> dict:
-    """Parse a WireGuard .conf file into the 4 vars Gluetun needs.
+# --- VPN provider support -------------------------------------------------
+#
+# Everything below was verified empirically against the exact image this box
+# runs (`qmcgaw/gluetun:v3` == v3.41.1) by launching throwaway containers and
+# reading gluetun's own settings-validation errors. Do not "simplify" these
+# rules from memory — each one corresponds to a FATAL gluetun startup error,
+# and gluetun failing to start takes the whole media stack with it (radarr /
+# prowlarr / qbittorrent / byparr are all `depends_on: service_healthy`).
 
-    Returns a dict with keys:
-      WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES,
-      WIREGUARD_PUBLIC_KEY,  WIREGUARD_ENDPOINT_IP
-    Raises ValueError on missing/malformed fields.
+# Default WireGuard listen port, used when a .conf's Endpoint omits one.
+_WG_DEFAULT_ENDPOINT_PORT = 51820
+
+# Gluetun's `custom` provider runs ANY standard WireGuard config. It needs
+# exactly what a .conf already contains, so it is our universal fallback.
+_VPN_PROVIDER_CUSTOM = "custom"
+
+# Providers gluetun v3.41.1 accepts for VPN_PORT_FORWARDING=on. Verbatim from
+# its own error text:
+#   "port forwarding cannot be enabled: value is not one of the possible
+#    choices: mullvad must be one of perfect privacy, private internet
+#    access, privatevpn or protonvpn"
+# Setting VPN_PORT_FORWARDING=on for anything else is a HARD startup failure,
+# not a warning — including for `custom`.
+_VPN_PORT_FORWARDING_PROVIDERS = frozenset({
+    "perfect privacy",
+    "private internet access",
+    "privatevpn",
+    "protonvpn",
+})
+
+# Of the four above, only protonvpn actually has WireGuard servers in
+# gluetun's embedded server list (checked against /gluetun/servers.json:
+# perfect privacy 0, private internet access 0, privatevpn 0, protonvpn 800).
+# So over WireGuard — which is all this box supports — ProtonVPN is the only
+# provider that can ever forward a port.
+_VPN_WIREGUARD_NATIVE_PROVIDERS = frozenset({
+    "airvpn", "fastestvpn", "ivpn", "mullvad",
+    "nordvpn", "protonvpn", "surfshark", "windscribe",
+})
+
+# Providers we are willing to select NATIVELY on our own (i.e. from detection
+# alone, with no operator confirmation). Native mode hands server choice to
+# gluetun, which is only worth the extra failure surface where it unlocks
+# something we need — and the only thing it unlocks here is port forwarding.
+# Everything else detects to a friendly label but still RUNS as `custom`.
+_VPN_AUTO_NATIVE_PROVIDERS = frozenset({"protonvpn"})
+
+
+def _parse_wireguard_endpoint(endpoint: str) -> tuple[str, int]:
+    """Split a WireGuard `Endpoint` into (host, port).
+
+    Host may be an IPv4 address, an IPv6 address or a DNS name — callers that
+    hand it to gluetun must resolve names first (see
+    _resolve_wireguard_endpoint_ip). Port falls back to the WireGuard default
+    when the endpoint omits it.
     """
+    endpoint = endpoint.strip()
+    port = _WG_DEFAULT_ENDPOINT_PORT
+    if endpoint.startswith("["):
+        # Bracketed IPv6: "[2001:db8::1]:51820"
+        host, _, rest = endpoint[1:].partition("]")
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+    else:
+        head, sep, tail = endpoint.rpartition(":")
+        # "host:port" — but an unbracketed IPv6 literal is also full of
+        # colons, and splitting one on its last colon would silently invent a
+        # port from the final hextet. Only treat the tail as a port when what
+        # is left is a single colon-free host.
+        if sep and tail.isdigit() and head and ":" not in head:
+            host, port = head, int(tail)
+        else:
+            host = endpoint
+    return host.strip(), port
+
+
+def _wireguard_sections(text: str) -> tuple[dict, dict]:
+    """Split a WireGuard .conf into its ([Interface], [Peer]) key/value maps."""
     section = None
     interface: dict = {}
     peer: dict = {}
@@ -683,6 +754,28 @@ def _parse_wireguard_config(text: str) -> dict:
             interface[key] = value
         elif section == "peer":
             peer[key] = value
+    return interface, peer
+
+
+def _parse_wireguard_config(text: str) -> dict:
+    """Parse a WireGuard .conf file into the vars Gluetun needs.
+
+    Returns a dict with keys:
+      WIREGUARD_PRIVATE_KEY, WIREGUARD_ADDRESSES,
+      WIREGUARD_PUBLIC_KEY,  WIREGUARD_ENDPOINT_IP,
+      WIREGUARD_ENDPOINT_PORT
+    Raises ValueError on missing/malformed fields.
+
+    Every key returned here is written straight to services/.env, so nothing
+    that is not a real gluetun variable belongs in this dict.
+
+    WIREGUARD_ENDPOINT_PORT is not optional trivia: gluetun's `custom`
+    provider refuses to start without it ("server selection: Wireguard server
+    selection settings: endpoint port is not set"). The port used to be
+    discarded here, which is fine only for native providers that carry their
+    own server list.
+    """
+    interface, peer = _wireguard_sections(text)
 
     missing = []
     if "PrivateKey" not in interface:
@@ -696,13 +789,7 @@ def _parse_wireguard_config(text: str) -> dict:
     if missing:
         raise ValueError(f"Missing required fields: {', '.join(missing)}")
 
-    endpoint = peer["Endpoint"]
-    # Endpoint format: "host:port" — split off the port. Handle bracketed
-    # IPv6 like "[2001:db8::1]:51820" defensively.
-    if endpoint.startswith("["):
-        endpoint_ip = endpoint[1:].split("]", 1)[0]
-    else:
-        endpoint_ip = endpoint.rsplit(":", 1)[0]
+    endpoint_ip, endpoint_port = _parse_wireguard_endpoint(peer["Endpoint"])
     if not endpoint_ip:
         raise ValueError("Could not parse host from [Peer] Endpoint")
 
@@ -722,7 +809,166 @@ def _parse_wireguard_config(text: str) -> dict:
         "WIREGUARD_ADDRESSES": ", ".join(ipv4_addresses),
         "WIREGUARD_PUBLIC_KEY": peer["PublicKey"],
         "WIREGUARD_ENDPOINT_IP": endpoint_ip,
+        "WIREGUARD_ENDPOINT_PORT": str(endpoint_port),
     }
+
+
+def _detect_vpn_brand(text: str, wg: dict | None = None) -> str:
+    """Best-effort brand ID for an uploaded WireGuard config.
+
+    Returns a gluetun provider string, or "" when nothing matches. This is a
+    LABEL — it does not by itself decide how the tunnel is run; see
+    _vpn_provider_env. Detection is deliberately conservative: an unknown
+    config falls through to "" and therefore to gluetun's `custom` provider,
+    which runs any standard WireGuard file.
+
+    Signature sources, and how far each is actually trusted:
+      * Endpoint hostname suffixes are taken from gluetun's own embedded
+        server list (/gluetun/servers.json in the running image), so they are
+        exact for the providers gluetun knows. They only help when the .conf
+        carries a hostname — several providers emit a bare IP instead.
+      * ProtonVPN's 10.2.0.0/16 interface address + 10.2.0.1 DNS gateway is
+        corroborated twice: by a real Proton config, and independently by
+        this repo's own operational notes (the FIREWALL_OUTBOUND_SUBNETS
+        comment in docker-compose.yml documents the 10.2.0.1 gateway as the
+        reason 10.0.0.0/8 must not be listed).
+      * Mullvad's 10.64.0.0/10 range is widely reported but was NOT verified
+        here against a real Mullvad config, so it is used only as a
+        secondary hint that can label — never to auto-select native mode.
+    """
+    interface, peer = _wireguard_sections(text)
+    if wg and wg.get("WIREGUARD_ENDPOINT_IP"):
+        host = wg["WIREGUARD_ENDPOINT_IP"].strip().lower()
+    else:
+        host, _ = _parse_wireguard_endpoint(peer.get("Endpoint", ""))
+        host = host.lower()
+    address = (interface.get("Address") or "").strip().lower()
+    dns = (interface.get("DNS") or "").strip().lower()
+
+    # 1. Endpoint hostname — the strongest signal when present.
+    host_suffixes = (
+        (".protonvpn.net", "protonvpn"),
+        (".mullvad.net", "mullvad"),
+        (".wg.ivpn.net", "ivpn"),
+        (".ivpn.net", "ivpn"),
+        (".vpn.airdns.org", "airvpn"),
+        (".airvpn.org", "airvpn"),
+        (".nordvpn.com", "nordvpn"),
+        (".prod.surfshark.com", "surfshark"),
+        (".surfshark.com", "surfshark"),
+        (".whiskergalaxy.com", "windscribe"),
+        (".windscribe.com", "windscribe"),
+        (".jumptoserver.com", "fastestvpn"),
+    )
+    for suffix, brand in host_suffixes:
+        if host.endswith(suffix):
+            return brand
+
+    # 2. ProtonVPN: 10.2.0.x interface address AND/OR the 10.2.0.1 DNS
+    #    gateway, plus the "# Key for <name>" header its dashboard writes.
+    proton_hits = 0
+    if address.startswith("10.2.0."):
+        proton_hits += 1
+    if dns.startswith("10.2.0.1"):
+        proton_hits += 1
+    if re.search(r"^\s*#\s*Key for\s+\S", text, re.MULTILINE):
+        proton_hits += 1
+    if proton_hits >= 2:
+        return "protonvpn"
+
+    # 3. Mullvad hint (label only — see docstring). Mullvad hands out
+    #    10.64.0.0/10 interface addresses and resolves DNS at 10.64.0.1.
+    if address.startswith("10.64.") or dns.startswith("10.64.0.1"):
+        return "mullvad"
+
+    return ""
+
+
+def _vpn_provider_env(provider: str, wg: dict, country: str = "") -> dict:
+    """Return the VPN_*/WIREGUARD_ENDPOINT_* env block for a chosen provider.
+
+    `provider` is a gluetun VPN_SERVICE_PROVIDER value; anything not natively
+    supported over WireGuard is coerced to `custom`. The returned dict is
+    applied AUTHORITATIVELY (it overwrites whatever the .env had), because
+    these keys have to stay mutually consistent with the uploaded config —
+    a stale value from a previous provider is exactly what breaks the tunnel.
+
+    Three rules here are load-bearing, each verified against gluetun v3.41.1
+    by reading its startup validation:
+
+    1. VPN_PORT_FORWARDING=on is only legal for the four providers in
+       _VPN_PORT_FORWARDING_PROVIDERS. For anything else — `custom` included
+       — gluetun exits with "port forwarding cannot be enabled". Because the
+       rest of the stack gates on `depends_on: service_healthy`, that is a
+       whole-stack outage, not a degraded tunnel.
+
+    2. A non-empty SERVER_COUNTRIES with provider `custom` is likewise fatal:
+       "for VPN service provider custom: the country specified is not valid:
+       one or more values is set but there is no possible value available".
+       Custom has no server list to filter, so the country must be blank.
+
+    3. The endpoint pin is only written for `custom`. For a native provider,
+       pinning WIREGUARD_ENDPOINT_IP overrides gluetun's own server picker —
+       including its port-forwarding-only filter — which is how this box got
+       stuck on a single server across reconnects. Native providers get the
+       pin explicitly BLANKED so re-provisioning clears a previous one.
+    """
+    if provider not in _VPN_WIREGUARD_NATIVE_PROVIDERS:
+        provider = _VPN_PROVIDER_CUSTOM
+
+    env = {
+        "VPN_SERVICE_PROVIDER": provider,
+        "VPN_TYPE": "wireguard",
+        "VPN_PORT_FORWARDING":
+            "on" if provider in _VPN_PORT_FORWARDING_PROVIDERS else "off",
+    }
+
+    if provider == _VPN_PROVIDER_CUSTOM:
+        env["VPN_COUNTRIES"] = ""            # rule 2
+        env["WIREGUARD_ENDPOINT_IP"] = wg.get("WIREGUARD_ENDPOINT_IP", "")
+        env["WIREGUARD_ENDPOINT_PORT"] = wg.get(
+            "WIREGUARD_ENDPOINT_PORT", str(_WG_DEFAULT_ENDPOINT_PORT))
+    else:
+        # Country filtering is only offered for ProtonVPN. Other native
+        # providers are left unfiltered on purpose: gluetun's windscribe
+        # WireGuard servers carry no country field at all, so a country here
+        # would trip the same "no possible value available" fatal as rule 2.
+        env["VPN_COUNTRIES"] = country if provider == "protonvpn" else ""
+        env["WIREGUARD_ENDPOINT_IP"] = ""    # rule 3
+        env["WIREGUARD_ENDPOINT_PORT"] = ""
+
+    return env
+
+
+def _vpn_supports_port_forwarding(provider: str) -> bool:
+    """True iff gluetun can lease a forwarded port for this provider."""
+    return provider in _VPN_PORT_FORWARDING_PROVIDERS
+
+
+def _resolve_wireguard_endpoint_ip(host: str) -> str:
+    """Resolve a WireGuard endpoint host to a literal IPv4 address.
+
+    Gluetun rejects a hostname outright — "environment variable
+    WIREGUARD_ENDPOINT_IP: ParseAddr(...): unexpected character ... note this
+    MUST be an IP address" — and several providers ship configs whose
+    Endpoint is a DNS name, so resolving here is what makes those configs
+    usable at all. Returns the input unchanged when it is already an IP.
+    Raises ValueError when a name cannot be resolved.
+    """
+    host = (host or "").strip()
+    if not host:
+        raise ValueError("empty WireGuard endpoint host")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        return socket.gethostbyname(host)
+    except Exception as exc:
+        raise ValueError(
+            f"Could not resolve WireGuard endpoint host {host!r} to an IP "
+            f"address ({exc}). Gluetun requires a literal IP.") from exc
 
 
 def create_app(data_dir: Path, config=None) -> Flask:
