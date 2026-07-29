@@ -156,6 +156,7 @@ set(APP_SOURCES
 set(UTILS_SOURCES
     src/utils/config.cpp
     src/utils/path_resolver.cpp
+    src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
 )
 
@@ -390,6 +391,12 @@ if(ENABLE_MEDIA_BROWSER)
     # Task 17: screen dispatcher + stub screens. Header-only base class
     # (mb_screen.h) + 6 concrete .cpp files. Kept in a separate list so
     # the test binary (which has no Renderer) doesn't need to link them.
+    #
+    # DEAD: defined but consumed by NO target. These files reach the kiosk
+    # binary through KIOSK_MEDIA_BROWSER_SOURCES above, which lists them
+    # separately. Anyone reviving this list must also give the target
+    # src/utils/time_format.cpp -- library_screen.cpp calls
+    # utils::iso8601_utc() and would otherwise fail to link with no hint why.
     set(MEDIA_BROWSER_UI_SOURCES
         src/media_browser/ui/browse_screen.cpp
         src/media_browser/ui/search_screen.cpp
@@ -554,6 +561,8 @@ if(UI_TEST_SOURCES)
         src/platform/platform_profile.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
+        # controller_wizard.cpp stamps captured_at through this.
+        src/utils/time_format.cpp
     )
     target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
     target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
@@ -608,6 +617,19 @@ if(DISPLAY_TEST_SOURCES)
     target_link_libraries(test_display_unit PRIVATE Catch2::Catch2WithMain)
     target_compile_options(test_display_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME DisplayUnit COMMAND test_display_unit)
+endif()
+
+# utils/ tests — leaf helpers with no project dependencies. Today: the shared
+# ISO-8601 UTC formatter, which lives in utils/ precisely because its two
+# callers are in retroarch/ and media_browser/ and neither should depend on the
+# other.
+file(GLOB UTILS_TEST_SOURCES "tests/utils/*.cpp")
+if(UTILS_TEST_SOURCES)
+    add_executable(test_utils_unit ${UTILS_TEST_SOURCES} src/utils/time_format.cpp)
+    target_include_directories(test_utils_unit PRIVATE src)
+    target_link_libraries(test_utils_unit PRIVATE Catch2::Catch2WithMain)
+    target_compile_options(test_utils_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME UtilsUnit COMMAND test_utils_unit)
 endif()
 
 # Stream-gate tests — stale-frame suppression between video streams.

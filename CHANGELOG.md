@@ -244,6 +244,44 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **"Recently added" could silently show the whole library** —
+  `LibraryScreen::rebuild_view()` built its 30-day cutoff by calling `gmtime_r`
+  and **discarding the return value**. On failure `gmtime_r` returns nullptr and
+  leaves the `tm` zero-initialized, so `strftime` produced
+  `"1900-01-00T00:00:00Z"` — a well-formed string that every real `added_at`
+  compares greater than. The filter passed every row while looking like it had
+  filtered, with no crash and nothing in the log. The comparison is a bare
+  string `>=` (ISO-8601 sorts chronologically as text), which is what let a
+  garbage date fail so quietly.
+
+  The formatter is now one shared `utils::iso8601_utc(std::time_t)` — extracted
+  rather than duplicated, because the second copy added for the controller
+  wizard's `captured_at` was already drifting from this one (it checked both
+  error returns; this one checked neither). It lives in `utils/` because its two
+  callers are `retroarch/` and `media_browser/` and pointing either at the other
+  would couple two independent subsystems.
+
+  On failure the filter now falls back to **show-all with a logged warning**,
+  which is deliberate: an empty grid reads as "your library is empty", a scarier
+  and more misleading failure on an appliance than an unfiltered one. Note the
+  fallback had to be an explicit branch, not just a better formatter — the
+  helper returns `""` on failure and `added_at >= ""` is true for every row, so
+  a mechanical swap would have reproduced the same silent pass-everything bug
+  through a different route.
+
+  The helper's contract is "either empty, or exactly 20 characters" — enforced
+  with a width check, not merely documented, because any off-width stamp is
+  well-formed enough to pass a caller's is-it-empty check and then sort wrongly
+  against real 4-digit dates. That check is on width rather than on a year range
+  because `%Y` is precisely where the two libcs disagree; measured for year 1,
+  Darwin zero-pads to `"0001-01-01T00:00:00Z"` (20 chars) while glibc/aarch64
+  emits `"1-01-01T00:00:00Z"` (17). A year-range contract would have been a
+  false claim on one platform; "20 chars or nothing" holds on both.
+
+  `library_screen.cpp` compiles only into the kiosk binary (it needs a GL
+  Renderer, so it is in no test target), so this call site is verified by
+  compilation and by the shared helper's unit tests, not by a test of the filter
+  itself.
 - **Captured controller profiles now record when they were captured** —
   `PhysicalProfile::captured_at` was plumbed end-to-end (declared as ISO-8601,
   written by `profiles_to_json`, parsed back by `profiles_from_json`) but the
@@ -251,7 +289,7 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   empty stamp. It is the only signal for "was this pad captured before or after
   the mapping change I am debugging" — with two pads captured on the bench Pi
   and both stamped empty, there was no way to order them. Now stamped via a new
-  `retroarch::iso8601_utc(std::time_t)`, which takes the instant as a parameter
+  `utils::iso8601_utc(std::time_t)`, which takes the instant as a parameter
   so the format is assertable in a unit test, and uses `gmtime_r` — UTC because
   the stamp carries a literal `Z` and a Z-suffixed local time is not imprecise
   but wrong, and the `_r` form because the kiosk runs background threads that

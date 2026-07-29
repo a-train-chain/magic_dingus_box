@@ -26,6 +26,7 @@
 #include "retroarch/logical_controls.h"
 #include "ui/controller_wizard.h"
 #include "ui_test_doubles.h"
+#include "utils/time_format.h"
 
 using ui::ControllerWizard;
 using Phase = ui::ControllerWizard::Phase;
@@ -468,8 +469,8 @@ TEST_CASE("saving stamps captured_at with the current UTC time",
 
     // Bracket the real clock rather than assert an exact string: the only
     // claim that matters is "a real now, in the documented format".
-    CHECK(stamp >= retroarch::iso8601_utc(before));
-    CHECK(stamp <= retroarch::iso8601_utc(after));
+    CHECK(stamp >= utils::iso8601_utc(before));
+    CHECK(stamp <= utils::iso8601_utc(after));
     // ISO-8601 UTC sorts lexicographically only if the shape is exact, which
     // the two bracket comparisons above silently depend on.
     REQUIRE(stamp.size() == 20);

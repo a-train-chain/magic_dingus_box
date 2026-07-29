@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
-#include <ctime>
+#include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
 #include <strings.h>  // strcasecmp
@@ -17,6 +17,7 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
+#include "utils/time_format.h"
 
 namespace media_browser::ui {
 
@@ -374,16 +375,38 @@ void LibraryScreen::rebuild_view() {
     // (which Radarr emits as ISO-8601, e.g. "2024-12-31T08:15:42Z").
     // ISO-8601 strings sort chronologically as plain strings — no
     // parsing required.
+    //
+    // utils::iso8601_utc returns "" if the conversion fails. That MUST be
+    // branched on rather than compared: "" is less than every non-empty string,
+    // so `added_at >= ""` is true for every row and the date filter would
+    // silently become a pass-everything filter. (The hand-rolled version this
+    // replaced ignored gmtime_r's return and formatted a zero-initialized tm
+    // into "1900-01-00T00:00:00Z" — a different string with the same
+    // pass-everything effect, and no way to tell from the UI that it happened.)
+    //
+    // Falling back to show-all is the deliberate choice over showing nothing:
+    // an empty grid reads as "your library is empty", which is a scarier and
+    // more misleading failure on an appliance than an unfiltered one. The log
+    // line is what makes it diagnosable instead of silent.
     std::string thirty_days_ago_iso;
-    {
+    bool recent_cutoff_valid = false;
+    if (filter == F::RecentlyAdded) {
         const auto now = std::chrono::system_clock::now();
         const auto cutoff = now - std::chrono::hours(24 * 30);
-        const std::time_t tt = std::chrono::system_clock::to_time_t(cutoff);
-        std::tm tm_utc{};
-        gmtime_r(&tt, &tm_utc);
-        char buf[32];
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
-        thirty_days_ago_iso = buf;
+        thirty_days_ago_iso =
+            utils::iso8601_utc(std::chrono::system_clock::to_time_t(cutoff));
+        recent_cutoff_valid = !thirty_days_ago_iso.empty();
+        // Latched, and gated on the filter above, because rebuild_view() runs
+        // about every 2s for as long as this screen is open (update() re-arms
+        // refresh_async() on kRefreshIntervalMs and each landing result rebuilds).
+        // Un-latched this would emit ~30 identical lines a minute, and
+        // un-gated it would say "'Recently added' will show the whole library"
+        // while the user is on a different filter entirely.
+        if (!recent_cutoff_valid && !warned_recent_cutoff_) {
+            warned_recent_cutoff_ = true;
+            spdlog::warn("[LibraryScreen] could not format the 30-day cutoff; "
+                         "'Recently added' will show the whole library");
+        }
     }
     for (const Movie& m : library_) {
         bool keep = true;
@@ -405,7 +428,9 @@ void LibraryScreen::rebuild_view() {
                 // Movie.added_at is a Radarr ISO-8601 string. Empty
                 // strings (which Radarr should never emit but we guard
                 // anyway) compare less-than the cutoff and are dropped.
-                keep = (!m.added_at.empty() && m.added_at >= thirty_days_ago_iso);
+                // No usable cutoff -> show all (see the warn above).
+                keep = !recent_cutoff_valid ||
+                       (!m.added_at.empty() && m.added_at >= thirty_days_ago_iso);
                 break;
         }
         if (keep) view_.push_back(&m);

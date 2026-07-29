@@ -89,6 +89,7 @@ sudo usermod -a -G video,input $USER
 - **`utils/`** - Utilities
   - `config` - Centralized path configuration (base paths, RetroArch paths, save dirs)
   - `path_resolver` - Asset path resolution
+  - `time_format` - `iso8601_utc(std::time_t)`: the one ISO-8601 UTC formatter. Lives here because its callers are in `retroarch/` (the wizard's `captured_at` stamp) and `media_browser/` (the "recently added" cutoff), and neither subsystem should depend on the other. Output is fixed-width so lexicographic order equals chronological order — both callers compare the result as a plain string. Returns `""` on failure, which callers MUST branch on rather than compare: `""` is less than every non-empty string, so letting it flow into a date comparison silently turns a filter into a pass-everything filter.
   - `wifi_manager` - WiFi scanning/connection via nmcli
 
 ### Rendering Pipeline

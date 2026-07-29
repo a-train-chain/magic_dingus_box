@@ -1,6 +1,5 @@
 #pragma once
 #include <cstdint>
-#include <ctime>
 #include <map>
 #include <string>
 // MenuNavOverlay (+ the InputAction enum it maps to) only. This deliberately
@@ -60,18 +59,6 @@ const PhysicalProfile& builtin_n64_adapter_profile();
 const PhysicalProfile& builtin_dragonrise_profile();
 
 std::string vidpid_key(uint16_t vid, uint16_t pid);  // "0079:0006"
-
-// Format a wall-clock instant as ISO-8601 UTC ("2001-09-09T01:46:40Z") -- the
-// shape PhysicalProfile::captured_at documents, and the shape the wizard
-// stamps at save time.
-//
-// UTC, not local: the stamp carries a literal trailing "Z", so a local-time
-// value would not be merely imprecise but actively wrong -- it claims to be
-// UTC and compares against real UTC stamps as though it were. Boxes ship to
-// whatever timezone the customer sets, so this cannot be left to strftime's
-// localtime default. Taking the time_t as a parameter (rather than reading
-// the clock inside) is what makes the format assertable in a unit test.
-std::string iso8601_utc(std::time_t t);
 
 // Derive the kiosk MENU-navigation mapping for a pad from its physical
 // profile. This is the pure half of the overlay feature; InputManager

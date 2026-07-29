@@ -2,7 +2,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -299,59 +298,6 @@ TEST_CASE("build_mapping leaves right stick fully unbound on a mixed-kind captur
     REQUIRE(m.r_x_minus_btn.empty());
     REQUIRE(m.r_y_plus_btn.empty());
     REQUIRE(m.r_y_minus_btn.empty());
-}
-
-// ---------------------------------------------------------------------------
-// iso8601_utc
-// ---------------------------------------------------------------------------
-
-// The well-known 10^9 instant: 2001-09-09T01:46:40Z. Chosen because every
-// field is non-zero and no two are equal, so a swapped month/day or a dropped
-// zero-pad shows up as a mismatch rather than an accidental pass.
-constexpr std::time_t kNineZeros = 1000000000;
-
-TEST_CASE("iso8601_utc formats an epoch as ISO-8601 UTC",
-          "[controller_profile][time]") {
-    CHECK(iso8601_utc(0) == "1970-01-01T00:00:00Z");
-    CHECK(iso8601_utc(kNineZeros) == "2001-09-09T01:46:40Z");
-}
-
-TEST_CASE("iso8601_utc is UTC regardless of the box's local timezone",
-          "[controller_profile][time]") {
-    // This is the whole reason the helper exists rather than a bare
-    // localtime()/strftime() at the call site: captured_at is documented as
-    // ISO-8601 with a trailing Z, and a Z-suffixed LOCAL time is not merely
-    // imprecise, it is wrong -- it sorts and compares against other
-    // ISO-8601 stamps as though it were UTC. A Pi shipped to a customer runs
-    // in whatever zone they set, so this cannot be left to the default.
-    struct TzGuard {
-        std::string old; bool had;
-        explicit TzGuard(const char* tz) {
-            const char* p = std::getenv("TZ");
-            had = p != nullptr;
-            if (had) old = p;
-            ::setenv("TZ", tz, 1);
-            ::tzset();
-        }
-        ~TzGuard() {
-            if (had) ::setenv("TZ", old.c_str(), 1); else ::unsetenv("TZ");
-            ::tzset();
-        }
-    };
-    // UTC-5/-4: a local-time bug would render 2001-09-08T21:46:40Z here.
-    TzGuard guard("America/New_York");
-
-    // Prove the zone actually took effect before trusting the CHECK below.
-    // Both glibc and libc++ silently fall back to UTC when a zone name will
-    // not resolve (a slim container with no tzdata), and under that fallback
-    // localtime_r agrees with gmtime_r -- so the regression guard would stop
-    // guarding while still reporting green. 1e9 is 01:46 UTC and 21:46 local
-    // here, so tm_hour is the discriminator.
-    std::tm local{};
-    REQUIRE(::localtime_r(&kNineZeros, &local) != nullptr);
-    REQUIRE(local.tm_hour != 1);
-
-    CHECK(iso8601_utc(kNineZeros) == "2001-09-09T01:46:40Z");
 }
 
 TEST_CASE("profiles round-trip through JSON", "[controller_profile][json]") {

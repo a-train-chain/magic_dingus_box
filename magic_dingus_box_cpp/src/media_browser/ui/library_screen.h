@@ -123,6 +123,10 @@ private:
     std::vector<Movie> library_;          // Full library, as returned by Radarr.
     std::vector<const Movie*> view_;      // Filter-applied, possibly-sorted view.
     bool loaded_ = false;
+    // Latch so the "could not format the 30-day cutoff" warning logs once
+    // rather than on every rebuild_view() — which runs ~every 2s while this
+    // screen is open. See rebuild_view().
+    bool warned_recent_cutoff_ = false;
 
     // tmdb_ids of movies currently in the Radarr download queue. Populated
     // in reload() alongside the library fetch. Drives the DOWNLOADING badge

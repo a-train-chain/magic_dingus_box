@@ -8,6 +8,7 @@
 #include "toast.h"
 #include "retroarch/controller_profile.h"
 #include "retroarch/logical_controls.h"
+#include "utils/time_format.h"
 
 namespace ui {
 
@@ -440,7 +441,7 @@ bool ControllerWizard::save_profile_() {
     profile.style = style();
     profile.vid = vid_;
     profile.pid = pid_;
-    profile.captured_at = retroarch::iso8601_utc(std::time(nullptr));
+    profile.captured_at = utils::iso8601_utc(std::time(nullptr));
     profile.controls = captured_;
 
     // Read-modify-write the WHOLE store: other pads' profiles live in the
