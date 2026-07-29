@@ -537,6 +537,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--games", type=int, default=2,
                     help="games per core (default 2)")
+    ap.add_argument("--playlist", default=None, metavar="NAME",
+                    help="only test playlists whose name contains NAME "
+                         "(case-insensitive), e.g. --playlist dreamcast. "
+                         "Without this every playlist is tested, so covering "
+                         "one system's whole library means launching that "
+                         "many games out of all nine.")
     ap.add_argument("--dry-run", action="store_true",
                     help="preflight + nav only, launch no games")
     ap.add_argument("--no-restart-test", action="store_true")
@@ -550,14 +556,35 @@ def main():
 
     # Discover how many game playlists exist.
     enter_game_browser(k)
-    n_playlists = k.status().get("settings", {}).get("game_playlist_count", 0)
+    settings = k.status().get("settings", {})
+    n_playlists = settings.get("game_playlist_count", 0)
+    names = settings.get("game_playlist_names", [])
     k.press(BTN_SETTINGS)  # close
     time.sleep(PRESS_SETTLE)
     log(f"discovered {n_playlists} game playlists", Colors.B)
 
+    targets = list(range(n_playlists))
+    if args.playlist:
+        needle = args.playlist.lower()
+        if not names:
+            # Older kiosk build with no game_playlist_names in its status.
+            # Refuse rather than silently sweeping every playlist — a "quick
+            # Dreamcast check" that quietly launches 150 games is worse than
+            # an error.
+            log("--playlist needs a kiosk build that reports "
+                "settings.game_playlist_names", Colors.R)
+            return 2
+        targets = [i for i, n in enumerate(names) if needle in n.lower()]
+        if not targets:
+            log(f"no game playlist matches {args.playlist!r}. Available: "
+                + ", ".join(names), Colors.R)
+            return 2
+        log("filtered to: " + ", ".join(names[i] for i in targets), Colors.B)
+
     results = []
-    for pidx in range(n_playlists):
-        log(f"=== game playlist {pidx} ===", Colors.B)
+    for pidx in targets:
+        label = names[pidx] if pidx < len(names) else pidx
+        log(f"=== game playlist {pidx} ({label}) ===", Colors.B)
         for gidx in range(args.games):
             r = test_one_game(k, pidx, gidx)
             results.append(r)

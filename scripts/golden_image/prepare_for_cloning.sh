@@ -246,7 +246,7 @@ SECRET_PATHS=(
     "/opt/magic_dingus_box/services/.env"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
-    "/home/magic/.config/magic_dingus_box/tmdb_api_key"
+    "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
     "/opt/magic_dingus_box/services/config/radarr/config.xml"
     "/opt/magic_dingus_box/services/config/radarr/radarr.db"
     "/opt/magic_dingus_box/services/config/radarr/radarr.db-wal"
@@ -257,6 +257,26 @@ SECRET_PATHS=(
     "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-shm"
     "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
 )
+
+# Expand the glob entries. This list has to match the SHAPE of what
+# first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray
+# tmdb_api_key.bak on the source Pi was cleaned off the running unit at first
+# boot while remaining fully readable inside the .img.gz artifact — which is
+# the one place these secrets must never survive, because the image is what
+# gets copied around. Only entries containing '*' are re-split, so literal
+# paths are untouched.
+_expanded=()
+shopt -s nullglob
+for _entry in "${SECRET_PATHS[@]}"; do
+    if [[ "$_entry" == *'*'* ]]; then
+        for _match in $_entry; do _expanded+=("$_match"); done
+    else
+        _expanded+=("$_entry")
+    fi
+done
+shopt -u nullglob
+SECRET_PATHS=("${_expanded[@]}")
+unset _expanded _entry _match
 
 log "[2c/5] Removing application secrets from the SD..."
 mkdir -p "$SECRET_STASH"

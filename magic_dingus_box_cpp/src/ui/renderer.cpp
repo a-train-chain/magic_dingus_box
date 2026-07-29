@@ -2108,92 +2108,107 @@ void Renderer::render_error_overlay(const app::AppState& state) {
 
 void Renderer::render_loading_overlay(const app::AppState& state) {
     if (!state.is_loading_game) return;
-    
-    // Draw semi-transparent background
-    draw_quad(0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_), 
-              ui::Color(0, 0, 0, 200));
-              
-    // Calculate pulsing alpha for text
-    auto now = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    float pulse = (sin(duration * 0.005f) + 1.0f) * 0.5f; // 0.0 to 1.0
-    float text_alpha = 0.5f + (pulse * 0.5f); // 0.5 to 1.0
-    
-    // Draw "Loading..." text
-    std::string text = "Loading...";
-    int font_size = theme_->font_large_size;
-    
-    // Get text metrics for proper centering
-    float text_width = body_font_manager_->get_text_width(text, font_size);
-    float baseline_offset = body_font_manager_->get_baseline_at_size(font_size);
-    
-    // Center text horizontally
-    float x = (width_ - text_width) / 2.0f;
-    
-    // Center text vertically (accounting for baseline)
-    // Visual center of text should be at screen center
-    float y = (height_ / 2.0f) - (font_size / 2.0f) + baseline_offset;
-    
-    // Use body font (false) to match rest of UI
-    draw_text(text, x, y, font_size, theme_->accent, false, text_alpha);
-    
-    // Draw animated spinner (rotating square)
-    float spinner_size = 40.0f;
-    float spinner_x = width_ / 2.0f;
-    // Position spinner below centered text
-    float spinner_y = y + (font_size / 2.0f) + 30.0f; // 30px below text center
-    
-    float rotation = duration * 0.005f; // Radians
-    
-    // Calculate rotated vertices
-    float half_size = spinner_size / 2.0f;
-    float cos_r = cos(rotation);
-    float sin_r = sin(rotation);
-    
-    // 4 corners relative to center
-    struct Point { float x, y; };
-    Point corners[4] = {
-        { -half_size, -half_size },
-        { half_size, -half_size },
-        { half_size, half_size },
-        { -half_size, half_size }
-    };
-    
-    // Rotate and translate
-    // We'll use 2 triangles: 0-1-2 and 0-2-3
-    
-    Point rotated[4];
-    for (int i = 0; i < 4; ++i) {
-        rotated[i].x = spinner_x + (corners[i].x * cos_r - corners[i].y * sin_r);
-        rotated[i].y = spinner_y + (corners[i].x * sin_r + corners[i].y * cos_r);
-    }
-    
-    float triangle_vertices[] = {
-        rotated[0].x, rotated[0].y, 0.0f, 0.0f,
-        rotated[1].x, rotated[1].y, 1.0f, 0.0f,
-        rotated[2].x, rotated[2].y, 1.0f, 1.0f,
-        
-        rotated[0].x, rotated[0].y, 0.0f, 0.0f,
-        rotated[2].x, rotated[2].y, 1.0f, 1.0f,
-        rotated[3].x, rotated[3].y, 0.0f, 1.0f
-    };
-    
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(triangle_vertices), triangle_vertices, GL_DYNAMIC_DRAW);
 
-    GLint colorLoc = u_color_loc_;
-    if (colorLoc >= 0) {
-        glUniform4f(colorLoc, theme_->accent.r / 255.0f, theme_->accent.g / 255.0f,
-                   theme_->accent.b / 255.0f, 1.0f);
+    // DESIGNED TO LOOK CORRECT WHEN IT STOPS UPDATING.
+    //
+    // The kiosk can only draw until it hands DRM master to RetroArch; the
+    // frame presented at that moment stays on the panel for ~2.5s while
+    // RetroArch initialises, and nothing can update it. Measured on hardware:
+    // of a 4.3s launch only ~0.4s was animatable, 3.9s was one frozen frame.
+    //
+    // The previous design was a rotating square plus a sine-pulsed text alpha
+    // — two purely time-driven cues, so the freeze left a spinner stopped at a
+    // random angle and text stuck at a random brightness. A stopped spinner
+    // reads as "hung"; that is the worst possible thing to leave on screen.
+    //
+    // So: no spinner, no pulse. A titled plate with a phase-stepped bar, which
+    // the launch path drives to FULL immediately before handing over the
+    // display. Every pixel is meaningful at rest, and the full bar is honest —
+    // everything the kiosk controls really has finished by then.
+
+    const float w = static_cast<float>(width_);
+    const float h = static_cast<float>(height_);
+
+    draw_quad(0.0f, 0.0f, w, h, ui::Color(0, 0, 0, 220));
+    if (!body_font_manager_) return;
+
+    // Panel proportions follow the 720p logical canvas the rest of the UI is
+    // authored against, so this scales with the display mode like everything
+    // else instead of being pinned to pixels.
+    const float panel_w = w * 0.62f;
+    const float panel_h = h * 0.34f;
+    const float panel_x = (w - panel_w) / 2.0f;
+    const float panel_y = (h - panel_h) / 2.0f;
+
+    const bool exiting = state.loading_is_exit.load();
+    // Gold going in, green coming back — see the bar below.
+    const ui::Color frame_color = exiting ? theme_->highlight1 : theme_->accent;
+
+    draw_quad(panel_x, panel_y, panel_w, panel_h, theme_->bg_lift);
+    // Hairline frame, drawn as four thin quads (no line primitive here).
+    const float edge = std::max(2.0f, h * 0.004f);
+    draw_quad(panel_x, panel_y, panel_w, edge, frame_color);
+    draw_quad(panel_x, panel_y + panel_h - edge, panel_w, edge, frame_color);
+    draw_quad(panel_x, panel_y, edge, panel_h, frame_color);
+    draw_quad(panel_x + panel_w - edge, panel_y, edge, panel_h, frame_color);
+
+    const float inner_x = panel_x + panel_w * 0.06f;
+    const float inner_w = panel_w * 0.88f;
+
+    // --- Eyebrow: which direction are we going? ---------------------------
+    // The same plate serves both the launch and the return. Keeping the
+    // geometry identical makes the round trip feel like one continuous piece
+    // of furniture rather than two unrelated screens; only the wording and the
+    // bar colour change, so the eye tracks it instead of being interrupted.
+    const int label_size = theme_->font_small_size;
+    const std::string label = exiting ? "RETURNING" : "NOW LOADING";
+    draw_text(label, inner_x, panel_y + panel_h * 0.20f, label_size,
+              theme_->dim, false);
+
+    // --- Game title, truncated to the panel ------------------------------
+    const int title_size = theme_->font_large_size;
+    std::string title = state.loading_title.empty() ? "Loading" : state.loading_title;
+    while (!title.empty() &&
+           body_font_manager_->get_text_width(title + "...", title_size) > inner_w) {
+        title.pop_back();
     }
-    GLint useTextureLoc = u_use_texture_loc_;
-    if (useTextureLoc >= 0) {
-        glUniform1i(useTextureLoc, 0);
+    if (title != state.loading_title && !title.empty()) title += "...";
+    draw_text(title, inner_x, panel_y + panel_h * 0.46f, title_size,
+              theme_->fg, false);
+
+    // --- System name -----------------------------------------------------
+    if (!state.loading_system.empty()) {
+        draw_text(state.loading_system, inner_x, panel_y + panel_h * 0.62f,
+                  theme_->font_small_size, theme_->dim, false);
     }
 
-    glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
+    // --- Chunky segmented progress bar -----------------------------------
+    // Discrete blocks rather than a smooth fill: a segmented bar is the
+    // cartridge-era idiom, and it also makes a stopped bar look like a
+    // finished count rather than an interrupted animation.
+    const float bar_h = std::max(10.0f, panel_h * 0.10f);
+    const float bar_y = panel_y + panel_h * 0.74f;
+    draw_quad(inner_x, bar_y, inner_w, bar_h, theme_->bg);
+
+    const int kSegments = 20;
+    const float gap = std::max(2.0f, inner_w * 0.004f);
+    const float seg_w = (inner_w - gap * (kSegments - 1)) / kSegments;
+    float progress = state.loading_progress.load();
+    progress = std::min(1.0f, std::max(0.0f, progress));
+    const int filled = static_cast<int>(progress * kSegments + 0.5f);
+    // Gold going in, green coming back. The colour alone tells you which
+    // direction the box is moving without reading a word of it, which matters
+    // because both plates can be on screen only briefly.
+    const ui::Color bar_color = frame_color;
+    for (int i = 0; i < filled; ++i) {
+        draw_quad(inner_x + i * (seg_w + gap), bar_y, seg_w, bar_h, bar_color);
+    }
+
+    // --- Phase line ------------------------------------------------------
+    if (!state.loading_phase.empty()) {
+        draw_text(state.loading_phase, inner_x, bar_y + bar_h + panel_h * 0.13f,
+                  theme_->font_small_size, theme_->dim, false);
+    }
 }
 
 #ifdef MEDIA_BROWSER_ENABLED

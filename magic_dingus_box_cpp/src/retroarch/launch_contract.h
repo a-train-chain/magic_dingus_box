@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <iosfwd>
 #include <string>
 #include <sys/types.h>
@@ -32,7 +33,44 @@ struct LaunchOptions {
     // (see renderer_for_core). Defaults to Vulkan for the existing
     // 2D/PS1-class lineup.
     Renderer renderer = Renderer::Vulkan;
+    // Display aspect of the picture this core will actually hand over, AFTER
+    // any per-title overscan crop. The viewport is sized to fill the screen
+    // HEIGHT at this ratio, so the picture always touches top and bottom and
+    // its geometry is never stretched; anything wider than the bezel's
+    // opening tucks under the frame, which is drawn over the video.
+    //
+    // 4:3 for everything that has no border to crop — Dreamcast, PS1, SNES
+    // and the rest all land here. Only the N64 titles with a measured crop
+    // differ, because removing a lopsided border leaves a shape that is no
+    // longer 4:3, and forcing THAT back into a 4:3 box is what would squeeze
+    // the picture (up to 7% on F-Zero X and GoldenEye — visible).
+    double content_aspect = 4.0 / 3.0;
+    // Invoked once, immediately before RetroArch is forked and AFTER the
+    // launcher script is fully written to disk.
+    //
+    // This exists so the kiosk can keep drawing its launch screen for as long
+    // as physically possible. Building the script is ~0.6s of pure file I/O
+    // that needs no display, but it used to happen after the kiosk had already
+    // handed over DRM master — so the panel sat on a frozen frame through it
+    // for nothing. The caller uses this hook to present its final frame and
+    // release the display at the last possible moment.
+    //
+    // Must not throw. Anything it does is unrecoverable from here: the fork
+    // follows immediately.
+    std::function<void()> before_fork;
 };
+
+// Display aspect an N64 title ends up with once its measured overscan crop is
+// applied, or 4:3 when it has no entry in the table. Feeds
+// LaunchOptions.content_aspect.
+//
+// Takes the core because ONLY mupen64plus_next implements the overscan
+// options — parallel_n64 has none of the five. Widening the viewport for a
+// core that will not actually crop stretches the picture horizontally, which
+// is precisely the distortion this design exists to avoid, so the backup core
+// always gets a plain 4:3.
+double n64_content_aspect(const std::string& core_name,
+                          const std::string& rom_path);
 
 // Pick the renderer a core needs. GL for the N64 cores (GLideN64),
 // Vulkan for everything else the kiosk ships (incl. Dreamcast/flycast).
@@ -62,6 +100,18 @@ std::string pick_hdmi_alsa_device(const std::string& aplay_L_output);
 // and case-insensitive.
 void write_core_options(std::ostream& out, const std::string& core_name,
                         const std::string& rom_path);
+
+// The option-key prefix write_core_options() emits for this core, or "" when
+// it writes nothing.
+//
+// This exists so the launcher can delete the per-core options file that would
+// otherwise shadow those options. RetroArch's
+// config/<Core Name>/<Core Name>.opt takes precedence over
+// core_options_path, so a stale .opt silently wins and every carefully
+// verified value in write_core_options() becomes a no-op — no error, no log
+// line, just the core's defaults. Deriving the prefix from the same place the
+// options come from means the two cannot drift apart.
+std::string core_options_key_prefix(const std::string& core_name);
 const char* audio_driver_for_gameplay();
 int audio_latency_ms_for_core(const std::string& core_name);
 

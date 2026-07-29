@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <csignal>
 #include <filesystem>
 #include <ostream>
@@ -39,6 +40,17 @@ bool is_ps1_core(const std::string& core_name) {
 bool is_n64_core(const std::string& core_name) {
     return core_name.find("mupen64plus") != std::string::npos ||
            core_name.find("parallel_n64") != std::string::npos;
+}
+
+bool is_dreamcast_core(const std::string& core_name) {
+    return core_name.find("flycast") != std::string::npos;
+}
+
+// Only mupen64plus_next implements the GLideN64 overscan options. The shipped
+// parallel_n64_libretro.so contains none of the five keys (checked against its
+// string table); it would ignore them and hand over an uncropped frame.
+bool core_supports_overscan(const std::string& core_name) {
+    return core_name.find("mupen64plus") != std::string::npos;
 }
 
 }  // namespace
@@ -210,12 +222,63 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
         out << "video_fullscreen_y = \"1080\"\n";
         out << "video_windowed_width = \"1920\"\n";
         out << "video_windowed_height = \"1080\"\n";
-        out << "video_custom_viewport_enable = \"true\"\n";
-        out << "video_custom_viewport_x = \"251\"\n";
-        out << "video_custom_viewport_y = \"10\"\n";
-        out << "video_custom_viewport_width = \"1415\"\n";
-        out << "video_custom_viewport_height = \"1059\"\n";
-        out << "aspect_ratio_index = \"22\"\n";  // 22 = custom viewport
+        // RetroArch's setting names carry NO video_ prefix — they are
+        // custom_viewport_{x,y,width,height}. These were emitted as
+        // video_custom_viewport_* (and alongside a
+        // video_custom_viewport_enable that is not a setting at all), so
+        // RetroArch never recognised any of them and the viewport below was
+        // dead config. Names verified against the shipped binary's own
+        // setting table.
+        //
+        // x/y are an OFFSET FROM CENTRE, not absolute screen coordinates.
+        // Proved on hardware: a 1415x1059 viewport with x=0,y=0 lands dead
+        // centre in the bezel opening (symmetric vignette, no side panels in
+        // frame), while x=251 — the opening's absolute left edge — pushed the
+        // picture 251px right and put the bezel's control panel inside the
+        // playfield. The opening is centred to within 3px of the screen
+        // anyway (left margin 251, right 254), so centring IS the alignment.
+        out << "custom_viewport_x = \"0\"\n";
+        out << "custom_viewport_y = \"0\"\n";
+        // FILL THE HEIGHT, KEEP THE SHAPE. Height is always the full 1080 so
+        // the picture touches top and bottom on every core; width is whatever
+        // that core's true aspect demands, so geometry is never stretched.
+        //
+        // For everything without a border to crop this is 1440x1080 — exact
+        // 4:3, no rounding. Only N64 titles carrying a measured overscan crop
+        // come out wider, because removing a lopsided border leaves a shape
+        // that is no longer 4:3; forcing that back into a 4:3 box is what
+        // squeezed the picture by up to 7% on F-Zero X and GoldenEye.
+        //
+        // Running wider than the bezel's opening (measured x 251..1665) is
+        // fine and deliberate. The bezel is an OVERLAY drawn on top of the
+        // video, so the excess tucks under the frame rather than spilling
+        // onto the artwork — which is exactly what a real CRT did, overscanning
+        // past the visible edge of the tube. Sizing the picture to stop at the
+        // cutout instead would leave a visible sliver of background between
+        // picture and frame.
+        const int vp_h = 1080;
+        int vp_w = static_cast<int>(std::lround(vp_h * options.content_aspect));
+        // Never wider than the panel: past that RetroArch would letterbox to
+        // fit and we would lose the fill-the-height guarantee entirely.
+        vp_w = std::min(vp_w, 1920);
+        out << "custom_viewport_width = \"" << vp_w << "\"\n";
+        out << "custom_viewport_height = \"" << vp_h << "\"\n";
+        // 23 = ASPECT_RATIO_CUSTOM — the only index that makes RetroArch use
+        // the viewport above. This said 22 with a comment claiming that meant
+        // "custom viewport"; 22 is ASPECT_RATIO_CORE ("Core provided"), which
+        // fits whatever aspect the core reports to the FULL screen and
+        // discards the viewport. (See enum aspect_ratio in RetroArch's
+        // gfx/video_defines.h: 20=CONFIG, 21=SQUARE, 22=CORE, 23=CUSTOM,
+        // 24=FULL.)
+        //
+        // Measured on hardware before the fix: the picture came out
+        // 1440x1080 at x=240 — 4:3 fitted to full screen height — against a
+        // bezel opening of 1415x1059 at (251,10), so it overflowed the cutout
+        // by ~11px on every side and its edges sat under the frame. Because
+        // the size came from the CORE, it also moved whenever a core reported
+        // a different aspect, which is why this drifts rather than staying
+        // consistently wrong.
+        out << "aspect_ratio_index = \"23\"\n";
 
         // Bezel overlay (optional — skipped when user has procedural "Simple" selected)
         if (!options.bezel_file.empty()) {
@@ -242,8 +305,13 @@ void write_video_config(std::ostream& out, const LaunchOptions& options) {
         out << "video_fullscreen_y = \"480\"\n";
         out << "video_windowed_width = \"640\"\n";
         out << "video_windowed_height = \"480\"\n";
-        out << "video_custom_viewport_enable = \"false\"\n";
-        out << "aspect_ratio_index = \"23\"\n";
+        // 0 = ASPECT_RATIO_4_3. This emitted 23 (ASPECT_RATIO_CUSTOM) while
+        // writing no custom_viewport_* values at all, pointing RetroArch at a
+        // zero-sized viewport; it falls back to full screen, so the picture
+        // was right by accident rather than by instruction. A 640x480
+        // framebuffer is already 4:3, so this is the same picture with a
+        // defined reason behind it.
+        out << "aspect_ratio_index = \"0\"\n";
     }
 }
 
@@ -254,6 +322,78 @@ std::string lowercase(const std::string& s) {
     std::transform(out.begin(), out.end(), out.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return out;
+}
+
+// Per-title N64 overscan crop.
+//
+// Plenty of N64 games draw less than the full framebuffer and leave a black
+// border. On a CRT the tube's own overscan swallowed it; on a flat panel it
+// is just a black margin sitting inside the bezel, and it differs per title —
+// Banjo-Kazooie has one on three sides, Super Mario 64 only along the bottom,
+// Mario Kart 64 none at all. So a single global crop is not an option: it
+// would fix Banjo and clip Mario Kart, which has nothing to spare.
+//
+// GLideN64 can crop this (mupen64plus-EnableOverscan defaults to Enabled),
+// but all four per-edge offsets default to 0, so nothing is cropped until
+// they are set.
+//
+// EVERY NUMBER HERE WAS MEASURED, not estimated. Each title was launched with
+// the bezel overlay disabled and the offsets zeroed, ~10 frames were captured
+// across a minute through RetroArch's network SCREENSHOT command, frames too
+// dark to measure were discarded, and the MINIMUM black border across the
+// rest was taken — the minimum, because cropping more than the smallest
+// border any frame showed would clip real picture in that frame.
+//
+// Units are 320x240 N64 pixels: the 1440x1080 viewport shows a 320x240 frame,
+// so one unit is 4.5 screen pixels. Confirmed on hardware by cropping a known
+// 20 units and watching a 67px border go to exactly zero (67/4.5 = 14.9, so
+// 20 over-cropped by ~5 units, which is what the picture showed).
+//
+// Cropping costs no performance: it happens after GLideN64 has rendered, so
+// the core still draws the same 640x480 either way. Only the rectangle handed
+// to the frontend changes, and that is scaled to the same output regardless.
+struct N64Overscan {
+    const char* rom_name_substring;  // matched lowercase against rom_path
+    int top;
+    int bottom;
+    int left;
+    int right;
+};
+
+// Five titles are deliberately ABSENT and therefore uncropped: Donkey Kong
+// 64, Jet Force Gemini, Perfect Dark, Star Fox 64 and Wave Race 64. Each
+// measured a vertical border of 19-42 units, which is not a framebuffer edge
+// — it is a dark or letterboxed scene the sampler happened to catch, and
+// cropping to it would zoom the game into its own middle. An uncropped title
+// looks exactly as it always has; an over-cropped one looks broken. When the
+// evidence is weak, the entry stays out.
+constexpr N64Overscan kN64Overscan[] = {
+    //                                            top bottom left right
+    {"banjo-kazooie",                              12,   15,  20,  15},
+    {"banjo-tooie",                                 6,    8,  14,  10},
+    {"conker's bad fur day",                       12,   15,  20,  15},
+    {"diddy kong racing",                           0,    3,   4,   4},
+    {"f-zero x",                                   15,   17,  12,  12},
+    {"goldeneye 007",                               0,    3,   4,   4},
+    {"kirby 64",                                    9,   11,  10,  10},
+    {"legend of zelda, the - majora's mask",        0,    3,   4,   4},
+    {"legend of zelda, the - ocarina of time",      0,    3,   4,   4},
+    {"mario kart 64",                               0,    3,   4,   4},
+    {"mario party 3",                               0,    3,   4,   4},
+    {"mario tennis",                               10,    8,  14,  15},
+    {"paper mario",                                 0,    3,   4,   4},
+    {"super mario 64",                              7,    9,   4,   4},
+    {"super smash bros.",                           9,   11,  10,  10},
+};
+
+const N64Overscan* find_n64_overscan(const std::string& rom_path) {
+    const std::string haystack = lowercase(rom_path);
+    for (const auto& entry : kN64Overscan) {
+        if (haystack.find(entry.rom_name_substring) != std::string::npos) {
+            return &entry;
+        }
+    }
+    return nullptr;
 }
 
 // Per-title PS1 performance overrides. THPS4's engine chugs on REAL
@@ -299,7 +439,8 @@ const Ps1TitleOverride* find_ps1_override(const std::string& rom_path) {
 //   - mupen64plus-EnableCopyColorToRDRAM and friends: GLideN64 ships a
 //     per-game ini that sets these correctly per title. Forcing one global
 //     value would override that curated database with a worse guess.
-void write_n64_core_options(std::ostream& out) {
+void write_n64_core_options(std::ostream& out, const std::string& core_name,
+                            const std::string& rom_path) {
     // GLideN64 (GLES3) is the ONLY viable RDP path on this board. The
     // alternatives are not "slower", they are unusable: ParaLLEl-RDP is a
     // Vulkan compute renderer measured ~7x slower than the CPU on V3DV, and
@@ -333,14 +474,148 @@ void write_n64_core_options(std::ostream& out) {
     out << "mupen64plus-BilinearMode = \"standard\"\n";
     // Controller Pak in slot 1 so games that save to it can.
     out << "mupen64plus-pak1 = \"memory\"\n";
+
+    // Crop the game's own black border, per title. Always emit all four
+    // offsets — a title with no entry gets explicit zeros rather than
+    // whatever a previous title's run left in the core's saved options.
+    //
+    // Skipped entirely for parallel_n64, which implements none of these keys.
+    // Emitting them there would be inert, but the viewport is sized from the
+    // same table (see n64_content_aspect) and the two must agree: a widened
+    // viewport with an uncropped frame stretches the picture.
+    if (!core_supports_overscan(core_name)) {
+        return;
+    }
+    const N64Overscan* overscan = find_n64_overscan(rom_path);
+    out << "mupen64plus-EnableOverscan = \"Enabled\"\n";
+    out << "mupen64plus-OverscanTop = \""
+        << (overscan ? overscan->top : 0) << "\"\n";
+    out << "mupen64plus-OverscanBottom = \""
+        << (overscan ? overscan->bottom : 0) << "\"\n";
+    out << "mupen64plus-OverscanLeft = \""
+        << (overscan ? overscan->left : 0) << "\"\n";
+    out << "mupen64plus-OverscanRight = \""
+        << (overscan ? overscan->right : 0) << "\"\n";
+}
+
+// Sega Dreamcast (flycast).
+//
+// Same discipline as the N64 block above, and for the same reason: an
+// unrecognised value is dropped silently, so a wrong literal is
+// indistinguishable from the option having no effect. These were read out of
+// the shipped flycast_libretro.so's retro_core_option_v2_definition table —
+// the core's own declared value lists, not its UI labels. The two differ, and
+// the difference bites: the cable-type VALUE is the bare token "VGA" even
+// though flycast's menu (and every guide) writes it "VGA (RGB)".
+//
+// Deliberately NOT set here:
+//   - reicast_alpha_sorting: the "per-triangle (normal)" default is the right
+//     accuracy/speed point. Per-pixel is an order-buffer path that would be
+//     punishing on V3D; per-strip visibly breaks transparency in 2D titles.
+//   - reicast_auto_skip_frame / reicast_enable_dsp: real performance
+//     tradeoffs with no measurement behind them yet. Defaults until a slow
+//     title says otherwise — guessing here is how you ship a stutter.
+//   - reicast_digital_triggers: correct value depends on the attached pad
+//     (analog on a PS-style pad, digital on the N64 adapter's shoulders) and
+//     this function does not know which is plugged in.
+void write_dreamcast_core_options(std::ostream& out) {
+    // SH4 recompiler and renderer on separate threads. flycast's own help
+    // text says "Highly recommended", and the Pi 5's spare A76 cores sit idle
+    // during emulation, so this is close to free.
+    out << "reicast_threaded_rendering = \"enabled\"\n";
+    // Native. The kiosk scales this into its 1440x1080 4:3 viewport, so a
+    // higher internal resolution would genuinely look sharper — there is just
+    // no room for it on V3D. MEASURED 2026-07-28, 45s runs, CPU as % of 400%:
+    //
+    //                 640x480   960x720   1440x1080
+    //   Sonic Adv 2     56.6      46.2       41.4
+    //   Soulcalibur     46.8      24.0       23.2
+    //
+    // CPU going DOWN as the picture gets bigger is the tell: the emulation
+    // thread is blocking on the GPU, so it is rendering FEWER frames, not
+    // cheaper ones. Soulcalibur halves at the very first step up and does not
+    // recover. There is plenty of CPU headroom here (peak 60C, 25C under the
+    // throttle point) — it just cannot be spent on fill rate.
+    out << "reicast_internal_resolution = \"640x480\"\n";
+    // The core default is "TV (Composite)" — correct for a real CRT, wrong
+    // for the kiosk's HDMI panel, where it produces interlaced/240p-style
+    // output instead of 480p progressive. Safe to set globally: flycast
+    // detects titles with no VGA mode and falls back by itself ("Game
+    // doesn't support VGA. Using TV Composite instead").
+    out << "reicast_cable_type = \"VGA\"\n";
+    // Per-game memory cards. The default shares eight VMU files across the
+    // whole library; a real VMU is 200 blocks, Dreamcast saves are large, and
+    // the kiosk ships no memory-card manager for anyone to free space in.
+    out << "reicast_per_content_vmus = \"VMU A1\"\n";
+    // DCNet is a third-party cloud relay for Dreamcast online play and
+    // defaults to ENABLED. A shipped appliance should not open connections to
+    // a service its owner never agreed to.
+    out << "reicast_dcnet = \"disabled\"\n";
+    // "disabled" here means "use the real dc_boot.bin when it is present".
+    // flycast already falls back to its HLE BIOS (REIOS) on a box with no
+    // BIOS installed, so this costs nothing now and takes the accurate path
+    // the moment one is dropped into ~/.config/retroarch/system/dc/.
+    out << "reicast_hle_bios = \"disabled\"\n";
+    // The shipped library is entirely USA/NTSC.
+    out << "reicast_region = \"USA\"\n";
+    out << "reicast_broadcast = \"NTSC\"\n";
 }
 
 }  // namespace
 
+double n64_content_aspect(const std::string& core_name,
+                          const std::string& rom_path) {
+    // parallel_n64 does not implement ANY of the five overscan options —
+    // verified against the shipped .so, which contains zero of them where
+    // mupen64plus_next contains all five. It therefore hands over the full
+    // uncropped frame, and widening the viewport to a cropped shape would
+    // stretch that horizontally. The backup core stays plain 4:3.
+    if (!core_supports_overscan(core_name)) {
+        return 4.0 / 3.0;
+    }
+    const N64Overscan* crop = find_n64_overscan(rom_path);
+    if (crop == nullptr) {
+        return 4.0 / 3.0;
+    }
+    // A full 320x240 N64 frame is displayed as 4:3, so its pixels are square.
+    // Whatever survives the crop therefore has display aspect
+    // (kept_w / kept_h) scaled by that same square-pixel ratio, i.e. simply
+    // kept_w/kept_h * (240/320) * (4/3) — which reduces to kept_w/kept_h.
+    const double kept_w = 320.0 - crop->left - crop->right;
+    const double kept_h = 240.0 - crop->top - crop->bottom;
+    if (kept_w <= 0.0 || kept_h <= 0.0) {
+        return 4.0 / 3.0;  // a nonsense entry must not produce a nonsense viewport
+    }
+    return (kept_w / kept_h) * (240.0 / 320.0) * (4.0 / 3.0);
+}
+
+std::string core_options_key_prefix(const std::string& core_name) {
+    // Keep in lockstep with write_core_options() below. Every line that
+    // function emits for a core must begin with the prefix returned here —
+    // there is a test that walks the output and checks exactly that.
+    if (is_n64_core(core_name)) {
+        // Both mupen64plus_next and parallel_n64 use mupen64plus-* keys, so
+        // one prefix has to clear both .opt files.
+        return "mupen64plus-";
+    }
+    if (is_dreamcast_core(core_name)) {
+        // flycast kept reicast_* from its Reicast ancestry.
+        return "reicast_";
+    }
+    if (is_ps1_core(core_name)) {
+        return "pcsx_rearmed_";
+    }
+    return "";
+}
+
 void write_core_options(std::ostream& out, const std::string& core_name,
                         const std::string& rom_path) {
     if (is_n64_core(core_name)) {
-        write_n64_core_options(out);
+        write_n64_core_options(out, core_name, rom_path);
+        return;
+    }
+    if (is_dreamcast_core(core_name)) {
+        write_dreamcast_core_options(out);
         return;
     }
     if (!is_ps1_core(core_name)) {

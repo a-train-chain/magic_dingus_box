@@ -102,7 +102,21 @@ def message_matches_bad_signature(messages_block) -> bool:
 def main() -> int:
     try:
         q = radarr("GET", "/queue?includeUnknownMovieItems=true&pageSize=200")
-    except urllib.error.URLError as e:
+    except OSError as e:
+        # OSError, not just urllib.error.URLError. urlopen only wraps failures
+        # it hits while ESTABLISHING the connection; a reset part-way through
+        # the RESPONSE surfaces raw from http.client as ConnectionResetError,
+        # which is an OSError but not a URLError, so it escaped this handler
+        # and the unit exited 1.
+        #
+        # That is a real state on this box: Radarr shares Gluetun's network
+        # namespace and gets recreated whenever the tunnel cycles or the
+        # storage-attach unit re-links the stack. If this timer happens to fire
+        # inside that window it dies, and systemd then reports the unit as
+        # failed until the next run up to 15 minutes later — long enough for
+        # verify_box to call an otherwise healthy box NOT SHIPPABLE. Observed
+        # three times in one session. URLError is an OSError subclass, so this
+        # still covers everything the narrower clause did.
         print(f"[auto-blocklist] Radarr unreachable: {e}", file=sys.stderr)
         return 0
 

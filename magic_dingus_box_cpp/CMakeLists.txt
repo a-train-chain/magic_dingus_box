@@ -81,6 +81,21 @@ endif()
 # JSON parsing (cross-platform — used by both kiosk settings and media_browser)
 pkg_check_modules(JSONCPP REQUIRED jsoncpp)
 
+# yaml-cpp again, this time off the Linux-only path and NOT required.
+#
+# test_app_unit compiles playlist_loader.cpp for the trim/loop parsing tests,
+# so it needs yaml-cpp headers on whatever machine is running unit tests —
+# but the probe above lives inside the Linux-only block, so on a Mac
+# YAMLCPP_INCLUDE_DIRS came back empty and the target failed to compile with
+# "'yaml-cpp/yaml.h' file not found". The suite silently stopped being part
+# of a Mac test run.
+#
+# Not REQUIRED: a dev box without yaml-cpp should still configure and build
+# every other suite, it just skips this one (see the guard on test_app_unit).
+if(NOT YAMLCPP_FOUND)
+    pkg_check_modules(YAMLCPP yaml-cpp)
+endif()
+
 # Filesystem (C++17 std::filesystem)
 
 # GStreamer is now the only video backend - MPV removed
@@ -135,6 +150,7 @@ set(APP_SOURCES
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
     src/app/status_writer.cpp
+    src/app/playback_stall_watchdog.cpp
 )
 
 set(UTILS_SOURCES
@@ -203,6 +219,7 @@ if(BUILD_KIOSK)
             src/media_browser/qbittorrent/qbittorrent_client.cpp
             src/media_browser/qbittorrent/download_watchdog.cpp
             src/media_browser/health/vpn_health_monitor.cpp
+            src/media_browser/movie_drive.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
@@ -387,6 +404,7 @@ if(ENABLE_MEDIA_BROWSER)
     # --- Unit test runner ---
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
+        tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_sequence_detector.cpp
@@ -398,6 +416,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_download_watchdog.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         src/media_browser/health/vpn_health_monitor.cpp
+        src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
@@ -545,10 +564,17 @@ endif()
 
 # App-layer pure-logic tests (ROM display titles, etc). No Linux-only deps.
 file(GLOB APP_TEST_SOURCES "tests/app/*.cpp")
-if(APP_TEST_SOURCES)
+if(APP_TEST_SOURCES AND NOT YAMLCPP_FOUND)
+    message(WARNING
+        "yaml-cpp not found — skipping test_app_unit (playlist trim/loop "
+        "parsing tests). Install it: brew install yaml-cpp / apt install "
+        "libyaml-cpp-dev")
+endif()
+if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
     add_executable(test_app_unit
         ${APP_TEST_SOURCES}
         src/app/rom_title.cpp
+        src/app/playback_stall_watchdog.cpp
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp

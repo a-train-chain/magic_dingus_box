@@ -80,6 +80,16 @@ void StatusWriter::write_now(const AppState& state) {
     sm["game_playlist_index"]   = state.sm_game_playlist_index;
     sm["selected_game_index"]   = state.sm_selected_game_index;
     sm["game_playlist_count"]   = static_cast<int>(state.game_playlists.size());
+    // Index -> title for every game playlist, in browser order. The harness
+    // needs this to target one system ("--playlist dreamcast") instead of
+    // launching N games out of all nine; without it the only way to learn a
+    // playlist's name was to open it, so covering one system's whole library
+    // meant a full sweep of every other system too.
+    Json::Value playlist_names(Json::arrayValue);
+    for (const auto& gp : state.game_playlists) {
+        playlist_names.append(gp.title);
+    }
+    sm["game_playlist_names"]   = playlist_names;
     if (state.sm_game_playlist_index >= 0 &&
         state.sm_game_playlist_index < static_cast<int>(state.game_playlists.size())) {
         const auto& gp = state.game_playlists[state.sm_game_playlist_index];

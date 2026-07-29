@@ -359,9 +359,37 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             write_core_options(script_file, core_name, game_info.rom_path);
             script_file << "OPTS\n";
 
-            // Delete per-core .opt override file so our core options take effect
-            // RetroArch's per-core .opt files override core_options_path
-            script_file << "rm -f \"$HOME/.config/retroarch/config/PCSX-ReARMed/PCSX-ReARMed.opt\" 2>/dev/null\n";
+            // Delete the per-core .opt files that would shadow the options we
+            // just wrote. RetroArch's config/<Core Name>/<Core Name>.opt takes
+            // precedence over core_options_path, so a stale one silently wins
+            // and every value above becomes a no-op — no error, no log line,
+            // just the core's defaults.
+            //
+            // This used to name PCSX-ReARMed's file literally, which meant PS1
+            // worked and nothing else did. Verified on hardware 2026-07-28:
+            // with Flycast.opt in place a Dreamcast launch ran on
+            // "TV (Composite)" with DCNet enabled; with it parked, the same
+            // launch came up "VGA" with DCNet disabled. Mupen64Plus-Next.opt
+            // had been shadowing the N64 options the same way since they were
+            // written — its ThreadedRenderer read "False" against the "True"
+            // in write_n64_core_options().
+            //
+            // Matched by option-key prefix rather than by core display name:
+            // the directory names are RetroArch's, not ours ("ParaLLEl N64",
+            // "Beetle PCE Fast"), and a hardcoded map silently stops matching
+            // when one is renamed upstream. The prefix comes from
+            // core_options_key_prefix(), which is unit-tested to cover every
+            // line write_core_options() emits.
+            {
+                const std::string opt_prefix = core_options_key_prefix(core_name);
+                if (!opt_prefix.empty()) {
+                    script_file
+                        << "grep -l '^" << opt_prefix
+                        << "' \"$HOME/.config/retroarch/config/\"*/*.opt "
+                           "2>/dev/null | while IFS= read -r f; do "
+                           "rm -f \"$f\"; done\n";
+                }
+            }
             
             // Override file, applied via --appendconfig AFTER the main
             // config so these can never be clobbered by RetroArch's own
@@ -397,6 +425,16 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             {
                 LaunchOptions video_opts = opts;
                 video_opts.renderer = renderer_for_core(core_name);
+                // Size the viewport to the shape the core will actually hand
+                // over. Only N64 differs from 4:3, and only for titles whose
+                // measured overscan crop is lopsided — see n64_content_aspect.
+                // Renderer::GL is precisely the N64 cores (renderer_for_core
+                // returns it for mupen64plus/parallel_n64 and nothing else),
+                // so it doubles as the family check without exporting one.
+                if (video_opts.renderer == Renderer::GL) {
+                    video_opts.content_aspect =
+                        n64_content_aspect(core_name, game_info.rom_path);
+                }
                 write_video_config(script_file, video_opts);
             }
             // RetroArch's threaded ALSA wrapper keeps the HDMI device fed
@@ -750,6 +788,15 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         std::string launch_cmd = "/bin/bash " + launcher_script;
         
         std::cout << "Command: " << launch_cmd << std::endl;
+
+        // LAST POSSIBLE MOMENT to hand over the display. The launcher script is
+        // written, chmod'd and verified; everything above needed no display at
+        // all, so the kiosk has been able to keep its launch screen animating
+        // through all of it. The caller uses this hook to present its final
+        // frame and release DRM master, and the fork happens immediately after.
+        if (opts.before_fork) {
+            opts.before_fork();
+        }
 
         // A stale marker must never make a new launch look ready. The script
         // removes it again immediately before starting RetroArch, but doing it
