@@ -17,7 +17,19 @@ venv/
 coverage.xml
 
 # Packaging / build
+#
+# Glob, not a literal list: every out-of-tree CMake build dir anyone invents
+# (build-mb for a MEDIA_BROWSER=ON config, build-asan, build-pi) is ~40k files
+# of objects, CMake caches and FetchContent checkouts of catch2/spdlog. A dir
+# whose name was not on the list gets swept into a `git add -A` and the commit
+# looks fine in a short status.
+#
+# `build-*/` and not `build*/`: the wider glob would also swallow a future real
+# source dir named builder/ or build_scripts/, and THAT failure mode is the
+# nastier one — source files silently missing from a commit, then from a deploy,
+# with nothing in any status output to say so.
 build/
+build-*/
 dist/
 *.egg-info/
 .eggs/
@@ -101,9 +113,8 @@ magic_dingus_box/web/test_files/
 # Worktrees
 .worktrees/
 
-# Local Mac build tree for Media Browser dev
-build-mac/
-build-test/
+# (build-mac/, build-test/ and every other out-of-tree build dir are covered
+# by the build*/ glob under "Packaging / build" above.)
 
 # Media Browser V2 — service secrets (never commit)
 magic_dingus_box_cpp/services/.env
