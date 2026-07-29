@@ -505,19 +505,34 @@ if(RETROARCH_TEST_SOURCES)
 endif()
 
 # UI-layer tests that don't need GL. Today: the Controller Setup wizard's
-# phase machine and its save/merge into the profile store.
+# phase machine, its save/merge into the profile store, and the SettingsMenu
+# side of the wizard's lifecycle.
 #
-# controller_wizard.cpp talks to platform::InputManager (libevdev) and
-# ui::Toast (whose .cpp includes renderer.h, hence GLES) — neither of which
-# builds on macOS. tests/ui/ui_test_doubles.cpp supplies definitions for
-# exactly the members the wizard calls, so this target links without either
-# real .cpp. Deliberately does NOT include controller_wizard_renderer.cpp:
-# that one is a Renderer method and is covered by the Pi build only.
+# settings_menu.cpp is in here for one reason: toggle()'s wizard_active_ branch
+# is the cancel path that ACTUALLY fires on hardware. main.cpp consumes every
+# SETTINGS_MENU event in its BTN4 hold/volume block and `continue`s, so that
+# event never reaches ControllerWizard::on_action(); the operator's press
+# arrives as settings_menu.toggle() instead. That path had zero automated
+# coverage while settings_menu.cpp was in no Mac target, on the one screen
+# whose failure mode is a bricked appliance with no keyboard attached.
+#
+# What the Mac build cannot link, tests/ui/ui_test_doubles.cpp defines at the
+# linker level (InputManager/libevdev, Toast/GLES, PairingScreen +
+# SettingsPersistence/spdlog), so the corresponding .cpp files are absent here.
+# wifi_manager / virtual_keyboard / platform_profile compile clean on macOS
+# with no project-level link tail, so they are linked for real.
+#
+# Deliberately does NOT include controller_wizard_renderer.cpp: that one is a
+# Renderer method and is covered by the Pi build only.
 file(GLOB UI_TEST_SOURCES "tests/ui/*.cpp")
 if(UI_TEST_SOURCES)
     add_executable(test_ui_unit
         ${UI_TEST_SOURCES}
         src/ui/controller_wizard.cpp
+        src/ui/settings_menu.cpp
+        src/ui/virtual_keyboard.cpp
+        src/utils/wifi_manager.cpp
+        src/platform/platform_profile.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )

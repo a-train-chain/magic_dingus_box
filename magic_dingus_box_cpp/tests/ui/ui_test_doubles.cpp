@@ -1,16 +1,26 @@
 // Link-seam doubles for test_ui_unit.
 //
-// ControllerWizard's collaborators are two objects the Mac build cannot
-// link: platform::InputManager (libevdev) and ui::Toast (whose .cpp includes
-// renderer.h, hence GLES). Both are reached through a handful of
-// non-virtual functions, so the cheapest honest seam is the linker: this TU
-// supplies definitions for exactly the members the wizard calls, and
-// input_manager.cpp / toast.cpp are simply not part of this binary.
+// The real ui/controller_wizard.cpp and ui/settings_menu.cpp are both in this
+// binary; what they reach for that the Mac build cannot link is supplied here
+// as linker-level definitions, and the corresponding .cpp files are simply not
+// part of the target. All of these are reached through non-virtual functions,
+// so the linker is the cheapest honest seam.
+//
+//   platform::InputManager   real .cpp needs libevdev
+//   ui::Toast                real .cpp includes renderer.h, hence GLES
+//   ui::PairingScreen        real .cpp includes utils/logger.h, hence spdlog
+//   app::SettingsPersistence ditto, and save_settings() writes settings.json
+//                            for real -- a unit test must not touch it
+//
+// Everything else settings_menu.cpp needs links against the REAL source
+// (wifi_manager.cpp, virtual_keyboard.cpp, platform_profile.cpp, config.cpp):
+// those compile clean on macOS, have no project-level link tail of their own,
+// and are inert unless called, so doubling them would buy nothing.
 //
 // The signatures are checked against the real headers by the compiler, so a
-// change to either API breaks this file loudly rather than silently drifting.
-// Nothing here reimplements behavior the wizard depends on beyond what the
-// real classes document:
+// change to any of these APIs breaks this file loudly rather than silently
+// drifting. Nothing here reimplements behavior the code under test depends on
+// beyond what the real classes document:
 //   - set_raw_capture is idempotent (repeating a state is a no-op),
 //   - device_caps returns nullopt for a device that isn't open.
 
@@ -19,7 +29,9 @@
 #include <string>
 #include <vector>
 
+#include "app/settings_persistence.h"
 #include "platform/input_manager.h"
+#include "ui/pairing_screen.h"
 #include "ui/toast.h"
 
 namespace {
@@ -27,6 +39,8 @@ std::optional<retroarch::CaptureDeviceCaps> g_caps;
 bool g_raw_capture = false;
 int g_raw_capture_calls = 0;
 std::string g_last_toast;
+int g_pairing_calls = 0;
+int g_settings_saves = 0;
 }  // namespace
 
 namespace ui_test {
@@ -38,11 +52,15 @@ void fake_reset() {
     g_raw_capture = false;
     g_raw_capture_calls = 0;
     g_last_toast.clear();
+    g_pairing_calls = 0;
+    g_settings_saves = 0;
 }
 bool fake_raw_capture_enabled() { return g_raw_capture; }
 int fake_raw_capture_calls() { return g_raw_capture_calls; }
 std::string fake_last_toast() { return g_last_toast; }
 void fake_clear_toast() { g_last_toast.clear(); }
+int fake_pairing_calls() { return g_pairing_calls; }
+int fake_settings_saves() { return g_settings_saves; }
 
 }  // namespace ui_test
 
@@ -107,4 +125,32 @@ void Toast::clear() {
 
 bool Toast::is_active() { return active_; }
 
+// ---------------------------------------------------------------------------
+// ui::PairingScreen — the three members settings_menu.cpp references. The
+// wizard tests never open the pairing screen, so these are never called; they
+// exist only so close_pairing_screen()'s (dead) branch links. Counted anyway,
+// so a test that DID reach them would show it rather than pass quietly.
+// ---------------------------------------------------------------------------
+
+PairingScreen::PairingScreen(std::string session_path)
+    : session_path_(std::move(session_path)) {}
+
+void PairingScreen::regenerate() { ++g_pairing_calls; }
+void PairingScreen::close() { ++g_pairing_calls; }
+
 }  // namespace ui
+
+// ---------------------------------------------------------------------------
+// app::SettingsPersistence::save_settings — settings_menu.cpp calls this from
+// the toggle handlers. Never from any wizard path, and a unit test must not
+// write the real settings.json, so it is a counted no-op.
+// ---------------------------------------------------------------------------
+
+namespace app {
+
+utils::Result<> SettingsPersistence::save_settings(const AppState&) {
+    ++g_settings_saves;
+    return utils::Result<>();
+}
+
+}  // namespace app

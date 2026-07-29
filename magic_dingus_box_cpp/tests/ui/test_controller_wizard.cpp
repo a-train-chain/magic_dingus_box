@@ -420,6 +420,56 @@ TEST_CASE("re-running the wizard replaces that pad's entry in place", "[wizard]"
     CHECK(retroarch::load_profile_store().size() == 1);
 }
 
+TEST_CASE("an all-skipped session can never be saved", "[wizard]") {
+    // Skipping every step produces a session that is COMPLETE — so it reaches
+    // TEST, where save normally lives — but captured nothing. Persisting that
+    // writes an empty profile keyed by this pad's VID/PID, and a captured
+    // profile SHADOWS the builtin one in resolve_profile()'s captured ->
+    // builtin -> legacy order. A pad that worked fine off its builtin profile
+    // would silently go dead in RetroArch.
+    ScopedStore store("all_skipped");
+    platform::InputManager im;
+    ControllerWizard w;
+    open_to_capture(w, im);
+
+    const size_t n = w.step_count();
+    for (size_t i = 0; i < n; ++i) w.on_action(act(InputAction::PLAY_PAUSE));
+    REQUIRE(w.phase() == Phase::TEST);
+    REQUIRE(w.captured().empty());
+    CHECK_FALSE(w.can_save());
+
+    // SELECT is consumed (the wizard owns the screen) but writes nothing and
+    // does not advance to DONE — the operator stays where redo and cancel are.
+    CHECK(w.on_action(act(InputAction::SELECT)));
+    CHECK(w.phase() == Phase::TEST);
+    CHECK(w.is_active());
+    CHECK(retroarch::load_profile_store().empty());
+    CHECK_FALSE(w.status_line().empty());
+
+    // Redo, then capture for real, and saving works again.
+    w.on_action(act(InputAction::PREV));
+    REQUIRE(w.phase() == Phase::CAPTURE);
+    capture_all(w);
+    CHECK(w.can_save());
+    w.on_action(act(InputAction::SELECT));
+    CHECK(w.phase() == Phase::DONE);
+    CHECK(retroarch::load_profile_store().size() == 1);
+}
+
+TEST_CASE("can_save tracks whether anything was captured", "[wizard]") {
+    platform::InputManager im;
+    ControllerWizard w;
+    open_to_capture(w, im);
+    CHECK_FALSE(w.can_save());          // nothing captured yet
+
+    w.on_action(act(InputAction::PLAY_PAUSE));   // skip step 0
+    CHECK_FALSE(w.can_save());
+    press_button(w, kBtn0 + 1);                  // capture step 1
+    CHECK(w.can_save());
+    w.on_action(act(InputAction::PREV));         // redo it away again
+    CHECK_FALSE(w.can_save());
+}
+
 TEST_CASE("a partially captured session can never be saved", "[wizard]") {
     ScopedStore store("partial");
     platform::InputManager im;
@@ -446,6 +496,13 @@ TEST_CASE("a partially captured session can never be saved", "[wizard]") {
 // ESCAPE PATHS — one per phase, none of them via the pad being configured
 // ---------------------------------------------------------------------------
 
+// NOT THE PATH PRODUCTION TAKES. main.cpp consumes every
+// InputAction::SETTINGS_MENU in its BTN4 hold/volume block and `continue`s, so
+// the event never reaches on_action() on hardware; the operator's press
+// arrives as settings_menu.toggle() instead. This branch is a legitimate
+// defensive path (and the only cancel a keyboard-less QUIT-less surface could
+// use if that dispatch ever changed), but coverage of the REAL escape hatch
+// lives in test_settings_menu_wizard.cpp. Do not read this test as covering it.
 TEST_CASE("SETTINGS_MENU cancels from every phase", "[wizard][escape]") {
     ScopedStore store("cancel");
     platform::InputManager im;

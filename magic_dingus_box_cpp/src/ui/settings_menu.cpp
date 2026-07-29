@@ -448,10 +448,16 @@ void SettingsMenuManager::close() {
     // Clean up pairing session file whenever the settings menu is dismissed.
     close_pairing_screen();
     // ...and never leave the wizard holding InputManager in raw-capture mode.
-    // Any path that dismisses Settings out from under the wizard (a game
-    // launch, the Media Browser handoff) would otherwise leave every gamepad
-    // producing raw events nobody drains — i.e. dead controllers — until the
-    // kiosk restarts.
+    //
+    // DEFENSE IN DEPTH, not a live bug fix. No caller can reach this while the
+    // wizard is up today: main.cpp's wizard interception block ends in
+    // `continue` before the SELECT dispatch that launches a game, and the
+    // force_close() below it is gated on current_screen == MediaBrowser, which
+    // that same `continue` makes unreachable. The point is that "Settings
+    // dismissed ⇒ wizard retired" holds HERE, structurally, instead of resting
+    // on main.cpp continuing to swallow every event — a future dispatch path
+    // that reaches close() would otherwise strand InputManager in raw-capture
+    // mode with nobody draining, i.e. every gamepad dead until restart.
     close_controller_wizard();
 }
 

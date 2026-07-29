@@ -214,7 +214,15 @@ bool ControllerWizard::on_action(const platform::InputEvent& ev) {
 
         case Phase::TEST:
             if (ev.action == InputAction::SELECT && ev.pressed) {
-                save_profile_();
+                // An all-skipped session is COMPLETE, so it lands here, but it
+                // captured nothing. Refuse it: see can_save() for why an empty
+                // profile is worse than no profile. The renderer already drops
+                // "Select: save" from the footer in that state, so this branch
+                // only catches a press the chrome never invited.
+                if (!save_profile_()) {
+                    status_ = "Nothing captured - redo or cancel";
+                    return true;
+                }
                 phase_ = Phase::DONE;
                 Toast::show("Controller saved: " + device_name_);
                 return true;
@@ -362,7 +370,12 @@ std::optional<bool> ControllerWizard::binding_lit_(
     return dir == b.direction;
 }
 
-void ControllerWizard::save_profile_() {
+bool ControllerWizard::save_profile_() {
+    // Last line of defence, independent of what the footer offers: never let
+    // an empty profile reach the store, where it would shadow this pad's
+    // builtin profile for every future bind resolution.
+    if (!can_save()) return false;
+
     retroarch::PhysicalProfile profile;
     profile.name = device_name_;
     profile.style = style();
@@ -377,6 +390,7 @@ void ControllerWizard::save_profile_() {
     auto store = retroarch::load_profile_store();
     store[retroarch::vidpid_key(vid_, pid_)] = profile;
     retroarch::save_profile_store(store);
+    return true;
 }
 
 }  // namespace ui

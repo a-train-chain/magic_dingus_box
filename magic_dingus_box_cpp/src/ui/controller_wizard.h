@@ -62,6 +62,14 @@ public:
     std::string prompt() const;                              // current step text
     size_t step_index() const; size_t step_count() const;
     std::string status_line() const;                         // duplicate/skip feedback
+    // Is there anything worth persisting? False for a session in which every
+    // step was skipped -- which is COMPLETE (so it reaches TEST) but captured
+    // nothing. Saving that would write an EMPTY profile keyed by this pad's
+    // VID/PID, and a captured profile SHADOWS the builtin one in
+    // resolve_profile()'s captured -> builtin -> legacy order, so a pad that
+    // worked fine off its builtin profile would silently go dead in RetroArch.
+    // The renderer uses this to stop offering "Select: save" in that state.
+    bool can_save() const { return !captured_.empty(); }
     // TEST phase: which captured controls are currently "lit"
     const std::map<retroarch::LogicalControl, bool>& test_lit() const;
     // Bindings captured SO FAR. Kept in sync after every feed/skip/redo, not
@@ -86,7 +94,8 @@ private:
     // the unplug check runs at 1 Hz rather than per frame.
     std::chrono::steady_clock::time_point last_caps_poll_;
 
-    void save_profile_();
+    // Returns false (and writes nothing) when there is nothing to save.
+    bool save_profile_();
     void start_capture_();        // (re)build session_ for the chosen style
     void sync_captured_();        // mirror session_->results() into captured_
     void finish_capture_();       // session complete -> TEST phase

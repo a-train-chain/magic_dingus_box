@@ -22,4 +22,10 @@ int  fake_raw_capture_calls();     // number of genuine state changes
 std::string fake_last_toast();
 void fake_clear_toast();
 
+// Collaborators that no wizard path should ever reach. Both counters must
+// stay at 0 across the settings-menu tests; a non-zero value means a wizard
+// close/cancel path started doing real I/O.
+int fake_pairing_calls();     // PairingScreen::regenerate() + ::close()
+int fake_settings_saves();    // SettingsPersistence::save_settings()
+
 }  // namespace ui_test

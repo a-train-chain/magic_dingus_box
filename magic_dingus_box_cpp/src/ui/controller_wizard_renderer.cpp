@@ -210,8 +210,13 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                             list_top + 40.0f, theme_->font_small_size, theme_->dim);
             }
 
-            footer(std::string("Select: save  ·  BTN1 / Prev: start over  ·  ") +
-                   kCancelHint);
+            // Do NOT offer save when nothing was captured: an empty profile
+            // would shadow this pad's builtin one (see ControllerWizard::
+            // can_save()). Point at the two things that do work instead.
+            footer(wiz.can_save()
+                       ? std::string("Select: save  ·  BTN1 / Prev: start over  ·  ") +
+                             kCancelHint
+                       : std::string("BTN1 / Prev: start over  ·  ") + kCancelHint);
             break;
         }
 
