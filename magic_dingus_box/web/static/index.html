@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=101">
+    <link rel="stylesheet" href="/static/style.css?v=102">
 </head>
 
 <body class="faceplate">
@@ -111,50 +111,6 @@
                     with the cable plugged — use the 10.55 address for USB
                     speed.
                 </p>
-            </div>
-        </section>
-
-        <!-- Device Settings & Backup Section -->
-        <section class="collapsible-section settings-section" id="settingsSectionWrapper" style="display: none;">
-            <div class="section-header" onclick="toggleSection('settingsContent')">
-                <h2>
-                    <span class="collapse-icon" id="settingsContentIcon">▶</span>
-                    Settings & Backup
-                </h2>
-            </div>
-            <div class="section-content collapsed" id="settingsContent">
-                <div class="settings-grid">
-                    <!-- Backup Section -->
-                    <div class="settings-card">
-                        <h4>Backup</h4>
-                        <p class="settings-description">Download a backup of all playlists, settings, and device
-                            configuration.</p>
-                        <button id="downloadBackup" class="btn-primary" onclick="downloadBackup()">Download
-                            Backup</button>
-                    </div>
-
-                    <!-- Restore Section -->
-                    <div class="settings-card">
-                        <h4>Restore</h4>
-                        <p class="settings-description">Restore from a previously downloaded backup file.</p>
-                        <div class="restore-upload">
-                            <input type="file" id="restoreFile" accept=".zip" style="display: none;"
-                                onchange="handleRestoreUpload(this)">
-                            <button id="restoreButton" class="btn-secondary"
-                                onclick="document.getElementById('restoreFile').click()">Select Backup File</button>
-                        </div>
-                        <div id="restoreStatus" class="restore-status"></div>
-                    </div>
-
-                    <!-- System Health Section -->
-                    <div class="settings-card">
-                        <h4>System Health</h4>
-                        <div id="healthInfo" class="health-info">
-                            <span class="loading">Loading...</span>
-                        </div>
-                        <button class="btn-secondary small" onclick="refreshHealthInfo()">Refresh</button>
-                    </div>
-                </div>
             </div>
         </section>
 
@@ -663,12 +619,8 @@
                             onchange="handleRestoreUpload(this)">
                         <button class="btn-secondary"
                             onclick="document.getElementById('mobileRestoreFile').click()">Select Backup File</button>
-                        <!-- The only visible restore status. Its counterpart
-                             #restoreStatus lives inside #settingsSectionWrapper,
-                             which is inline display:none and is never unhidden
-                             (showSettingsSection() is defined but called from
-                             nowhere) — so restoring a backup reported nothing on
-                             screen at all. -->
+                        <!-- The only restore status element in the document —
+                             showRestoreStatus() (manager.js) writes here. -->
                         <div id="mobileRestoreStatus" class="restore-status"></div>
                     </div>
                 </div>
@@ -782,7 +734,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=118"></script>
+    <script src="/static/manager.js?v=119"></script>
 
 </body>
 

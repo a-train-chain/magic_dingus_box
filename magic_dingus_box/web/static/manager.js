@@ -936,11 +936,7 @@ function updateMobileSettingsView() {
             `;
         }
 
-        // Copy health info from main section if available
-        const mainHealthInfo = document.getElementById('healthInfo');
-        if (mobileHealthInfo && mainHealthInfo) {
-            mobileHealthInfo.innerHTML = mainHealthInfo.innerHTML;
-        } else if (mobileHealthInfo) {
+        if (mobileHealthInfo) {
             refreshHealthInfo();
         }
     } else {
@@ -4802,57 +4798,42 @@ async function handleRestoreUpload(input) {
  * @param {string} message - The message to display
  */
 function showRestoreStatus(type, message) {
-    // Writes to EVERY status element, not just #restoreStatus. That one lives
-    // inside #settingsSectionWrapper (index.html), which carries an inline
-    // display:none and is never unhidden — showSettingsSection() is defined but
-    // called from nowhere in the codebase. So restoring a backup produced no
-    // on-screen feedback whatsoever: no "Restoring…", no success, no error.
-    const els = ['restoreStatus', 'mobileRestoreStatus']
-        .map(id => document.getElementById(id))
-        .filter(Boolean);
-    if (!els.length) return;
+    const el = document.getElementById('mobileRestoreStatus');
+    if (!el) return;
 
-    els.forEach(el => {
-        el.textContent = message;
-        el.className = 'restore-status visible ' + type;
-    });
+    el.textContent = message;
+    el.className = 'restore-status visible ' + type;
 
     // Auto-hide success/error messages after 5 seconds
     if (type !== 'loading') {
-        setTimeout(() => {
-            els.forEach(el => el.classList.remove('visible'));
-        }, 5000);
+        setTimeout(() => { el.classList.remove('visible'); }, 5000);
     }
 }
 
 // ===== HEALTH MONITORING FUNCTIONS =====
 
+/** The System Health panel in the Settings tab. */
+function healthElement() {
+    return document.getElementById('mobileHealthInfo');
+}
+
 /**
  * Refresh and display system health information
  */
-/** Every System Health panel currently in the DOM (desktop card + phone card). */
-function healthElements() {
-    return ['healthInfo', 'mobileHealthInfo']
-        .map(id => document.getElementById(id))
-        .filter(Boolean);
-}
-
 async function refreshHealthInfo() {
     if (!currentDevice) return;
 
-    const healthEls = healthElements();
-    if (!healthEls.length) return;
+    const healthEl = healthElement();
+    if (!healthEl) return;
 
-    healthEls.forEach(el => { el.innerHTML = '<span class="loading">Loading...</span>'; });
+    healthEl.innerHTML = '<span class="loading">Loading...</span>';
 
     try {
         const data = await apiGet(`${currentDevice.url}/admin/health/detailed`);
         displayHealthInfo(data);
     } catch (e) {
         console.error('Health check failed:', e);
-        healthEls.forEach(el => {
-            el.innerHTML = '<span class="loading">Failed to load health info</span>';
-        });
+        healthEl.innerHTML = '<span class="loading">Failed to load health info</span>';
     }
 }
 
@@ -4861,12 +4842,8 @@ async function refreshHealthInfo() {
  * @param {object} data - Health data from the API
  */
 function displayHealthInfo(data) {
-    // Both cards, for the same reason as showRestoreStatus: #healthInfo is
-    // inside the permanently hidden #settingsSectionWrapper, while the phone's
-    // Settings tab renders #mobileHealthInfo. Writing only to the former meant
-    // the mobile "Refresh" button appeared to do nothing.
-    const healthEls = healthElements();
-    if (!healthEls.length) return;
+    const healthEl = healthElement();
+    if (!healthEl) return;
 
     let html = '';
 
@@ -4943,27 +4920,7 @@ function displayHealthInfo(data) {
         </div>`;
     }
 
-    healthEls.forEach(el => { el.innerHTML = html; });
-}
-
-/**
- * Show the settings section (called when device connects)
- */
-function showSettingsSection() {
-    const section = document.getElementById('settingsSectionWrapper');
-    if (section) {
-        section.style.display = 'block';
-    }
-}
-
-/**
- * Hide the settings section (called when device disconnects)
- */
-function hideSettingsSection() {
-    const section = document.getElementById('settingsSectionWrapper');
-    if (section) {
-        section.style.display = 'none';
-    }
+    healthEl.innerHTML = html;
 }
 
 // ===== NEW PLAYLIST EDITOR FUNCTIONS =====

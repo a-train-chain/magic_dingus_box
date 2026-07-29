@@ -320,9 +320,8 @@ header::after {
     font-weight: bold;
 }
 
-/* Device Selector and Settings sections - hidden since Settings tab contains this info */
-.device-selector-wrapper,
-.settings-section {
+/* Device Selector - hidden since the Settings tab contains this info */
+.device-selector-wrapper {
     display: none;
 }
 
@@ -1775,45 +1774,11 @@ header::after {
 }
 
 /* ===== SETTINGS & BACKUP SECTION ===== */
-.settings-section {
-    /* Settings section specific styles */
-}
-
-.settings-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1.5rem;
-}
-
-.settings-card {
-    background: var(--bg-dark);
-    border: 2px solid var(--border-color);
-    border-radius: 8px;
-    padding: 1.5rem;
-    transition: all 0.2s;
-}
-
-.settings-card:hover {
-    border-color: var(--accent);
-}
-
-.settings-card h4 {
-    color: var(--accent2);
-    margin-bottom: 0.75rem;
-    font-size: 1.125rem;
-}
-
 .settings-description {
     color: var(--text-secondary);
     font-size: 0.875rem;
     margin-bottom: 1rem;
     line-height: 1.5;
-}
-
-.settings-card .btn-primary,
-.settings-card .btn-secondary {
-    width: auto;
-    min-width: 150px;
 }
 
 /* Restore status messages */
@@ -3121,16 +3086,6 @@ header::after {
         min-height: 44px;
     }
 
-    /* Settings grid: single column */
-    .settings-grid {
-        grid-template-columns: 1fr !important;
-        gap: 1rem;
-    }
-
-    .settings-card {
-        padding: 1rem;
-    }
-
     /* Playlist editor on mobile */
     .playlist-header {
         flex-direction: column;
@@ -3351,13 +3306,6 @@ header::after {
 
 .settings-section-mobile .section-body {
     padding: 1rem;
-}
-
-/* Hide original settings section on mobile when using bottom nav */
-@media (max-width: 600px) {
-    .settings-section.hide-mobile {
-        display: none;
-    }
 }
 
 /* Touch-friendly improvements */
@@ -4653,8 +4601,8 @@ body.faceplate .playlist-table .inline-input:focus-visible {
 
 
 /* === Coarse-pointer coverage for FILE inputs ===
- * The controls pass covered every text-entry control but not the five
- * type="file" inputs (restoreFile, videoUpload, romUpload, mbConfigFile,
+ * The controls pass covered every text-entry control but not the
+ * type="file" inputs (videoUpload, romUpload, mbConfigFile,
  * mobileRestoreFile), which sat at 13.3px.
  *
  * These do NOT cause the iOS focus-zoom bug — tapping one opens the system
@@ -4741,16 +4689,15 @@ body.faceplate .playlist-table .inline-input:focus-visible {
    targets (manager.js:4208, 4212, 4236); the shorthand resets
    background-image to none. Those writes currently target the <tbody>
    (MEDIA_CONFIG.playlistItemsId === 'playlistTableBody', manager.js:437/469)
-   so none of these five panels is affected today — but keeping the longhands
+   so none of these four panels is affected today — but keeping the longhands
    documents which layer any future inline write would destroy.
 
-   One grouped rule, five call sites: .collapsible-section (l.158),
-   .settings-card (l.1792), .settings-section-mobile (l.3355),
-   .playlist-panel-main (l.2301), .library-panel (l.2627) were five
-   near-identical flat rules. The four later ones are trimmed to their
-   layout-only declarations in the changes that follow, so nothing here is
-   overridden by source order. */
-body.faceplate .collapsible-section, body.faceplate .settings-card, body.faceplate .settings-section-mobile, body.faceplate .playlist-panel-main, body.faceplate .library-panel {
+   One grouped rule, four call sites: .collapsible-section (l.158),
+   .settings-section-mobile (l.3355), .playlist-panel-main (l.2301),
+   .library-panel (l.2627) were four near-identical flat rules. The three
+   later ones are trimmed to their layout-only declarations in the changes
+   that follow, so nothing here is overridden by source order. */
+body.faceplate .collapsible-section, body.faceplate .settings-section-mobile, body.faceplate .playlist-panel-main, body.faceplate .library-panel {
     background-color: var(--bg-lift);
     background-image:
         repeating-linear-gradient(45deg, rgba(242, 228, 217, .013) 0 1px, transparent 1px 3px),
@@ -4782,34 +4729,9 @@ body.faceplate .collapsible-section {
    120ms is the remote's state-reveal tier (remote.css:568,
    `transition: border-color 120ms ease-out`). */
 @media (hover: hover) and (pointer: fine) {
-    body.faceplate .collapsible-section:hover, body.faceplate .settings-card:hover {
+    body.faceplate .collapsible-section:hover {
         border-color: rgba(245, 191, 66, .38);
     }
-}
-
-/* --- .settings-card, .settings-card:hover  (style.css:1792-1802) --- */
-/* REPLACES style.css:1792-1802, which currently reads:
-
-     .settings-card {
-         background: var(--bg-dark);
-         border: 2px solid var(--border-color);
-         border-radius: 8px;
-         padding: 1.5rem;
-         transition: all 0.2s;
-     }
-
-     .settings-card:hover {
-         border-color: var(--accent);
-     }
-*/
-
-/* Surface and hover now come from the grouped plate rule at style.css:158.
-   Only the padding is card-specific. Both blocks above must be DELETED, not
-   merely edited: they sit LATER in the file at equal specificity (0,1,0), so
-   any `background` / `border` / `border-radius` left here would win over the
-   plate. */
-body.faceplate .settings-card {
-    padding: 1.25rem;
 }
 
 /* --- .playlist-panel-main  (style.css:2301-2308) --- */
@@ -5861,7 +5783,7 @@ body.faceplate input:focus, body.faceplate select:focus, body.faceplate textarea
 
     /* Recover horizontal room: at 296px the wells' 0.75rem margins plus the
        body's 1rem padding cost 56px of the 294px interior. */
-    body.faceplate .settings-section-mobile .section-body, body.faceplate .settings-card {
+    body.faceplate .settings-section-mobile .section-body {
         padding: 0.75rem;
     }
 
@@ -8973,7 +8895,6 @@ body.faceplate .info-row > :last-child {
  * density without touching the 16px floor on inputs. */
 @media (max-width: 700px) {
   body.faceplate .section-body p,
-  body.faceplate .settings-card p,
   body.faceplate .hint,
   body.faceplate .help-text { font-size: 13px; line-height: 1.5; }
 }
