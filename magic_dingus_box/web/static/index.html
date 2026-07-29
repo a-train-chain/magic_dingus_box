@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=102">
+    <link rel="stylesheet" href="/static/style.css?v=103">
 </head>
 
 <body class="faceplate">
@@ -585,6 +585,79 @@
                     <div id="mbActionStatus" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
                 </div>
             </div>
+
+            <!-- Movie info (TMDB).
+                 Deliberately a SIBLING of the three state panels above rather
+                 than living inside one of them. During setup it sits directly
+                 under the VPN drop-zone, where it belongs — both are
+                 "credentials the customer supplies to turn this feature on".
+                 But it stays reachable after setup too, because a key can be
+                 revoked, rate-limited or simply mistyped, and burying it in
+                 State A would make it unreachable the moment the box works.
+                 _mbShowState() owns its visibility. -->
+            <div id="mbTmdbSection" class="settings-section-mobile" style="display: none;">
+                <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-search"/></svg> Movie Info (TMDB)</div>
+                <div class="section-body">
+                    <p class="settings-description">
+                        Movie titles, posters, cast and descriptions all come from
+                        <strong>TMDB</strong>. Without a key, <strong>Browse and Search on
+                        the TV stay empty</strong> — downloading still works, but there is
+                        nothing to browse.
+                    </p>
+                    <p class="settings-description">
+                        A key is <strong>free</strong>. Make a TMDB account, open
+                        <strong>Settings → API</strong>, and copy the value labelled
+                        <strong>API Key</strong> — the short 32-character one, not the
+                        long "API Read Access Token".
+                        <a href="https://www.themoviedb.org/settings/api" target="_blank"
+                            rel="noopener noreferrer">Get a TMDB API key <svg class="ic" aria-hidden="true"><use href="#ic-arrow-r"/></svg></a>
+                    </p>
+
+                    <!-- Current state. The key itself is never sent to this page —
+                         the backend returns only whether one is set and how long
+                         it is, so this row can show a mask of the right width. -->
+                    <div id="mbTmdbStatus" class="health-info" style="margin-bottom: 0.75rem;">
+                        <span class="loading">Checking…</span>
+                    </div>
+
+                    <!-- Warnings: no key set / kiosk still running the old key /
+                         an env var overriding the file. Populated by JS. -->
+                    <div id="mbTmdbNotice" style="display: none; margin-bottom: 0.75rem;"></div>
+
+                    <label for="mbTmdbInput" class="settings-description"
+                           style="display: block; margin-bottom: 0.35rem;">
+                        TMDB API Key
+                    </label>
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem;">
+                        <!-- font-size is set INLINE and to exactly 16px on purpose.
+                             iOS Safari zooms the viewport on focus for any text
+                             control under 16px, and the (pointer: coarse) floor in
+                             style.css is a hand-maintained list of selectors — a new
+                             id is not covered by it. Setting the floor here keeps the
+                             fix with the element and needs no stylesheet change.
+                             Contrast #mbConfigText, whose inline 0.8rem beat the
+                             stylesheet and zoomed the page on every phone. -->
+                        <input type="password" id="mbTmdbInput" autocomplete="off"
+                            autocorrect="off" autocapitalize="off" spellcheck="false"
+                            placeholder="32-character key from TMDB"
+                            style="flex: 1 1 240px; min-width: 0; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; font-family: monospace; font-size: 16px; min-height: 44px;">
+                        <button type="button" class="btn-secondary small" id="mbTmdbRevealBtn"
+                            style="min-height: 44px;">Show</button>
+                    </div>
+
+                    <div id="mbTmdbError" class="restore-status" style="display: none; margin-bottom: 0.75rem;"></div>
+
+                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                        <button id="mbTmdbSaveBtn" class="btn-primary" onclick="saveTmdbKey()">
+                            Save Key
+                        </button>
+                        <button id="mbTmdbRestartBtn" class="btn-secondary small"
+                            onclick="restartKioskForTmdbKey()" style="display: none;">
+                            <svg class="ic" aria-hidden="true"><use href="#ic-refresh"/></svg> Restart Kiosk
+                        </button>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <!-- Media Browser Reset confirmation modal -->
@@ -753,7 +826,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=119"></script>
+    <script src="/static/manager.js?v=120"></script>
 
 </body>
 

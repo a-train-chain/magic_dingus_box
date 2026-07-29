@@ -5751,6 +5751,238 @@ function _mbShowState(stateName) {
         const el = document.getElementById(id);
         if (el) el.style.display = (id === targetId) ? 'block' : 'none';
     });
+
+    // The TMDB panel is not one of the three states — it is shown alongside
+    // all of them, so the key can be set during setup AND changed afterwards.
+    // Hidden only in 'loading', where we don't yet know the tab is usable.
+    const tmdb = document.getElementById('mbTmdbSection');
+    if (tmdb) {
+        const show = (stateName !== 'loading');
+        tmdb.style.display = show ? 'block' : 'none';
+        if (show) {
+            // Wire here rather than at DOMContentLoaded: the Media Browser tab
+            // is hidden until the kiosk unlock check passes, and the existing
+            // panels already re-wire defensively for the same reason.
+            _wireTmdbKeyPanel();
+            refreshTmdbKeyStatus();
+        }
+    }
+}
+
+// ===== TMDB API KEY =====
+//
+// The kiosk's Browse and Search screens are driven entirely by TMDB, and
+// first_boot.sh wipes the developer's key from every cloned unit — so a box
+// with no key here has a working downloader and a completely blank discovery
+// surface. This panel is the only non-SSH way to fix that.
+//
+// The key value NEVER reaches this page. The backend reports whether one is
+// set and how long it is; everything below renders from that.
+
+let _mbTmdbPendingUnverified = null;  // key awaiting an explicit "save anyway"
+
+function _mbTmdbSetError(message, tone = 'error') {
+    const el = document.getElementById('mbTmdbError');
+    if (!el) return;
+    if (!message) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+    }
+    el.style.display = 'block';
+    el.style.color = (tone === 'error') ? 'var(--error)' : 'var(--success)';
+    el.textContent = message;
+}
+
+/**
+ * Fetch and render the TMDB key state. Never receives the key itself.
+ */
+async function refreshTmdbKeyStatus() {
+    const statusEl = document.getElementById('mbTmdbStatus');
+    const noticeEl = document.getElementById('mbTmdbNotice');
+    const restartBtn = document.getElementById('mbTmdbRestartBtn');
+    if (!statusEl) return;
+
+    if (!currentDevice) {
+        statusEl.innerHTML = '<span class="loading">Connect to a device first.</span>';
+        return;
+    }
+
+    try {
+        const d = await apiGet(`${currentDevice.url}/admin/media-browser/tmdb`);
+
+        // Masked readout, matching the Service Credentials rows: a run of dots
+        // sized to the real key, and never the key.
+        const dots = '•'.repeat(Math.min(32, Math.max(8, d.key_length || 8)));
+        statusEl.innerHTML = `
+            <div class="health-row">
+                <span class="health-label">API key</span>
+                <span class="health-value" style="font-family: monospace;">${
+                    d.configured
+                        ? `${dots} <span style="color: var(--success); font-family: inherit;">configured</span>`
+                        : '<span style="color: var(--accent);">not set</span>'
+                }</span>
+            </div>`;
+
+        const notices = [];
+        if (!d.configured) {
+            // The empty-state fix, web-side half: say WHY Browse is blank
+            // instead of letting the TV's "No movies in this category" imply
+            // the box is broken.
+            notices.push({
+                tone: 'accent',
+                html: '<strong>Browse and Search on the TV are empty</strong> because no ' +
+                      'TMDB key is set. Add one below and they will fill in.',
+            });
+        }
+        if (d.env_override) {
+            // main.cpp checks $MDB_TMDB_API_KEY before the file, so a key set
+            // in services/.env silently wins over anything saved here.
+            notices.push({
+                tone: 'error',
+                html: '<strong>MDB_TMDB_API_KEY is set in the environment.</strong> The kiosk ' +
+                      'reads that before this file, so saving a key here will have no effect ' +
+                      'until it is removed from <code>services/.env</code>.',
+            });
+        }
+        if (d.configured && d.kiosk_has_current_key === false) {
+            // THE restart problem, stated plainly rather than papered over.
+            notices.push({
+                tone: 'accent',
+                html: '<strong>The kiosk has not picked this key up yet.</strong> It reads the ' +
+                      'key once when it starts, so it is still running with whatever it had ' +
+                      'before. Restart it to apply — this interrupts anything playing on the TV.',
+            });
+        }
+
+        if (noticeEl) {
+            if (notices.length) {
+                noticeEl.style.display = 'block';
+                noticeEl.innerHTML = notices.map(n => `
+                    <div class="settings-description" style="color: var(--${n.tone}); margin: 0 0 0.5rem 0;">
+                        ${spriteIcon('ic-warning')} ${n.html}
+                    </div>`).join('');
+            } else {
+                noticeEl.style.display = 'none';
+                noticeEl.innerHTML = '';
+            }
+        }
+
+        // Offer the restart only when it would actually change something.
+        if (restartBtn) {
+            restartBtn.style.display =
+                (d.configured && d.kiosk_has_current_key === false && d.kiosk_service_active)
+                    ? 'inline-flex' : 'none';
+        }
+    } catch (e) {
+        console.error('TMDB key status fetch failed:', e);
+        statusEl.innerHTML =
+            `<span class="loading" style="color: var(--error);">Failed to read key status: ${escapeHtml(e.message || String(e))}</span>`;
+    }
+}
+
+/**
+ * Validate + save a TMDB key. The backend checks it against TMDB before it
+ * writes anything, so a bad key can never clobber a working one.
+ */
+async function saveTmdbKey(allowUnverified = false) {
+    const input = document.getElementById('mbTmdbInput');
+    const saveBtn = document.getElementById('mbTmdbSaveBtn');
+    if (!input || !currentDevice) return;
+
+    const key = allowUnverified ? _mbTmdbPendingUnverified : input.value.trim();
+    if (!key) {
+        _mbTmdbSetError('Enter your TMDB API key.');
+        return;
+    }
+
+    _mbTmdbSetError('');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Checking key…'; }
+
+    try {
+        const d = await apiPost(`${currentDevice.url}/admin/media-browser/tmdb`,
+                                { api_key: key, allow_unverified: !!allowUnverified });
+        // Clear the field on success — no reason to leave a secret sitting in
+        // the DOM, and the masked row above now reflects the saved state.
+        input.value = '';
+        _mbTmdbPendingUnverified = null;
+        _mbTmdbSetError(
+            d.verified
+                ? 'Key verified with TMDB and saved.'
+                : 'Key saved, but it could not be verified — Browse may still be empty if it is wrong.',
+            d.verified ? 'success' : 'error');
+        await refreshTmdbKeyStatus();
+    } catch (e) {
+        if (e.code === 'tmdb_unreachable') {
+            // No internet is not evidence the key is bad — but saving blind
+            // reproduces the silent-empty-Browse failure, so make it a choice.
+            _mbTmdbPendingUnverified = key;
+            const el = document.getElementById('mbTmdbError');
+            if (el) {
+                el.style.display = 'block';
+                el.style.color = 'var(--accent)';
+                el.innerHTML =
+                    `${escapeHtml(e.message || 'Could not reach TMDB to check this key.')} ` +
+                    `The key looks well-formed. ` +
+                    `<button type="button" class="btn-secondary small" id="mbTmdbSaveAnywayBtn" ` +
+                    `style="margin-left: 0.5rem;">Save without checking</button>`;
+                const btn = document.getElementById('mbTmdbSaveAnywayBtn');
+                if (btn) btn.addEventListener('click', () => saveTmdbKey(true));
+            }
+        } else {
+            _mbTmdbSetError(e.message || String(e));
+        }
+    } finally {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Save Key'; }
+    }
+}
+
+/**
+ * Restart the kiosk so it re-reads the key. Explicit and opt-in: this kills
+ * whatever is on the TV, which is why nothing calls it automatically.
+ */
+async function restartKioskForTmdbKey() {
+    if (!currentDevice) return;
+    if (!confirm('Restart the kiosk now?\n\nThis interrupts anything playing on the TV. ' +
+                 'It takes a few seconds, and afterwards the kiosk will be using the new TMDB key.')) {
+        return;
+    }
+    const btn = document.getElementById('mbTmdbRestartBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Restarting…'; }
+    try {
+        await apiPost(`${currentDevice.url}/admin/media-browser/restart-kiosk`, {});
+        _mbTmdbSetError('Kiosk restarted — it is now using the saved key.', 'success');
+    } catch (e) {
+        _mbTmdbSetError(`Restart failed: ${e.message || String(e)}`);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `${spriteIcon('ic-refresh')} Restart Kiosk`;
+        }
+        // Give systemd a moment to record the new start time before we ask
+        // whether the kiosk is current again.
+        setTimeout(refreshTmdbKeyStatus, 3000);
+    }
+}
+
+function _wireTmdbKeyPanel() {
+    const btn = document.getElementById('mbTmdbRevealBtn');
+    const input = document.getElementById('mbTmdbInput');
+    if (btn && input && !btn.dataset.wired) {
+        btn.dataset.wired = '1';
+        btn.addEventListener('click', () => {
+            const hidden = input.type === 'password';
+            input.type = hidden ? 'text' : 'password';
+            btn.textContent = hidden ? 'Hide' : 'Show';
+        });
+    }
+    if (input && !input.dataset.wired) {
+        input.dataset.wired = '1';
+        // Enter submits — this is a one-field form in all but markup.
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); saveTmdbKey(); }
+        });
+    }
 }
 
 async function refreshMediaBrowserStatus() {
