@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include "../platform/input_manager.h"
 #include "logical_controls.h"
 
 namespace retroarch {
@@ -53,6 +54,22 @@ const PhysicalProfile& builtin_n64_adapter_profile();
 const PhysicalProfile& builtin_dragonrise_profile();
 
 std::string vidpid_key(uint16_t vid, uint16_t pid);  // "0079:0006"
+
+// Derive the kiosk MENU-navigation mapping for a pad from its physical
+// profile. This is the pure half of the overlay feature; InputManager
+// applies the result (see platform::MenuNavOverlay).
+//
+// It deliberately mirrors input_manager.cpp's hardcoded
+// map_button_to_action / map_axis_to_action semantics rather than inventing
+// new ones -- the overlay's job is to say "on THIS pad, that same kiosk
+// action lives at this other code", not to change what the kiosk does.
+//
+// Anything the profile doesn't bind, or binds with the wrong kind (a face
+// button captured as an axis, a stick captured as a button/hat), is simply
+// left unclaimed: InputManager then falls through to its built-in switch for
+// that code, so a partial or nonsense profile degrades to stock behavior
+// rather than to a broken menu.
+platform::MenuNavOverlay menu_overlay_from_profile(const PhysicalProfile& p);
 
 // Serialize captured profiles to/from the on-disk JSON schema (see
 // config::get_controller_profiles_file()). profiles_to_json writes each

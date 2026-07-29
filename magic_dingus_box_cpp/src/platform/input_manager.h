@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include <memory>
@@ -40,6 +41,19 @@ struct InputEvent {
     // encoder switch, default false for all other sources.
     bool is_from_rotary = false;
 #endif
+};
+
+// Per-model kiosk-menu mapping learned by the Controller Setup wizard.
+// ADDITIVE: codes not listed here fall through to the built-in switch, so a
+// bad profile can never make the menu less usable than stock.
+//
+// The flip side of "additive" is that a code the overlay DOES claim must not
+// also fire the built-in action -- see poll()'s overlay branches, which are
+// mutually exclusive with the hardcoded ones for exactly that reason.
+struct MenuNavOverlay {
+    std::map<uint16_t, InputAction> buttons;  // EV_KEY code -> action
+    int nav_x_abs = -1;   // ABS code driving ROTATE (main stick X), -1 = none
+    int seek_abs = -1;    // ABS code driving SEEK_LEFT/RIGHT, -1 = none
 };
 
 class InputManager {

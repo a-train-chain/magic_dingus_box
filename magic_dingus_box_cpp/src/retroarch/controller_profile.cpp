@@ -140,6 +140,48 @@ const PhysicalProfile& builtin_dragonrise_profile() {
     return p;
 }
 
+platform::MenuNavOverlay menu_overlay_from_profile(const PhysicalProfile& p) {
+    using platform::InputAction;
+    platform::MenuNavOverlay o;
+
+    // Only a BUTTON-kind binding can name an EV_KEY code. A control captured
+    // as an AXIS or HAT is skipped entirely rather than contributing a code
+    // that InputManager would then interpret in the wrong event type.
+    auto add_btn = [&](L c, InputAction a) {
+        const PhysicalBinding* b = p.binding(c);
+        if (b && b->kind == K::BUTTON) o.buttons[b->code] = a;
+    };
+
+    // Mirrors input_manager.cpp map_button_to_action's operator semantics.
+    // Two logical controls may map to the same action (Cross and Start both
+    // confirm); the PS and N64 vocabularies are disjoint, so listing both
+    // here is safe for either style -- only one family is ever bound.
+    add_btn(L::CROSS, InputAction::SELECT);
+    add_btn(L::START, InputAction::SELECT);
+    add_btn(L::N64_A, InputAction::SELECT);
+    add_btn(L::N64_START, InputAction::SELECT);
+    add_btn(L::CIRCLE, InputAction::SETTINGS_MENU);
+    add_btn(L::N64_B, InputAction::SETTINGS_MENU);
+    add_btn(L::TRIANGLE, InputAction::PLAY_PAUSE);
+    add_btn(L::N64_Z, InputAction::PLAY_PAUSE);
+    add_btn(L::R1, InputAction::NEXT);
+    add_btn(L::N64_R, InputAction::NEXT);
+    add_btn(L::L1, InputAction::PREV);
+    add_btn(L::N64_L, InputAction::PREV);
+
+    // Only an AXIS-kind binding names an ABS code the overlay can treat as
+    // an analog stick. A HAT-kind binding is excluded on purpose: hats
+    // already have dedicated, hardware-proven handling in poll().
+    auto stick_axis = [&](L c) -> int {
+        const PhysicalBinding* b = p.binding(c);
+        return (b && b->kind == K::AXIS) ? static_cast<int>(b->code) : -1;
+    };
+    const bool n64 = (p.style == ControllerStyle::N64_STYLE);
+    o.nav_x_abs = stick_axis(n64 ? L::N64_STICK_RIGHT : L::LSTICK_RIGHT);
+    o.seek_abs = stick_axis(n64 ? L::N64_C_RIGHT : L::RSTICK_RIGHT);
+    return o;
+}
+
 std::string vidpid_key(uint16_t vid, uint16_t pid) {
     char buf[10];
     std::snprintf(buf, sizeof(buf), "%04x:%04x", vid, pid);

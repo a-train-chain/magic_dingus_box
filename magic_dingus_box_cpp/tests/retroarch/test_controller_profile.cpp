@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "platform/input_manager.h"
 #include "retroarch/controller_mapping.h"
 #include "retroarch/controller_profile.h"
 
@@ -524,4 +525,92 @@ TEST_CASE("save_profile_store creates missing parent directories",
 
     ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
     std::filesystem::remove_all(base_dir);       // clean up what this test created
+}
+
+// ---------------------------------------------------------------------------
+// Menu-navigation overlay derivation (Task 9)
+//
+// menu_overlay_from_profile() is the PURE half of the overlay feature: it
+// turns a captured/builtin PhysicalProfile into the per-model kiosk-menu
+// mapping that InputManager layers on top of its hardcoded switch. The
+// InputManager half is Pi-compiled only; everything semantic is pinned here.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("menu overlay mirrors the kiosk's hardcoded semantics",
+          "[controller_profile][overlay]") {
+    using platform::InputAction;
+    const auto ps = menu_overlay_from_profile(builtin_dragonrise_profile());
+    REQUIRE(ps.buttons.at(290) == InputAction::SELECT);          // Cross
+    REQUIRE(ps.buttons.at(297) == InputAction::SELECT);          // Start
+    REQUIRE(ps.buttons.at(289) == InputAction::SETTINGS_MENU);   // Circle
+    REQUIRE(ps.buttons.at(288) == InputAction::PLAY_PAUSE);      // Triangle
+    REQUIRE(ps.buttons.at(293) == InputAction::NEXT);            // R1
+    REQUIRE(ps.buttons.at(292) == InputAction::PREV);            // L1
+    REQUIRE(ps.nav_x_abs == 0);                                  // ABS_X
+    REQUIRE(ps.seek_abs == 2);                                   // ABS_Z (right stick X)
+
+    const auto n64 = menu_overlay_from_profile(builtin_n64_adapter_profile());
+    REQUIRE(n64.buttons.at(306) == InputAction::SELECT);         // A
+    REQUIRE(n64.buttons.at(305) == InputAction::SETTINGS_MENU);  // B
+    REQUIRE(n64.buttons.at(310) == InputAction::PLAY_PAUSE);     // Z
+    REQUIRE(n64.buttons.at(309) == InputAction::NEXT);           // R
+    REQUIRE(n64.buttons.at(308) == InputAction::PREV);           // L
+    REQUIRE(n64.seek_abs == -1);   // C cluster is buttons, not an axis
+}
+
+// The overlay is ADDITIVE: a code it does not claim must fall through to
+// InputManager's hardcoded switch. These cases pin the "claims nothing"
+// end of that contract, so a partial or nonsense captured profile can only
+// ever leave the kiosk at stock behavior, never below it.
+TEST_CASE("menu overlay claims nothing for an empty profile",
+          "[controller_profile][overlay]") {
+    PhysicalProfile empty;
+    empty.style = ControllerStyle::PS_STYLE;
+    const auto o = menu_overlay_from_profile(empty);
+    REQUIRE(o.buttons.empty());
+    REQUIRE(o.nav_x_abs == -1);
+    REQUIRE(o.seek_abs == -1);
+
+    PhysicalProfile empty_n64;
+    empty_n64.style = ControllerStyle::N64_STYLE;
+    const auto n = menu_overlay_from_profile(empty_n64);
+    REQUIRE(n.buttons.empty());
+    REQUIRE(n.nav_x_abs == -1);
+    REQUIRE(n.seek_abs == -1);
+}
+
+TEST_CASE("menu overlay ignores bindings of the wrong kind",
+          "[controller_profile][overlay]") {
+    // A mis-captured profile whose CROSS landed on an axis and whose left
+    // stick landed on a button must contribute NOTHING for those controls
+    // rather than claiming a code it cannot correctly interpret.
+    PhysicalProfile p;
+    p.style = ControllerStyle::PS_STYLE;
+    p.controls[LogicalControl::CROSS] = {K::AXIS, kAbsX, +1, "+0"};
+    p.controls[LogicalControl::LSTICK_RIGHT] = {K::BUTTON, 290, 0, "2"};
+    p.controls[LogicalControl::RSTICK_RIGHT] = {K::HAT, kAbsHat0X, +1, "h0right"};
+    // A well-formed one alongside them still lands.
+    p.controls[LogicalControl::CIRCLE] = {K::BUTTON, 289, 0, "1"};
+
+    const auto o = menu_overlay_from_profile(p);
+    REQUIRE(o.buttons.size() == 1);
+    REQUIRE(o.buttons.at(289) == platform::InputAction::SETTINGS_MENU);
+    REQUIRE(o.buttons.count(kAbsX) == 0);   // the AXIS-kind CROSS is not a button
+    REQUIRE(o.nav_x_abs == -1);             // BUTTON-kind stick is not an axis
+    REQUIRE(o.seek_abs == -1);              // HAT-kind stick is not an axis either
+}
+
+// An N64-style profile must read its stick from the N64 vocabulary, and a
+// PS-style one from the PS vocabulary -- crossing them would silently pick
+// up nothing (or the wrong axis) on a real captured profile.
+TEST_CASE("menu overlay picks stick axes per style", "[controller_profile][overlay]") {
+    PhysicalProfile n64;
+    n64.style = ControllerStyle::N64_STYLE;
+    n64.controls[LogicalControl::N64_STICK_RIGHT] = {K::AXIS, kAbsX, +1, "+0"};
+    n64.controls[LogicalControl::N64_C_RIGHT] = {K::AXIS, kAbsZ, +1, "+2"};
+    // PS-vocabulary bindings on an N64-style profile are not consulted.
+    n64.controls[LogicalControl::LSTICK_RIGHT] = {K::AXIS, kAbsRz, +1, "+3"};
+    const auto o = menu_overlay_from_profile(n64);
+    REQUIRE(o.nav_x_abs == kAbsX);
+    REQUIRE(o.seek_abs == kAbsZ);   // an N64 pad whose C-cluster IS an axis
 }
