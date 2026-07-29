@@ -595,6 +595,34 @@
                  revoked, rate-limited or simply mistyped, and burying it in
                  State A would make it unreachable the moment the box works.
                  _mbShowState() owns its visibility. -->
+            <!-- Movie Storage.
+                 A SIBLING of the three state panels, for the same reason the
+                 TMDB panel is: a drive has to be prepared BEFORE the stack is
+                 healthy. With no drive mounted, STORAGE_ROOT=/mnt/ssd is a
+                 plain directory on the SD card, so downloads land on the OS
+                 partition — which is exactly the situation this panel exists
+                 to prevent. Burying it inside the "healthy" state would make
+                 it unreachable precisely when it is needed.
+                 _mbShowState() owns its visibility. -->
+            <div id="mbStorageSection" class="settings-section-mobile" style="display: none;">
+                <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-plug"/></svg> Movie Storage</div>
+                <div class="section-body">
+                    <p class="settings-description">
+                        Movies download to a USB drive, not the SD card. The drive must be
+                        formatted as ext4 and labelled <strong>MOVIES</strong> — which Windows
+                        and macOS cannot do, so prepare it here.
+                    </p>
+                    <div id="mbStorageStatus" class="health-info" style="margin-bottom: 0.75rem;">
+                        <span class="loading">Checking storage…</span>
+                    </div>
+                    <div id="mbStorageDevices"></div>
+                    <button class="btn-secondary small" onclick="refreshStorageDevices()" id="mbStorageRefreshBtn">
+                        <svg class="ic" aria-hidden="true"><use href="#ic-refresh"/></svg> Rescan drives
+                    </button>
+                    <div id="mbStorageActionStatus" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
+                </div>
+            </div>
+
             <div id="mbTmdbSection" class="settings-section-mobile" style="display: none;">
                 <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-search"/></svg> Movie Info (TMDB)</div>
                 <div class="section-body">
@@ -659,6 +687,32 @@
                 </div>
             </div>
         </section>
+
+        <!-- Prepare Drive confirmation modal.
+             Same type-to-confirm shape as the Reset modal, but the phrase to
+             type is the DEVICE NAME rather than a fixed word. That is
+             deliberate: it makes it impossible to confirm the wrong drive by
+             muscle memory, which matters when one of the choices may be the
+             drive already holding the customer's library. -->
+        <div id="mbPrepareModal" class="modal">
+            <div class="modal-content">
+                <h3><svg class="ic" aria-hidden="true"><use href="#ic-warning"/></svg> Erase and prepare this drive?</h3>
+                <div id="mbPrepareWarning"></div>
+                <p style="margin-top: 1rem;">
+                    Type <strong><span id="mbPrepareDeviceName">the device name</span></strong> to confirm:
+                </p>
+                <input type="text" id="mbPrepareConfirmInput" placeholder="Type the device name"
+                    style="width: 100%; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px; font-family: monospace; margin-top: 0.5rem;"
+                    autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+                <div class="modal-actions" style="margin-top: 1rem;">
+                    <button id="mbPrepareCancelBtn" type="button" class="btn-secondary">Cancel</button>
+                    <button id="mbPrepareConfirmBtn" type="button" class="btn-primary" disabled
+                        style="background: var(--error); border-color: var(--error);">
+                        Erase and prepare
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <!-- Media Browser Reset confirmation modal -->
         <div id="mbResetModal" class="modal">

@@ -5755,6 +5755,20 @@ function _mbShowState(stateName) {
     // The TMDB panel is not one of the three states — it is shown alongside
     // all of them, so the key can be set during setup AND changed afterwards.
     // Hidden only in 'loading', where we don't yet know the tab is usable.
+    // Movie Storage is shown alongside every state for the same reason, and
+    // one more: with no drive mounted, downloads land on the SD card. That is
+    // most likely to be true DURING setup, so the panel has to be reachable
+    // before the stack is healthy — not only after.
+    const storage = document.getElementById('mbStorageSection');
+    if (storage) {
+        const showStorage = (stateName !== 'loading');
+        storage.style.display = showStorage ? 'block' : 'none';
+        if (showStorage) {
+            _wireStoragePanel();
+            refreshStorageDevices();
+        }
+    }
+
     const tmdb = document.getElementById('mbTmdbSection');
     if (tmdb) {
         const show = (stateName !== 'loading');
@@ -5766,6 +5780,150 @@ function _mbShowState(stateName) {
             _wireTmdbKeyPanel();
             refreshTmdbKeyStatus();
         }
+    }
+}
+
+// ===== MOVIE STORAGE (PREPARE DRIVE) =====
+//
+// A customer's new drive arrives exFAT or NTFS with an arbitrary label, so it
+// does not match the `LABEL=MOVIES ... ext4` line in /etc/fstab and never
+// mounts. ext4 cannot be produced from Windows or macOS, so preparation has to
+// happen on the box.
+//
+// Every safety decision lives server-side in storage_prepare.py — this UI only
+// renders what the box says is eligible and collects a typed confirmation. It
+// never decides what is safe to erase.
+
+let _mbPrepareTarget = null;
+// Last listing from the box, keyed by device name. Kept so the confirm modal
+// can read the device's real properties instead of scraping them back out of
+// rendered HTML — which would break the moment the markup changed, and would
+// break in the direction of showing the WRONG warning.
+let _mbStorageDevices = {};
+
+async function refreshStorageDevices() {
+    const status = document.getElementById('mbStorageStatus');
+    const list = document.getElementById('mbStorageDevices');
+    if (!status || !list || !currentDevice) return;
+
+    status.innerHTML = '<span class="loading">Checking storage…</span>';
+    list.innerHTML = '';
+    try {
+        const data = await apiGet(`${currentDevice.url}/admin/media-browser/storage/devices`);
+        const devices = data.devices || [];
+        _mbStorageDevices = {};
+        devices.forEach(d => { _mbStorageDevices[d.name] = d; });
+        const prepared = devices.filter(d => d.is_current_movies_drive);
+
+        // Lead with the thing that actually matters to the customer: is there
+        // somewhere for movies to go, or are they filling the SD card?
+        status.innerHTML = prepared.length
+            ? `<div style="color: var(--success, #66DD7A);">Movie drive connected — downloads go to ${escapeHtml(data.mountpoint)}</div>`
+            : `<div style="color: var(--error);">No movie drive connected. Downloads would fill the SD card.</div>`;
+
+        if (!devices.length) {
+            list.innerHTML = '<p class="settings-description">No drives found. Plug in a USB drive and rescan.</p>';
+            return;
+        }
+        list.innerHTML = devices.map(d => `
+            <div class="health-info" style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin-bottom:0.5rem;">
+                <div>
+                    <div style="font-family: monospace;">${escapeHtml(d.path)} — ${escapeHtml(d.size || '')}</div>
+                    <div class="settings-description" style="margin:0;">
+                        ${d.is_current_movies_drive
+                            ? 'Currently holding your movie library'
+                            : (d.fstype ? escapeHtml(d.fstype) : 'unformatted')}
+                        ${d.removable ? ' · removable' : ''}
+                    </div>
+                </div>
+                <button class="btn-secondary small" style="color: var(--error); border-color: var(--error); white-space: nowrap;"
+                        onclick="openPrepareDriveModal('${escapeHtml(d.name)}')">
+                    Erase &amp; prepare
+                </button>
+            </div>`).join('');
+    } catch (e) {
+        status.innerHTML = `<div style="color: var(--error);">Could not read storage: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+}
+
+function openPrepareDriveModal(name) {
+    _mbPrepareTarget = name;
+
+    const warn = document.getElementById('mbPrepareWarning');
+    const isCurrent = !!(_mbStorageDevices[name] || {}).is_current_movies_drive;
+    if (warn) {
+        warn.innerHTML = isCurrent
+            ? `<p style="color: var(--error);"><strong>This is the drive currently holding your movie library.</strong>
+                 Erasing it will permanently delete every downloaded movie on it. This cannot be undone.</p>`
+            : `<p>Everything on <strong>/dev/${escapeHtml(name)}</strong> will be permanently erased and
+                 replaced with an empty movie library. This cannot be undone.</p>`;
+    }
+    const label = document.getElementById('mbPrepareDeviceName');
+    if (label) label.textContent = name;
+
+    const input = document.getElementById('mbPrepareConfirmInput');
+    const btn = document.getElementById('mbPrepareConfirmBtn');
+    if (input) { input.value = ''; input.placeholder = `Type ${name}`; }
+    if (btn) btn.disabled = true;
+
+    const modal = document.getElementById('mbPrepareModal');
+    if (modal) modal.classList.add('active');
+    if (input) setTimeout(() => input.focus(), 50);
+}
+
+function _closePrepareDriveModal() {
+    const modal = document.getElementById('mbPrepareModal');
+    if (modal) modal.classList.remove('active');
+    _mbPrepareTarget = null;
+}
+
+async function _confirmPrepareDrive() {
+    const device = _mbPrepareTarget;
+    const input = document.getElementById('mbPrepareConfirmInput');
+    const statusEl = document.getElementById('mbStorageActionStatus');
+    if (!device || !input || input.value.trim() !== device) return;
+
+    _closePrepareDriveModal();
+    if (statusEl) {
+        statusEl.style.display = 'block';
+        statusEl.innerHTML = `<span class="loading">Preparing ${escapeHtml(device)} — this can take a minute…</span>`;
+    }
+    try {
+        const data = await apiRequest(
+            `${currentDevice.url}/admin/media-browser/storage/prepare`,
+            { method: 'POST', headers: getCsrfHeaders(),
+              body: JSON.stringify({ device, confirm: device }) });
+        if (statusEl) {
+            statusEl.innerHTML = `<span style="color: var(--success, #66DD7A);">${escapeHtml(device)} is ready for movies.</span>`;
+        }
+        refreshStorageDevices();
+    } catch (e) {
+        if (statusEl) {
+            statusEl.innerHTML = `<span style="color: var(--error);">Failed: ${escapeHtml(e.message || String(e))}</span>`;
+        }
+    }
+}
+
+function _wireStoragePanel() {
+    const input = document.getElementById('mbPrepareConfirmInput');
+    const btn = document.getElementById('mbPrepareConfirmBtn');
+    const cancel = document.getElementById('mbPrepareCancelBtn');
+    // Wired here rather than at DOMContentLoaded because the Media Browser tab
+    // does not exist in the DOM until the unlock check passes — the same
+    // reason the TMDB panel re-wires defensively.
+    if (input && !input.dataset.wired) {
+        input.dataset.wired = '1';
+        input.addEventListener('input', () => {
+            if (btn) btn.disabled = (input.value.trim() !== _mbPrepareTarget);
+        });
+    }
+    if (btn && !btn.dataset.wired) {
+        btn.dataset.wired = '1';
+        btn.addEventListener('click', _confirmPrepareDrive);
+    }
+    if (cancel && !cancel.dataset.wired) {
+        cancel.dataset.wired = '1';
+        cancel.addEventListener('click', _closePrepareDriveModal);
     }
 }
 

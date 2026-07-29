@@ -188,6 +188,7 @@ if(BUILD_KIOSK)
             src/media_browser/qbittorrent/qbittorrent_client.cpp
             src/media_browser/qbittorrent/download_watchdog.cpp
             src/media_browser/health/vpn_health_monitor.cpp
+            src/media_browser/movie_drive.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/browse_screen.cpp
@@ -372,6 +373,7 @@ if(ENABLE_MEDIA_BROWSER)
     # --- Unit test runner ---
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
+        tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_sequence_detector.cpp
@@ -383,6 +385,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_download_watchdog.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         src/media_browser/health/vpn_health_monitor.cpp
+        src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
         ${MEDIA_BROWSER_SOURCES}
     )

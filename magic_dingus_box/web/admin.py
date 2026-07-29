@@ -11,6 +11,22 @@ import os
 import re
 import subprocess
 import sys
+
+# admin.py is imported both as a package member and as a flat module (the test
+# harness does the latter), so sibling imports need the same dual form the
+# remote/* imports below use.
+try:  # noqa: E402
+    from storage_prepare import (
+        PROTECTED_MOUNTPOINTS,
+        eligible_devices,
+        protected_disk_names,
+    )
+except ImportError:  # pragma: no cover - exercised by whichever form runs
+    from .storage_prepare import (
+        PROTECTED_MOUNTPOINTS,
+        eligible_devices,
+        protected_disk_names,
+    )
 import secrets
 import threading
 import time
@@ -459,6 +475,71 @@ _TMDB_VERIFY_URL = "https://api.themoviedb.org/3/authentication"
 _TMDB_KEY_FILE_ENV = "MDB_TMDB_KEY_FILE"
 
 KIOSK_SERVICE = "magic-dingus-box-cpp.service"
+
+
+def _protected_disks() -> set:
+    """Whole disks backing the running system — never offered for formatting.
+
+    Derived live from findmnt rather than hardcoded, because the boot device
+    differs across boards (mmcblk0 on SD, nvme0n1 on an NVMe hat, sda on USB
+    boot). An empty return means we could not establish what the system runs
+    from, and every caller treats that as fatal rather than proceeding.
+    """
+    sources = []
+    for mountpoint in PROTECTED_MOUNTPOINTS:
+        try:
+            out = subprocess.run(["findmnt", "-no", "SOURCE", mountpoint],
+                                 capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                sources.append(out.stdout.strip())
+        except Exception:  # noqa: BLE001 - a missing mount is not an error
+            continue
+    return protected_disk_names(sources)
+
+
+def _mountpoints_under(disk_path: str) -> list:
+    """Every mountpoint currently served by this disk or its partitions.
+
+    Used to clear a drive before formatting it. Anything still mounted makes
+    wipefs fail with "device is busy", which is an unhelpful way for the
+    Prepare Drive flow to end.
+    """
+    out = []
+    try:
+        result = subprocess.run(["lsblk", "-nro", "MOUNTPOINT", disk_path],
+                                capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return []
+        for line in result.stdout.splitlines():
+            mountpoint = line.strip()
+            # Never hand a system path to umount, whatever lsblk reports. The
+            # eligibility rule should already have excluded such a disk; this
+            # is the same belt-and-braces reasoning applied one layer down.
+            if mountpoint and mountpoint not in PROTECTED_MOUNTPOINTS:
+                out.append(mountpoint)
+    except Exception:  # noqa: BLE001
+        return []
+    return out
+
+
+def _first_partition_of(disk_path: str):
+    """The first partition node of a disk, once udev has created it.
+
+    Naming differs by device class — sda -> sda1, but mmcblk0 -> mmcblk0p1 and
+    nvme0n1 -> nvme0n1p1 — so this asks lsblk rather than concatenating.
+    """
+    try:
+        out = subprocess.run(["lsblk", "-J", "-o", "NAME,TYPE", disk_path],
+                             capture_output=True, text=True, timeout=15)
+        if out.returncode != 0:
+            return None
+        for device in (json.loads(out.stdout).get("blockdevices") or []):
+            for child in (device.get("children") or []):
+                if child.get("type") == "part":
+                    return "/dev/" + child["name"]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 # Systems whose libraries contain multi-disc titles, so an upload should
 # re-run the .m3u generator over that system's ROM directory. Cartridge
@@ -3488,6 +3569,170 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "visible": _media_browser_unlocked(),
             "vpn_configured": _vpn_configured(),
         })
+
+    # ===== PREPARE DRIVE =====
+    #
+    # A customer's new drive is exFAT or NTFS with some arbitrary label, so it
+    # does not match the `LABEL=MOVIES ... ext4` line in /etc/fstab and never
+    # mounts. Worse, STORAGE_ROOT=/mnt/ssd is a plain directory on the SD card
+    # when nothing is mounted there, so the stack comes up bound to the SD and
+    # downloads land on the OS partition.
+    #
+    # ext4 is not something a customer can produce from Windows or macOS, so
+    # the preparation has to happen on the box.
+    #
+    # Gated behind the SAME Layer 1 unlock as the rest of the Media Browser —
+    # when the secret sequence has not been entered, these 403 exactly like
+    # every other /admin/media-browser/* route and the UI renders nothing.
+    # require_vpn=False because preparing storage is setup work that precedes
+    # dropping in a WireGuard config, same as the other setup endpoints.
+
+    @app.get("/admin/media-browser/storage/devices")
+    def storage_devices():  # type: ignore[no-redef]
+        gate = _check_media_browser_gates(require_vpn=False)
+        if gate is not None:
+            return gate
+        try:
+            listing = subprocess.run(
+                ["lsblk", "-J", "-o", "NAME,TYPE,SIZE,RM,MOUNTPOINT,LABEL,FSTYPE"],
+                capture_output=True, text=True, timeout=15, check=True).stdout
+            protected = _protected_disks()
+        except Exception as e:  # noqa: BLE001 - surfaced to the operator
+            return error_response("STORAGE_ERROR", f"Could not enumerate disks: {e}")
+        if not protected:
+            # We could not establish what the system is running from. Refusing
+            # is the only safe answer — an empty protected set would make the
+            # boot disk eligible.
+            return error_response(
+                "STORAGE_ERROR",
+                "Could not determine the system disk; refusing to list targets")
+        return success_response(data={
+            "devices": eligible_devices(json.loads(listing), protected),
+            "mountpoint": "/mnt/ssd",
+            "label": "MOVIES",
+        })
+
+    @app.post("/admin/media-browser/storage/prepare")
+    @require_csrf
+    def storage_prepare():  # type: ignore[no-redef]
+        """ERASE a drive and set it up to hold the movie library.
+
+        Destructive and irreversible. Three independent checks stand between a
+        request and mkfs: the device must be in the eligible list computed
+        fresh here (never trusted from the client), the caller must echo the
+        device name back in `confirm`, and the eligibility rule itself refuses
+        anything serving the running system.
+        """
+        gate = _check_media_browser_gates(require_vpn=False)
+        if gate is not None:
+            return gate
+
+        body = request.get_json(silent=True) or {}
+        device = str(body.get("device") or "").strip()
+        confirm = str(body.get("confirm") or "").strip()
+        if not device:
+            return error_response("VALIDATION_ERROR", "device required")
+
+        try:
+            listing = subprocess.run(
+                ["lsblk", "-J", "-o", "NAME,TYPE,SIZE,RM,MOUNTPOINT,LABEL,FSTYPE"],
+                capture_output=True, text=True, timeout=15, check=True).stdout
+            protected = _protected_disks()
+        except Exception as e:  # noqa: BLE001
+            return error_response("STORAGE_ERROR", f"Could not enumerate disks: {e}")
+        if not protected:
+            return error_response(
+                "STORAGE_ERROR",
+                "Could not determine the system disk; refusing to format anything")
+
+        # Re-derive eligibility server-side. The client's idea of what is safe
+        # is never trusted.
+        allowed = {d["name"]: d for d in eligible_devices(json.loads(listing), protected)}
+        target = allowed.get(device)
+        if target is None:
+            return error_response(
+                "VALIDATION_ERROR",
+                f"{device} is not a device this box may format", status=400)
+
+        # Explicit, typed confirmation naming the exact device. Guards against
+        # a mis-click reaching a destructive endpoint.
+        if confirm != device:
+            return error_response(
+                "VALIDATION_ERROR",
+                "confirm must exactly match the device name", status=400)
+
+        path = target["path"]
+        try:
+            # Unmount everything on the target before touching it, or wipefs
+            # fails with "device is busy" — a confusing way for this to end.
+            #
+            # Mountpoints are queried live rather than read from the listing
+            # above: the eligible-device records deliberately carry no
+            # partition detail, and state can change between listing and
+            # formatting anyway.
+            subprocess.run(["sudo", "umount", "-l", "/mnt/ssd"],
+                           capture_output=True, timeout=30)
+            for mp in _mountpoints_under(path):
+                subprocess.run(["sudo", "umount", "-l", mp],
+                               capture_output=True, timeout=30)
+
+            steps = [
+                # Clear any existing signatures so a stale label cannot linger.
+                ["sudo", "wipefs", "-a", path],
+                ["sudo", "parted", "-s", path, "mklabel", "gpt"],
+                ["sudo", "parted", "-s", path, "mkpart", "primary", "ext4",
+                 "0%", "100%"],
+            ]
+            for step in steps:
+                subprocess.run(step, capture_output=True, text=True,
+                               timeout=120, check=True)
+            subprocess.run(["sudo", "partprobe", path], capture_output=True,
+                           timeout=60)
+            time.sleep(2)  # let udev create the partition node
+
+            partition = _first_partition_of(path)
+            if not partition:
+                return error_response(
+                    "STORAGE_ERROR",
+                    "Partition was created but did not appear; try again")
+
+            # The label is the whole contract with /etc/fstab.
+            subprocess.run(["sudo", "mkfs.ext4", "-F", "-L", "MOVIES", partition],
+                           capture_output=True, text=True, timeout=600, check=True)
+            subprocess.run(["sudo", "systemctl", "daemon-reload"],
+                           capture_output=True, timeout=30)
+            subprocess.run(["sudo", "mount", "/mnt/ssd"], capture_output=True,
+                           text=True, timeout=60, check=True)
+
+            # Radarr binds ${STORAGE_ROOT}/library and qBit ${STORAGE_ROOT}/
+            # downloads. Docker resolves a bind source once, at container
+            # start, so these must exist before the stack is re-linked.
+            for sub in ("library", "downloads"):
+                subprocess.run(["sudo", "mkdir", "-p", f"/mnt/ssd/{sub}"],
+                               capture_output=True, timeout=30, check=True)
+            subprocess.run(["sudo", "chown", "-R", "magic:magic", "/mnt/ssd"],
+                           capture_output=True, timeout=120)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()[:300]
+            return error_response("STORAGE_ERROR",
+                                  f"Preparation failed: {detail or e}")
+        except Exception as e:  # noqa: BLE001
+            return error_response("STORAGE_ERROR", f"Preparation failed: {e}")
+
+        # Re-link the containers onto the freshly mounted drive. Without this
+        # they keep the bind they resolved at start — the empty placeholder
+        # dirs on the SD card — and Radarr reports an empty library with
+        # nothing in any log to explain it.
+        try:
+            subprocess.run(
+                ["sudo", "systemctl", "start", "magic-dingus-storage-attach.service"],
+                capture_output=True, timeout=300)
+        except Exception:  # noqa: BLE001 - drive is prepared either way
+            pass
+
+        return success_response(
+            data={"device": device, "mountpoint": "/mnt/ssd", "label": "MOVIES"},
+            message=f"{device} is ready for movies")
 
     @app.get("/admin/media-browser/status")
     def media_browser_status():  # type: ignore[no-redef]

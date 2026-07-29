@@ -178,6 +178,13 @@ private:
     int quality_profile_idx_ = 0;  // index into quality_profiles_
 
     std::vector<RootFolder> root_folders_;
+    // Whether the movie drive is actually mounted, cached because the render
+    // path runs every frame and this reads /proc/mounts. Radarr's root folder
+    // cannot answer it: with no drive at /mnt/ssd that path is a directory on
+    // the SD card, so the folder looks valid and the free-space readout shows
+    // the SD's free space while downloads fill the OS partition.
+    mutable bool movie_drive_mounted_ = true;
+    mutable std::chrono::steady_clock::time_point movie_drive_checked_at_{};
 
     // Prowlarr indexer state.
     std::vector<IndexerRow> indexer_rows_;

@@ -1,4 +1,6 @@
 #include "media_browser/ui/mb_settings_screen.h"
+
+#include "media_browser/movie_drive.h"
 #include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
@@ -1173,6 +1175,38 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             }
 
             case RowKind::StoragePath: {
+                // Is there actually a drive, or is Radarr's root folder a
+                // directory on the SD card? Nothing else on this screen can
+                // tell the difference, and the difference is "downloads go to
+                // a 239 GB drive" versus "downloads fill the partition the OS
+                // runs from". Re-checked at most every 2s — the render path
+                // runs every frame and this reads /proc/mounts.
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (movie_drive_checked_at_.time_since_epoch().count() == 0 ||
+                        now - movie_drive_checked_at_ > std::chrono::seconds(2)) {
+                        movie_drive_mounted_ =
+                            media_browser::movie_drive_mounted_now("/mnt/ssd");
+                        movie_drive_checked_at_ = now;
+                    }
+                }
+                if (!movie_drive_mounted_) {
+                    const std::string warn = "NO DRIVE";
+                    int wtw = r.mb_text_width(warn, value_sz);
+                    r.mb_draw_text(warn,
+                                   value_x_right - static_cast<float>(wtw),
+                                   label_y, value_sz, th.highlight2, 1.0f);
+                    const std::string hint =
+                        "Downloads fill the SD card - prepare a drive in Content Manager";
+                    float hint_max_w = value_x_right - label_x - 8.0f;
+                    std::string hint_drawn =
+                        truncate_to_width(r, hint, small_sz, hint_max_w);
+                    int hb = r.mb_text_baseline(small_sz);
+                    r.mb_draw_text(hint_drawn, label_x,
+                                   center_y + 12.0f + static_cast<float>(hb),
+                                   small_sz, th.highlight2, 0.9f);
+                    break;
+                }
                 // Two-line presentation: path on the right side of the
                 // label row in dim small font (truncated if it overflows),
                 // and a "FREE: 124 GB" readout right-aligned in highlight1
