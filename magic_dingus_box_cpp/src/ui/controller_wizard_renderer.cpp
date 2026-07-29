@@ -25,14 +25,38 @@ namespace ui {
 
 namespace {
 
-// Footer key legend. The box has four face buttons wired to fixed actions
-// (gpio_manager.cpp): BTN1 yellow = PREV, BTN2 red = PLAY_PAUSE, BTN3 green =
-// NEXT, BTN4 black = SETTINGS_MENU, rotary click = SELECT. The wizard binds
-// skip/redo/cancel to PREV/PLAY_PAUSE/SETTINGS_MENU, so BTN3 is NOT a wizard
-// key and must not be advertised as one — telling the user to press a button
-// that does nothing is exactly the sort of dead end this screen exists to
-// avoid.
-constexpr const char* kCancelHint = "BTN4 / B: cancel";
+// Footer key legend.
+//
+// TWO RULES, both learned the hard way on this exact file:
+//   1. Name ONLY controls that can actually act in the phase being drawn.
+//      While the wizard is up, InputManager::set_raw_capture(true) diverts
+//      every real joystick to raw events, so NO gamepad button can produce
+//      an InputAction at all — a footer that says "B: cancel" is pointing at
+//      a dead key on the one screen whose failure mode is a bricked box.
+//   2. Use the labels the user physically sees, not internal names. "BTN4"
+//      is not written on anything.
+//
+// The two surfaces that keep working, verified against their sources rather
+// than assumed:
+//
+//   Box faceplate (gpio_manager.cpp:255-286) — four illuminated buttons and
+//   a clickable rotary knob:
+//     YELLOW -> PREV,  RED -> PLAY_PAUSE,  GREEN -> NEXT,
+//     BLACK  -> SETTINGS_MENU,  knob click -> SELECT,
+//     knob turn -> ROTATE (input_manager.cpp:838-856).
+//
+//   Phone remote (web/remote/uinput_writer.py:30-34,69-81 for the codes,
+//   web/static/remote/remote.html:148-175 for the labels the phone shows,
+//   input_manager.cpp:957+ for what the kiosk does with each code):
+//     yellow cap (308) -> PREV,   red cap (310) -> PLAY_PAUSE,
+//     green cap (309)  -> NEXT,   button labelled "Menu" (305) -> SETTINGS_MENU,
+//     centre key labelled "Enter" (304) -> SELECT,
+//     D-pad (ABS_HAT0X/Y) -> ROTATE / ROTATE_VERTICAL (input_manager.cpp:730-757).
+//
+// GREEN / NEXT is bound to nothing in any wizard phase, so it is never
+// advertised.
+constexpr const char* kCancelHint = "Black / Menu: cancel";
+constexpr const char* kSelectHint = "Click knob / Enter";
 
 }  // namespace
 
@@ -115,8 +139,8 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                 draw_text(label, x, y, theme_->font_medium_size,
                           sel ? theme_->accent : theme_->fg);
             }
-            footer(std::string("Rotate / D-pad: choose  ·  Select: confirm  ·  ") +
-                   kCancelHint);
+            footer(std::string("Turn knob / D-pad: choose  ·  ") + kSelectHint +
+                   ": confirm  ·  " + kCancelHint);
             break;
         }
 
@@ -168,8 +192,7 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
             pane_text(wiz.status_line(), vh * 0.40f + 96.0f, theme_->font_small_size,
                       theme_->highlight2);
 
-            footer(std::string("BTN2 / Play: skip  ·  BTN1 / Prev: redo  ·  ") +
-                   kCancelHint);
+            footer(std::string("Red: skip  ·  Yellow: redo  ·  ") + kCancelHint);
             break;
         }
 
@@ -227,9 +250,9 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
             // (see ControllerWizard::can_save()). Point at the two things that
             // do work instead.
             footer(wiz.can_save()
-                       ? std::string("Select: save  ·  BTN1 / Prev: start over  ·  ") +
+                       ? std::string(kSelectHint) + ": save  ·  Yellow: start over  ·  " +
                              kCancelHint
-                       : std::string("BTN1 / Prev: start over  ·  ") + kCancelHint);
+                       : std::string("Yellow: start over  ·  ") + kCancelHint);
             break;
         }
 
@@ -246,7 +269,7 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
             }
             center_text(wiz.device_name(), vh * 0.40f + 56.0f,
                         theme_->font_medium_size, theme_->fg);
-            footer(std::string("Select: done  ·  ") + kCancelHint);
+            footer(std::string(kSelectHint) + ": done  ·  " + kCancelHint);
             break;
         }
     }
