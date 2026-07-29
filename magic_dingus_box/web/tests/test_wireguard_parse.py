@@ -37,6 +37,8 @@ All keys in this file are SYNTHETIC — fixed placeholder strings, never issued
 by any provider. Do not paste a real config in here: a live ProtonVPN key was
 committed to this file once (commit 5fad794) and had to be revoked.
 """
+import re
+
 import pytest
 
 from magic_dingus_box.web.admin import (
@@ -111,6 +113,17 @@ DNS = 10.255.255.1
 PublicKey = {SYNTH_PUB}
 AllowedIPs = 0.0.0.0/0
 Endpoint = nl-002.whiskergalaxy.com:443
+"""
+
+SURFSHARK = f"""\
+[Interface]
+PrivateKey = {SYNTH_PRIV}
+Address = 10.14.0.2/16
+DNS = 162.252.172.57, 149.154.159.92
+[Peer]
+PublicKey = {SYNTH_PUB}
+AllowedIPs = 0.0.0.0/0
+Endpoint = nl-ams.prod.surfshark.com:51820
 """
 
 # A self-hosted / corporate tunnel: no brand markers at all.
@@ -214,14 +227,47 @@ def test_hostname_endpoint_keeps_the_hostname():
     (IVPN, "ivpn"),
     (AIRVPN, "airvpn"),
     (WINDSCRIBE, "windscribe"),
+    (SURFSHARK, "surfshark"),
 ])
 def test_detects_known_providers(conf, expected):
     assert _detect_vpn_brand(conf) == expected
 
 
+@pytest.mark.parametrize("conf,expected", [
+    (MULLVAD, "mullvad"),
+    (AIRVPN, "airvpn"),
+    (WINDSCRIBE, "windscribe"),
+    (SURFSHARK, "surfshark"),
+])
+def test_detection_survives_without_the_endpoint_hostname(conf, expected):
+    """ProtonVPN and Mullvad ship a bare IP, so subnet rules must stand alone."""
+    stripped = re.sub(r"(?m)^Endpoint = .*$", "Endpoint = 198.51.100.4:51820", conf)
+    assert _detect_vpn_brand(stripped) == expected
+
+
 def test_unknown_config_detects_as_nothing():
     """A self-hosted tunnel must not be mistaken for a commercial provider."""
     assert _detect_vpn_brand(SELF_HOSTED) == ""
+
+
+def test_ivpn_is_not_detected_from_its_subnet_alone():
+    """172.16.0.0/12 is the most commonly self-chosen private range there is.
+
+    IVPN configs carry a *.wg.ivpn.net endpoint, so the hostname rule already
+    covers the real case; matching the subnet too would relabel a large share
+    of corporate tunnels as IVPN.
+    """
+    conf = SELF_HOSTED.replace(
+        "Address = 192.168.77.4/24", "Address = 172.27.181.44/32").replace(
+        "DNS = 192.168.77.1", "DNS = 172.16.0.1")
+    assert _detect_vpn_brand(conf) == ""
+
+
+def test_mullvad_detected_outside_the_10_64_0_x_block():
+    """Real Mullvad addresses span the whole /10, e.g. 10.71.237.120."""
+    conf = MULLVAD.replace("Address = 10.64.222.11/32",
+                           "Address = 10.71.237.120/32")
+    assert _detect_vpn_brand(conf) == "mullvad"
 
 
 def test_proton_detected_without_the_key_comment():
@@ -270,10 +316,13 @@ def test_protonvpn_gets_native_mode_with_port_forwarding():
 
 
 def test_protonvpn_does_not_pin_the_endpoint():
-    """A pin overrides gluetun's port-forwarding-only server filter.
+    """A pin collapses gluetun's server pool to exactly one server.
 
-    Observed live: the box stayed stuck on one server across reconnects and
-    could not move to a working one. The keys must be present-but-blank so a
+    Over WireGuard gluetun filters its server list first and then scans the
+    filtered pool for the pinned IP, so the pin does not skip the
+    port-forwarding-only filter — it leaves gluetun a pool of one. Observed
+    live: the box stayed stuck on a single server across reconnects and could
+    not move to a working one. The keys must be present-but-blank so a
     re-provision CLEARS a pin written by an earlier version.
     """
     wg = _parse_wireguard_config(PROTON_DUAL_STACK)
@@ -341,3 +390,72 @@ def test_every_provider_env_sets_wireguard_type():
     wg = _parse_wireguard_config(MULLVAD)
     for provider in ("protonvpn", "mullvad", "custom", "nonsense"):
         assert _vpn_provider_env(provider, wg)["VPN_TYPE"] == "wireguard"
+
+
+# --------------------------------------------------------------------------
+# Re-provisioning an already-configured box
+#
+# These mirror exactly what /admin/media-browser/setup does to services/.env:
+#   env = read(.env); env.update(wg); env.update(_vpn_provider_env(...))
+# The stale-key case is the one that actually bites — a leftover
+# VPN_PORT_FORWARDING=on or WIREGUARD_ENDPOINT_IP from a previous provider is
+# a fatal gluetun startup error, and the operator has no shell to find it.
+# --------------------------------------------------------------------------
+
+LEGACY_PROTON_ENV = {
+    "VPN_SERVICE_PROVIDER": "protonvpn",
+    "VPN_TYPE": "wireguard",
+    "VPN_PORT_FORWARDING": "on",
+    "VPN_COUNTRIES": "Netherlands",
+    "WIREGUARD_ENDPOINT_IP": "169.150.196.67",
+    "STORAGE_ROOT": "/mnt/ssd",
+    "QBITTORRENT_ADMIN_PASSWORD": "keep-me-secret",
+    "RADARR_API_KEY": "keep-me-too",
+}
+
+
+def _apply(existing, conf, provider, country="Netherlands"):
+    """Reproduce the setup route's merge order."""
+    wg = _parse_wireguard_config(conf)
+    env = dict(existing)
+    env.update(wg)
+    env.update(_vpn_provider_env(provider, wg, country=country))
+    return env, wg
+
+
+def test_switching_a_proton_box_to_a_custom_vpn_clears_every_stale_key():
+    env, wg = _apply(LEGACY_PROTON_ENV, MULLVAD, "custom")
+    assert env["VPN_SERVICE_PROVIDER"] == "custom"
+    assert env["VPN_PORT_FORWARDING"] == "off"
+    assert env["VPN_COUNTRIES"] == ""
+    assert env["WIREGUARD_ENDPOINT_IP"] == wg["WIREGUARD_ENDPOINT_IP"]
+    assert env["WIREGUARD_ENDPOINT_PORT"] == wg["WIREGUARD_ENDPOINT_PORT"]
+
+
+def test_reprovisioning_a_proton_box_drops_the_inherited_endpoint_pin():
+    """The pin is what left this box stuck on one server; re-setup clears it."""
+    env, _ = _apply(LEGACY_PROTON_ENV, PROTON_DUAL_STACK, "protonvpn")
+    assert env["WIREGUARD_ENDPOINT_IP"] == ""
+    assert env["VPN_PORT_FORWARDING"] == "on"
+    assert env["VPN_COUNTRIES"] == "Netherlands"
+
+
+def test_reprovisioning_preserves_unrelated_secrets_and_settings():
+    """Only the VPN block is authoritative — the rest of .env must survive."""
+    env, _ = _apply(LEGACY_PROTON_ENV, MULLVAD, "custom")
+    assert env["QBITTORRENT_ADMIN_PASSWORD"] == "keep-me-secret"
+    assert env["RADARR_API_KEY"] == "keep-me-too"
+    assert env["STORAGE_ROOT"] == "/mnt/ssd"
+
+
+def test_a_legacy_proton_env_left_untouched_still_describes_a_valid_stack():
+    """Backward compat: an existing box that is never re-provisioned.
+
+    Nothing in this change rewrites .env on its own, so the values a
+    already-provisioned ProtonVPN box carries must remain a legal gluetun
+    configuration on their own terms.
+    """
+    assert LEGACY_PROTON_ENV["VPN_SERVICE_PROVIDER"] == "protonvpn"
+    assert _vpn_supports_port_forwarding(
+        LEGACY_PROTON_ENV["VPN_SERVICE_PROVIDER"]) is True
+    assert LEGACY_PROTON_ENV["VPN_COUNTRIES"]  # non-empty is legal natively

@@ -123,10 +123,35 @@ services:
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
       - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY:-}
       - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP:-}
+      # Required by the `custom` provider — it has no server list, so the
+      # endpoint from the customer's .conf is the only thing telling gluetun
+      # where to connect. Missing it is fatal: "server selection: Wireguard
+      # server selection settings: endpoint port is not set". Native
+      # providers must NOT have it (they reject or restrict the value), so
+      # admin.py writes it blank for those.
+      - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
-      - SERVER_COUNTRIES=${VPN_COUNTRIES:-Netherlands}
-      - SERVER_FEATURES=${SERVER_FEATURES:-}
-      - VPN_PORT_FORWARDING=${VPN_PORT_FORWARDING:-on}
+      # NOTE the `-` and not `:-`. This default must apply only when
+      # VPN_COUNTRIES is UNSET, never when it is set-and-empty.
+      # `VPN_SERVICE_PROVIDER=custom` — the bring-your-own-VPN default — has
+      # no server list to filter, and gluetun treats a non-empty country
+      # there as fatal: "for VPN service provider custom: the country
+      # specified is not valid: one or more values is set but there is no
+      # possible value available". admin.py writes `VPN_COUNTRIES=` for
+      # custom, and with `:-` compose would helpfully turn that empty value
+      # back into Netherlands and break every non-Proton box.
+      # Boxes provisioned before this change have VPN_COUNTRIES=Netherlands
+      # written out explicitly, so they are unaffected either way.
+      - SERVER_COUNTRIES=${VPN_COUNTRIES-}
+      # Only ProtonVPN, Private Internet Access, PrivateVPN and Perfect
+      # Privacy are accepted here — and of those, only ProtonVPN has any
+      # WireGuard servers. For anything else, including `custom`, gluetun
+      # refuses to start: "port forwarding cannot be enabled: value is not
+      # one of the possible choices". Since radarr/prowlarr/qbittorrent/
+      # byparr are all gated on `depends_on: service_healthy`, that is a
+      # whole-stack outage. Default OFF so an unprovisioned or hand-edited
+      # .env fails safe; admin.py turns it on only where it is legal.
+      - VPN_PORT_FORWARDING=${VPN_PORT_FORWARDING:-off}
       # Allow LAN + docker inter-container traffic through firewall.
       #
       # CRITICAL: do NOT use the broad 10.0.0.0/8 here, even though it's

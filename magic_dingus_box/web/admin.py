@@ -826,15 +826,22 @@ def _detect_vpn_brand(text: str, wg: dict | None = None) -> str:
       * Endpoint hostname suffixes are taken from gluetun's own embedded
         server list (/gluetun/servers.json in the running image), so they are
         exact for the providers gluetun knows. They only help when the .conf
-        carries a hostname — several providers emit a bare IP instead.
-      * ProtonVPN's 10.2.0.0/16 interface address + 10.2.0.1 DNS gateway is
-        corroborated twice: by a real Proton config, and independently by
-        this repo's own operational notes (the FIREWALL_OUTBOUND_SUBNETS
-        comment in docker-compose.yml documents the 10.2.0.1 gateway as the
-        reason 10.0.0.0/8 must not be listed).
-      * Mullvad's 10.64.0.0/10 range is widely reported but was NOT verified
-        here against a real Mullvad config, so it is used only as a
-        secondary hint that can label — never to auto-select native mode.
+        carries a hostname — ProtonVPN and Mullvad emit a bare IP instead.
+      * ProtonVPN's 10.2.0.2 interface address + 10.2.0.1 DNS gateway is
+        corroborated three ways: a real Proton config; this repo's own
+        operational notes (the FIREWALL_OUTBOUND_SUBNETS comment in
+        docker-compose.yml documents the 10.2.0.1 gateway as the reason
+        10.0.0.0/8 must not be listed); and gluetun itself, which hardcodes
+        10.2.0.2 as its ProtonVPN default address.
+      * The remaining subnet rules are only applied where the range is
+        distinctive enough that a self-hosted tunnel is unlikely to collide
+        with it. IVPN (172.16.0.0/12) is deliberately NOT matched on subnet:
+        that is the most commonly self-chosen private range there is, and
+        IVPN configs carry a hostname endpoint anyway.
+
+    A wrong label here is cosmetic, never functional: every brand except
+    protonvpn still RUNS as `custom` (see _VPN_AUTO_NATIVE_PROVIDERS), and
+    the operator can override the choice in the setup panel.
     """
     interface, peer = _wireguard_sections(text)
     if wg and wg.get("WIREGUARD_ENDPOINT_IP"):
@@ -844,6 +851,16 @@ def _detect_vpn_brand(text: str, wg: dict | None = None) -> str:
         host = host.lower()
     address = (interface.get("Address") or "").strip().lower()
     dns = (interface.get("DNS") or "").strip().lower()
+
+    def _in(value: str, cidr: str) -> bool:
+        """True iff `value` (an Address or DNS entry) sits inside `cidr`."""
+        first = value.split(",")[0].strip().split("/")[0].strip()
+        if not first:
+            return False
+        try:
+            return ipaddress.ip_address(first) in ipaddress.ip_network(cidr)
+        except ValueError:
+            return False
 
     # 1. Endpoint hostname — the strongest signal when present.
     host_suffixes = (
@@ -864,22 +881,41 @@ def _detect_vpn_brand(text: str, wg: dict | None = None) -> str:
         if host.endswith(suffix):
             return brand
 
-    # 2. ProtonVPN: 10.2.0.x interface address AND/OR the 10.2.0.1 DNS
-    #    gateway, plus the "# Key for <name>" header its dashboard writes.
+    # 2. ProtonVPN — two of three: the 10.2.0.x address, the 10.2.0.1 DNS
+    #    gateway, or one of the "# Key for" / "# NetShield" / "# NAT-PMP" /
+    #    "# VPN Accelerator" headers its dashboard writes. These co-occur;
+    #    they are not alternatives, so any one of them counts once.
     proton_hits = 0
-    if address.startswith("10.2.0."):
+    if _in(address, "10.2.0.0/24"):
         proton_hits += 1
-    if dns.startswith("10.2.0.1"):
+    if _in(dns, "10.2.0.1/32"):
         proton_hits += 1
-    if re.search(r"^\s*#\s*Key for\s+\S", text, re.MULTILINE):
+    if re.search(r"^\s*#\s*(Key for\s+\S|NetShield|NAT-PMP|VPN Accelerator)",
+                 text, re.MULTILINE | re.IGNORECASE):
         proton_hits += 1
     if proton_hits >= 2:
         return "protonvpn"
 
-    # 3. Mullvad hint (label only — see docstring). Mullvad hands out
-    #    10.64.0.0/10 interface addresses and resolves DNS at 10.64.0.1.
-    if address.startswith("10.64.") or dns.startswith("10.64.0.1"):
+    # 3. Surfshark writes a byte-identical `Address = 10.14.0.2/16` for every
+    #    user and every server — the /16 on a single-peer client config is
+    #    itself unusual enough to be a signature.
+    if address.startswith("10.14.0.2/16"):
+        return "surfshark"
+
+    # 4. Mullvad: 10.64.0.0/10 address AND the 10.64.0.1 DNS gateway. The
+    #    address is NOT fixed at 10.64.0.x — real ones include 10.69.209.105
+    #    and 10.71.237.120 — so the whole /10 has to be checked.
+    if _in(address, "10.64.0.0/10") and _in(dns, "10.64.0.1/32"):
         return "mullvad"
+
+    # 5. AirVPN: 10.128.0.0/9 address with the 10.128.0.1 DNS gateway.
+    if _in(address, "10.128.0.0/9") and _in(dns, "10.128.0.1/32"):
+        return "airvpn"
+
+    # 6. Windscribe: CGNAT-range address (100.64.0.0/10) with a 10.255.255.x
+    #    resolver. Its hostname rule above covers the usual case.
+    if _in(address, "100.64.0.0/10") and _in(dns, "10.255.255.0/24"):
+        return "windscribe"
 
     return ""
 
@@ -907,11 +943,20 @@ def _vpn_provider_env(provider: str, wg: dict, country: str = "") -> dict:
        one or more values is set but there is no possible value available".
        Custom has no server list to filter, so the country must be blank.
 
-    3. The endpoint pin is only written for `custom`. For a native provider,
-       pinning WIREGUARD_ENDPOINT_IP overrides gluetun's own server picker —
-       including its port-forwarding-only filter — which is how this box got
-       stuck on a single server across reconnects. Native providers get the
-       pin explicitly BLANKED so re-provisioning clears a previous one.
+    3. The endpoint pin is only written for `custom`. For a native provider
+       over WireGuard, gluetun filters its server list FIRST and then scans
+       the filtered pool for the pinned IP (internal/provider/utils/pick.go)
+       — so the pin does not skip the port-forwarding-only filter, it
+       collapses the pool to exactly one server. That is why this box stayed
+       on a single server across every reconnect and could not move to a
+       working one; and if the pinned server ever drops out of the filtered
+       set, gluetun fails outright with "target IP address not found: in %d
+       filtered connections". Native providers get the pin explicitly
+       BLANKED so re-provisioning clears one written by an earlier version.
+       (Native WireGuard providers also reject an endpoint PORT outright —
+       it must be unset for protonvpn/nordvpn/surfshark/fastestvpn, and is
+       restricted to a fixed allow-list for airvpn/ivpn/windscribe — so
+       blanking both keys is the only safe native shape.)
     """
     if provider not in _VPN_WIREGUARD_NATIVE_PROVIDERS:
         provider = _VPN_PROVIDER_CUSTOM
@@ -943,6 +988,40 @@ def _vpn_provider_env(provider: str, wg: dict, country: str = "") -> dict:
 def _vpn_supports_port_forwarding(provider: str) -> bool:
     """True iff gluetun can lease a forwarded port for this provider."""
     return provider in _VPN_PORT_FORWARDING_PROVIDERS
+
+
+# Display names for the setup panel's provider dropdown. Keys are gluetun's
+# own VPN_SERVICE_PROVIDER strings and must stay exact.
+_VPN_PROVIDER_LABELS = {
+    _VPN_PROVIDER_CUSTOM: "Other / self-hosted (works with any WireGuard config)",
+    "protonvpn": "ProtonVPN",
+    "airvpn": "AirVPN",
+    "fastestvpn": "FastestVPN",
+    "ivpn": "IVPN",
+    "mullvad": "Mullvad",
+    "nordvpn": "NordVPN",
+    "surfshark": "Surfshark",
+    "windscribe": "Windscribe",
+}
+
+
+def _vpn_provider_choices() -> list[dict]:
+    """Provider options for the setup panel, custom first.
+
+    `custom` leads because it is the right answer for almost everyone: it
+    runs any standard WireGuard config, so it is the option that cannot be
+    wrong. The native entries below it only change anything for operators who
+    want gluetun picking servers for them.
+    """
+    ordered = [_VPN_PROVIDER_CUSTOM] + sorted(_VPN_WIREGUARD_NATIVE_PROVIDERS)
+    return [
+        {
+            "value": p,
+            "label": _VPN_PROVIDER_LABELS.get(p, p),
+            "port_forwarding": _vpn_supports_port_forwarding(p),
+        }
+        for p in ordered
+    ]
 
 
 def _resolve_wireguard_endpoint_ip(host: str) -> str:
@@ -3321,6 +3400,37 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return error_response("invalid_wireguard_config",
                                   f"Could not parse WireGuard config: {e}", status=400)
 
+        # Which gluetun provider runs this tunnel.
+        #
+        # The operator's dropdown wins when they set it; otherwise we detect.
+        # Detection only promotes to NATIVE mode for the providers in
+        # _VPN_AUTO_NATIVE_PROVIDERS (ProtonVPN alone, because it is the only
+        # WireGuard provider gluetun can port-forward for). Every other
+        # recognised brand is still a label — it runs as `custom`, which
+        # works for any standard WireGuard config. That keeps a wrong guess
+        # cosmetic instead of turning it into a failed tunnel.
+        detected = _detect_vpn_brand(config_text, wg)
+        requested = (request.form.get("provider") or "").strip().lower()
+        if requested and requested != "auto":
+            provider = requested
+        elif detected in _VPN_AUTO_NATIVE_PROVIDERS:
+            provider = detected
+        else:
+            provider = _VPN_PROVIDER_CUSTOM
+
+        # `custom` has no server list, so gluetun connects to the endpoint in
+        # the .conf verbatim — and it will only accept a literal IP there.
+        # Several providers ship a hostname, so resolve it now and fail with
+        # something the operator can act on rather than letting gluetun exit
+        # at startup with a ParseAddr error nobody will ever read.
+        if provider == _VPN_PROVIDER_CUSTOM:
+            try:
+                wg["WIREGUARD_ENDPOINT_IP"] = _resolve_wireguard_endpoint_ip(
+                    wg["WIREGUARD_ENDPOINT_IP"])
+            except ValueError as e:
+                return error_response("invalid_wireguard_config", str(e),
+                                      status=400)
+
         # Quick NOPASSWD sudo precheck so we fail fast with a clear error
         # rather than silently spawning a process that hangs on a password prompt.
         try:
@@ -3344,20 +3454,23 @@ def create_app(data_dir: Path, config=None) -> Flask:
         env = _read_env_file(SERVICES_ENV)
         env.update(wg)
 
-        country = (request.form.get("country") or "").strip() or "Netherlands"
-        defaults = {
-            "VPN_SERVICE_PROVIDER": "protonvpn",
-            "VPN_TYPE": "wireguard",
-            "VPN_PORT_FORWARDING": "on",
-            "VPN_COUNTRIES": country,
+        # Host-level defaults: fill only when absent, so a box that has been
+        # tuned by hand keeps its settings.
+        for key, value in {
             "STORAGE_ROOT": "/mnt/ssd",
             "PUID": "1000",
             "PGID": "1000",
             "TZ": _detect_timezone(),
-        }
-        for key, value in defaults.items():
+        }.items():
             if not env.get(key):
                 env[key] = value
+
+        # VPN keys, by contrast, are applied AUTHORITATIVELY. They have to
+        # stay mutually consistent with the config that was just uploaded:
+        # a VPN_PORT_FORWARDING=on or a WIREGUARD_ENDPOINT_IP left over from
+        # a previous provider is precisely what stops gluetun from starting.
+        country = (request.form.get("country") or "").strip() or "Netherlands"
+        env.update(_vpn_provider_env(provider, wg, country=country))
 
         try:
             _write_env_file(SERVICES_ENV, env)
@@ -3387,9 +3500,62 @@ def create_app(data_dir: Path, config=None) -> Flask:
         thread.start()
 
         return success_response(
-            data={"job_id": job_id},
+            data={
+                "job_id": job_id,
+                "detected_provider": detected,
+                "provider": provider,
+                "port_forwarding": _vpn_supports_port_forwarding(provider),
+            },
             message="Media Browser setup started",
         )
+
+    @app.post("/admin/media-browser/detect-provider")
+    @require_csrf
+    def media_browser_detect_provider():  # type: ignore[no-redef]
+        """Preview which VPN provider a config looks like, without applying it.
+
+        Lets the setup panel default its provider dropdown to the detected
+        value the moment a .conf is dropped, so the operator sees — and can
+        correct — the choice BEFORE anything is written to services/.env.
+
+        Parses only; writes nothing and starts no job.
+        """
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
+
+        config_text = ""
+        if "file" in request.files and request.files["file"].filename:
+            try:
+                config_text = request.files["file"].read().decode(
+                    "utf-8", errors="replace")
+            except Exception as e:
+                return error_response("invalid_wireguard_config",
+                                      f"Could not read uploaded file: {e}",
+                                      status=400)
+        else:
+            config_text = (request.form.get("config_text") or "").strip()
+
+        if not config_text:
+            return error_response(
+                "invalid_wireguard_config", "No WireGuard config provided",
+                status=400)
+
+        try:
+            wg = _parse_wireguard_config(config_text)
+        except ValueError as e:
+            return error_response(
+                "invalid_wireguard_config",
+                f"Could not parse WireGuard config: {e}", status=400)
+
+        detected = _detect_vpn_brand(config_text, wg)
+        provider = (detected if detected in _VPN_AUTO_NATIVE_PROVIDERS
+                    else _VPN_PROVIDER_CUSTOM)
+        return success_response(data={
+            "detected_provider": detected,
+            "provider": provider,
+            "port_forwarding": _vpn_supports_port_forwarding(provider),
+            "choices": _vpn_provider_choices(),
+        })
 
     @app.get("/admin/media-browser/setup-status/<job_id>")
     def media_browser_setup_status(job_id):  # type: ignore[no-redef]
