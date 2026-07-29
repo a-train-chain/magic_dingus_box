@@ -3,9 +3,12 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 #include <memory>
+
+#include "../retroarch/capture_device_caps.h"
 
 namespace platform {
 
@@ -56,10 +59,43 @@ struct MenuNavOverlay {
     int seek_abs = -1;    // ABS code driving SEEK_LEFT/RIGHT, -1 = none
 };
 
+// One raw, unmapped evdev event from a joystick, surfaced only while
+// set_raw_capture(true) is in effect. Shaped to feed
+// retroarch::CaptureSession::feed() directly.
+struct RawInputEvent {
+    uint16_t vid = 0, pid = 0;
+    std::string device_name;
+    uint16_t type = 0;   // EV_KEY / EV_ABS
+    uint16_t code = 0;
+    int32_t value = 0;
+};
+
 class InputManager {
 public:
     InputManager();
     ~InputManager();
+
+    // Install the per-model menu-nav overlays derived by
+    // retroarch::menu_overlay_from_profile(), keyed by (vid << 16) | pid.
+    // Safe to call at any time, including while devices are already open:
+    // it re-resolves every open device's overlay pointer against the NEW
+    // map (the old map's nodes die with the assignment, so no Device may
+    // keep pointing into it). Passing an empty map removes all overlays and
+    // restores pure built-in behavior.
+    void set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays);
+
+    // Raw capture (wizard): while enabled, joystick devices' events are
+    // delivered via drain_raw_events() INSTEAD of being action-mapped.
+    // Keyboards, the rotary encoder, and the phone-remote virtual pad
+    // ("MagicDingus Phone Remote") keep producing InputActions so the
+    // wizard chrome stays driveable.
+    void set_raw_capture(bool enabled);
+    bool raw_capture() const { return raw_capture_; }
+    std::vector<RawInputEvent> drain_raw_events();
+
+    // Capability snapshot for the wizard's CaptureSession (nullopt if the
+    // device isn't currently open). rest = current axis value at call time.
+    std::optional<retroarch::CaptureDeviceCaps> device_caps(uint16_t vid, uint16_t pid);
 
     // Set how many EV_REL events equal one detent click on this board
     // (platform::PlatformProfile::rotary_events_per_detent). Values < 1
@@ -100,7 +136,29 @@ private:
     InputAction map_button_to_action(uint16_t code, bool pressed);
     InputAction map_axis_to_action(uint8_t axis, int16_t value);
     InputAction map_key_to_action(uint16_t code);
-    
+
+    // The ROTATE decision for a main-stick X axis: deadzone + fire-on-change
+    // + hold-to-repeat at ROTATE_REPEAT_HZ. Extracted from
+    // map_axis_to_action's `axis == 0` branch so the overlay path
+    // (arbitrary ABS code) and the hardcoded path (ABS_X) are literally the
+    // same code and share last_rotate_dir_/last_rotate_time_ -- they can
+    // never drift apart, and only one of the two ever runs per event.
+    InputAction rotate_from_axis_value(int16_t value);
+
+    // Overlay for this vid/pid, or nullptr. The returned pointer is owned by
+    // overlays_ and is invalidated by set_menu_overlays().
+    const MenuNavOverlay* lookup_overlay(uint16_t vid, uint16_t pid) const;
+
+    std::map<uint32_t, MenuNavOverlay> overlays_;   // (vid << 16) | pid
+
+    bool raw_capture_ = false;
+    std::vector<RawInputEvent> raw_events_;
+    // Hard ceiling so a consumer that stops draining (wizard torn down
+    // without clearing capture) can't grow this without bound.
+    static constexpr size_t MAX_RAW_EVENTS = 4096;
+
+    static constexpr const char* PHONE_REMOTE_NAME = "MagicDingus Phone Remote";
+
     // State tracking for axes/hats
     int last_rotate_dir_;
     double last_rotate_time_;

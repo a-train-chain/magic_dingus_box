@@ -3,20 +3,16 @@
 #include <map>
 #include <string>
 #include <vector>
+#include "capture_device_caps.h"
 #include "controller_profile.h"
 #include "logical_controls.h"
 
 namespace retroarch {
 
-// Everything the session needs to know about the target device, gathered
-// once by InputManager when the wizard picks it (Task 9).
-struct CaptureDeviceCaps {
-    uint16_t vid = 0, pid = 0;
-    std::string name;
-    std::vector<uint16_t> key_codes;                  // ascending EV_KEY codes
-    struct AxisRange { uint16_t code; int min, max, rest; };
-    std::vector<AxisRange> axes;                      // ascending ABS codes (incl. hats)
-};
+// CaptureDeviceCaps -- what InputManager::device_caps() gathers about the
+// target device -- lives in capture_device_caps.h so platform/ can include
+// it without dragging in (or cycling through) this header. See the note at
+// the top of that file.
 
 // Pure state machine driving the controller-setup wizard: walks
 // capture_steps(style) one LogicalControl at a time, deciding when a raw

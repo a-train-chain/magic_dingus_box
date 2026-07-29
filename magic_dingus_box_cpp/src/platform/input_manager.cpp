@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <sys/ioctl.h>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <algorithm>
@@ -33,6 +34,14 @@ struct InputManager::Device {
     // every event that happens to land in the extreme zone.
     int dpad_x_8bit_last;
     int dpad_y_8bit_last;
+    // USB identity, used to key menu-nav overlays and device_caps() lookups.
+    uint16_t vid = 0;
+    uint16_t pid = 0;
+    // Non-owning pointer into InputManager::overlays_, or nullptr when no
+    // profile has been captured for this pad. MUST be re-resolved whenever
+    // that map is replaced (set_menu_overlays does this) -- a stale pointer
+    // here would be read on every single event.
+    const MenuNavOverlay* overlay = nullptr;
 
     Device() : fd(-1), dev(nullptr), is_joystick(false), is_keyboard(false), is_rotary(false),
                axis_is_8bit(false), dpad_x_8bit_last(0), dpad_y_8bit_last(0) {}
@@ -151,6 +160,9 @@ bool InputManager::open_joystick_devices() {
             device->dev = dev;
             device->name = dev_name ? dev_name : "Unknown";
             device->is_joystick = true;
+            device->vid = static_cast<uint16_t>(libevdev_get_id_vendor(dev));
+            device->pid = static_cast<uint16_t>(libevdev_get_id_product(dev));
+            device->overlay = lookup_overlay(device->vid, device->pid);
             // Detect 8-bit-axis controllers (DragonRise-style): ABS_X reported
             // with min=0 means values are 0..255 with center 127, NOT signed
             // 16-bit. The D-pad on these pads sends ABS_X/Y extremes (0 or
@@ -186,7 +198,10 @@ bool InputManager::open_joystick_devices() {
 }
 
 void InputManager::reprobe_phone_remote() {
-    static const char* kPhoneName = "MagicDingus Phone Remote";
+    // Single spelling of the name, shared with poll()'s raw-capture bypass
+    // (the phone remote must keep producing InputActions during capture, so
+    // both sites have to agree on which device that is).
+    const char* kPhoneName = PHONE_REMOTE_NAME;
 
     // Step 1: drop a dead phone-remote grab. When the web service restarts,
     // the old uinput node is destroyed; EVIOCGID on its fd then fails with
@@ -251,6 +266,9 @@ void InputManager::reprobe_phone_remote() {
             device->dev = dev;
             device->name = kPhoneName;
             device->is_joystick = true;
+            device->vid = static_cast<uint16_t>(libevdev_get_id_vendor(dev));
+            device->pid = static_cast<uint16_t>(libevdev_get_id_product(dev));
+            device->overlay = lookup_overlay(device->vid, device->pid);
             int grab_rc = libevdev_grab(dev, LIBEVDEV_GRAB);
             if (grab_rc < 0) {
                 std::cerr << "  Warning: could not grab reopened phone remote"
@@ -393,11 +411,15 @@ bool InputManager::open_rotary_devices() {
 
 std::vector<InputEvent> InputManager::poll() {
     std::vector<InputEvent> events;
-    
+
+    // Joystick nodes that reported -ENODEV this pass (unplugged). Collected
+    // rather than erased inline: devices_ is being iterated.
+    std::vector<Device*> dead_devices;
+
     for (auto& device : devices_) {
         struct input_event ev;
         int rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
-        
+
         while (rc == LIBEVDEV_READ_STATUS_SYNC || rc == LIBEVDEV_READ_STATUS_SUCCESS) {
             InputEvent input_ev;
             input_ev.action = InputAction::NONE;
@@ -410,7 +432,39 @@ std::vector<InputEvent> InputManager::poll() {
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
             }
-            
+
+            // RAW CAPTURE (Controller Setup wizard). While enabled, a REAL
+            // joystick's events are queued verbatim and skip ALL action
+            // mapping below -- otherwise pressing a face button to capture
+            // it would also confirm whatever the menu had selected.
+            // Deliberately NOT diverted: keyboards, the rotary encoder, and
+            // the phone-remote virtual pad, which are the surfaces the user
+            // still needs to drive the wizard itself.
+            if (raw_capture_ && device->is_joystick &&
+                device->name != PHONE_REMOTE_NAME) {
+                if (ev.type == EV_KEY || ev.type == EV_ABS) {
+                    if (raw_events_.size() >= MAX_RAW_EVENTS) {
+                        // Nobody is draining. Drop the OLDEST half so the
+                        // queue stays bounded and the user's most recent
+                        // gesture is still the one that gets seen.
+                        raw_events_.erase(
+                            raw_events_.begin(),
+                            raw_events_.begin() + MAX_RAW_EVENTS / 2);
+                    }
+                    RawInputEvent raw;
+                    raw.vid = device->vid;
+                    raw.pid = device->pid;
+                    raw.device_name = device->name;
+                    raw.type = ev.type;
+                    raw.code = ev.code;
+                    raw.value = ev.value;
+                    raw_events_.push_back(std::move(raw));
+                }
+                // Keep draining libevdev so the kernel buffer can't back up.
+                rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
+                continue;
+            }
+
             if (ev.type == EV_KEY) {
                 // Button/key press
                 input_ev.pressed = (ev.value == 1);
@@ -475,7 +529,31 @@ std::vector<InputEvent> InputManager::poll() {
                             if (dpad_held_x_ == dir) dpad_held_x_ = 0;
                         }
                     } else {
-                        input_ev.action = map_button_to_action(ev.code, input_ev.pressed);
+                        // ADDITIVE MENU-NAV OVERLAY. A captured per-model
+                        // profile may claim this EV_KEY code; if it does, it
+                        // REPLACES the built-in mapping for that one code and
+                        // map_button_to_action is not consulted (so a single
+                        // press can never fire two actions). Every code the
+                        // overlay does not claim -- and every code at all when
+                        // no overlay is installed -- takes the built-in path
+                        // exactly as before.
+                        //
+                        // Note this sits in the final `else`, AFTER the
+                        // BTN_DPAD_* handling above, on purpose: a garbage
+                        // profile that claimed a d-pad code must not be able
+                        // to take d-pad navigation away. Worst case for a bad
+                        // overlay entry is that it's inert.
+                        InputAction overlay_action = InputAction::NONE;
+                        if (device->overlay) {
+                            auto it = device->overlay->buttons.find(ev.code);
+                            if (it != device->overlay->buttons.end()) {
+                                overlay_action = it->second;
+                            }
+                        }
+                        input_ev.action =
+                            (overlay_action != InputAction::NONE)
+                                ? overlay_action
+                                : map_button_to_action(ev.code, input_ev.pressed);
                     }
                 }
             } else if (ev.type == EV_ABS && device->is_joystick) {
@@ -574,6 +652,32 @@ std::vector<InputEvent> InputManager::poll() {
                          input_ev.action = InputAction::ROTATE_VERTICAL;
                          input_ev.delta = 1;
                     }
+                // ADDITIVE MENU-NAV OVERLAY (axes). Reached ONLY for codes
+                // none of the branches above handled -- the 8-bit d-pad path,
+                // ABS_HAT0X/Y and ABS_Y keep their built-in, hardware-proven
+                // behavior even if a bad profile named one of them, so an
+                // overlay can never cost the user a working direction. And
+                // because these are `else if`s, a code the overlay DOES claim
+                // never also reaches map_axis_to_action below: exactly one
+                // action per event, never two.
+                } else if (device->overlay && device->overlay->nav_x_abs >= 0 &&
+                           static_cast<int>(ev.code) == device->overlay->nav_x_abs) {
+                    // Same deadzone / fire-on-change / hold-repeat logic the
+                    // hardcoded ABS_X path uses, on this pad's actual stick-X
+                    // code.
+                    input_ev.action = rotate_from_axis_value(static_cast<int16_t>(ev.value));
+                    if (input_ev.action == InputAction::ROTATE) {
+                        input_ev.delta = (ev.value > 0) ? 1 : (ev.value < 0) ? -1 : 0;
+                    }
+                } else if (device->overlay && device->overlay->seek_abs >= 0 &&
+                           static_cast<int>(ev.code) == device->overlay->seek_abs) {
+                    // Same deadzone the hardcoded C-stick path uses.
+                    const int16_t deadzone = 5000;
+                    if (ev.value > deadzone) {
+                        input_ev.action = InputAction::SEEK_RIGHT;
+                    } else if (ev.value < -deadzone) {
+                        input_ev.action = InputAction::SEEK_LEFT;
+                    }
                 } else {
                     // Regular axis movement
                     input_ev.action = map_axis_to_action(ev.code, ev.value);
@@ -624,6 +728,36 @@ std::vector<InputEvent> InputManager::poll() {
             
             rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
         }
+
+        // The loop above ends on the first non-event return code, normally
+        // -EAGAIN ("nothing pending"). -ENODEV means the node is gone: the
+        // pad was unplugged. Drop it so device_caps() reports it as absent
+        // (the wizard's unplug-abort path keys off exactly that) instead of
+        // us re-reading a dead fd forever.
+        if (device->is_joystick && rc == -ENODEV) {
+            dead_devices.push_back(device.get());
+        }
+    }
+
+    if (!dead_devices.empty()) {
+        for (Device* d : dead_devices) {
+            std::cout << "  Joystick disconnected, dropping: " << d->name << std::endl;
+        }
+        // A device that vanishes mid-hold never delivers its release event,
+        // so the manager-level D-pad latch would stay set and
+        // generate_dpad_repeats() would scroll the menu forever. Same
+        // reasoning (and same fix) as reprobe_phone_remote()'s stale-grab
+        // path; we can't know whether the dead pad was the one holding.
+        dpad_held_x_ = 0;
+        dpad_held_y_ = 0;
+        devices_.erase(
+            std::remove_if(devices_.begin(), devices_.end(),
+                           [&dead_devices](const std::unique_ptr<Device>& d) {
+                               return std::find(dead_devices.begin(),
+                                                dead_devices.end(),
+                                                d.get()) != dead_devices.end();
+                           }),
+            devices_.end());   // ~Device closes fd + frees libevdev
     }
 
     generate_dpad_repeats(events);
@@ -721,39 +855,49 @@ InputAction InputManager::map_button_to_action(uint16_t code, bool pressed) {
     }
 }
 
+// Extracted verbatim from map_axis_to_action's `axis == 0` branch so the
+// overlay path can reuse it for a pad whose stick-X is NOT ABS_X. Both
+// callers therefore share last_rotate_dir_/last_rotate_time_ and behave
+// identically; at most one of them runs for any given event.
+InputAction InputManager::rotate_from_axis_value(int16_t value) {
+    const int16_t deadzone = 5000;  // ~15% of full range
+
+    int dir = 0;
+    if (value > deadzone) {
+        dir = 1;
+    } else if (value < -deadzone) {
+        dir = -1;
+    }
+
+    if (dir != 0) {
+        auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (dir != last_rotate_dir_) {
+            // Direction changed - fire immediately
+            last_rotate_dir_ = dir;
+            last_rotate_time_ = now;
+            return InputAction::ROTATE;
+        } else if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
+            // Same direction held - fire at repeat rate
+            last_rotate_time_ = now;
+            return InputAction::ROTATE;
+        }
+    }
+    if (dir == 0) {
+        last_rotate_dir_ = 0;
+    }
+    return InputAction::NONE;
+}
+
 InputAction InputManager::map_axis_to_action(uint8_t axis, int16_t value) {
     // Axis 0 = X (left/right) -> ROTATE
     // Axis 3 = C-stick horizontal -> NEXT/PREV
     // Axis 2 = C-stick vertical -> unused
-    
+
     // Apply deadzone to avoid drift
     const int16_t deadzone = 5000;  // ~15% of full range
-    
+
     if (axis == 0) {
-        // X axis for rotation
-        int dir = 0;
-        if (value > deadzone) {
-            dir = 1;
-        } else if (value < -deadzone) {
-            dir = -1;
-        }
-        
-        if (dir != 0) {
-            auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (dir != last_rotate_dir_) {
-                // Direction changed - fire immediately
-                last_rotate_dir_ = dir;
-                last_rotate_time_ = now;
-                return InputAction::ROTATE;
-            } else if (now - last_rotate_time_ >= (1.0 / ROTATE_REPEAT_HZ)) {
-                // Same direction held - fire at repeat rate
-                last_rotate_time_ = now;
-                return InputAction::ROTATE;
-            }
-        }
-        if (dir == 0) {
-            last_rotate_dir_ = 0;
-        }
+        return rotate_from_axis_value(value);
     } else if (axis == 3) {
         // C-stick horizontal
         if (value > deadzone) {
@@ -785,6 +929,95 @@ InputAction InputManager::map_key_to_action(uint16_t code) {
         default:
             return InputAction::NONE;
     }
+}
+
+const MenuNavOverlay* InputManager::lookup_overlay(uint16_t vid, uint16_t pid) const {
+    // 0000:0000 is what a device with no readable USB identity reports; it is
+    // not a real pad, so never let it collide with a stored overlay.
+    if (vid == 0 && pid == 0) return nullptr;
+    auto it = overlays_.find((static_cast<uint32_t>(vid) << 16) | pid);
+    return it == overlays_.end() ? nullptr : &it->second;
+}
+
+void InputManager::set_menu_overlays(std::map<uint32_t, MenuNavOverlay> overlays) {
+    // Drop every borrowed pointer BEFORE the old map dies. The assignment
+    // below destroys the old map's nodes, so any Device still pointing into
+    // it would be left dangling -- and poll() dereferences that pointer on
+    // every event, so a dangling one is not a latent bug, it's an immediate
+    // crash on the next button press.
+    for (auto& device : devices_) {
+        device->overlay = nullptr;
+    }
+    overlays_ = std::move(overlays);
+    for (auto& device : devices_) {
+        device->overlay = lookup_overlay(device->vid, device->pid);
+    }
+}
+
+void InputManager::set_raw_capture(bool enabled) {
+    // Idempotent: repeating the current state must NOT discard events the
+    // wizard hasn't drained yet (a UI that calls this every frame is easy to
+    // write and would otherwise lose every capture).
+    if (raw_capture_ == enabled) return;
+    raw_capture_ = enabled;
+
+    // Queue is per-capture-session; never carry events across an edge.
+    raw_events_.clear();
+
+    // Both edges of a capture swallow (or stop swallowing) joystick events
+    // mid-gesture, so a direction the user was holding may never deliver its
+    // release. Clear the latches or generate_dpad_repeats() would scroll the
+    // menu forever; clear the per-device 8-bit edge memory too, so the first
+    // post-capture push registers as a fresh transition instead of matching
+    // a stale "still held" value and doing nothing.
+    dpad_held_x_ = 0;
+    dpad_held_y_ = 0;
+    for (auto& device : devices_) {
+        device->dpad_x_8bit_last = 0;
+        device->dpad_y_8bit_last = 0;
+    }
+}
+
+std::vector<RawInputEvent> InputManager::drain_raw_events() {
+    std::vector<RawInputEvent> out;
+    out.swap(raw_events_);   // move-and-clear
+    return out;
+}
+
+std::optional<retroarch::CaptureDeviceCaps> InputManager::device_caps(uint16_t vid,
+                                                                     uint16_t pid) {
+    for (auto& device : devices_) {
+        if (!device->is_joystick || device->vid != vid || device->pid != pid) {
+            continue;
+        }
+        retroarch::CaptureDeviceCaps caps;
+        caps.vid = vid;
+        caps.pid = pid;
+        caps.name = device->name;
+
+        // Gamepad/joystick buttons live in [BTN_MISC, KEY_MAX_of_that_block]
+        // = 0x100..0x2ff. Ascending by construction.
+        for (unsigned code = 0x100; code <= 0x2ff; ++code) {
+            if (libevdev_has_event_code(device->dev, EV_KEY, code)) {
+                caps.key_codes.push_back(static_cast<uint16_t>(code));
+            }
+        }
+        // Every ABS code including the hats (ABS_MAX == 0x3f). Ascending.
+        for (unsigned code = 0; code <= 0x3f; ++code) {
+            if (!libevdev_has_event_code(device->dev, EV_ABS, code)) continue;
+            retroarch::CaptureDeviceCaps::AxisRange range;
+            range.code = static_cast<uint16_t>(code);
+            range.min = libevdev_get_abs_minimum(device->dev, code);
+            range.max = libevdev_get_abs_maximum(device->dev, code);
+            // Current value = the axis's resting position right now, which is
+            // what CaptureSession needs to tell "deflected" from "at rest".
+            range.rest = libevdev_get_event_value(device->dev, EV_ABS, code);
+            caps.axes.push_back(range);
+        }
+        return caps;
+    }
+    // Not open (never was, or unplugged and dropped by poll()).
+    return std::nullopt;
 }
 
 void InputManager::cleanup() {
