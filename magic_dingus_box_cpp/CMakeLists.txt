@@ -146,6 +146,8 @@ set(RETROARCH_SOURCES
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
+    src/retroarch/logical_controls.cpp
+    src/retroarch/controller_profile.cpp
 )
 
 set(ALL_SOURCES
@@ -465,6 +467,8 @@ if(RETROARCH_TEST_SOURCES)
         src/app/game_quiet_mode.cpp
         src/retroarch/launch_contract.cpp
         src/retroarch/controller_mapping.cpp
+        src/retroarch/logical_controls.cpp
+        src/retroarch/controller_profile.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_retroarch_unit PRIVATE src)
