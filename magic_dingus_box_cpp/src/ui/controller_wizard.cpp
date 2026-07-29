@@ -187,12 +187,28 @@ bool ControllerWizard::on_action(const platform::InputEvent& ev) {
             return false;
 
         case Phase::PICK_STYLE:
-            if ((ev.action == InputAction::ROTATE ||
-                 ev.action == InputAction::ROTATE_VERTICAL) && ev.delta != 0) {
+            // Rotary knob (twist=flip, click=SELECT) works here, but a user's
+            // first instinct on a screen asking about a controller is to
+            // press buttons — on the pad being configured (correctly inert;
+            // see the "ignores the target pad's own buttons" test) or on the
+            // box's own front panel. Confirmed on real hardware 2026-07-29:
+            // a user who never finds the knob is stuck with no way to choose
+            // a style. PREV/NEXT (front-panel Yellow/Green) flip the binary
+            // choice exactly like ROTATE; PLAY_PAUSE (Red) confirms exactly
+            // like SELECT — matching the CAPTURE phase's own convention of
+            // giving the front buttons real meaning during setup.
+            if (((ev.action == InputAction::ROTATE ||
+                  ev.action == InputAction::ROTATE_VERTICAL) &&
+                 ev.delta != 0) ||
+                ((ev.action == InputAction::PREV ||
+                  ev.action == InputAction::NEXT) &&
+                 ev.pressed)) {
                 style_cursor_ = style_cursor_ == 0 ? 1 : 0;
                 return true;
             }
-            if (ev.action == InputAction::SELECT && ev.pressed) {
+            if ((ev.action == InputAction::SELECT ||
+                 ev.action == InputAction::PLAY_PAUSE) &&
+                ev.pressed) {
                 start_capture_();
                 return true;
             }

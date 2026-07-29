@@ -228,6 +228,37 @@ TEST_CASE("PICK_STYLE N64 choice drives the N64 prompt list", "[wizard]") {
           retroarch::control_prompt(retroarch::LogicalControl::N64_DPAD_UP));
 }
 
+TEST_CASE("PICK_STYLE also toggles and confirms on the box's front buttons",
+          "[wizard]") {
+    // The rotary knob works here, but a user's first instinct on a screen
+    // asking about a controller is to press buttons — either on the pad
+    // being configured (correctly inert, see the test below) or on the box
+    // itself. Confirmed on real hardware 2026-07-29: with only the rotary
+    // path wired, a user who never discovers the knob is stuck here. PREV/
+    // NEXT (front-panel Yellow/Green) must flip the choice and PLAY_PAUSE
+    // (Red) must confirm it, exactly like the rotary/SELECT path already did.
+    ui_test::fake_reset();
+    ui_test::fake_set_caps(make_caps());
+    platform::InputManager im;
+    ControllerWizard w;
+    w.open(&im);
+    press_button(w, kBtn0);
+    REQUIRE(w.phase() == Phase::PICK_STYLE);
+    CHECK(w.style_cursor() == 0);
+
+    w.on_action(act(InputAction::PREV, /*pressed=*/true));
+    CHECK(w.style_cursor() == 1);
+    w.on_action(act(InputAction::NEXT, /*pressed=*/true));
+    CHECK(w.style_cursor() == 0);
+
+    // Release must not also toggle — only the press.
+    w.on_action(act(InputAction::PREV, /*pressed=*/false));
+    CHECK(w.style_cursor() == 0);
+
+    w.on_action(act(InputAction::PLAY_PAUSE, /*pressed=*/true));
+    CHECK(w.phase() == Phase::CAPTURE);
+}
+
 TEST_CASE("PICK_STYLE ignores the target pad's own buttons", "[wizard]") {
     ui_test::fake_reset();
     ui_test::fake_set_caps(make_caps());

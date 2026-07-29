@@ -151,8 +151,8 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                 draw_text(label, x, y, theme_->font_medium_size,
                           sel ? theme_->accent : theme_->fg);
             }
-            footer(std::string("Turn knob / D-pad: choose  ·  ") + kSelectHint +
-                   ": confirm  ·  " + kCancelHint);
+            footer(std::string("Yellow/Green or knob: choose  ·  Red or ") +
+                   kSelectHint + ": confirm  ·  " + kCancelHint);
             break;
         }
 
