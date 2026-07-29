@@ -148,6 +148,7 @@ set(RETROARCH_SOURCES
     src/retroarch/controller_mapping.cpp
     src/retroarch/logical_controls.cpp
     src/retroarch/controller_profile.cpp
+    src/retroarch/joydev_index.cpp
 )
 
 set(ALL_SOURCES
@@ -469,6 +470,7 @@ if(RETROARCH_TEST_SOURCES)
         src/retroarch/controller_mapping.cpp
         src/retroarch/logical_controls.cpp
         src/retroarch/controller_profile.cpp
+        src/retroarch/joydev_index.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_retroarch_unit PRIVATE src)
