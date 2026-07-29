@@ -79,8 +79,13 @@ sudo usermod -a -G video,input $USER
   - `settings_persistence` - YAML settings storage
   - `sample_mode` - Sample/demo mode for kiosk auto-play
 - **`retroarch/`** - Game emulation
-  - `retroarch_launcher` - DRM/KMS handoff, config generation (incl. video config via `write_video_config()`), process lifecycle. Per-core button mappings live here in two helper variants — `get_mapping_n64_adapter()` (USB N64-style adapter) and `get_mapping_ps_style()` (PlayStation-style pads); the dispatch goes through `get_mapping(ControllerType, core_name)`.
-  - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum) so the launcher knows which mapping helper to call. Split out of `retroarch_launcher` in v1.4.0.
+  - `retroarch_launcher` - DRM/KMS handoff, config generation (incl. video config via `write_video_config()`), process lifecycle. It no longer owns button mappings: it resolves one mapping per controller port and emits the `input_playerN_*` lines through `write_player_binds()`.
+  - `controller_mapping` - the mapping layer, in two halves. **Semantic tables** (`semantic_n64_style()` / `semantic_ps_style()`) say which *logical* control drives each RetroPad slot for a given core — "RetroPad B ← the Cross button" — using `LogicalControl` values, never physical button numbers. **`build_mapping(SemanticMapping, PhysicalProfile)`** marries a semantic table to a concrete pad's physical layout to produce the `ControllerMapping` the launcher emits. `get_mapping(ControllerType, core_name)` remains the public dispatch entrypoint (signature unchanged); `resolve_mapping_for_pad()` is the per-pad form used at launch. Also owns `write_player_binds()`.
+  - `controller_profile` - `PhysicalProfile`: where each `LogicalControl` physically lives on one pad model (evdev code + RetroArch bind token). Ships `builtin_n64_adapter_profile()` / `builtin_dragonrise_profile()` for the two known pads, and loads/saves operator-captured profiles keyed by USB VID/PID in `config/controller_profiles.json`. Resolution order is captured → builtin → legacy fallback. Also derives the kiosk's menu-navigation overlay for a pad.
+  - `logical_controls` - the `LogicalControl` vocabulary (separate PS-style and N64-style sets) plus the wizard's per-style prompt order.
+  - `joydev_index` - converts a raw evdev code + the device's capability lists into the RetroArch udev bind token (`"5"`, `"h0up"`, `"+2"`). The kiosk reads evdev codes; RetroArch configs want joystick indices — nothing else bridges the two.
+  - `capture_session` - pure state machine behind the Controller Setup wizard: walks the per-style prompt list, decides when a press or stick deflection counts, rejects duplicates, supports skip/redo. No I/O.
+  - `controller_detector` - USB controller probing (vendor/product IDs → `ControllerType` enum). `detect_primary_controller()` returns the first recognized pad; `detect_connected_controllers()` returns one entry per `/dev/input/js*` in port order, which is what per-port resolution consumes. Split out of `retroarch_launcher` in v1.4.0.
 - **`utils/`** - Utilities
   - `config` - Centralized path configuration (base paths, RetroArch paths, save dirs)
   - `path_resolver` - Asset path resolution
@@ -177,7 +182,7 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 - **Q/Esc**: Quit
 
 ### In RetroArch
-- Per-core button mappings (N64 controller → RetroPad) defined in `retroarch_launcher.cpp`
+- Per-core button mappings live in `controller_mapping.cpp` (semantic tables) combined with a pad's `PhysicalProfile`; player 1 and player 2 resolve independently from whichever pad is on each port
 - **Z + Start**: Toggle RetroArch menu (hotkey combo for all cores)
 - Auto-save state on exit, auto-load on start
 

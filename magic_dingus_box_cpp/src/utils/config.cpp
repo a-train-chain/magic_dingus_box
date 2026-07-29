@@ -63,6 +63,13 @@ std::string get_settings_file() {
     return get_config_path() + "/settings.json";
 }
 
+std::string get_controller_profiles_file() {
+    if (const char* env = std::getenv("MAGIC_CONTROLLER_PROFILES_FILE")) {
+        return env;
+    }
+    return get_config_path() + "/controller_profiles.json";
+}
+
 std::string get_log_file() {
     if (const char* env = std::getenv("MAGIC_LOG_FILE")) {
         return env;

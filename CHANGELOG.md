@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 RetroArch performance-headroom round: quiet the media stack during game
 sessions, reclaim PS1 audio latency, add heavy-scene video options, and
 cool the boot config. Video contract (Vulkan/khr_display, viewports,
-bezels) and all controller mappings unchanged.
+bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
 
 ### Added
 - **Raspberry Pi 5 groundwork: platform profile** — new
@@ -68,6 +68,26 @@ bezels) and all controller mappings unchanged.
   sweep. Closes the "I just added it, why is nothing happening?" gap:
   the add-time search runs immediately, and now the user sees it. Reads
   Radarr's running-command list (`/api/v3/command`).
+- **Controller Setup wizard** (Settings → Controller Setup): press-each-button
+  capture for any USB gamepad, walking the operator through every logical
+  control for their pad's style (PlayStation-style or N64-style) with
+  skip/redo support (`CaptureSession`). Captured profiles are keyed by USB
+  VID/PID and stored in `config/controller_profiles.json` — configure a
+  controller model once and every future plug-in of that model is
+  recognized automatically. Profiles resolve independently per port, so two
+  *different* controller models can drive player 1 and player 2
+  simultaneously in a two-player game. The same captured profile also
+  drives the kiosk's own menu navigation, so a third-party pad the box
+  previously could not navigate menus with now works immediately after
+  capture — no restart needed. Survives OTA updates (see
+  `OTA_UPDATE_GUARANTEES.md`).
+- **Settings → System → Reset Controller Setup** — the wizard's undo.
+  Erases the captured profile store so every pad falls back to its
+  built-in/legacy mapping. Two-press confirm, and the row is hidden when
+  nothing has been captured. Without it a bad or incomplete capture could
+  only be corrected by completing all 24 wizard steps again, on the pad the
+  bad capture had just broken — the profile file is deliberately immune to
+  OTA updates, so there was no path back to the shipped mapping at all.
 
 ### Changed
 - **Settings → Audio Output cycle is platform-aware** — the Headphone
@@ -111,6 +131,11 @@ bezels) and all controller mappings unchanged.
     (deliberate: early real releases still grab the moment they
     exist); these warnings cover the fake-release window instead.
 
+- Controller mapping internals refactored into semantic tables + physical
+  profiles (`build_mapping()`); output for the two shipped pads is
+  snapshot-locked and unchanged. Player-bind emission moved to the
+  Mac-testable `write_player_binds()`.
+
 - **Wi-Fi setup overhaul (new-location flow)** — scanning now streams
   results onto the screen as they're found (animated "Scanning…" header
   with a live count) instead of a fixed 4s "Please wait"; the scan
@@ -122,6 +147,52 @@ bezels) and all controller mappings unchanged.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **Deploys and OTA updates no longer link stale object files** — both
+  `deploy_cpp.sh` and `update.sh` keep `build/` out of their rsync, so it is a
+  long-lived directory holding objects from previous source trees. Incremental
+  `make` is not safe across a change that alters a struct layout: objects
+  compiled against the old header link cleanly against objects compiled against
+  the new one, and the resulting ODR violation corrupts the heap. The build
+  succeeds and the kiosk segfaults at startup inside an unrelated destructor —
+  unattended, on a fielded box, that is a brick. `update.sh` now always builds
+  clean (rollback is unaffected; the backup taken beforehand still includes
+  `build/`). `deploy_cpp.sh` fingerprints every header plus `CMakeLists.txt`
+  and wipes `build/` only when that fingerprint moves, so ordinary `.cpp` edits
+  still build incrementally; `--clean` forces it.
+- **A failed kiosk restart no longer latches the unit down** — `deploy_cpp.sh`
+  used `systemctl restart`, which could return before the old process released
+  DRM master, the input-device grabs, and its PulseAudio child, so the
+  replacement raced the corpse and died; `Restart=always` then tripped
+  systemd's start-rate limiter and the unit stuck in "start request repeated
+  too quickly" even after a known-good binary was restored. The deploy now
+  stops, waits for the process to actually exit, clears any latched failure,
+  starts, confirms the service came up, and prints the journal if it did not.
+- **Captured analog controls no longer land in digital bind fields** —
+  `build_mapping()` picked the RetroArch field from the semantic table and
+  the token from the pad's profile without checking the two agreed. On a
+  pad whose d-pad is an analog axis pair with no hat, and whose triggers are
+  analog (the class the wizard exists to support), a capture emitted
+  `left_btn = "-0"` and `right_btn = "+0"` — and RetroArch reads anything
+  not starting with `h` as a button INDEX, so both resolved to physical
+  button 0. Bindings now follow the profile's kind: an axis d-pad goes to
+  the `*_axis` fields, and no analog token can reach a `*_btn` field. The
+  two shipped pads emit byte-identical configs (33/33 snapshot goldens
+  unchanged).
+- **The wizard can no longer save a pad-disabling profile** — capturing one
+  control and skipping the rest wrote a near-empty profile that
+  unconditionally shadows the built-in one for that VID/PID (i.e. for both
+  players, since the shipped pads share an ID) and left the RetroArch menu
+  hotkey unbound. Saving now requires at minimum the four d-pad directions
+  plus confirm and Start, and the TEST screen names what is still missing.
+- **A failed profile save no longer reports success** — a read-only `/opt`
+  or a full SD card produced "Saved!" and a success toast over a write that
+  never happened. The store's real result is now propagated, with a
+  retryable failure state.
+- **Wizard footers name controls that actually work** — they advertised a
+  gamepad "B: cancel" that cannot fire (raw capture diverts every joystick
+  for the whole run) and never named the phone remote's real cancel. Every
+  phase now lists only live controls, by the labels printed on the box and
+  on the phone.
 - **Phone remote can now quit games** — the QUIT_GAME chord (KEY_Z +
   Start on the virtual "MagicDingus Phone Remote" gamepad) was silently
   ignored in-game: the virtual pad has no manual joypad binds and

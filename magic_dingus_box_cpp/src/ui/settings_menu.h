@@ -11,7 +11,12 @@ namespace app {
 }
 
 namespace ui {
-    class PairingScreen;  // forward declaration — avoid circular include
+    class PairingScreen;      // forward declaration — avoid circular include
+    class ControllerWizard;   // ditto (controller_wizard.h pulls in platform/)
+}
+
+namespace platform {
+    class InputManager;
 }
 
 namespace ui {
@@ -24,7 +29,8 @@ enum class MenuSection {
     WIFI,
     WIFI_NETWORKS,
     INFO,
-    PHONE_REMOTE,    // NEW: drills into the pairing-screen view, not a submenu
+    PHONE_REMOTE,      // NEW: drills into the pairing-screen view, not a submenu
+    CONTROLLER_SETUP,  // Drills into the Controller Setup wizard, not a submenu
     BACK,
     BROWSE_GAMES,
     TOGGLE_PLAYLIST_LOOP,
@@ -64,7 +70,14 @@ struct MenuItem {
 class SettingsMenuManager {
 public:
     SettingsMenuManager(app::AppState* state = nullptr);
-    
+    // Declared (not defaulted here) and defined in the .cpp: this class owns
+    // unique_ptrs to forward-declared types (PairingScreen, ControllerWizard),
+    // and an implicit destructor would have to be instantiated in every TU
+    // that destroys a manager — each of which would then need the full
+    // definition of both. Out-of-lining it keeps the forward declarations
+    // honest.
+    ~SettingsMenuManager();
+
     void set_app_state(app::AppState* state) { app_state_ = state; }
     
     void update();
@@ -135,6 +148,29 @@ public:
     void close_pairing_screen();
     bool is_pairing_screen_active() const { return pairing_active_; }
 
+    // Controller Setup wizard. Same shape as the pairing screen above: a
+    // full-screen view that replaces the settings panel while it is up.
+    // close_controller_wizard() is idempotent and is also called from
+    // close()/force_close(), so no path can dismiss the settings menu while
+    // leaving InputManager stuck in raw-capture mode (which would leave every
+    // gamepad dead until a kiosk restart).
+    ControllerWizard* controller_wizard();
+    void open_controller_wizard(platform::InputManager* input);
+    void close_controller_wizard();
+    bool is_controller_wizard_active() const { return wizard_active_; }
+
+    // Consume-once flag: true when a Settings action changed the captured
+    // controller-profile store on disk. Today that is the System submenu's
+    // "Reset Controller Setup" row, which is the wizard's undo -- it erases
+    // every captured profile so pads fall back to their built-in mapping.
+    //
+    // main.cpp polls this each frame to rebuild InputManager's menu-nav
+    // overlays. The wizard's own active->inactive edge already covers the
+    // capture path, but this row rewrites the same file without the wizard
+    // ever opening, and a stale overlay would keep remapping menu buttons
+    // from a profile that no longer exists.
+    bool take_controller_profiles_dirty();
+
 private:
     app::AppState* app_state_;
     mutable bool active_;
@@ -148,6 +184,10 @@ private:
     bool was_scanning_;
     bool was_connecting_;
     bool wifi_disconnect_confirm_ = false;
+    // Two-press confirm for "Reset Controller Setup", same idiom as
+    // wifi_disconnect_confirm_ above (and cleared in the same places).
+    bool controller_reset_confirm_ = false;
+    bool controller_profiles_dirty_ = false;
     // Default to 7 (CRT layout); renderer overwrites this each frame
     // once it knows the actual viewport height.
     int max_visible_items_ = 7;
@@ -182,6 +222,9 @@ private:
 
     std::unique_ptr<PairingScreen> pairing_screen_;
     bool pairing_active_ = false;
+
+    std::unique_ptr<ControllerWizard> controller_wizard_;
+    bool wizard_active_ = false;
 };
 
 } // namespace ui

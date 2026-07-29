@@ -1,11 +1,13 @@
 #include "settings_menu.h"
 #include <unistd.h>
+#include "controller_wizard.h"
 #include "pairing_screen.h"
 #include "toast.h"
 #include "virtual_keyboard.h"
 #include "../utils/config.h"
 #include "../utils/wifi_manager.h"
 #include "../platform/platform_profile.h"
+#include "../retroarch/controller_profile.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>  // For std::max
@@ -59,9 +61,14 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
         MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
         MenuItem("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone"),
+        MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any USB gamepad"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
+
+// Out-of-line so the unique_ptr members can stay forward-declared in the
+// header — see the note there.
+SettingsMenuManager::~SettingsMenuManager() = default;
 
 void SettingsMenuManager::update() {
     if (!active_ && !is_opening_ && !is_closing_) return;
@@ -301,6 +308,18 @@ void SettingsMenuManager::toggle() {
     // because some shallow states are also true at deeper depths
     // (e.g. game_browser_active_ stays true while viewing_games_in_playlist_).
 
+    // Depth 4: the Controller Setup wizard owns the whole screen. MENU here
+    // means "cancel the wizard", NOT "close Settings" — the operator came
+    // from the Settings list and should land back on it. This is also the
+    // cancel path that actually fires in practice: main.cpp handles
+    // SETTINGS_MENU at the top of its dispatch loop (BTN4 hold/volume logic)
+    // and routes the short press here, so the event never reaches the
+    // wizard's own on_action().
+    if (wizard_active_) {
+        close_controller_wizard();
+        return;
+    }
+
     // Depth 4 (deepest): looking at the games inside a specific playlist.
     if (game_browser_active_ && viewing_games_in_playlist_) {
         exit_game_list();
@@ -414,6 +433,8 @@ void SettingsMenuManager::open() {
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
         menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
         menu_items_.emplace_back("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone");
+        menu_items_.emplace_back("Controller Setup", MenuSection::CONTROLLER_SETUP,
+                                 "Map any USB gamepad");
         menu_items_.emplace_back("Back", MenuSection::BACK);
 #endif
     }
@@ -427,6 +448,18 @@ void SettingsMenuManager::close() {
     }
     // Clean up pairing session file whenever the settings menu is dismissed.
     close_pairing_screen();
+    // ...and never leave the wizard holding InputManager in raw-capture mode.
+    //
+    // DEFENSE IN DEPTH, not a live bug fix. No caller can reach this while the
+    // wizard is up today: main.cpp's wizard interception block ends in
+    // `continue` before the SELECT dispatch that launches a game, and the
+    // force_close() below it is gated on current_screen == MediaBrowser, which
+    // that same `continue` makes unreachable. The point is that "Settings
+    // dismissed ⇒ wizard retired" holds HERE, structurally, instead of resting
+    // on main.cpp continuing to swallow every event — a future dispatch path
+    // that reaches close() would otherwise strand InputManager in raw-capture
+    // mode with nobody draining, i.e. every gamepad dead until restart.
+    close_controller_wizard();
 }
 
 void SettingsMenuManager::force_close() {
@@ -434,6 +467,7 @@ void SettingsMenuManager::force_close() {
     is_opening_ = false;
     is_closing_ = false;
     close_pairing_screen();
+    close_controller_wizard();
 }
 
 float SettingsMenuManager::get_animation_progress() const {
@@ -568,6 +602,7 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
     if (!reentering) {
         // Fresh entry: reset all transient flags.
         wifi_disconnect_confirm_ = false;
+        controller_reset_confirm_ = false;
     }
 
     if (section == MenuSection::VIDEO_GAMES) {
@@ -598,6 +633,7 @@ void SettingsMenuManager::exit_submenu() {
     selected_index_ = 0;
     scroll_offset_ = 0;
     wifi_disconnect_confirm_ = false;
+    controller_reset_confirm_ = false;
     submenu_items_.clear();
 }
 
@@ -676,6 +712,29 @@ void SettingsMenuManager::close_pairing_screen() {
     }
 }
 
+// ── Controller Setup wizard ──────────────────────────────────────────────────
+
+ControllerWizard* SettingsMenuManager::controller_wizard() {
+    if (!controller_wizard_) {
+        controller_wizard_ = std::make_unique<ControllerWizard>();
+    }
+    return controller_wizard_.get();
+}
+
+void SettingsMenuManager::open_controller_wizard(platform::InputManager* input) {
+    wizard_active_ = true;
+    controller_wizard()->open(input);
+}
+
+void SettingsMenuManager::close_controller_wizard() {
+    // Unconditional close() on the wizard, not gated on wizard_active_: the
+    // wizard can retire itself (cancel, idle timeout, pad unplugged) a frame
+    // before this flag catches up, and ControllerWizard::close() is a no-op
+    // once it has already run.
+    if (controller_wizard_) controller_wizard_->close();
+    wizard_active_ = false;
+}
+
 std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {
     return {
         MenuItem("Browse Games", MenuSection::BROWSE_GAMES, "Game libraries"),
@@ -722,7 +781,6 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     std::string loop_status = app_state_->playlist_loop ? "ON" : "OFF";
     std::string shuffle_status = app_state_->shuffle ? "ON" : "OFF";
 
-#ifdef MEDIA_BROWSER_ENABLED
     std::vector<MenuItem> items = {
         MenuItem("Playlist Loop: " + loop_status,
                  MenuSection::TOGGLE_PLAYLIST_LOOP, "Auto-restart",
@@ -740,6 +798,7 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
                  }),
     };
 
+#ifdef MEDIA_BROWSER_ENABLED
     // Inject "Hide Movies feature" row conditionally. This submenu is rebuilt
     // on every enter_submenu(SYSTEM) call, so the unlock state is re-evaluated
     // each time the user navigates in — picking up changes made elsewhere
@@ -751,28 +810,66 @@ std::vector<MenuItem> SettingsMenuManager::build_system_submenu() {
     if (app_state_->media_browser_unlocked) {
         items.emplace_back("Hide Movies feature", MenuSection::HIDE_MEDIA_BROWSER, "Re-lock Media Browser");
     }
+#endif
+
+    // ── Reset Controller Setup ──────────────────────────────────────────────
+    //
+    // THE UNDO FOR THE CONTROLLER SETUP WIZARD. A captured profile
+    // unconditionally shadows the built-in one for its VID/PID
+    // (resolve_mapping_for_pad) and the file is deliberately immune to OTA
+    // updates, so before this row existed a bad capture could only be
+    // corrected by completing all 24 wizard steps again — on the pad the bad
+    // capture had just broken. There was no path back to the shipped mapping
+    // from the kiosk at all.
+    //
+    // It clears EVERY captured profile rather than just the pad in front of
+    // the operator. Targeting one pad means enumerating it first, and "the
+    // reset did nothing because the box could not see your controller" is
+    // exactly the dead end this row exists to remove. In practice the store
+    // holds only pads that were deliberately captured (both fielded pads
+    // share one VID/PID, i.e. one entry), and the row is hidden entirely when
+    // there is nothing to erase — same idiom as the Wi-Fi "Disconnect" row,
+    // which is hidden when nothing is connected.
+    //
+    // Two-press confirm, matching that same Wi-Fi row: destructive and
+    // irreversible (the captured mapping is not backed up anywhere).
+    const size_t captured_count = retroarch::load_profile_store().size();
+    if (captured_count > 0) {
+        items.emplace_back(
+            controller_reset_confirm_ ? "Confirm: erase controller setup?"
+                                      : "Reset Controller Setup",
+            MenuSection::SYSTEM,
+            controller_reset_confirm_
+                ? "Press again to restore the built-in mapping"
+                : (captured_count == 1
+                       ? "Discard the saved mapping, use the built-in one"
+                       : "Discard " + std::to_string(captured_count) +
+                             " saved mappings, use the built-in ones"),
+            [this]() {
+                if (!controller_reset_confirm_) {
+                    controller_reset_confirm_ = true;
+                    rebuild_current_submenu();
+                    return;
+                }
+                controller_reset_confirm_ = false;
+                const bool ok = retroarch::save_profile_store({});
+                // Report the truth: a read-only /opt or a full SD card fails
+                // here exactly as it fails in the wizard's save.
+                ui::Toast::show(ok ? "Controller setup reset — using built-in mapping"
+                                   : "Could not reset controller setup");
+                if (ok) controller_profiles_dirty_ = true;
+                rebuild_current_submenu();
+            });
+    }
 
     items.emplace_back("Back", MenuSection::BACK);
     return items;
-#else
-    return {
-        MenuItem("Playlist Loop: " + loop_status,
-                 MenuSection::TOGGLE_PLAYLIST_LOOP, "Auto-restart",
-                 [&]() {
-                     app_state_->playlist_loop = !app_state_->playlist_loop;
-                     rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_);
-                 }),
-        MenuItem("Shuffle: " + shuffle_status,
-                 MenuSection::TOGGLE_SHUFFLE, "Random order",
-                 [&]() {
-                     app_state_->shuffle = !app_state_->shuffle;
-                     rebuild_current_submenu();
-                     app::SettingsPersistence::save_settings(*app_state_);
-                 }),
-        MenuItem("Back", MenuSection::BACK)
-    };
-#endif
+}
+
+bool SettingsMenuManager::take_controller_profiles_dirty() {
+    const bool dirty = controller_profiles_dirty_;
+    controller_profiles_dirty_ = false;
+    return dirty;
 }
 
 // Helper to check whether an interface is actually carrying traffic.

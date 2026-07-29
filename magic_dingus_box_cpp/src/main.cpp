@@ -8,8 +8,10 @@
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
 #include "ui/settings_menu.h"
+#include "ui/controller_wizard.h"
 #include "ui/pairing_screen.h"
 #include "ui/pairing_screen_renderer.h"
+#include "retroarch/controller_profile.h"
 #ifdef MEDIA_BROWSER_ENABLED
 #include "ui/toast.h"
 #include "platform/sequence_detector.h"
@@ -93,6 +95,22 @@ static void page_flip_handler(int /*fd*/, unsigned int /*frame*/,
     if (ctx) {
         ctx->waiting_for_flip = false;
     }
+}
+
+// Rebuild the per-model kiosk MENU-navigation overlays from the captured
+// profile store and hand them to InputManager. Called once at startup and
+// again whenever the Controller Setup wizard closes, so a pad the operator
+// just captured can drive the menus immediately instead of after a restart.
+// Passing the full map replaces the previous set wholesale (see
+// InputManager::set_menu_overlays).
+static void reload_menu_overlays(platform::InputManager& input) {
+    std::map<uint32_t, platform::MenuNavOverlay> overlays;
+    for (const auto& [key, prof] : retroarch::load_profile_store()) {
+        (void)key;
+        overlays[(static_cast<uint32_t>(prof.vid) << 16) | prof.pid] =
+            retroarch::menu_overlay_from_profile(prof);
+    }
+    input.set_menu_overlays(std::move(overlays));
 }
 
 int main(int /* argc */, char* /* argv */[]) {
@@ -233,7 +251,13 @@ int main(int /* argc */, char* /* argv */[]) {
     } else {
         LOG_DEBUG("Input initialized");
     }
-    
+
+    // Apply whatever the operator has already captured with the Controller
+    // Setup wizard, so a non-standard pad can drive the menus from boot.
+    // An empty/missing store is the normal case and leaves InputManager on
+    // pure built-in behavior.
+    reload_menu_overlays(input);
+
     // Initialize GPIO (for physical buttons, rotary encoder, LEDs, power switch)
     LOG_DEBUG("Initializing GPIO...");
     GpioManager gpio;
@@ -1609,6 +1633,49 @@ int main(int /* argc */, char* /* argv */[]) {
         // Poll input
         auto input_events = input.poll();
 
+        // ── Controller Setup wizard: raw-event pump + watchdog ───────────────
+        //
+        // Placed HERE deliberately: after input.poll() (which is what fills
+        // the raw queue) and before the dispatch loop below (which is where a
+        // cancel/save can call set_raw_capture(false)). set_raw_capture(false)
+        // DISCARDS the pending queue — see the ordering requirement on
+        // InputManager::set_raw_capture — so draining first is what keeps the
+        // user's final capture from vanishing.
+        //
+        // The active→inactive edge is detected here rather than at each close
+        // site so that EVERY way out (cancel, save+dismiss, idle timeout, pad
+        // unplugged, Settings dismissed from under it) refreshes the menu-nav
+        // overlays exactly once.
+        {
+            static bool wizard_was_active = false;
+            if (settings_menu.is_controller_wizard_active()) {
+                auto* wiz = settings_menu.controller_wizard();
+                if (wiz) {
+                    for (const auto& raw : input.drain_raw_events()) {
+                        wiz->on_raw_event(raw);
+                    }
+                    if (!wiz->tick() || !wiz->is_active()) {
+                        settings_menu.close_controller_wizard();
+                    }
+                } else {
+                    settings_menu.close_controller_wizard();
+                }
+            }
+            if (wizard_was_active && !settings_menu.is_controller_wizard_active()) {
+                // Profiles may have changed — refresh menu-nav overlays.
+                reload_menu_overlays(input);
+            }
+            wizard_was_active = settings_menu.is_controller_wizard_active();
+            // Settings → System → "Reset Controller Setup" erases the captured
+            // store without the wizard ever opening, so the edge above cannot
+            // see it. A stale overlay would keep remapping menu buttons from a
+            // profile that no longer exists.
+            if (settings_menu.take_controller_profiles_dirty()) {
+                reload_menu_overlays(input);
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         // Poll GPIO (buttons, encoder) and merge with controller/keyboard events
         if (gpio.is_available()) {
             auto gpio_events = gpio.poll();
@@ -1627,7 +1694,13 @@ int main(int /* argc */, char* /* argv */[]) {
         // controls (e.g. triple BTN2 toggles play/pause three times, and
         // the final RCLICK fires SELECT). Unmatched events (NO_MATCH)
         // pass through normally, so random button use is unaffected.
-        {
+        //
+        // Suppressed entirely while the Controller Setup wizard is up. The
+        // wizard binds BTN1 (redo) and BTN2 (skip), which overlap the unlock
+        // sequence's chord and triple-press; letting the detector run would
+        // let it swallow the very presses the wizard is asking for — silent
+        // dead buttons on a screen the user is already unsure about.
+        if (!settings_menu.is_controller_wizard_active()) {
             using namespace std::chrono;
             auto seq_now = steady_clock::now();
             platform::SeqInput seq_ev = platform::SeqInput::NONE;
@@ -2395,6 +2468,39 @@ int main(int /* argc */, char* /* argv */[]) {
                     continue; // Skip normal menu handling when in game browser
                 }
                 
+                // ── Controller Setup wizard: intercept everything ─────────────
+                //
+                // Every input surface EXCEPT the pad being configured lands
+                // here (that pad is diverted to raw events by
+                // set_raw_capture). on_action() owns cancel from every phase,
+                // so the wizard is always escapable from the box buttons, the
+                // rotary, the phone remote, or a keyboard.
+                //
+                // NOT from a gamepad — not even a working one. set_raw_capture
+                // diverts EVERY real joystick (the phone-remote uinput device
+                // is the sole exception), so no pad can produce an InputAction
+                // while the wizard is up. See the header comment on
+                // ui::ControllerWizard, which states the same guarantee
+                // correctly.
+                if (settings_menu.is_controller_wizard_active()) {
+                    auto* wiz = settings_menu.controller_wizard();
+                    if (wiz) {
+                        // Return value ignored on purpose: consumed or not,
+                        // nothing else may act on this event while the wizard
+                        // owns the screen.
+                        wiz->on_action(ev);
+                        // Close immediately rather than waiting for next
+                        // frame's pump, so the overlay can't paint one extra
+                        // frame after the user cancelled. The pump's
+                        // active→inactive edge still fires the overlay reload.
+                        if (!wiz->is_active()) settings_menu.close_controller_wizard();
+                    } else {
+                        settings_menu.close_controller_wizard();
+                    }
+                    continue;  // eat all other inputs while the wizard is up
+                }
+                // ─────────────────────────────────────────────────────────────
+
                 // ── Phone Remote pairing screen: intercept navigation/forget ──
                 if (settings_menu.is_pairing_screen_active()) {
                     auto* ps = settings_menu.pairing_screen();
@@ -2461,6 +2567,8 @@ int main(int /* argc */, char* /* argv */[]) {
                             settings_menu.enter_submenu(ui::MenuSection::INFO);
                         } else if (section == ui::MenuSection::PHONE_REMOTE) {
                             settings_menu.open_pairing_screen();
+                        } else if (section == ui::MenuSection::CONTROLLER_SETUP) {
+                            settings_menu.open_controller_wizard(&input);
                         } else if (section == ui::MenuSection::BROWSE_GAMES) {
                             // Enter game browser
                             settings_menu.enter_game_browser();

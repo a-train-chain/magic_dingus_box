@@ -40,14 +40,16 @@ uint16_t parse_hex4(const std::string& s) {
     }
 }
 
-// Match a (vendor, product) pair to a known controller type.
+} // anonymous namespace
+
+// Match a (vendor, product) pair to a known controller type. Declared in
+// controller_detector.h (moved out of the anonymous namespace above) so
+// resolve_mapping_for_pad() can reach it.
 ControllerType match_vid_pid(uint16_t vid, uint16_t pid) {
     if (vid == 0x0e6d && pid == 0x111d) return ControllerType::N64_ADAPTER;
     if (vid == 0x0079 && pid == 0x0006) return ControllerType::PS_STYLE_DRAGONRISE;
     return ControllerType::UNKNOWN;
 }
-
-} // anonymous namespace
 
 ControllerType detect_primary_controller() {
     namespace fs = std::filesystem;
@@ -91,6 +93,39 @@ ControllerType detect_primary_controller() {
 
     // Nothing matched; return UNKNOWN (caller will fall back to default mapping)
     return ControllerType::UNKNOWN;
+}
+
+std::vector<DetectedPad> detect_connected_controllers() {
+    namespace fs = std::filesystem;
+    std::vector<DetectedPad> pads;
+
+    // Same enumeration as detect_primary_controller(): walk /dev/input/js*
+    // and sort lexicographically so port order is deterministic (js0, js1,
+    // js2, ... -- not directory_iterator's unspecified OS order).
+    std::vector<fs::path> js_nodes;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator("/dev/input", ec)) {
+        if (ec) break;
+        const auto& name = entry.path().filename().string();
+        if (name.rfind("js", 0) == 0 && name.size() > 2) js_nodes.push_back(entry.path());
+    }
+    std::sort(js_nodes.begin(), js_nodes.end());
+
+    int port = 0;
+    for (const auto& node : js_nodes) {
+        const std::string basename = node.filename().string();
+        const fs::path id_dir = fs::path("/sys/class/input") / basename / "device" / "id";
+        DetectedPad pad;
+        pad.port = port++;
+        pad.vid = parse_hex4(read_sysfs_line(id_dir / "vendor"));
+        pad.pid = parse_hex4(read_sysfs_line(id_dir / "product"));
+        pad.name = read_sysfs_line(fs::path("/sys/class/input") / basename / "device" / "name");
+        std::cout << "controller_detector: " << node.string() << " vid="
+                  << std::hex << pad.vid << " pid=" << pad.pid << std::dec
+                  << " name=" << pad.name << std::endl;
+        pads.push_back(pad);
+    }
+    return pads;
 }
 
 std::string controller_type_name(ControllerType t) {

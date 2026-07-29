@@ -109,6 +109,8 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/controller_wizard.cpp
+    src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
     src/ui/pairing_screen_renderer.cpp
     src/ui/theme.cpp
@@ -146,6 +148,35 @@ set(RETROARCH_SOURCES
     src/retroarch/retroarch_launcher.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
+    src/retroarch/logical_controls.cpp
+    src/retroarch/controller_profile.cpp
+    src/retroarch/joydev_index.cpp
+    src/retroarch/capture_session.cpp
+)
+
+# Retroarch sources shared by BOTH test_retroarch_unit and
+# test_phone_remote_unit, below. Those two targets used to maintain fully
+# independent source lists even though both compile controller_mapping.cpp,
+# which is not self-contained (it delegates to controller_profile.cpp /
+# controller_detector.cpp / logical_controls.cpp / launch_contract.cpp) --
+# so a new dependency added to any of those files had to be added to BOTH
+# targets by hand, and it silently didn't happen once (test_phone_remote_unit
+# failed to LINK, not compile, with undefined symbols, while
+# test_retroarch_unit kept passing). Defining the shared subset once and
+# having both targets consume this variable makes that class of drift
+# structurally impossible instead of relying on someone reading a comment.
+# (retroarch_launcher.cpp is deliberately NOT in this list -- it's needed by
+# only one of the two targets. joydev_index.cpp USED to be excluded on the
+# same reasoning, but capture_session.cpp -- itself shared here -- calls
+# bind_token(), so joydev_index.cpp must ship to both targets too now.)
+set(RETROARCH_TESTABLE_SOURCES
+    src/retroarch/launch_contract.cpp
+    src/retroarch/controller_detector.cpp
+    src/retroarch/controller_mapping.cpp
+    src/retroarch/logical_controls.cpp
+    src/retroarch/controller_profile.cpp
+    src/retroarch/joydev_index.cpp
+    src/retroarch/capture_session.cpp
 )
 
 set(ALL_SOURCES
@@ -463,14 +494,53 @@ if(RETROARCH_TEST_SOURCES)
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
         src/app/game_quiet_mode.cpp
-        src/retroarch/launch_contract.cpp
-        src/retroarch/controller_mapping.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )
-    target_include_directories(test_retroarch_unit PRIVATE src)
-    target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain pthread)
+    target_include_directories(test_retroarch_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_retroarch_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
     target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
+endif()
+
+# UI-layer tests that don't need GL. Today: the Controller Setup wizard's
+# phase machine, its save/merge into the profile store, and the SettingsMenu
+# side of the wizard's lifecycle.
+#
+# settings_menu.cpp is in here for one reason: toggle()'s wizard_active_ branch
+# is the cancel path that ACTUALLY fires on hardware. main.cpp consumes every
+# SETTINGS_MENU event in its BTN4 hold/volume block and `continue`s, so that
+# event never reaches ControllerWizard::on_action(); the operator's press
+# arrives as settings_menu.toggle() instead. That path had zero automated
+# coverage while settings_menu.cpp was in no Mac target, on the one screen
+# whose failure mode is a bricked appliance with no keyboard attached.
+#
+# What the Mac build cannot link, tests/ui/ui_test_doubles.cpp defines at the
+# linker level (InputManager/libevdev, Toast/GLES, PairingScreen +
+# SettingsPersistence/spdlog), so the corresponding .cpp files are absent here.
+# wifi_manager / virtual_keyboard / platform_profile compile clean on macOS
+# with no project-level link tail, so they are linked for real.
+#
+# Deliberately does NOT include controller_wizard_renderer.cpp: that one is a
+# Renderer method and is covered by the Pi build only.
+file(GLOB UI_TEST_SOURCES "tests/ui/*.cpp")
+if(UI_TEST_SOURCES)
+    add_executable(test_ui_unit
+        ${UI_TEST_SOURCES}
+        src/ui/controller_wizard.cpp
+        src/ui/settings_menu.cpp
+        src/ui/virtual_keyboard.cpp
+        src/utils/wifi_manager.cpp
+        src/platform/platform_profile.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
+        src/utils/config.cpp
+    )
+    target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_ui_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
+    target_compile_options(test_ui_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME UiUnit COMMAND test_ui_unit)
 endif()
 
 # App-layer pure-logic tests (ROM display titles, etc). No Linux-only deps.
@@ -526,6 +596,17 @@ if(VIDEO_TEST_SOURCES)
 endif()
 
 # Phone remote tests
+#
+# This target compiles src/retroarch/controller_mapping.cpp, which is NOT
+# self-contained -- get_mapping()/resolve_mapping_for_pad() delegate to the
+# built-in physical controller profiles and other retroarch/ sources. It
+# shares those sources with test_retroarch_unit via RETROARCH_TESTABLE_SOURCES
+# (defined above, near RETROARCH_SOURCES) instead of listing them
+# independently, so a new dependency added to any of those files reaches both
+# test targets automatically -- this target used to list its own copy of the
+# source list and had silently drifted out of sync with test_retroarch_unit
+# before (a LINK failure, not a compile failure, since the missing piece is
+# an undefined symbol).
 file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
 if(PHONE_REMOTE_TEST_SOURCES)
     add_executable(test_phone_remote_unit
@@ -534,10 +615,8 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
         src/app/controller_text_input.cpp
-        src/retroarch/launch_contract.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
         src/retroarch/retroarch_launcher.cpp
-        src/retroarch/controller_detector.cpp
-        src/retroarch/controller_mapping.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
@@ -551,4 +630,34 @@ if(PHONE_REMOTE_TEST_SOURCES)
     endif()
     add_test(NAME PhoneRemoteUnit COMMAND test_phone_remote_unit)
     target_compile_options(test_phone_remote_unit PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
+# controller_probe — on-Pi diagnostic tool, NOT part of the kiosk binary.
+#
+# Prints each joystick's live evdev capability lists and the joydev_index
+# tokens computed from them, then diffs those tokens against every applicable
+# builtin PhysicalProfile. It is the hardware half of the ground truth that
+# tests/retroarch/ asserts from transcribed capability lists.
+#
+# Linux-only: it links libevdev and reads /dev/input/event*, neither of which
+# exists on macOS. Gated on EVDEV_FOUND as well as the platform because the
+# pkg_check_modules(EVDEV ...) above only runs under BUILD_KIOSK — a Linux
+# configure with -DBUILD_KIOSK=OFF must skip this target, not fail on an
+# empty ${EVDEV_LIBRARIES}.
+#
+# Built on demand (`make controller_probe`); EXCLUDE_FROM_ALL keeps it out of
+# the default build so the kiosk's build time is unchanged.
+if(UNIX AND NOT APPLE AND EVDEV_FOUND)
+    add_executable(controller_probe EXCLUDE_FROM_ALL
+        src/tools/controller_probe.cpp
+        src/retroarch/joydev_index.cpp
+        src/retroarch/logical_controls.cpp
+        src/retroarch/controller_profile.cpp
+        src/utils/config.cpp
+    )
+    target_include_directories(controller_probe PRIVATE src ${JSONCPP_INCLUDE_DIRS} ${EVDEV_INCLUDE_DIRS})
+    target_link_directories(controller_probe PRIVATE ${JSONCPP_LIBRARY_DIRS} ${EVDEV_LIBRARY_DIRS})
+    target_link_libraries(controller_probe PRIVATE ${EVDEV_LIBRARIES} ${JSONCPP_LIBRARIES})
+    target_compile_options(controller_probe PRIVATE -Wall -Wextra -Wpedantic)
 endif()

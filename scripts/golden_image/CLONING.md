@@ -89,6 +89,17 @@ default playlists work). Media Browser is locked because there's no
 laptop (drops in a WireGuard config; `setup_services.sh` rebuilds the
 entire stack from the codified fixtures in `magic_dingus_box_cpp/scripts/data/`).
 
+**Controller profiles carry over too — deliberately.** `config/controller_profiles.json`
+(captured via Settings → Controller Setup) is not in the per-Pi wipe
+list above; `first_boot.sh` never touches it. That's intentional, not
+a gap: profiles are keyed by USB VID/PID, i.e. by controller *model*
+rather than by box, so a profile captured once on the source Pi is
+already correct for every clone shipped with that same pad model —
+there's nothing per-Pi to reset. A cloned unit that ships with a
+different, uncaptured pad just falls back to its built-in mapping (if
+it's one of the two shipped pad models) or the legacy N64-adapter
+default, and its owner can capture it through the same wizard.
+
 > **Footnote on SSH host keys:** every cloned Pi inherits the source's
 > SSH host keys. For a kiosk on a trusted LAN this is acceptable — the
 > primary access path is the Content Manager (HTTP), not SSH. If you
