@@ -38,6 +38,7 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `magic_dingus_box_cpp/data/states/*` | RetroArch auto-resume save states. | `<rom>.state.auto` per game. |
 | `magic_dingus_box_cpp/data/device_info.json` | Per-Pi device identity (UUID, hostname). | Generated at first boot; stable across the Pi's life. |
 | `config/*` | Kiosk settings (display mode, audio, bezel selection, master volume, Media Browser unlock flag). Plus WiFi credentials in NetworkManager. | `config/settings.json`. |
+| `config/controller_profiles.json` | Captured controller mappings from the Controller Setup wizard. Covered by the existing `config/*` exclude; listed here so nobody "cleans it up". | Per-model button/axis profiles keyed by USB VID/PID. |
 | `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install. | CMake cache, object files, the kiosk binary. |
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |

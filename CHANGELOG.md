@@ -68,6 +68,19 @@ bezels) and all controller mappings unchanged.
   sweep. Closes the "I just added it, why is nothing happening?" gap:
   the add-time search runs immediately, and now the user sees it. Reads
   Radarr's running-command list (`/api/v3/command`).
+- **Controller Setup wizard** (Settings → Controller Setup): press-each-button
+  capture for any USB gamepad, walking the operator through every logical
+  control for their pad's style (PlayStation-style or N64-style) with
+  skip/redo support (`CaptureSession`). Captured profiles are keyed by USB
+  VID/PID and stored in `config/controller_profiles.json` — configure a
+  controller model once and every future plug-in of that model is
+  recognized automatically. Profiles resolve independently per port, so two
+  *different* controller models can drive player 1 and player 2
+  simultaneously in a two-player game. The same captured profile also
+  drives the kiosk's own menu navigation, so a third-party pad the box
+  previously could not navigate menus with now works immediately after
+  capture — no restart needed. Survives OTA updates (see
+  `OTA_UPDATE_GUARANTEES.md`).
 
 ### Changed
 - **Settings → Audio Output cycle is platform-aware** — the Headphone
@@ -110,6 +123,11 @@ bezels) and all controller mappings unchanged.
     pre-grab scoring. Radarr's `minimumAvailability=announced` stays
     (deliberate: early real releases still grab the moment they
     exist); these warnings cover the fake-release window instead.
+
+- Controller mapping internals refactored into semantic tables + physical
+  profiles (`build_mapping()`); output for the two shipped pads is
+  snapshot-locked and unchanged. Player-bind emission moved to the
+  Mac-testable `write_player_binds()`.
 
 - **Wi-Fi setup overhaul (new-location flow)** — scanning now streams
   results onto the screen as they're found (animated "Scanning…" header
