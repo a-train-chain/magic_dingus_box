@@ -244,6 +244,35 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **`ENABLE_MEDIA_BROWSER=OFF` did not build at all** — `main.cpp` calls
+  `ui::Toast::show()` from the display-mode change path, which is core kiosk code
+  compiled in every configuration, but `#include "ui/toast.h"` sat inside
+  `#ifdef MEDIA_BROWSER_ENABLED`. With the flag off the compile failed on
+  `'ui::Toast' has not been declared` — not degraded behavior, no binary.
+
+  It hid behind a two-part blind spot: production always deploys
+  `MEDIA_BROWSER=true`, and on macOS the OFF config never builds the kiosk target
+  at all (it needs DRM/GLES), so configuring OFF on a dev machine builds only
+  test binaries — none of which include `main.cpp`. The break reproduced solely
+  when building the kiosk binary on a Pi with the flag off, the one combination
+  nobody runs. Half of it had already been found once and half-fixed:
+  `CMakeLists.txt` appends `toast.cpp` to `UI_SOURCES` unconditionally with a
+  comment explaining why, which resolved the matching *link* error and left the
+  *include* error standing.
+
+  Audited the rest of that block rather than just the failing line: of the 20
+  headers gated behind `MEDIA_BROWSER_ENABLED` in `main.cpp`, `ui/toast.h` was
+  the only one referenced from non-gated code.
+- **Dead Media Browser scaffolding removed** — `MEDIA_BROWSER_UI_SOURCES` in
+  `CMakeLists.txt` was defined and consumed by no target, with a comment implying
+  it kept those files out of the test binary. It did nothing, and it sent anyone
+  tracing where the MB screens get compiled down a dead end. All 8 files it named
+  are already listed in `KIOSK_MEDIA_BROWSER_SOURCES`. Also deleted two uncalled
+  statics in `library_screen.cpp` that warned `-Wunused-function` on every Pi
+  build: `poster_tint_for_tmdb()` was a byte-for-byte duplicate of
+  `library_tint_for_tmdb()` further down the same file (the one `render()`
+  actually calls), and `truncate_to_width()` was superseded when the screen moved
+  to `chrome::draw_poster_card()`.
 - **"Recently added" could silently show the whole library** —
   `LibraryScreen::rebuild_view()` built its 30-day cutoff by calling `gmtime_r`
   and **discarding the return value**. On failure `gmtime_r` returns nullptr and
