@@ -534,6 +534,15 @@ if(VIDEO_TEST_SOURCES)
 endif()
 
 # Phone remote tests
+#
+# NOTE: this target compiles src/retroarch/controller_mapping.cpp, which is
+# NOT self-contained -- get_mapping()/resolve_mapping_for_pad() delegate to
+# the built-in physical controller profiles. If controller_mapping.cpp grows
+# a new dependency (as it did when it started calling into
+# controller_profile.cpp), this source list must gain that new source too,
+# or this target fails to LINK (not compile) with undefined symbols. Do not
+# assume test_retroarch_unit passing means this target still builds -- it
+# lists controller_mapping.cpp independently and has drifted before.
 file(GLOB PHONE_REMOTE_TEST_SOURCES "tests/phone_remote/*.cpp")
 if(PHONE_REMOTE_TEST_SOURCES)
     add_executable(test_phone_remote_unit
@@ -546,6 +555,8 @@ if(PHONE_REMOTE_TEST_SOURCES)
         src/retroarch/retroarch_launcher.cpp
         src/retroarch/controller_detector.cpp
         src/retroarch/controller_mapping.cpp
+        src/retroarch/controller_profile.cpp
+        src/retroarch/logical_controls.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_phone_remote_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
