@@ -21,6 +21,8 @@ BUILD=false
 TEST=false
 INSTALL_CORES=false
 SETUP_USB_GADGET=false
+FORCE_CLEAN=false    # --clean. Also set automatically when the header
+                     # fingerprint changes; see "Stale-object guard" below.
 MEDIA_BROWSER=true   # Default ON — production Pis run Media Browser. The
                      # CMake option in CMakeLists.txt still defaults to OFF
                      # for cross-builds on dev machines; this script overrides
@@ -54,6 +56,11 @@ while [[ $# -gt 0 ]]; do
             MEDIA_BROWSER=true
             shift
             ;;
+        --clean)
+            BUILD=true
+            FORCE_CLEAN=true
+            shift
+            ;;
         --help|-h)
             cat <<EOF
 Usage: $(basename "$0") [options]
@@ -65,6 +72,9 @@ Options:
   --usb-gadget, -u  Setup USB Ethernet Gadget mode for fast uploads
   --media-browser, -m  Install Media Browser deps (build is MB=ON by default;
                        this flag adds the apt-get step for the docker stack)
+  --clean         Wipe the Pi's build dir before building. Done automatically
+                  whenever any header or CMakeLists.txt changes, so you rarely
+                  need this — reach for it if a build behaves inexplicably.
   --help, -h      Show this help
 
 Environment overrides:
@@ -332,9 +342,42 @@ rsync -avz --checksum \
 #     exists. Same first-deploy guard as before — we only restart if
 #     /opt/magic_dingus_box/.../build/magic_dingus_box_cpp is executable,
 #     so a sync-without-build doesn't crash the unit into a failed state.
+# Restart the kiosk the careful way: stop, WAIT for the process to actually
+# exit, then start and confirm it came up.
+#
+# `systemctl restart` is not safe here. The kiosk holds DRM master, an
+# exclusive grab on every input device, and a PulseAudio child; systemd's stop
+# can return before all of that is released, so the replacement instance races
+# the corpse of the old one and dies. Worse, Restart=always then retries
+# immediately, trips systemd's start-rate limiter, and the unit latches into
+# "start request repeated too quickly" — at which point the box stays down even
+# after you put a known-good binary back, until someone runs `reset-failed`.
+# That is exactly how a 2026-07-29 deploy turned a fixable crash into a
+# confusing outage, and it also made a healthy binary look broken.
+#
+# So: stop, poll for inactive, settle, clear any latched failure, start, then
+# poll for active and surface the journal if it did not make it.
 RESTART_CMD='if [ -x "'"${PI_DIR}"'/magic_dingus_box_cpp/build/magic_dingus_box_cpp" ]; then
-    sudo systemctl restart magic-dingus-box-cpp.service
-    echo "  Restarted kiosk (binary present)"
+    sudo systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
+    for i in $(seq 1 30); do
+        systemctl is-active --quiet magic-dingus-box-cpp.service || break
+        sleep 0.5
+    done
+    sleep 2                                    # let DRM/PulseAudio teardown finish
+    sudo systemctl reset-failed magic-dingus-box-cpp.service 2>/dev/null || true
+    sudo systemctl start magic-dingus-box-cpp.service 2>/dev/null || true
+    for i in $(seq 1 60); do
+        if systemctl is-active --quiet magic-dingus-box-cpp.service; then
+            echo "  Restarted kiosk — service active"
+            exit 0
+        fi
+        sleep 0.5
+    done
+    echo "  ✗ Kiosk did NOT come back up. Last journal lines:"
+    journalctl -u magic-dingus-box-cpp.service --no-pager -n 20 2>&1 | tail -20
+    echo "  The previous binary is still in build/ only if you saved one;"
+    echo "  otherwise re-deploy a known-good revision with --clean."
+    exit 1
 else
     echo "  Skipping kiosk restart (binary not yet built — run with --build to compile)"
 fi'
@@ -437,7 +480,7 @@ echo ""
 # Step 3: Build (if requested)
 if [ "$BUILD" = true ]; then
     echo "Step 3: Building on Pi..."
-    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" MEDIA_BROWSER="${MEDIA_BROWSER}" bash <<'BUILDEOF'
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" MEDIA_BROWSER="${MEDIA_BROWSER}" FORCE_CLEAN="${FORCE_CLEAN}" bash <<'BUILDEOF'
 set -e
 cd "${PI_DIR}/magic_dingus_box_cpp"
 
@@ -492,6 +535,46 @@ if [ "${MEDIA_BROWSER}" = "true" ]; then
     echo "  Media Browser: ENABLED"
 fi
 
+# ── Stale-object guard ───────────────────────────────────────────────────────
+# build/ is deliberately excluded from this script's rsync, so it is a
+# long-lived directory that outlives many source trees — including branch
+# switches. Incremental make is not safe across a change that alters a struct
+# layout: objects compiled against the old header link happily against objects
+# compiled against the new one, and the resulting ODR violation corrupts the
+# heap. It does not fail to build; it segfaults at runtime in an unrelated
+# destructor, which is a genuinely awful thing to debug.
+#
+# This bit us for real on 2026-07-29: a deploy left 13 objects compiled hours
+# before the headers they transitively depend on (input_manager.h had gained
+# members), and the kiosk SEGV'd on startup inside std::vector<std::string>'s
+# destructor. A clean rebuild fixed it outright.
+#
+# So: fingerprint every header plus CMakeLists.txt (contents AND the file list,
+# so additions/removals/renames register too) and wipe build/ whenever it
+# moves. .cpp-only edits — the common case — still build incrementally.
+build_fingerprint() {
+    {
+        find src -type f \( -name '*.h' -o -name '*.hpp' \) | LC_ALL=C sort
+        find src -type f \( -name '*.h' -o -name '*.hpp' \) -print0 \
+            | LC_ALL=C sort -z | xargs -0 cat
+        cat CMakeLists.txt
+    } 2>/dev/null | md5sum | cut -d' ' -f1
+}
+
+FINGERPRINT_FILE="build/.mdb_build_fingerprint"
+NEW_FINGERPRINT="$(build_fingerprint)"
+OLD_FINGERPRINT="$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)"
+
+if [ "${FORCE_CLEAN}" = "true" ]; then
+    echo "  Clean build requested (--clean) — wiping build/"
+    rm -rf build
+elif [ -d build ] && [ "$NEW_FINGERPRINT" != "$OLD_FINGERPRINT" ]; then
+    echo "  Headers or CMakeLists.txt changed since the last build here."
+    echo "  Wiping build/ — incremental linking across a layout change"
+    echo "  produces a binary that builds fine and crashes at runtime."
+    rm -rf build
+fi
+
 # Build
 echo "  Running cmake ${CMAKE_FLAGS}..."
 mkdir -p build
@@ -508,6 +591,10 @@ if ! make -j4; then
     echo "  ✗ Build failed!"
     exit 1
 fi
+
+# Only record the fingerprint after a SUCCESSFUL build, so a failed or
+# interrupted build re-cleans next time instead of trusting a partial tree.
+printf '%s\n' "$NEW_FINGERPRINT" > .mdb_build_fingerprint
 
 echo "  ✓ Build complete"
 if [ "${MEDIA_BROWSER}" = "true" ]; then

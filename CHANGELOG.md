@@ -147,6 +147,26 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **Deploys and OTA updates no longer link stale object files** — both
+  `deploy_cpp.sh` and `update.sh` keep `build/` out of their rsync, so it is a
+  long-lived directory holding objects from previous source trees. Incremental
+  `make` is not safe across a change that alters a struct layout: objects
+  compiled against the old header link cleanly against objects compiled against
+  the new one, and the resulting ODR violation corrupts the heap. The build
+  succeeds and the kiosk segfaults at startup inside an unrelated destructor —
+  unattended, on a fielded box, that is a brick. `update.sh` now always builds
+  clean (rollback is unaffected; the backup taken beforehand still includes
+  `build/`). `deploy_cpp.sh` fingerprints every header plus `CMakeLists.txt`
+  and wipes `build/` only when that fingerprint moves, so ordinary `.cpp` edits
+  still build incrementally; `--clean` forces it.
+- **A failed kiosk restart no longer latches the unit down** — `deploy_cpp.sh`
+  used `systemctl restart`, which could return before the old process released
+  DRM master, the input-device grabs, and its PulseAudio child, so the
+  replacement raced the corpse and died; `Restart=always` then tripped
+  systemd's start-rate limiter and the unit stuck in "start request repeated
+  too quickly" even after a known-good binary was restored. The deploy now
+  stops, waits for the process to actually exit, clears any latched failure,
+  starts, confirms the service came up, and prints the journal if it did not.
 - **Captured analog controls no longer land in digital bind fields** —
   `build_mapping()` picked the RetroArch field from the semantic table and
   the token from the pad's profile without checking the two agreed. On a

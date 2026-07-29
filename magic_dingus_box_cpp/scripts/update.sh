@@ -108,6 +108,25 @@ run_build() {
     fi
 
     local build_dir="$INSTALL_DIR/magic_dingus_box_cpp/build"
+
+    # ALWAYS build clean on an OTA. build/ is excluded from the install rsync
+    # (see the --exclude below), so without this it is a long-lived directory
+    # carrying objects compiled against the PREVIOUS release's headers. If a
+    # release changes a struct layout, incremental make happily links old
+    # objects against new ones: the build succeeds and the kiosk then segfaults
+    # at startup inside an unrelated destructor. On a fielded box that is a
+    # brick, unattended, with no one watching and no SSH.
+    #
+    # Observed for real on 2026-07-29 via deploy_cpp.sh (same defect, same
+    # long-lived build dir) — 13 objects predated the headers they depended on.
+    #
+    # The cost is a full compile instead of a partial one. That is minutes on a
+    # process that already downloads a tarball and restarts the kiosk, and it
+    # is the correct trade against the failure it prevents. Rollback is
+    # unaffected: create_backup() runs before this and deliberately includes
+    # build/, so the previous working binary is still recoverable.
+    log "Building clean (removing stale build directory)"
+    rm -rf "$build_dir"
     mkdir -p "$build_dir"
     cd "$build_dir"
 
