@@ -36,8 +36,10 @@ const PhysicalProfile& builtin_n64_adapter_profile() {
         p.style = ControllerStyle::N64_STYLE;
         p.vid = 0x0e6d; p.pid = 0x111d;
         // Joystick index i lives at evdev code 304+i on this adapter
-        // (contiguous BTN_GAMEPAD range; indices verified via evtest, see
-        // controller_mapping.cpp's physical table).
+        // (contiguous BTN_GAMEPAD range). The physical layout used to be
+        // a separate table at the top of controller_mapping.cpp; that
+        // table was deleted by the semantic/physical split (this task),
+        // and the layout now lives here, in the profile itself.
         //
         // HARDWARE-CONFIRMED (2026-07-29, see .superpowers/sdd/
         // hardware-evidence.md): captured live from a "SWITCH CO.,LTD.
@@ -50,6 +52,13 @@ const PhysicalProfile& builtin_n64_adapter_profile() {
         p.controls = {
             {L::N64_C_LEFT, btn(304, "0")},  {L::N64_B, btn(305, "1")},
             {L::N64_A, btn(306, "2")},       {L::N64_C_DOWN, btn(307, "3")},
+            // NOTE: evdev names are misleading on this adapter -- BTN_Z
+            // (evdev code 309) is physically the R shoulder, and BTN_TL
+            // (evdev code 310) is physically the Z trigger. A reader
+            // checking linux/input-event-codes.h against the two bindings
+            // below would see N64_R at code 309 (BTN_Z) and N64_Z at code
+            // 310 (BTN_TL) and might "correct" them -- don't; they are
+            // right as written.
             {L::N64_L, btn(308, "4")},       {L::N64_R, btn(309, "5")},
             {L::N64_Z, btn(310, "6")},       {L::N64_C_RIGHT, btn(312, "8")},
             {L::N64_C_UP, btn(313, "9")},    {L::N64_START, btn(316, "12")},

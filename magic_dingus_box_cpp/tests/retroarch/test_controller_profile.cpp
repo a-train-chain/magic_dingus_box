@@ -159,3 +159,107 @@ TEST_CASE("build_mapping unbinds slots the profile lacks", "[build_mapping]") {
     p.controls.erase(LogicalControl::L2);
     REQUIRE(build_mapping(sem, p).l2_btn.empty());   // "" = unbound, not default
 }
+
+// Regression test for Fix 1: semantic_ps_style's nestopia branch never sets
+// up/down/left/right, so before the fix build_mapping left those
+// ControllerMapping fields at their struct defaults ("h0up"/"h0down"/
+// "h0left"/"h0right") no matter what the profile said. That was invisible
+// with the built-in DragonRise profile, whose d-pad really is a hat bound
+// to those exact tokens, but would silently break a captured pad whose
+// d-pad is an axis pair instead of a hat.
+TEST_CASE("build_mapping resolves the d-pad through the profile even when "
+          "the core never binds it explicitly",
+          "[build_mapping]") {
+    PhysicalProfile profile = builtin_dragonrise_profile();
+    profile.controls[LogicalControl::DPAD_UP] =
+        {K::AXIS, kAbsY, -1, "-1"};
+    profile.controls[LogicalControl::DPAD_DOWN] =
+        {K::AXIS, kAbsY, +1, "+1"};
+    profile.controls[LogicalControl::DPAD_LEFT] =
+        {K::AXIS, kAbsX, -1, "-0"};
+    profile.controls[LogicalControl::DPAD_RIGHT] =
+        {K::AXIS, kAbsX, +1, "+0"};
+
+    const auto sem = get_semantic_mapping(ControllerStyle::PS_STYLE, "nestopia_libretro");
+    const auto m = build_mapping(sem, profile);
+    REQUIRE(m.up_btn == "-1");
+    REQUIRE(m.up_btn != "h0up");
+    REQUIRE(m.down_btn == "+1");
+    REQUIRE(m.left_btn == "-0");
+    REQUIRE(m.right_btn == "+0");
+}
+
+// Regression test for Fix 1's stick half: semantic_n64_style's nestopia
+// branch called stick() but never set left_stick, so before the fix
+// build_mapping left l_x_plus/l_x_minus/l_y_plus/l_y_minus at their struct
+// defaults ("+0"/"-0"/"+1"/"-1") regardless of the profile's stick tokens.
+TEST_CASE("build_mapping resolves the left stick through the profile even "
+          "when the core leaves left_stick unset",
+          "[build_mapping]") {
+    PhysicalProfile profile = builtin_n64_adapter_profile();
+    profile.controls[LogicalControl::N64_STICK_RIGHT] =
+        {K::AXIS, kAbsX, +1, "+9"};
+    profile.controls[LogicalControl::N64_STICK_LEFT] =
+        {K::AXIS, kAbsX, -1, "-9"};
+    profile.controls[LogicalControl::N64_STICK_DOWN] =
+        {K::AXIS, kAbsY, +1, "+8"};
+    profile.controls[LogicalControl::N64_STICK_UP] =
+        {K::AXIS, kAbsY, -1, "-8"};
+
+    const auto sem = get_semantic_mapping(ControllerStyle::N64_STYLE, "nestopia_libretro");
+    const auto m = build_mapping(sem, profile);
+    REQUIRE(m.l_x_plus == "+9");
+    REQUIRE(m.l_x_plus != "+0");
+    REQUIRE(m.l_x_minus == "-9");
+    REQUIRE(m.l_y_plus == "+8");
+    REQUIRE(m.l_y_minus == "-8");
+}
+
+// Regression test for Fix 2: a wizard capture that got r_up/r_down/r_left
+// but skipped r_right used to still emit r_x_minus/r_y_plus/r_y_minus from
+// whatever profile.token() returned for the three present controls, next
+// to an empty r_x_plus -- an incoherent, partially-bound right stick.
+TEST_CASE("build_mapping leaves right stick fully unbound on a partial capture",
+          "[build_mapping]") {
+    SemanticMapping sem;
+    sem.r_up = LogicalControl::RSTICK_UP; sem.r_down = LogicalControl::RSTICK_DOWN;
+    sem.r_left = LogicalControl::RSTICK_LEFT; sem.r_right = LogicalControl::RSTICK_RIGHT;
+    PhysicalProfile p = builtin_dragonrise_profile();
+    p.controls.erase(LogicalControl::RSTICK_RIGHT);  // wizard capture skipped this one
+
+    const auto m = build_mapping(sem, p);
+    REQUIRE(m.r_x_plus.empty());
+    REQUIRE(m.r_x_minus.empty());
+    REQUIRE(m.r_y_plus.empty());
+    REQUIRE(m.r_y_minus.empty());
+    REQUIRE(m.r_x_plus_btn.empty());
+    REQUIRE(m.r_x_minus_btn.empty());
+    REQUIRE(m.r_y_plus_btn.empty());
+    REQUIRE(m.r_y_minus_btn.empty());
+}
+
+// Regression test for Fix 2's mixed-kind case: one of the four right-stick
+// controls captured as a BUTTON while the other three are AXIS used to
+// still take the axis branch (keyed off r_up alone) and write a button
+// token into an axis field.
+TEST_CASE("build_mapping leaves right stick fully unbound on a mixed-kind capture",
+          "[build_mapping]") {
+    SemanticMapping sem;
+    sem.r_up = LogicalControl::RSTICK_UP; sem.r_down = LogicalControl::RSTICK_DOWN;
+    sem.r_left = LogicalControl::RSTICK_LEFT; sem.r_right = LogicalControl::RSTICK_RIGHT;
+    PhysicalProfile p = builtin_dragonrise_profile();
+    // r_up/r_down/r_left are AXIS (from the built-in profile); make
+    // r_right a BUTTON, as if that corner of the capture landed on a
+    // digital control instead of an axis.
+    p.controls[LogicalControl::RSTICK_RIGHT] = {K::BUTTON, 0, 0, "7"};
+
+    const auto m = build_mapping(sem, p);
+    REQUIRE(m.r_x_plus.empty());
+    REQUIRE(m.r_x_minus.empty());
+    REQUIRE(m.r_y_plus.empty());
+    REQUIRE(m.r_y_minus.empty());
+    REQUIRE(m.r_x_plus_btn.empty());
+    REQUIRE(m.r_x_minus_btn.empty());
+    REQUIRE(m.r_y_plus_btn.empty());
+    REQUIRE(m.r_y_minus_btn.empty());
+}

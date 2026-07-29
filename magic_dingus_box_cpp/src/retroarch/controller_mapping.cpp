@@ -37,7 +37,8 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // Turbo buttons
         s.x = L::N64_C_DOWN;  // Turbo A
         s.y = L::N64_C_LEFT;  // Turbo B
-        stick(); s.stick_to_dpad = true;  // stick -> d-pad, so it works for Mario
+        dpad();
+        stick(); s.left_stick = true; s.stick_to_dpad = true;  // stick -> d-pad, so it works for Mario
         hotkeys();
         s.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
                          "nestopia_audio_vol_sq2 = \"100\"\n"
@@ -55,6 +56,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.start = L::N64_START;
         s.select = L::N64_C_UP;
         s.l = L::N64_L; s.r = L::N64_R; s.r2 = L::N64_C_RIGHT;
+        dpad();
         stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("prosystem") != std::string::npos) {
@@ -64,7 +66,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // default, and physical button 10 is unused on this pad, so the
         // slot stays nullopt and the default carries it. Same for the
         // other branches below that "set" a field to its default.
-        dpad(); stick(); s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("genesis_plus_gx") != std::string::npos) {
         s.name = "Sega Genesis"; s.analog_dpad_mode = "0";
@@ -73,14 +75,14 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.b = L::N64_B;       // B
         s.y = L::N64_C_DOWN;  // A
         s.start = L::N64_START;
-        dpad(); stick(); s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("snes9x") != std::string::npos) {
         s.name = "Super Nintendo"; s.analog_dpad_mode = "0";
         // SNES layout: B, A, Y, X, L, R
         s.b = L::N64_B; s.a = L::N64_A; s.y = L::N64_C_DOWN; s.x = L::N64_C_LEFT;
         s.l = L::N64_L; s.r = L::N64_R; s.start = L::N64_START;
-        dpad(); stick(); s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("mednafen_pce_fast") != std::string::npos) {
         s.name = "PC Engine / TurboGrafx-16"; s.analog_dpad_mode = "0";
@@ -90,7 +92,8 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // Turbo buttons
         s.y = L::N64_C_LEFT;  // Turbo II
         s.x = L::N64_C_DOWN;  // Turbo I
-        stick(); s.stick_to_dpad = true; hotkeys();
+        dpad();
+        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("fbneo") != std::string::npos) {
         s.name = "Arcade (FinalBurn Neo)"; s.analog_dpad_mode = "0";
@@ -101,6 +104,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.b = L::N64_B; s.a = L::N64_A; s.r = L::N64_R;
         s.select = L::N64_C_UP;  // Coin
         s.start = L::N64_START;
+        dpad();
         stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
 
     } else if (core.find("mupen64plus") != std::string::npos || core.find("parallel_n64") != std::string::npos) {
@@ -171,6 +175,8 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.y = L::SQUARE;    // turbo B
         s.x = L::TRIANGLE;  // turbo A
         s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
         s.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
                          "nestopia_audio_vol_sq2 = \"100\"\n"
                          "nestopia_audio_vol_tri = \"100\"\n"
@@ -181,6 +187,8 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.name = "Super Nintendo (PS-style)";
         s.b = L::CROSS; s.a = L::CIRCLE; s.y = L::SQUARE; s.x = L::TRIANGLE;
         s.l = L::L1; s.r = L::R1; s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("genesis_plus_gx") != std::string::npos) {
         s.name = "Sega Genesis (PS-style)";
@@ -192,16 +200,22 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.l = L::L1;        // Genesis Y
         s.r = L::R1;        // Genesis Z
         s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("pcsx") != std::string::npos || core.find("beetle_psx") != std::string::npos || core.find("swanstation") != std::string::npos) {
         s.name = "PS1 (PS-style, 1:1)"; s.core_option_pad_type = "analog";
         s.b = L::CROSS; s.a = L::CIRCLE; s.y = L::SQUARE; s.x = L::TRIANGLE;
         s.l = L::L1; s.r = L::R1; s.l2 = L::L2; s.r2 = L::R2;
         s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800 (PS-style)";
         s.b = L::CROSS; s.a = L::CIRCLE; s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("mednafen_pce_fast") != std::string::npos) {
         s.name = "PC Engine (PS-style)";
@@ -210,6 +224,8 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.y = L::SQUARE;    // turbo II
         s.x = L::TRIANGLE;  // turbo I
         s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("fbneo") != std::string::npos) {
         s.name = "Arcade / FBNeo (PS-style)";
@@ -221,6 +237,8 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.y = L::SQUARE; s.x = L::TRIANGLE; s.l = L::L1;
         s.b = L::CROSS; s.a = L::CIRCLE; s.r = L::R1;
         s.select = L::SELECT; s.start = L::START;
+        s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
+        s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("mupen64plus") != std::string::npos || core.find("parallel_n64") != std::string::npos) {
         // ---- Nintendo 64 -------------------------------------------
@@ -321,25 +339,37 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     // Right stick / C cluster: axis vs button form follows the PROFILE's
     // binding kind (a real stick binds axes; a digital C cluster binds
     // buttons). Mirrors the legacy write_right_stick_binds contract.
+    //
+    // Emit ONLY when all four controls are present in the profile AND
+    // share the same binding kind. A wizard capture can be partial (e.g.
+    // r_up captured but r_right skipped) or mixed-kind (one control lands
+    // on an axis, another on a button) -- either way there is no single
+    // coherent form to write, so this leaves all eight fields empty
+    // rather than emitting an incoherent mix (a button token sitting in
+    // an axis field, or three tokens next to one empty one).
     if (sem.r_up && sem.r_down && sem.r_left && sem.r_right) {
         const auto* up = profile.binding(*sem.r_up);
-        if (up && up->kind == PhysicalBinding::Kind::AXIS) {
-            m.r_x_plus  = profile.token(*sem.r_right);
-            m.r_x_minus = profile.token(*sem.r_left);
-            m.r_y_plus  = profile.token(*sem.r_down);
-            m.r_y_minus = profile.token(*sem.r_up);
-        } else if (up) {
-            m.r_x_plus_btn  = profile.token(*sem.r_right);
-            m.r_x_minus_btn = profile.token(*sem.r_left);
-            m.r_y_plus_btn  = profile.token(*sem.r_down);
-            m.r_y_minus_btn = profile.token(*sem.r_up);
+        const auto* down = profile.binding(*sem.r_down);
+        const auto* left = profile.binding(*sem.r_left);
+        const auto* right = profile.binding(*sem.r_right);
+        if (up && down && left && right && up->kind == down->kind &&
+            up->kind == left->kind && up->kind == right->kind) {
+            if (up->kind == PhysicalBinding::Kind::AXIS) {
+                m.r_x_plus  = right->token;
+                m.r_x_minus = left->token;
+                m.r_y_plus  = down->token;
+                m.r_y_minus = up->token;
+            } else {
+                m.r_x_plus_btn  = right->token;
+                m.r_x_minus_btn = left->token;
+                m.r_y_plus_btn  = down->token;
+                m.r_y_minus_btn = up->token;
+            }
         }
-        // up == nullptr (skipped in wizard): emit neither form.
     }
 
     if (sem.hotkey_enable) m.enable_hotkey_btn = profile.token(*sem.hotkey_enable);
     if (sem.menu_toggle)   m.menu_toggle_btn   = profile.token(*sem.menu_toggle);
-    if (sem.exit_emulator) m.exit_emulator_btn = profile.token(*sem.exit_emulator);
     return m;
 }
 

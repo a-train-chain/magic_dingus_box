@@ -104,18 +104,37 @@ struct SemanticMapping {
     std::string core_option_pad_type = "";
     std::string extra_config = "";
 
-    // RetroPad button slots
+    // RetroPad button slots. RESIDUAL: an unset slot here still emits
+    // ControllerMapping's literal struct default (e.g. select_btn="10"),
+    // which is a physical button INDEX, not a logical control -- so on a
+    // captured pad with more buttons than the built-ins, a legacy branch
+    // that never bound this RetroPad function can end up binding whatever
+    // stray physical button happens to sit at that index. The d-pad and
+    // stick slot classes below were made explicit (routed through the
+    // profile) precisely to close this gap for those classes; the button
+    // slots were deliberately left alone, because for these the legacy
+    // tables genuinely never bound some of them, and normalizing them
+    // would change shipped behavior on fielded boxes (would fail the
+    // golden snapshot). Accepted as a known gap for Task 5+ to revisit.
     std::optional<LogicalControl> b, y, select, start, a, x, l, r, l2, r2;
     // RetroPad digital d-pad slots
     std::optional<LogicalControl> up, down, left, right;
     // Main analog stick controls (LSTICK_* or N64_STICK_*)
     std::optional<LogicalControl> stick_up, stick_down, stick_left, stick_right;
-    bool left_stick = false;    // emit l_x/l_y axis binds from stick_*
+    // When true, override the default left-stick binds (ControllerMapping's
+    // l_x_plus/l_x_minus/l_y_plus/l_y_minus struct defaults) with the
+    // profile's tokens for stick_*. This is NOT a "does this core use the
+    // stick" toggle -- leaving it false does not suppress emission, it
+    // just leaves those four fields at the struct defaults, which are
+    // physical tokens for one specific pad shape. Must be true whenever
+    // stick_* is populated, or a captured pad's real stick tokens get
+    // silently ignored in favor of those defaults.
+    bool left_stick = false;
     bool stick_to_dpad = false; // emit up/down/left/right_axis from stick_*
     // RetroPad right-stick slots (RSTICK_* or N64_C_*); presence gates emission
     std::optional<LogicalControl> r_up, r_down, r_left, r_right;
     // Hotkeys
-    std::optional<LogicalControl> hotkey_enable, menu_toggle, exit_emulator;
+    std::optional<LogicalControl> hotkey_enable, menu_toggle;
 };
 
 SemanticMapping get_semantic_mapping(ControllerStyle style,
