@@ -274,6 +274,112 @@ TEST_CASE("close_controller_wizard after the wizard self-retired is a no-op",
     check_fully_retired(f.sm);
 }
 
+// ---------------------------------------------------------------------------
+// Reset Controller Setup — the wizard's undo
+// ---------------------------------------------------------------------------
+//
+// A captured profile unconditionally shadows the built-in one for its VID/PID
+// and the file is deliberately OTA-immune, so before this row existed a bad
+// capture could only be corrected by completing all 24 wizard steps again on
+// the pad the bad capture had just broken. There was no path back to the
+// shipped mapping from the kiosk at all.
+
+namespace {
+
+// Index of the row whose label starts with `prefix` in the current submenu,
+// or -1. The System submenu's length varies with build flags and unlock
+// state, so rows are located by label rather than by a hardcoded index.
+int row_index(const SettingsMenuManager& sm, const std::string& prefix) {
+    const auto& items = sm.get_submenu_items();
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].label.rfind(prefix, 0) == 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+// Put one captured profile in the store, as a completed wizard run would.
+void seed_store() {
+    std::map<std::string, retroarch::PhysicalProfile> s;
+    s[retroarch::vidpid_key(kVid, kPid)] = retroarch::builtin_dragonrise_profile();
+    REQUIRE(retroarch::save_profile_store(s));
+}
+
+}  // namespace
+
+TEST_CASE("the reset row is hidden when nothing has been captured",
+          "[settings_menu][reset]") {
+    ScopedStore store("reset_hidden");
+    app::AppState state{};
+    SettingsMenuManager sm{&state};
+    ui_test::fake_reset();
+    sm.open();
+    sm.enter_submenu(ui::MenuSection::SYSTEM);
+    CHECK(row_index(sm, "Reset Controller Setup") == -1);
+}
+
+TEST_CASE("Reset Controller Setup confirms, then restores the built-in mapping",
+          "[settings_menu][reset]") {
+    ScopedStore store("reset_confirm");
+    seed_store();
+
+    app::AppState state{};
+    SettingsMenuManager sm{&state};
+    ui_test::fake_reset();
+    sm.open();
+    sm.enter_submenu(ui::MenuSection::SYSTEM);
+
+    const int row = row_index(sm, "Reset Controller Setup");
+    REQUIRE(row >= 0);
+    sm.navigate(row);
+    REQUIRE(sm.get_selected_index() == row);
+
+    // First press ARMS. Nothing is destroyed yet, and the row says so.
+    REQUIRE(sm.select_current() == ui::MenuSection::SYSTEM);
+    CHECK(retroarch::load_profile_store().size() == 1);
+    CHECK(row_index(sm, "Confirm: erase controller setup?") >= 0);
+    CHECK_FALSE(sm.take_controller_profiles_dirty());
+
+    // main.cpp answers a SYSTEM section by re-entering the submenu; that must
+    // not silently disarm the confirm (the trap the Wi-Fi row hit).
+    sm.enter_submenu(ui::MenuSection::SYSTEM);
+    REQUIRE(row_index(sm, "Confirm: erase controller setup?") >= 0);
+
+    // Second press (same row, selection preserved across the rebuild) erases.
+    REQUIRE(sm.get_selected_index() == row_index(sm, "Confirm:"));
+    REQUIRE(sm.select_current() == ui::MenuSection::SYSTEM);
+    CHECK(retroarch::load_profile_store().empty());
+    CHECK(ui_test::fake_last_toast().rfind("Controller setup reset", 0) == 0);
+    // ...and the row is gone, because there is nothing left to reset.
+    CHECK(row_index(sm, "Reset Controller Setup") == -1);
+    CHECK(row_index(sm, "Confirm: erase controller setup?") == -1);
+
+    // main.cpp must rebuild the menu-nav overlays: an overlay derived from a
+    // profile that no longer exists would keep remapping menu buttons.
+    CHECK(sm.take_controller_profiles_dirty());
+    CHECK_FALSE(sm.take_controller_profiles_dirty());   // consume-once
+}
+
+TEST_CASE("leaving the System submenu disarms the reset confirm",
+          "[settings_menu][reset]") {
+    ScopedStore store("reset_disarm");
+    seed_store();
+
+    app::AppState state{};
+    SettingsMenuManager sm{&state};
+    ui_test::fake_reset();
+    sm.open();
+    sm.enter_submenu(ui::MenuSection::SYSTEM);
+    sm.navigate(row_index(sm, "Reset Controller Setup"));
+    REQUIRE(sm.select_current() == ui::MenuSection::SYSTEM);
+    REQUIRE(row_index(sm, "Confirm:") >= 0);
+
+    sm.exit_submenu();
+    sm.enter_submenu(ui::MenuSection::SYSTEM);
+    CHECK(row_index(sm, "Confirm:") == -1);
+    CHECK(row_index(sm, "Reset Controller Setup") >= 0);
+    CHECK(retroarch::load_profile_store().size() == 1);   // nothing destroyed
+}
+
 TEST_CASE("retiring the wizard touches neither pairing nor settings.json",
           "[settings_menu][wizard]") {
     // close()/force_close() also call close_pairing_screen(), and the menu's

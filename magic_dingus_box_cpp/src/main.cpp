@@ -1666,6 +1666,13 @@ int main(int /* argc */, char* /* argv */[]) {
                 reload_menu_overlays(input);
             }
             wizard_was_active = settings_menu.is_controller_wizard_active();
+            // Settings → System → "Reset Controller Setup" erases the captured
+            // store without the wizard ever opening, so the edge above cannot
+            // see it. A stale overlay would keep remapping menu buttons from a
+            // profile that no longer exists.
+            if (settings_menu.take_controller_profiles_dirty()) {
+                reload_menu_overlays(input);
+            }
         }
         // ─────────────────────────────────────────────────────────────────────
 

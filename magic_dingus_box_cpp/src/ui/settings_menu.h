@@ -159,6 +159,18 @@ public:
     void close_controller_wizard();
     bool is_controller_wizard_active() const { return wizard_active_; }
 
+    // Consume-once flag: true when a Settings action changed the captured
+    // controller-profile store on disk. Today that is the System submenu's
+    // "Reset Controller Setup" row, which is the wizard's undo -- it erases
+    // every captured profile so pads fall back to their built-in mapping.
+    //
+    // main.cpp polls this each frame to rebuild InputManager's menu-nav
+    // overlays. The wizard's own active->inactive edge already covers the
+    // capture path, but this row rewrites the same file without the wizard
+    // ever opening, and a stale overlay would keep remapping menu buttons
+    // from a profile that no longer exists.
+    bool take_controller_profiles_dirty();
+
 private:
     app::AppState* app_state_;
     mutable bool active_;
@@ -172,6 +184,10 @@ private:
     bool was_scanning_;
     bool was_connecting_;
     bool wifi_disconnect_confirm_ = false;
+    // Two-press confirm for "Reset Controller Setup", same idiom as
+    // wifi_disconnect_confirm_ above (and cleared in the same places).
+    bool controller_reset_confirm_ = false;
+    bool controller_profiles_dirty_ = false;
     // Default to 7 (CRT layout); renderer overwrites this each frame
     // once it knows the actual viewport height.
     int max_visible_items_ = 7;
