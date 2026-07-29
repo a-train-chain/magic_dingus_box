@@ -460,6 +460,12 @@ _TMDB_KEY_FILE_ENV = "MDB_TMDB_KEY_FILE"
 
 KIOSK_SERVICE = "magic-dingus-box-cpp.service"
 
+# Systems whose libraries contain multi-disc titles, so an upload should
+# re-run the .m3u generator over that system's ROM directory. Cartridge
+# systems are excluded — there is nothing to swap, and scanning them is a
+# pointless subprocess on every upload.
+MULTI_DISC_SYSTEMS = frozenset({"ps1", "dreamcast"})
+
 
 def _kiosk_started_at() -> Optional[float]:
     """Wall-clock epoch when the kiosk unit last became active, or None.
@@ -3020,8 +3026,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
         out.parent.mkdir(parents=True, exist_ok=True)
         f.save(str(out))
         
-        # Auto-generate M3U playlists for PS1 multi-disc games
-        if safe_system.lower() == 'ps1':
+        # Auto-generate M3U playlists for multi-disc games.
+        #
+        # This was gated on 'ps1' and invoked the generator with no argument,
+        # so it always scanned the PS1 directory no matter what was uploaded.
+        # Dreamcast ships two-disc titles of its own (Resident Evil - Code -
+        # Veronica, Skies of Arcadia) and flycast reads .m3u exactly like
+        # pcsx_rearmed does — without this, uploading disc 2 of a Dreamcast
+        # game through the Content Manager left the two discs as separate,
+        # unswappable playlist entries.
+        if safe_system.lower() in MULTI_DISC_SYSTEMS:
+            system_rom_dir = out.parent
+
             def run_m3u_generator():
                 # Acquire lock to ensure only one script instance runs at a time
                 with m3u_lock:
@@ -3029,7 +3045,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         script_path = data_dir.parent / "magic_dingus_box_cpp" / "scripts" / "generate_m3u_playlists.sh"
                         if script_path.exists():
                             subprocess.run(
-                                [str(script_path)],
+                                [str(script_path), str(system_rom_dir)],
                                 capture_output=True,
                                 timeout=30
                             )

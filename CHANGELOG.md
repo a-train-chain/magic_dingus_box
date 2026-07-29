@@ -13,6 +13,103 @@ cool the boot config. Video contract (Vulkan/khr_display, viewports,
 bezels) and all controller mappings unchanged.
 
 ### Added
+- **Playback stall watchdog** — a live box wedged on 2026-07-29 and stayed
+  wedged for seven hours. A burst of navigation input (a controller pinned
+  against something) tipped a playlist switch into its timeout path; the
+  recovery restored the kiosk's "playing" flags but left GStreamer PAUSED.
+  PulseAudio held the proof — the kiosk's own sink-input read `Corked: yes`
+  while the kiosk reported `is_paused = false`. Position sat at 0.00, the TV
+  showed a still frame, and nothing detected the mismatch. The box then
+  reloaded item after item, confirming each at position 0, which is what had
+  the fan running.
+
+  `app::PlaybackStallWatchdog` now checks the one signal that separates
+  "wedged" from "fine": a video the kiosk believes is playing must advance.
+  Position still for 3s while playback is expected → restart playback, retried
+  no more than once per 8s so it cannot hammer `play()` into never succeeding.
+  Pure logic with an injected clock, because the real failure is only
+  reproducible by corking an audio stream.
+
+  Verified on hardware by reproducing the wedge (`pactl suspend-sink`): the
+  watchdog fired 4 times at exactly the 8s cadence. Note the recovery ACTION is
+  not isolated by that test — an administratively suspended sink cannot be
+  resumed by the client, so `play()` had no path to succeed. What is proven is
+  detection, plus zero false positives across a full 9-core launch/return
+  sweep, which is the risk that actually matters (a watchdog that restarts
+  video mid-playback would be worse than the bug).
+- **Game launch screen rebuilt so it cannot look broken** — it used a rotating
+  square and a sine-pulsed text alpha, both purely time-driven. The kiosk can
+  only draw until it hands DRM master to RetroArch, and the frame presented at
+  that instant stays on the panel until RetroArch takes over the display, so
+  the freeze left a spinner stopped at a random angle. Measured on hardware:
+  of a 4.3s launch, **0.43s was animated and 3.90s was one frozen frame** — the
+  spinner was stuck for 90% of the load. A stopped spinner reads as "hung",
+  which is the worst possible thing to leave on screen.
+
+  Two changes. First, everything that needs no display now happens BEFORE the
+  handoff: input teardown, the udev controller wake-up, and (via the new
+  `LaunchOptions::before_fork` hook) the launcher's ~0.6s of script generation.
+  The kiosk now animates through all of it and releases the display in the
+  instruction before `fork()`. Second, the screen no longer depends on motion
+  at all — a titled plate showing the game and system, with a chunky segmented
+  progress bar stepped by real launch phases, driven to FULL on the last frame.
+  The frozen image is a completed bar, which reads as "about to start", and it
+  is honest: everything the kiosk controls really has finished by then.
+
+  Result, same title, measured: **1.62s animated / 3.11s frozen** — the
+  animation runs ~4x longer and the remainder is almost entirely RetroArch's
+  own initialisation, which no amount of code can draw over. 9/9 cores pass
+  after the launch-path change.
+
+  The same plate now also covers the RETURN from a game, which previously
+  showed the stale launch frame: re-acquiring DRM master puts the kiosk's own
+  last framebuffer back on the scanout, and that still read "STARTING" with a
+  full bar — so exiting a game looked like launching one. It flips to
+  "RETURNING" with a green frame and bar (gold going in, green coming back, so
+  direction is readable without reading a word), repaints as soon as the
+  display is back, and steps through the restore phases.
+
+  One thing that does NOT work, tried and reverted: painting that first return
+  frame *before* `set_mode()`. RetroArch leaves the display on its own mode,
+  which does not match the kiosk's EGL surface, and `present_frame` then blocks
+  on a page-flip event that never arrives — launches went 4.3s to as much as
+  15.8s and returns 3.4s to 5.7s. The paint has to come after the mode restore.
+- **Dreamcast is playable** — `kernel=kernel8.img` under `[pi5]` in
+  `config.txt` switches the Pi 5 from its default 16 KB memory pages to
+  4 KB. flycast hardcodes a 4096-byte page size for Linux/aarch64
+  (`core/stdclass.h` gives a runtime page size to Android and a 16384
+  constant to Apple silicon; everything else falls through to
+  `#define PAGE_SIZE 4096`), so `virtmem::region_unlock()` rounded
+  addresses to a 4 KB boundary and called `mprotect()`, which returns
+  `EINVAL` on a 16 KB-page kernel — flycast treats that as fatal and
+  hits a `DEBUGBREAK`. Every Dreamcast launch died ~4s in, 100%
+  reproducible, with nothing wrong in the core, the ROM, or the config.
+  Confirmed three ways: `getconf PAGESIZE` = 16384, a standalone
+  `mprotect` repro returning errno 22 on this board, and disassembly of
+  `region_unlock` showing `and x0, x0, #0xfffffffffffff000`. Rebuilding
+  flycast does *not* help — the constant is selected by platform macros
+  at compile time, not from the host. `kernel8.img` and its module tree
+  ship in the stock image, so this is a supported switch, and it is a
+  whole-system change: every process now runs 4 KB pages.
+  `emulator_smoke_test` is 9/9 after it, with no regression in the other
+  eight cores.
+- **Dreamcast core options** — `write_dreamcast_core_options()` pins
+  threaded rendering, native 640x480, USA/NTSC and real-BIOS-preferred,
+  switches the cable type to progressive VGA (the core default is
+  composite, which is right for a CRT and wrong for an HDMI panel),
+  gives every game its own VMU instead of sharing eight save files
+  library-wide, and disables DCNet so a shipped box does not open
+  connections to a third-party cloud relay nobody agreed to. Keys and
+  values were read out of the shipped `flycast_libretro.so`'s
+  `retro_core_option_v2_definition` table rather than its UI labels —
+  those differ, and the difference matters: the cable-type value is the
+  bare token `"VGA"`, not the `"VGA (RGB)"` the menu shows, and
+  RetroArch would have dropped the longer form silently.
+- **`verify_box.sh` checks the page size** when Dreamcast ROMs are
+  present. This is the one check that separates "Dreamcast works" from
+  "Dreamcast is dead on this box", and it is invisible everywhere else —
+  the core loads, the ROMs verify, and the failure only appears once a
+  game actually starts.
 - **Raspberry Pi 5 groundwork: platform profile** — new
   `platform::PlatformProfile` (`src/platform/platform_profile.{h,cpp}`)
   detects the board from `/proc/device-tree/model` at startup and
@@ -122,6 +219,95 @@ bezels) and all controller mappings unchanged.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **Games were never rendered into the bezel's screen cutout** — three
+  separate faults in the same six lines, none of which produce a log line:
+  1. The settings were emitted as `video_custom_viewport_*`. RetroArch's
+     names carry no `video_` prefix (`custom_viewport_x/y/width/height`), so
+     it did not recognise any of them — and `video_custom_viewport_enable`
+     is not a setting at all. The viewport was dead config.
+  2. `aspect_ratio_index` was `22` with a comment claiming that meant
+     "custom viewport". `22` is `ASPECT_RATIO_CORE`; custom is `23`. So the
+     picture was sized from whatever aspect each CORE reported — which is
+     why the consoles did not agree with each other: SNES reports 1.306,
+     Dreamcast 1.333, and each drew a different rectangle.
+  3. `custom_viewport_x/y` are an offset from CENTRE on this driver, not
+     absolute screen coordinates. Setting x to the cutout's absolute left
+     edge (251) pushed the picture 251px right and put the bezel's control
+     panel inside the playfield.
+  Now `aspect_ratio_index = 23` with the viewport at offset `0,0`, sized to
+  **fill the full 1080 height at whatever the picture's true aspect is** —
+  `1440x1080` (exact 4:3, `1440*3 == 1080*4`) for every core that has no
+  border to crop, wider only for the N64 titles carrying a measured overscan
+  crop. Geometry is therefore never stretched, and the picture always touches
+  top and bottom. Excess width tucks under the bezel, which is an overlay
+  drawn on top of the video — the same overscan a real CRT had. Clamped to
+  the 1920 panel width, past which RetroArch would letterbox to fit and the
+  fill-the-height guarantee would be lost. Verified by capturing the
+  composited frame off the Pi over RetroArch's network command interface and
+  measuring it.
+- **N64 games left black margins inside the bezel** — many N64 titles draw
+  less than the full framebuffer; a CRT's overscan hid it, a flat panel does
+  not. It is per title: Banjo-Kazooie borders three sides, Super Mario 64
+  only the bottom, Mario Kart 64 none, so one global crop would fix Banjo and
+  clip Mario Kart. GLideN64's `mupen64plus-EnableOverscan` already defaults
+  to Enabled but all four offsets default to `0`, so nothing was cropped.
+  Added a per-title crop table (same shape as the existing `kPs1TitleOverrides`).
+  Every value measured, not estimated: each title launched with the bezel
+  disabled and offsets zeroed, ~10 frames captured across a minute via
+  RetroArch's network `SCREENSHOT` command, frames too dark to measure
+  discarded, and the MINIMUM border taken — the minimum because cropping past
+  the smallest border any frame showed would clip real picture. Units are
+  320x240 N64 pixels (4.5 screen px each), confirmed by cropping a known 20
+  units and watching a 67px border go to exactly zero.
+- **CRT Native pointed at a zero-sized viewport** — it emitted
+  `aspect_ratio_index = 23` (custom) while writing no `custom_viewport_*`
+  values at all. RetroArch falls back to full screen, so the picture was
+  right by accident rather than by instruction. Now `0` (`ASPECT_RATIO_4_3`),
+  which is the same picture on a 640x480 framebuffer with a defined reason.
+- **The backup N64 core would have been sent a crop it cannot perform** —
+  `parallel_n64` implements NONE of the five GLideN64 overscan options (its
+  shipped `.so` contains zero of them where `mupen64plus_next` contains all
+  five), so it hands over the full uncropped frame. The viewport, however, was
+  sized from the crop table keyed on the ROM — so launching a cropped title on
+  the backup core would have widened the viewport over an uncropped picture and
+  stretched it horizontally, exactly the distortion the design exists to
+  prevent. Both the options and the viewport now key off the core as well as
+  the ROM; `parallel_n64` gets no overscan keys and a plain 4:3.
+- **`prepare_for_cloning.sh` stashed one TMDB key path, `first_boot.sh` wiped
+  a glob** — the clone got cleaned at first boot while a stray
+  `tmdb_api_key.bak` on the source Pi rode along inside the `.img.gz` itself,
+  which is the one artifact these secrets must never survive in. The stash list
+  now expands globs so the two agree.
+- **Multi-disc games outside PS1 got no `.m3u`** — the Content
+  Manager's auto-generation was gated on `system == 'ps1'` AND invoked
+  `generate_m3u_playlists.sh` with no argument, so it always scanned the
+  PS1 directory no matter what had just been uploaded. Dreamcast ships
+  two-disc titles of its own (Resident Evil - Code - Veronica, Skies of
+  Arcadia) and flycast reads `.m3u` exactly like pcsx_rearmed does;
+  without this, the discs stayed separate playlist entries that could
+  not be swapped between and kept separate saves. Now driven by a
+  `MULTI_DISC_SYSTEMS` set with the system's own ROM directory passed
+  through, and the generator recognises `.gdi`/`.cdi` alongside the
+  formats it already handled.
+- **`verify_box.sh` failed a box for having no Dreamcast BIOS** — now a
+  WARN. It is not a blocker (flycast falls back to its HLE BIOS and the
+  shipped library boots on it) and not something an image can fix
+  (`dc_boot.bin` is Sega firmware and cannot be redistributed). The
+  check also only looked at the top of the system directory, reporting
+  "missing" on a box with the BIOS installed in the `dc/` subdirectory
+  flycast's own documentation describes.
+- **`test_app_unit` could not build on macOS** — the target compiles
+  `playlist_loader.cpp` for the playlist trim/loop parsing tests, but
+  the yaml-cpp probe lived inside a Linux-only block, so
+  `YAMLCPP_INCLUDE_DIRS` came back empty and the build died on
+  `'yaml-cpp/yaml.h' file not found`. The suite had quietly stopped
+  being part of a Mac test run. Now probed unconditionally (not
+  `REQUIRED`), with the target skipped and a warning printed when
+  yaml-cpp is genuinely absent.
+- **Dreamcast box art was not gitignored** — every other system's
+  `data/thumbnails/<system>/` directory is excluded; `dreamcast/` was
+  missing from the list, so 20 PNGs of scanned cover art would have
+  been committed on the next `git add`.
 - **Phone remote can now quit games** — the QUIT_GAME chord (KEY_Z +
   Start on the virtual "MagicDingus Phone Remote" gamepad) was silently
   ignored in-game: the virtual pad has no manual joypad binds and

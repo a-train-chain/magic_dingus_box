@@ -610,6 +610,15 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         std::string overlay_path;
         // Could implement bezel lookup here based on emulator_system if needed
         
+        // Launch-screen content. Set before the first frame so the very first
+        // thing on screen already names the game — a plate with the title and
+        // system on it reads as deliberate even when it stops updating, which
+        // a bare spinner never does.
+        state.loading_title = item.title;
+        state.loading_system = item.emulator_system;
+        state.loading_phase = "STOPPING VIDEO";
+        state.loading_progress.store(0.15f);
+
         // Stop GStreamer completely before launching RetroArch
         // This ensures all resources (EGL, DRM, threads) are released
         if (player_) {
@@ -619,6 +628,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         } // Wait for stop to complete
         wait_with_callback(300, progress_callback);
+        state.loading_progress.store(0.35f);
         
         // Verify player stopped with retry loop
         int retry_count = 0;
@@ -634,29 +644,16 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             std::cout << "GStreamer stopped successfully" << std::endl;
         }
         
-        // Cleanup DRM display before launching RetroArch to release resources
-        // Don't restore mode - leave it at 640x480 for RetroArch
-        // Cleanup DRM display before launching RetroArch to release resources
-        // Don't restore mode - leave it at 640x480 for RetroArch
-        if (display_) {
-            // CRITICAL: Keep CRTC enabled (disable_crtc = false) for Vulkan compatibility.
-            // Disabling it causes "QueuePresent failed" on startup for most cores (Genesis, SNES, NES, PS1).
-            // We rely on pkill and display restoration logic for clean exit.
-            bool disable_crtc = false;
+        // ---- Everything DRM-INDEPENDENT happens FIRST, while we can still
+        // ---- draw. See app_state.h: from release_master() onward the panel
+        // ---- holds whatever frame we presented last, for ~2.5s, and nothing
+        // ---- can update it. Input teardown and the udev controller wake-up
+        // ---- have nothing to do with the display, and doing them after the
+        // ---- handoff spent 0.65s of that frozen window for no reason
+        // ---- (measured: DRM released 01.205, launcher started 01.963).
+        // ---- Relative order between these two is preserved: release the grab
+        // ---- first, then re-trigger, so udev re-enumerates ungrabbed devices.
 
-            // Present the final loading frame while the kiosk still owns DRM.
-            // From release_master onward, no callback may page-flip until the
-            // display is re-acquired after RetroArch exits.
-            if (progress_callback) {
-                progress_callback();
-            }
-            std::cout << "Releasing DRM master for RetroArch (disable_crtc=" << disable_crtc << ")..." << std::endl;
-            display_->release_master(disable_crtc);
-            std::cout << "DRM master released" << std::endl;
-            // Wait for DRM resources to be fully released and display to settle
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        }
-        
         // CRITICAL: Release controller input grab before launching RetroArch
         // This ensures the main app doesn't block RetroArch from accessing the controller
         if (input_manager_) {
@@ -664,7 +661,10 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             input_manager_->cleanup();
             std::cout << "Input devices released" << std::endl;
         }
-        
+        state.loading_progress.store(0.55f);
+        state.loading_phase = "RELEASING INPUT";
+        if (progress_callback) progress_callback();
+
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
         std::cout << "Waking up controller before RetroArch launch..." << std::endl;
@@ -680,10 +680,19 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             if (pid > 0) { int s; waitpid(pid, &s, 0); }
         };
         run_udevadm("--sysname-match=js*");
+        if (progress_callback) progress_callback();
         run_udevadm("--sysname-match=event*");
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        state.loading_progress.store(0.75f);
+        state.loading_phase = "WAKING CONTROLLER";
+        wait_with_callback(200, progress_callback);
         std::cout << "Controller wake-up signal sent" << std::endl;
-        
+
+        // NOTE: the display is NOT released here. It is handed over from the
+        // before_fork hook below, once the launcher has finished writing its
+        // script — see LaunchOptions::before_fork. Everything between this
+        // point and the fork needs no display, and releasing early spent that
+        // whole stretch showing a frozen frame for no reason.
+
         // Launch the game (BLOCKING)
         retroarch::GameLaunchInfo game_info = {
             resolved_rom_path,
@@ -701,10 +710,46 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             }
         }
 
+        // Hand the display over at the last possible instant: after the
+        // launcher has written its script, immediately before the fork. This
+        // is the final frame the kiosk draws for this launch — the panel holds
+        // it until RetroArch takes over KMS — so the bar is presented FULL.
+        // That is honest as well as better-looking: everything the kiosk
+        // controls really has finished by the time this runs.
+        opts.before_fork = [this, &state, &progress_callback]() {
+            state.loading_progress.store(1.0f);
+            state.loading_phase = "STARTING";
+            if (progress_callback) {
+                progress_callback();
+            }
+            if (display_) {
+                // CRITICAL: Keep CRTC enabled (disable_crtc = false) for Vulkan
+                // compatibility. Disabling it causes "QueuePresent failed" on
+                // startup for most cores (Genesis, SNES, NES, PS1). We rely on
+                // pkill and display restoration logic for clean exit.
+                const bool disable_crtc = false;
+                std::cout << "Releasing DRM master for RetroArch (disable_crtc="
+                          << disable_crtc << ")..." << std::endl;
+                display_->release_master(disable_crtc);
+                std::cout << "DRM master released" << std::endl;
+                // Let DRM resources settle before RetroArch grabs the display.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+        };
+
         bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
         
         // Game has exited. Restore system.
-        
+        //
+        // Flip the launch plate to its RETURN wording immediately — before the
+        // display comes back — so that whatever gets scanned out during the
+        // handover already says the right thing. The kiosk's own framebuffer
+        // still holds the last frame it drew (a full bar reading "STARTING"),
+        // and re-acquiring DRM master puts that straight back on screen.
+        state.loading_is_exit.store(true);
+        state.loading_progress.store(0.0f);
+        state.loading_phase = "CLOSING GAME";
+
         // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
         // This prevents "zombie" processes from holding onto DRM/Input resources
         std::cout << "RetroArch exited. Ensuring process termination..." << std::endl;
@@ -744,6 +789,21 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             // Force restore video mode to ensure UI is visible
             std::cout << "Restoring display mode to 640x480..." << std::endl;
             display_->set_mode(640, 480);
+
+            // First frame we are allowed to draw since handing the display
+            // over. Paint the return plate NOW so the stale launch frame the
+            // scanout just picked up is replaced, rather than sitting there
+            // until the main loop rebuilds the menu.
+            //
+            // This MUST come after set_mode(). Painting before it was tried
+            // and reverted: RetroArch leaves the display on its own mode,
+            // which does not match the kiosk's EGL surface, and present_frame
+            // then blocks waiting on a page-flip event that never arrives.
+            // Measured cost of getting this wrong: launches went 4.3s -> up to
+            // 15.8s and returns 3.4s -> 5.7s.
+            state.loading_progress.store(0.45f);
+            state.loading_phase = "RESTORING DISPLAY";
+            if (progress_callback) progress_callback();
         }
 
         // Re-initialize input devices after RetroArch exits with retry logic
@@ -766,6 +826,12 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
             
+            if (input_initialized) {
+                state.loading_progress.store(0.8f);
+                state.loading_phase = "RESTORING CONTROLS";
+                if (progress_callback) progress_callback();
+            }
+
             if (!input_initialized) {
                 std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
                 // Last-resort attempt: sleep longer and try once more

@@ -1,13 +1,21 @@
 #!/bin/bash
 #
 # generate_m3u_playlists.sh
-# Automatically creates .m3u playlist files for multi-disc PS1 games
+# Automatically creates .m3u playlist files for multi-disc disc-based games
 #
 # Usage: ./generate_m3u_playlists.sh [rom_directory]
 #
-# This script scans the PS1 ROM directory for multi-disc games
-# (identified by patterns like "Disc 1", "Disc 2", etc.) and creates
-# .m3u playlist files that allow RetroArch to handle disc swapping.
+# This script scans a ROM directory for multi-disc games (identified by
+# patterns like "Disc 1", "Disc 2", etc.) and creates .m3u playlist files
+# that allow RetroArch to handle disc swapping.
+#
+# Defaults to the PS1 directory for backwards compatibility, but works for
+# any disc-based system — Dreamcast (flycast) reads .m3u the same way, and
+# Resident Evil - Code - Veronica and Skies of Arcadia are both two-disc.
+# Pass the directory to scan as $1.
+#
+# Pointing RetroArch at the .m3u instead of a single disc also means both
+# discs share one save/VMU identity, which is what a two-disc game wants.
 #
 
 set -euo pipefail
@@ -39,7 +47,9 @@ declare -A games
 # Enable nullglob so unmatched patterns expand to nothing
 shopt -s nullglob
 
-for file in *.chd *.cue *.bin *.iso; do
+# .gdi and .cdi are the Dreamcast-native disc formats; the shipped library is
+# all CHD but a hand-added rip may not be.
+for file in *.chd *.cue *.bin *.iso *.gdi *.cdi; do
     # Check if this is a multi-disc file
     if [[ "$file" =~ \((Disc|Disk|CD)[[:space:]]*([0-9]+)\) ]]; then
         # Extract the base game name (everything before the disc indicator)

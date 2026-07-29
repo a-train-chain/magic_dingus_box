@@ -39,6 +39,7 @@
 #include "app/sample_mode.h"
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
+#include "app/playback_stall_watchdog.h"
 #include "utils/config.h"
 #include "utils/path_resolver.h"
 #include "utils/wifi_manager.h"
@@ -434,6 +435,8 @@ int main(int /* argc */, char* /* argv */[]) {
     // companion app always has a fresh snapshot of screen / playback state.
     app::StatusWriter status_writer(config::get_data_path() + "/kiosk_status.json");
     auto last_status_write = std::chrono::steady_clock::now();
+    // Watches for the pipeline stalling while the kiosk thinks it is playing.
+    app::PlaybackStallWatchdog playback_watchdog;
     constexpr auto STATUS_PERIOD = std::chrono::milliseconds(200); // 5 Hz
 
     // Phone Remote: clear any stale pairing session left from a crashed
@@ -2351,8 +2354,14 @@ int main(int /* argc */, char* /* argv */[]) {
                                             gpio_poll_thread.join();
                                         }
 
-                                        // Reset loading state
+                                        // Reset loading state. loading_is_exit
+                                        // must clear too or the NEXT launch
+                                        // would open on the return wording and
+                                        // the green frame.
                                         state.is_loading_game = false;
+                                        state.loading_is_exit.store(false);
+                                        state.loading_progress.store(0.0f);
+                                        state.loading_phase.clear();
 
 #ifdef MEDIA_BROWSER_ENABLED
                                         if (ui_renderer.artwork_cache_initialized()) {
@@ -3567,6 +3576,33 @@ int main(int /* argc */, char* /* argv */[]) {
             if (sw_now - last_status_write >= STATUS_PERIOD) {
                 status_writer.write_now(state);
                 last_status_write = sw_now;
+            }
+        }
+
+        // ── Playback stall watchdog ──────────────────────────────────────
+        // Catches the pipeline silently stalling while the kiosk still
+        // believes it is playing. Seen live 2026-07-29: a playlist-switch
+        // timeout restored the "playing" flags but left GStreamer PAUSED
+        // (its PulseAudio stream read `Corked: yes` against the kiosk's
+        // `is_paused = false`), position sat at 0.00 for seven hours, and
+        // nothing detected it. Logic and thresholds live in
+        // app::PlaybackStallWatchdog — see tests/app/test_playback_stall.cpp.
+        {
+            const bool expect_playing =
+                state.video_active && controller.is_playing() &&
+                !controller.is_paused() && !state.is_loading_game &&
+                !state.showing_intro_video && !state.is_switching_playlist;
+            const double watchdog_now =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+            if (playback_watchdog.update(expect_playing, state.get_position(),
+                                         watchdog_now) ==
+                app::PlaybackStallWatchdog::Action::Recover) {
+                std::cerr << "Playback stalled at " << state.get_position()
+                          << "s while reported playing — restarting playback"
+                          << std::endl;
+                controller.play();
             }
         }
 

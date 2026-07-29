@@ -42,6 +42,7 @@ magic_dingus_box_cpp/data/thumbnails/snes/
 magic_dingus_box_cpp/data/thumbnails/genesis/
 magic_dingus_box_cpp/data/thumbnails/ps1/
 magic_dingus_box_cpp/data/thumbnails/n64/
+magic_dingus_box_cpp/data/thumbnails/dreamcast/
 
 # Exclude binary libretro cores
 magic_dingus_box_cpp/libretro_cores/

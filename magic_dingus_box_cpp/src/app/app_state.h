@@ -375,6 +375,29 @@ public:
     
     // Loading state
     std::atomic<bool> is_loading_game{false}; // True when a game is being launched
+    // What the launch screen shows. There is a hard limit on how long the
+    // kiosk can animate: once it releases DRM master, only RetroArch may draw,
+    // and the last frame the kiosk presented stays on the panel until RetroArch
+    // takes over the display (~2.5s later). Measured on hardware: of a 4.3s
+    // launch, only the first ~0.4s was animatable and 3.9s was a frozen frame.
+    //
+    // So the launch screen is deliberately built to look CORRECT WHEN STOPPED.
+    // These fields drive a phase-stepped progress bar rather than a spinner —
+    // a stopped spinner reads as "hung", a full bar reads as "about to start",
+    // and the bar is genuinely full at that point because everything the kiosk
+    // controls really has finished.
+    std::atomic<float> loading_progress{0.0f};   // 0..1, stepped per real phase
+    std::string loading_title;                   // game being launched
+    std::string loading_system;                  // e.g. "N64", "Dreamcast"
+    std::string loading_phase;                   // short status line
+    // The same plate serves the RETURN from a game, which needs its own
+    // wording — and needs to replace the launch frame promptly. On the way
+    // back the kiosk re-acquires DRM master and the scanout picks up its OWN
+    // previous framebuffer, which still holds the last thing it drew: the
+    // launch plate with a full bar reading "STARTING". Left alone that stale
+    // frame reappears for a second while the menu is rebuilt, which looks like
+    // the box is launching the game a second time.
+    std::atomic<bool> loading_is_exit{false};
     // Note: playback_started is now playback_started_ (atomic) - use playback_started_.load()/store()
     
     // Display settings for CRT effects and display mode

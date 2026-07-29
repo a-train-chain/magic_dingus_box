@@ -179,8 +179,33 @@ else fail "cores failing to load: ${CORE_BAD}"; fi
 [[ -f "$HOME/.config/retroarch/system/scph5501.bin" ]] \
   && pass "PS1 BIOS present" || fail "PS1 BIOS (scph5501.bin) missing — PS1 games will not boot"
 if ls "$APP"/data/roms/dreamcast/* >/dev/null 2>&1; then
-  [[ -f "$HOME/.config/retroarch/system/dc_boot.bin" ]] \
-    && pass "Dreamcast BIOS present" || fail "Dreamcast ROMs present but dc_boot.bin missing"
+  # flycast searches the system dir AND its dc/ subdirectory; only checking
+  # the top level reported "missing" on a box that had the BIOS installed
+  # the way flycast's own docs describe.
+  SYS="$HOME/.config/retroarch/system"
+  if [[ -f "$SYS/dc_boot.bin" || -f "$SYS/dc/dc_boot.bin" ]]; then
+    pass "Dreamcast BIOS present"
+  else
+    # Downgraded from FAIL 2026-07-28. It is not a blocker: flycast falls
+    # back to its own HLE BIOS (REIOS) and the shipped library boots on it,
+    # verified by emulator_smoke_test. Nor is it something an image can fix
+    # — dc_boot.bin is Sega firmware and cannot be redistributed, so every
+    # unit that wants the accurate path has to supply its own dump.
+    warn "no Dreamcast BIOS (dc_boot.bin) — flycast will use its HLE BIOS (REIOS)"
+  fi
+
+  # The 16 KB-page kernel kills flycast outright: it hardcodes a 4096-byte
+  # page for Linux/aarch64, so its mprotect() calls fail with EINVAL and the
+  # core aborts ~4s into every launch. This is the single check that
+  # separates "Dreamcast works" from "Dreamcast is dead on this box", and it
+  # is invisible from anywhere else — the core loads fine, the ROMs verify
+  # fine, and the failure only shows up once a game is actually started.
+  PGSZ=$(getconf PAGESIZE 2>/dev/null)
+  if [[ "$PGSZ" == "4096" ]]; then
+    pass "kernel page size ${PGSZ} (flycast-compatible)"
+  else
+    fail "kernel page size ${PGSZ} — flycast crashes on anything but 4096; set kernel=kernel8.img in config.txt"
+  fi
 fi
 
 # ---------------------------------------------------------------------
