@@ -424,6 +424,174 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8",
         pass
 
 
+# ===== TMDB API KEY =====
+#
+# The kiosk's Media Browser discovers movies through TMDB. Without a key,
+# every Browse and Search screen on the TV is blank — downloads still work,
+# but the entire discovery surface is dead. first_boot.sh deliberately wipes
+# the developer's personal key from every cloned unit (it is one person's
+# key and rate limits are per key), so a shipped box has NO key and no way
+# to get one short of SSH. These helpers back the Content Manager field that
+# closes that gap.
+#
+# The file this writes is the one the kiosk already reads — see
+# magic_dingus_box_cpp/src/main.cpp, which checks $MDB_TMDB_API_KEY first
+# and otherwise reads $HOME/.config/magic_dingus_box/tmdb_api_key. No C++
+# change is needed to make the key land.
+
+# TMDB v3 API Key: 32 hex characters. This is the ONLY form the kiosk can
+# use. TmdbClient interpolates the key into `?api_key=` on every request
+# (magic_dingus_box_cpp/src/media_browser/tmdb_client.cpp — search_movie,
+# get_movie, get_popular, ... all build the URL that way) and its http_get
+# sets no CURLOPT_HTTPHEADER at all. A v4 "Read Access Token" only
+# authenticates via an `Authorization: Bearer` header, so passing one here
+# would produce a 401 on every kiosk call and the exact blank Browse screen
+# this feature exists to prevent. We therefore reject v4 tokens at entry
+# with an explanation rather than accepting them and failing silently.
+_TMDB_V3_KEY_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+# v4 Read Access Tokens are JWTs: three base64url segments, and because the
+# header is always {"alg":..,"typ":"JWT"} they begin "eyJ". Matched only so
+# we can give a specific error, never to accept.
+_TMDB_V4_TOKEN_RE = re.compile(r"^eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
+
+_TMDB_VERIFY_URL = "https://api.themoviedb.org/3/authentication"
+_TMDB_KEY_FILE_ENV = "MDB_TMDB_KEY_FILE"
+
+KIOSK_SERVICE = "magic-dingus-box-cpp.service"
+
+
+def _kiosk_started_at() -> Optional[float]:
+    """Wall-clock epoch when the kiosk unit last became active, or None.
+
+    Used to answer "is the running kiosk using the key that is on disk?" —
+    the kiosk reads the key only at startup, so a key file newer than the
+    process means the process is stale.
+
+    Clock-jump note: the Pi has no RTC, so at boot the clock is stale and NTP
+    steps it forward afterwards. systemd records ActiveEnterTimestamp at the
+    moment of start and never revises it, so after such a step the recorded
+    start looks EARLIER than it really was. That biases the comparison toward
+    "stale" — i.e. toward telling the operator a restart is needed when it
+    might not be. That is the safe direction: a needless restart prompt is
+    recoverable, a silently-empty Browse screen is the bug being fixed.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", KIOSK_SERVICE, "-p", "ActiveEnterTimestamp",
+             "--value"],
+            capture_output=True, text=True, timeout=5,
+        )
+        raw = (result.stdout or "").strip()
+        if not raw:
+            return None
+        # systemd emits e.g. "Tue 2026-07-28 19:07:19 PDT". Drop the leading
+        # weekday and let the platform parse the rest.
+        parts = raw.split(" ", 1)
+        stamp = parts[1] if len(parts) > 1 else raw
+        for fmt in ("%Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(stamp.strip(), fmt).timestamp()
+            except ValueError:
+                continue
+        return None
+    except Exception:
+        return None
+
+
+def _tmdb_key_file() -> Path:
+    """Path of the key file the kiosk reads.
+
+    Defaults to the kiosk's own lookup path. $MDB_TMDB_KEY_FILE overrides it
+    so tests can write somewhere disposable — the web process must never be
+    made to write into a real home directory during a test run.
+    """
+    override = os.getenv(_TMDB_KEY_FILE_ENV)
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "magic_dingus_box" / "tmdb_api_key"
+
+
+def _tmdb_redact(text: str, secret: str) -> str:
+    """Strip `secret` out of a message before it can reach a log or a client.
+
+    Belt-and-braces. Nothing here is *supposed* to put the key in an error
+    string, but a library exception that happens to carry the request URL
+    would leak it into a JSON response, and API keys have leaked out of this
+    project before.
+    """
+    if not secret:
+        return text
+    return text.replace(secret, "<redacted>")
+
+
+def _tmdb_classify_key(raw: str) -> tuple[str, str]:
+    """Classify a user-supplied key. Returns (kind, normalized).
+
+    kind is one of:
+      "v3"      usable — 32 hex chars
+      "v4"      well-formed Read Access Token, but the kiosk cannot use it
+      "empty"   nothing supplied
+      "invalid" anything else
+    """
+    normalized = (raw or "").strip()
+    if not normalized:
+        return ("empty", "")
+    if _TMDB_V3_KEY_RE.match(normalized):
+        return ("v3", normalized)
+    if _TMDB_V4_TOKEN_RE.match(normalized):
+        return ("v4", normalized)
+    return ("invalid", normalized)
+
+
+def _tmdb_verify_key(api_key: str, timeout: float = 10.0) -> tuple[str, str]:
+    """Ask TMDB whether this key actually works. Returns (result, detail).
+
+    result is one of:
+      "valid"        TMDB accepted it
+      "invalid"      TMDB rejected it (401) — the key is wrong or revoked
+      "unreachable"  we could not get an answer (no internet, DNS down,
+                     TMDB outage, rate limit). NOT evidence either way.
+
+    The distinction matters: "invalid" is a reason to refuse the save,
+    "unreachable" is not — a box mid-setup may have no working DNS yet, and
+    refusing outright would strand the customer. The caller decides.
+
+    Never raises, and never lets the key into `detail`.
+    """
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlencode
+
+    url = f"{_TMDB_VERIFY_URL}?{urlencode({'api_key': api_key})}"
+    req = urllib.request.Request(url, headers={"User-Agent": "MagicDingusBox/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return ("valid", "")
+            return ("unreachable", f"TMDB returned HTTP {resp.status}")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # TMDB puts a human-readable reason in the body; surface it so a
+            # revoked key reads differently from a mistyped one.
+            detail = "TMDB rejected this key"
+            try:
+                payload = json.loads(e.read().decode("utf-8", "replace"))
+                if payload.get("status_message"):
+                    detail = str(payload["status_message"])
+            except Exception:
+                pass
+            return ("invalid", _tmdb_redact(detail, api_key))
+        if e.code == 429:
+            return ("unreachable", "TMDB is rate-limiting this box; try again shortly")
+        return ("unreachable", f"TMDB returned HTTP {e.code}")
+    except Exception as e:
+        # URLError, socket.timeout, ssl errors, anything else. Report the
+        # exception TYPE only — the message could in principle echo the
+        # request URL, which contains the key.
+        return ("unreachable", f"Could not reach TMDB ({type(e).__name__})")
+
+
 def _sanitize_filename(name: str, allowed_extensions: Optional[list[str]] = None) -> str:
     """Sanitize filename to prevent path traversal attacks.
     
@@ -3882,6 +4050,201 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "vpn_provider": provider,
             "vpn_port_forwarding_supported": _vpn_supports_port_forwarding(provider),
         })
+
+    # ----- TMDB API key -----
+    #
+    # THE RESTART PROBLEM. The kiosk loads the TMDB key exactly once, during
+    # startup: main.cpp reads $MDB_TMDB_API_KEY or the key file and passes the
+    # string to `TmdbClient(tmdb_key)`. TmdbClient's only constructor takes the
+    # key by value (tmdb_client.h) and exposes no setter, and the kiosk has no
+    # SIGHUP handler or config-reload path — so writing the file does NOT reach
+    # a process that is already running. It keeps whatever it had at boot,
+    # which on a shipped box is nothing.
+    #
+    # We do NOT restart the kiosk automatically. This endpoint is reachable at
+    # any time, not just during first-run setup, so an implicit restart could
+    # kill a movie mid-playback with no warning. Instead:
+    #   * the save response reports kiosk_restart_required
+    #   * GET reports kiosk_has_current_key, derived from the kiosk service's
+    #     start time vs. the key file's mtime — a fact, not a guess
+    #   * POST /admin/media-browser/restart-kiosk performs the restart, but
+    #     only when the operator explicitly asks for it
+    def _tmdb_env_override_present() -> bool:
+        """True if MDB_TMDB_API_KEY is set somewhere the kiosk will see it.
+
+        main.cpp checks the environment variable BEFORE the file, and the
+        kiosk unit has `EnvironmentFile=-/opt/magic_dingus_box/services/.env`.
+        If that file ever defines MDB_TMDB_API_KEY, anything written here is
+        dead on arrival — so the UI needs to be able to say so instead of
+        reporting a successful save that changes nothing.
+        """
+        if os.getenv("MDB_TMDB_API_KEY", "").strip():
+            return True
+        try:
+            return bool(_read_env_file(SERVICES_ENV).get("MDB_TMDB_API_KEY", "").strip())
+        except Exception:
+            return False
+
+    def _tmdb_key_state() -> dict:
+        """Everything the UI needs about the key — never the key itself."""
+        path = _tmdb_key_file()
+        configured = False
+        key_length = 0
+        updated_at = None
+        try:
+            if path.is_file():
+                content = path.read_text(encoding="utf-8", errors="replace").strip()
+                if content:
+                    configured = True
+                    key_length = len(content)
+                    updated_at = path.stat().st_mtime
+        except OSError:
+            pass
+
+        kiosk_active = check_service_status("magic-dingus-box-cpp") == "active"
+        started_at = _kiosk_started_at()
+        # Only meaningful when a key exists AND we could read both timestamps.
+        if not configured or updated_at is None or started_at is None:
+            kiosk_has_current_key = None
+        else:
+            kiosk_has_current_key = started_at >= updated_at
+
+        return {
+            "configured": configured,
+            # Width for the masked readout. A v3 key is always 32 hex chars,
+            # so this discloses nothing the format doesn't already imply, and
+            # the real value never leaves the box.
+            "key_length": key_length,
+            "updated_at": updated_at,
+            "kiosk_service_active": kiosk_active,
+            "kiosk_has_current_key": kiosk_has_current_key,
+            "env_override": _tmdb_env_override_present(),
+            "signup_url": "https://www.themoviedb.org/settings/api",
+        }
+
+    @app.get("/admin/media-browser/tmdb")
+    def media_browser_tmdb_status():  # type: ignore[no-redef]
+        """Report whether a TMDB key is configured. Never returns the key.
+
+        Layer 1 only (require_vpn=False): TMDB metadata calls exit via the
+        host network, not through Gluetun, so the key is useful — and
+        settable — regardless of VPN state.
+        """
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
+        return success_response(data=_tmdb_key_state())
+
+    @app.post("/admin/media-browser/tmdb")
+    @require_csrf
+    def media_browser_tmdb_save():  # type: ignore[no-redef]
+        """Validate a TMDB v3 API key and write it where the kiosk reads it.
+
+        Body: {"api_key": "<32 hex>", "allow_unverified": false}
+
+        Order of operations matters: the key is checked against TMDB BEFORE
+        anything is written, so a bad key cannot clobber a working one.
+        """
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
+
+        body = request.get_json(silent=True) or {}
+        kind, key = _tmdb_classify_key(body.get("api_key", ""))
+
+        if kind == "empty":
+            return error_response(
+                "invalid_key_format", "Enter your TMDB API key.", status=400)
+        if kind == "v4":
+            return error_response(
+                "unsupported_key_type",
+                "That looks like a TMDB Read Access Token (v4). This box needs "
+                "the API Key (v3) — the 32-character value on the same TMDB "
+                "settings page, listed as \"API Key\".",
+                status=400,
+            )
+        if kind != "v3":
+            return error_response(
+                "invalid_key_format",
+                "A TMDB API key is exactly 32 characters, digits and letters "
+                "a-f only. Check for a stray space or a truncated paste.",
+                status=400,
+            )
+
+        result, detail = _tmdb_verify_key(key)
+        if result == "invalid":
+            return error_response(
+                "key_rejected",
+                detail or "TMDB rejected this key.",
+                status=400,
+            )
+        if result == "unreachable" and not body.get("allow_unverified"):
+            # Deliberately not saved. The format is right but we have no
+            # evidence the key works, and saving an unverified key reproduces
+            # the silent-empty-Browse failure. The client can retry with
+            # allow_unverified once the operator accepts that trade.
+            return error_response(
+                "tmdb_unreachable",
+                detail or "Could not reach TMDB to check this key.",
+                status=503,
+            )
+
+        verified = (result == "valid")
+        path = _tmdb_key_file()
+        try:
+            # Trailing newline: main.cpp strips \n, \r and spaces off the end,
+            # so this is safe and keeps the file a well-formed text file.
+            # 0600 because the kiosk and the web app both run as `magic` and
+            # nobody else has any business reading it.
+            _atomic_write_text(path, key + "\n", mode=0o600)
+        except OSError as e:
+            return error_response(
+                "write_failed",
+                _tmdb_redact(f"Could not write the key file: {e}", key),
+                status=500,
+            )
+
+        state = _tmdb_key_state()
+        state["verified"] = verified
+        # After a fresh write the file is newer than any running kiosk, so
+        # _tmdb_key_state already reports kiosk_has_current_key=False. Restate
+        # it as an explicit instruction for the UI.
+        state["kiosk_restart_required"] = (
+            state["kiosk_service_active"] and not state["kiosk_has_current_key"]
+        )
+        if not verified:
+            state["verify_warning"] = detail or "Key saved without verification."
+        return success_response(
+            data=state,
+            message=("TMDB key saved and verified." if verified
+                     else "TMDB key saved, but it could not be verified."),
+        )
+
+    @app.post("/admin/media-browser/restart-kiosk")
+    @require_csrf
+    def media_browser_restart_kiosk():  # type: ignore[no-redef]
+        """Restart the kiosk app so it re-reads the TMDB key.
+
+        Explicitly operator-triggered — see the restart-problem note above.
+        This interrupts whatever is on the TV, which is why nothing calls it
+        implicitly.
+        """
+        if (resp := _check_media_browser_gates(require_vpn=False)):
+            return resp
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "restart", KIOSK_SERVICE],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                return error_response(
+                    "restart_failed",
+                    (result.stderr or result.stdout or "systemctl restart failed").strip(),
+                    status=500,
+                )
+            return success_response(message="Kiosk restarted")
+        except subprocess.TimeoutExpired:
+            return error_response("timeout", "Kiosk restart timed out", status=504)
+        except Exception as e:
+            return error_response("restart_failed", str(e), status=500)
 
     @app.post("/admin/media-browser/restart")
     @require_csrf
