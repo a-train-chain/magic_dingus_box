@@ -111,6 +111,15 @@ public:
     // Testing / diagnostics.
     const std::string& last_error() const { return last_error_; }
 
+    // True when a key was supplied at construction. Every endpoint here
+    // 401s without one, so a keyless box gets zero results from all of
+    // them — which is indistinguishable, at the UI layer, from a
+    // genuinely empty category or a network fault. Screens branch on
+    // this to say "no key configured" instead of "nothing here", and
+    // point the operator at the Content Manager's Media Browser tab.
+    // main.cpp logs the same condition at startup.
+    bool has_api_key() const { return !api_key_.empty(); }
+
 private:
     std::string http_get(const std::string& url);
     static int extract_year(const std::string& date_yyyy_mm_dd);

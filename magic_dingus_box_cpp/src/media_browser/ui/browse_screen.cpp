@@ -1027,7 +1027,18 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
     if (!loading_ && movies_.empty()) {
-        draw_centered_msg("No movies in this category", th.dim);
+        // Distinguish "unconfigured" from "genuinely empty". Without a
+        // TMDB key every category comes back empty, so the generic
+        // message made a box that just needs a key look broken. Same
+        // condition main.cpp warns about at startup — this is the
+        // on-screen half of it.
+        if (!tmdb_.has_api_key()) {
+            draw_centered_msg(
+                "No TMDB key — add one in the Content Manager, "
+                "Media Browser tab", th.highlight2);
+        } else {
+            draw_centered_msg("No movies in this category", th.dim);
+        }
         draw_baseline_footer();
         return;
     }

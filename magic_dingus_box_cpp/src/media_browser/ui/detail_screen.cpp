@@ -1625,7 +1625,15 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     if (mode_ == Mode::Error) {
         int sz = th.font_large_size;
         int sz_baseline = r.mb_text_baseline(sz);
-        std::string msg = "Couldn't fetch movie info from TMDB.";
+        // A keyless box reaches this screen through Search (which goes
+        // via Radarr's SkyHook proxy and works without a TMDB key), then
+        // fails here because get_movie() is TMDB-direct. "Couldn't
+        // fetch" reads as a network or service fault, so name the real
+        // cause when there's simply no key.
+        std::string msg = tmdb_.has_api_key()
+            ? "Couldn't fetch movie info from TMDB."
+            : "No TMDB key — add one in the Content Manager, "
+              "Media Browser tab.";
         cursor_y += kSectionTopPad + static_cast<float>(sz_baseline);
         r.mb_draw_text(msg, col_x, cursor_y,
                        sz, th.highlight2, 0.95f);

@@ -261,3 +261,20 @@ TEST_CASE("TmdbClient::build_discover_url omits unset filters", "[tmdb]") {
     REQUIRE(url.find("page=2") != std::string::npos);
     REQUIRE(url.find("sort_by=popularity.desc") != std::string::npos);
 }
+
+// --- has_api_key() ---------------------------------------------------
+// Drives the kiosk's "no key configured" empty states (BrowseScreen's
+// category grid, DetailScreen's metadata panel). Without it those two
+// screens render a generic "empty"/"couldn't fetch" message that is
+// indistinguishable from a genuinely empty category or a network fault,
+// so a box that just needs a key in the Content Manager looks broken.
+TEST_CASE("TmdbClient::has_api_key reports whether a key is configured", "[tmdb]") {
+    SECTION("empty key — the unconfigured box") {
+        media_browser::TmdbClient c("");
+        REQUIRE_FALSE(c.has_api_key());
+    }
+    SECTION("non-empty key") {
+        media_browser::TmdbClient c("deadbeef");
+        REQUIRE(c.has_api_key());
+    }
+}
