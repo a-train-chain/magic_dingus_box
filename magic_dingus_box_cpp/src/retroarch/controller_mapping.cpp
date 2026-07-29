@@ -421,4 +421,33 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
     }
 }
 
+void write_player_binds(std::ostream& out, const ControllerMapping& map,
+                        int player) {
+    const std::string p = "input_player" + std::to_string(player) + "_";
+    out << p << "analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
+    out << p << "b_btn = \"" << map.b_btn << "\"\n";
+    out << p << "y_btn = \"" << map.y_btn << "\"\n";
+    out << p << "select_btn = \"" << map.select_btn << "\"\n";
+    out << p << "start_btn = \"" << map.start_btn << "\"\n";
+    out << p << "up_btn = \"" << map.up_btn << "\"\n";
+    out << p << "down_btn = \"" << map.down_btn << "\"\n";
+    out << p << "left_btn = \"" << map.left_btn << "\"\n";
+    out << p << "right_btn = \"" << map.right_btn << "\"\n";
+    out << p << "a_btn = \"" << map.a_btn << "\"\n";
+    out << p << "x_btn = \"" << map.x_btn << "\"\n";
+    out << p << "l_btn = \"" << map.l_btn << "\"\n";
+    out << p << "r_btn = \"" << map.r_btn << "\"\n";
+    out << p << "l2_btn = \"" << map.l2_btn << "\"\n";
+    out << p << "r2_btn = \"" << map.r2_btn << "\"\n";
+    out << p << "l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
+    out << p << "l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
+    out << p << "l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
+    out << p << "l_y_minus_axis = \"" << map.l_y_minus << "\"\n";
+    write_right_stick_binds(out, map, player);
+    out << p << "up_axis = \"" << map.up_axis << "\"\n";
+    out << p << "down_axis = \"" << map.down_axis << "\"\n";
+    out << p << "left_axis = \"" << map.left_axis << "\"\n";
+    out << p << "right_axis = \"" << map.right_axis << "\"\n";
+}
+
 }  // namespace retroarch

@@ -178,4 +178,28 @@ ControllerMapping resolve_mapping_for_pad(
 void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player);
 
+// Emit the full input_player<N>_* RetroArch bind block for one player:
+// analog_dpad_mode, the face/shoulder buttons, the d-pad buttons, the left
+// stick axes, the right stick (via write_right_stick_binds), then the d-pad
+// axes. Extracted out of retroarch_launcher.cpp (Pi-only, no Mac build) so
+// this exact block is unit-testable — that launcher used to hand-duplicate
+// this block once per player, and the duplication once let the P2 copy drift
+// out of sync and ship without the right-stick lines (P2 had no N64 camera
+// control in every two-player game). Routing both players through this one
+// function makes that class of drift structurally impossible.
+//
+// Every line here is UNCONDITIONAL, including when the mapped value is
+// empty (e.g. `input_player1_l2_btn = ""`) — RetroArch treats an empty
+// value and an absent line differently, so do not skip empties. The right
+// stick block is the sole exception: it is genuinely conditional (see
+// write_right_stick_binds), because emitting empty axis/button lines there
+// would UNBIND the stick instead of leaving it alone.
+//
+// Order matches the legacy launcher block line-for-line (the d-pad _btn
+// lines sit between select/start and a/x; the d-pad _axis lines come after
+// the right-stick block) purely so a diff against the old block stays
+// reviewable — RetroArch's config parser does not care about line order.
+void write_player_binds(std::ostream& out, const ControllerMapping& map,
+                        int player);
+
 }  // namespace retroarch
