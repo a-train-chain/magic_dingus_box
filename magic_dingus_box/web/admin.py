@@ -4121,28 +4121,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
 
-    # ------------------------------------------------------------------
-    # TEMPORARY DIAGNOSTIC — records what the PHONE reports about its own
-    # viewport. The remote's faceplate frame stops short of the physical
-    # bottom in portrait on one device; four CSS fixes failed because the
-    # cause is not in the CSS. A fixed-position element cannot paint outside
-    # the layout viewport, so if viewport-fit=cover is not in effect on that
-    # device the bottom strip is simply unreachable by any stylesheet. This
-    # captures the device's real numbers so the regime can be identified
-    # rather than guessed at a fifth time. Remove once settled.
-    # ------------------------------------------------------------------
-    @app.route("/api/remote/diag", methods=["POST"])
-    def remote_viewport_diag():
-        try:
-            payload = request.get_json(silent=True) or {}
-            payload["ua"] = request.headers.get("User-Agent", "")[:300]
-            payload["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            with open(os.path.join(str(data_dir), "remote_viewport_diag.jsonl"), "a") as fh:
-                fh.write(json.dumps(payload) + "\n")
-        except Exception:
-            pass
-        return {"ok": True}
-
     @app.route("/admin/remote", methods=["GET"])
     def remote_page():  # type: ignore[no-redef]
         cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
