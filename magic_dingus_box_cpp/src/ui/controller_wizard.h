@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include "platform/input_manager.h"
 #include "retroarch/capture_session.h"
 
@@ -62,14 +63,25 @@ public:
     std::string prompt() const;                              // current step text
     size_t step_index() const; size_t step_count() const;
     std::string status_line() const;                         // duplicate/skip feedback
-    // Is there anything worth persisting? False for a session in which every
-    // step was skipped -- which is COMPLETE (so it reaches TEST) but captured
-    // nothing. Saving that would write an EMPTY profile keyed by this pad's
-    // VID/PID, and a captured profile SHADOWS the builtin one in
-    // resolve_profile()'s captured -> builtin -> legacy order, so a pad that
-    // worked fine off its builtin profile would silently go dead in RetroArch.
-    // The renderer uses this to stop offering "Select: save" in that state.
-    bool can_save() const { return !captured_.empty(); }
+    // Is this session complete enough to persist?
+    //
+    // A captured profile SHADOWS the builtin one for its VID/PID in
+    // resolve_mapping_for_pad()'s captured -> builtin -> legacy order, and the
+    // file is deliberately OTA-immune. So an under-captured profile does not
+    // merely give a worse mapping -- it disables the pad in games, on BOTH
+    // players (the two fielded pads share a VID/PID), and the hotkey block is
+    // skipped wholesale when enable_hotkey_btn resolves to "", taking
+    // Z+Start / Select+Start (the only way into the RetroArch menu) with it.
+    //
+    // "Non-empty" was too weak a bar: capture one control, skip 23, press
+    // Select, and that is what shipped. The bar is now
+    // retroarch::required_controls(style) -- the four d-pad directions plus
+    // confirm and Start. missing_required() names what is still outstanding so
+    // the TEST screen can say so instead of just withholding the option.
+    std::vector<retroarch::LogicalControl> missing_required() const;
+    bool can_save() const { return missing_required().empty(); }
+    // "Still needed: D-PAD UP, CROSS" — empty when nothing is missing.
+    std::string missing_required_line() const;
     // TEST phase: which captured controls are currently "lit"
     const std::map<retroarch::LogicalControl, bool>& test_lit() const;
     // Bindings captured SO FAR. Kept in sync after every feed/skip/redo, not

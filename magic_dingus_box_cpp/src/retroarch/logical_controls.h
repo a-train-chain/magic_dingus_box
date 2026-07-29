@@ -40,6 +40,18 @@ ControllerStyle style_of(LogicalControl c);
 // minimal pad front-loads the controls it actually has.
 std::vector<LogicalControl> capture_steps(ControllerStyle style);
 
+// The subset of capture_steps() a session MUST have captured before its
+// profile may be persisted. A captured profile unconditionally shadows the
+// built-in one for its VID/PID (resolve_mapping_for_pad), so a profile that
+// binds almost nothing does not degrade the pad -- it disables it, for both
+// players, with the file deliberately immune to OTA updates.
+//
+// The floor is "the pad can still drive a game and still reach a menu":
+// all four d-pad directions, plus the confirm and Start buttons. Everything
+// else stays genuinely optional, because pads legitimately differ (no
+// shoulders, no second stick, no Select).
+std::vector<LogicalControl> required_controls(ControllerStyle style);
+
 // On-screen prompt, e.g. "Press CROSS (bottom face button)" /
 // "Move the analog stick UP".
 std::string control_prompt(LogicalControl c);

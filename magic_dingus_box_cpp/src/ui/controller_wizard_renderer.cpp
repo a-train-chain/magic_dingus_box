@@ -209,10 +209,19 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
                 center_text("(nothing captured — every step was skipped)",
                             list_top + 40.0f, theme_->font_small_size, theme_->dim);
             }
+            // Withholding save without saying why is a dead end on an
+            // appliance with no other diagnostic surface. Name the controls
+            // that are still outstanding, at the bottom of the screen where
+            // the save prompt would otherwise be.
+            if (!wiz.can_save()) {
+                center_text(wiz.missing_required_line(), vh - 62.0f,
+                            theme_->font_small_size, theme_->highlight2);
+            }
 
-            // Do NOT offer save when nothing was captured: an empty profile
-            // would shadow this pad's builtin one (see ControllerWizard::
-            // can_save()). Point at the two things that do work instead.
+            // Do NOT offer save until the essentials are captured: a profile
+            // that binds too little does not degrade this pad, it disables it
+            // (see ControllerWizard::can_save()). Point at the two things that
+            // do work instead.
             footer(wiz.can_save()
                        ? std::string("Select: save  ·  BTN1 / Prev: start over  ·  ") +
                              kCancelHint

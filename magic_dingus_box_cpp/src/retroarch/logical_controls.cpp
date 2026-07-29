@@ -86,6 +86,16 @@ std::vector<LogicalControl> capture_steps(ControllerStyle style) {
             L::RSTICK_RIGHT, L::L3, L::R3};
 }
 
+std::vector<LogicalControl> required_controls(ControllerStyle style) {
+    using L = LogicalControl;
+    if (style == ControllerStyle::N64_STYLE) {
+        return {L::N64_DPAD_UP, L::N64_DPAD_DOWN, L::N64_DPAD_LEFT,
+                L::N64_DPAD_RIGHT, L::N64_A, L::N64_START};
+    }
+    return {L::DPAD_UP, L::DPAD_DOWN, L::DPAD_LEFT, L::DPAD_RIGHT,
+            L::CROSS, L::START};
+}
+
 const char* controller_style_key(ControllerStyle s) {
     return s == ControllerStyle::N64_STYLE ? "n64_style" : "ps_style";
 }

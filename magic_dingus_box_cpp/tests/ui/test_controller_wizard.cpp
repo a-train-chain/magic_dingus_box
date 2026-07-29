@@ -11,6 +11,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -456,17 +457,112 @@ TEST_CASE("an all-skipped session can never be saved", "[wizard]") {
     CHECK(retroarch::load_profile_store().size() == 1);
 }
 
-TEST_CASE("can_save tracks whether anything was captured", "[wizard]") {
+// ---------------------------------------------------------------------------
+// can_save() is a COMPLETENESS gate, not an emptiness gate
+// ---------------------------------------------------------------------------
+//
+// The fielded failure this pins: capture one control, skip the other 23,
+// press Select. That wrote a one-control profile keyed by this pad's VID/PID,
+// which unconditionally shadows the builtin (resolve_mapping_for_pad) for BOTH
+// players -- the two shipped pads share a VID/PID -- and left
+// enable_hotkey_btn empty, so retroarch_launcher skips the hotkey block
+// entirely and Select+Start no longer opens the RetroArch menu. Recovery meant
+// completing all 24 steps again, on a pad that no longer worked.
+
+TEST_CASE("one captured control is not enough to save", "[wizard][can_save]") {
+    ScopedStore store("one_control");
+    platform::InputManager im;
+    ControllerWizard w;
+    open_to_capture(w, im);
+
+    press_button(w, kBtn0);                       // capture step 0 (D-pad up)
+    const size_t n = w.step_count();
+    for (size_t i = 1; i < n; ++i) w.on_action(act(InputAction::PLAY_PAUSE));
+    REQUIRE(w.phase() == Phase::TEST);
+    REQUIRE(w.captured().size() == 1);            // non-empty: the old bar
+
+    CHECK_FALSE(w.can_save());
+    CHECK(w.on_action(act(InputAction::SELECT)));  // consumed, but refused
+    CHECK(w.phase() == Phase::TEST);
+    CHECK(retroarch::load_profile_store().empty());
+    // ...and the operator is told what is outstanding, not just refused.
+    CHECK(w.status_line().find("DPAD DOWN") != std::string::npos);
+    CHECK(w.status_line().find("CROSS") != std::string::npos);
+    CHECK(w.status_line().find("START") != std::string::npos);
+}
+
+TEST_CASE("can_save requires the d-pad plus confirm and Start", "[wizard][can_save]") {
+    platform::InputManager im;
+
+    SECTION("PS-style") {
+        ControllerWizard w;
+        open_to_capture(w, im);
+        const auto steps = retroarch::capture_steps(retroarch::ControllerStyle::PS_STYLE);
+        const auto required = retroarch::required_controls(retroarch::ControllerStyle::PS_STYLE);
+        // Capture exactly the required set, skip everything else.
+        for (size_t i = 0; i < steps.size(); ++i) {
+            const bool needed = std::find(required.begin(), required.end(),
+                                          steps[i]) != required.end();
+            if (needed) press_button(w, static_cast<uint16_t>(kBtn0 + i));
+            else w.on_action(act(InputAction::PLAY_PAUSE));
+        }
+        REQUIRE(w.phase() == Phase::TEST);
+        CHECK(w.captured().size() == required.size());
+        CHECK(w.can_save());
+        CHECK(w.missing_required_line().empty());
+    }
+
+    SECTION("PS-style, one d-pad direction short") {
+        ControllerWizard w;
+        open_to_capture(w, im);
+        const auto steps = retroarch::capture_steps(retroarch::ControllerStyle::PS_STYLE);
+        const auto required = retroarch::required_controls(retroarch::ControllerStyle::PS_STYLE);
+        for (size_t i = 0; i < steps.size(); ++i) {
+            const bool needed = std::find(required.begin(), required.end(),
+                                          steps[i]) != required.end();
+            if (needed && steps[i] != retroarch::LogicalControl::DPAD_RIGHT)
+                press_button(w, static_cast<uint16_t>(kBtn0 + i));
+            else
+                w.on_action(act(InputAction::PLAY_PAUSE));
+        }
+        REQUIRE(w.phase() == Phase::TEST);
+        CHECK_FALSE(w.can_save());
+        CHECK(w.missing_required_line() == "Still needed: DPAD RIGHT");
+    }
+
+    SECTION("N64-style uses the N64 vocabulary") {
+        ControllerWizard w;
+        open_to_capture(w, im, /*n64_style=*/true);
+        const auto steps = retroarch::capture_steps(retroarch::ControllerStyle::N64_STYLE);
+        const auto required = retroarch::required_controls(retroarch::ControllerStyle::N64_STYLE);
+        for (size_t i = 0; i < steps.size(); ++i) {
+            const bool needed = std::find(required.begin(), required.end(),
+                                          steps[i]) != required.end();
+            if (needed) press_button(w, static_cast<uint16_t>(kBtn0 + i));
+            else w.on_action(act(InputAction::PLAY_PAUSE));
+        }
+        REQUIRE(w.phase() == Phase::TEST);
+        CHECK(w.can_save());
+    }
+}
+
+TEST_CASE("can_save follows capture and redo", "[wizard][can_save]") {
     platform::InputManager im;
     ControllerWizard w;
     open_to_capture(w, im);
     CHECK_FALSE(w.can_save());          // nothing captured yet
 
-    w.on_action(act(InputAction::PLAY_PAUSE));   // skip step 0
-    CHECK_FALSE(w.can_save());
-    press_button(w, kBtn0 + 1);                  // capture step 1
+    // Capture the whole required prefix (d-pad + Cross is steps 0..4)...
+    for (uint16_t i = 0; i < 5; ++i) press_button(w, static_cast<uint16_t>(kBtn0 + i));
+    CHECK_FALSE(w.can_save());          // START still outstanding
+    CHECK(w.missing_required_line() == "Still needed: START");
+
+    // ...skip to START (step 13) and capture it.
+    while (w.step_index() < 13) w.on_action(act(InputAction::PLAY_PAUSE));
+    press_button(w, kBtn0 + 13);
     CHECK(w.can_save());
-    w.on_action(act(InputAction::PREV));         // redo it away again
+
+    w.on_action(act(InputAction::PREV));   // redo START away again
     CHECK_FALSE(w.can_save());
 }
 

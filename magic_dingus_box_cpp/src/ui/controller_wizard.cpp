@@ -214,11 +214,17 @@ bool ControllerWizard::on_action(const platform::InputEvent& ev) {
 
         case Phase::TEST:
             if (ev.action == InputAction::SELECT && ev.pressed) {
-                // An all-skipped session is COMPLETE, so it lands here, but it
-                // captured nothing. Refuse it: see can_save() for why an empty
-                // profile is worse than no profile. The renderer already drops
-                // "Select: save" from the footer in that state, so this branch
-                // only catches a press the chrome never invited.
+                // A session that skipped everything -- or skipped enough of
+                // the essentials -- is still COMPLETE, so it lands here. Refuse
+                // it: see can_save() for why an under-captured profile is worse
+                // than no profile. The renderer already drops "Select: save"
+                // from the footer in that state, so this branch only catches a
+                // press the chrome never invited. Name what is outstanding
+                // rather than just refusing.
+                if (!can_save()) {
+                    status_ = missing_required_line() + " - redo or cancel";
+                    return true;
+                }
                 if (!save_profile_()) {
                     status_ = "Nothing captured - redo or cancel";
                     return true;
@@ -297,6 +303,25 @@ size_t ControllerWizard::step_count() const {
 }
 
 std::string ControllerWizard::status_line() const { return status_; }
+
+std::vector<retroarch::LogicalControl> ControllerWizard::missing_required() const {
+    std::vector<retroarch::LogicalControl> missing;
+    for (retroarch::LogicalControl c : retroarch::required_controls(style())) {
+        if (captured_.count(c) == 0) missing.push_back(c);
+    }
+    return missing;
+}
+
+std::string ControllerWizard::missing_required_line() const {
+    const auto missing = missing_required();
+    if (missing.empty()) return "";
+    std::string s = "Still needed: ";
+    for (size_t i = 0; i < missing.size(); ++i) {
+        if (i) s += ", ";
+        s += short_control_label(missing[i]);
+    }
+    return s;
+}
 
 const std::map<retroarch::LogicalControl, bool>& ControllerWizard::test_lit() const {
     return test_lit_;
