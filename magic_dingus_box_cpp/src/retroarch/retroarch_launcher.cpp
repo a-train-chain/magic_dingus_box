@@ -1,6 +1,7 @@
 #include "retroarch_launcher.h"
 #include "controller_detector.h"
 #include "controller_mapping.h"
+#include "controller_profile.h"
 #include "../utils/config.h"
 #include <iostream>
 #include <cstdlib>
@@ -521,14 +522,27 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // Trojan Horse moved to after EOF
             script_file << "echo 'Launcher: Core name is " << shell_sq_escape(core_name) << "' >> /tmp/retroarch_launcher.log\n";
 
-            // 2. Dispatch to the per-controller mapping (controller_type detected earlier)
-            ControllerMapping map = get_mapping(controller_type, core_name);
+            // 2. Resolve each port's mapping independently: captured profile
+            // -> builtin -> legacy N64 fallback (resolve_mapping_for_pad's
+            // precedence, via resolve_port_mappings() in
+            // controller_mapping.cpp). A missing P2 pad mirrors P1 exactly,
+            // and no detected pads at all falls back to today's single
+            // get_mapping(controller_type, core_name) path unchanged --
+            // see resolve_port_mappings() for the exact preserved-behavior
+            // contract (also unit-tested on Mac against a synthetic pad
+            // list, since this /dev/input scan itself has no Mac build).
+            const auto pads = detect_connected_controllers();
+            const auto profile_store = load_profile_store();
+            const auto port_mappings =
+                resolve_port_mappings(pads, controller_type, profile_store, core_name);
+            ControllerMapping map = port_mappings.p1;
+            ControllerMapping map_p2 = port_mappings.p2;
 
             // map.name is a hardcoded string in get_mapping_*() helpers, but
             // route through shell_sq_escape anyway as defense-in-depth.
             script_file << "# === Controller Mapping: " << map.name << " ===\n";
             script_file << "echo 'Launcher: Applying controller mapping for: " << shell_sq_escape(map.name) << "' >> /tmp/retroarch_launcher.log\n";
-            
+
             // 2-5. Apply the full input_player1_* bind block (settings,
             // buttons, d-pad, analog axes, right stick, d-pad axes). See
             // write_player_binds() in controller_mapping.cpp for the exact
@@ -537,14 +551,19 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // from an absent line).
             write_player_binds(script_file, map, 1);
 
-            // 5b. Mirror the same mapping for player 2 — assumes the 2nd
-            // controller (joypad index 1) is the same physical kind as P1.
-            // In our hardware that's always true (kiosk ships with two
-            // identical pads). Without this, RetroArch's per-core remap
-            // covers only player 1 and the 2nd pad shows up in
-            // /dev/input/js1 but produces no in-game effect — symptom: P2
-            // character sits motionless in 2-player Twisted Metal / Tony
-            // Hawk / Doom split-screen.
+            // 5b. Player 2's own mapping, resolved above from port 1's
+            // VID/PID (or mirrored from player 1 when no second pad is
+            // connected -- see resolve_port_mappings()). Historically P2
+            // always mirrored P1 outright, because every fielded box ships
+            // two identical pads; without SOME P2 emission at all,
+            // RetroArch's per-core remap covers only player 1 and the 2nd
+            // pad shows up in /dev/input/js1 but produces no in-game effect
+            // — symptom: P2 character sits motionless in 2-player Twisted
+            // Metal / Tony Hawk / Doom split-screen. Task 7 lets each port
+            // resolve independently instead, so two DIFFERENT controller
+            // models can each get their own correct mapping in the same
+            // two-player game, while the one-pad-detected case still
+            // produces an exact mirror (verified above).
             //
             // Both calls MUST go through write_player_binds() — the P2
             // block used to be a hand-duplicated copy of the P1 block, and
@@ -552,24 +571,23 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // right-stick lines, leaving P2 with no camera control in every
             // two-player N64 game. Routing both players through the same
             // function makes that class of drift structurally impossible.
-            // Task 7 lets each port resolve to a different captured mapping
-            // so two different controller models can play simultaneously;
-            // for now both players share `map`.
             //
             // Hotkeys (below) intentionally stay player-1-only so both
             // controllers don't fight over the RA menu toggle.
-            write_player_binds(script_file, map, 2);
+            write_player_binds(script_file, map_p2, 2);
 
             // 5c. PCSX-rearmed needs the per-pad type set for both pads.
             // Without pad2type, the second controller is treated as
             // disconnected by the PS1 BIOS — multiplayer games like
             // Twisted Metal won't see a 2nd player even if RetroArch
-            // is reading js1 events.
-            if (!map.core_option_pad_type.empty()) {
-                script_file << "pcsx_rearmed_pad2type = \"" << map.core_option_pad_type << "\"\n";
+            // is reading js1 events. This now follows PLAYER 2's OWN
+            // resolved mapping (map_p2), not player 1's, so a differently
+            // typed pad in port 1 gets its own correct PS1 pad type.
+            if (!map_p2.core_option_pad_type.empty()) {
+                script_file << "pcsx_rearmed_pad2type = \"" << map_p2.core_option_pad_type << "\"\n";
             }
 
-            // 6. Apply Core Options (if any)
+            // 6. Apply Core Options (if any) -- player 1 only.
             if (!map.core_option_pad_type.empty()) {
                  script_file << "pcsx_rearmed_pad1type = \"" << map.core_option_pad_type << "\"\n";
             }

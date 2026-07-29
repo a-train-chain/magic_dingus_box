@@ -400,6 +400,32 @@ ControllerMapping resolve_mapping_for_pad(
     return get_mapping(match_vid_pid(vid, pid), core_name);
 }
 
+PortMappings resolve_port_mappings(
+    const std::vector<DetectedPad>& pads, ControllerType fallback_type,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name) {
+    PortMappings out;
+    if (pads.empty()) {
+        // No pads detected: today's exact path, unchanged. Do NOT route
+        // this through resolve_mapping_for_pad(0, 0, ...) -- that would
+        // silently pick up a captured profile if one ever existed for
+        // VID/PID 0000:0000, diverging from the legacy behavior this branch
+        // must preserve.
+        out.p1 = get_mapping(fallback_type, core_name);
+        out.p2 = out.p1;
+        return out;
+    }
+    out.p1 = resolve_mapping_for_pad(pads[0].vid, pads[0].pid, store, core_name);
+    // Only one pad connected: player 2 mirrors player 1 exactly, matching
+    // every currently-fielded box (two identical pads, or -- as measured on
+    // the one Pi we have hardware evidence for -- a single unrecognized pad
+    // riding the legacy N64 fallback via resolve_mapping_for_pad above).
+    out.p2 = pads.size() > 1
+                 ? resolve_mapping_for_pad(pads[1].vid, pads[1].pid, store, core_name)
+                 : out.p1;
+    return out;
+}
+
 void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player) {
     const std::string p = "input_player" + std::to_string(player) + "_r_";

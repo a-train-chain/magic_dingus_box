@@ -5,6 +5,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "controller_detector.h"
 #include "controller_profile.h"
@@ -161,6 +162,39 @@ ControllerMapping get_mapping(ControllerType type, const std::string& core_name)
 // intentionally stays lightweight (no cyclic dependency on this header).
 ControllerMapping resolve_mapping_for_pad(
     uint16_t vid, uint16_t pid,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name);
+
+// The two per-player mappings the launcher emits, resolved independently
+// per port.
+struct PortMappings {
+    ControllerMapping p1;
+    ControllerMapping p2;
+};
+
+// Resolve player 1 / player 2 mappings from a per-port pad detection list
+// (see detect_connected_controllers() in controller_detector.h), preserving
+// every currently-fielded box's behavior exactly:
+//
+//   - Zero pads: both players get get_mapping(fallback_type, core_name) --
+//     TODAY'S path, unchanged. `fallback_type` is whatever
+//     detect_primary_controller() returned; this is deliberately NOT
+//     resolve_mapping_for_pad(0, 0, ...), which could silently diverge if a
+//     captured profile ever existed for VID/PID 0000:0000.
+//   - One pad: player 2 is an exact mirror of player 1 (legacy behavior for
+//     the shipped identical-pads case -- a missing second pad must not
+//     produce a worse or different mapping than today).
+//   - Two or more pads: player 1 and player 2 each resolve independently
+//     from their own port's VID/PID via resolve_mapping_for_pad (captured
+//     profile -> builtin -> legacy N64 fallback). Only ports 0 and 1 are
+//     consulted; extra pads beyond player 2 are ignored.
+//
+// Pulled out of retroarch_launcher.cpp (Pi-only, no Mac build) as a pure
+// function so this exact port-resolution logic is unit-testable off-device
+// given a synthetic pad list, even though the underlying /dev/input scan
+// (detect_connected_controllers()) is not.
+PortMappings resolve_port_mappings(
+    const std::vector<DetectedPad>& pads, ControllerType fallback_type,
     const std::map<std::string, PhysicalProfile>& store,
     const std::string& core_name);
 
