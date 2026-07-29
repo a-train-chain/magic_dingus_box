@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -544,6 +545,51 @@ TEST_CASE("can_save requires the d-pad plus confirm and Start", "[wizard][can_sa
         REQUIRE(w.phase() == Phase::TEST);
         CHECK(w.can_save());
     }
+}
+
+TEST_CASE("a failed save reports failure instead of Saved!", "[wizard][save]") {
+    // The store path's parent is a regular FILE, so save_profile_store()'s
+    // create_directories() fails and the write never happens. Stands in for
+    // the real failure modes on the box: read-only /opt, full SD card, bad
+    // ownership on config/. Before this fix save_profile_() discarded
+    // save_profile_store()'s return value and returned true unconditionally,
+    // so the wizard advanced to DONE and painted "Saved!" over a write that
+    // did not occur — on an appliance with no other diagnostic surface.
+    struct BlockedStore {
+        std::filesystem::path blocker;
+        BlockedStore() {
+            blocker = std::filesystem::temp_directory_path() / "mdb_wizard_blocker";
+            std::filesystem::remove_all(blocker);
+            std::ofstream(blocker.string()) << "not a directory";
+            ::setenv("MAGIC_CONTROLLER_PROFILES_FILE",
+                     (blocker / "sub" / "profiles.json").string().c_str(), 1);
+        }
+        ~BlockedStore() {
+            ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
+            std::error_code ec;
+            std::filesystem::remove(blocker, ec);
+        }
+    } blocked;
+    REQUIRE_FALSE(retroarch::save_profile_store({}));   // the premise holds
+
+    platform::InputManager im;
+    ControllerWizard w;
+    open_to_capture(w, im);
+    capture_all(w);
+    REQUIRE(w.can_save());
+
+    CHECK(w.on_action(act(InputAction::SELECT)));
+    CHECK(w.phase() == Phase::TEST);          // no "Saved!" screen
+    CHECK(w.is_active());                     // ...and Select can be retried
+    CHECK_FALSE(w.status_line().empty());
+    CHECK(ui_test::fake_last_toast().find("NOT saved") != std::string::npos);
+
+    // Point the store somewhere writable and the SAME press now succeeds.
+    ScopedStore store("save_recovery");
+    CHECK(w.on_action(act(InputAction::SELECT)));
+    CHECK(w.phase() == Phase::DONE);
+    CHECK(ui_test::fake_last_toast() == "Controller saved: Test Pad");
+    CHECK(retroarch::load_profile_store().size() == 1);
 }
 
 TEST_CASE("can_save follows capture and redo", "[wizard][can_save]") {

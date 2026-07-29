@@ -211,10 +211,14 @@ void Renderer::render_controller_wizard(const ControllerWizard& wiz) {
             }
             // Withholding save without saying why is a dead end on an
             // appliance with no other diagnostic surface. Name the controls
-            // that are still outstanding, at the bottom of the screen where
-            // the save prompt would otherwise be.
+            // that are still outstanding, or — when the save was offered and
+            // the WRITE failed (read-only /opt, full SD card) — say that,
+            // just above the footer where the save prompt sits.
             if (!wiz.can_save()) {
                 center_text(wiz.missing_required_line(), vh - 62.0f,
+                            theme_->font_small_size, theme_->highlight2);
+            } else if (!wiz.status_line().empty()) {
+                center_text(wiz.status_line(), vh - 62.0f,
                             theme_->font_small_size, theme_->highlight2);
             }
 

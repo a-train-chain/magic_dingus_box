@@ -106,7 +106,9 @@ private:
     // the unplug check runs at 1 Hz rather than per frame.
     std::chrono::steady_clock::time_point last_caps_poll_;
 
-    // Returns false (and writes nothing) when there is nothing to save.
+    // False when the session is too incomplete to save (nothing written), and
+    // ALSO false when the write itself failed -- the caller distinguishes the
+    // two by checking can_save() first.
     bool save_profile_();
     void start_capture_();        // (re)build session_ for the chosen style
     void sync_captured_();        // mirror session_->results() into captured_

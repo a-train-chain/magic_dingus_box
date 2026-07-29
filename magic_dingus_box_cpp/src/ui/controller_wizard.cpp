@@ -225,8 +225,16 @@ bool ControllerWizard::on_action(const platform::InputEvent& ev) {
                     status_ = missing_required_line() + " - redo or cancel";
                     return true;
                 }
+                // save_profile_() forwards save_profile_store()'s real
+                // result. A read-only /opt, a full SD card, or bad ownership
+                // on config/ all fail here, and this appliance has no other
+                // diagnostic surface -- reporting "Saved!" over a write that
+                // did not happen is worse than reporting nothing. Stay on
+                // TEST so Select can simply be pressed again once the cause
+                // is fixed.
                 if (!save_profile_()) {
-                    status_ = "Nothing captured - redo or cancel";
+                    status_ = "Couldn't save - storage may be full or read-only";
+                    Toast::show("Controller NOT saved - storage error");
                     return true;
                 }
                 phase_ = Phase::DONE;
@@ -414,8 +422,10 @@ bool ControllerWizard::save_profile_() {
     // (see controller_profile.h), so key by the canonical vidpid_key.
     auto store = retroarch::load_profile_store();
     store[retroarch::vidpid_key(vid_, pid_)] = profile;
-    retroarch::save_profile_store(store);
-    return true;
+    // PROPAGATED, not discarded. save_profile_store() already returns a
+    // correct bool for every failure mode (mkdir, open, write/flush, rename);
+    // swallowing it made a read-only /opt or a full SD card render "Saved!".
+    return retroarch::save_profile_store(store);
 }
 
 }  // namespace ui
