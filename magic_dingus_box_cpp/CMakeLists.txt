@@ -149,6 +149,7 @@ set(RETROARCH_SOURCES
     src/retroarch/logical_controls.cpp
     src/retroarch/controller_profile.cpp
     src/retroarch/joydev_index.cpp
+    src/retroarch/capture_session.cpp
 )
 
 # Retroarch sources shared by BOTH test_retroarch_unit and
@@ -162,14 +163,18 @@ set(RETROARCH_SOURCES
 # test_retroarch_unit kept passing). Defining the shared subset once and
 # having both targets consume this variable makes that class of drift
 # structurally impossible instead of relying on someone reading a comment.
-# (retroarch_launcher.cpp and joydev_index.cpp are deliberately NOT in this
-# list -- they're each needed by only one of the two targets.)
+# (retroarch_launcher.cpp is deliberately NOT in this list -- it's needed by
+# only one of the two targets. joydev_index.cpp USED to be excluded on the
+# same reasoning, but capture_session.cpp -- itself shared here -- calls
+# bind_token(), so joydev_index.cpp must ship to both targets too now.)
 set(RETROARCH_TESTABLE_SOURCES
     src/retroarch/launch_contract.cpp
     src/retroarch/controller_detector.cpp
     src/retroarch/controller_mapping.cpp
     src/retroarch/logical_controls.cpp
     src/retroarch/controller_profile.cpp
+    src/retroarch/joydev_index.cpp
+    src/retroarch/capture_session.cpp
 )
 
 set(ALL_SOURCES
@@ -488,7 +493,6 @@ if(RETROARCH_TEST_SOURCES)
         src/app/game_launch_recovery.cpp
         src/app/game_quiet_mode.cpp
         ${RETROARCH_TESTABLE_SOURCES}
-        src/retroarch/joydev_index.cpp
         src/utils/config.cpp
     )
     target_include_directories(test_retroarch_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
