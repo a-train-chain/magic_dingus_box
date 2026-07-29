@@ -65,11 +65,6 @@ std::string control_prompt(LogicalControl c) {
     return "";
 }
 
-ControllerStyle style_of(LogicalControl c) {
-    return c >= LogicalControl::N64_A ? ControllerStyle::N64_STYLE
-                                      : ControllerStyle::PS_STYLE;
-}
-
 std::vector<LogicalControl> capture_steps(ControllerStyle style) {
     using L = LogicalControl;
     if (style == ControllerStyle::N64_STYLE) {

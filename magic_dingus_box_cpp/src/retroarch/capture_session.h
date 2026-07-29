@@ -17,9 +17,9 @@ namespace retroarch {
 // Pure state machine driving the controller-setup wizard: walks
 // capture_steps(style) one LogicalControl at a time, deciding when a raw
 // evdev-shaped event (ev_type/code/value) counts as a capture for the
-// current step. No I/O, no device access -- Task 9 feeds it real evdev
-// events, Task 10 renders its prompts and persists results() via the
-// existing profile store.
+// current step. No I/O, no device access: ui::ControllerWizard feeds it the
+// events InputManager's raw-capture queue produces, renders its prompts, and
+// persists results() through the profile store.
 class CaptureSession {
 public:
     CaptureSession(ControllerStyle style, CaptureDeviceCaps caps);
@@ -46,7 +46,9 @@ private:
     // here so the three call sites cannot drift out of sync again.
     void reset_transient();
 
-    ControllerStyle style_;
+    // NB: no style_ member. The ctor uses its `style` PARAMETER to build
+    // steps_, and nothing afterwards needs the style again -- steps_ IS the
+    // style, resolved. A stored copy was an unread field (-Wunused-private-field).
     CaptureDeviceCaps caps_;
     std::vector<LogicalControl> steps_;
     size_t index_ = 0;

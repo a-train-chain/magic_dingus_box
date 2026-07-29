@@ -14,7 +14,7 @@ constexpr uint16_t kHatFirst = 0x10, kHatLast = 0x17;
 }  // namespace
 
 CaptureSession::CaptureSession(ControllerStyle style, CaptureDeviceCaps caps)
-    : style_(style), caps_(std::move(caps)), steps_(capture_steps(style)) {}
+    : caps_(std::move(caps)), steps_(capture_steps(style)) {}
 
 bool CaptureSession::done() const { return index_ >= steps_.size(); }
 LogicalControl CaptureSession::current_control() const { return steps_[index_]; }

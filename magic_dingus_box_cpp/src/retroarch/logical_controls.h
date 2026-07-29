@@ -11,10 +11,13 @@ enum class ControllerStyle { PS_STYLE, N64_STYLE };
 // vocabularies are deliberately distinct (no punning): an N64 pad's A is not
 // "the same control" as a PS pad's Cross even if a core treats them alike.
 //
-// ORDER IS LOAD-BEARING: style_of() below dispatches on enum ordering
-// (c >= LogicalControl::N64_A means N64_STYLE). Do not reorder these
-// enumerators or insert new ones before N64_A without also revisiting
-// style_of().
+// Nothing dispatches on the enum ORDER. It used to: style_of() keyed off
+// `c >= N64_A`, and this comment said the order was load-bearing because of
+// it. That function had no callers outside its own test and has been removed.
+// The one remaining consequence of the order is cosmetic — bindings live in
+// std::map<LogicalControl, ...>, so it decides the sequence controls are
+// listed in on the wizard's TEST screen. Grouping the two families
+// contiguously is for readability, not correctness.
 enum class LogicalControl {
     // PS-style vocabulary
     DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT,
@@ -33,8 +36,6 @@ enum class LogicalControl {
 // Stable snake_case key used in controller_profiles.json ("cross", "n64_a").
 const char* logical_control_key(LogicalControl c);
 std::optional<LogicalControl> logical_control_from_key(const std::string& key);
-
-ControllerStyle style_of(LogicalControl c);
 
 // The wizard's prompt order for a style. D-pad first, sticks last, so a
 // minimal pad front-loads the controls it actually has.
