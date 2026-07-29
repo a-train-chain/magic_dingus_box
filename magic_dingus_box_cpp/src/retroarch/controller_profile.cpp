@@ -11,9 +11,6 @@ namespace retroarch {
 // NOTE ON PORTABILITY: this file must build on macOS for the unit tests.
 // linux/input-event-codes.h does not exist there, so define the handful of
 // codes we need when the header is absent (or not included, as on Mac).
-#ifndef BTN_SOUTH
-#define BTN_SOUTH 0x130
-#endif
 #ifndef ABS_X
 #define ABS_X 0x00
 #define ABS_Y 0x01
@@ -41,6 +38,15 @@ const PhysicalProfile& builtin_n64_adapter_profile() {
         // Joystick index i lives at evdev code 304+i on this adapter
         // (contiguous BTN_GAMEPAD range; indices verified via evtest, see
         // controller_mapping.cpp's physical table).
+        //
+        // HARDWARE-CONFIRMED (2026-07-29, see .superpowers/sdd/
+        // hardware-evidence.md): captured live from a "SWITCH CO.,LTD.
+        // Controller (Dinput)" pad (2563:0575, functionally an N64-style
+        // adapter) on the production Pi. Capability bitmaps: EV_KEY =
+        // 0x1fff<<48 -> codes 304..316 inclusive, 13 contiguous buttons;
+        // EV_ABS = 0x30027 -> bits 0,1,2,5,16,17 = ABS_X/Y/Z/RZ plus a
+        // REAL ABS_HAT0X/Y (not an 8-bit axis overload). Every code and
+        // token below (buttons, hat, and stick) matches that hardware.
         p.controls = {
             {L::N64_C_LEFT, btn(304, "0")},  {L::N64_B, btn(305, "1")},
             {L::N64_A, btn(306, "2")},       {L::N64_C_DOWN, btn(307, "3")},
@@ -68,15 +74,37 @@ const PhysicalProfile& builtin_dragonrise_profile() {
         p.style = ControllerStyle::PS_STYLE;
         p.vid = 0x0079; p.pid = 0x0006;
         // Joystick index i lives at evdev code 288+i (BTN_TRIGGER range,
-        // see input_manager.cpp map_button_to_action comment block).
-        // Right-stick axis tokens are the LEGACY +2/+3 (what shipped code
-        // emits); the on-Pi probe (Task 12) re-verifies against hardware.
+        // see input_manager.cpp map_button_to_action comment block --
+        // that function documents BUTTON codes only, nothing about axes
+        // or hats, so the HAT/AXIS assignments below are this profile's
+        // own, not transcribed from anywhere).
+        //
+        // Right-stick tokens +2/+3: NOT merely "legacy" -- per
+        // .superpowers/sdd/hardware-evidence.md these are the correct
+        // joydev axis INDICES for ABS_Z (raw evdev code 2) / ABS_RZ (raw
+        // evdev code 5) respectively. controller_mapping.cpp's DragonRise
+        // comment ("Right stick: axes 2 (Rx) / 5 (Ry)") looks like it
+        // disagrees but is quoting RAW ABS codes -- a different numbering
+        // system from joydev indices: ABS_Z (code 2) is joydev axis index
+        // 2, ABS_RZ (code 5) is joydev axis index 3. Both the comment and
+        // these tokens are correct; no fix needed.
         p.controls = {
             {L::TRIANGLE, btn(288, "0")}, {L::CIRCLE, btn(289, "1")},
             {L::CROSS, btn(290, "2")},    {L::SQUARE, btn(291, "3")},
             {L::L1, btn(292, "4")},       {L::R1, btn(293, "5")},
             {L::L2, btn(294, "6")},       {L::R2, btn(295, "7")},
             {L::SELECT, btn(296, "8")},   {L::START, btn(297, "9")},
+            // PROVISIONAL / UNVERIFIED: assumes a real hat (ABS_HAT0X/Y).
+            // input_manager.cpp:27-30,154-166 documents that THIS SAME
+            // VID/PID (0079:0006) can instead report its d-pad via
+            // ABS_X/Y extremes in an 8-bit (0..255) range, with no hat at
+            // all, detected at runtime via ABS_X min==0 && max<=255. No
+            // DragonRise pad was on hand when hardware-evidence.md was
+            // captured, so which revision this shipped pad actually is
+            // remains open -- Task 12's controller_probe resolves it
+            // against the physical pad. If the 8-bit variant is
+            // confirmed, these four bindings must change to AXIS on
+            // ABS_X/Y instead of HAT.
             {L::DPAD_UP, hat(ABS_HAT0Y, -1, "h0up")},
             {L::DPAD_DOWN, hat(ABS_HAT0Y, +1, "h0down")},
             {L::DPAD_LEFT, hat(ABS_HAT0X, -1, "h0left")},

@@ -33,8 +33,22 @@ struct PhysicalProfile {
 };
 
 // Built-in profiles for the two shipped pads. Token values transcribed 1:1
-// from the legacy physical tables in controller_mapping.cpp; evdev codes
-// from input_manager.cpp's map_button_to_action comments.
+// from the legacy physical tables in controller_mapping.cpp.
+//
+// Evdev code provenance is NOT uniform across kinds:
+//  - BUTTON codes are transcribed from input_manager.cpp's
+//    map_button_to_action comment block, which documents the actual live
+//    ranges observed for each pad (304+index contiguous for the N64
+//    adapter; 288+index BTN_TRIGGER range for the DragonRise).
+//  - HAT/AXIS codes (ABS_HAT0X/Y, ABS_X/Y/Z/RZ) are NOT transcribed from
+//    anywhere -- map_button_to_action documents buttons only, nothing
+//    about axes or hats -- so those are this profile author's own
+//    assignment. See the per-profile comments in the .cpp: the N64
+//    adapter's are hardware-confirmed; the DragonRise d-pad's are
+//    provisional and unverified (input_manager.cpp:27-30,154-166 documents
+//    that the same VID/PID can instead report its d-pad via 8-bit
+//    ABS_X/Y extremes with no real hat, and no DragonRise pad was
+//    available to settle which this shipped pad is).
 const PhysicalProfile& builtin_n64_adapter_profile();
 const PhysicalProfile& builtin_dragonrise_profile();
 

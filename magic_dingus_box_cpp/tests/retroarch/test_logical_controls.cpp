@@ -33,3 +33,11 @@ TEST_CASE("every control has a human prompt", "[logical_controls]") {
         for (auto c : capture_steps(style))
             REQUIRE(!control_prompt(c).empty());
 }
+
+TEST_CASE("controller style keys round-trip", "[logical_controls]") {
+    REQUIRE(std::string(controller_style_key(ControllerStyle::PS_STYLE)) == "ps_style");
+    REQUIRE(std::string(controller_style_key(ControllerStyle::N64_STYLE)) == "n64_style");
+    REQUIRE(controller_style_from_key("ps_style") == ControllerStyle::PS_STYLE);
+    REQUIRE(controller_style_from_key("n64_style") == ControllerStyle::N64_STYLE);
+    REQUIRE(!controller_style_from_key("bogus").has_value());
+}

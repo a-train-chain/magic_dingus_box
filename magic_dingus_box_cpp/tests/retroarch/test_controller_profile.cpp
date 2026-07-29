@@ -1,58 +1,127 @@
 #include <catch2/catch_test_macros.hpp>
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "retroarch/controller_profile.h"
 
 using namespace retroarch;
 
-TEST_CASE("builtin N64 adapter profile reproduces the legacy tokens",
-          "[controller_profile]") {
+namespace {
+
+// Raw evdev EV_ABS codes (linux/input-event-codes.h numbering). Hardcoded
+// here rather than included, since that header doesn't exist on macOS,
+// where this test binary builds.
+constexpr uint16_t kAbsX = 0x00;
+constexpr uint16_t kAbsY = 0x01;
+constexpr uint16_t kAbsZ = 0x02;
+constexpr uint16_t kAbsRz = 0x05;
+constexpr uint16_t kAbsHat0X = 0x10;
+constexpr uint16_t kAbsHat0Y = 0x11;
+
+using K = PhysicalBinding::Kind;
+
+struct Expected {
+    LogicalControl control;
+    PhysicalBinding::Kind kind;
+    uint16_t code;
+    int direction;
+    std::string token;
+};
+
+// Asserts every {kind, code, direction, token} in `expected` against the
+// profile's actual binding, plus that the profile has exactly that many
+// controls -- so a silently added or dropped binding fails the count check
+// even if every listed one still matches.
+void check_bindings(const PhysicalProfile& p, const std::vector<Expected>& expected) {
+    REQUIRE(p.controls.size() == expected.size());
+    for (const auto& e : expected) {
+        INFO("control: " << logical_control_key(e.control));
+        const PhysicalBinding* b = p.binding(e.control);
+        REQUIRE(b != nullptr);
+        CHECK(b->kind == e.kind);
+        CHECK(b->code == e.code);
+        CHECK(b->direction == e.direction);
+        CHECK(b->token == e.token);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("builtin N64 adapter profile pins every binding", "[controller_profile]") {
     const auto& p = builtin_n64_adapter_profile();
     REQUIRE(p.style == ControllerStyle::N64_STYLE);
-    REQUIRE(p.vid == 0x0e6d); REQUIRE(p.pid == 0x111d);
-    // Tokens transcribed from controller_mapping.cpp's physical table:
-    // 0=C-Left, 1=B, 2=A, 3=C-Down, 4=L, 5=R, 6=Z, 8=C-Right, 9=C-Up, 12=Start
-    REQUIRE(p.token(LogicalControl::N64_A) == "2");
-    REQUIRE(p.token(LogicalControl::N64_B) == "1");
-    REQUIRE(p.token(LogicalControl::N64_Z) == "6");
-    REQUIRE(p.token(LogicalControl::N64_L) == "4");
-    REQUIRE(p.token(LogicalControl::N64_R) == "5");
-    REQUIRE(p.token(LogicalControl::N64_START) == "12");
-    REQUIRE(p.token(LogicalControl::N64_C_LEFT) == "0");
-    REQUIRE(p.token(LogicalControl::N64_C_DOWN) == "3");
-    REQUIRE(p.token(LogicalControl::N64_C_RIGHT) == "8");
-    REQUIRE(p.token(LogicalControl::N64_C_UP) == "9");
-    REQUIRE(p.token(LogicalControl::N64_DPAD_UP) == "h0up");
-    REQUIRE(p.token(LogicalControl::N64_STICK_UP) == "-1");
-    REQUIRE(p.token(LogicalControl::N64_STICK_RIGHT) == "+0");
-    // evdev codes for the kiosk-menu overlay (code = 304 + index on this pad)
-    REQUIRE(p.binding(LogicalControl::N64_A)->code == 306);
-    REQUIRE(p.binding(LogicalControl::N64_B)->code == 305);
-    REQUIRE(p.binding(LogicalControl::N64_START)->code == 316);
+    REQUIRE(p.vid == 0x0e6d);
+    REQUIRE(p.pid == 0x111d);
+
+    // Hardware-confirmed against a live pad (see controller_profile.cpp
+    // and .superpowers/sdd/hardware-evidence.md): buttons 304..316
+    // contiguous, real ABS_HAT0X/Y hat, ABS_X/Y stick.
+    const std::vector<Expected> expected = {
+        {LogicalControl::N64_C_LEFT,  K::BUTTON, 304, 0, "0"},
+        {LogicalControl::N64_B,       K::BUTTON, 305, 0, "1"},
+        {LogicalControl::N64_A,       K::BUTTON, 306, 0, "2"},
+        {LogicalControl::N64_C_DOWN,  K::BUTTON, 307, 0, "3"},
+        {LogicalControl::N64_L,       K::BUTTON, 308, 0, "4"},
+        {LogicalControl::N64_R,       K::BUTTON, 309, 0, "5"},
+        {LogicalControl::N64_Z,       K::BUTTON, 310, 0, "6"},
+        {LogicalControl::N64_C_RIGHT, K::BUTTON, 312, 0, "8"},
+        {LogicalControl::N64_C_UP,    K::BUTTON, 313, 0, "9"},
+        {LogicalControl::N64_START,   K::BUTTON, 316, 0, "12"},
+        {LogicalControl::N64_DPAD_UP,    K::HAT, kAbsHat0Y, -1, "h0up"},
+        {LogicalControl::N64_DPAD_DOWN,  K::HAT, kAbsHat0Y, +1, "h0down"},
+        {LogicalControl::N64_DPAD_LEFT,  K::HAT, kAbsHat0X, -1, "h0left"},
+        {LogicalControl::N64_DPAD_RIGHT, K::HAT, kAbsHat0X, +1, "h0right"},
+        {LogicalControl::N64_STICK_UP,    K::AXIS, kAbsY, -1, "-1"},
+        {LogicalControl::N64_STICK_DOWN,  K::AXIS, kAbsY, +1, "+1"},
+        {LogicalControl::N64_STICK_LEFT,  K::AXIS, kAbsX, -1, "-0"},
+        {LogicalControl::N64_STICK_RIGHT, K::AXIS, kAbsX, +1, "+0"},
+    };
+    check_bindings(p, expected);
+
     // Missing control -> empty token, null binding
     REQUIRE(p.token(LogicalControl::CROSS) == "");
     REQUIRE(p.binding(LogicalControl::CROSS) == nullptr);
 }
 
-TEST_CASE("builtin DragonRise profile reproduces the legacy tokens",
-          "[controller_profile]") {
+TEST_CASE("builtin DragonRise profile pins every binding", "[controller_profile]") {
     const auto& p = builtin_dragonrise_profile();
     REQUIRE(p.style == ControllerStyle::PS_STYLE);
-    // 0=Triangle 1=Circle 2=Cross 3=Square 4=L1 5=R1 6=L2 7=R2 8=Select 9=Start
-    REQUIRE(p.token(LogicalControl::TRIANGLE) == "0");
-    REQUIRE(p.token(LogicalControl::CIRCLE) == "1");
-    REQUIRE(p.token(LogicalControl::CROSS) == "2");
-    REQUIRE(p.token(LogicalControl::SQUARE) == "3");
-    REQUIRE(p.token(LogicalControl::L1) == "4");
-    REQUIRE(p.token(LogicalControl::R2) == "7");
-    REQUIRE(p.token(LogicalControl::SELECT) == "8");
-    REQUIRE(p.token(LogicalControl::START) == "9");
-    REQUIRE(p.token(LogicalControl::DPAD_LEFT) == "h0left");
-    REQUIRE(p.token(LogicalControl::LSTICK_DOWN) == "+1");
-    // Legacy right-stick tokens are +2/+3 (see get_mapping_ps_style N64 branch)
-    REQUIRE(p.token(LogicalControl::RSTICK_RIGHT) == "+2");
-    REQUIRE(p.token(LogicalControl::RSTICK_DOWN) == "+3");
-    // evdev codes: code = 288 + index (BTN_TRIGGER range, per input_manager.cpp)
-    REQUIRE(p.binding(LogicalControl::CROSS)->code == 290);
-    REQUIRE(p.binding(LogicalControl::START)->code == 297);
+    REQUIRE(p.vid == 0x0079);
+    REQUIRE(p.pid == 0x0006);
+
+    const std::vector<Expected> expected = {
+        {LogicalControl::TRIANGLE, K::BUTTON, 288, 0, "0"},
+        {LogicalControl::CIRCLE,   K::BUTTON, 289, 0, "1"},
+        {LogicalControl::CROSS,    K::BUTTON, 290, 0, "2"},
+        {LogicalControl::SQUARE,   K::BUTTON, 291, 0, "3"},
+        {LogicalControl::L1,       K::BUTTON, 292, 0, "4"},
+        {LogicalControl::R1,       K::BUTTON, 293, 0, "5"},
+        {LogicalControl::L2,       K::BUTTON, 294, 0, "6"},
+        {LogicalControl::R2,       K::BUTTON, 295, 0, "7"},
+        {LogicalControl::SELECT,   K::BUTTON, 296, 0, "8"},
+        {LogicalControl::START,    K::BUTTON, 297, 0, "9"},
+        // PROVISIONAL / UNVERIFIED (see controller_profile.cpp caveat):
+        // assumes a real hat; input_manager.cpp documents this same
+        // VID/PID may instead use 8-bit ABS_X/Y extremes with no hat.
+        // Settled by Task 12's controller_probe against the physical pad.
+        {LogicalControl::DPAD_UP,    K::HAT, kAbsHat0Y, -1, "h0up"},
+        {LogicalControl::DPAD_DOWN,  K::HAT, kAbsHat0Y, +1, "h0down"},
+        {LogicalControl::DPAD_LEFT,  K::HAT, kAbsHat0X, -1, "h0left"},
+        {LogicalControl::DPAD_RIGHT, K::HAT, kAbsHat0X, +1, "h0right"},
+        {LogicalControl::LSTICK_UP,    K::AXIS, kAbsY, -1, "-1"},
+        {LogicalControl::LSTICK_DOWN,  K::AXIS, kAbsY, +1, "+1"},
+        {LogicalControl::LSTICK_LEFT,  K::AXIS, kAbsX, -1, "-0"},
+        {LogicalControl::LSTICK_RIGHT, K::AXIS, kAbsX, +1, "+0"},
+        // +2/+3 are the correct joydev axis indices for ABS_Z/ABS_RZ (not
+        // merely "legacy" -- see controller_profile.cpp's caveat comment
+        // and .superpowers/sdd/hardware-evidence.md).
+        {LogicalControl::RSTICK_UP,    K::AXIS, kAbsRz, -1, "-3"},
+        {LogicalControl::RSTICK_DOWN,  K::AXIS, kAbsRz, +1, "+3"},
+        {LogicalControl::RSTICK_LEFT,  K::AXIS, kAbsZ, -1, "-2"},
+        {LogicalControl::RSTICK_RIGHT, K::AXIS, kAbsZ, +1, "+2"},
+    };
+    check_bindings(p, expected);
 }
 
 TEST_CASE("vidpid_key formats 4-hex lowercase", "[controller_profile]") {
