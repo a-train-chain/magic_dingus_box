@@ -156,11 +156,61 @@ TEST_CASE("8-bit range pad (min=0,max=255,rest=127) arms and captures with corre
     CaptureDeviceCaps caps;
     caps.axes = {{99, 0, 255, 127}};
     CaptureSession s(ControllerStyle::PS_STYLE, caps);
-    // half-range = (255-0)/2 = 127; 50% threshold = 63; 25% threshold = 31
-    REQUIRE(s.feed(EV_ABS_T, 99, 180) == CaptureSession::FeedResult::NONE);  // delta=53, not >63: no arm
+    // Directional thresholds: avail_pos = max-rest = 255-127 = 128 (50% = 64,
+    // 25% = 32); avail_neg = rest-min = 127-0 = 127 (unused by this test,
+    // rest is near-centered so both sides behave almost identically).
+    REQUIRE(s.feed(EV_ABS_T, 99, 180) == CaptureSession::FeedResult::NONE);  // delta=53, not >64: no arm
     REQUIRE(s.feed(EV_ABS_T, 99, 127) == CaptureSession::FeedResult::NONE);  // back to rest, never armed
-    REQUIRE(s.feed(EV_ABS_T, 99, 250) == CaptureSession::FeedResult::NONE); // delta=123 >63: arms +1
-    REQUIRE(s.feed(EV_ABS_T, 99, 110) == CaptureSession::FeedResult::CAPTURED);  // delta=-17, |delta|<31
+    REQUIRE(s.feed(EV_ABS_T, 99, 250) == CaptureSession::FeedResult::NONE); // delta=123 >64: arms +1
+    REQUIRE(s.feed(EV_ABS_T, 99, 110) == CaptureSession::FeedResult::CAPTURED);  // delta=-17, |delta|<32
     REQUIRE(s.results().at(LogicalControl::DPAD_UP).direction == +1);
     REQUIRE(s.results().at(LogicalControl::DPAD_UP).token == "+0");
+}
+
+// --- Fix pass regression tests ------------------------------------------
+
+TEST_CASE("a held button from a completed hat step does not leak into the next step",
+          "[capture_session]") {
+    // Reproduces the exact leaked-transient-state scenario: the user holds
+    // a button through an unrelated hat capture on the same step, then
+    // merely releases that stale button on the *next* step. Before the
+    // fix, feed() only cleared the transient field belonging to the
+    // completing gesture's kind (pressed_code_ for BUTTON, armed_abs_code_
+    // for HAT/AXIS), so pressed_code_ survived a HAT capture and a later
+    // stray release silently mis-bound DPAD_DOWN to button 290.
+    CaptureSession s(ControllerStyle::PS_STYLE, dragonrise_like());
+    REQUIRE(s.current_control() == LogicalControl::DPAD_UP);
+
+    // 1. Press and hold button 290 on DPAD_UP -- never released here.
+    REQUIRE(s.feed(EV_KEY_T, 290, 1) == CaptureSession::FeedResult::NONE);
+
+    // 2. Still on DPAD_UP, perform the intended hat gesture: arm hat 17
+    //    direction -1, then return to 0 -- captures DPAD_UP via the hat.
+    REQUIRE(s.feed(EV_ABS_T, 17, -1) == CaptureSession::FeedResult::NONE);
+    REQUIRE(s.feed(EV_ABS_T, 17, 0) == CaptureSession::FeedResult::CAPTURED);
+    REQUIRE(s.current_control() == LogicalControl::DPAD_DOWN);
+    REQUIRE(s.results().at(LogicalControl::DPAD_UP).kind == PhysicalBinding::Kind::HAT);
+
+    // 3. On DPAD_DOWN, simply release the button that was idly held since
+    //    step 1. This must NOT be captured as a binding for DPAD_DOWN.
+    REQUIRE(s.feed(EV_KEY_T, 290, 0) == CaptureSession::FeedResult::NONE);
+    REQUIRE(s.current_control() == LogicalControl::DPAD_DOWN);  // did not advance
+    REQUIRE(s.results().count(LogicalControl::DPAD_DOWN) == 0);
+}
+
+TEST_CASE("a stick resting near one extreme still arms toward that extreme",
+          "[capture_session]") {
+    // On an 8-bit pad (0..255) resting at 200 instead of ~127, there is
+    // only 55 units of travel toward max. The old fixed half-range
+    // threshold ((255-0)/2/2 = 63) exceeded that entire 55-unit budget, so
+    // deflecting fully toward max could never arm and that direction was
+    // permanently uncapturable. The directional threshold uses the room
+    // actually available (max-rest = 55; 50% = 27), so full deflection
+    // (delta=55) now arms.
+    CaptureDeviceCaps caps;
+    caps.axes = {{99, 0, 255, 200}};
+    CaptureSession s(ControllerStyle::PS_STYLE, caps);
+    REQUIRE(s.feed(EV_ABS_T, 99, 255) == CaptureSession::FeedResult::NONE);   // delta=55 >27: arms +1
+    REQUIRE(s.feed(EV_ABS_T, 99, 200) == CaptureSession::FeedResult::CAPTURED);  // back at rest
+    REQUIRE(s.results().at(LogicalControl::DPAD_UP).direction == +1);
 }

@@ -43,6 +43,13 @@ public:
     std::map<LogicalControl, PhysicalBinding> results() const;
 
 private:
+    // Clears all per-step transient state. Used by skip(), redo_last(), and
+    // feed() on every successful capture -- a gesture of one kind (e.g. a
+    // held button) must not leak into the next step just because a
+    // different kind (e.g. a hat) is what actually completed. Centralized
+    // here so the three call sites cannot drift out of sync again.
+    void reset_transient();
+
     ControllerStyle style_;
     CaptureDeviceCaps caps_;
     std::vector<LogicalControl> steps_;
