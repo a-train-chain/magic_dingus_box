@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace retroarch {
@@ -12,6 +13,11 @@ enum class ControllerType {
     N64_ADAPTER,          // SWITCH CO.,LTD. 0e6d:111d
     PS_STYLE_DRAGONRISE,  // DragonRise/Microntek Generic USB Joystick 0079:0006
 };
+
+// Match a (vendor, product) pair to a known controller type. Exposed (moved
+// out of the anonymous namespace) for per-pad mapping resolution — see
+// resolve_mapping_for_pad() in controller_mapping.h.
+ControllerType match_vid_pid(uint16_t vid, uint16_t pid);
 
 // Scan /dev/input/js* lexicographically and return the first recognized type.
 // Reads VID/PID from /sys/class/input/jsN/device/id/{vendor,product}.

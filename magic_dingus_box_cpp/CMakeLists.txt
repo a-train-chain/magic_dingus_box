@@ -470,11 +470,13 @@ if(RETROARCH_TEST_SOURCES)
         src/retroarch/controller_mapping.cpp
         src/retroarch/logical_controls.cpp
         src/retroarch/controller_profile.cpp
+        src/retroarch/controller_detector.cpp
         src/retroarch/joydev_index.cpp
         src/utils/config.cpp
     )
-    target_include_directories(test_retroarch_unit PRIVATE src)
-    target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain pthread)
+    target_include_directories(test_retroarch_unit PRIVATE src ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_retroarch_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
     target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
 endif()

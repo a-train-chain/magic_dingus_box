@@ -40,14 +40,16 @@ uint16_t parse_hex4(const std::string& s) {
     }
 }
 
-// Match a (vendor, product) pair to a known controller type.
+} // anonymous namespace
+
+// Match a (vendor, product) pair to a known controller type. Declared in
+// controller_detector.h (moved out of the anonymous namespace above) so
+// resolve_mapping_for_pad() can reach it.
 ControllerType match_vid_pid(uint16_t vid, uint16_t pid) {
     if (vid == 0x0e6d && pid == 0x111d) return ControllerType::N64_ADAPTER;
     if (vid == 0x0079 && pid == 0x0006) return ControllerType::PS_STYLE_DRAGONRISE;
     return ControllerType::UNKNOWN;
 }
-
-} // anonymous namespace
 
 ControllerType detect_primary_controller() {
     namespace fs = std::filesystem;

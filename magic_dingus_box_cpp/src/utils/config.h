@@ -34,6 +34,11 @@ std::string get_home_path();
 // Settings file ($CONFIG/settings.json)
 std::string get_settings_file();
 
+// Captured controller profiles file ($CONFIG/controller_profiles.json).
+// Excluded from the OTA updater's rsync, so captured profiles survive
+// firmware updates. MAGIC_CONTROLLER_PROFILES_FILE overrides for tests.
+std::string get_controller_profiles_file();
+
 // Log file ($CONFIG/magic_dingus_box.log)
 std::string get_log_file();
 

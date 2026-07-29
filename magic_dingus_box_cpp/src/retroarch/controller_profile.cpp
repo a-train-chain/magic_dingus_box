@@ -1,6 +1,14 @@
 #include "controller_profile.h"
 
+#include <json/json.h>
+
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <sstream>
+
+#include "../utils/config.h"
 
 #ifdef __linux__
 #include <linux/input-event-codes.h>  // only for the code constants; see below
@@ -136,6 +144,212 @@ std::string vidpid_key(uint16_t vid, uint16_t pid) {
     char buf[10];
     std::snprintf(buf, sizeof(buf), "%04x:%04x", vid, pid);
     return buf;
+}
+
+namespace {
+
+const char* kind_key(PhysicalBinding::Kind k) {
+    switch (k) {
+        case PhysicalBinding::Kind::BUTTON: return "button";
+        case PhysicalBinding::Kind::HAT: return "hat";
+        case PhysicalBinding::Kind::AXIS: return "axis";
+    }
+    return "button";
+}
+
+std::optional<PhysicalBinding::Kind> kind_from_key(const std::string& s) {
+    if (s == "button") return PhysicalBinding::Kind::BUTTON;
+    if (s == "hat") return PhysicalBinding::Kind::HAT;
+    if (s == "axis") return PhysicalBinding::Kind::AXIS;
+    return std::nullopt;
+}
+
+// Parse a 4-hex-digit field of a "vvvv:pppp" vidpid_key(). Never throws --
+// std::stoul throws on a malformed key (e.g. non-hex characters), which
+// would otherwise propagate out of profiles_from_json and violate its
+// never-throw contract.
+std::optional<uint16_t> parse_hex4_field(const std::string& s) {
+    try {
+        size_t pos = 0;
+        unsigned long v = std::stoul(s, &pos, 16);
+        if (pos != s.size() || v > 0xFFFF) return std::nullopt;
+        return static_cast<uint16_t>(v);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+// jsoncpp's Value::asString()/asUInt()/asInt() THROW (Json::LogicError, by
+// default build config) when the value's actual JSON type isn't convertible
+// -- e.g. a "code" field written as a string or an array. A corrupt or
+// hand-edited controller_profiles.json can easily contain a field with the
+// wrong JSON type, so every field read in profiles_from_json goes through
+// one of these wrappers, which catch that and fall back to `def` instead of
+// letting the exception escape.
+std::string safe_str(const Json::Value& obj, const char* key, const std::string& def) {
+    try {
+        return obj.get(key, def).asString();
+    } catch (...) {
+        return def;
+    }
+}
+
+unsigned safe_uint(const Json::Value& obj, const char* key, unsigned def) {
+    try {
+        return obj.get(key, def).asUInt();
+    } catch (...) {
+        return def;
+    }
+}
+
+int safe_int(const Json::Value& obj, const char* key, int def) {
+    try {
+        return obj.get(key, def).asInt();
+    } catch (...) {
+        return def;
+    }
+}
+
+}  // namespace
+
+std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profiles) {
+    Json::Value root;
+    root["version"] = 1;
+    Json::Value& out = root["profiles"] = Json::Value(Json::objectValue);
+    for (const auto& [key, p] : profiles) {
+        Json::Value jp;
+        jp["name"] = p.name;
+        jp["style"] = controller_style_key(p.style);
+        jp["captured_at"] = p.captured_at;
+        Json::Value& jc = jp["controls"] = Json::Value(Json::objectValue);
+        for (const auto& [control, b] : p.controls) {
+            Json::Value jb;
+            jb["kind"] = kind_key(b.kind);
+            jb["code"] = b.code;
+            if (b.direction != 0) jb["direction"] = b.direction;
+            jb["token"] = b.token;
+            jc[logical_control_key(control)] = jb;
+        }
+        out[key] = jp;
+    }
+    Json::StreamWriterBuilder w;
+    w["indentation"] = "  ";
+    return Json::writeString(w, root);
+}
+
+// NEVER throws and never propagates a parse failure -- every malformed
+// piece (bad JSON, a non-object "profiles" node, a non-object profile entry,
+// a map key that isn't a valid "vvvv:pppp" vid/pid pair, an unknown style,
+// an unknown control key, or an unknown binding kind) degrades to skipping
+// just that piece, so a corrupt controller_profiles.json can never prevent
+// the kiosk from booting.
+std::map<std::string, PhysicalProfile> profiles_from_json(const std::string& text) {
+    std::map<std::string, PhysicalProfile> result;
+    if (text.empty()) return result;
+
+    Json::Value root;
+    Json::CharReaderBuilder rb;
+    std::string errs;
+    std::istringstream in(text);
+    if (!Json::parseFromStream(rb, in, &root, &errs)) return result;
+    // A syntactically valid JSON document that isn't an object (e.g. a bare
+    // "42" or "[1,2,3]") makes root's type non-object -- jsoncpp's
+    // operator[] asserts (and, with exceptions enabled, THROWS) if called on
+    // a non-object/non-null Value, so this check must come before touching
+    // root["profiles"] at all, not just before using its result.
+    if (!root.isObject()) return result;
+
+    const Json::Value& profiles = root["profiles"];
+    if (!profiles.isObject()) return result;
+
+    for (const auto& key : profiles.getMemberNames()) {
+        const Json::Value& jp = profiles[key];
+        if (!jp.isObject()) continue;  // malformed entry: skip just this one
+
+        // vid/pid parsed back from the "vvvv:pppp" map key.
+        if (key.size() != 9 || key[4] != ':') continue;
+        auto vid = parse_hex4_field(key.substr(0, 4));
+        auto pid = parse_hex4_field(key.substr(5, 4));
+        if (!vid || !pid) continue;
+
+        auto style = controller_style_from_key(safe_str(jp, "style", ""));
+        if (!style) continue;  // unknown/malformed style: skip this profile
+
+        PhysicalProfile p;
+        p.name = safe_str(jp, "name", "");
+        p.style = *style;
+        p.vid = *vid;
+        p.pid = *pid;
+        p.captured_at = safe_str(jp, "captured_at", "");
+
+        const Json::Value& jc = jp["controls"];
+        if (jc.isObject()) {
+            for (const auto& ck : jc.getMemberNames()) {
+                auto control = logical_control_from_key(ck);
+                if (!control) continue;  // unknown control key: skip it
+
+                const Json::Value& jb = jc[ck];
+                if (!jb.isObject()) continue;
+                auto kind = kind_from_key(safe_str(jb, "kind", ""));
+                if (!kind) continue;  // unknown/malformed binding kind: skip it
+
+                PhysicalBinding b;
+                b.kind = *kind;
+                b.code = static_cast<uint16_t>(safe_uint(jb, "code", 0));
+                b.direction = safe_int(jb, "direction", 0);
+                b.token = safe_str(jb, "token", "");
+                p.controls[*control] = b;
+            }
+        }
+        result[key] = p;
+    }
+    return result;
+}
+
+std::map<std::string, PhysicalProfile> load_profile_store() {
+    std::ifstream f(config::get_controller_profiles_file());
+    if (!f.good()) return {};  // missing/unreadable file: empty store, not an error
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return profiles_from_json(ss.str());
+}
+
+bool save_profile_store(const std::map<std::string, PhysicalProfile>& profiles) {
+    const std::string path = config::get_controller_profiles_file();
+
+    // Ensure the config directory exists (mirrors SettingsPersistence's
+    // save path) -- a fresh box or a test pointed at a not-yet-created
+    // directory must not crash the wizard's save step.
+    std::filesystem::path dir = std::filesystem::path(path).parent_path();
+    if (!dir.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        if (ec) return false;
+    }
+
+    const std::string tmp = path + ".tmp";
+    {
+        // Scoped so the file is fully flushed and closed (RAII) before the
+        // rename below -- renaming over a still-open/unflushed handle would
+        // risk a truncated destination file.
+        std::ofstream f(tmp, std::ios::trunc);
+        if (!f.good()) return false;
+        f << profiles_to_json(profiles);
+        f.close();
+        if (f.fail()) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace retroarch

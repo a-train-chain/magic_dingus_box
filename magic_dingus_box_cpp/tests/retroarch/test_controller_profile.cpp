@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -262,4 +265,94 @@ TEST_CASE("build_mapping leaves right stick fully unbound on a mixed-kind captur
     REQUIRE(m.r_x_minus_btn.empty());
     REQUIRE(m.r_y_plus_btn.empty());
     REQUIRE(m.r_y_minus_btn.empty());
+}
+
+TEST_CASE("profiles round-trip through JSON", "[controller_profile][json]") {
+    std::map<std::string, PhysicalProfile> in;
+    PhysicalProfile p = builtin_dragonrise_profile();
+    p.vid = 0x0810; p.pid = 0xe501; p.name = "Twin USB"; p.captured_at = "2026-07-28T21:00:00Z";
+    in[vidpid_key(p.vid, p.pid)] = p;
+    const auto out = profiles_from_json(profiles_to_json(in));
+    REQUIRE(out.size() == 1);
+    const auto& q = out.at("0810:e501");
+    REQUIRE(q.name == "Twin USB");
+    REQUIRE(q.style == ControllerStyle::PS_STYLE);
+    REQUIRE(q.vid == 0x0810); REQUIRE(q.pid == 0xe501);
+    REQUIRE(q.token(LogicalControl::CROSS) == "2");
+    REQUIRE(q.binding(LogicalControl::DPAD_UP)->kind == PhysicalBinding::Kind::HAT);
+    REQUIRE(q.binding(LogicalControl::DPAD_UP)->direction == -1);
+}
+
+TEST_CASE("malformed JSON degrades to an empty store", "[controller_profile][json]") {
+    REQUIRE(profiles_from_json("").empty());
+    REQUIRE(profiles_from_json("not json at all").empty());
+    REQUIRE(profiles_from_json("{\"version\":1,\"profiles\":{\"x\":42}}").empty());
+}
+
+TEST_CASE("unknown keys are ignored, known ones survive", "[controller_profile][json]") {
+    const char* j = R"({"version":1,"future_field":true,"profiles":{
+      "0810:e501":{"name":"T","style":"ps_style","captured_at":"",
+        "controls":{"cross":{"kind":"button","code":289,"token":"1"},
+                    "warp_drive":{"kind":"button","code":300,"token":"9"}}}}})";
+    const auto out = profiles_from_json(j);
+    REQUIRE(out.size() == 1);
+    REQUIRE(out.at("0810:e501").token(LogicalControl::CROSS) == "1");
+    REQUIRE(out.at("0810:e501").controls.size() == 1);  // warp_drive dropped
+}
+
+// Extra regression coverage beyond the brief: jsoncpp's asString()/asUInt()/
+// asInt() THROW when a field's actual JSON type doesn't convert (verified
+// directly against the linked jsoncpp build) -- e.g. root itself not being
+// an object, or a "code"/"direction" field written as a string/array. A
+// hand-corrupted or partially-written controller_profiles.json can easily
+// produce either shape, so both must degrade like every other malformed
+// input rather than crashing the kiosk on boot.
+TEST_CASE("profiles_from_json never throws on well-formed-but-wrong-shaped JSON",
+          "[controller_profile][json]") {
+    REQUIRE(profiles_from_json("42").empty());       // valid JSON, non-object root
+    REQUIRE(profiles_from_json("[1,2,3]").empty());   // valid JSON, array root
+    const char* j = R"({"version":1,"profiles":{"0810:e501":{
+        "name":"T","style":"ps_style","captured_at":"",
+        "controls":{"cross":{"kind":"button","code":"nope","direction":[1],"token":42}}}}})";
+    std::map<std::string, PhysicalProfile> out;
+    REQUIRE_NOTHROW(out = profiles_from_json(j));
+    REQUIRE(out.size() == 1);
+    // Non-convertible fields degrade to their defaults rather than throwing.
+    const auto* b = out.at("0810:e501").binding(LogicalControl::CROSS);
+    REQUIRE(b != nullptr);
+    REQUIRE(b->code == 0);
+    REQUIRE(b->direction == 0);
+}
+
+TEST_CASE("resolution order: captured > builtin > N64 fallback", "[controller_profile]") {
+    std::map<std::string, PhysicalProfile> store;
+    // 1. Unknown pad, empty store -> N64 fallback (legacy behavior)
+    auto m = resolve_mapping_for_pad(0x1234, 0x5678, store, "snes9x2010_libretro");
+    REQUIRE(m.name == "Super Nintendo");
+    // 2. Known builtin -> its style
+    m = resolve_mapping_for_pad(0x0079, 0x0006, store, "snes9x2010_libretro");
+    REQUIRE(m.name == "Super Nintendo (PS-style)");
+    // 3. Captured profile for the SAME vid/pid wins over the builtin
+    PhysicalProfile clone = builtin_dragonrise_profile();
+    clone.controls[LogicalControl::CROSS].token = "7";   // rewired clone pad
+    store[vidpid_key(0x0079, 0x0006)] = clone;
+    m = resolve_mapping_for_pad(0x0079, 0x0006, store, "snes9x2010_libretro");
+    REQUIRE(m.b_btn == "7");
+    // 4. Captured profile for an unknown pad
+    PhysicalProfile cap = builtin_dragonrise_profile();
+    cap.vid = 0x1234; cap.pid = 0x5678;
+    store[vidpid_key(0x1234, 0x5678)] = cap;
+    REQUIRE(resolve_mapping_for_pad(0x1234, 0x5678, store, "snes9x2010_libretro").name
+            == "Super Nintendo (PS-style)");
+}
+
+TEST_CASE("store save/load round-trips through a temp file", "[controller_profile][store]") {
+    ::setenv("MAGIC_CONTROLLER_PROFILES_FILE", "/tmp/mdb_test_profiles.json", 1);
+    std::remove("/tmp/mdb_test_profiles.json");
+    REQUIRE(load_profile_store().empty());          // missing file -> empty, no error
+    std::map<std::string, PhysicalProfile> in;
+    in["0810:e501"] = builtin_dragonrise_profile();
+    REQUIRE(save_profile_store(in));
+    REQUIRE(load_profile_store().size() == 1);
+    ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
 }

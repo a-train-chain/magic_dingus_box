@@ -54,4 +54,22 @@ const PhysicalProfile& builtin_dragonrise_profile();
 
 std::string vidpid_key(uint16_t vid, uint16_t pid);  // "0079:0006"
 
+// Serialize captured profiles to/from the on-disk JSON schema (see
+// config::get_controller_profiles_file()). profiles_from_json NEVER throws
+// and never propagates a parse failure -- malformed text, a non-object
+// "profiles" node, a bad map key, an unknown style, an unknown control key,
+// or an unknown binding kind all degrade to skipping that piece (or an
+// empty store), so a corrupt profiles file can never prevent the kiosk from
+// booting.
+std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profiles);
+std::map<std::string, PhysicalProfile> profiles_from_json(const std::string& text);
+
+// Load/save the profile store at config::get_controller_profiles_file()
+// (overridable via MAGIC_CONTROLLER_PROFILES_FILE for tests). A missing
+// file loads as an empty store, not an error. save_profile_store writes to
+// a temp file and renames it into place so a crash mid-write can never
+// leave a half-written profiles file on disk.
+std::map<std::string, PhysicalProfile> load_profile_store();
+bool save_profile_store(const std::map<std::string, PhysicalProfile>& profiles);
+
 }  // namespace retroarch

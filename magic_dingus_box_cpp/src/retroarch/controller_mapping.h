@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <iosfwd>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -146,6 +148,21 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
 // fall back to the N64 adapter mapping, preserving existing behavior for
 // anyone without the PS pad plugged in.
 ControllerMapping get_mapping(ControllerType type, const std::string& core_name);
+
+// Resolve the mapping for one physical pad, by VID/PID, in precedence order:
+//   1. A captured profile for this exact VID/PID in `store` (operator-
+//      corrected -- this deliberately wins even over a builtin match, so a
+//      rewired clone pad sharing a known VID/PID can be fixed by capturing).
+//   2. A built-in profile for this VID/PID (see get_mapping/match_vid_pid).
+//   3. The legacy N64-adapter fallback (get_mapping's UNKNOWN branch).
+//
+// Declared here rather than in controller_profile.h because it returns
+// ControllerMapping by value and needs the complete type; controller_profile.h
+// intentionally stays lightweight (no cyclic dependency on this header).
+ControllerMapping resolve_mapping_for_pad(
+    uint16_t vid, uint16_t pid,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name);
 
 // Emit the RetroArch input_player<N>_r_* lines for the right analog stick.
 //

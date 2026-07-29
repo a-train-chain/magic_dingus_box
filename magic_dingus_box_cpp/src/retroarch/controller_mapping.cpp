@@ -386,6 +386,20 @@ ControllerMapping get_mapping(ControllerType type, const std::string& core_name)
     }
 }
 
+ControllerMapping resolve_mapping_for_pad(
+    uint16_t vid, uint16_t pid,
+    const std::map<std::string, PhysicalProfile>& store,
+    const std::string& core_name) {
+    // 1. Captured profile wins (covers rewired clones of known pads too).
+    auto it = store.find(vidpid_key(vid, pid));
+    if (it != store.end()) {
+        return build_mapping(get_semantic_mapping(it->second.style, core_name),
+                             it->second);
+    }
+    // 2. Builtin by VID/PID; 3. legacy N64 fallback for everything else.
+    return get_mapping(match_vid_pid(vid, pid), core_name);
+}
+
 void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player) {
     const std::string p = "input_player" + std::to_string(player) + "_r_";
