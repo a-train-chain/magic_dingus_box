@@ -207,10 +207,50 @@ services:
       # The cascade-restart watcher (gluetun_cascade_restart.sh) catches
       # the resulting health_status:unhealthy event and restarts gluetun,
       # which then fires a start event that cascades to dependents.
-      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip='"]
+      #
+      # SECOND LAYER — the NAT-PMP forwarded port. Added after a live
+      # incident: the tunnel stayed perfectly healthy for ~8 hours while
+      # port forwarding was dead, because the check above passes on DNS +
+      # TCP + TLS and never touches NAT-PMP. Gluetun had leased port 48513,
+      # then the gateway began refusing (`10.2.0.2->10.2.0.1:5351:
+      # connection refused`), the port went to 0, and nothing noticed:
+      # qBittorrent sat on a stale 38738 accepting no incoming peers while
+      # the dashboard read "VPN port unavailable" and the container reported
+      # healthy, so the cascade-restart watchdog never fired. A manual
+      # `docker restart mdb_gluetun` fixed it in 10 seconds.
+      #
+      # The sentinel /tmp/.pf_seen is the load-bearing part, and it must be
+      # written by THIS CHECK — not read from gluetun's own port file.
+      # Gluetun CLEARS /tmp/gluetun/forwarded_port the moment a lease dies
+      # (observed: "17:53:22 writing port file" then "17:54:10 clearing port
+      # file"). Keying off that file therefore reads a DEAD lease as "never
+      # had one" and reports healthy — which is precisely the 8-hour silent
+      # outage this check exists to catch. The sentinel only ever gets
+      # created, never cleared, so it is a true "we held a lease this
+      # session" latch. /tmp is container-local (only /gluetun is bind
+      # mounted), so a recreate resets it and a fresh session legitimately
+      # starts in the never-leased state.
+      # That is what stops two much worse outcomes than a missing port:
+      #
+      #   1. BOOT DEADLOCK. radarr/prowlarr/qbit/byparr share this netns and
+      #      `depends_on: service_healthy` gates their startup. If a plain
+      #      port assertion were used and NAT-PMP happened to be unavailable
+      #      at boot, gluetun would never go healthy and the ENTIRE media
+      #      stack would fail to start — far worse than degraded peering.
+      #   2. RESTART LOOP. cascade-restart restarts gluetun on unhealthy. A
+      #      sustained ProtonVPN port-forwarding outage would otherwise churn
+      #      the whole stack every few minutes, indefinitely.
+      #
+      # Net effect: a lease that DIES is caught and auto-recovered (the case
+      # that actually bit us); a lease that never existed is left alone.
+      test: ["CMD-SHELL", "wget -qO- --tries=1 --timeout=5 https://one.one.one.one/cdn-cgi/trace | grep -q '^ip=' && { wget -qO- --tries=1 --timeout=3 http://localhost:8000/v1/openvpn/portforwarded 2>/dev/null | grep -qE '\"port\":[1-9]' && touch /tmp/.pf_seen || [ ! -f /tmp/.pf_seen ]; }"]
       interval: 60s
       timeout: 10s
-      retries: 3
+      # 5 consecutive failures (~5 min) before unhealthy, not 3. A NAT-PMP
+      # re-lease across a server change can briefly read 0; five minutes is
+      # comfortably longer than that blip and still well inside the window
+      # where a dead lease matters.
+      retries: 5
       # This is the cold-boot bottleneck: radarr/prowlarr/qbit share
       # gluetun's netns and can't start until it's healthy. start_interval
       # polls every 3s during start_period so gluetun flips healthy the
