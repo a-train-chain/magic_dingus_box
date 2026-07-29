@@ -315,22 +315,50 @@ TEST_CASE("a profile captured under an uppercase-hex key is still found by "
     REQUIRE(m.a_btn == "77");
 }
 
-// Fix 1's serializer half: profiles_to_json must not trust the caller's map
-// key either, or a non-canonical (or simply wrong) map key would be
-// faithfully written back out to disk, reproducing the read-side bug on the
-// very next load. The serializer derives the on-disk key from the profile's
-// own vid/pid fields instead.
-TEST_CASE("profiles_to_json derives the on-disk key from the profile's own "
-          "vid/pid, ignoring a wrong caller-supplied map key",
+// Fix pass 2: profiles_to_json must write each entry under the CALLER's map
+// key, not a key derived from the profile's own vid/pid fields. std::map
+// already guarantees the caller's keys are unique, so writing them straight
+// through can never collide two distinct entries on disk -- unlike deriving
+// the on-disk key from p.vid/p.pid, which two entries can easily share (see
+// the collision regression test below).
+TEST_CASE("profiles_to_json writes each entry under the caller's map key, "
+          "not a key derived from the profile's own vid/pid",
           "[controller_profile][json]") {
     std::map<std::string, PhysicalProfile> in;
-    PhysicalProfile p = builtin_dragonrise_profile();
-    p.vid = 0x0810; p.pid = 0xe501;
-    in["this-is-not-a-vidpid-key-at-all"] = p;
+    PhysicalProfile p = builtin_dragonrise_profile();  // p.vid/p.pid baked at 0079:0006
+    in["0810:e501"] = p;  // caller's key intentionally differs from p.vid/p.pid
     const auto out = profiles_from_json(profiles_to_json(in));
     REQUIRE(out.size() == 1);
+    // Found under the caller's key, not a key derived from p.vid/p.pid.
     REQUIRE(out.count("0810:e501") == 1);
-    REQUIRE(out.count("this-is-not-a-vidpid-key-at-all") == 0);
+    REQUIRE(out.count("0079:0006") == 0);
+}
+
+// Regression test: profiles_to_json used to derive the on-disk key from each
+// profile's own vid/pid fields instead of writing the caller's map key.
+// std::map guarantees the caller's keys are unique, but two entries can
+// easily carry IDENTICAL vid/pid fields -- e.g. both cloned from the same
+// builtin template without overriding vid/pid, as here -- so deriving the
+// on-disk key from vid/pid let the second entry silently overwrite the
+// first, with no error and no log. This test fails against that code (both
+// entries collapse to the same "0079:0006" key, so out.size() == 1) and
+// passes once each entry is written under its own caller-supplied key.
+TEST_CASE("profiles_to_json does not collide two entries with identical "
+          "vid/pid fields stored under different caller keys",
+          "[controller_profile][json]") {
+    std::map<std::string, PhysicalProfile> in;
+    PhysicalProfile a = builtin_dragonrise_profile();  // vid/pid left at 0079:0006
+    PhysicalProfile b = builtin_dragonrise_profile();  // same vid/pid, different map key
+    a.name = "Player 1 pad";
+    b.name = "Player 2 pad";
+    in["0810:e501"] = a;
+    in["1234:5678"] = b;
+    const auto out = profiles_from_json(profiles_to_json(in));
+    REQUIRE(out.size() == 2);
+    REQUIRE(out.count("0810:e501") == 1);
+    REQUIRE(out.count("1234:5678") == 1);
+    REQUIRE(out.at("0810:e501").name == "Player 1 pad");
+    REQUIRE(out.at("1234:5678").name == "Player 2 pad");
 }
 
 TEST_CASE("malformed JSON degrades to an empty store", "[controller_profile][json]") {
@@ -464,9 +492,13 @@ TEST_CASE("store save/load round-trips through a temp file", "[controller_profil
     std::remove("/tmp/mdb_test_profiles.json");
     REQUIRE(load_profile_store().empty());          // missing file -> empty, no error
     std::map<std::string, PhysicalProfile> in;
-    in["0810:e501"] = builtin_dragonrise_profile();
+    PhysicalProfile p = builtin_dragonrise_profile();
+    p.vid = 0x0810; p.pid = 0xe501;  // match the map key below, not the builtin's 0079:0006
+    in["0810:e501"] = p;
     REQUIRE(save_profile_store(in));
-    REQUIRE(load_profile_store().size() == 1);
+    const auto out = load_profile_store();
+    REQUIRE(out.size() == 1);
+    REQUIRE(out.count("0810:e501") == 1);
     ::unsetenv("MAGIC_CONTROLLER_PROFILES_FILE");
 }
 

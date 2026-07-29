@@ -217,7 +217,6 @@ std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profi
     root["version"] = 1;
     Json::Value& out = root["profiles"] = Json::Value(Json::objectValue);
     for (const auto& [key, p] : profiles) {
-        (void)key;  // see the canonical-key comment below -- the map key itself is not trusted
         Json::Value jp;
         jp["name"] = p.name;
         jp["style"] = controller_style_key(p.style);
@@ -231,17 +230,18 @@ std::string profiles_to_json(const std::map<std::string, PhysicalProfile>& profi
             jb["token"] = b.token;
             jc[logical_control_key(control)] = jb;
         }
-        // Derive the on-disk key from the profile's OWN vid/pid fields
-        // rather than trusting the caller's map key. profiles_to_json takes
-        // whatever std::map<std::string, PhysicalProfile> a caller hands
-        // it, and nothing enforces that the caller's key matches
-        // vidpid_key(p.vid, p.pid) -- a hand-built map, or a future writer
-        // that keys by something else, would otherwise faithfully persist a
-        // non-canonical (or simply wrong) key to disk, reproducing the same
-        // silent-lookup-miss bug profiles_from_json's canonicalization
-        // fixes on the read side. Deriving from the profile itself makes
-        // the round trip self-healing regardless of what the map key was.
-        out[vidpid_key(p.vid, p.pid)] = jp;
+        // Write under the CALLER's map key, as-is. std::map guarantees the
+        // caller's keys are unique, but two distinct entries can easily
+        // share the same vid/pid fields (e.g. both cloned from a builtin
+        // template without overriding vid/pid, or both left at the
+        // zero-initialized default) -- deriving the on-disk key from
+        // p.vid/p.pid instead of the caller's key would make the second
+        // such entry silently overwrite the first, with no error and no
+        // log. Writing the caller's guaranteed-unique key means distinct
+        // entries can never collide on disk; profiles_from_json's
+        // canonicalization (see below) already self-corrects a
+        // non-canonical key spelling on the next load.
+        out[key] = jp;
     }
     Json::StreamWriterBuilder w;
     w["indentation"] = "  ";
