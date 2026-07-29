@@ -388,25 +388,14 @@ if(ENABLE_MEDIA_BROWSER)
         src/platform/sequence_detector.cpp
     )
 
-    # Task 17: screen dispatcher + stub screens. Header-only base class
-    # (mb_screen.h) + 6 concrete .cpp files. Kept in a separate list so
-    # the test binary (which has no Renderer) doesn't need to link them.
-    #
-    # DEAD: defined but consumed by NO target. These files reach the kiosk
-    # binary through KIOSK_MEDIA_BROWSER_SOURCES above, which lists them
-    # separately. Anyone reviving this list must also give the target
-    # src/utils/time_format.cpp -- library_screen.cpp calls
-    # utils::iso8601_utc() and would otherwise fail to link with no hint why.
-    set(MEDIA_BROWSER_UI_SOURCES
-        src/media_browser/ui/browse_screen.cpp
-        src/media_browser/ui/search_screen.cpp
-        src/media_browser/ui/detail_screen.cpp
-        src/media_browser/ui/playback_screen.cpp
-        src/media_browser/ui/queue_screen.cpp
-        src/media_browser/ui/library_screen.cpp
-        src/media_browser/ui/mb_settings_screen.cpp
-        src/media_browser/ui/mb_chrome.cpp
-    )
+    # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
+    # queue/library/mb_settings/mb_chrome) are NOT listed here. They need a GL
+    # Renderer, so they go only into the kiosk binary, via
+    # KIOSK_MEDIA_BROWSER_SOURCES above — that list is the single place they are
+    # named. A second list of exactly those eight files used to sit here
+    # (MEDIA_BROWSER_UI_SOURCES), consumed by no target, with a comment implying
+    # it existed to keep them OUT of the test binary. It did nothing, and it sent
+    # anyone tracing where those files get compiled down a dead end.
 
     # --- Unit test runner ---
     set(MEDIA_BROWSER_TEST_SOURCES

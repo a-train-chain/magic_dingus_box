@@ -81,27 +81,14 @@ constexpr float kDotInset        = 8.0f;
 constexpr float kFooterMargin    = 12.0f;
 constexpr float kFooterReserve   = 36.0f;     // vertical room reserved for hint
 
-// Backdrop poster tint — same deterministic Knuth hash used by Browse
-// and Detail, so a given movie has the same fallback color everywhere.
-::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;  // Knuth hash
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at font_size.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
+// NOTE: a poster_tint_for_tmdb() and a truncate_to_width() used to sit here,
+// both uncalled and both warning -Wunused-function on every Pi build. The tint
+// one was a byte-for-byte duplicate of library_tint_for_tmdb() further down this
+// same file, which is what render() actually calls; the truncate one was
+// superseded when this screen moved to chrome::draw_poster_card(), which does its
+// own ellipsizing. Identical copies of both still live in the sibling screens
+// that do call them (browse/detail/search/queue/release_picker/mb_settings), so
+// nothing was lost here.
 
 // Slide-in overlay (v1.6.x).
 //   Panel sits 20 px inside the wood-frame's right inner edge so the
