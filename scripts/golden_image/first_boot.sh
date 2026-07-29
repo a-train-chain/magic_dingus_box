@@ -342,6 +342,28 @@ for f in paired_remotes.json pairing_session.json pairing_audit.log pending_revo
     fi
 done
 
+# Any *.jsonl left in the data dir. This is a GLOB, deliberately, not more
+# filenames added to the list above — that list is hand-maintained, and the
+# way this gap was found is that something not on it shipped:
+# remote_viewport_diag.jsonl accumulated 46 records of device user-agent
+# strings and screen geometry from the temporary viewport instrumentation,
+# and neither this script nor prepare_for_cloning.sh knew the name, so it
+# would have been captured into the image and shipped on every unit.
+#
+# Every .jsonl under data/ is per-unit append-only debris by construction —
+# a queue or a log that the kiosk or Flask recreates on demand. There is no
+# .jsonl here that a fresh box needs to inherit, so a glob is safe and it
+# catches the next one nobody thought to name. text_input_queue.jsonl is the
+# other current example: transient phone-to-kiosk keystrokes, and a
+# first-booting clone has nothing in flight.
+for d in "$DATA_DIR" "${CPP_DIR}/build/data"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r -d '' f; do
+        rm -f "$f"
+        log "    wiped: ${f#${INSTALL_DIR}/}"
+    done < <(find "$d" -maxdepth 1 -name '*.jsonl' -print0 2>/dev/null)
+done
+
 # The build tree carries a SECOND, byte-identical copy of the same per-Pi
 # state — build/data/ is populated when the C++ tests run and was never in
 # the loop above, so a clone kept a working copy of the source box's Flask
