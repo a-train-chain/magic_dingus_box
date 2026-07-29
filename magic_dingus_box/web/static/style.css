@@ -613,54 +613,14 @@ header::after {
     margin-bottom: 1.5rem;
 }
 
-.form-group {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    /* Fix for flex items not shrinking/growing correctly */
-}
-
-.form-group label {
-    margin-bottom: 0.5rem;
-    font-weight: bold;
-    color: var(--text-secondary);
-}
-
-.form-group input[type="text"],
-.form-group textarea {
-    padding: 0.75rem;
-    background: var(--bg-dark);
-    color: var(--text-primary);
-    border: 2px solid var(--border-color);
-    font-family: inherit;
-    font-size: 1rem;
-    width: 100%;
-    min-width: 200px;
-    /* Prevent inputs from becoming too narrow */
-    box-sizing: border-box;
-}
-
-.form-group input[type="text"]:focus,
-.form-group textarea:focus {
-    outline: none;
-    border-color: var(--accent2);
-    box-shadow: 0 0 10px rgba(64, 255, 200, 0.3);
-}
-
-.form-group input[type="checkbox"] {
-    width: auto;
-    margin-right: 0.5rem;
-}
-
-/* Playlist Builder - stacks on mobile, side-by-side on desktop */
-.playlist-content {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 1rem;
-    margin: 1.5rem 0;
-    width: 100%;
-    overflow: hidden;
-}
+/* DELETED: the `.form-group` cluster (label / input[type=text] / textarea /
+   :focus / input[type=checkbox]) and `.playlist-content`. Neither class
+   appears in index.html or manager.js, and querySelectorAll returns 0 for both
+   across all five tabs, all three sub-views of each, and with both modals
+   open. `.form-group` was pre-faceplate chrome — 2px --border-color strokes
+   and a `0 0 10px rgba(64,255,200,.3)` mint focus halo, a colour that exists
+   nowhere else in this file. See also the note at the checkbox block, which
+   already recorded it as inert. */
 
 .source-panel,
 .playlist-panel {
@@ -1309,10 +1269,8 @@ header::after {
         justify-content: center;
     }
 
-    .playlist-content {
-        grid-template-columns: 1fr 1fr;
-        /* Side by side */
-    }
+    /* DELETED: `.playlist-content { grid-template-columns: 1fr 1fr }` — the
+       class matches zero elements; see the note at its base rule. */
 
     .btn-primary {
         width: auto;
@@ -1628,32 +1586,14 @@ header::after {
     gap: 0.5rem;
 }
 
-/* Editor Layout */
-.editor-layout {
-    display: grid;
-    grid-template-columns: 1fr 350px;
-    gap: 1.5rem;
-    height: calc(100vh - 250px);
-    min-height: 600px;
-}
-
-.editor-main {
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-card);
-    border-radius: 12px;
-    padding: 1.5rem;
-    border: 1px solid var(--border-color);
-}
-
-.editor-sidebar {
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-card);
-    border-radius: 12px;
-    padding: 1rem;
-    border: 1px solid var(--border-color);
-}
+/* DELETED: `.editor-layout` / `.editor-main` / `.editor-sidebar`. None of the
+   three appears in index.html or manager.js and all three return 0 from
+   querySelectorAll in every tab and sub-view. They were a SECOND, competing
+   editor shell — the live one is `.playlist-editor-container` (index.html) —
+   and they carried pre-faceplate chrome the layer had already replaced
+   elsewhere: 12px radii (the canonical set is --r-key 0 / --r-inset 4px /
+   --r-panel 8px, style.css:3756-3758) and --border-color strokes. Their
+   `@media (max-width: 1024px)` companion block went with them. */
 
 /* Compact Form */
 .compact-form {
@@ -1667,9 +1607,9 @@ header::after {
     gap: 1rem;
 }
 
-.form-row .form-group {
-    flex: 1;
-}
+/* DELETED: `.form-row .form-group { flex: 1 }` — dead by containment, since
+   `.form-group` matches nothing. `.form-row` itself is left in place: it is
+   outside the scope of this pass and was not separately audited. */
 
 /* Sidebar Tabs */
 .sidebar-tabs {
@@ -1767,17 +1707,9 @@ header::after {
     font-size: 0.8rem;
 }
 
-/* Responsive Adjustments */
-@media (max-width: 1024px) {
-    .editor-layout {
-        grid-template-columns: 1fr;
-        height: auto;
-    }
-
-    .editor-sidebar {
-        height: 500px;
-    }
-}
+/* DELETED: the whole `@media (max-width: 1024px)` "Responsive Adjustments"
+   block. Its only two rules targeted `.editor-layout` and `.editor-sidebar`,
+   both of which match zero elements, so removing them left an empty query. */
 
 /* Modal */
 .modal {
@@ -1992,28 +1924,13 @@ header::after {
     font-size: 0.875rem;
 }
 
-.resolution-select {
-    width: 100%;
-    padding: 0.625rem 0.75rem;
-    border: 2px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-dark);
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    font-family: inherit;
-    cursor: pointer;
-    transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.resolution-select:hover {
-    border-color: var(--accent2);
-}
-
-.resolution-select:focus {
-    outline: none;
-    border-color: var(--accent2);
-    box-shadow: 0 0 10px rgba(88, 132, 177, 0.3);
-}
+/* DELETED: `.resolution-select` and its :hover / :focus. The live class is
+   `.resolution-select-compact` — #targetResolution and #systemSelect are the
+   only two selects in the app and both carry it; `.resolution-select` matches
+   zero elements. Two comments elsewhere in this file already recorded it as
+   dead (the selects block and the KEYBOARD FOCUS block), including the
+   observation that its `:focus { outline: none }` was one of the four :focus
+   rules that made keyboard focus invisible app-wide. */
 
 .transcode-settings .help-text {
     display: block;
