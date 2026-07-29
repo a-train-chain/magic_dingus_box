@@ -529,84 +529,36 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# === Controller Mapping: " << map.name << " ===\n";
             script_file << "echo 'Launcher: Applying controller mapping for: " << shell_sq_escape(map.name) << "' >> /tmp/retroarch_launcher.log\n";
             
-            // 2. Apply Settings
-            script_file << "input_player1_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
-            
-            // 3. Apply Buttons
-            script_file << "input_player1_b_btn = \"" << map.b_btn << "\"\n";
-            script_file << "input_player1_y_btn = \"" << map.y_btn << "\"\n";
-            script_file << "input_player1_select_btn = \"" << map.select_btn << "\"\n";
-            script_file << "input_player1_start_btn = \"" << map.start_btn << "\"\n";
-            
-            script_file << "input_player1_up_btn = \"" << map.up_btn << "\"\n";
-            script_file << "input_player1_down_btn = \"" << map.down_btn << "\"\n";
-            script_file << "input_player1_left_btn = \"" << map.left_btn << "\"\n";
-            script_file << "input_player1_right_btn = \"" << map.right_btn << "\"\n";
-            
-            script_file << "input_player1_a_btn = \"" << map.a_btn << "\"\n";
-            script_file << "input_player1_x_btn = \"" << map.x_btn << "\"\n";
-            
-            script_file << "input_player1_l_btn = \"" << map.l_btn << "\"\n";
-            script_file << "input_player1_r_btn = \"" << map.r_btn << "\"\n";
-            
-            script_file << "input_player1_l2_btn = \"" << map.l2_btn << "\"\n";
-            script_file << "input_player1_r2_btn = \"" << map.r2_btn << "\"\n";
+            // 2-5. Apply the full input_player1_* bind block (settings,
+            // buttons, d-pad, analog axes, right stick, d-pad axes). See
+            // write_player_binds() in controller_mapping.cpp for the exact
+            // field order and the unconditional-emission rule (empty values
+            // still write a `= ""` line — RetroArch treats that differently
+            // from an absent line).
+            write_player_binds(script_file, map, 1);
 
-            // 4. Apply Analog Axes
-            script_file << "input_player1_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
-            script_file << "input_player1_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
-            script_file << "input_player1_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
-            script_file << "input_player1_l_y_minus_axis = \"" << map.l_y_minus << "\"\n";
-            // Right stick — only emitted when a mapping supplies it (N64
-            // C-buttons). Emitting empty values would unbind the stick.
-            // Axis form for pads with a real right stick, button form for
-            // the N64 adapter's digital C cluster. See controller_mapping.h.
-            write_right_stick_binds(script_file, map, 1);
-
-            // 5. Apply D-Pad Axis Mappings
-            script_file << "input_player1_up_axis = \"" << map.up_axis << "\"\n";
-            script_file << "input_player1_down_axis = \"" << map.down_axis << "\"\n";
-            script_file << "input_player1_left_axis = \"" << map.left_axis << "\"\n";
-            script_file << "input_player1_right_axis = \"" << map.right_axis << "\"\n";
-
-            // 5b. Mirror the same mapping for player 2 — assumes the
-            // 2nd controller (joypad index 1) is the same physical kind
-            // as P1. In our hardware that's always true (kiosk ships
-            // with two identical PS-style pads). Without these mirrored
-            // bindings RetroArch's per-core remap covers only player 1
-            // and the 2nd pad shows up in /dev/input/js1 but produces
-            // no in-game effect — symptom: P2 character sits motionless
-            // in 2-player Twisted Metal / Tony Hawk / Doom split-screen.
+            // 5b. Mirror the same mapping for player 2 — assumes the 2nd
+            // controller (joypad index 1) is the same physical kind as P1.
+            // In our hardware that's always true (kiosk ships with two
+            // identical pads). Without this, RetroArch's per-core remap
+            // covers only player 1 and the 2nd pad shows up in
+            // /dev/input/js1 but produces no in-game effect — symptom: P2
+            // character sits motionless in 2-player Twisted Metal / Tony
+            // Hawk / Doom split-screen.
             //
-            // Hotkeys (5+ below) intentionally stay player-1-only so
-            // both controllers don't fight over RA menu toggle.
-            script_file << "input_player2_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
-            script_file << "input_player2_b_btn = \"" << map.b_btn << "\"\n";
-            script_file << "input_player2_y_btn = \"" << map.y_btn << "\"\n";
-            script_file << "input_player2_select_btn = \"" << map.select_btn << "\"\n";
-            script_file << "input_player2_start_btn = \"" << map.start_btn << "\"\n";
-            script_file << "input_player2_up_btn = \"" << map.up_btn << "\"\n";
-            script_file << "input_player2_down_btn = \"" << map.down_btn << "\"\n";
-            script_file << "input_player2_left_btn = \"" << map.left_btn << "\"\n";
-            script_file << "input_player2_right_btn = \"" << map.right_btn << "\"\n";
-            script_file << "input_player2_a_btn = \"" << map.a_btn << "\"\n";
-            script_file << "input_player2_x_btn = \"" << map.x_btn << "\"\n";
-            script_file << "input_player2_l_btn = \"" << map.l_btn << "\"\n";
-            script_file << "input_player2_r_btn = \"" << map.r_btn << "\"\n";
-            script_file << "input_player2_l2_btn = \"" << map.l2_btn << "\"\n";
-            script_file << "input_player2_r2_btn = \"" << map.r2_btn << "\"\n";
-            script_file << "input_player2_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
-            script_file << "input_player2_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
-            script_file << "input_player2_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
-            script_file << "input_player2_l_y_minus_axis = \"" << map.l_y_minus << "\"\n";
-            // P2's right stick / C-buttons. Omitted before N64 arrived,
-            // which would have left the second player with no camera
-            // control in every two-player N64 title.
-            write_right_stick_binds(script_file, map, 2);
-            script_file << "input_player2_up_axis = \"" << map.up_axis << "\"\n";
-            script_file << "input_player2_down_axis = \"" << map.down_axis << "\"\n";
-            script_file << "input_player2_left_axis = \"" << map.left_axis << "\"\n";
-            script_file << "input_player2_right_axis = \"" << map.right_axis << "\"\n";
+            // Both calls MUST go through write_player_binds() — the P2
+            // block used to be a hand-duplicated copy of the P1 block, and
+            // that copy once drifted out of sync and shipped without the
+            // right-stick lines, leaving P2 with no camera control in every
+            // two-player N64 game. Routing both players through the same
+            // function makes that class of drift structurally impossible.
+            // Task 7 lets each port resolve to a different captured mapping
+            // so two different controller models can play simultaneously;
+            // for now both players share `map`.
+            //
+            // Hotkeys (below) intentionally stay player-1-only so both
+            // controllers don't fight over the RA menu toggle.
+            write_player_binds(script_file, map, 2);
 
             // 5c. PCSX-rearmed needs the per-pad type set for both pads.
             // Without pad2type, the second controller is treated as
