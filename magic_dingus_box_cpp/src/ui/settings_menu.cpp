@@ -1,5 +1,6 @@
 #include "settings_menu.h"
 #include <unistd.h>
+#include "controller_wizard.h"
 #include "pairing_screen.h"
 #include "toast.h"
 #include "virtual_keyboard.h"
@@ -59,9 +60,14 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
         MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
         MenuItem("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone"),
+        MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any USB gamepad"),
         MenuItem("Back", MenuSection::BACK)
     };
 }
+
+// Out-of-line so the unique_ptr members can stay forward-declared in the
+// header — see the note there.
+SettingsMenuManager::~SettingsMenuManager() = default;
 
 void SettingsMenuManager::update() {
     if (!active_ && !is_opening_ && !is_closing_) return;
@@ -301,6 +307,18 @@ void SettingsMenuManager::toggle() {
     // because some shallow states are also true at deeper depths
     // (e.g. game_browser_active_ stays true while viewing_games_in_playlist_).
 
+    // Depth 4: the Controller Setup wizard owns the whole screen. MENU here
+    // means "cancel the wizard", NOT "close Settings" — the operator came
+    // from the Settings list and should land back on it. This is also the
+    // cancel path that actually fires in practice: main.cpp handles
+    // SETTINGS_MENU at the top of its dispatch loop (BTN4 hold/volume logic)
+    // and routes the short press here, so the event never reaches the
+    // wizard's own on_action().
+    if (wizard_active_) {
+        close_controller_wizard();
+        return;
+    }
+
     // Depth 4 (deepest): looking at the games inside a specific playlist.
     if (game_browser_active_ && viewing_games_in_playlist_) {
         exit_game_list();
@@ -414,6 +432,8 @@ void SettingsMenuManager::open() {
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
         menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
         menu_items_.emplace_back("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone");
+        menu_items_.emplace_back("Controller Setup", MenuSection::CONTROLLER_SETUP,
+                                 "Map any USB gamepad");
         menu_items_.emplace_back("Back", MenuSection::BACK);
 #endif
     }
@@ -427,6 +447,12 @@ void SettingsMenuManager::close() {
     }
     // Clean up pairing session file whenever the settings menu is dismissed.
     close_pairing_screen();
+    // ...and never leave the wizard holding InputManager in raw-capture mode.
+    // Any path that dismisses Settings out from under the wizard (a game
+    // launch, the Media Browser handoff) would otherwise leave every gamepad
+    // producing raw events nobody drains — i.e. dead controllers — until the
+    // kiosk restarts.
+    close_controller_wizard();
 }
 
 void SettingsMenuManager::force_close() {
@@ -434,6 +460,7 @@ void SettingsMenuManager::force_close() {
     is_opening_ = false;
     is_closing_ = false;
     close_pairing_screen();
+    close_controller_wizard();
 }
 
 float SettingsMenuManager::get_animation_progress() const {
@@ -674,6 +701,29 @@ void SettingsMenuManager::close_pairing_screen() {
         pairing_screen()->close();
         pairing_active_ = false;
     }
+}
+
+// ── Controller Setup wizard ──────────────────────────────────────────────────
+
+ControllerWizard* SettingsMenuManager::controller_wizard() {
+    if (!controller_wizard_) {
+        controller_wizard_ = std::make_unique<ControllerWizard>();
+    }
+    return controller_wizard_.get();
+}
+
+void SettingsMenuManager::open_controller_wizard(platform::InputManager* input) {
+    wizard_active_ = true;
+    controller_wizard()->open(input);
+}
+
+void SettingsMenuManager::close_controller_wizard() {
+    // Unconditional close() on the wizard, not gated on wizard_active_: the
+    // wizard can retire itself (cancel, idle timeout, pad unplugged) a frame
+    // before this flag catches up, and ControllerWizard::close() is a no-op
+    // once it has already run.
+    if (controller_wizard_) controller_wizard_->close();
+    wizard_active_ = false;
 }
 
 std::vector<MenuItem> SettingsMenuManager::build_games_submenu() {

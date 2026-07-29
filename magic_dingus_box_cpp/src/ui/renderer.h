@@ -11,6 +11,7 @@
 namespace ui {
 class Theme;
 class FontManager;
+class ControllerWizard;
 class PairingScreen;
 class SettingsMenuManager;
 class VirtualKeyboard;
@@ -431,6 +432,11 @@ private:
                                const std::vector<PairedDevice>& paired_devices,
                                const std::string& lan_ip,
                                const std::string& hostname);
+
+    // Controller Setup wizard — implemented in controller_wizard_renderer.cpp.
+    // Full-screen overlay that replaces the regular settings panel, same as
+    // the pairing screen above. Layout is per-phase; see that file.
+    void render_controller_wizard(const ControllerWizard& wiz);
     
     // Helper: format time as MM:SS
     std::string format_time(double seconds);

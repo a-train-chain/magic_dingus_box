@@ -6,6 +6,7 @@
 #include "theme.h"
 #include "font_manager.h"
 #include "settings_menu.h"
+#include "controller_wizard.h"
 #include "pairing_screen.h"
 #include "pairing_screen_renderer.h"
 #include "virtual_keyboard.h" // Added for virtual keyboard rendering
@@ -1299,7 +1300,12 @@ void Renderer::render(app::AppState& state) {
     // Render settings menu if active (on top of everything, before scanlines)
     if (state.settings_menu && state.settings_menu->is_active()) {
 
-        if (state.settings_menu->is_pairing_screen_active()) {
+        if (state.settings_menu->is_controller_wizard_active()) {
+            // Controller Setup wizard replaces the regular settings panel,
+            // same as the pairing screen below.
+            ui::ControllerWizard* wiz = state.settings_menu->controller_wizard();
+            if (wiz) render_controller_wizard(*wiz);
+        } else if (state.settings_menu->is_pairing_screen_active()) {
             // Phone Remote pairing screen replaces the regular settings panel.
             // Use the shared mtime-based cache so this and main.cpp's input
             // handler always see the same device list (no divergence after
@@ -1416,7 +1422,7 @@ void Renderer::render(app::AppState& state) {
                 draw_text(fallback_text, fallback_x, fallback_y, theme_->font_small_size, theme_->highlight2, false, 1.0f);
             }
         }
-        } // end else (not pairing screen active)
+        } // end else (neither the wizard nor the pairing screen is active)
     }
 
     // Virtual Keyboard overlay

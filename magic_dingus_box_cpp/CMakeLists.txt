@@ -109,6 +109,8 @@ set(VIDEO_SOURCES
 
 set(UI_SOURCES
     src/ui/renderer.cpp
+    src/ui/controller_wizard.cpp
+    src/ui/controller_wizard_renderer.cpp
     src/ui/pairing_screen.cpp
     src/ui/pairing_screen_renderer.cpp
     src/ui/theme.cpp
@@ -500,6 +502,30 @@ if(RETROARCH_TEST_SOURCES)
     target_link_libraries(test_retroarch_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
     target_compile_options(test_retroarch_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME RetroArchUnit COMMAND test_retroarch_unit)
+endif()
+
+# UI-layer tests that don't need GL. Today: the Controller Setup wizard's
+# phase machine and its save/merge into the profile store.
+#
+# controller_wizard.cpp talks to platform::InputManager (libevdev) and
+# ui::Toast (whose .cpp includes renderer.h, hence GLES) — neither of which
+# builds on macOS. tests/ui/ui_test_doubles.cpp supplies definitions for
+# exactly the members the wizard calls, so this target links without either
+# real .cpp. Deliberately does NOT include controller_wizard_renderer.cpp:
+# that one is a Renderer method and is covered by the Pi build only.
+file(GLOB UI_TEST_SOURCES "tests/ui/*.cpp")
+if(UI_TEST_SOURCES)
+    add_executable(test_ui_unit
+        ${UI_TEST_SOURCES}
+        src/ui/controller_wizard.cpp
+        ${RETROARCH_TESTABLE_SOURCES}
+        src/utils/config.cpp
+    )
+    target_include_directories(test_ui_unit PRIVATE src tests/ui ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_ui_unit PRIVATE ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_ui_unit PRIVATE Catch2::Catch2WithMain ${JSONCPP_LIBRARIES} pthread)
+    target_compile_options(test_ui_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME UiUnit COMMAND test_ui_unit)
 endif()
 
 # App-layer pure-logic tests (ROM display titles, etc). No Linux-only deps.
