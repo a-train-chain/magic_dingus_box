@@ -9994,3 +9994,105 @@ body.faceplate .bottom-nav {
   body.faceplate .sub-tab.active:hover { color: var(--accent); }
   body.faceplate .sub-tab.active:hover::after { background: var(--accent); }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- Type hierarchy: the loudest text was the least informative ---------
+   *
+   * PLAYLIST EDITOR. Measured on a real 5-item playlist at 1440x900:
+   *     .col-num   (the ordinal "1")   16px, font-weight 700
+   *     .col-title input (the TITLE)   14.4px, weight 400
+   *     .col-artist input              14.4px
+   *     thead th (the column caption)   9.6px
+   * `.playlist-table td` (style.css:2469) declares only padding and
+   * vertical-align, so cells inherit 16px from the root, and
+   * `.playlist-table td.col-num` (style.css:2474) adds `font-weight: bold` on
+   * top. The list index — the least informative thing in the row — was the
+   * loudest text in the editor's focal panel, and the title you are there to
+   * read and edit was 1.6px smaller than it.
+   *
+   * The bold is separately wrong: DejaVuMono ships exactly one face, so
+   * `font-weight: bold` asks the browser to smear the single cut
+   * algorithmically. There is no 700 to select.
+   *
+   * The caption is wrong against the file's OWN stated rule. style.css:4906
+   * sets the floor and says why: "0.72rem = 11.5px, which is the admin floor
+   * for an all-caps display face — the remote's own 8-10px chrome type does
+   * not survive on a laptop." `body.faceplate .playlist-table th`
+   * (style.css:5326) then ships 0.6rem = 9.6px of all-caps ZEN DOTS, which is
+   * exactly the display face that floor was written for.
+   *
+   * LIBRARY TABLES. The column captions are 10px against 14px cells — a 4px
+   * spread that reads as a decorative band rather than as labels you can
+   * scan, and again under the 11.5px floor. 11px with the tracking eased from
+   * .12em to .10em; "USED IN PLAYLISTS" still measures well inside its column
+   * (122.8px at 10px, ~135px at 11px, against a 179px content box).
+   *
+   * USER-AUTHORED STRINGS SHOULD NOT SHOUT. `.usage-badge` is
+   * `text-transform: uppercase` with .08em tracking at 10px — correct for a
+   * fixed chrome label, but manager.js:1643 puts a comma-joined list of
+   * PLAYLIST TITLES in it. Measured live: "The Nostalgia Channel" rendered as
+   * all-caps 10px. Caps removes the ascender/descender silhouettes the eye
+   * uses for word recognition, and the added tracking flattens the word-space
+   * contrast that would otherwise compensate. `.unused` keeps its caps —
+   * "⚠ Not used" IS a fixed chrome label — and only moves up to the floor.
+   *
+   * The 11px on .in-use is chosen so the batch-2 column widths still hold:
+   * DejaVuMono advances 0.60205em, so the badge goes from 10px + 0.8px
+   * tracking = 6.82px per character to 11px + 0.11px = 6.73px — very slightly
+   * NARROWER, so the 18% "Used In Playlists" column cannot fall off the
+   * wrapping cliff that width was picked to clear. */
+  body.faceplate .playlist-table th {
+    font-size: 11.5px;
+  }
+  body.faceplate .playlist-table td {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  body.faceplate .playlist-table td.col-num {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--dim, #968B85);
+    font-variant-numeric: tabular-nums;
+  }
+
+  body.faceplate .video-library-table th {
+    font-size: 11px;
+    letter-spacing: .10em;
+    padding-bottom: 10px;
+  }
+
+  body.faceplate .usage-badge.in-use {
+    text-transform: none;
+    letter-spacing: .01em;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  body.faceplate .usage-badge.unused {
+    font-size: 11px;
+    letter-spacing: .06em;
+  }
+}
+
+/* The row inputs MUST carry `and (pointer: fine)`.
+ *
+ * `@media (pointer: coarse)` at style.css:3950 sets
+ * `body.faceplate .playlist-table .inline-input { font-size: 16px }` as the
+ * iOS auto-zoom floor, and its selector is (0,3,1) — identical specificity to
+ * the rule below. An appended min-width-only block would therefore win on
+ * source order and re-enable focus zoom on a coarse-pointer device at >=1024px.
+ * iPad landscape is 1024 and 1180 CSS px, so that is a real device, not a
+ * hypothetical. `pointer: fine` makes the two queries mutually exclusive.
+ *
+ * The title is the thing being edited, so it takes the top step; the secondary
+ * field steps down and dims, which is the same relationship .video-title and
+ * .video-artist already have in the library table. */
+@media (min-width: 1024px) and (pointer: fine) {
+  body.faceplate .playlist-table .inline-input {
+    font-size: 15px;
+  }
+  body.faceplate .playlist-table .col-artist .inline-input {
+    font-size: 13.5px;
+    color: var(--dim, #968B85);
+  }
+}
