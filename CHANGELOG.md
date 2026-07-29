@@ -244,6 +244,24 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   Password" right on the failure screen instead of a dead-end message.
 
 ### Fixed
+- **Captured controller profiles now record when they were captured** —
+  `PhysicalProfile::captured_at` was plumbed end-to-end (declared as ISO-8601,
+  written by `profiles_to_json`, parsed back by `profiles_from_json`) but the
+  wizard's save path hardcoded `""`, so every profile on every box carried an
+  empty stamp. It is the only signal for "was this pad captured before or after
+  the mapping change I am debugging" — with two pads captured on the bench Pi
+  and both stamped empty, there was no way to order them. Now stamped via a new
+  `retroarch::iso8601_utc(std::time_t)`, which takes the instant as a parameter
+  so the format is assertable in a unit test, and uses `gmtime_r` — UTC because
+  the stamp carries a literal `Z` and a Z-suffixed local time is not imprecise
+  but wrong, and the `_r` form because the kiosk runs background threads that
+  would race `gmtime`'s shared static. Profiles captured before this change keep
+  their empty stamp until re-captured; the parser already tolerates it.
+
+  Read the stamp as approximate on a cold box: a Pi has no RTC, so a capture
+  done before NTP syncs is stamped from fake-hwclock's saved value and can sit
+  hours or days early. Still strictly more informative than the empty string it
+  replaces, but it is not evidence of ordering across a reboot.
 - **Deploys and OTA updates no longer link stale object files** — both
   `deploy_cpp.sh` and `update.sh` keep `build/` out of their rsync, so it is a
   long-lived directory holding objects from previous source trees. Incremental

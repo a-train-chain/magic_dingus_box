@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -441,6 +442,43 @@ TEST_CASE("saving writes this pad's profile without losing the others", "[wizard
     CHECK(saved.style == retroarch::ControllerStyle::PS_STYLE);
     CHECK(saved.controls.size() ==
           retroarch::capture_steps(retroarch::ControllerStyle::PS_STYLE).size());
+}
+
+TEST_CASE("saving stamps captured_at with the current UTC time",
+          "[wizard][save]") {
+    // captured_at was plumbed end-to-end -- declared, serialized, parsed back
+    // -- but save_profile_() hardcoded "", so every profile on every fielded
+    // box carried an empty stamp. It is the only signal for "was this pad
+    // captured before or after the mapping change I am debugging", so an
+    // always-empty field is a silent loss, not a cosmetic one.
+    ScopedStore store("captured_at");
+
+    const auto before = std::time(nullptr);
+    platform::InputManager im;
+    ControllerWizard w;
+    open_to_capture(w, im);
+    capture_all(w);
+    w.on_action(act(InputAction::SELECT));
+    REQUIRE(w.phase() == Phase::DONE);
+    const auto after = std::time(nullptr);
+
+    const auto stamp =
+        retroarch::load_profile_store().at(retroarch::vidpid_key(kVid, kPid))
+            .captured_at;
+
+    // Bracket the real clock rather than assert an exact string: the only
+    // claim that matters is "a real now, in the documented format".
+    CHECK(stamp >= retroarch::iso8601_utc(before));
+    CHECK(stamp <= retroarch::iso8601_utc(after));
+    // ISO-8601 UTC sorts lexicographically only if the shape is exact, which
+    // the two bracket comparisons above silently depend on.
+    REQUIRE(stamp.size() == 20);
+    CHECK(stamp[4] == '-');
+    CHECK(stamp[7] == '-');
+    CHECK(stamp[10] == 'T');
+    CHECK(stamp[13] == ':');
+    CHECK(stamp[16] == ':');
+    CHECK(stamp[19] == 'Z');
 }
 
 TEST_CASE("re-running the wizard replaces that pad's entry in place", "[wizard]") {

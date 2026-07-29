@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 
 #include "toast.h"
 #include "retroarch/controller_profile.h"
@@ -439,7 +440,7 @@ bool ControllerWizard::save_profile_() {
     profile.style = style();
     profile.vid = vid_;
     profile.pid = pid_;
-    profile.captured_at = "";
+    profile.captured_at = retroarch::iso8601_utc(std::time(nullptr));
     profile.controls = captured_;
 
     // Read-modify-write the WHOLE store: other pads' profiles live in the

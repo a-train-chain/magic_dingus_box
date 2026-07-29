@@ -3,6 +3,7 @@
 #include <json/json.h>
 
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -200,6 +201,19 @@ platform::MenuNavOverlay menu_overlay_from_profile(const PhysicalProfile& p) {
 std::string vidpid_key(uint16_t vid, uint16_t pid) {
     char buf[10];
     std::snprintf(buf, sizeof(buf), "%04x:%04x", vid, pid);
+    return buf;
+}
+
+std::string iso8601_utc(std::time_t t) {
+    // gmtime_r, not gmtime: the kiosk runs background threads (VpnHealthMonitor,
+    // the Prowlarr availability worker), and gmtime returns a pointer into one
+    // shared static tm that a concurrent caller can overwrite between the
+    // conversion and the strftime.
+    std::tm tm_utc{};
+    if (::gmtime_r(&t, &tm_utc) == nullptr) return {};
+    char buf[32];
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc) == 0)
+        return {};
     return buf;
 }
 
