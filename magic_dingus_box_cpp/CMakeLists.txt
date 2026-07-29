@@ -631,3 +631,33 @@ if(PHONE_REMOTE_TEST_SOURCES)
     add_test(NAME PhoneRemoteUnit COMMAND test_phone_remote_unit)
     target_compile_options(test_phone_remote_unit PRIVATE -Wall -Wextra)
 endif()
+
+# ---------------------------------------------------------------------------
+# controller_probe — on-Pi diagnostic tool, NOT part of the kiosk binary.
+#
+# Prints each joystick's live evdev capability lists and the joydev_index
+# tokens computed from them, then diffs those tokens against every applicable
+# builtin PhysicalProfile. It is the hardware half of the ground truth that
+# tests/retroarch/ asserts from transcribed capability lists.
+#
+# Linux-only: it links libevdev and reads /dev/input/event*, neither of which
+# exists on macOS. Gated on EVDEV_FOUND as well as the platform because the
+# pkg_check_modules(EVDEV ...) above only runs under BUILD_KIOSK — a Linux
+# configure with -DBUILD_KIOSK=OFF must skip this target, not fail on an
+# empty ${EVDEV_LIBRARIES}.
+#
+# Built on demand (`make controller_probe`); EXCLUDE_FROM_ALL keeps it out of
+# the default build so the kiosk's build time is unchanged.
+if(UNIX AND NOT APPLE AND EVDEV_FOUND)
+    add_executable(controller_probe EXCLUDE_FROM_ALL
+        src/tools/controller_probe.cpp
+        src/retroarch/joydev_index.cpp
+        src/retroarch/logical_controls.cpp
+        src/retroarch/controller_profile.cpp
+        src/utils/config.cpp
+    )
+    target_include_directories(controller_probe PRIVATE src ${JSONCPP_INCLUDE_DIRS} ${EVDEV_INCLUDE_DIRS})
+    target_link_directories(controller_probe PRIVATE ${JSONCPP_LIBRARY_DIRS} ${EVDEV_LIBRARY_DIRS})
+    target_link_libraries(controller_probe PRIVATE ${EVDEV_LIBRARIES} ${JSONCPP_LIBRARIES})
+    target_compile_options(controller_probe PRIVATE -Wall -Wextra -Wpedantic)
+endif()

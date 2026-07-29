@@ -117,11 +117,27 @@ const PhysicalProfile& builtin_dragonrise_profile() {
             // ABS_X/Y extremes in an 8-bit (0..255) range, with no hat at
             // all, detected at runtime via ABS_X min==0 && max<=255. No
             // DragonRise pad was on hand when hardware-evidence.md was
-            // captured, so which revision this shipped pad actually is
-            // remains open -- Task 12's controller_probe resolves it
-            // against the physical pad. If the 8-bit variant is
+            // captured, and none was attached when controller_probe ran
+            // on 2026-07-29 either, so which revision this shipped pad
+            // actually is REMAINS OPEN. Run
+            // `controller_probe /dev/input/eventN` with the pad plugged
+            // in: it prints each axis's range and whether ABS_HAT0X/Y is
+            // present, which answers it outright. If the 8-bit variant is
             // confirmed, these four bindings must change to AXIS on
             // ABS_X/Y instead of HAT.
+            //
+            // DO NOT try to infer the answer from the axis range alone.
+            // controller_probe measured the N64-style adapter attached to
+            // the bench Pi (2563:0575) reporting ABS_X/Y/Z/RZ as
+            // range=[0..255] AND a real ABS_HAT0X/Y at the same time --
+            // 8-bit axes and a genuine hat coexist happily on one pad, so
+            // "min==0 && max<=255" says nothing about where the d-pad is.
+            // (input_manager.cpp:245-252 keys its d-pad-on-ABS_X/Y
+            // handling off exactly that range test and is therefore true
+            // for the N64 adapter too; harmless there, because pushing
+            // that pad's analog stick to an extreme navigating the kiosk
+            // menu is the documented behavior -- but it is not evidence
+            // about any pad's hat.)
             {L::DPAD_UP, hat(ABS_HAT0Y, -1, "h0up")},
             {L::DPAD_DOWN, hat(ABS_HAT0Y, +1, "h0down")},
             {L::DPAD_LEFT, hat(ABS_HAT0X, -1, "h0left")},
