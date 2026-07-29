@@ -451,12 +451,14 @@
                 <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-movies"/></svg> Media Browser Setup</div>
                 <div class="section-body">
                     <p class="settings-description">
-                        Media Browser uses a VPN tunnel to discover and download movies. To
-                        provision this Pi, paste a WireGuard config from your ProtonVPN
-                        dashboard. Make sure to enable <strong>NAT-PMP</strong> when generating
-                        it.
+                        Media Browser sends all download traffic through a VPN tunnel. Drop in
+                        a standard WireGuard <code>.conf</code> from whichever VPN you use —
+                        most providers work as-is.
                     </p>
                     <p class="settings-description">
+                        Using <strong>ProtonVPN</strong>? Enable <strong>NAT-PMP</strong> when
+                        you generate the config and this Pi will also forward a port, which
+                        helps torrents start faster.
                         <a href="https://account.protonvpn.com/downloads" target="_blank"
                             rel="noopener noreferrer">Open ProtonVPN dashboard <svg class="ic" aria-hidden="true"><use href="#ic-arrow-r"/></svg></a>
                     </p>
@@ -484,6 +486,23 @@
                             style="width: 100%; margin-top: 0.5rem; font-family: monospace; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;"
                             placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = ...&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = ..."></textarea>
                     </details>
+
+                    <!-- Provider override. Populated + preselected from the
+                         detected provider once a config is supplied; the
+                         operator always gets the last word. Hidden until
+                         then, so an empty panel isn't asking a question the
+                         operator has no way to answer yet. -->
+                    <div id="mbProviderRow" style="display: none; margin-bottom: 1rem;">
+                        <label for="mbProviderSelect" class="settings-description"
+                               style="display: block; margin-bottom: 0.35rem;">
+                            VPN provider
+                        </label>
+                        <select id="mbProviderSelect"
+                            style="width: 100%; padding: 0.5rem; background: var(--bg-dark); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;">
+                        </select>
+                        <div id="mbProviderNote" class="settings-description"
+                             style="margin-top: 0.4rem; color: var(--text-secondary);"></div>
+                    </div>
 
                     <div id="mbConfigError" class="restore-status" style="display: none; color: var(--error); margin-bottom: 0.75rem;"></div>
 

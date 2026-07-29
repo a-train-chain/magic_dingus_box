@@ -3838,19 +3838,38 @@ def create_app(data_dir: Path, config=None) -> Flask:
         library_count = _radarr_library_count(env)
         queue = _radarr_queue_summary(env)
         qbit = _qbit_torrent_summary(env)
-        forwarded_port = _gluetun_forwarded_port()
-        qbit_listen = _qbit_listen_port(env)
 
-        if forwarded_port == -1:
-            port_status = "unavailable"
-        elif forwarded_port == 0:
-            port_status = "unavailable"
-        elif qbit_listen == -1:
-            port_status = "unavailable"
-        elif forwarded_port == qbit_listen:
-            port_status = "synced"
+        # Does this box's VPN forward a port AT ALL?
+        #
+        # Most providers do not, and gluetun only implements it for four of
+        # them (of which only ProtonVPN has WireGuard servers). A customer on
+        # Mullvad or a self-hosted tunnel has no forwarded port by design —
+        # that is a normal, healthy configuration with somewhat slower peer
+        # discovery, NOT a fault. Reporting it in red as "unavailable"
+        # alongside genuine outages sent people hunting for a broken thing
+        # that was never there. Distinguish the two: `unsupported` means
+        # there is nothing to report, `unavailable` means a port was
+        # expected and is missing.
+        provider = (env.get("VPN_SERVICE_PROVIDER") or "").strip().lower()
+        pf_requested = (env.get("VPN_PORT_FORWARDING") or "").strip().lower() \
+            in ("on", "true", "1", "yes")
+        pf_expected = pf_requested and _vpn_supports_port_forwarding(provider)
+
+        if not pf_expected:
+            # Skip the docker exec entirely — there is no lease to ask about,
+            # and the call would just burn its timeout on every refresh.
+            forwarded_port = 0
+            qbit_listen = _qbit_listen_port(env)
+            port_status = "unsupported"
         else:
-            port_status = "drift"
+            forwarded_port = _gluetun_forwarded_port()
+            qbit_listen = _qbit_listen_port(env)
+            if forwarded_port <= 0 or qbit_listen == -1:
+                port_status = "unavailable"
+            elif forwarded_port == qbit_listen:
+                port_status = "synced"
+            else:
+                port_status = "drift"
 
         return success_response(data={
             "library_count": library_count,
@@ -3860,6 +3879,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             "qbit_seeding_torrents": qbit["seeding"],
             "vpn_forwarded_port": forwarded_port if forwarded_port > 0 else 0,
             "vpn_port_status": port_status,
+            "vpn_provider": provider,
+            "vpn_port_forwarding_supported": _vpn_supports_port_forwarding(provider),
         })
 
     @app.post("/admin/media-browser/restart")

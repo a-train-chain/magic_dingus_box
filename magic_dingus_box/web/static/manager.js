@@ -5891,9 +5891,13 @@ function _setupMediaBrowserDropZone() {
         if (errorEl) errorEl.style.display = 'none';
         if (textArea) textArea.value = '';  // file wins
         updateButtonState();
+        _detectMediaBrowserProvider();
     });
 
     if (textArea) {
+        // Debounced: the operator is typing/pasting a multi-line config, and
+        // we don't want a detect round-trip per keystroke.
+        let textDebounce = null;
         textArea.addEventListener('input', () => {
             if (errorEl) errorEl.style.display = 'none';
             if (textArea.value.trim()) {
@@ -5901,6 +5905,8 @@ function _setupMediaBrowserDropZone() {
                 if (dropLabel) dropLabel.textContent = 'Drop a .conf file here, or click to pick';
             }
             updateButtonState();
+            if (textDebounce) clearTimeout(textDebounce);
+            textDebounce = setTimeout(_detectMediaBrowserProvider, 600);
         });
     }
 
@@ -5923,6 +5929,84 @@ function _setupMediaBrowserDropZone() {
             }
         });
     }
+}
+
+// Ask the backend which provider the supplied config looks like, and
+// preselect it. Detection is a convenience, never a lock-in — the operator
+// can always override the choice before hitting Configure.
+//
+// This only parses; nothing is written to the Pi until Configure is pressed.
+async function _detectMediaBrowserProvider() {
+    const row = document.getElementById('mbProviderRow');
+    const select = document.getElementById('mbProviderSelect');
+    if (!row || !select || !currentDevice || !mbConfigPayload) return;
+
+    const formData = new FormData();
+    if (mbConfigPayload.file) formData.append('file', mbConfigPayload.file);
+    else if (mbConfigPayload.text) formData.append('config_text', mbConfigPayload.text);
+    else return;
+
+    try {
+        await fetchCsrfToken();
+        const response = await fetch(
+            `${currentDevice.url}/admin/media-browser/detect-provider`, {
+                method: 'POST',
+                headers: { 'X-CSRF-Token': csrfToken || '' },
+                body: formData,
+            });
+        const result = await response.json();
+        if (!result.ok) {
+            // An unparseable config is reported when they press Configure;
+            // don't nag mid-typing. Just leave the picker hidden.
+            row.style.display = 'none';
+            return;
+        }
+
+        const d = result.data;
+        select.innerHTML = (d.choices || []).map(c =>
+            `<option value="${escapeHtml(c.value)}"${c.value === d.provider ? ' selected' : ''}>${escapeHtml(c.label)}</option>`
+        ).join('');
+        row.style.display = '';
+        _renderProviderNote(d.detected_provider);
+        select.onchange = () => _renderProviderNote(d.detected_provider);
+    } catch (e) {
+        console.warn('Provider detection failed (falling back to custom):', e);
+        row.style.display = 'none';
+    }
+}
+
+function _renderProviderNote(detected) {
+    const select = document.getElementById('mbProviderSelect');
+    const note = document.getElementById('mbProviderNote');
+    if (!select || !note) return;
+
+    const chosen = select.value;
+    const label = select.options[select.selectedIndex]
+        ? select.options[select.selectedIndex].text : chosen;
+
+    const parts = [];
+    if (detected) {
+        parts.push(`Detected <strong>${escapeHtml(detected)}</strong> from the config.`);
+    } else {
+        parts.push('Could not identify the provider from this config — '
+            + 'that is fine, the default below works with any standard '
+            + 'WireGuard file.');
+    }
+
+    // Be straight about the trade. Port forwarding is the only thing riding
+    // on this choice, and pretending otherwise is how a customer ends up
+    // thinking their box is broken when it is working exactly as it can.
+    if (chosen === 'protonvpn') {
+        parts.push('ProtonVPN mode also forwards a port, which helps torrents '
+            + 'start faster. Generate the config with NAT-PMP enabled.');
+    } else if (chosen === 'custom') {
+        parts.push('Runs your config exactly as written. No port forwarding — '
+            + 'downloads work, some torrents just take longer to get going.');
+    } else {
+        parts.push(`Lets Gluetun pick ${escapeHtml(label)} servers for you. `
+            + 'This provider does not offer port forwarding.');
+    }
+    note.innerHTML = parts.join(' ');
 }
 
 async function configureMediaBrowser() {
@@ -5948,6 +6032,12 @@ async function configureMediaBrowser() {
         formData.append('file', mbConfigPayload.file);
     } else if (mbConfigPayload.text) {
         formData.append('config_text', mbConfigPayload.text);
+    }
+    // Whatever the operator settled on. Absent (detection never ran) means
+    // the backend detects for itself and falls back to `custom`.
+    const providerSelect = document.getElementById('mbProviderSelect');
+    if (providerSelect && providerSelect.value) {
+        formData.append('provider', providerSelect.value);
     }
 
     try {
@@ -6196,23 +6286,39 @@ function _renderHealthSummaryRows(d) {
             <span class="health-value">${escapeHtml(qbitText)}</span>
         </div>`;
 
-    // VPN port
+    // VPN port.
+    //
+    // "not supported by this VPN" is a normal, healthy state — most
+    // providers simply do not offer port forwarding, and gluetun only
+    // implements it for a handful. Showing that in red as "unavailable"
+    // (which is what this did for every non-ProtonVPN box) reads as a fault
+    // and sends the operator looking for a broken thing that isn't there.
+    // Only a port we EXPECTED and did not get is an error.
     let portColor = 'var(--text-primary)';
     let portText = 'unavailable';
+    let portTitle = '';
     if (d.vpn_port_status === 'synced') {
         portColor = 'var(--success)';
         portText = `${d.vpn_forwarded_port} ✓ synced`;
     } else if (d.vpn_port_status === 'drift') {
         portColor = 'var(--accent)';
         portText = `${d.vpn_forwarded_port} ⚠ drift`;
+    } else if (d.vpn_port_status === 'unsupported') {
+        portColor = 'var(--text-secondary)';
+        portText = 'not supported by this VPN';
+        portTitle = 'This VPN provider does not offer port forwarding. '
+            + 'Downloads still work; incoming peer connections are limited, '
+            + 'so some torrents may be slower to start.';
     } else {
         portColor = 'var(--error)';
         portText = 'unavailable';
+        portTitle = 'This VPN supports port forwarding but no port is '
+            + 'currently leased.';
     }
     const portRow = `
         <div class="health-row">
             <span class="health-label">VPN port</span>
-            <span class="health-value" style="color: ${portColor};">${escapeHtml(portText)}</span>
+            <span class="health-value" style="color: ${portColor};"${portTitle ? ` title="${escapeHtml(portTitle)}"` : ''}>${escapeHtml(portText)}</span>
         </div>`;
 
     return libRow + queueRow + qbitRow + portRow;
