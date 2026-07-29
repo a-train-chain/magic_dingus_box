@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "retroarch/controller_mapping.h"
 #include "retroarch/controller_profile.h"
 
 using namespace retroarch;
@@ -127,4 +128,34 @@ TEST_CASE("builtin DragonRise profile pins every binding", "[controller_profile]
 TEST_CASE("vidpid_key formats 4-hex lowercase", "[controller_profile]") {
     REQUIRE(vidpid_key(0x0079, 0x0006) == "0079:0006");
     REQUIRE(vidpid_key(0x0e6d, 0x111d) == "0e6d:111d");
+}
+
+TEST_CASE("build_mapping resolves slots through the profile", "[build_mapping]") {
+    SemanticMapping sem;
+    sem.name = "T"; sem.analog_dpad_mode = "0";
+    sem.b = LogicalControl::CROSS;
+    sem.r_up = LogicalControl::RSTICK_UP; sem.r_down = LogicalControl::RSTICK_DOWN;
+    sem.r_left = LogicalControl::RSTICK_LEFT; sem.r_right = LogicalControl::RSTICK_RIGHT;
+    const auto m = build_mapping(sem, builtin_dragonrise_profile());
+    REQUIRE(m.b_btn == "2");            // CROSS token
+    REQUIRE(m.y_btn == "3");            // slot absent -> struct default kept
+    REQUIRE(m.r_x_plus == "+2");        // AXIS kind -> axis form
+    REQUIRE(m.r_x_plus_btn.empty());
+}
+
+TEST_CASE("build_mapping uses button form for a digital C cluster", "[build_mapping]") {
+    SemanticMapping sem;
+    sem.r_up = LogicalControl::N64_C_UP; sem.r_down = LogicalControl::N64_C_DOWN;
+    sem.r_left = LogicalControl::N64_C_LEFT; sem.r_right = LogicalControl::N64_C_RIGHT;
+    const auto m = build_mapping(sem, builtin_n64_adapter_profile());
+    REQUIRE(m.r_y_minus_btn == "9");    // C-Up, BUTTON kind -> _btn form
+    REQUIRE(m.r_x_plus.empty());
+}
+
+TEST_CASE("build_mapping unbinds slots the profile lacks", "[build_mapping]") {
+    SemanticMapping sem;
+    sem.l2 = LogicalControl::L2;        // DragonRise has it; a stickless capture may not
+    PhysicalProfile p = builtin_dragonrise_profile();
+    p.controls.erase(LogicalControl::L2);
+    REQUIRE(build_mapping(sem, p).l2_btn.empty());   // "" = unbound, not default
 }

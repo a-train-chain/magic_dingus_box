@@ -484,6 +484,71 @@ namespace {
 
 }  // namespace
 
+ControllerMapping build_mapping(const SemanticMapping& sem,
+                                const PhysicalProfile& profile) {
+    ControllerMapping m;  // struct defaults are load-bearing — see header
+    m.name = sem.name;
+    m.analog_dpad_mode = sem.analog_dpad_mode;
+    m.core_option_pad_type = sem.core_option_pad_type;
+    m.extra_config = sem.extra_config;
+
+    auto put = [&](std::string ControllerMapping::*field,
+                   const std::optional<LogicalControl>& slot) {
+        if (slot) m.*field = profile.token(*slot);
+    };
+    put(&ControllerMapping::b_btn, sem.b);
+    put(&ControllerMapping::y_btn, sem.y);
+    put(&ControllerMapping::select_btn, sem.select);
+    put(&ControllerMapping::start_btn, sem.start);
+    put(&ControllerMapping::a_btn, sem.a);
+    put(&ControllerMapping::x_btn, sem.x);
+    put(&ControllerMapping::l_btn, sem.l);
+    put(&ControllerMapping::r_btn, sem.r);
+    put(&ControllerMapping::l2_btn, sem.l2);
+    put(&ControllerMapping::r2_btn, sem.r2);
+    put(&ControllerMapping::up_btn, sem.up);
+    put(&ControllerMapping::down_btn, sem.down);
+    put(&ControllerMapping::left_btn, sem.left);
+    put(&ControllerMapping::right_btn, sem.right);
+
+    if (sem.left_stick) {
+        m.l_x_plus  = sem.stick_right ? profile.token(*sem.stick_right) : "";
+        m.l_x_minus = sem.stick_left  ? profile.token(*sem.stick_left)  : "";
+        m.l_y_plus  = sem.stick_down  ? profile.token(*sem.stick_down)  : "";
+        m.l_y_minus = sem.stick_up    ? profile.token(*sem.stick_up)    : "";
+    }
+    if (sem.stick_to_dpad) {
+        m.right_axis = sem.stick_right ? profile.token(*sem.stick_right) : "";
+        m.left_axis  = sem.stick_left  ? profile.token(*sem.stick_left)  : "";
+        m.down_axis  = sem.stick_down  ? profile.token(*sem.stick_down)  : "";
+        m.up_axis    = sem.stick_up    ? profile.token(*sem.stick_up)    : "";
+    }
+
+    // Right stick / C cluster: axis vs button form follows the PROFILE's
+    // binding kind (a real stick binds axes; a digital C cluster binds
+    // buttons). Mirrors the legacy write_right_stick_binds contract.
+    if (sem.r_up && sem.r_down && sem.r_left && sem.r_right) {
+        const auto* up = profile.binding(*sem.r_up);
+        if (up && up->kind == PhysicalBinding::Kind::AXIS) {
+            m.r_x_plus  = profile.token(*sem.r_right);
+            m.r_x_minus = profile.token(*sem.r_left);
+            m.r_y_plus  = profile.token(*sem.r_down);
+            m.r_y_minus = profile.token(*sem.r_up);
+        } else if (up) {
+            m.r_x_plus_btn  = profile.token(*sem.r_right);
+            m.r_x_minus_btn = profile.token(*sem.r_left);
+            m.r_y_plus_btn  = profile.token(*sem.r_down);
+            m.r_y_minus_btn = profile.token(*sem.r_up);
+        }
+        // up == nullptr (skipped in wizard): emit neither form.
+    }
+
+    if (sem.hotkey_enable) m.enable_hotkey_btn = profile.token(*sem.hotkey_enable);
+    if (sem.menu_toggle)   m.menu_toggle_btn   = profile.token(*sem.menu_toggle);
+    if (sem.exit_emulator) m.exit_emulator_btn = profile.token(*sem.exit_emulator);
+    return m;
+}
+
     ControllerMapping get_mapping(ControllerType type, const std::string& core_name) {
         switch (type) {
             case ControllerType::PS_STYLE_DRAGONRISE:

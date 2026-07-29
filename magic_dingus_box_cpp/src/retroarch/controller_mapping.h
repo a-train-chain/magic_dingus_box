@@ -1,9 +1,11 @@
 #pragma once
 
 #include <iosfwd>
+#include <optional>
 #include <string>
 
 #include "controller_detector.h"
+#include "controller_profile.h"
 
 namespace retroarch {
 
@@ -89,6 +91,37 @@ struct ControllerMapping {
     std::string menu_toggle_btn = "";   // The button to press with modifier
     std::string exit_emulator_btn = ""; // Optional exit button
 };
+
+// A per-core mapping expressed in LOGICAL controls instead of physical
+// button numbers. get_semantic_mapping() owns the per-core decisions
+// (which control drives which RetroPad slot); build_mapping() marries a
+// SemanticMapping to a PhysicalProfile to produce the ControllerMapping
+// the launcher emits. Slots left nullopt keep ControllerMapping's struct
+// defaults — several legacy branches rely on exactly that.
+struct SemanticMapping {
+    std::string name = "Default";
+    std::string analog_dpad_mode = "1";
+    std::string core_option_pad_type = "";
+    std::string extra_config = "";
+
+    // RetroPad button slots
+    std::optional<LogicalControl> b, y, select, start, a, x, l, r, l2, r2;
+    // RetroPad digital d-pad slots
+    std::optional<LogicalControl> up, down, left, right;
+    // Main analog stick controls (LSTICK_* or N64_STICK_*)
+    std::optional<LogicalControl> stick_up, stick_down, stick_left, stick_right;
+    bool left_stick = false;    // emit l_x/l_y axis binds from stick_*
+    bool stick_to_dpad = false; // emit up/down/left/right_axis from stick_*
+    // RetroPad right-stick slots (RSTICK_* or N64_C_*); presence gates emission
+    std::optional<LogicalControl> r_up, r_down, r_left, r_right;
+    // Hotkeys
+    std::optional<LogicalControl> hotkey_enable, menu_toggle, exit_emulator;
+};
+
+SemanticMapping get_semantic_mapping(ControllerStyle style,
+                                     const std::string& core_name);
+ControllerMapping build_mapping(const SemanticMapping& sem,
+                                const PhysicalProfile& profile);
 
 // Pick the per-core bindings for a detected controller. Unknown controllers
 // fall back to the N64 adapter mapping, preserving existing behavior for
