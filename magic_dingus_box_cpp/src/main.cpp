@@ -12,8 +12,17 @@
 #include "ui/pairing_screen.h"
 #include "ui/pairing_screen_renderer.h"
 #include "retroarch/controller_profile.h"
-#ifdef MEDIA_BROWSER_ENABLED
+// NOT under MEDIA_BROWSER_ENABLED: Toast::show() is called from the
+// display-mode change path below (~line 1533), which is core kiosk code and
+// compiles in every configuration. While this include sat inside the #ifdef,
+// -DENABLE_MEDIA_BROWSER=OFF failed outright with "'ui::Toast' has not been
+// declared". Nothing caught it: production always deploys MEDIA_BROWSER=true,
+// and the OFF config on macOS never builds this target at all (it needs
+// DRM/GLES), so the break only reproduced when building the kiosk binary on a
+// Pi with the flag off. toast.cpp is likewise unconditionally in UI_SOURCES --
+// see the note there, which fixed the matching LINK error and missed this one.
 #include "ui/toast.h"
+#ifdef MEDIA_BROWSER_ENABLED
 #include "platform/sequence_detector.h"
 #include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
