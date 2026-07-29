@@ -25,9 +25,14 @@ struct InputManager::Device {
     bool is_joystick;
     bool is_keyboard;
     bool is_rotary;
-    // Some cheap PS-style USB pads (e.g. DragonRise/Microntek 0079:0006)
-    // report axes ABS_X/Y in 0..255 range with the D-pad sending extremes
-    // (0 or 255) instead of using ABS_HAT0X/Y. True for those devices.
+    // True when this device reports ABS_X in a 0..255 range (centre 127)
+    // rather than signed 16-bit -- and NOTHING MORE. Some cheap PS-style USB
+    // pads (e.g. the DragonRise/Microntek 0079:0006 class) additionally put
+    // their D-pad on ABS_X/Y extremes with no hat at all, which is what the
+    // 8-bit handling below exists to serve -- but the two properties are
+    // independent: the N64-style adapter on the bench Pi reports 8-bit axes
+    // AND a real ABS_HAT0X/Y (measured by controller_probe, 2026-07-29). Do
+    // not read this flag as "the d-pad is on the axes".
     bool axis_is_8bit;
     // Tracks the last-known D-pad direction emitted from ABS_X/Y on 8-bit
     // controllers, so we only fire on transitions (press/release), not on
@@ -238,10 +243,24 @@ bool InputManager::open_joystick_devices() {
             device->pid = static_cast<uint16_t>(libevdev_get_id_product(dev));
             device->overlay = lookup_overlay(device->vid, device->pid);
             device->cache_axis_ranges();
-            // Detect 8-bit-axis controllers (DragonRise-style): ABS_X reported
-            // with min=0 means values are 0..255 with center 127, NOT signed
-            // 16-bit. The D-pad on these pads sends ABS_X/Y extremes (0 or
-            // 255) instead of HAT events.
+            // Detect 8-bit-axis controllers (DragonRise-style): ABS_X
+            // reported with min=0 means values are 0..255 with center 127,
+            // NOT signed 16-bit.
+            //
+            // THAT IS ALL IT MEANS. This flag used to be documented as "the
+            // d-pad on these pads sends ABS_X/Y extremes instead of HAT
+            // events" -- now known false. controller_probe measured the
+            // N64-style adapter on the bench Pi (2563:0575) reporting
+            // ABS_X/Y/Z/RZ as range=[0..255] AND a real ABS_HAT0X/Y at the
+            // same time: 8-bit axes and a genuine hat coexist happily on one
+            // pad. So this test says nothing about where any pad's d-pad
+            // lives, and in particular it cannot settle the open question of
+            // which DragonRise revision (0079:0006) the box ships -- see
+            // controller_profile.cpp's caveat on that profile. What the flag
+            // is actually FOR is the axis-overlay handling below: on a pad
+            // whose axes are 8-bit, ABS_X carries d-pad-like extremes that
+            // the kiosk must keep interpreting itself rather than letting a
+            // profile overlay claim.
             if (libevdev_has_event_code(dev, EV_ABS, ABS_X)) {
                 int abs_min = libevdev_get_abs_minimum(dev, ABS_X);
                 int abs_max = libevdev_get_abs_maximum(dev, ABS_X);
@@ -772,9 +791,9 @@ std::vector<InputEvent> InputManager::poll() {
                 // map_axis_to_action below: exactly one action per event.
                 //
                 // THE CEILING -- exactly what an overlay can and cannot claim.
-                // Tasks 10 and 12 should work from this list, not from
-                // intuition; an entry naming an unclaimable code is accepted,
-                // stored, and then silently does nothing.
+                // Work from this list, not from intuition: an entry naming an
+                // unclaimable code is accepted, stored, and then silently
+                // does nothing.
                 //
                 //   EV_ABS, on EVERY device class:
                 //     ABS_HAT0X / ABS_HAT0Y  NOT claimable (built-in hat)

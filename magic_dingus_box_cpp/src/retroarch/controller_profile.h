@@ -28,7 +28,6 @@ struct PhysicalProfile {
     std::string captured_at;  // ISO-8601, informational only
     std::map<LogicalControl, PhysicalBinding> controls;
 
-    bool has(LogicalControl c) const { return controls.count(c) != 0; }
     std::string token(LogicalControl c) const {
         auto it = controls.find(c);
         return it == controls.end() ? std::string() : it->second.token;
@@ -52,9 +51,9 @@ struct PhysicalProfile {
 //    about axes or hats -- so those are this profile author's own
 //    assignment. See the per-profile comments in the .cpp: the N64
 //    adapter's are hardware-confirmed; the DragonRise d-pad's are
-//    provisional and unverified (input_manager.cpp:27-30,154-166 documents
-//    that the same VID/PID can instead report its d-pad via 8-bit
-//    ABS_X/Y extremes with no real hat, and no DragonRise pad was
+//    provisional and unverified (input_manager.cpp's axis_is_8bit handling
+//    documents that pads of this VID/PID can instead report their d-pad via
+//    8-bit ABS_X/Y extremes with no real hat, and no DragonRise pad has been
 //    available to settle which this shipped pad is).
 const PhysicalProfile& builtin_n64_adapter_profile();
 const PhysicalProfile& builtin_dragonrise_profile();

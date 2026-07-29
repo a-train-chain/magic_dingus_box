@@ -2474,7 +2474,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 // here (that pad is diverted to raw events by
                 // set_raw_capture). on_action() owns cancel from every phase,
                 // so the wizard is always escapable from the box buttons, the
-                // rotary, the phone remote, or a working pad.
+                // rotary, the phone remote, or a keyboard.
+                //
+                // NOT from a gamepad — not even a working one. set_raw_capture
+                // diverts EVERY real joystick (the phone-remote uinput device
+                // is the sole exception), so no pad can produce an InputAction
+                // while the wizard is up. See the header comment on
+                // ui::ControllerWizard, which states the same guarantee
+                // correctly.
                 if (settings_menu.is_controller_wizard_active()) {
                     auto* wiz = settings_menu.controller_wizard();
                     if (wiz) {

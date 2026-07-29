@@ -110,7 +110,24 @@ TEST_CASE("builtin DragonRise profile pins every binding", "[controller_profile]
         // PROVISIONAL / UNVERIFIED (see controller_profile.cpp caveat):
         // assumes a real hat; input_manager.cpp documents this same
         // VID/PID may instead use 8-bit ABS_X/Y extremes with no hat.
-        // Settled by Task 12's controller_probe against the physical pad.
+        //
+        // STILL OPEN. This block briefly claimed the question was "settled
+        // by Task 12's controller_probe against the physical pad" -- it was
+        // not. No DragonRise pad was attached when that probe ran (see
+        // .superpowers/sdd/task-12-report.md, which lists the question as
+        // open, and controller_profile.cpp:114+), so the probe cross-checked
+        // this profile against nothing. What these four lines actually pin
+        // is the transcription of the built-in profile as written, not the
+        // hardware.
+        //
+        // WHAT WOULD SETTLE IT: plug the shipped DragonRise/Microntek
+        // 0079:0006 pad into the box and run
+        // `controller_probe /dev/input/eventN`. It prints the device's EV_ABS
+        // capability list and each axis's range, which answers outright
+        // whether ABS_HAT0X/Y exists on that pad. If it does not, these four
+        // bindings must become AXIS on ABS_X/Y and the expectations below
+        // change with them. The axis RANGE alone proves nothing either way --
+        // see the caveat in controller_profile.cpp.
         {LogicalControl::DPAD_UP,    K::HAT, kAbsHat0Y, -1, "h0up"},
         {LogicalControl::DPAD_DOWN,  K::HAT, kAbsHat0Y, +1, "h0down"},
         {LogicalControl::DPAD_LEFT,  K::HAT, kAbsHat0X, -1, "h0left"},

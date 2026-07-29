@@ -21,12 +21,22 @@ namespace retroarch {
 //             Codes 304..316 -> indices 0..12, reproducing all ten of
 //             builtin_n64_adapter_profile()'s button tokens exactly
 //             (18/18 tokens matched, buttons + hat + stick).
-//   VERIFIED  Non-hat axes ascending, hats excluded from that numbering.
-//             ABS_X/Y/Z/RZ (codes 0,1,2,5) -> axis indices 0,1,2,3 -- so
-//             ABS_RZ really is axis 3, which is what the DragonRise
-//             profile's "+3"/"-3" right-stick tokens depend on.
-//             Corroborated independently by the kernel's own joydev
+//   VERIFIED  Non-hat axes ascending. ABS_X/Y/Z/RZ (codes 0,1,2,5) -> axis
+//             indices 0,1,2,3 -- so ABS_RZ really is axis 3, which is what
+//             the DragonRise profile's "+3"/"-3" right-stick tokens depend
+//             on. Corroborated independently by the kernel's own joydev
 //             JSIOCGAXMAP on the same pad (0->0 1->1 2->2 3->5).
+//
+//   CONSISTENT WITH (not proven by) that measurement: hats being EXCLUDED
+//             from the axis numbering rather than merely SORTED LAST. The
+//             two hypotheses are indistinguishable on any real pad, because
+//             evdev hat codes are always >= ABS_HAT0X (16) while analog axis
+//             codes are always < 16 -- so a hat can never land before an
+//             analog axis under either rule, and every measurement to date
+//             agrees with both. axis_index() implements exclusion. To tell
+//             them apart you would need a synthetic uinput pad advertising a
+//             hat code below an analog code, which evdev's own numbering
+//             makes impossible; reading udev_joypad.c is the practical route.
 //   VERIFIED  ABS_HAT0X/Y map to hat 0 with the left/right/up/down suffixes.
 //
 //   ASSUMED   The [BTN_MISC, BTN_JOYSTICK) WRAP-AFTER branch in

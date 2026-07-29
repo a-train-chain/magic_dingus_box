@@ -112,11 +112,10 @@ const PhysicalProfile& builtin_dragonrise_profile() {
             {L::L2, btn(294, "6")},       {L::R2, btn(295, "7")},
             {L::SELECT, btn(296, "8")},   {L::START, btn(297, "9")},
             // PROVISIONAL / UNVERIFIED: assumes a real hat (ABS_HAT0X/Y).
-            // input_manager.cpp:27-30,154-166 documents that THIS SAME
-            // VID/PID (0079:0006) can instead report its d-pad via
+            // input_manager.cpp's axis_is_8bit handling documents that THIS
+            // SAME VID/PID (0079:0006) can instead report its d-pad via
             // ABS_X/Y extremes in an 8-bit (0..255) range, with no hat at
-            // all, detected at runtime via ABS_X min==0 && max<=255. No
-            // DragonRise pad was on hand when hardware-evidence.md was
+            // all. No DragonRise pad was on hand when hardware-evidence.md was
             // captured, and none was attached when controller_probe ran
             // on 2026-07-29 either, so which revision this shipped pad
             // actually is REMAINS OPEN. Run
@@ -132,12 +131,12 @@ const PhysicalProfile& builtin_dragonrise_profile() {
             // range=[0..255] AND a real ABS_HAT0X/Y at the same time --
             // 8-bit axes and a genuine hat coexist happily on one pad, so
             // "min==0 && max<=255" says nothing about where the d-pad is.
-            // (input_manager.cpp:245-252 keys its d-pad-on-ABS_X/Y
-            // handling off exactly that range test and is therefore true
-            // for the N64 adapter too; harmless there, because pushing
-            // that pad's analog stick to an extreme navigating the kiosk
-            // menu is the documented behavior -- but it is not evidence
-            // about any pad's hat.)
+            // (input_manager.cpp's open_joystick_devices() keys its
+            // d-pad-on-ABS_X/Y handling off exactly that range test, so
+            // axis_is_8bit is set for the N64 adapter too; harmless there,
+            // because pushing that pad's analog stick to an extreme to
+            // navigate the kiosk menu is the documented behavior -- but it
+            // is not evidence about any pad's hat.)
             {L::DPAD_UP, hat(ABS_HAT0Y, -1, "h0up")},
             {L::DPAD_DOWN, hat(ABS_HAT0Y, +1, "h0down")},
             {L::DPAD_LEFT, hat(ABS_HAT0X, -1, "h0left")},

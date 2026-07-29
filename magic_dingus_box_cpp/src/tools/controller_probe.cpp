@@ -10,8 +10,15 @@
 // on the device, it recomputes every token FROM THE LIVE CAPABILITY LISTS and
 // diffs it against the profile's hand-transcribed token. That diff is the
 // point of this tool: the unit tests assert those tokens from a transcribed
-// capability list, this asserts them from real hardware. Exit status is 0
-// only when every applicable profile matches token-for-token.
+// capability list, this asserts them from real hardware.
+//
+// EXIT STATUS -- three outcomes, not two. "Nothing was comparable" is NOT
+// "verified clean", and conflating them is how a run with the pad unplugged
+// came to be quoted as evidence about that pad:
+//   0  at least one profile applied and every one that did matched.
+//   1  a profile applied and disagreed with live hardware.
+//   2  no built-in profile applied to any device examined -- nothing was
+//      compared, so the run proves nothing about any profile.
 //
 // Read-only: opens devices O_RDONLY|O_NONBLOCK and never reads an event, so
 // it is safe to run while the kiosk (or RetroArch) is using the same pads.
@@ -75,6 +82,10 @@ bool profile_applies(const retroarch::PhysicalProfile& p,
     return true;
 }
 
+// Number of built-in profiles that were actually comparable against some
+// device this run. Zero at exit means nothing was verified.
+int g_profiles_compared = 0;
+
 // Returns the number of MISMATCHED tokens (0 == clean).
 int cross_check(const retroarch::PhysicalProfile& p,
                 const std::vector<uint16_t>& keys,
@@ -87,6 +98,7 @@ int cross_check(const retroarch::PhysicalProfile& p,
         printf("     (skipped -- this pad is a different shape, not a failure)\n");
         return 0;
     }
+    ++g_profiles_compared;
     int mismatches = 0, total = 0;
     for (const auto& [control, b] : p.controls) {
         const std::string live =
@@ -210,7 +222,13 @@ int main(int argc, char** argv) {
                "builtin profiles disagree on real hardware\n", mismatches);
         return 1;
     }
+    if (g_profiles_compared == 0) {
+        printf("controller_probe: NOTHING COMPARED -- no builtin profile applied "
+               "to any device examined, so this run verifies nothing. Plug in "
+               "the pad you mean to check and re-run.\n");
+        return 2;
+    }
     printf("controller_probe: all applicable builtin-profile tokens reproduced "
-           "from live hardware\n");
+           "from live hardware (%d profile(s) compared)\n", g_profiles_compared);
     return 0;
 }
