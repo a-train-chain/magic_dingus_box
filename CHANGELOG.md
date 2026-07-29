@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 RetroArch performance-headroom round: quiet the media stack during game
 sessions, reclaim PS1 audio latency, add heavy-scene video options, and
 cool the boot config. Video contract (Vulkan/khr_display, viewports,
-bezels) and all controller mappings unchanged.
+bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
 
 ### Added
 - **Raspberry Pi 5 groundwork: platform profile** — new
