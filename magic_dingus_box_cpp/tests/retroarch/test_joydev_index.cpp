@@ -25,6 +25,35 @@ TEST_CASE("DragonRise-shaped pad gets contiguous indices", "[joydev_index]") {
     REQUIRE(button_index(keys, 297) == 9);   // Start
 }
 
+// EVERY vector above is already sorted, so std::sort inside button_index() /
+// axis_index() is a no-op in all of them — deleting both sorts would leave
+// them green. The capability lists this code consumes are built by walking
+// codes in ascending order (controller_probe.cpp, InputManager::device_caps),
+// which is exactly why the sort has never been exercised. It is still load
+// bearing: nothing in the SIGNATURES promises ordered input, and a future
+// caller that assembles a list some other way (a profile replayed from JSON,
+// a hand-written test fixture) would silently get wrong indices without it.
+TEST_CASE("indices do not depend on the caller's ordering", "[joydev_index]") {
+    // Same two pads as above, shuffled.
+    const std::vector<uint16_t> keys = {0x13b, 0x101, 0x130, 0x100, 0x131};
+    REQUIRE(button_index(keys, 0x130) == 0);
+    REQUIRE(button_index(keys, 0x131) == 1);
+    REQUIRE(button_index(keys, 0x13b) == 2);
+    REQUIRE(button_index(keys, 0x100) == 3);   // BTN_MISC still wraps AFTER
+    REQUIRE(button_index(keys, 0x101) == 4);
+
+    const std::vector<uint16_t> abs = {5, 17, 0, 16, 2, 1};
+    REQUIRE(axis_index(abs, 0) == 0);
+    REQUIRE(axis_index(abs, 1) == 1);
+    REQUIRE(axis_index(abs, 2) == 2);
+    REQUIRE(axis_index(abs, 5) == 3);
+    REQUIRE(axis_index(abs, 16) == -1);
+
+    // ...and the tokens built on top of them agree with the sorted case.
+    REQUIRE(bind_token(keys, abs, K::AXIS, 5, +1) == "+3");
+    REQUIRE(bind_token(keys, abs, K::BUTTON, 0x13b, 0) == "2");
+}
+
 TEST_CASE("axis_index skips hats", "[joydev_index]") {
     // ABS_X(0), ABS_Y(1), ABS_Z(2), ABS_RZ(5), ABS_HAT0X(16), ABS_HAT0Y(17)
     const std::vector<uint16_t> abs = {0, 1, 2, 5, 16, 17};
