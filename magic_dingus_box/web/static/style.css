@@ -10096,3 +10096,67 @@ body.faceplate .bottom-nav {
     color: var(--dim, #968B85);
   }
 }
+
+@media (min-width: 1024px) {
+
+  /* --- The header cluster is sized for a 390px phone ----------------------
+   *
+   * Every value in it is either a fixed px chosen for a handset or a clamp
+   * whose ceiling is already reached at a 679px viewport. `.header-logo`
+   * (style.css:8297) is `max-width: clamp(196px, 56vw, 380px)`, and 56vw hits
+   * 380px at 678.6px wide — so from 679px to 2560px NOTHING in this header
+   * changes size. Measured at 1440x900: the wordmark is 380x55 inside a
+   * 1200px content box (29.7% of the measure), the eyebrow is 11px and the
+   * device chip is a 30px-tall pill with an 11px label. It reads as a phone
+   * header centred in a wide window.
+   *
+   * The file already knows this is wrong. style.css:8318-8320, on the
+   * eyebrow: "Fixed 11px rather than a clamp: remote.css uses twelve integer
+   * px sizes and zero clamps for type, stepping at breakpoints instead of
+   * scaling fluidly." The fixed size shipped; the stepping never did. This is
+   * that missing step — integer px at a breakpoint, not a new clamp.
+   *
+   * The 196px clamp FLOOR is deliberately untouched. style.css:8291-8296
+   * records it as a collision fix: at a 320px viewport the old 250px minimum
+   * spanned x = 35..285 and overlapped the top-left corner screw at
+   * x = 28..39. Overriding max-width at >=1024 replaces only the branch a
+   * phone can never select — 56vw and the 196px floor both remain in force
+   * below 1024.
+   *
+   * 440px is 36.7% of the 1200px measure, which lands the mark near the
+   * remote's own 232px wordmark relative to its 640px shell (36.3%) — the two
+   * surfaces read at the same scale, which is the point of a shared identity.
+   *
+   * The chip stops shouting the device NAME. `.connection-badge` is
+   * `text-transform: uppercase` with .10em tracking, correct for a chrome
+   * label, but manager.js:1122 fills it with
+   * `${currentDevice.device_name} • ${connectionType}` — measured live as
+   * "MAGIC DINGUS BOX • WIFI" for a box the operator sees as "Magic Dingus
+   * Box" everywhere else in the product, including the address bar. Scoped to
+   * #connectionBadgeText (1,0,1) so only the DATA span loses the transform;
+   * the badge itself keeps its label voice for the icon and any future fixed
+   * text. */
+  body.faceplate header {
+    padding: 32px 0 24px;
+    margin-bottom: 32px;
+  }
+  body.faceplate .header-logo {
+    max-width: 440px;
+    margin-bottom: 14px;
+  }
+  body.faceplate .subtitle {
+    font-size: 13px;
+    letter-spacing: .22em;
+    line-height: 1.2;
+  }
+  body.faceplate .connection-badge {
+    font-size: 12px;
+    letter-spacing: .08em;
+    min-height: 34px;
+    padding: 7px 14px;
+  }
+  body.faceplate #connectionBadgeText {
+    text-transform: none;
+    letter-spacing: .02em;
+  }
+}
