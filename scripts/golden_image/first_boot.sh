@@ -382,11 +382,19 @@ fi
 # Operator's personal TMDB API key. Nothing wiped this before, so every unit
 # made Media Browser metadata calls against one person's key — rate limits are
 # per key, so the whole fleet shared one quota and one attribution.
-TMDB_KEY="/home/magic/.config/magic_dingus_box/tmdb_api_key"
-if [[ -f "$TMDB_KEY" ]]; then
-    rm -f "$TMDB_KEY"
-    log "    wiped: tmdb_api_key"
-fi
+# Globbed, not an exact path. The exact-path version wiped tmdb_api_key and
+# nothing else, so any sibling copy — a hand-made .bak, an editor's ~ or .swp
+# file, a half-written .tmp from an interrupted save — survived the wipe and
+# shipped the operator's key on every cloned unit. The customer now supplies
+# their own key through the Content Manager, so on a fresh box NO file in this
+# family should exist; deleting the whole set is the correct, safe behaviour.
+shopt -s nullglob
+TMDB_KEY_FILES=(/home/magic/.config/magic_dingus_box/tmdb_api_key*)
+shopt -u nullglob
+for f in "${TMDB_KEY_FILES[@]}"; do
+    rm -f "$f"
+    log "    wiped: $(basename "$f")"
+done
 
 # Step 6c and 6d run UNCONDITIONALLY — they are the most important
 # anti-leak steps for cloned Pis (inherited WiFi credentials and the
