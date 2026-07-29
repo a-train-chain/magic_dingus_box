@@ -2,7 +2,13 @@
 #include <cstdint>
 #include <map>
 #include <string>
-#include "../platform/input_manager.h"
+// MenuNavOverlay (+ the InputAction enum it maps to) only. This deliberately
+// does NOT include platform/input_manager.h: that header declares the whole
+// InputManager class, and every TU that reaches this one -- the launcher,
+// capture_session.h, controller_mapping.h, joydev_index.h, four test binaries
+// -- would parse all of it just to see one struct. Same leaf-header treatment
+// as ../retroarch/capture_device_caps.h, for the same reason.
+#include "../platform/menu_nav_overlay.h"
 #include "logical_controls.h"
 
 namespace retroarch {

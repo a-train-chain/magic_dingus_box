@@ -9,27 +9,13 @@
 #include <memory>
 
 #include "../retroarch/capture_device_caps.h"
+// InputAction + MenuNavOverlay. Both live in a std-only leaf header so
+// retroarch/controller_profile.h can declare menu_overlay_from_profile()
+// without pulling this whole class in; including it here keeps every existing
+// user of platform::InputAction working unchanged.
+#include "menu_nav_overlay.h"
 
 namespace platform {
-
-enum class InputAction {
-    NONE,
-    ROTATE,           // Rotate playlist selection (Horizontal/General)
-    ROTATE_VERTICAL,  // Rotate vertical (D-pad Up/Down)
-    SELECT,           // Select/activate
-    NEXT,             // Next track
-    PREV,             // Previous track
-    SEEK_LEFT,        // Seek backward
-    SEEK_RIGHT,       // Seek forward
-    PLAY_PAUSE,       // Toggle play/pause
-    TOGGLE_LOOP,      // Toggle loop
-    QUIT,             // Quit application
-    ENTER_SAMPLE_MODE,
-    EXIT_SAMPLE_MODE,
-    MARKER_ACTION,
-    UNDO_MARKER,
-    SETTINGS_MENU     // Toggle settings menu
-};
 
 struct InputEvent {
     InputAction action;
@@ -44,19 +30,6 @@ struct InputEvent {
     // encoder switch, default false for all other sources.
     bool is_from_rotary = false;
 #endif
-};
-
-// Per-model kiosk-menu mapping learned by the Controller Setup wizard.
-// ADDITIVE: codes not listed here fall through to the built-in switch, so a
-// bad profile can never make the menu less usable than stock.
-//
-// The flip side of "additive" is that a code the overlay DOES claim must not
-// also fire the built-in action -- see poll()'s overlay branches, which are
-// mutually exclusive with the hardcoded ones for exactly that reason.
-struct MenuNavOverlay {
-    std::map<uint16_t, InputAction> buttons;  // EV_KEY code -> action
-    int nav_x_abs = -1;   // ABS code driving ROTATE (main stick X), -1 = none
-    int seek_abs = -1;    // ABS code driving SEEK_LEFT/RIGHT, -1 = none
 };
 
 // One raw, unmapped evdev event from a joystick, surfaced only while
@@ -89,8 +62,30 @@ public:
     // Keyboards, the rotary encoder, and the phone-remote virtual pad
     // ("MagicDingus Phone Remote") keep producing InputActions so the
     // wizard chrome stays driveable.
+    //
+    // ORDERING REQUIREMENT -- DRAIN BEFORE YOU DISABLE. Every real state
+    // change clears raw_events_, because the queue is per-capture-session and
+    // events must never leak across an edge. So:
+    //
+    //     set_raw_capture(false);            // <-- discards the queue
+    //     auto ev = drain_raw_events();      // <-- always empty
+    //
+    // silently loses the final capture, with no error and no log. Do this
+    // instead:
+    //
+    //     auto ev = drain_raw_events();
+    //     set_raw_capture(false);
+    //
+    // Repeating the CURRENT state is a no-op and keeps the queue intact
+    // (set_raw_capture is idempotent on purpose, so a UI that calls it every
+    // frame doesn't discard undrained events) -- only a genuine edge clears.
     void set_raw_capture(bool enabled);
     bool raw_capture() const { return raw_capture_; }
+
+    // Take everything queued since the last drain, leaving the queue empty.
+    // Safe to call at any time, including while capture is off -- but see the
+    // ordering requirement on set_raw_capture(): disabling capture first
+    // throws the queue away.
     std::vector<RawInputEvent> drain_raw_events();
 
     // Capability snapshot for the wizard's CaptureSession (nullopt if the
@@ -143,7 +138,22 @@ private:
     // (arbitrary ABS code) and the hardcoded path (ABS_X) are literally the
     // same code and share last_rotate_dir_/last_rotate_time_ -- they can
     // never drift apart, and only one of the two ever runs per event.
-    InputAction rotate_from_axis_value(int16_t value);
+    //
+    // `deflection` is signed distance from the axis's REST CENTRE, not the raw
+    // evdev value: an axis reporting 0..255 rests at 127, so comparing its raw
+    // value against a symmetric deadzone would read "hard right" forever. The
+    // hardcoded ABS_X path passes the raw value with AXIS_DEADZONE, which is
+    // exactly what it always did (centre 0, threshold 5000); the overlay path
+    // passes a value centred and a threshold scaled by the device's reported
+    // min/max (Device::AxisNorm).
+    InputAction rotate_from_axis_value(int32_t deflection, int32_t deadzone);
+
+    // Deadzone for a signed-16-bit axis: ~15% of half-range. Also the
+    // numerator of the proportional threshold derived for other ranges, so a
+    // signed-16 axis normalizes back to exactly this value (see
+    // cache_axis_ranges in the .cpp).
+    static constexpr int32_t AXIS_DEADZONE = 5000;
+    static constexpr int32_t AXIS_DEADZONE_OF = 32767;  // ...out of this many
 
     // Overlay for this vid/pid, or nullptr. The returned pointer is owned by
     // overlays_ and is invalidated by set_menu_overlays().

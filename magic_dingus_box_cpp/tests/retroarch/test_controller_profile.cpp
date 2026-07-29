@@ -555,6 +555,9 @@ TEST_CASE("menu overlay mirrors the kiosk's hardcoded semantics",
     REQUIRE(n64.buttons.at(310) == InputAction::PLAY_PAUSE);     // Z
     REQUIRE(n64.buttons.at(309) == InputAction::NEXT);           // R
     REQUIRE(n64.buttons.at(308) == InputAction::PREV);           // L
+    // Both stick fields, not just the -1 one: nav_x_abs going unasserted was
+    // how a wrong axis could ship green. N64_STICK_RIGHT is bound to ABS_X.
+    REQUIRE(n64.nav_x_abs == kAbsX);
     REQUIRE(n64.seek_abs == -1);   // C cluster is buttons, not an axis
 }
 
