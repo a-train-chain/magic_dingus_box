@@ -74,7 +74,8 @@ constexpr char kCapturedPadName[] = "SWITCH CO.,LTD. Controller (Dinput)";
 // and write_player_binds() emitted no such lines -- so no capture from a
 // pre-fix box could contain them. They were added when PS1 gained its
 // second analog stick and its stick clicks (see test_ps1_analog_binds.cpp).
-// Both are EMPTY here, and that is the assertion doing real work: this pad
+// Both are explicitly UNBOUND here using RetroArch's "nul" sentinel, and
+// that is the assertion doing real work: this pad
 // rides the legacy N64-adapter profile, which has no L3/R3 binding, and
 // snes9x's semantic table binds no stick clicks either (the SNES pad has
 // none) -- so a token appearing in either field would mean the PS1 fix had
@@ -94,10 +95,10 @@ constexpr char kExpectedBinds[] =
     "input_player1_x_btn = \"0\"\n"
     "input_player1_l_btn = \"4\"\n"
     "input_player1_r_btn = \"5\"\n"
-    "input_player1_l2_btn = \"\"\n"
-    "input_player1_r2_btn = \"\"\n"
-    "input_player1_l3_btn = \"\"\n"  // added post-capture -- see note above
-    "input_player1_r3_btn = \"\"\n"  // added post-capture -- see note above
+    "input_player1_l2_btn = \"nul\"\n"
+    "input_player1_r2_btn = \"nul\"\n"
+    "input_player1_l3_btn = \"nul\"\n"  // added post-capture -- see note above
+    "input_player1_r3_btn = \"nul\"\n"  // added post-capture -- see note above
     "input_player1_l_x_plus_axis = \"+0\"\n"
     "input_player1_l_x_minus_axis = \"-0\"\n"
     "input_player1_l_y_plus_axis = \"+1\"\n"
@@ -119,10 +120,10 @@ constexpr char kExpectedBinds[] =
     "input_player2_x_btn = \"0\"\n"
     "input_player2_l_btn = \"4\"\n"
     "input_player2_r_btn = \"5\"\n"
-    "input_player2_l2_btn = \"\"\n"
-    "input_player2_r2_btn = \"\"\n"
-    "input_player2_l3_btn = \"\"\n"  // added post-capture -- see note above
-    "input_player2_r3_btn = \"\"\n"  // added post-capture -- see note above
+    "input_player2_l2_btn = \"nul\"\n"
+    "input_player2_r2_btn = \"nul\"\n"
+    "input_player2_l3_btn = \"nul\"\n"  // added post-capture -- see note above
+    "input_player2_r3_btn = \"nul\"\n"  // added post-capture -- see note above
     "input_player2_l_x_plus_axis = \"+0\"\n"
     "input_player2_l_x_minus_axis = \"-0\"\n"
     "input_player2_l_y_plus_axis = \"+1\"\n"

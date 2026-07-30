@@ -21,9 +21,18 @@ TEST_CASE("player binds match the legacy launcher block line-for-line",
     REQUIRE(cfg.find("input_player1_l2_btn = \"6\"\n") != std::string::npos);
     REQUIRE(cfg.find("input_player1_l_x_plus_axis = \"+0\"\n") != std::string::npos);
     REQUIRE(cfg.find("input_player1_up_axis = \"-1\"\n") != std::string::npos);
-    // Unconditional emission: an empty value still writes the line
+    // RetroArch 1.20.0 parses an empty *_btn value with strtoull("", ...),
+    // which aliases physical button 0. Its explicit unbound sentinel is
+    // "nul", so an absent control must still emit the line with that token.
     const std::string nes = emit(ControllerType::N64_ADAPTER, "nestopia_libretro", 1);
-    REQUIRE(nes.find("input_player1_l2_btn = \"\"\n") != std::string::npos);
+    REQUIRE(nes.find("input_player1_l2_btn = \"nul\"\n") != std::string::npos);
+
+    // Regression for the live SHANWAN/N64 failure: empty R2 became button 0,
+    // and Mupen's alternate map interprets RetroPad R2 as N64 R (grab in
+    // Smash 64), so bottom A produced A+R. This must never serialize empty.
+    const std::string n64 = emit(ControllerType::PS_STYLE_DRAGONRISE,
+                                 "mupen64plus_next_libretro", 1);
+    REQUIRE(n64.find("input_player1_r2_btn = \"nul\"\n") != std::string::npos);
 }
 
 TEST_CASE("player 2 mirrors with the player2 prefix and no player1 lines",

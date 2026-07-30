@@ -29,8 +29,8 @@
 // Engine and Arcade had neither a second stick nor stick clicks; the N64 has
 // no stick clicks and already spends its right stick on the C-button
 // cluster; the Dreamcast has one stick plus two analog triggers. All of them
-// must keep emitting EMPTY l3/r3 lines -- present, because RetroArch
-// distinguishes an empty value from an absent line, but empty.
+// must keep emitting explicitly UNBOUND l3/r3 lines -- present, because
+// RetroArch distinguishes the "nul" sentinel from an absent line.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -192,17 +192,17 @@ TEST_CASE("PS1 on a PS-style pad binds the captured right stick and L3/R3",
     CHECK(has_line(cfg, "input_player1_l_x_plus_axis = \"+0\"\n"));
 }
 
-TEST_CASE("consoles with no stick clicks keep emitting EMPTY l3/r3",
+TEST_CASE("consoles with no stick clicks keep emitting UNBOUND l3/r3",
           "[ps1_analog][player_binds]") {
     // The scope guard. Every one of these consoles genuinely lacks stick
     // clicks, so the lines must be PRESENT (RetroArch distinguishes an empty
-    // value from an absent line) and EMPTY. A token leaking in here would
+    // value from an absent line) and set to "nul". A physical token leaking in here would
     // mean this fix escaped PS1.
     for (const auto& core : non_ps1_cores()) {
         INFO("core=" << core);
         const std::string cfg = emit_for(shanwan_profile(), core);
-        CHECK(has_line(cfg, "input_player1_l3_btn = \"\"\n"));
-        CHECK(has_line(cfg, "input_player1_r3_btn = \"\"\n"));
+        CHECK(has_line(cfg, "input_player1_l3_btn = \"nul\"\n"));
+        CHECK(has_line(cfg, "input_player1_r3_btn = \"nul\"\n"));
     }
     // Same for the two built-in pads, across every shipped core, on both
     // players -- this is the path a box with no captured profile takes.
@@ -214,8 +214,8 @@ TEST_CASE("consoles with no stick clicks keep emitting EMPTY l3/r3",
             for (int player : {1, 2}) {
                 const std::string cfg = emit_builtin(pad, core, player);
                 const std::string p = "input_player" + std::to_string(player) + "_";
-                CHECK(has_line(cfg, p + "l3_btn = \"\"\n"));
-                CHECK(has_line(cfg, p + "r3_btn = \"\"\n"));
+                CHECK(has_line(cfg, p + "l3_btn = \"nul\"\n"));
+                CHECK(has_line(cfg, p + "r3_btn = \"nul\"\n"));
             }
         }
     }
@@ -234,8 +234,8 @@ TEST_CASE("N64 on a PS-style pad keeps the right stick on the C cluster",
         CHECK(has_line(cfg, "input_player1_r_x_minus_axis = \"-2\"\n"));
         CHECK(has_line(cfg, "input_player1_r_y_plus_axis = \"+3\"\n"));
         CHECK(has_line(cfg, "input_player1_r_y_minus_axis = \"-3\"\n"));
-        CHECK(has_line(cfg, "input_player1_l3_btn = \"\"\n"));
-        CHECK(has_line(cfg, "input_player1_r3_btn = \"\"\n"));
+        CHECK(has_line(cfg, "input_player1_l3_btn = \"nul\"\n"));
+        CHECK(has_line(cfg, "input_player1_r3_btn = \"nul\"\n"));
 
         // And on the built-in DragonRise, whose golden snapshot entry pins
         // these same four tokens.
@@ -253,23 +253,23 @@ TEST_CASE("a profile with no L3/R3 captured degrades to an empty bind",
     // persistable and a fielded box can genuinely be in this state.
     const std::string cfg =
         emit_for(shanwan_profile_without_stick_clicks(), "pcsx_rearmed_libretro");
-    CHECK(has_line(cfg, "input_player1_l3_btn = \"\"\n"));
-    CHECK(has_line(cfg, "input_player1_r3_btn = \"\"\n"));
+    CHECK(has_line(cfg, "input_player1_l3_btn = \"nul\"\n"));
+    CHECK(has_line(cfg, "input_player1_r3_btn = \"nul\"\n"));
     // The right stick WAS captured on this pad, so it is still bound: a
     // missing stick click degrades only itself.
     CHECK(has_line(cfg, "input_player1_r_x_plus_axis = \"+2\"\n"));
 
     // The built-in DragonRise profile is the same case from the other
     // direction: it has a real right stick but has never had L3/R3, so PS1
-    // on the shipped pad gets the stick and empty clicks.
+    // on the shipped pad gets the stick and explicitly unbound clicks.
     const std::string builtin = emit_builtin(ControllerType::PS_STYLE_DRAGONRISE,
                                              "pcsx_rearmed_libretro");
     CHECK(has_line(builtin, "input_player1_r_x_plus_axis = \"+2\"\n"));
     CHECK(has_line(builtin, "input_player1_r_x_minus_axis = \"-2\"\n"));
     CHECK(has_line(builtin, "input_player1_r_y_plus_axis = \"+3\"\n"));
     CHECK(has_line(builtin, "input_player1_r_y_minus_axis = \"-3\"\n"));
-    CHECK(has_line(builtin, "input_player1_l3_btn = \"\"\n"));
-    CHECK(has_line(builtin, "input_player1_r3_btn = \"\"\n"));
+    CHECK(has_line(builtin, "input_player1_l3_btn = \"nul\"\n"));
+    CHECK(has_line(builtin, "input_player1_r3_btn = \"nul\"\n"));
 }
 
 TEST_CASE("both players get the l3/r3 lines", "[ps1_analog][player_binds]") {

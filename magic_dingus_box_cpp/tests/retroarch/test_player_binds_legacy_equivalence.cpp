@@ -20,7 +20,10 @@
 // construction; it can only pass if the two independently-written code
 // paths produce identical text.
 //
-// ONE DOCUMENTED DELTA FROM THE LEGACY BLOCK: the four l3_btn/r3_btn lines
+// DOCUMENTED DELTAS FROM THE LEGACY BLOCK:
+// - Empty button tokens render as RetroArch's "nul" sentinel. The literal
+//   empty string is parsed as physical button 0 by RetroArch 1.20.0.
+// - The four l3_btn/r3_btn lines
 // (two per player, marked inline below). The legacy block could not have
 // contained them -- RetroPad L3/R3 had no plumbing anywhere in the kiosk
 // until PS1 gained its second analog stick and its stick clicks, so there is
@@ -33,33 +36,38 @@
 // verbatim transcription.
 namespace {
 
+const std::string& serialized_btn(const std::string& token) {
+    static const std::string nul = "nul";
+    return token.empty() ? nul : token;
+}
+
 void legacy_write_block(std::ostream& out, const retroarch::ControllerMapping& map) {
     // 2. Apply Settings
     out << "input_player1_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
 
     // 3. Apply Buttons
-    out << "input_player1_b_btn = \"" << map.b_btn << "\"\n";
-    out << "input_player1_y_btn = \"" << map.y_btn << "\"\n";
-    out << "input_player1_select_btn = \"" << map.select_btn << "\"\n";
-    out << "input_player1_start_btn = \"" << map.start_btn << "\"\n";
+    out << "input_player1_b_btn = \"" << serialized_btn(map.b_btn) << "\"\n";
+    out << "input_player1_y_btn = \"" << serialized_btn(map.y_btn) << "\"\n";
+    out << "input_player1_select_btn = \"" << serialized_btn(map.select_btn) << "\"\n";
+    out << "input_player1_start_btn = \"" << serialized_btn(map.start_btn) << "\"\n";
 
-    out << "input_player1_up_btn = \"" << map.up_btn << "\"\n";
-    out << "input_player1_down_btn = \"" << map.down_btn << "\"\n";
-    out << "input_player1_left_btn = \"" << map.left_btn << "\"\n";
-    out << "input_player1_right_btn = \"" << map.right_btn << "\"\n";
+    out << "input_player1_up_btn = \"" << serialized_btn(map.up_btn) << "\"\n";
+    out << "input_player1_down_btn = \"" << serialized_btn(map.down_btn) << "\"\n";
+    out << "input_player1_left_btn = \"" << serialized_btn(map.left_btn) << "\"\n";
+    out << "input_player1_right_btn = \"" << serialized_btn(map.right_btn) << "\"\n";
 
-    out << "input_player1_a_btn = \"" << map.a_btn << "\"\n";
-    out << "input_player1_x_btn = \"" << map.x_btn << "\"\n";
+    out << "input_player1_a_btn = \"" << serialized_btn(map.a_btn) << "\"\n";
+    out << "input_player1_x_btn = \"" << serialized_btn(map.x_btn) << "\"\n";
 
-    out << "input_player1_l_btn = \"" << map.l_btn << "\"\n";
-    out << "input_player1_r_btn = \"" << map.r_btn << "\"\n";
+    out << "input_player1_l_btn = \"" << serialized_btn(map.l_btn) << "\"\n";
+    out << "input_player1_r_btn = \"" << serialized_btn(map.r_btn) << "\"\n";
 
-    out << "input_player1_l2_btn = \"" << map.l2_btn << "\"\n";
-    out << "input_player1_r2_btn = \"" << map.r2_btn << "\"\n";
+    out << "input_player1_l2_btn = \"" << serialized_btn(map.l2_btn) << "\"\n";
+    out << "input_player1_r2_btn = \"" << serialized_btn(map.r2_btn) << "\"\n";
 
     // 3b. Stick clicks -- NOT in the legacy block (see the delta note above).
-    out << "input_player1_l3_btn = \"" << map.l3_btn << "\"\n";
-    out << "input_player1_r3_btn = \"" << map.r3_btn << "\"\n";
+    out << "input_player1_l3_btn = \"" << serialized_btn(map.l3_btn) << "\"\n";
+    out << "input_player1_r3_btn = \"" << serialized_btn(map.r3_btn) << "\"\n";
 
     // 4. Apply Analog Axes
     out << "input_player1_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
@@ -76,23 +84,23 @@ void legacy_write_block(std::ostream& out, const retroarch::ControllerMapping& m
 
     // 5b. Mirror the same mapping for player 2.
     out << "input_player2_analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
-    out << "input_player2_b_btn = \"" << map.b_btn << "\"\n";
-    out << "input_player2_y_btn = \"" << map.y_btn << "\"\n";
-    out << "input_player2_select_btn = \"" << map.select_btn << "\"\n";
-    out << "input_player2_start_btn = \"" << map.start_btn << "\"\n";
-    out << "input_player2_up_btn = \"" << map.up_btn << "\"\n";
-    out << "input_player2_down_btn = \"" << map.down_btn << "\"\n";
-    out << "input_player2_left_btn = \"" << map.left_btn << "\"\n";
-    out << "input_player2_right_btn = \"" << map.right_btn << "\"\n";
-    out << "input_player2_a_btn = \"" << map.a_btn << "\"\n";
-    out << "input_player2_x_btn = \"" << map.x_btn << "\"\n";
-    out << "input_player2_l_btn = \"" << map.l_btn << "\"\n";
-    out << "input_player2_r_btn = \"" << map.r_btn << "\"\n";
-    out << "input_player2_l2_btn = \"" << map.l2_btn << "\"\n";
-    out << "input_player2_r2_btn = \"" << map.r2_btn << "\"\n";
+    out << "input_player2_b_btn = \"" << serialized_btn(map.b_btn) << "\"\n";
+    out << "input_player2_y_btn = \"" << serialized_btn(map.y_btn) << "\"\n";
+    out << "input_player2_select_btn = \"" << serialized_btn(map.select_btn) << "\"\n";
+    out << "input_player2_start_btn = \"" << serialized_btn(map.start_btn) << "\"\n";
+    out << "input_player2_up_btn = \"" << serialized_btn(map.up_btn) << "\"\n";
+    out << "input_player2_down_btn = \"" << serialized_btn(map.down_btn) << "\"\n";
+    out << "input_player2_left_btn = \"" << serialized_btn(map.left_btn) << "\"\n";
+    out << "input_player2_right_btn = \"" << serialized_btn(map.right_btn) << "\"\n";
+    out << "input_player2_a_btn = \"" << serialized_btn(map.a_btn) << "\"\n";
+    out << "input_player2_x_btn = \"" << serialized_btn(map.x_btn) << "\"\n";
+    out << "input_player2_l_btn = \"" << serialized_btn(map.l_btn) << "\"\n";
+    out << "input_player2_r_btn = \"" << serialized_btn(map.r_btn) << "\"\n";
+    out << "input_player2_l2_btn = \"" << serialized_btn(map.l2_btn) << "\"\n";
+    out << "input_player2_r2_btn = \"" << serialized_btn(map.r2_btn) << "\"\n";
     // Stick clicks -- NOT in the legacy block (see the delta note above).
-    out << "input_player2_l3_btn = \"" << map.l3_btn << "\"\n";
-    out << "input_player2_r3_btn = \"" << map.r3_btn << "\"\n";
+    out << "input_player2_l3_btn = \"" << serialized_btn(map.l3_btn) << "\"\n";
+    out << "input_player2_r3_btn = \"" << serialized_btn(map.r3_btn) << "\"\n";
     out << "input_player2_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
     out << "input_player2_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
     out << "input_player2_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";

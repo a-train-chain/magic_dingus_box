@@ -554,27 +554,34 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
 void write_player_binds(std::ostream& out, const ControllerMapping& map,
                         int player) {
     const std::string p = "input_player" + std::to_string(player) + "_";
+    // RetroArch's config parser does not treat an empty button string as
+    // unbound: strtoull("", ...) yields 0, silently aliasing physical button
+    // zero. "nul" is RetroArch's explicit NO_BTN sentinel.
+    auto write_btn = [&](const char* name, const std::string& token) {
+        out << p << name << "_btn = \""
+            << (token.empty() ? "nul" : token) << "\"\n";
+    };
     out << p << "analog_dpad_mode = \"" << map.analog_dpad_mode << "\"\n";
-    out << p << "b_btn = \"" << map.b_btn << "\"\n";
-    out << p << "y_btn = \"" << map.y_btn << "\"\n";
-    out << p << "select_btn = \"" << map.select_btn << "\"\n";
-    out << p << "start_btn = \"" << map.start_btn << "\"\n";
-    out << p << "up_btn = \"" << map.up_btn << "\"\n";
-    out << p << "down_btn = \"" << map.down_btn << "\"\n";
-    out << p << "left_btn = \"" << map.left_btn << "\"\n";
-    out << p << "right_btn = \"" << map.right_btn << "\"\n";
-    out << p << "a_btn = \"" << map.a_btn << "\"\n";
-    out << p << "x_btn = \"" << map.x_btn << "\"\n";
-    out << p << "l_btn = \"" << map.l_btn << "\"\n";
-    out << p << "r_btn = \"" << map.r_btn << "\"\n";
-    out << p << "l2_btn = \"" << map.l2_btn << "\"\n";
-    out << p << "r2_btn = \"" << map.r2_btn << "\"\n";
+    write_btn("b", map.b_btn);
+    write_btn("y", map.y_btn);
+    write_btn("select", map.select_btn);
+    write_btn("start", map.start_btn);
+    write_btn("up", map.up_btn);
+    write_btn("down", map.down_btn);
+    write_btn("left", map.left_btn);
+    write_btn("right", map.right_btn);
+    write_btn("a", map.a_btn);
+    write_btn("x", map.x_btn);
+    write_btn("l", map.l_btn);
+    write_btn("r", map.r_btn);
+    write_btn("l2", map.l2_btn);
+    write_btn("r2", map.r2_btn);
     // L3/R3 sit here, after r2 and before the analog axes, matching both this
     // struct's field order and the order a stock retroarch.cfg lists them in.
-    // Unconditional like every other line in this block: empty means "this
+    // Unconditional like every other line in this block: "nul" means "this
     // console has no stick click", which RetroArch must be told explicitly.
-    out << p << "l3_btn = \"" << map.l3_btn << "\"\n";
-    out << p << "r3_btn = \"" << map.r3_btn << "\"\n";
+    write_btn("l3", map.l3_btn);
+    write_btn("r3", map.r3_btn);
     out << p << "l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
     out << p << "l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
     out << p << "l_y_plus_axis = \"" << map.l_y_plus << "\"\n";

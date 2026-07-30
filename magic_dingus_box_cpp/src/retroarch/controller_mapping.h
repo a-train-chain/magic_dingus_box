@@ -249,10 +249,10 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
 // control in every two-player game). Routing both players through this one
 // function makes that class of drift structurally impossible.
 //
-// Every line here is UNCONDITIONAL, including when the mapped value is
-// empty (e.g. `input_player1_l2_btn = ""`) — RetroArch treats an empty
-// value and an absent line differently, so do not skip empties. The right
-// stick block is the sole exception: it is genuinely conditional (see
+// Every line here is UNCONDITIONAL. Empty button fields are serialized with
+// RetroArch's explicit "nul" sentinel; a literal empty string is parsed as
+// physical button 0. The right stick block is the sole exception: it is
+// genuinely conditional (see
 // write_right_stick_binds), because emitting empty axis/button lines there
 // would UNBIND the stick instead of leaving it alone.
 //
