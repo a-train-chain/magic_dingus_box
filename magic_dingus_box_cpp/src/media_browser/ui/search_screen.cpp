@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -83,32 +84,6 @@ constexpr float kTopFrac             = 0.50f;     // keyboard region ends here
 // shared idiom; the only constant retained here is the gap above the
 // grid (between the steel-blue divider and the first row of cells).
 constexpr float kGridPaddingTop      = 18.0f;
-
-// Backdrop poster tint — same deterministic Knuth hash used by Browse
-// and Detail, so a movie's placeholder color stays consistent across
-// every screen it appears on.
-::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at
-// font_size. Same helper DetailScreen uses; duplicated here rather
-// than shared because the file-pair convention in this directory is
-// for each screen to own its anonymous-namespace helpers.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
 
 // Friendlier on-key labels for the special keys that the widget stores
 // as all-caps sentinels. Keeps the rendered text short enough to fit
@@ -868,7 +843,7 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // year pill in one shared helper. Real artwork can later
             // overlay this (mb_draw_poster_or_tint) but the styled card
             // alone reads as a designed slot even before TMDB images load.
-            const ::ui::Color tint = poster_tint_for_tmdb(m.tmdb_id);
+            const ::ui::Color tint = stable_tint_for_id(m.tmdb_id);
             const bool in_library =
                 (m.tmdb_id > 0 &&
                  library_tmdb_ids_.count(m.tmdb_id) > 0);

@@ -3,6 +3,7 @@
 #include <system_error>
 #include <cstdio>
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_ui_utils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -82,13 +83,12 @@ constexpr float kFooterMargin    = 12.0f;
 constexpr float kFooterReserve   = 36.0f;     // vertical room reserved for hint
 
 // NOTE: a poster_tint_for_tmdb() and a truncate_to_width() used to sit here,
-// both uncalled and both warning -Wunused-function on every Pi build. The tint
-// one was a byte-for-byte duplicate of library_tint_for_tmdb() further down this
-// same file, which is what render() actually calls; the truncate one was
-// superseded when this screen moved to chrome::draw_poster_card(), which does its
-// own ellipsizing. Identical copies of both still live in the sibling screens
-// that do call them (browse/detail/search/queue/release_picker/mb_settings), so
-// nothing was lost here.
+// both uncalled and both warning -Wunused-function on every Pi build. 4f17b61
+// deleted them as dead code and noted that identical copies still lived in the
+// sibling screens; that is no longer true — this screen no longer defines ANY
+// local UI helper. The tint, the truncator, the cubic easings and the byte
+// formatter are all one shared implementation now, in mb_ui_utils.h, included at
+// the top of this file.
 
 // Slide-in overlay (v1.6.x).
 //   Panel sits 20 px inside the wood-frame's right inner edge so the
@@ -111,16 +111,6 @@ constexpr int kOverlayPanelInnerPadY = 16;
 constexpr int kOverlaySectionGap     = 18;   // Vertical gap between section blocks
 constexpr int kOverlayRowHeight      = 32;   // Per row in Sort + Filter sections
 constexpr int kOverlaySectionHeaderH = 28;   // Gold ZenDots heading + gap
-
-// Ease curve for the slide-in animation. Cubic ease-out: 1 - (1-t)^3.
-inline float ease_out_cubic(float t) {
-    const float u = 1.0f - t;
-    return 1.0f - u * u * u;
-}
-// Ease-in for slide-out: t^3.
-inline float ease_in_cubic(float t) {
-    return t * t * t;
-}
 
 // True if the case-insensitive prefix of `s` matches `prefix`. Used by
 // the file-state classifier (preserved verbatim from the previous
@@ -619,38 +609,6 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
 // Rendering
 // ---------------------------------------------------------------------------
 
-namespace {
-// Format a byte count as a human-readable size string.
-// "0 B", "23 KB", "1.4 MB", "12.3 GB", etc.
-std::string format_bytes(int64_t bytes) {
-    if (bytes < 1024) {
-        return std::to_string(bytes) + " B";
-    }
-    constexpr double k = 1024.0;
-    constexpr double m = k * 1024.0;
-    constexpr double g = m * 1024.0;
-    const double f = static_cast<double>(bytes);
-    char buf[32];
-    if (bytes < 1024 * 1024) {
-        std::snprintf(buf, sizeof(buf), "%.1f KB", f / k);
-    } else if (bytes < 1024 * 1024 * 1024) {
-        std::snprintf(buf, sizeof(buf), "%.1f MB", f / m);
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.1f GB", f / g);
-    }
-    return buf;
-}
-
-// Deterministic colored tint for a movie's tmdb_id, matching BrowseScreen.
-::ui::Color library_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-}  // namespace
-
 void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     tick_overlay_animation();
 
@@ -706,7 +664,8 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             if (!ec) free_bytes = static_cast<int64_t>(info.available);
             stats_line_ =
                 std::to_string(library_.size()) + " titles  ·  "
-                + format_bytes(used_bytes) + " used  ·  "
+                + (used_bytes > 0 ? format_bytes(used_bytes)
+                                  : std::string("0 B")) + " used  ·  "
                 + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
         }
     }
@@ -799,7 +758,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // fetches, plus year pill + IN LIBRARY badge (or
             // DOWNLOADING / BAD RELEASE badge when the movie is in the
             // queue or stuck on importBlocked).
-            const ::ui::Color tint = library_tint_for_tmdb(mv->tmdb_id);
+            const ::ui::Color tint = stable_tint_for_id(mv->tmdb_id);
             // Badge precedence mirrors draw_poster_card: stuck > importing
             // > downloading > in_library. Compute each exclusive of the
             // higher-priority ones so at most one badge is requested.
@@ -982,13 +941,17 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         char buf_titles[64], buf_used[64], buf_free[64];
         std::snprintf(buf_titles, sizeof(buf_titles), "%zu titles",
                       library_.size());
-        // Reuse the format_bytes helper already in library_screen.cpp.
         int64_t used_bytes_ov = 0;
         for (const Movie& m : library_) {
             if (m.has_file) used_bytes_ov += m.file_size_bytes;
         }
+        // Shared format_bytes() covers bytes > 0 only; an empty library is a
+        // real zero and keeps the "0 B" the deleted local copy produced.
+        const std::string used_str = used_bytes_ov > 0
+                                         ? format_bytes(used_bytes_ov)
+                                         : std::string("0 B");
         std::snprintf(buf_used, sizeof(buf_used), "%s used",
-                      format_bytes(used_bytes_ov).c_str());
+                      used_str.c_str());
         int64_t free_bytes_ov = 0;
         {
             std::error_code ec;

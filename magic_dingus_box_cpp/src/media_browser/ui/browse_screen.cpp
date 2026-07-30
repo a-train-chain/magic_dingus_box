@@ -16,6 +16,7 @@
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -119,27 +120,6 @@ constexpr std::array<SortOption, 3> kSortOptions = {{
     {"Rating",       "vote_average.desc"},
     {"Release date", "primary_release_date.desc"},
 }};
-
-// Deterministic colored tint for a tmdb_id, used as a poster placeholder
-// until the artwork cache has fetched the real image.
-::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;  // Knuth hash
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
 
 // Current calendar year — used as the upper bound of the Year cycle.
 int current_year_now() {
@@ -1086,7 +1066,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // designed object even before TMDB artwork loads. When real
             // artwork is later available, mb_draw_poster_or_tint can
             // overlay on top; for now the styled card IS the visual.
-            const ::ui::Color tint = poster_tint_for_tmdb(movie.tmdb_id);
+            const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
             const bool in_library = library_tmdb_ids_.count(movie.tmdb_id) > 0;
             const bool is_downloading = downloading_tmdb_ids_.count(movie.tmdb_id) > 0;
             chrome::draw_poster_card(

@@ -13,6 +13,7 @@
 
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -69,33 +70,6 @@ constexpr float kCancelBoxBorder = 2.0f;
 // DetailScreen's bottom-hint styling exactly.
 constexpr float kFooterMarginY   = 12.0f;
 
-// Deterministic colored tint for a queue item poster fallback. Hashing on
-// queue id (rather than movie id) keeps the placeholder color stable for
-// the lifetime of a download row even if Radarr renumbers things between
-// refreshes — same hash idiom Detail uses for poster_tint_for_tmdb().
-::ui::Color tint_for_queue_id(int queue_id) {
-    uint32_t h = static_cast<uint32_t>(queue_id) * 2654435761u;  // Knuth hash
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at
-// font_size. Same helper Detail uses — mirrored here so the row's title
-// degrades gracefully when the poster + progress bar squeeze the middle
-// column on narrow displays.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
-
 // Human-readable rate: "1.2 MB/s", "480 KB/s", "0 B/s".
 std::string format_rate(int bps) {
     if (bps <= 0) return "0 B/s";
@@ -135,27 +109,6 @@ std::string titlecase_state(const std::string& s) {
     std::string out = s;
     out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
     return out;
-}
-
-// Human-readable byte count. Picks GB / MB / KB / B based on magnitude.
-// One decimal under 100 of the chosen unit, no decimal above. Used to
-// surface "1.8 / 4.5 GB" on each queue row so the user can see how
-// much of the download is left to go independently of the percentage.
-std::string format_bytes(int64_t b) {
-    if (b <= 0) return "0 B";
-    double v = static_cast<double>(b);
-    const char* unit = "B";
-    if (v >= 1024.0 * 1024.0 * 1024.0) {
-        v /= (1024.0 * 1024.0 * 1024.0); unit = "GB";
-    } else if (v >= 1024.0 * 1024.0) {
-        v /= (1024.0 * 1024.0); unit = "MB";
-    } else if (v >= 1024.0) {
-        v /= 1024.0; unit = "KB";
-    }
-    char buf[32];
-    if (v >= 100.0) snprintf(buf, sizeof(buf), "%.0f %s", v, unit);
-    else            snprintf(buf, sizeof(buf), "%.1f %s", v, unit);
-    return buf;
 }
 
 // Pick the progress-bar fill color based on download state. Mirrors the
@@ -756,7 +709,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             float poster_y = ry + (kRowHeight - kPosterH) / 2.0f;
             r.mb_draw_poster_fit(q.poster_url,
                                  poster_x, poster_y, kPosterW, kPosterH,
-                                 tint_for_queue_id(q.id), 1.0f);
+                                 stable_tint_for_id(q.id), 1.0f);
             r.mb_stroke_rect(poster_x, poster_y, kPosterW, kPosterH,
                              kPosterBorderW, th.dim, 0.6f);
 
@@ -862,7 +815,12 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             if (q.size_bytes > 0) {
                 int64_t left  = std::max<int64_t>(0, q.sizeleft_bytes);
                 int64_t down  = std::max<int64_t>(0, q.size_bytes - left);
-                ss << "  \xE2\x80\xA2  " << format_bytes(down)
+                // format_bytes() covers bytes > 0 only; "0 B" here means
+                // "size is known, nothing transferred yet", which is NOT the
+                // same as ReleasePicker's "?" ("size unknown"). Keeping the
+                // branch at the call site is what preserves that distinction.
+                ss << "  \xE2\x80\xA2  "
+                   << (down > 0 ? format_bytes(down) : std::string("0 B"))
                    << " / " << format_bytes(q.size_bytes);
             }
             if (q.download_rate_bps > 0) {

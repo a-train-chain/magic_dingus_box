@@ -4,6 +4,7 @@
 
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 
@@ -62,16 +63,6 @@ constexpr int kMetaTotalH   = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
 constexpr int kMetaGap      = 4;
 
 constexpr int kMaxSimilar   = 18;  // 2 viewport-widths; cursor scrolls horizontally past col 8
-
-// Deterministic tint color for a TMDB id — same Knuth-hash formula as
-// browse_screen.cpp (local copy; that function is file-scoped there).
-inline ::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;
-    uint8_t r = 64  + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40  + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80  + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
 
 // Simple greedy word-wrap. Returns lines, each fitting within max_w pixels.
 std::vector<std::string> wrap_text_overlay(::ui::Renderer& r,
@@ -259,7 +250,7 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Big poster (200×300 — smaller than Detail's 280×420 to give the
     // similar-films row room below).
     {
-        const ::ui::Color tint = poster_tint_for_tmdb(meta_.tmdb_id);
+        const ::ui::Color tint = stable_tint_for_id(meta_.tmdb_id);
         r.mb_draw_poster_fit(meta_.poster_url,
                              static_cast<float>(poster_x),
                              static_cast<float>(poster_y),
@@ -516,7 +507,7 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top;
 
-            const ::ui::Color tint = poster_tint_for_tmdb(hit.tmdb_id);
+            const ::ui::Color tint = stable_tint_for_id(hit.tmdb_id);
             chrome::draw_poster_card(r, x, y, cell_w, poster_cell_h,
                                      hit.title, hit.year,
                                      tint, /*in_library=*/false,

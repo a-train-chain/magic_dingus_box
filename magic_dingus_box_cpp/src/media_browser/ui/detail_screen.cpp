@@ -14,6 +14,7 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -89,16 +90,6 @@ constexpr float kButtonMarkerW   = 30.0f;
 // render time and lets truncate_wrapped add "..." when content actually
 // overflows.
 
-// Backdrop poster tint — same deterministic hash used by Browse, so the
-// color theme on the detail screen matches the grid placeholder.
-::ui::Color poster_tint_for_tmdb(int tmdb_id) {
-    uint32_t h = static_cast<uint32_t>(tmdb_id) * 2654435761u;  // Knuth hash
-    uint8_t r = 64 + static_cast<uint8_t>((h >>  0) & 0x7F);
-    uint8_t g = 40 + static_cast<uint8_t>((h >>  8) & 0x5F);
-    uint8_t b = 80 + static_cast<uint8_t>((h >> 16) & 0x7F);
-    return {r, g, b, 255};
-}
-
 // Greedy word-wrap by pixel width. Breaks words that individually exceed
 // the width at whatever partial point fits.
 std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
@@ -145,18 +136,6 @@ std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
     }
     if (!current.empty()) lines.push_back(current);
     return lines;
-}
-
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at font_size.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
 }
 
 // Format runtime as "2h 15m", "95m" (under an hour), "2h" (no minutes), or
@@ -1222,7 +1201,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // --- Big poster card (left column) -------------------------------
     {
-        ::ui::Color tint = poster_tint_for_tmdb(tmdb_id_);
+        ::ui::Color tint = stable_tint_for_id(tmdb_id_);
         r.mb_draw_poster_fit(poster_url,
                              kPosterX, kPosterY,
                              kPosterW, kPosterH,

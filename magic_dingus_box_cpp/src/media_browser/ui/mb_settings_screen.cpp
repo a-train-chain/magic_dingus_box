@@ -90,20 +90,6 @@ size_t curl_write_cb(void* ptr, size_t size, size_t nmemb, void* ud) {
     return size * nmemb;
 }
 
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at font_size.
-// Mirrors the helper in detail_screen.cpp so long storage paths and indexer
-// names don't bleed past the right edge of the value column.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
-
 // Format raw byte count as "124 GB" (no decimal). Used by the Storage row's
 // "FREE: 124 GB" right-aligned readout — the space-saving short form is more
 // scannable than the long "12.3 GB free / 500 GB" we used in the prototype.

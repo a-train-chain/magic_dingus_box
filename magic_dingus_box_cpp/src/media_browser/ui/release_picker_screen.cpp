@@ -2,6 +2,7 @@
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -10,8 +11,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstdint>
-#include <cstdio>
 #include <initializer_list>
 #include <json/json.h>
 #include <sstream>
@@ -38,38 +37,6 @@ constexpr float kRowInnerPadX    = 16.0f;
 constexpr float kRowInnerPadY    = 10.0f;
 constexpr float kRowOutlineW     = 3.0f;   // focused / auto-pick stroke
 constexpr float kRowDimOutlineW  = 1.0f;   // unfocused stroke
-
-// Truncate `text` with a trailing ellipsis if it exceeds max_w at
-// font_size. Same helper Detail / Queue use.
-std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
-                              int font_size, float max_w) {
-    if (r.mb_text_width(text, font_size) <= max_w) return text;
-    const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (r.mb_text_width(candidate, font_size) <= max_w) return candidate;
-    }
-    return ellipsis;
-}
-
-// Human-readable byte count — same format_bytes idiom QueueScreen uses
-// so the size column reads consistently across the two screens.
-std::string format_bytes(int64_t b) {
-    if (b <= 0) return "?";
-    double v = static_cast<double>(b);
-    const char* unit = "B";
-    if (v >= 1024.0 * 1024.0 * 1024.0) {
-        v /= (1024.0 * 1024.0 * 1024.0); unit = "GB";
-    } else if (v >= 1024.0 * 1024.0) {
-        v /= (1024.0 * 1024.0); unit = "MB";
-    } else if (v >= 1024.0) {
-        v /= 1024.0; unit = "KB";
-    }
-    char buf[32];
-    if (v >= 100.0) snprintf(buf, sizeof(buf), "%.0f %s", v, unit);
-    else            snprintf(buf, sizeof(buf), "%.1f %s", v, unit);
-    return buf;
-}
 
 // Build the JSON release payload Radarr's POST /api/v3/release expects.
 // At minimum Radarr needs guid + indexerId — without indexerId the grab
@@ -688,7 +655,14 @@ void ReleasePickerScreen::render(::ui::Renderer& r, int screen_w, int screen_h) 
             seed << c.seeders << " \xE2\x86\x91 / " << c.leechers
                  << " \xE2\x86\x93";
             draw_col_value(seed.str(),         col_seed_x,   col_seed_w);
-            draw_col_value(format_bytes(c.size_bytes), col_size_x, col_size_w);
+            // format_bytes() covers bytes > 0 only. A missing size means
+            // "the indexer did not report one" here — distinct from Queue's
+            // "0 B" ("nothing transferred yet") — so the sentinel stays local.
+            // Passing "" lets draw_col_value supply the same "?" the deleted
+            // copy of format_bytes returned for <= 0.
+            draw_col_value(c.size_bytes > 0 ? format_bytes(c.size_bytes)
+                                            : std::string(),
+                           col_size_x, col_size_w);
             draw_col_value(c.codec,            col_codec_x,  col_codec_w);
             draw_col_value(c.resolution,       col_res_x,    col_res_w);
             draw_col_value(c.source,           col_source_x, col_source_w);

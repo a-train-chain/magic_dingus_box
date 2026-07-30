@@ -1,6 +1,7 @@
 #include "media_browser/ui/mb_filter_overlay.h"
 
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 
 #include <algorithm>
@@ -57,10 +58,6 @@ constexpr int kRowFontPx             = 16;
 // Cursor triangle geometry — matches LibraryScreen overlay.
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
-
-// Slide easing — identical to LibraryScreen and previous FilterOverlay.
-float ease_in_cubic(float t)  { return t * t * t; }
-float ease_out_cubic(float t) { float u = 1.0f - t; return 1.0f - u * u * u; }
 
 // Genre catalog — index in this list maps to bit position in genre_mask.
 struct GenreEntry { int tmdb_id; const char* display; };

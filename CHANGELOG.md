@@ -243,6 +243,45 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   outcome. A failed saved-network reconnect now offers "Enter New
   Password" right on the failure screen instead of a dead-end message.
 
+- **Media Browser screen helpers deduplicated, and Library's storage
+  readout drops a decimal** — four helpers had been copy-pasted across
+  the nine Marquee screens: the ellipsis truncator (**6** copies), the
+  Knuth-hash poster tint (**6**, under three different names —
+  `poster_tint_for_tmdb`, `library_tint_for_tmdb`, `tint_for_queue_id`),
+  the two cubic easings (2 each), and the byte formatter (3). This is the
+  same shape as the "Recently added" bug below: two copies of one
+  function drift, the one missing a check silently breaks something, and
+  no test can see either because both live in translation units that
+  only compile into the kiosk binary — they name `ui::Renderer`,
+  `Renderer` pulls in GLES, and GLES exists in no test target. They are
+  now one implementation each in `media_browser/ui/mb_ui_utils.{h,cpp}`,
+  which deliberately names no `Renderer` — that is what makes them the
+  first UI helpers in this directory with actual unit tests (18 cases
+  pinning the exact tint RGB for specific ids, every unit boundary, and
+  the truncator's edge cases). The ~20 existing `truncate_to_width` call
+  sites are untouched: a one-line forwarding overload in `mb_chrome`
+  carries their exact signature.
+
+  **User-visible:** the byte formatter's three copies disagreed on
+  rounding. Queue and the release picker dropped the decimal at 100 of
+  the chosen unit; Library always printed one. The 2-of-3 majority wins,
+  so Library's "N titles · X used · Y free" line and the same readout in
+  its slide-in overlay now say **`500 MB` where they said `500.0 MB`**.
+  Queue and the release picker are unchanged.
+
+  The formatter's `<= 0` behavior was deliberately **not** unified. The
+  three copies rendered it as `"0 B"`, `"?"` and a plain integer, and
+  those are different *meanings*, not drift — the release picker's `"?"`
+  means "the indexer reported no size", Queue's `"0 B"` means "size
+  known, nothing transferred yet". Collapsing them would have destroyed
+  information, so the shared helper covers `bytes > 0` and each caller
+  keeps its own guard at the call site.
+
+  `library_screen.cpp` now defines no local UI helper at all, which
+  finishes what the dead-scaffolding removal below started — the two
+  uncalled statics deleted there were duplicates of exactly two of these
+  four helpers.
+
 ### Fixed
 - **`ENABLE_MEDIA_BROWSER=OFF` did not build at all** — `main.cpp` calls
   `ui::Toast::show()` from the display-mode change path, which is core kiosk code
