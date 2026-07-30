@@ -7,8 +7,8 @@
 #include "retroarch/controller_detector.h"
 #include "retroarch/controller_mapping.h"
 
-// Physical button IDs on the USB N64-style adapter (verified via evtest,
-// see controller_mapping.h):
+// Legacy 0e6d:111d adapter's physical button IDs. Numeric token ordering
+// from another N64-style USB VID/PID does not establish these face labels:
 //   0=C-Left, 1=B, 2=A, 3=C-Down, 4=L shoulder, 5=R shoulder,
 //   6=Z trigger, 8=C-Right, 9=C-Up, 12=Start
 //   Axes: 0/1 = analog stick, hat0 = D-pad
@@ -16,7 +16,7 @@
 using retroarch::ControllerType;
 using retroarch::get_mapping;
 
-TEST_CASE("N64 games on the N64 adapter map 1:1 to the real pad",
+TEST_CASE("N64 games on the legacy N64 adapter map 1:1 to its real pad",
           "[retroarch][mapping][n64]") {
     const auto map = get_mapping(ControllerType::N64_ADAPTER,
                                  "mupen64plus_next_libretro");

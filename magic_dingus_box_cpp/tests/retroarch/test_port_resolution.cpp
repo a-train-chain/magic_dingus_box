@@ -159,6 +159,113 @@ TEST_CASE("a captured profile resolves independently per port too",
     REQUIRE(resolved.p2.b_btn != "77");
 }
 
+TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N64",
+          "[retroarch][wizard_profile][cross_layer]") {
+    using K = PhysicalBinding::Kind;
+    const auto btn = [](uint16_t code, const char* token) {
+        return PhysicalBinding{K::BUTTON, code, 0, token};
+    };
+    const auto hat = [](uint16_t code, int direction, const char* token) {
+        return PhysicalBinding{K::HAT, code, direction, token};
+    };
+    const auto axis = [](uint16_t code, int direction, const char* token) {
+        return PhysicalBinding{K::AXIS, code, direction, token};
+    };
+
+    PhysicalProfile captured;
+    captured.name = "SWITCH CO.,LTD. Controller (Dinput)";
+    captured.style = ControllerStyle::N64_STYLE;
+    captured.vid = kUnknownVid;
+    captured.pid = kUnknownPid;
+    captured.controls = {
+        {LogicalControl::N64_A, btn(305, "1")},
+        {LogicalControl::N64_B, btn(306, "2")},
+        {LogicalControl::N64_C_DOWN, btn(304, "0")},
+        {LogicalControl::N64_C_LEFT, btn(307, "3")},
+        {LogicalControl::N64_L, btn(308, "4")},
+        {LogicalControl::N64_R, btn(309, "5")},
+        {LogicalControl::N64_Z, btn(310, "6")},
+        {LogicalControl::N64_C_RIGHT, btn(312, "8")},
+        {LogicalControl::N64_C_UP, btn(313, "9")},
+        {LogicalControl::N64_START, btn(316, "12")},
+        {LogicalControl::N64_DPAD_UP, hat(0x11, -1, "h0up")},
+        {LogicalControl::N64_DPAD_DOWN, hat(0x11, +1, "h0down")},
+        {LogicalControl::N64_DPAD_LEFT, hat(0x10, -1, "h0left")},
+        {LogicalControl::N64_DPAD_RIGHT, hat(0x10, +1, "h0right")},
+        {LogicalControl::N64_STICK_UP, axis(1, -1, "-1")},
+        {LogicalControl::N64_STICK_DOWN, axis(1, +1, "+1")},
+        {LogicalControl::N64_STICK_LEFT, axis(0, -1, "-0")},
+        {LogicalControl::N64_STICK_RIGHT, axis(0, +1, "+0")},
+    };
+
+    const std::map<std::string, PhysicalProfile> saved = {
+        {vidpid_key(kUnknownVid, kUnknownPid), captured},
+    };
+    const auto store = profiles_from_json(profiles_to_json(saved));
+    REQUIRE(store.size() == 1);
+
+    const auto& profile = store.at(vidpid_key(kUnknownVid, kUnknownPid));
+    const auto overlay = menu_overlay_from_profile(profile);
+    REQUIRE(overlay.buttons.at(305) == platform::InputAction::SELECT);
+    REQUIRE(overlay.buttons.at(306) == platform::InputAction::SETTINGS_MENU);
+    REQUIRE(overlay.buttons.at(316) == platform::InputAction::SELECT);
+    REQUIRE(overlay.buttons.at(310) == platform::InputAction::PLAY_PAUSE);
+    REQUIRE(overlay.buttons.at(309) == platform::InputAction::NEXT);
+    REQUIRE(overlay.buttons.at(308) == platform::InputAction::PREV);
+    REQUIRE(overlay.nav_x_abs == 0);  // ABS_X
+
+    const auto ps1 =
+        resolve_mapping_for_pad(kUnknownVid, kUnknownPid, store, "pcsx_rearmed_libretro");
+    REQUIRE(ps1.b_btn == "1");
+    REQUIRE(ps1.y_btn == "2");
+    REQUIRE(ps1.a_btn == "0");
+    REQUIRE(ps1.x_btn == "3");
+    REQUIRE(ps1.l_btn == "4");
+    REQUIRE(ps1.r_btn == "5");
+    REQUIRE(ps1.l2_btn == "6");
+    REQUIRE(ps1.r2_btn == "8");
+    REQUIRE(ps1.select_btn == "9");
+    REQUIRE(ps1.start_btn == "12");
+
+    const auto dreamcast =
+        resolve_mapping_for_pad(kUnknownVid, kUnknownPid, store, "flycast_libretro");
+    REQUIRE(dreamcast.b_btn == "1");
+    REQUIRE(dreamcast.y_btn == "2");
+    REQUIRE(dreamcast.a_btn == "0");
+    REQUIRE(dreamcast.x_btn == "3");
+    REQUIRE(dreamcast.l2_btn == "4");
+    REQUIRE(dreamcast.r2_btn == "5");
+    REQUIRE(dreamcast.start_btn == "12");
+    REQUIRE(dreamcast.enable_hotkey_btn == "6");
+    REQUIRE(dreamcast.menu_toggle_btn == "12");
+
+    const auto n64 = resolve_mapping_for_pad(
+        kUnknownVid, kUnknownPid, store, "mupen64plus_next_libretro");
+    REQUIRE(n64.b_btn == "1");
+    REQUIRE(n64.a_btn == "2");
+    REQUIRE(n64.l_btn == "4");
+    REQUIRE(n64.r_btn == "5");
+    REQUIRE(n64.l2_btn == "6");
+    REQUIRE(n64.start_btn == "12");
+    REQUIRE(n64.r_y_minus_btn == "9");
+    REQUIRE(n64.r_y_plus_btn == "0");
+    REQUIRE(n64.r_x_minus_btn == "3");
+    REQUIRE(n64.r_x_plus_btn == "8");
+    REQUIRE(n64.enable_hotkey_btn == "6");
+    REQUIRE(n64.menu_toggle_btn == "12");
+
+    for (const auto* mapping : {&ps1, &dreamcast, &n64}) {
+        REQUIRE(mapping->up_btn == "h0up");
+        REQUIRE(mapping->down_btn == "h0down");
+        REQUIRE(mapping->left_btn == "h0left");
+        REQUIRE(mapping->right_btn == "h0right");
+        REQUIRE(mapping->l_x_plus == "+0");
+        REQUIRE(mapping->l_x_minus == "-0");
+        REQUIRE(mapping->l_y_plus == "+1");
+        REQUIRE(mapping->l_y_minus == "-1");
+    }
+}
+
 TEST_CASE("extra pads beyond player 2 are ignored", "[retroarch][port_resolution]") {
     const std::map<std::string, PhysicalProfile> store;
     const std::vector<DetectedPad> pads = {

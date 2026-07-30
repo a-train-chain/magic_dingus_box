@@ -18,9 +18,10 @@ namespace retroarch {
 // ABS_X/Y/Z/RZ + a real ABS_HAT0X/Y):
 //
 //   VERIFIED  Ascending order in the high (>= BTN_JOYSTICK) button range.
-//             Codes 304..316 -> indices 0..12, reproducing all ten of
-//             builtin_n64_adapter_profile()'s button tokens exactly
-//             (18/18 tokens matched, buttons + hat + stick).
+//             Codes 304..316 -> indices 0..12, reproducing the captured
+//             pad's button tokens (and 18/18 tokens overall: buttons + hat
+//             + stick). This validates numbering, not the physical face
+//             labels in builtin_n64_adapter_profile() for 0e6d:111d.
 //   VERIFIED  Non-hat axes ascending. ABS_X/Y/Z/RZ (codes 0,1,2,5) -> axis
 //             indices 0,1,2,3 -- so ABS_RZ really is axis 3, which is what
 //             the DragonRise profile's "+3"/"-3" right-stick tokens depend

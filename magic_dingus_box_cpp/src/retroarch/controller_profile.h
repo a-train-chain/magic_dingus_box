@@ -38,8 +38,11 @@ struct PhysicalProfile {
     }
 };
 
-// Built-in profiles for the two shipped pads. Token values transcribed 1:1
-// from the legacy physical tables in controller_mapping.cpp.
+// Built-in profiles for the two shipped pads. builtin_n64_adapter_profile()
+// is the legacy 0e6d:111d profile; its numeric token ordering is not a
+// universal physical-label map for distinct N64-style USB VID/PIDs. A
+// wizard-captured profile for a matching VID/PID is authoritative and
+// overrides built-ins and fallbacks during resolution.
 //
 // Evdev code provenance is NOT uniform across kinds:
 //  - BUTTON codes are transcribed from input_manager.cpp's
@@ -49,8 +52,10 @@ struct PhysicalProfile {
 //  - HAT/AXIS codes (ABS_HAT0X/Y, ABS_X/Y/Z/RZ) are NOT transcribed from
 //    anywhere -- map_button_to_action documents buttons only, nothing
 //    about axes or hats -- so those are this profile author's own
-//    assignment. See the per-profile comments in the .cpp: the N64
-//    adapter's are hardware-confirmed; the DragonRise d-pad's are
+//    assignment. See the per-profile comments in the .cpp: the 2563:0575
+//    capture confirms N64-style capabilities, evdev codes, and token
+//    numbering, but not face labels for the legacy 0e6d:111d profile; the
+//    DragonRise d-pad's are
 //    provisional and unverified (input_manager.cpp's axis_is_8bit handling
 //    documents that pads of this VID/PID can instead report their d-pad via
 //    8-bit ABS_X/Y extremes with no real hat, and no DragonRise pad has been
