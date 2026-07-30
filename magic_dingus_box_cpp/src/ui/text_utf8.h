@@ -4,6 +4,45 @@
 
 namespace ui {
 
+// True iff `b` is a UTF-8 continuation byte (10xxxxxx), i.e. the second or
+// later byte of a multi-byte sequence. Lead bytes and ASCII are false, so a
+// byte offset is a codepoint boundary exactly when this is false.
+inline bool utf8_is_continuation(unsigned char b) {
+    return (b & 0xC0) == 0x80;
+}
+
+// Snap a prefix LENGTH down to the nearest UTF-8 codepoint boundary.
+//
+// `n` is a count of bytes to keep (as in `s.substr(0, n)`), not an index of a
+// byte to look at. The return value is the largest m <= n such that
+// `s.substr(0, m)` ends on a codepoint boundary -- so it never splits a
+// multi-byte sequence and leaves orphaned bytes behind.
+//
+// Cutting a sequence in half is not a cosmetic problem: decode_utf8 above
+// returns U+FFFD for the orphan, so the kiosk draws a replacement box. Any
+// code that shortens a string to fit a pixel budget must route its cut
+// through here.
+//
+// n >= s.size() returns s.size() (the whole string is trivially a boundary).
+// Malformed input cannot hang or over-read: the walk is bounded below by 0.
+inline std::size_t utf8_floor_boundary(const std::string& s, std::size_t n) {
+    if (n >= s.size()) return s.size();
+    while (n > 0 && utf8_is_continuation(static_cast<unsigned char>(s[n]))) {
+        --n;
+    }
+    return n;
+}
+
+// Drop the last codepoint from `s`, in place. The codepoint-wise replacement
+// for `s.pop_back()` in a "shrink until it fits" loop -- popping single bytes
+// there is what produced replacement boxes on accented and CJK titles.
+// A no-op on an empty string, and always makes progress otherwise, so it is
+// safe as a loop body.
+inline void utf8_pop_back(std::string& s) {
+    if (s.empty()) return;
+    s.resize(utf8_floor_boundary(s, s.size() - 1));
+}
+
 // Decode one UTF-8 codepoint from `s` starting at `pos`. On return,
 // `pos` is advanced past the consumed bytes. On invalid sequences,
 // returns 0xFFFD (replacement character) and advances one byte so

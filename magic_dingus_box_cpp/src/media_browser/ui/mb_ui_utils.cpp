@@ -1,21 +1,58 @@
 #include "media_browser/ui/mb_ui_utils.h"
 
 #include <cstdio>
+#include <vector>
+
+#include "ui/text_utf8.h"
 
 namespace media_browser::ui {
 
 std::string truncate_to_width(const std::string& text, int font_size,
                               float max_w, const TextMeasureFn& measure) {
-    // Reproduced verbatim from the six screen-local copies. The `<=` (not `<`)
-    // and the bare-ellipsis fallthrough are both load-bearing -- see the
-    // contract in the header before touching either.
+    // The `<=` (not `<`) and the bare-ellipsis fallthrough are both
+    // load-bearing -- see the contract in the header before touching either.
     if (measure(text, font_size) <= max_w) return text;
+
     const std::string ellipsis = "...";
-    for (size_t n = text.size(); n > 0; --n) {
-        std::string candidate = text.substr(0, n) + ellipsis;
-        if (measure(candidate, font_size) <= max_w) return candidate;
+
+    // Candidate cut lengths: every codepoint boundary in [0, size). Cutting
+    // anywhere else splits a multi-byte sequence and leaves an orphaned lead
+    // byte that decodes to U+FFFD -- a replacement box on screen.
+    //
+    // text.size() itself is deliberately NOT a candidate: the full string just
+    // failed to fit, and width is non-decreasing in prefix length (see the
+    // header), so full + ellipsis cannot fit either. The old scan probed it
+    // anyway and always wasted that call.
+    std::vector<std::size_t> cuts;
+    cuts.reserve(text.size() + 1);
+    cuts.push_back(0);
+    for (std::size_t i = 1; i < text.size(); ++i) {
+        if (!::ui::utf8_is_continuation(static_cast<unsigned char>(text[i]))) {
+            cuts.push_back(i);
+        }
     }
-    return ellipsis;
+
+    // Binary search for the LARGEST candidate that fits. Valid because "fits"
+    // is monotone over the candidates -- again, the non-decreasing-width
+    // assumption stated in the header.
+    std::size_t lo = 0;
+    std::size_t hi = cuts.size();
+    std::size_t best = cuts.size();  // sentinel: nothing fits
+    while (lo < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        if (measure(text.substr(0, cuts[mid]) + ellipsis, font_size) <= max_w) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Nothing fits -> the bare ellipsis, which does NOT itself fit and gets
+    // drawn anyway. Note cuts[0] == 0 makes the found-nothing and found-empty
+    // cases produce the same string, so this stays one observable behavior.
+    if (best == cuts.size()) return ellipsis;
+    return text.substr(0, cuts[best]) + ellipsis;
 }
 
 ::ui::Color stable_tint_for_id(int id) {

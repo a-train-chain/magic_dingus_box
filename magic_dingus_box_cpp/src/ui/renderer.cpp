@@ -2170,7 +2170,7 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     std::string title = state.loading_title.empty() ? "Loading" : state.loading_title;
     while (!title.empty() &&
            body_font_manager_->get_text_width(title + "...", title_size) > inner_w) {
-        title.pop_back();
+        ::ui::utf8_pop_back(title);
     }
     if (title != state.loading_title && !title.empty()) title += "...";
     draw_text(title, inner_x, panel_y + panel_h * 0.46f, title_size,

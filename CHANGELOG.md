@@ -265,9 +265,11 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   pinning the exact tint RGB for specific ids, every unit boundary, the
   truncator's edge cases, and — as present behavior, not as correct
   behavior — the mojibake the truncator emits when its byte-wise cut
-  lands inside a multi-byte UTF-8 sequence). The ~20 existing `truncate_to_width` call
-  sites are untouched: a one-line forwarding overload in `mb_chrome`
-  carries their exact signature.
+  lands inside a multi-byte UTF-8 sequence; **that last one is now fixed
+  and those expectations rewritten — see "Truncated text no longer
+  mangles accented, CJK and emoji titles" under Fixed**). The ~20
+  existing `truncate_to_width` call sites are untouched: a one-line
+  forwarding overload in `mb_chrome` carries their exact signature.
 
   **User-visible:** the byte formatter's three copies disagreed on
   rounding. Queue and the release picker dropped the decimal at 100 of
@@ -338,6 +340,97 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   and the borrowed-pointer contract by address.
 
 ### Fixed
+- **Truncated text no longer mangles accented, CJK and emoji titles** —
+  `media_browser::ui::truncate_to_width` cut on BYTES
+  (`text.substr(0, n)`, n counted down one byte at a time), so any cut
+  landing inside a multi-byte UTF-8 sequence emitted an orphaned lead
+  byte before the `"..."`. `ui::decode_utf8` returns U+FFFD for that
+  orphan, so the kiosk drew a **replacement box**. The cut now snaps back
+  to a codepoint boundary via a new `ui::utf8_floor_boundary` in
+  `ui/text_utf8.h`.
+
+  Not theoretical, and not rare: truncation is the *common* case in the
+  poster grid, and TMDB titles are full of non-ASCII — `Amélie`,
+  `Léon: The Professional`, `千と千尋の神隠し`. Worse, the screens embed
+  `•` and `…` themselves when composing metadata lines, so a
+  genre/runtime row could be mangled on a box whose library is 100%
+  ASCII titles.
+
+  CJK was by far the worst hit: at 3 bytes per character, two byte
+  offsets in three land mid-sequence. Measured over every truncating
+  width, the old cut produced a replacement box for
+  `千と千尋の神隠し` at **14 of 24** widths, `Alien 🎬 Extra` at 3 of 16,
+  `Drama • Fantasy` at 2 of 17, and `Amélie Poulain` /
+  `Léon: The Professional` at 1 each (a single `é` gives exactly one bad
+  offset) — 21 bad (string, width) pairs across the six strings the sweep
+  test covers, and 0 for the pure-ASCII control.
+
+  The `mb_ui_utils` tests that **pinned** this as present behavior now
+  assert the clean output instead — that was their stated purpose, and
+  the diff is the record of exactly which strings changed. Added: one
+  case per sequence length (2-byte `é`, 3-byte CJK, 4-byte emoji), a
+  regression guard that a cut already *on* a boundary is not over-trimmed
+  (the obvious wrong fix — "always walk back one codepoint" — silently
+  drops a character that fit), and the re-decode sweep above, which
+  proves *absence* of U+FFFD in a way no hand-picked expectation set can.
+
+  **Also now O(log n) in `measure` calls.** The old scan called `measure`
+  once per byte — a font/GL round-trip each on the kiosk — which the
+  header had flagged as costing "hundreds of text-width calls per frame"
+  for a long synopsis. A binary search over codepoint boundaries takes a
+  1000-byte synopsis from **~950 calls to 11**, pinned by a
+  call-counting test (the return value is identical either way, so a
+  regression to the linear scan would otherwise be invisible). This
+  assumes rendered width is non-decreasing in prefix length — true for
+  the LTR text the kiosk draws, false only under a shaper doing negative
+  kerning or RTL reordering, which this kiosk has no engine for. Stated
+  in the header rather than left implicit.
+
+  **Deliberately NOT grapheme-aware.** Boundaries are codepoints, so a
+  combining accent or emoji ZWJ sequence can still be split between its
+  codepoints. Full UAX #29 segmentation needs property tables — a real
+  dependency for a text stack that is one `stb_truetype.h` — and
+  `font_manager.cpp` already draws one glyph per codepoint with no
+  cluster composition, so a combining mark renders as a separate spacing
+  glyph whether or not it is cut. Cutting mid-cluster is therefore no
+  worse on screen than cutting anywhere else; cutting mid-codepoint
+  produced an actual replacement box. The invalid-UTF-8 class of failure
+  is gone, which is the part that was visibly broken.
+
+  Contract otherwise unchanged and still pinned: `<=` not `<` on the fits
+  check, and the bare `"..."` fallthrough when even one codepoint plus
+  the ellipsis will not fit.
+
+- **The same byte-wise cut in 12 more places** — auditing for siblings
+  turned up `while (width > budget) s.pop_back();` loops, which is the
+  identical defect one character at a time: `cap_lines` in
+  `playback_overlay.cpp` and its copy `truncate_wrapped` in
+  `detail_screen.cpp`, the overlay's title / CAST / DIRECTOR / similar-title
+  trims (8 sites), `library_screen.cpp`'s two-line title fallback (2), and
+  the game-loading panel title in `ui/renderer.cpp` — that last one outside
+  the Media Browser entirely, so RetroArch loading screens were exposed too.
+  All now call `ui::utf8_pop_back`. Surgical by design: only the pop is
+  codepoint-aware now, no restructuring, no comparison-operator changes.
+
+  `mb_settings_screen.cpp` and `mb_chrome.cpp` were checked and do no
+  slicing of their own — they call the shared truncator, so they were
+  fixed by the change above. `browse_screen.cpp` / `search_screen.cpp`
+  likewise: the dedupe commit had already pointed their two-line title
+  fallback at `truncate_to_width`, and `library_screen.cpp` /
+  `playback_overlay.cpp` are the two that still hand-roll it — worth
+  collapsing, but a behavior change (the hand-rolled version returns the
+  *full overflowing* title when nothing fits, where the shared helper
+  returns `"..."`) and so left alone here.
+
+  The word-wrap helper `wrap_text_overlay` needed no fix: it splits on
+  `' '`, and a space byte cannot occur inside a multi-byte sequence.
+
+  New `ui::utf8_*` primitives live in `ui/text_utf8.h` — header-only over
+  `<cstdint>`/`<string>`, no GL, no link tail — and are tested in
+  `tests/ui/test_text_utf8.cpp`, i.e. in `test_ui_unit`, which builds in
+  **both** `ENABLE_MEDIA_BROWSER=ON` and `OFF`. That matters because
+  `ui/renderer.cpp` uses them and is not a Media Browser file.
+
 - **`ENABLE_MEDIA_BROWSER=OFF` did not build at all** — `main.cpp` calls
   `ui::Toast::show()` from the display-mode change path, which is core kiosk code
   compiled in every configuration, but `#include "ui/toast.h"` sat inside
