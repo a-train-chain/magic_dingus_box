@@ -223,6 +223,7 @@ if(BUILD_KIOSK)
             src/media_browser/movie_drive.cpp
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
+            src/media_browser/ui/mb_ui_utils.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -386,6 +387,13 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/qbittorrent/qbittorrent_client.cpp
         src/media_browser/qbittorrent/download_watchdog.cpp
         src/platform/sequence_detector.cpp
+        # Pure UI helpers shared by every Marquee screen. Deliberately has no
+        # ::ui::Renderer dependency (Renderer pulls in GLES, which does not
+        # exist in the test binaries) so these four functions are testable
+        # here rather than only compilable into the kiosk. The
+        # Renderer-shaped truncate_to_width convenience overload lives in
+        # mb_chrome.cpp, which stays kiosk-only.
+        src/media_browser/ui/mb_ui_utils.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -411,6 +419,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_release_picker.cpp
         tests/media_browser/test_download_watchdog.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
+        tests/media_browser/test_mb_ui_utils.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp

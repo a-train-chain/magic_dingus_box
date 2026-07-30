@@ -22,6 +22,28 @@
 
 namespace ui { class Renderer; }
 
+namespace media_browser::ui {
+
+// Renderer-shaped convenience overload of the truncation helper in
+// mb_ui_utils.h. Declared in media_browser::ui (NOT ::chrome) on purpose: this
+// is the exact signature the ~20 existing call sites across the screens
+// already use unqualified from inside that namespace, so consolidating six
+// copy-pasted definitions into one cost those call sites no edit at all.
+//
+// It lives in mb_chrome rather than mb_ui_utils because naming ::ui::Renderer
+// drags in GLES, and mb_ui_utils has to stay compilable in the macOS test
+// targets. mb_chrome is already Renderer-coupled and already kiosk-only, so
+// putting the forward here keeps the untested surface down to one line: it
+// just calls the pure core with a lambda over r.mb_text_width(). All the
+// behavior -- and all the tests -- are in mb_ui_utils.
+//
+// See mb_ui_utils.h for the contract, including what comes back when even the
+// ellipsis does not fit.
+std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
+                              int font_size, float max_w);
+
+}  // namespace media_browser::ui
+
 namespace media_browser::ui::chrome {
 
 // ---------- Layout constants ----------

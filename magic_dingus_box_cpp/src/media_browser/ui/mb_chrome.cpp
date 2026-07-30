@@ -1,5 +1,6 @@
 #include "media_browser/ui/mb_chrome.h"
 
+#include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 
@@ -7,6 +8,21 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+
+namespace media_browser::ui {
+
+// One-line forward into the tested core. See mb_chrome.h for why this overload
+// exists and why it lives here rather than in mb_ui_utils.
+std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
+                              int font_size, float max_w) {
+    return truncate_to_width(text, font_size, max_w,
+                             [&r](const std::string& s, int px) {
+                                 return static_cast<float>(
+                                     r.mb_text_width(s, px));
+                             });
+}
+
+}  // namespace media_browser::ui
 
 namespace media_browser::ui::chrome {
 
