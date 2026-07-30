@@ -127,28 +127,28 @@ SemanticMapping semantic_n64_style(const std::string& core) {
 
     } else if (core.find("mupen64plus") != std::string::npos || core.find("parallel_n64") != std::string::npos) {
         // ---- Nintendo 64 on a real N64 pad -------------------------
-        // The one case where the hardware and the emulated console are
-        // the same shape, so this is a straight 1:1 passthrough and the
-        // labels on the plastic tell the truth.
-        //
-        // UNVALIDATED ON HARDWARE — button feel needs a real pad and a
-        // real ROM. Considered starting point, not a finished mapping.
-        s.name = "Nintendo 64 (N64 pad)"; s.analog_dpad_mode = "0";  // real analog stick
-        s.b = L::N64_A; s.a = L::N64_B; s.l = L::N64_L; s.r = L::N64_R;
-        s.l2 = L::N64_Z; s.start = L::N64_START;
-        stick(); s.left_stick = true;   // NO stick_to_dpad — d-pad must not double
-        // The C cluster. On this pad they are four DIGITAL buttons, but
-        // mupen64plus_next / parallel_n64 read the C buttons off the
-        // RetroPad RIGHT STICK. RetroArch will drive an analog bind from a
-        // plain button, so the profile resolves these to the _btn form
-        // (build_mapping picks the form off the profile's binding kind) —
-        // the adapter has no second stick, and binding to a nonexistent
-        // axis would silently do nothing.
-        s.r_up = L::N64_C_UP; s.r_down = L::N64_C_DOWN;
-        s.r_left = L::N64_C_LEFT; s.r_right = L::N64_C_RIGHT;
-        // D-pad on the hat only. Don't also drive it from the stick or
-        // analog input would double as D-pad presses in-game.
-        dpad(); hotkeys();
+        // Mupen's independent C-button mode gives every native N64 control a
+        // dedicated digital RetroPad slot. Route the physical labels directly
+        // to those slots; no right-stick bridge or duplicate defaults.
+        s.name = "Nintendo 64 (N64 pad)";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;          // native A
+        s.y = L::N64_B;          // native B
+        s.a = L::N64_C_DOWN;
+        s.x = L::N64_C_UP;
+        s.l = L::N64_C_LEFT;
+        s.r = L::N64_C_RIGHT;
+        s.l2 = L::N64_Z;
+        s.r2 = L::N64_R;
+        s.select = L::N64_L;
+        s.start = L::N64_START;
+
+        stick();
+        s.left_stick = true;
+        dpad();
+        hotkeys();               // physical Z + Start
 
     } else if (core.find("flycast") != std::string::npos) {
         // ---- Sega Dreamcast on an N64 pad --------------------------
@@ -584,8 +584,8 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
         out << p << "y_minus_axis = \"" << map.r_y_minus << "\"\n";
         return;
     }
-    // Digital C cluster (N64 adapter): bind the same analog functions to
-    // plain buttons. RetroArch accepts either form for an analog bind.
+    // Digital right-stick representation for PS-style/modern pads that need
+    // it; native N64-style pads use independent digital RetroPad slots.
     if (!map.r_x_plus_btn.empty()) {
         out << p << "x_plus_btn = \"" << map.r_x_plus_btn << "\"\n";
         out << p << "x_minus_btn = \"" << map.r_x_minus_btn << "\"\n";

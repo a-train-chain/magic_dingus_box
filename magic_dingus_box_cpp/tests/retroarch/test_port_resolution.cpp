@@ -127,8 +127,8 @@ TEST_CASE("two different pads resolve independently per port",
     // The two mappings must genuinely differ -- this is the whole point of
     // the task: a mismatched pair now each gets its own correct mapping
     // instead of both being forced onto player 1's.
-    REQUIRE(resolved.p1.r_x_plus_btn != resolved.p2.r_x_plus_btn);
-    REQUIRE_FALSE(resolved.p1.r_x_plus_btn.empty());
+    REQUIRE(resolved.p1.l_btn != resolved.p2.l_btn);
+    REQUIRE_FALSE(resolved.p1.l_btn.empty());
     REQUIRE(resolved.p1.r_x_plus.empty());
     REQUIRE_FALSE(resolved.p2.r_x_plus.empty());
 }
@@ -239,22 +239,43 @@ TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N6
     REQUIRE(dreamcast.enable_hotkey_btn == "6");
     REQUIRE(dreamcast.menu_toggle_btn == "12");
 
-    const auto n64 = resolve_mapping_for_pad(
-        kUnknownVid, kUnknownPid, store, "mupen64plus_next_libretro");
-    REQUIRE(n64.b_btn == "1");
-    REQUIRE(n64.a_btn == "2");
-    REQUIRE(n64.l_btn == "4");
-    REQUIRE(n64.r_btn == "5");
-    REQUIRE(n64.l2_btn == "6");
-    REQUIRE(n64.start_btn == "12");
-    REQUIRE(n64.r_y_minus_btn == "9");
-    REQUIRE(n64.r_y_plus_btn == "0");
-    REQUIRE(n64.r_x_minus_btn == "3");
-    REQUIRE(n64.r_x_plus_btn == "8");
-    REQUIRE(n64.enable_hotkey_btn == "6");
-    REQUIRE(n64.menu_toggle_btn == "12");
+    for (const auto& core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro"}) {
+        INFO("core=" << core);
+        const auto n64 =
+            resolve_mapping_for_pad(kUnknownVid, kUnknownPid, store, core);
+        CHECK(n64.b_btn == "1");       // saved physical A
+        CHECK(n64.y_btn == "2");       // saved physical B
+        CHECK(n64.a_btn == "0");       // saved C-Down
+        CHECK(n64.x_btn == "9");       // saved C-Up
+        CHECK(n64.l_btn == "3");       // saved C-Left
+        CHECK(n64.r_btn == "8");       // saved C-Right
+        CHECK(n64.l2_btn == "6");      // saved Z
+        CHECK(n64.r2_btn == "5");      // saved R
+        CHECK(n64.select_btn == "4");  // saved L
+        CHECK(n64.start_btn == "12");
+        CHECK(n64.r_x_plus.empty());
+        CHECK(n64.r_x_minus.empty());
+        CHECK(n64.r_y_plus.empty());
+        CHECK(n64.r_y_minus.empty());
+        CHECK(n64.r_x_plus_btn.empty());
+        CHECK(n64.r_x_minus_btn.empty());
+        CHECK(n64.r_y_plus_btn.empty());
+        CHECK(n64.r_y_minus_btn.empty());
+        CHECK(n64.enable_hotkey_btn == "6");
+        CHECK(n64.menu_toggle_btn == "12");
 
-    for (const auto* mapping : {&ps1, &dreamcast, &n64}) {
+        CHECK(n64.up_btn == "h0up");
+        CHECK(n64.down_btn == "h0down");
+        CHECK(n64.left_btn == "h0left");
+        CHECK(n64.right_btn == "h0right");
+        CHECK(n64.l_x_plus == "+0");
+        CHECK(n64.l_x_minus == "-0");
+        CHECK(n64.l_y_plus == "+1");
+        CHECK(n64.l_y_minus == "-1");
+    }
+
+    for (const auto* mapping : {&ps1, &dreamcast}) {
         REQUIRE(mapping->up_btn == "h0up");
         REQUIRE(mapping->down_btn == "h0down");
         REQUIRE(mapping->left_btn == "h0left");
