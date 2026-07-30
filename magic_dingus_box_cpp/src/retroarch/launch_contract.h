@@ -87,6 +87,12 @@ void write_video_config(std::ostream& out, const LaunchOptions& options);
 // kiosk units ship no keyboards, so re-binding costs nothing.)
 void write_remote_quit_config(std::ostream& out);
 
+// Selects the emulated input device exposed to the core. PCSX-ReARMed and
+// the other supported PS1 core families need the libretro DualShock subclass
+// on both ports; other cores retain RetroArch's defaults.
+void write_core_input_device_config(std::ostream& out,
+                                    const std::string& core_name);
+
 // Pick the ALSA device for HDMI game audio from `aplay -L` output.
 // Selects vc4hdmi0 by NAME (the kiosk's display port is HDMI0) instead
 // of by card number: on Pi 4 vc4hdmi0 is ALSA card 1 (behind the

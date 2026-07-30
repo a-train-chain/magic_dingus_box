@@ -221,7 +221,8 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
                                   "the Night (USA).chd");
     const std::string config = output.str();
 
-    require_line(config, "pcsx_rearmed_pad1type = \"analog\"");
+    REQUIRE(config.find("pcsx_rearmed_pad1type") == std::string::npos);
+    REQUIRE(config.find("pcsx_rearmed_pad2type") == std::string::npos);
     require_line(config, "pcsx_rearmed_spu_thread = \"enabled\"");
     require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
     require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");
@@ -245,6 +246,41 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     REQUIRE(config.find("gpu_thread_rendering") == std::string::npos);
     // Default titles run at the native PSX clock with stall emulation.
     REQUIRE(config.find("pcsx_rearmed_nostalls") == std::string::npos);
+}
+
+TEST_CASE("PS1 cores select DualShock through the frontend input-device setting",
+          "[retroarch][input-device][ps1]") {
+    const char* ps1_cores[] = {
+        "pcsx_rearmed_libretro",
+        "beetle_psx_libretro",
+        "swanstation_libretro",
+    };
+    for (const char* core_name : ps1_cores) {
+        CAPTURE(core_name);
+        std::ostringstream output;
+        retroarch::write_core_input_device_config(output, core_name);
+        const std::string config = output.str();
+
+        require_line(config, "input_libretro_device_p1 = \"517\"");
+        require_line(config, "input_libretro_device_p2 = \"517\"");
+        REQUIRE(config ==
+                "input_libretro_device_p1 = \"517\"\n"
+                "input_libretro_device_p2 = \"517\"\n");
+        REQUIRE(config.find("pcsx_rearmed_pad1type") == std::string::npos);
+        REQUIRE(config.find("pcsx_rearmed_pad2type") == std::string::npos);
+    }
+
+    const char* non_ps1_cores[] = {
+        "flycast_libretro",
+        "mupen64plus_next_libretro",
+        "nestopia_libretro",
+    };
+    for (const char* core_name : non_ps1_cores) {
+        CAPTURE(core_name);
+        std::ostringstream output;
+        retroarch::write_core_input_device_config(output, core_name);
+        REQUIRE(output.str().empty());
+    }
 }
 
 TEST_CASE("THPS4 gets the heavy-title PS1 overclock override",

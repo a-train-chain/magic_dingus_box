@@ -614,23 +614,12 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // controllers don't fight over the RA menu toggle.
             write_player_binds(script_file, map_p2, 2);
 
-            // 5c. PCSX-rearmed needs the per-pad type set for both pads.
-            // Without pad2type, the second controller is treated as
-            // disconnected by the PS1 BIOS — multiplayer games like
-            // Twisted Metal won't see a 2nd player even if RetroArch
-            // is reading js1 events. This now follows PLAYER 2's OWN
-            // resolved mapping (map_p2), not player 1's, so a differently
-            // typed pad in port 1 gets its own correct PS1 pad type.
-            if (!map_p2.core_option_pad_type.empty()) {
-                script_file << "pcsx_rearmed_pad2type = \"" << map_p2.core_option_pad_type << "\"\n";
-            }
+            // 5c. Select the emulated devices through RetroArch's frontend
+            // libretro API. Supported PS1 cores receive a DualShock on both
+            // ports; every other core receives no additional config.
+            write_core_input_device_config(script_file, core_name);
 
-            // 6. Apply Core Options (if any) -- player 1 only.
-            if (!map.core_option_pad_type.empty()) {
-                 script_file << "pcsx_rearmed_pad1type = \"" << map.core_option_pad_type << "\"\n";
-            }
-            
-            // 7. Apply Hotkeys
+            // 6. Apply Hotkeys
             if (!map.enable_hotkey_btn.empty()) {
                 script_file << "input_enable_hotkey_btn = \"" << map.enable_hotkey_btn << "\"\n";
                 
