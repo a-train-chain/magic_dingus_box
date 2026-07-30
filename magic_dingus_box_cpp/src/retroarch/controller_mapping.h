@@ -53,6 +53,14 @@ struct ControllerMapping {
     std::string l2_btn = "";      // L2 (Optional)
     std::string r2_btn = "";      // R2 (Optional)
 
+    // Stick clicks. RetroPad L3/R3, which on a DualShock are the two
+    // analog-stick buttons. Default "" like l2/r2 rather than a physical
+    // index, so a core whose semantic table never binds them (every console
+    // but PS1 -- none of the others HAS a stick click) emits an honest empty
+    // value instead of whatever button happens to sit at some index.
+    std::string l3_btn = "";      // L3 (Optional)
+    std::string r3_btn = "";      // R3 (Optional)
+
     // D-Pad (Usually Hat)
     std::string up_btn = "h0up";
     std::string down_btn = "h0down";
@@ -134,6 +142,10 @@ struct SemanticMapping {
     // mis-parsed as a button index. build_mapping() is now kind-aware; see
     // the "THE FIELD FIXES THE FORM" block in controller_mapping.cpp.
     std::optional<LogicalControl> b, y, select, start, a, x, l, r, l2, r2;
+    // Stick clicks (L3/R3). Like l2/r2 these default to "" in
+    // ControllerMapping, so they are outside the index-defaulting gap
+    // described above: an unset slot here is simply unbound.
+    std::optional<LogicalControl> l3, r3;
     // RetroPad digital d-pad slots
     std::optional<LogicalControl> up, down, left, right;
     // Main analog stick controls (LSTICK_* or N64_STICK_*)
@@ -227,9 +239,10 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player);
 
 // Emit the full input_player<N>_* RetroArch bind block for one player:
-// analog_dpad_mode, the face/shoulder buttons, the d-pad buttons, the left
-// stick axes, the right stick (via write_right_stick_binds), then the d-pad
-// axes. Extracted out of retroarch_launcher.cpp (Pi-only, no Mac build) so
+// analog_dpad_mode, the face/shoulder buttons, the d-pad buttons, the stick
+// clicks (l3/r3), the left stick axes, the right stick (via
+// write_right_stick_binds), then the d-pad axes.
+// Extracted out of retroarch_launcher.cpp (Pi-only, no Mac build) so
 // this exact block is unit-testable — that launcher used to hand-duplicate
 // this block once per player, and the duplication once let the P2 copy drift
 // out of sync and ship without the right-stick lines (P2 had no N64 camera
@@ -247,6 +260,10 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
 // lines sit between select/start and a/x; the d-pad _axis lines come after
 // the right-stick block) purely so a diff against the old block stays
 // reviewable — RetroArch's config parser does not care about line order.
+// The l3/r3 lines are the one thing the legacy block has no counterpart for:
+// RetroPad L3/R3 had no plumbing here until PS1 gained its stick clicks, so
+// they were placed after r2 to match a stock retroarch.cfg's own ordering
+// rather than transcribed from anywhere.
 void write_player_binds(std::ostream& out, const ControllerMapping& map,
                         int player);
 

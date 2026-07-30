@@ -13,6 +13,12 @@ inline std::string serialize_mapping(const retroarch::ControllerMapping& m) {
       << "btn=" << m.b_btn << "," << m.y_btn << "," << m.select_btn << ","
       << m.start_btn << "," << m.a_btn << "," << m.x_btn << "," << m.l_btn
       << "," << m.r_btn << "," << m.l2_btn << "," << m.r2_btn << "\n"
+      // Stick clicks get their OWN line rather than being appended to btn=
+      // above. Appending would have made every golden's face-button line
+      // change, so a genuine face-button regression could hide inside a line
+      // the reviewer already expected to move; a new line leaves all 33
+      // existing btn= lines byte-identical.
+      << "l3r3=" << m.l3_btn << "," << m.r3_btn << "\n"
       << "dpad=" << m.up_btn << "," << m.down_btn << "," << m.left_btn << ","
       << m.right_btn << "\n"
       << "ls=" << m.l_x_plus << "," << m.l_x_minus << "," << m.l_y_plus << ","

@@ -204,12 +204,40 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
 
     } else if (core.find("pcsx") != std::string::npos || core.find("beetle_psx") != std::string::npos || core.find("swanstation") != std::string::npos) {
+        // ---- Sony PlayStation ---------------------------------------
+        // The one console whose controller IS this controller, so every
+        // slot is a straight 1:1 and the labels on the plastic tell the
+        // truth. core_option_pad_type = "analog" makes pcsx_rearmed
+        // present a DUALSHOCK to the game -- which means the game polls
+        // two sticks and two stick clicks, and all four of those have to
+        // be bound here or the emulated pad is lying about what it has.
         s.name = "PS1 (PS-style, 1:1)"; s.core_option_pad_type = "analog";
         s.b = L::CROSS; s.a = L::CIRCLE; s.y = L::SQUARE; s.x = L::TRIANGLE;
         s.l = L::L1; s.r = L::R1; s.l2 = L::L2; s.r2 = L::R2;
         s.select = L::SELECT; s.start = L::START;
         s.up = L::DPAD_UP; s.down = L::DPAD_DOWN;
         s.left = L::DPAD_LEFT; s.right = L::DPAD_RIGHT;
+        // Right stick -> RetroPad right stick, 1:1. Unlike the N64 branch
+        // below (which spends this stick on the C-button cluster) there is
+        // nothing to translate: the DualShock's right stick and the
+        // RetroPad's are the same control.
+        s.r_up = L::RSTICK_UP; s.r_down = L::RSTICK_DOWN;
+        s.r_left = L::RSTICK_LEFT; s.r_right = L::RSTICK_RIGHT;
+        // Stick clicks. Only PS1 sets these: it is the only console the box
+        // emulates whose controller has them.
+        s.l3 = L::L3; s.r3 = L::R3;
+        // NOTE ON stick_to_dpad: deliberately LEFT AT the preamble's `true`,
+        // NOT cleared the way the N64 branch below clears it. The two are
+        // unrelated despite looking adjacent. stick_to_dpad governs the
+        // *_axis D-PAD binds and reads sem.stick_* -- the LEFT stick -- so
+        // it cannot affect, and is not affected by, the r_* fields just set
+        // above (a disjoint set of RetroArch settings, and disjoint axes:
+        // left stick 0/1, right stick 2/3). The N64 branch clears it to
+        // match what the legacy N64 table emitted, not because it gained a
+        // right stick. Clearing it here would instead REMOVE four
+        // currently-emitted binds and stop the left stick doubling as the
+        // D-pad on every fielded box -- a behavior change PS1 never asked
+        // for and no hardware evidence calls for.
 
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800 (PS-style)";
@@ -347,6 +375,12 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     put_btn(&ControllerMapping::r_btn, sem.r);
     put_btn(&ControllerMapping::l2_btn, sem.l2);
     put_btn(&ControllerMapping::r2_btn, sem.r2);
+    // Stick clicks are digital buttons on every pad that has them, so they
+    // go through the same put_btn contract as the face buttons: an unset
+    // slot, a control the profile never captured, or one captured as an axis
+    // all leave the field "" -- unbound rather than mis-bound.
+    put_btn(&ControllerMapping::l3_btn, sem.l3);
+    put_btn(&ControllerMapping::r3_btn, sem.r3);
 
     // D-pad: the binding's kind decides WHICH FIELD, not just the value. On
     // pads that overload ABS_X/ABS_Y for the d-pad and carry no hat at all
@@ -535,6 +569,12 @@ void write_player_binds(std::ostream& out, const ControllerMapping& map,
     out << p << "r_btn = \"" << map.r_btn << "\"\n";
     out << p << "l2_btn = \"" << map.l2_btn << "\"\n";
     out << p << "r2_btn = \"" << map.r2_btn << "\"\n";
+    // L3/R3 sit here, after r2 and before the analog axes, matching both this
+    // struct's field order and the order a stock retroarch.cfg lists them in.
+    // Unconditional like every other line in this block: empty means "this
+    // console has no stick click", which RetroArch must be told explicitly.
+    out << p << "l3_btn = \"" << map.l3_btn << "\"\n";
+    out << p << "r3_btn = \"" << map.r3_btn << "\"\n";
     out << p << "l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
     out << p << "l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
     out << p << "l_y_plus_axis = \"" << map.l_y_plus << "\"\n";

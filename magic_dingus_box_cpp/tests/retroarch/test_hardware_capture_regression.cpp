@@ -66,6 +66,20 @@ constexpr char kCapturedPadName[] = "SWITCH CO.,LTD. Controller (Dinput)";
 // `input_player2_analog_dpad_mode = "0"` and `input_player2_b_btn = "1"` --
 // so the two lines below are that same real capture, read via its
 // untruncated other half, not an invented expectation.
+//
+// LINES ADDED AFTER THE CAPTURE: the four `l3_btn`/`r3_btn` lines (two per
+// player, marked below). These are the ONE deliberate divergence from the
+// 2026-07-29 capture, and they postdate it: RetroPad L3/R3 had no plumbing
+// at all when this text was recorded -- ControllerMapping had no such fields
+// and write_player_binds() emitted no such lines -- so no capture from a
+// pre-fix box could contain them. They were added when PS1 gained its
+// second analog stick and its stick clicks (see test_ps1_analog_binds.cpp).
+// Both are EMPTY here, and that is the assertion doing real work: this pad
+// rides the legacy N64-adapter profile, which has no L3/R3 binding, and
+// snes9x's semantic table binds no stick clicks either (the SNES pad has
+// none) -- so a token appearing in either field would mean the PS1 fix had
+// leaked onto a fielded configuration it must not touch. Every other line
+// below remains the capture, byte for byte.
 constexpr char kExpectedBinds[] =
     "input_player1_analog_dpad_mode = \"0\"\n"  // reconstructed -- see note above
     "input_player1_b_btn = \"1\"\n"              // reconstructed -- see note above
@@ -82,6 +96,8 @@ constexpr char kExpectedBinds[] =
     "input_player1_r_btn = \"5\"\n"
     "input_player1_l2_btn = \"\"\n"
     "input_player1_r2_btn = \"\"\n"
+    "input_player1_l3_btn = \"\"\n"  // added post-capture -- see note above
+    "input_player1_r3_btn = \"\"\n"  // added post-capture -- see note above
     "input_player1_l_x_plus_axis = \"+0\"\n"
     "input_player1_l_x_minus_axis = \"-0\"\n"
     "input_player1_l_y_plus_axis = \"+1\"\n"
@@ -105,6 +121,8 @@ constexpr char kExpectedBinds[] =
     "input_player2_r_btn = \"5\"\n"
     "input_player2_l2_btn = \"\"\n"
     "input_player2_r2_btn = \"\"\n"
+    "input_player2_l3_btn = \"\"\n"  // added post-capture -- see note above
+    "input_player2_r3_btn = \"\"\n"  // added post-capture -- see note above
     "input_player2_l_x_plus_axis = \"+0\"\n"
     "input_player2_l_x_minus_axis = \"-0\"\n"
     "input_player2_l_y_plus_axis = \"+1\"\n"

@@ -19,6 +19,18 @@
 // implemented by calling write_player_binds(), so this test cannot pass by
 // construction; it can only pass if the two independently-written code
 // paths produce identical text.
+//
+// ONE DOCUMENTED DELTA FROM THE LEGACY BLOCK: the four l3_btn/r3_btn lines
+// (two per player, marked inline below). The legacy block could not have
+// contained them -- RetroPad L3/R3 had no plumbing anywhere in the kiosk
+// until PS1 gained its second analog stick and its stick clicks, so there is
+// no historical text to transcribe. They are written out here by hand, in
+// the same independent-second-implementation spirit as the rest of the
+// function, which is what keeps this test's real value intact: it still
+// catches prefix, ordering and P1/P2-drift mistakes in the NEW lines too,
+// because getting them wrong in write_player_binds() and getting them wrong
+// identically here are separate mistakes. Everything else remains the
+// verbatim transcription.
 namespace {
 
 void legacy_write_block(std::ostream& out, const retroarch::ControllerMapping& map) {
@@ -44,6 +56,10 @@ void legacy_write_block(std::ostream& out, const retroarch::ControllerMapping& m
 
     out << "input_player1_l2_btn = \"" << map.l2_btn << "\"\n";
     out << "input_player1_r2_btn = \"" << map.r2_btn << "\"\n";
+
+    // 3b. Stick clicks -- NOT in the legacy block (see the delta note above).
+    out << "input_player1_l3_btn = \"" << map.l3_btn << "\"\n";
+    out << "input_player1_r3_btn = \"" << map.r3_btn << "\"\n";
 
     // 4. Apply Analog Axes
     out << "input_player1_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
@@ -74,6 +90,9 @@ void legacy_write_block(std::ostream& out, const retroarch::ControllerMapping& m
     out << "input_player2_r_btn = \"" << map.r_btn << "\"\n";
     out << "input_player2_l2_btn = \"" << map.l2_btn << "\"\n";
     out << "input_player2_r2_btn = \"" << map.r2_btn << "\"\n";
+    // Stick clicks -- NOT in the legacy block (see the delta note above).
+    out << "input_player2_l3_btn = \"" << map.l3_btn << "\"\n";
+    out << "input_player2_r3_btn = \"" << map.r3_btn << "\"\n";
     out << "input_player2_l_x_plus_axis = \"" << map.l_x_plus << "\"\n";
     out << "input_player2_l_x_minus_axis = \"" << map.l_x_minus << "\"\n";
     out << "input_player2_l_y_plus_axis = \"" << map.l_y_plus << "\"\n";
