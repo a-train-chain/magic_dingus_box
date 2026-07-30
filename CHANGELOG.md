@@ -435,9 +435,10 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   `test_media_browser_unit` was created with `add_executable` but never
   registered with `add_test`. Every other test target has a
   registration; this one had none, so `ctest` reported "8 tests passed"
-  while quietly omitting **144 Media Browser test cases**. The binary was
-  still compiled on every build — it just never ran unless someone
-  remembered to invoke `./test_media_browser_unit` by hand.
+  while quietly omitting **the entire Media Browser suite** (148 cases /
+  4948 assertions as of this entry). The binary was still compiled on
+  every build — it just never ran unless someone remembered to invoke
+  `./test_media_browser_unit` by hand.
 
   That is the worst failure mode for a test suite: a green `ctest` that
   reads as full coverage. Anything the Media Browser tests would have
