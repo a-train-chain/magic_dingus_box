@@ -1,7 +1,16 @@
 # N64 games on the PS-style pad — status and open decisions
 
 **Date:** 2026-07-29
-**Status:** core bug fixed and deployed; target layout designed but not implemented; one related bug found and blocking separate work
+**Status:** superseded by the approved universal mapping design
+
+> **2026-07-30 correction:** The apparent duplicate live R2 binding was not
+> merely an in-memory RetroArch remap. RetroArch 1.20.0 parses
+> `input_playerN_*_btn = ""` as physical button `0`; the shipped serializer
+> therefore aliased every empty button slot to the bottom face button. The
+> serializer now emits RetroArch's `nul` sentinel. The finished target layout
+> is specified in
+> `2026-07-30-universal-ps-style-n64-controller-mapping-design.md`.
+
 **Author's note:** this document exists because the investigation took most of a day, went through five wrong hypotheses before the real one, and none of it is written down anywhere else. Read this before touching N64 pad mapping again.
 
 ## Executive summary

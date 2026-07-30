@@ -217,7 +217,7 @@ hotkeys=8,9,
 extra=)GOLD"},
 {"PS|mupen64plus_next_libretro", R"GOLD(name=Nintendo 64 (PS-style)
 adm=0|drv=udev|pad=
-btn=2,3,10,9,1,4,4,5,6,
+btn=2,3,4,9,7,0,,1,6,5
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -228,7 +228,7 @@ hotkeys=8,9,
 extra=)GOLD"},
 {"PS|parallel_n64_libretro", R"GOLD(name=Nintendo 64 (PS-style)
 adm=0|drv=udev|pad=
-btn=2,3,10,9,1,4,4,5,6,
+btn=2,3,4,9,7,0,,1,6,5
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1

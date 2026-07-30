@@ -276,12 +276,20 @@ SemanticMapping semantic_ps_style(const std::string& core) {
         // expect the C buttons on the RetroPad RIGHT STICK, which is
         // why ControllerMapping grew r_*_ fields.
         //
-        // UNVALIDATED ON HARDWARE — button feel needs a real pad and a
-        // real ROM. Treat these as a considered starting point, not a
-        // finished mapping; verify before shipping.
         s.name = "Nintendo 64 (PS-style)";
-        s.b = L::CROSS; s.a = L::CIRCLE; s.l = L::L1; s.r = L::R1;
-        s.l2 = L::L2; s.start = L::START;
+        s.clear_unassigned_buttons = true;
+
+        // Mupen's alternate map translates these RetroPad slots to the
+        // final N64 functions shown at right.
+        s.b = L::CROSS;       // bottom -> N64 A
+        s.y = L::SQUARE;      // left   -> N64 B
+        s.x = L::TRIANGLE;    // top    -> C-Up
+        s.r = L::CIRCLE;      // right  -> C-Right
+        s.select = L::L1;     // L1     -> N64 L
+        s.l2 = L::L2;         // L2     -> N64 Z
+        s.r2 = L::R1;         // R1     -> N64 R
+        s.a = L::R2;          // R2     -> C-Down
+        s.start = L::START;
         // Right stick = C-button cluster; D-pad stays on the hat so
         // analog input doesn't double as D-pad presses in-game.
         s.stick_to_dpad = false;   // legacy clears the *_axis dpad binds
@@ -331,6 +339,21 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     m.analog_dpad_mode = sem.analog_dpad_mode;
     m.core_option_pad_type = sem.core_option_pad_type;
     m.extra_config = sem.extra_config;
+
+    if (sem.clear_unassigned_buttons) {
+        m.b_btn.clear();
+        m.y_btn.clear();
+        m.select_btn.clear();
+        m.start_btn.clear();
+        m.a_btn.clear();
+        m.x_btn.clear();
+        m.l_btn.clear();
+        m.r_btn.clear();
+        m.l2_btn.clear();
+        m.r2_btn.clear();
+        m.l3_btn.clear();
+        m.r3_btn.clear();
+    }
 
     using Kind = PhysicalBinding::Kind;
     auto kind_is = [&](LogicalControl c, Kind want) {

@@ -246,6 +246,67 @@ TEST_CASE("N64 on a PS-style pad keeps the right stick on the C cluster",
     }
 }
 
+TEST_CASE("captured PS-style pad resolves the universal N64 layout",
+          "[ps1_analog][player_binds][n64][ps_style]") {
+    const PhysicalProfile profile = shanwan_profile();
+    const auto store = store_of(profile);
+
+    for (const auto& core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro"}) {
+        INFO("core=" << core);
+        const auto map = retroarch::resolve_mapping_for_pad(
+            profile.vid, profile.pid, store, core);
+
+        CHECK(map.b_btn == "0");       // bottom / printed A -> N64 A
+        CHECK(map.y_btn == "3");       // left / printed X   -> N64 B
+        CHECK(map.x_btn == "4");       // top / printed Y    -> C-Up
+        CHECK(map.r_btn == "1");       // right / printed B  -> C-Right
+        CHECK(map.select_btn == "6");  // L1                 -> N64 L
+        CHECK(map.l2_btn == "8");      // L2                 -> N64 Z
+        CHECK(map.r2_btn == "7");      // R1                 -> N64 R
+        CHECK(map.a_btn == "9");       // R2                 -> C-Down
+        CHECK(map.l_btn.empty());
+        CHECK(map.start_btn == "11");
+        CHECK(map.enable_hotkey_btn == "10");
+        CHECK(map.menu_toggle_btn == "11");
+        CHECK(map.l3_btn.empty());
+        CHECK(map.r3_btn.empty());
+
+        CHECK(map.up_btn == "h0up");
+        CHECK(map.down_btn == "h0down");
+        CHECK(map.left_btn == "h0left");
+        CHECK(map.right_btn == "h0right");
+        CHECK(map.l_x_plus == "+0");
+        CHECK(map.l_x_minus == "-0");
+        CHECK(map.l_y_plus == "+1");
+        CHECK(map.l_y_minus == "-1");
+        CHECK(map.r_x_plus == "+2");
+        CHECK(map.r_x_minus == "-2");
+        CHECK(map.r_y_plus == "+3");
+        CHECK(map.r_y_minus == "-3");
+
+        for (int player : {1, 2}) {
+            INFO("player=" << player);
+            const std::string cfg = emit_for(profile, core, player);
+            const std::string p =
+                "input_player" + std::to_string(player) + "_";
+            CHECK(has_line(cfg, p + "b_btn = \"0\"\n"));
+            CHECK(has_line(cfg, p + "y_btn = \"3\"\n"));
+            CHECK(has_line(cfg, p + "select_btn = \"6\"\n"));
+            CHECK(has_line(cfg, p + "start_btn = \"11\"\n"));
+            CHECK(has_line(cfg, p + "a_btn = \"9\"\n"));
+            CHECK(has_line(cfg, p + "x_btn = \"4\"\n"));
+            CHECK(has_line(cfg, p + "l_btn = \"nul\"\n"));
+            CHECK(has_line(cfg, p + "r_btn = \"1\"\n"));
+            CHECK(has_line(cfg, p + "l2_btn = \"8\"\n"));
+            CHECK(has_line(cfg, p + "r2_btn = \"7\"\n"));
+            CHECK(has_line(cfg, p + "l3_btn = \"nul\"\n"));
+            CHECK(has_line(cfg, p + "r3_btn = \"nul\"\n"));
+            CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
+        }
+    }
+}
+
 TEST_CASE("a profile with no L3/R3 captured degrades to an empty bind",
           "[ps1_analog][player_binds]") {
     // A partially-captured profile must not produce a garbage token. Both

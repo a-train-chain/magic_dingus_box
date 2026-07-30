@@ -141,6 +141,11 @@ struct SemanticMapping {
     // ignored, so an analog control's token landed in a *_btn field and was
     // mis-parsed as a button index. build_mapping() is now kind-aware; see
     // the "THE FIELD FIXES THE FORM" block in controller_mapping.cpp.
+    // When true, build_mapping() clears every RetroPad button slot before
+    // applying the semantic assignments below. This lets a table express
+    // "intentionally unbound" despite ControllerMapping's legacy non-empty
+    // defaults, without changing any other core or controller style.
+    bool clear_unassigned_buttons = false;
     std::optional<LogicalControl> b, y, select, start, a, x, l, r, l2, r2;
     // Stick clicks (L3/R3). Like l2/r2 these default to "" in
     // ControllerMapping, so they are outside the index-defaulting gap

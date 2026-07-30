@@ -84,18 +84,42 @@ TEST_CASE("Dreamcast is playable on the N64 adapter",
     REQUIRE(map.enable_hotkey_btn == "6");
 }
 
-TEST_CASE("PS-style pad keeps its N64 mapping",
-          "[retroarch][mapping][n64]") {
-    const auto map = get_mapping(ControllerType::PS_STYLE_DRAGONRISE,
-                                 "mupen64plus_next_libretro");
+TEST_CASE("PS-style pads use the universal N64 layout",
+          "[retroarch][mapping][n64][ps_style]") {
+    for (const auto& core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro"}) {
+        INFO("core=" << core);
+        const auto map =
+            get_mapping(ControllerType::PS_STYLE_DRAGONRISE, core);
 
-    REQUIRE(map.b_btn == "2");   // Cross  -> N64 A
-    REQUIRE(map.a_btn == "1");   // Circle -> N64 B
-    REQUIRE(map.l2_btn == "6");  // L2     -> N64 Z
-    // This pad HAS a right stick, so the C buttons ride the real axes.
-    REQUIRE(map.r_x_plus == "+2");
-    REQUIRE(map.r_y_plus == "+3");
-    REQUIRE(map.r_x_plus_btn.empty());
+        CHECK(map.b_btn == "2");       // Cross    -> N64 A
+        CHECK(map.y_btn == "3");       // Square   -> N64 B
+        CHECK(map.x_btn == "0");       // Triangle -> C-Up
+        CHECK(map.r_btn == "1");       // Circle   -> C-Right
+        CHECK(map.select_btn == "4");  // L1       -> N64 L
+        CHECK(map.l2_btn == "6");      // L2       -> N64 Z
+        CHECK(map.r2_btn == "5");      // R1       -> N64 R
+        CHECK(map.a_btn == "7");       // R2       -> C-Down
+        CHECK(map.l_btn.empty());      // C-Left stays on the right stick
+        CHECK(map.start_btn == "9");
+        CHECK(map.enable_hotkey_btn == "8");
+        CHECK(map.menu_toggle_btn == "9");
+        CHECK(map.l3_btn.empty());
+        CHECK(map.r3_btn.empty());
+
+        CHECK(map.up_btn == "h0up");
+        CHECK(map.down_btn == "h0down");
+        CHECK(map.left_btn == "h0left");
+        CHECK(map.right_btn == "h0right");
+        CHECK(map.l_x_plus == "+0");
+        CHECK(map.l_x_minus == "-0");
+        CHECK(map.l_y_plus == "+1");
+        CHECK(map.l_y_minus == "-1");
+        CHECK(map.r_x_plus == "+2");
+        CHECK(map.r_x_minus == "-2");
+        CHECK(map.r_y_plus == "+3");
+        CHECK(map.r_y_minus == "-3");
+    }
 }
 
 TEST_CASE("unknown controllers still fall back to the N64 adapter mapping",
