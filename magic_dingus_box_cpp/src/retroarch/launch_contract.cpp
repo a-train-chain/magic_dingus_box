@@ -61,13 +61,12 @@ void write_remote_quit_config(std::ostream& out) {
     out << "input_exit_emulator = \"z\"\n";
 }
 
-void write_core_input_device_config(std::ostream& out,
-                                    const std::string& core_name) {
+std::vector<std::string> core_input_device_args(
+    const std::string& core_name) {
     if (!is_ps1_core(core_name)) {
-        return;
+        return {};
     }
-    out << "input_libretro_device_p1 = \"517\"\n";
-    out << "input_libretro_device_p2 = \"517\"\n";
+    return {"--device", "1:517", "--device", "2:517"};
 }
 
 Renderer renderer_for_core(const std::string& core_name) {

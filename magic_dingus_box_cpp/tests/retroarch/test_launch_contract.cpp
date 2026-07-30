@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #include "retroarch/launch_contract.h"
 
@@ -248,8 +249,11 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     REQUIRE(config.find("pcsx_rearmed_nostalls") == std::string::npos);
 }
 
-TEST_CASE("PS1 cores select DualShock through the frontend input-device setting",
+TEST_CASE("PS1 cores pass DualShock command-line device overrides",
           "[retroarch][input-device][ps1]") {
+    const std::vector<std::string> expected = {
+        "--device", "1:517", "--device", "2:517",
+    };
     const char* ps1_cores[] = {
         "pcsx_rearmed_libretro",
         "beetle_psx_libretro",
@@ -257,17 +261,7 @@ TEST_CASE("PS1 cores select DualShock through the frontend input-device setting"
     };
     for (const char* core_name : ps1_cores) {
         CAPTURE(core_name);
-        std::ostringstream output;
-        retroarch::write_core_input_device_config(output, core_name);
-        const std::string config = output.str();
-
-        require_line(config, "input_libretro_device_p1 = \"517\"");
-        require_line(config, "input_libretro_device_p2 = \"517\"");
-        REQUIRE(config ==
-                "input_libretro_device_p1 = \"517\"\n"
-                "input_libretro_device_p2 = \"517\"\n");
-        REQUIRE(config.find("pcsx_rearmed_pad1type") == std::string::npos);
-        REQUIRE(config.find("pcsx_rearmed_pad2type") == std::string::npos);
+        REQUIRE(retroarch::core_input_device_args(core_name) == expected);
     }
 
     const char* non_ps1_cores[] = {
@@ -277,9 +271,7 @@ TEST_CASE("PS1 cores select DualShock through the frontend input-device setting"
     };
     for (const char* core_name : non_ps1_cores) {
         CAPTURE(core_name);
-        std::ostringstream output;
-        retroarch::write_core_input_device_config(output, core_name);
-        REQUIRE(output.str().empty());
+        REQUIRE(retroarch::core_input_device_args(core_name).empty());
     }
 }
 

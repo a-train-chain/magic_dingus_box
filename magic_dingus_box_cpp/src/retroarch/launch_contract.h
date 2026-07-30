@@ -5,6 +5,7 @@
 #include <iosfwd>
 #include <string>
 #include <sys/types.h>
+#include <vector>
 
 #include "app/app_state.h"
 
@@ -87,11 +88,11 @@ void write_video_config(std::ostream& out, const LaunchOptions& options);
 // kiosk units ship no keyboards, so re-binding costs nothing.)
 void write_remote_quit_config(std::ostream& out);
 
-// Selects the emulated input device exposed to the core. PCSX-ReARMed and
-// the other supported PS1 core families need the libretro DualShock subclass
-// on both ports; other cores retain RetroArch's defaults.
-void write_core_input_device_config(std::ostream& out,
-                                    const std::string& core_name);
+// Command-line device overrides for the core. Debian RetroArch loads
+// input_libretro_device_pN from remap files rather than the global config,
+// so supported PS1 cores select DualShock through the explicit CLI path.
+std::vector<std::string> core_input_device_args(
+    const std::string& core_name);
 
 // Pick the ALSA device for HDMI game audio from `aplay -L` output.
 // Selects vc4hdmi0 by NAME (the kiosk's display port is HDMI0) instead

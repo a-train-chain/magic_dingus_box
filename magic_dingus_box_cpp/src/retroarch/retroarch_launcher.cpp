@@ -171,10 +171,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         // the phone remote's QUIT_GAME chord did nothing in-game
         // (verified on hardware 2026-07-26).
         "--appendconfig", "/tmp/retroarch_mdb_override.cfg",
-        "-L", core_name,
-        game_info.rom_path,
-        "--verbose"
     };
+    const auto input_device_args = core_input_device_args(core_name);
+    cmd.insert(cmd.end(), input_device_args.begin(), input_device_args.end());
+    cmd.push_back("-L");
+    cmd.push_back(core_name);
+    cmd.push_back(game_info.rom_path);
+    cmd.push_back("--verbose");
 
     // DRM cleanup will be handled by the main application shutdown
     // The systemd-run service will wait for cleanup to complete before launching RetroArch
@@ -614,12 +617,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // controllers don't fight over the RA menu toggle.
             write_player_binds(script_file, map_p2, 2);
 
-            // 5c. Select the emulated devices through RetroArch's frontend
-            // libretro API. Supported PS1 cores receive a DualShock on both
-            // ports; every other core receives no additional config.
-            write_core_input_device_config(script_file, core_name);
-
-            // 6. Apply Hotkeys
+            // 5c. Apply Hotkeys
             if (!map.enable_hotkey_btn.empty()) {
                 script_file << "input_enable_hotkey_btn = \"" << map.enable_hotkey_btn << "\"\n";
                 
