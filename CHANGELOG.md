@@ -300,6 +300,43 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   uncalled statics deleted there were duplicates of exactly two of these
   four helpers.
 
+- **The Library grid's filter and sort logic is now tested** — it was
+  inlined in `LibraryScreen::rebuild_view()`, and `library_screen.cpp`
+  belongs to no test target: it names `ui::Renderer`, `Renderer` pulls in
+  GLES, and GLES exists in no test binary and not at all on the mac dev
+  box. So the rules deciding which movies an operator sees, and in what
+  order, had **zero** automated coverage. That is not a hypothetical gap —
+  it is precisely why the "Recently added" cutoff bug below shipped and
+  sat there: a well-formed-but-wrong date turned the filter into a
+  pass-everything filter, and there was no test that could have noticed,
+  because there was no test.
+
+  The decision logic moved to `media_browser/ui/library_view.{h,cpp}` as
+  two pure functions — "does this row survive this filter" and "filter
+  then sort" — which name no `Renderer` and compile into
+  `test_media_browser_unit`. The split is along the impurity line rather
+  than a feature line: reading the clock for the 30-day cutoff, the
+  latched warn when that read fails, and clamping the grid cursor all
+  stay in the screen, because none of them can be a pure function of
+  their arguments. The cutoff crosses the seam as a
+  `(string, bool valid)` pair, which is what makes the show-all fallback
+  reachable: the branch the bug lived in used to require a machine whose
+  `gmtime_r` had actually failed, and is now the first case in the test
+  file.
+
+  **No behavior change.** Every rule is preserved verbatim, including the
+  ones that look like mistakes and are not: the `Unwatched` filter still
+  keeps every row (a deliberate placeholder — the kiosk tracks no watched
+  history yet, and an empty grid would read as "nothing is here" rather
+  than "not implemented"), the `!recent_cutoff_valid ||` short-circuit
+  stays a real branch rather than being "simplified" into a comparison
+  against an empty string, and `Title` sorting stays `strcasecmp`, so
+  `apple` still precedes `Banana`. 21 cases / 71 assertions, written
+  before the implementation, pin all of that plus the `>=` cutoff
+  boundary, the year sort's case-insensitive title tiebreak, sizes past
+  the 32-bit boundary, an empty library across all 16 filter/sort pairs,
+  and the borrowed-pointer contract by address.
+
 ### Fixed
 - **`ENABLE_MEDIA_BROWSER=OFF` did not build at all** — `main.cpp` calls
   `ui::Toast::show()` from the display-mode change path, which is core kiosk code
