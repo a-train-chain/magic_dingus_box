@@ -338,6 +338,32 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   and the borrowed-pointer contract by address.
 
 ### Fixed
+- **`ctest` silently skipped the largest test binary in the repo** —
+  `test_media_browser_unit` was created with `add_executable` but never
+  registered with `add_test`. Every other test target has a
+  registration; this one had none, so `ctest` reported "8 tests passed"
+  while quietly omitting **144 Media Browser test cases**. The binary was
+  still compiled on every build — it just never ran unless someone
+  remembered to invoke `./test_media_browser_unit` by hand.
+
+  That is the worst failure mode for a test suite: a green `ctest` that
+  reads as full coverage. Anything the Media Browser tests would have
+  caught — the Radarr/Prowlarr parsers, the release picker, the download
+  watchdog, the VPN health monitor, the shared UI helpers — could regress
+  through a clean run. Now `add_test(NAME MediaBrowserUnit ...)`, so
+  `ctest` reports **9** with `ENABLE_MEDIA_BROWSER=ON` and 8 with it OFF
+  (the target does not exist when the flag is off, which is correct).
+
+  The neighbouring `test_media_browser` target — same directory, no
+  `_unit` suffix — is deliberately **still** unregistered, and a comment
+  now says why so nobody "finishes the job" later. Despite the name it is
+  not a test binary: it is a subcommand-driven CLI for exercising the
+  subsystems by hand on hardware (`test_media_browser tmdb-search alien`).
+  Invoked bare it prints help and exits **2**, so registering it would
+  add a permanently failing test, and every real subcommand needs API
+  keys plus a live TMDB / Radarr / libtorrent stack. Live scaffolding
+  worth keeping, just not through `ctest`.
+
 - **`ENABLE_MEDIA_BROWSER=OFF` did not build at all** — `main.cpp` calls
   `ui::Toast::show()` from the display-mode change path, which is core kiosk code
   compiled in every configuration, but `#include "ui/toast.h"` sat inside
