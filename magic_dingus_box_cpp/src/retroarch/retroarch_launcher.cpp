@@ -477,7 +477,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
             script_file << "input_enable_hotkey = \"true\"\n";
-            script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
+            write_menu_toggle_combo_config(script_file);
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
             script_file << "input_logging_enable = \"false\"\n";
@@ -1003,7 +1003,7 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
             script_file << "input_enable_hotkey = \"true\"\n";
-            script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
+            write_menu_toggle_combo_config(script_file);
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
             script_file << "input_logging_enable = \"false\"\n";

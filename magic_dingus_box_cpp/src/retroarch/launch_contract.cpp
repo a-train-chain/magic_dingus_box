@@ -61,6 +61,10 @@ void write_remote_quit_config(std::ostream& out) {
     out << "input_exit_emulator = \"z\"\n";
 }
 
+void write_menu_toggle_combo_config(std::ostream& out) {
+    out << "input_menu_toggle_gamepad_combo = \"3\"\n";
+}
+
 std::vector<std::string> core_input_device_args(
     const std::string& core_name) {
     if (!is_ps1_core(core_name)) {

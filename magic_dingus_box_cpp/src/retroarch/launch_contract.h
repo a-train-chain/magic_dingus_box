@@ -88,6 +88,9 @@ void write_video_config(std::ostream& out, const LaunchOptions& options);
 // kiosk units ship no keyboards, so re-binding costs nothing.)
 void write_remote_quit_config(std::ostream& out);
 
+// Debian RetroArch 1.20 enum 3 = L1 + R1 + Start + Select.
+void write_menu_toggle_combo_config(std::ostream& out);
+
 // Command-line device overrides for the core. Debian RetroArch loads
 // input_libretro_device_pN from remap files rather than the global config,
 // so supported PS1 cores select DualShock through the explicit CLI path.

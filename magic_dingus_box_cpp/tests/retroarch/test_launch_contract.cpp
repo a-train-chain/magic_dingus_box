@@ -878,6 +878,17 @@ TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
     require_line(config, "input_exit_emulator = \"z\"");
 }
 
+TEST_CASE("menu-toggle combo opens Quick Menu with L1 R1 Start Select",
+          "[retroarch][hotkeys][menu-combo]") {
+    std::ostringstream out;
+    retroarch::write_menu_toggle_combo_config(out);
+    const std::string config = out.str();
+
+    require_line(config, "input_menu_toggle_gamepad_combo = \"3\"");
+    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"1\"") ==
+            std::string::npos);
+}
+
 TEST_CASE("HDMI ALSA device picks vc4hdmi0 by NAME on both Pi 4 and Pi 5",
           "[retroarch][audio]") {
     // Pi 5 layout: vc4hdmi0 is ALSA card 0 (captured from the bench Pi,
