@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <vector>
 
 #include "retroarch/launch_contract.h"
 
@@ -221,7 +222,9 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
                                   "the Night (USA).chd");
     const std::string config = output.str();
 
-    require_line(config, "pcsx_rearmed_pad1type = \"analog\"");
+    REQUIRE(config.find("pcsx_rearmed_pad1type") == std::string::npos);
+    REQUIRE(config.find("pcsx_rearmed_pad2type") == std::string::npos);
+    require_line(config, "pcsx_rearmed_analog_combo = \"disabled\"");
     require_line(config, "pcsx_rearmed_spu_thread = \"enabled\"");
     require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
     require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");
@@ -245,6 +248,32 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
     REQUIRE(config.find("gpu_thread_rendering") == std::string::npos);
     // Default titles run at the native PSX clock with stall emulation.
     REQUIRE(config.find("pcsx_rearmed_nostalls") == std::string::npos);
+}
+
+TEST_CASE("PS1 cores pass DualShock command-line device overrides",
+          "[retroarch][input-device][ps1]") {
+    const std::vector<std::string> expected = {
+        "--device", "1:517", "--device", "2:517",
+    };
+    const char* ps1_cores[] = {
+        "pcsx_rearmed_libretro",
+        "beetle_psx_libretro",
+        "swanstation_libretro",
+    };
+    for (const char* core_name : ps1_cores) {
+        CAPTURE(core_name);
+        REQUIRE(retroarch::core_input_device_args(core_name) == expected);
+    }
+
+    const char* non_ps1_cores[] = {
+        "flycast_libretro",
+        "mupen64plus_next_libretro",
+        "nestopia_libretro",
+    };
+    for (const char* core_name : non_ps1_cores) {
+        CAPTURE(core_name);
+        REQUIRE(retroarch::core_input_device_args(core_name).empty());
+    }
 }
 
 TEST_CASE("THPS4 gets the heavy-title PS1 overclock override",
@@ -848,6 +877,17 @@ TEST_CASE("remote-quit bind lets the phone remote's KEY_Z chord exit the core",
     retroarch::write_remote_quit_config(out);
     const std::string config = out.str();
     require_line(config, "input_exit_emulator = \"z\"");
+}
+
+TEST_CASE("menu-toggle combo opens Quick Menu with L1 R1 Start Select",
+          "[retroarch][hotkeys][menu-combo]") {
+    std::ostringstream out;
+    retroarch::write_menu_toggle_combo_config(out);
+    const std::string config = out.str();
+
+    require_line(config, "input_menu_toggle_gamepad_combo = \"3\"");
+    REQUIRE(config.find("input_menu_toggle_gamepad_combo = \"1\"") ==
+            std::string::npos);
 }
 
 TEST_CASE("HDMI ALSA device picks vc4hdmi0 by NAME on both Pi 4 and Pi 5",

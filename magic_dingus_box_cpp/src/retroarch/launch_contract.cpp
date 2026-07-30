@@ -61,6 +61,18 @@ void write_remote_quit_config(std::ostream& out) {
     out << "input_exit_emulator = \"z\"\n";
 }
 
+void write_menu_toggle_combo_config(std::ostream& out) {
+    out << "input_menu_toggle_gamepad_combo = \"3\"\n";
+}
+
+std::vector<std::string> core_input_device_args(
+    const std::string& core_name) {
+    if (!is_ps1_core(core_name)) {
+        return {};
+    }
+    return {"--device", "1:517", "--device", "2:517"};
+}
+
 Renderer renderer_for_core(const std::string& core_name) {
     // The N64 cores render through GLideN64 (OpenGL/GLES) and must run on
     // the GL context. Everything else the kiosk ships — including
@@ -641,7 +653,10 @@ void write_core_options(std::ostream& out, const std::string& core_name,
     }
     const Ps1TitleOverride* title_override = find_ps1_override(rom_path);
 
-    out << "pcsx_rearmed_pad1type = \"analog\"\n";
+    // This controller has no dedicated DualShock Analog button. PCSX's default
+    // L1+R1+Select toggle overlaps the former menu chord and can persist ANALOG
+    // OFF in auto-states, so keep DualShock mode under the core/game's control.
+    out << "pcsx_rearmed_analog_combo = \"disabled\"\n";
     // Offload SPU audio to a separate CPU core (Pi 4B has four cores).
     out << "pcsx_rearmed_spu_thread = \"enabled\"\n";
     // Retain CD audio and XA decoding for the complete game soundtrack.

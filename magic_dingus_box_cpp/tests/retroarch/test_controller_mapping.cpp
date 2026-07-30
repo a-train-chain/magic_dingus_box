@@ -7,8 +7,8 @@
 #include "retroarch/controller_detector.h"
 #include "retroarch/controller_mapping.h"
 
-// Physical button IDs on the USB N64-style adapter (verified via evtest,
-// see controller_mapping.h):
+// Legacy 0e6d:111d adapter's physical button IDs. Numeric token ordering
+// from another N64-style USB VID/PID does not establish these face labels:
 //   0=C-Left, 1=B, 2=A, 3=C-Down, 4=L shoulder, 5=R shoulder,
 //   6=Z trigger, 8=C-Right, 9=C-Up, 12=Start
 //   Axes: 0/1 = analog stick, hat0 = D-pad
@@ -16,72 +16,221 @@
 using retroarch::ControllerType;
 using retroarch::get_mapping;
 
-TEST_CASE("N64 games on the N64 adapter map 1:1 to the real pad",
+TEST_CASE("N64 games on the legacy N64 adapter use native semantic slots",
           "[retroarch][mapping][n64]") {
-    const auto map = get_mapping(ControllerType::N64_ADAPTER,
-                                 "mupen64plus_next_libretro");
+    for (const auto& core : {"mupen64plus_next_libretro",
+                             "parallel_n64_libretro"}) {
+        INFO("core=" << core);
+        const auto map = get_mapping(ControllerType::N64_ADAPTER, core);
 
-    // The whole point of this adapter: the physical button labelled A
-    // drives N64 A. mupen64plus takes N64 A on RetroPad B.
-    REQUIRE(map.b_btn == "2");   // physical A -> RetroPad B -> N64 A
-    REQUIRE(map.a_btn == "1");   // physical B -> RetroPad A -> N64 B
-    REQUIRE(map.l_btn == "4");   // L shoulder
-    REQUIRE(map.r_btn == "5");   // R shoulder
-    REQUIRE(map.l2_btn == "6");  // Z trigger -> RetroPad L2 -> N64 Z
-    REQUIRE(map.start_btn == "12");
+        CHECK(map.b_btn == "2");       // physical A -> native A
+        CHECK(map.y_btn == "1");       // physical B -> native B
+        CHECK(map.a_btn == "3");       // C-Down
+        CHECK(map.x_btn == "9");       // C-Up
+        CHECK(map.l_btn == "0");       // C-Left
+        CHECK(map.r_btn == "8");       // C-Right
+        CHECK(map.l2_btn == "6");      // Z
+        CHECK(map.r2_btn == "5");      // R shoulder
+        CHECK(map.select_btn == "4");  // L shoulder
+        CHECK(map.start_btn == "12");
 
-    // Real analog stick, not d-pad emulation.
-    REQUIRE(map.analog_dpad_mode == "0");
-    REQUIRE(map.l_x_plus == "+0");
-    REQUIRE(map.l_y_plus == "+1");
+        CHECK(map.r_x_plus.empty());
+        CHECK(map.r_x_minus.empty());
+        CHECK(map.r_y_plus.empty());
+        CHECK(map.r_y_minus.empty());
+        CHECK(map.r_x_plus_btn.empty());
+        CHECK(map.r_x_minus_btn.empty());
+        CHECK(map.r_y_plus_btn.empty());
+        CHECK(map.r_y_minus_btn.empty());
+
+        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.menu_toggle_btn == "12");
+    }
 }
 
-TEST_CASE("N64 adapter C-buttons reach the core via the right stick",
-          "[retroarch][mapping][n64]") {
-    const auto map = get_mapping(ControllerType::N64_ADAPTER,
-                                 "mupen64plus_next_libretro");
+TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
+          "[retroarch][mapping][ps1][n64_style]") {
+    for (const auto& core : {"pcsx_rearmed_libretro",
+                             "beetle_psx_libretro",
+                             "swanstation_libretro"}) {
+        INFO("core=" << core);
+        const auto map = get_mapping(ControllerType::N64_ADAPTER, core);
 
-    // The C cluster is four DIGITAL buttons on real hardware, but
-    // mupen64plus_next expects the C buttons on the RetroPad RIGHT STICK.
-    // RetroArch can drive an analog bind from a digital button, which is
-    // what the _btn (rather than _axis) form is for. Without these four,
-    // the C buttons do nothing at all -- which breaks the camera in every
-    // 3D game on the list.
-    REQUIRE(map.r_x_plus_btn == "8");   // C-Right
-    REQUIRE(map.r_x_minus_btn == "0");  // C-Left
-    REQUIRE(map.r_y_plus_btn == "3");   // C-Down
-    REQUIRE(map.r_y_minus_btn == "9");  // C-Up
+        CHECK(map.name == "PS1 (N64 Controller)");
+        CHECK(map.core_option_pad_type == "analog");
+        CHECK(map.analog_dpad_mode == "0");
 
-    // The adapter has no second physical stick, so the axis form must NOT
-    // also be emitted -- it would bind the C buttons to axes that do not
-    // exist on this device.
-    REQUIRE(map.r_x_plus.empty());
-    REQUIRE(map.r_y_plus.empty());
+        CHECK(map.b_btn == "2");       // N64 A      -> Cross
+        CHECK(map.y_btn == "1");       // N64 B      -> Square
+        CHECK(map.x_btn == "0");       // C-Left     -> Triangle
+        CHECK(map.a_btn == "3");       // C-Down     -> Circle
+        CHECK(map.l_btn == "4");       // L           -> L1
+        CHECK(map.r_btn == "5");       // R           -> R1
+        CHECK(map.l2_btn == "6");      // Z           -> L2
+        CHECK(map.r2_btn == "8");      // C-Right     -> R2
+        CHECK(map.select_btn == "9");  // C-Up        -> Select
+        CHECK(map.start_btn == "12");
+
+        CHECK(map.up_btn == "h0up");
+        CHECK(map.down_btn == "h0down");
+        CHECK(map.left_btn == "h0left");
+        CHECK(map.right_btn == "h0right");
+        CHECK(map.l_x_plus == "+0");
+        CHECK(map.l_x_minus == "-0");
+        CHECK(map.l_y_plus == "+1");
+        CHECK(map.l_y_minus == "-1");
+
+        CHECK(map.up_axis.empty());
+        CHECK(map.down_axis.empty());
+        CHECK(map.left_axis.empty());
+        CHECK(map.right_axis.empty());
+        CHECK(map.r_x_plus.empty());
+        CHECK(map.r_x_minus.empty());
+        CHECK(map.r_y_plus.empty());
+        CHECK(map.r_y_minus.empty());
+        CHECK(map.r_x_plus_btn.empty());
+        CHECK(map.r_x_minus_btn.empty());
+        CHECK(map.r_y_plus_btn.empty());
+        CHECK(map.r_y_minus_btn.empty());
+        CHECK(map.l3_btn.empty());
+        CHECK(map.r3_btn.empty());
+        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.menu_toggle_btn == "12");
+
+        for (int player : {1, 2}) {
+            INFO("player=" << player);
+            std::ostringstream out;
+            retroarch::write_player_binds(out, map, player);
+            const std::string cfg = out.str();
+            const std::string p =
+                "input_player" + std::to_string(player) + "_";
+
+            CHECK(cfg.find(p + "b_btn = \"2\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "y_btn = \"1\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "select_btn = \"9\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "start_btn = \"12\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "a_btn = \"3\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "x_btn = \"0\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l_btn = \"4\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r_btn = \"5\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l2_btn = \"6\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r2_btn = \"8\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l3_btn = \"nul\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r3_btn = \"nul\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "up_axis = \"\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "down_axis = \"\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r_x_") == std::string::npos);
+            CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
+        }
+    }
 }
 
-TEST_CASE("N64 adapter keeps the established menu hotkey on N64 games",
-          "[retroarch][mapping][n64]") {
-    const auto map = get_mapping(ControllerType::N64_ADAPTER,
-                                 "mupen64plus_next_libretro");
-    // Z + Start is the kiosk-wide convention across every core.
-    REQUIRE(map.enable_hotkey_btn == "6");
-    REQUIRE(map.menu_toggle_btn == "12");
+TEST_CASE("N64-style controllers use physical Z+Start on every core",
+          "[retroarch][mapping][hotkeys][n64_style]") {
+    const std::vector<std::string> cores = {
+        "nestopia_libretro",
+        "fceumm_libretro",
+        "snes9x2010_libretro",
+        "genesis_plus_gx_libretro",
+        "pcsx_rearmed_libretro",
+        "beetle_psx_libretro",
+        "swanstation_libretro",
+        "mednafen_pce_fast_libretro",
+        "prosystem_libretro",
+        "fbneo_libretro",
+        "mupen64plus_next_libretro",
+        "parallel_n64_libretro",
+        "flycast_libretro",
+        "totally_unknown_core",
+    };
+
+    for (const auto& core : cores) {
+        INFO("core=" << core);
+        const auto map =
+            get_mapping(ControllerType::N64_ADAPTER, core);
+        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.menu_toggle_btn == "12");
+        CHECK(map.exit_emulator_btn.empty());
+    }
 }
 
-TEST_CASE("Dreamcast is playable on the N64 adapter",
-          "[retroarch][mapping][dreamcast]") {
-    const auto map = get_mapping(ControllerType::N64_ADAPTER,
-                                 "flycast_libretro");
+TEST_CASE("N64-style hotkeys serialize once as a menu chord, never exit",
+          "[retroarch][mapping][hotkeys][config]") {
+    const auto map = get_mapping(
+        ControllerType::N64_ADAPTER, "pcsx_rearmed_libretro");
+    std::ostringstream out;
+    retroarch::write_hotkey_binds(out, map);
+    CHECK(out.str() ==
+          "input_enable_hotkey_btn = \"6\"\n"
+          "input_menu_toggle_btn = \"12\"\n");
+    CHECK(out.str().find("input_exit_emulator_btn") ==
+          std::string::npos);
+}
 
-    REQUIRE(map.b_btn == "2");   // physical A -> DC A
-    REQUIRE(map.a_btn == "1");   // physical B -> DC B
-    REQUIRE(map.y_btn == "0");   // C-Left    -> DC X
-    REQUIRE(map.x_btn == "3");   // C-Down    -> DC Y
-    // The DC's analog triggers land on the only shoulders this pad has.
-    REQUIRE(map.l2_btn == "4");
-    REQUIRE(map.r2_btn == "5");
-    REQUIRE(map.start_btn == "12");
-    REQUIRE(map.enable_hotkey_btn == "6");
+TEST_CASE("N64 adapter uses the role-consistent Dreamcast layout",
+          "[retroarch][mapping][dreamcast][n64_style]") {
+    const auto map =
+        get_mapping(ControllerType::N64_ADAPTER, "flycast_libretro");
+
+    CHECK(map.name == "Dreamcast (N64 pad)");
+    CHECK(map.analog_dpad_mode == "0");
+    CHECK(map.b_btn == "2");       // N64 A      -> DC A
+    CHECK(map.y_btn == "1");       // N64 B      -> DC X
+    CHECK(map.x_btn == "0");       // C-Left     -> DC Y
+    CHECK(map.a_btn == "3");       // C-Down     -> DC B
+    CHECK(map.l2_btn == "4");      // L          -> left trigger
+    CHECK(map.r2_btn == "5");      // R          -> right trigger
+    CHECK(map.start_btn == "12");
+
+    CHECK(map.select_btn.empty());
+    CHECK(map.l_btn.empty());
+    CHECK(map.r_btn.empty());
+    CHECK(map.l3_btn.empty());
+    CHECK(map.r3_btn.empty());
+    CHECK(map.r_x_plus.empty());
+    CHECK(map.r_x_plus_btn.empty());
+    CHECK(map.up_axis.empty());
+    CHECK(map.down_axis.empty());
+    CHECK(map.left_axis.empty());
+    CHECK(map.right_axis.empty());
+
+    CHECK(map.up_btn == "h0up");
+    CHECK(map.down_btn == "h0down");
+    CHECK(map.left_btn == "h0left");
+    CHECK(map.right_btn == "h0right");
+    CHECK(map.l_x_plus == "+0");
+    CHECK(map.l_x_minus == "-0");
+    CHECK(map.l_y_plus == "+1");
+    CHECK(map.l_y_minus == "-1");
+
+    CHECK(map.enable_hotkey_btn == "6");
+    CHECK(map.menu_toggle_btn == "12");
+
+    for (int player : {1, 2}) {
+        INFO("player=" << player);
+        std::ostringstream out;
+        retroarch::write_player_binds(out, map, player);
+        const std::string cfg = out.str();
+        const std::string p =
+            "input_player" + std::to_string(player) + "_";
+
+        CHECK(cfg.find(p + "b_btn = \"2\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "y_btn = \"1\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "select_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "start_btn = \"12\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "a_btn = \"3\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "x_btn = \"0\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l2_btn = \"4\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r2_btn = \"5\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l3_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r3_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "up_axis = \"\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "down_axis = \"\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_x_") == std::string::npos);
+        CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
+    }
 }
 
 TEST_CASE("PS-style pads use the universal N64 layout",
@@ -129,30 +278,22 @@ TEST_CASE("unknown controllers still fall back to the N64 adapter mapping",
     const auto fallback = get_mapping(ControllerType::UNKNOWN,
                                       "mupen64plus_next_libretro");
     REQUIRE(fallback.b_btn == known.b_btn);
-    REQUIRE(fallback.r_x_plus_btn == known.r_x_plus_btn);
+    REQUIRE(fallback.y_btn == known.y_btn);
+    REQUIRE(fallback.select_btn == known.select_btn);
+    REQUIRE(fallback.r2_btn == known.r2_btn);
 }
 
 TEST_CASE("right-stick binds reach the config in the form the pad needs",
           "[retroarch][mapping][config]") {
     // A mapping is only worth as much as what actually lands in the
-    // RetroArch config. The N64 adapter drives the C cluster from digital
-    // buttons (_btn) and the PS pad from real axes (_axis); emitting the
-    // wrong form, or dropping one, is a silent no-op at runtime.
-    SECTION("N64 adapter emits the button form only") {
+    // RetroArch config. PS-style pads drive N64 C buttons from their real
+    // right-stick axes; native N64 pads instead use direct RetroPad slots.
+    SECTION("N64 adapter emits no right-stick binds") {
         std::ostringstream out;
         retroarch::write_right_stick_binds(
             out, get_mapping(ControllerType::N64_ADAPTER,
                              "mupen64plus_next_libretro"), 1);
-        const std::string cfg = out.str();
-        REQUIRE(cfg.find("input_player1_r_x_plus_btn = \"8\"") !=
-                std::string::npos);
-        REQUIRE(cfg.find("input_player1_r_x_minus_btn = \"0\"") !=
-                std::string::npos);
-        REQUIRE(cfg.find("input_player1_r_y_plus_btn = \"3\"") !=
-                std::string::npos);
-        REQUIRE(cfg.find("input_player1_r_y_minus_btn = \"9\"") !=
-                std::string::npos);
-        REQUIRE(cfg.find("_axis") == std::string::npos);
+        REQUIRE(out.str().empty());
     }
 
     SECTION("PS-style pad emits the axis form only") {
@@ -179,23 +320,28 @@ TEST_CASE("right-stick binds reach the config in the form the pad needs",
     }
 }
 
-TEST_CASE("player 2 gets the C-buttons too",
+TEST_CASE("native N64 fields are serialized for both players",
           "[retroarch][mapping][config]") {
-    // Six of the eighteen N64 games on the box are two-player (Mario Kart
-    // 64, Smash Bros., Mario Party 3, GoldenEye, Perfect Dark, Diddy Kong
-    // Racing). The launcher mirrors P1's mapping onto P2 so the second pad
-    // works at all -- but the right stick was never part of that mirror, so
-    // P2 would have had no camera control in any of them.
-    std::ostringstream out;
-    retroarch::write_right_stick_binds(
-        out, get_mapping(ControllerType::N64_ADAPTER,
-                         "mupen64plus_next_libretro"), 2);
-    const std::string cfg = out.str();
-    REQUIRE(cfg.find("input_player2_r_x_plus_btn = \"8\"") !=
-            std::string::npos);
-    REQUIRE(cfg.find("input_player2_r_y_minus_btn = \"9\"") !=
-            std::string::npos);
-    REQUIRE(cfg.find("player1") == std::string::npos);
+    const auto map = get_mapping(ControllerType::N64_ADAPTER,
+                                 "mupen64plus_next_libretro");
+    for (const int player : {1, 2}) {
+        INFO("player=" << player);
+        std::ostringstream out;
+        retroarch::write_player_binds(out, map, player);
+        const std::string cfg = out.str();
+        const std::string p = "input_player" + std::to_string(player) + "_";
+
+        CHECK(cfg.find(p + "b_btn = \"2\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "y_btn = \"1\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "a_btn = \"3\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "x_btn = \"9\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l_btn = \"0\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_btn = \"8\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "select_btn = \"4\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r2_btn = \"5\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_x_") == std::string::npos);
+        CHECK(cfg.find(p + "r_y_") == std::string::npos);
+    }
 }
 
 TEST_CASE("every shipped core has a real mapping on both pads",

@@ -182,9 +182,10 @@ TEST_CASE("kind-awareness changes nothing for the two built-in profiles",
     CHECK(n64.down_btn == "h0down");
     CHECK(n64.left_btn == "h0left");
     CHECK(n64.right_btn == "h0right");
-    CHECK(n64.up_axis == "-1");        // from stick_to_dpad, as before
+    CHECK(n64.up_axis.empty());         // native d-pad stays independent
     CHECK(n64.r2_btn == "8");          // C-Right, a real BUTTON
     CHECK(n64.enable_hotkey_btn == "6");
+    CHECK(n64.menu_toggle_btn == "12");
 
     const auto ps = build_mapping(
         get_semantic_mapping(ControllerStyle::PS_STYLE, "pcsx_rearmed_libretro"),

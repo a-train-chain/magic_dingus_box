@@ -15,14 +15,16 @@ using L = LogicalControl;
 // builtin_n64_adapter_profile(); see controller_profile.cpp for that
 // adapter's physical button IDs and hardware evidence.
 //
-// Hotkey combo across all cores: Z trigger + Start = toggle RetroArch menu.
+// Z trigger + Start is the universal N64-style hotkey combo for every core
+// mapping, including PS1.
 SemanticMapping semantic_n64_style(const std::string& core) {
     SemanticMapping s;
+    s.hotkey_enable = L::N64_Z;
+    s.menu_toggle = L::N64_START;
     auto stick = [&] {
         s.stick_up = L::N64_STICK_UP; s.stick_down = L::N64_STICK_DOWN;
         s.stick_left = L::N64_STICK_LEFT; s.stick_right = L::N64_STICK_RIGHT;
     };
-    auto hotkeys = [&] { s.hotkey_enable = L::N64_Z; s.menu_toggle = L::N64_START; };
     auto dpad = [&] {
         s.up = L::N64_DPAD_UP; s.down = L::N64_DPAD_DOWN;
         s.left = L::N64_DPAD_LEFT; s.right = L::N64_DPAD_RIGHT;
@@ -39,25 +41,39 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.y = L::N64_C_LEFT;  // Turbo B
         dpad();
         stick(); s.left_stick = true; s.stick_to_dpad = true;  // stick -> d-pad, so it works for Mario
-        hotkeys();
         s.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
                          "nestopia_audio_vol_sq2 = \"100\"\n"
                          "nestopia_audio_vol_tri = \"100\"\n"
                          "nestopia_audio_vol_noise = \"100\"\n"
                          "nestopia_audio_vol_dpcm = \"100\"\n";
 
-    } else if (core.find("pcsx") != std::string::npos || core.find("beetle_psx") != std::string::npos || core.find("swanstation") != std::string::npos) {
-        s.name = "PS1 (N64 Controller)"; s.core_option_pad_type = "analog"; s.analog_dpad_mode = "0";
-        // PS1 face buttons land on the N64's A/B plus two of the C cluster.
-        s.b = L::N64_A;       // Cross (primary action)
-        s.a = L::N64_B;       // Circle (secondary)
-        s.y = L::N64_C_DOWN;  // Square (attack/action)
-        s.x = L::N64_C_LEFT;  // Triangle (menu/special)
-        s.start = L::N64_START;
+    } else if (core.find("pcsx") != std::string::npos ||
+               core.find("beetle_psx") != std::string::npos ||
+               core.find("swanstation") != std::string::npos) {
+        // ---- Sony PlayStation on an N64 pad ------------------------
+        // Layer-free original PlayStation layout. The physical D-pad and
+        // analog stick stay independent; DualShock right-stick/L3/R3
+        // functions are intentionally outside this controller's scope.
+        s.name = "PS1 (N64 Controller)";
+        s.core_option_pad_type = "analog";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;        // Cross
+        s.y = L::N64_B;        // Square
+        s.x = L::N64_C_LEFT;   // Triangle
+        s.a = L::N64_C_DOWN;   // Circle
+        s.l = L::N64_L;        // L1
+        s.r = L::N64_R;        // R1
+        s.l2 = L::N64_Z;       // L2
+        s.r2 = L::N64_C_RIGHT; // R2
         s.select = L::N64_C_UP;
-        s.l = L::N64_L; s.r = L::N64_R; s.r2 = L::N64_C_RIGHT;
+        s.start = L::N64_START;
+
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick();
+        s.left_stick = true;
+        // No stick_to_dpad.
 
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800"; s.analog_dpad_mode = "0";
@@ -66,7 +82,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // default, and physical button 10 is unused on this pad, so the
         // slot stays nullopt and the default carries it. Same for the
         // other branches below that "set" a field to its default.
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("genesis_plus_gx") != std::string::npos) {
         s.name = "Sega Genesis"; s.analog_dpad_mode = "0";
@@ -75,14 +91,14 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.b = L::N64_B;       // B
         s.y = L::N64_C_DOWN;  // A
         s.start = L::N64_START;
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("snes9x") != std::string::npos) {
         s.name = "Super Nintendo"; s.analog_dpad_mode = "0";
         // SNES layout: B, A, Y, X, L, R
         s.b = L::N64_B; s.a = L::N64_A; s.y = L::N64_C_DOWN; s.x = L::N64_C_LEFT;
         s.l = L::N64_L; s.r = L::N64_R; s.start = L::N64_START;
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("mednafen_pce_fast") != std::string::npos) {
         s.name = "PC Engine / TurboGrafx-16"; s.analog_dpad_mode = "0";
@@ -93,7 +109,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.y = L::N64_C_LEFT;  // Turbo II
         s.x = L::N64_C_DOWN;  // Turbo I
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("fbneo") != std::string::npos) {
         s.name = "Arcade (FinalBurn Neo)"; s.analog_dpad_mode = "0";
@@ -105,52 +121,52 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.select = L::N64_C_UP;  // Coin
         s.start = L::N64_START;
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("mupen64plus") != std::string::npos || core.find("parallel_n64") != std::string::npos) {
         // ---- Nintendo 64 on a real N64 pad -------------------------
-        // The one case where the hardware and the emulated console are
-        // the same shape, so this is a straight 1:1 passthrough and the
-        // labels on the plastic tell the truth.
-        //
-        // UNVALIDATED ON HARDWARE — button feel needs a real pad and a
-        // real ROM. Considered starting point, not a finished mapping.
-        s.name = "Nintendo 64 (N64 pad)"; s.analog_dpad_mode = "0";  // real analog stick
-        s.b = L::N64_A; s.a = L::N64_B; s.l = L::N64_L; s.r = L::N64_R;
-        s.l2 = L::N64_Z; s.start = L::N64_START;
-        stick(); s.left_stick = true;   // NO stick_to_dpad — d-pad must not double
-        // The C cluster. On this pad they are four DIGITAL buttons, but
-        // mupen64plus_next / parallel_n64 read the C buttons off the
-        // RetroPad RIGHT STICK. RetroArch will drive an analog bind from a
-        // plain button, so the profile resolves these to the _btn form
-        // (build_mapping picks the form off the profile's binding kind) —
-        // the adapter has no second stick, and binding to a nonexistent
-        // axis would silently do nothing.
-        s.r_up = L::N64_C_UP; s.r_down = L::N64_C_DOWN;
-        s.r_left = L::N64_C_LEFT; s.r_right = L::N64_C_RIGHT;
-        // D-pad on the hat only. Don't also drive it from the stick or
-        // analog input would double as D-pad presses in-game.
-        dpad(); hotkeys();
+        // Mupen's independent C-button mode gives every native N64 control a
+        // dedicated digital RetroPad slot. Route the physical labels directly
+        // to those slots; no right-stick bridge or duplicate defaults.
+        s.name = "Nintendo 64 (N64 pad)";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;          // native A
+        s.y = L::N64_B;          // native B
+        s.a = L::N64_C_DOWN;
+        s.x = L::N64_C_UP;
+        s.l = L::N64_C_LEFT;
+        s.r = L::N64_C_RIGHT;
+        s.l2 = L::N64_Z;
+        s.r2 = L::N64_R;
+        s.select = L::N64_L;
+        s.start = L::N64_START;
+
+        stick();
+        s.left_stick = true;
+        dpad();
 
     } else if (core.find("flycast") != std::string::npos) {
         // ---- Sega Dreamcast on an N64 pad --------------------------
-        // Awkward but workable: the DC's four face buttons land on the
-        // N64's two face buttons plus two of the C cluster, and the DC's
-        // two ANALOG triggers land on the N64's digital shoulders (so
-        // they read as fully-pressed — fine for most titles, imprecise
-        // for the racing games). The PS-style pad is the better fit for
-        // Dreamcast if one is to hand.
-        //
-        // UNVALIDATED ON HARDWARE — see the N64 note above.
-        s.name = "Dreamcast (N64 pad)"; s.analog_dpad_mode = "0";
-        s.b = L::N64_A;       // DC A
-        s.a = L::N64_B;       // DC B
-        s.y = L::N64_C_LEFT;  // DC X
-        s.x = L::N64_C_DOWN;  // DC Y
-        s.l2 = L::N64_L;      // DC left trigger
-        s.r2 = L::N64_R;      // DC right trigger
+        // Match the approved PS1 muscle memory: primary on A,
+        // attack/secondary on B, upper action on C-Left, and
+        // back/alternate on C-Down.
+        s.name = "Dreamcast (N64 pad)";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;        // DC A
+        s.y = L::N64_B;        // DC X
+        s.x = L::N64_C_LEFT;   // DC Y
+        s.a = L::N64_C_DOWN;   // DC B
+        s.l2 = L::N64_L;       // DC left trigger, digital full press
+        s.r2 = L::N64_R;       // DC right trigger, digital full press
         s.start = L::N64_START;
-        stick(); s.left_stick = true; dpad(); hotkeys();
+
+        stick();
+        s.left_stick = true;
+        dpad();
     }
     return s;
 }
@@ -564,13 +580,29 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
         out << p << "y_minus_axis = \"" << map.r_y_minus << "\"\n";
         return;
     }
-    // Digital C cluster (N64 adapter): bind the same analog functions to
-    // plain buttons. RetroArch accepts either form for an analog bind.
+    // Digital right-stick representation for PS-style/modern pads that need
+    // it; native N64-style pads use independent digital RetroPad slots.
     if (!map.r_x_plus_btn.empty()) {
         out << p << "x_plus_btn = \"" << map.r_x_plus_btn << "\"\n";
         out << p << "x_minus_btn = \"" << map.r_x_minus_btn << "\"\n";
         out << p << "y_plus_btn = \"" << map.r_y_plus_btn << "\"\n";
         out << p << "y_minus_btn = \"" << map.r_y_minus_btn << "\"\n";
+    }
+}
+
+void write_hotkey_binds(std::ostream& out,
+                        const ControllerMapping& map) {
+    if (map.enable_hotkey_btn.empty()) return;
+
+    out << "input_enable_hotkey_btn = \""
+        << map.enable_hotkey_btn << "\"\n";
+    if (!map.menu_toggle_btn.empty()) {
+        out << "input_menu_toggle_btn = \""
+            << map.menu_toggle_btn << "\"\n";
+    }
+    if (!map.exit_emulator_btn.empty()) {
+        out << "input_exit_emulator_btn = \""
+            << map.exit_emulator_btn << "\"\n";
     }
 }
 

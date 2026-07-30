@@ -171,10 +171,13 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
         // the phone remote's QUIT_GAME chord did nothing in-game
         // (verified on hardware 2026-07-26).
         "--appendconfig", "/tmp/retroarch_mdb_override.cfg",
-        "-L", core_name,
-        game_info.rom_path,
-        "--verbose"
     };
+    const auto input_device_args = core_input_device_args(core_name);
+    cmd.insert(cmd.end(), input_device_args.begin(), input_device_args.end());
+    cmd.push_back("-L");
+    cmd.push_back(core_name);
+    cmd.push_back(game_info.rom_path);
+    cmd.push_back("--verbose");
 
     // DRM cleanup will be handled by the main application shutdown
     // The systemd-run service will wait for cleanup to complete before launching RetroArch
@@ -474,7 +477,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
             script_file << "input_enable_hotkey = \"true\"\n";
-            script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
+            write_menu_toggle_combo_config(script_file);
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
             script_file << "input_logging_enable = \"false\"\n";
@@ -614,34 +617,8 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // controllers don't fight over the RA menu toggle.
             write_player_binds(script_file, map_p2, 2);
 
-            // 5c. PCSX-rearmed needs the per-pad type set for both pads.
-            // Without pad2type, the second controller is treated as
-            // disconnected by the PS1 BIOS — multiplayer games like
-            // Twisted Metal won't see a 2nd player even if RetroArch
-            // is reading js1 events. This now follows PLAYER 2's OWN
-            // resolved mapping (map_p2), not player 1's, so a differently
-            // typed pad in port 1 gets its own correct PS1 pad type.
-            if (!map_p2.core_option_pad_type.empty()) {
-                script_file << "pcsx_rearmed_pad2type = \"" << map_p2.core_option_pad_type << "\"\n";
-            }
-
-            // 6. Apply Core Options (if any) -- player 1 only.
-            if (!map.core_option_pad_type.empty()) {
-                 script_file << "pcsx_rearmed_pad1type = \"" << map.core_option_pad_type << "\"\n";
-            }
-            
-            // 7. Apply Hotkeys
-            if (!map.enable_hotkey_btn.empty()) {
-                script_file << "input_enable_hotkey_btn = \"" << map.enable_hotkey_btn << "\"\n";
-                
-                if (!map.menu_toggle_btn.empty()) {
-                    script_file << "input_menu_toggle_btn = \"" << map.menu_toggle_btn << "\"\n";
-                }
-                
-                if (!map.exit_emulator_btn.empty()) {
-                    script_file << "input_exit_emulator_btn = \"" << map.exit_emulator_btn << "\"\n";
-                }
-            }
+            // 5c. Apply Hotkeys
+            write_hotkey_binds(script_file, map);
 
             // 8. Apply Extra Config (if any)
             if (!map.extra_config.empty()) {
@@ -1016,7 +993,7 @@ bool RetroArchLauncher::open_core_downloader_direct(int system_volume_percent) {
             script_file << "# We rely on core-specific sections to define mappings\n";
             script_file << "# For NES: A=0 (jump), B=1 (run), Start=2, Select=10, D-pad=hat0\n";
             script_file << "input_enable_hotkey = \"true\"\n";
-            script_file << "input_menu_toggle_gamepad_combo = \"1\"\n";  // L1+R1+Start+Select
+            write_menu_toggle_combo_config(script_file);
             script_file << "input_auto_game_focus = \"true\"\n";
             script_file << "input_game_focus_enable = \"true\"\n";
             script_file << "input_logging_enable = \"false\"\n";

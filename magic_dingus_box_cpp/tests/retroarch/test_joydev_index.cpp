@@ -93,12 +93,11 @@ TEST_CASE("bind_token formats all three kinds", "[joydev_index]") {
 //   B: ABS=30027                       -> bits 0,1,2,5,16,17 -> ABS_X, ABS_Y,
 //                                        ABS_Z, ABS_RZ, ABS_HAT0X, ABS_HAT0Y.
 //
-// This is not a synthetic case: these are exactly the tokens the shipped,
-// hardware-validated builtin_n64_adapter_profile() mapping uses for this
-// pad (A=306->"2", Z=310->"6", C-Right=312->"8", C-Up=313->"9",
-// Start=316->"12"). All codes fall in the high (>= BTN_JOYSTICK) range, so
-// button ordering is simple ascending index == code-304 here; this test
-// does not exercise the BTN_MISC-wrap branch (covered above).
+// This is not a synthetic case: it proves the live 2563:0575 pad's token
+// numbering (not face labels for the distinct legacy 0e6d:111d adapter).
+// All codes fall in the high (>= BTN_JOYSTICK) range, so button ordering is
+// simple ascending index == code-304 here; this test does not exercise the
+// BTN_MISC-wrap branch (covered above).
 TEST_CASE("real N64-adapter capture (2563:0575) reproduces shipped tokens",
           "[joydev_index]") {
     std::vector<uint16_t> keys;

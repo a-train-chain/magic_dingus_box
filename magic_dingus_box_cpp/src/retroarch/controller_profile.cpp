@@ -43,20 +43,21 @@ const PhysicalProfile& builtin_n64_adapter_profile() {
         p.name = "SWITCH CO.,LTD. Controller (N64 adapter)";
         p.style = ControllerStyle::N64_STYLE;
         p.vid = 0x0e6d; p.pid = 0x111d;
-        // Joystick index i lives at evdev code 304+i on this adapter
+        // Legacy 0e6d:111d adapter profile: joystick index i lives at evdev code 304+i
         // (contiguous BTN_GAMEPAD range). The physical layout used to be
         // a separate table at the top of controller_mapping.cpp; that
         // table was deleted by the semantic/physical split (this task),
         // and the layout now lives here, in the profile itself.
         //
-        // HARDWARE-CONFIRMED (2026-07-29, see .superpowers/sdd/
-        // hardware-evidence.md): captured live from a "SWITCH CO.,LTD.
-        // Controller (Dinput)" pad (2563:0575, functionally an N64-style
-        // adapter) on the production Pi. Capability bitmaps: EV_KEY =
-        // 0x1fff<<48 -> codes 304..316 inclusive, 13 contiguous buttons;
-        // EV_ABS = 0x30027 -> bits 0,1,2,5,16,17 = ABS_X/Y/Z/RZ plus a
-        // REAL ABS_HAT0X/Y (not an 8-bit axis overload). Every code and
-        // token below (buttons, hat, and stick) matches that hardware.
+        // The 2563:0575 hardware capture (2026-07-29, see .superpowers/sdd/
+        // hardware-evidence.md) confirms the capability bitmap, evdev codes,
+        // and joydev token numbering: EV_KEY = 0x1fff<<48 -> codes 304..316
+        // inclusive, 13 contiguous buttons; EV_ABS = 0x30027 -> bits
+        // 0,1,2,5,16,17 = ABS_X/Y/Z/RZ plus a real ABS_HAT0X/Y. It does not
+        // establish which physical face labels own those tokens on this
+        // different built-in VID/PID. A wizard-captured profile for its
+        // matching VID/PID is authoritative and overrides this legacy
+        // built-in profile (and the fallback) during resolution.
         p.controls = {
             {L::N64_C_LEFT, btn(304, "0")},  {L::N64_B, btn(305, "1")},
             {L::N64_A, btn(306, "2")},       {L::N64_C_DOWN, btn(307, "3")},

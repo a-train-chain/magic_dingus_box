@@ -42,7 +42,16 @@ TEST_CASE("player 2 mirrors with the player2 prefix and no player1 lines",
           "[player_binds]") {
     const std::string cfg = emit(ControllerType::N64_ADAPTER,
                                  "mupen64plus_next_libretro", 2);
-    REQUIRE(cfg.find("input_player2_r_x_plus_btn = \"8\"") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_b_btn = \"2\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_y_btn = \"1\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_a_btn = \"3\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_x_btn = \"9\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_l_btn = \"0\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_r_btn = \"8\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_select_btn = \"4\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_r2_btn = \"5\"\n") != std::string::npos);
+    REQUIRE(cfg.find("input_player2_r_x_") == std::string::npos);
+    REQUIRE(cfg.find("input_player2_r_y_") == std::string::npos);
     REQUIRE(cfg.find("player1") == std::string::npos);
 }
 
