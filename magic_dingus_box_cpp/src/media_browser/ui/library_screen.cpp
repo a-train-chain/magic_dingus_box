@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <system_error>
 #include <cstdio>
+#include "media_browser/ui/library_view.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_ui_utils.h"
 
@@ -11,7 +12,6 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
-#include <strings.h>  // strcasecmp
 #include <unordered_map>
 
 #include "app/settings_persistence.h"
@@ -337,10 +337,15 @@ void LibraryScreen::apply_pending() {
 }
 
 void LibraryScreen::rebuild_view() {
-    view_.clear();
-    view_.reserve(library_.size());
+    // Which rows survive and in what order is decided by the pure
+    // build_library_view() in media_browser/ui/library_view.h. Everything
+    // that stays here is the part that cannot be pure: reading the clock for
+    // the cutoff, the latched warn when that read fails, assigning view_, and
+    // clamping the cursor. library_view.cpp names no ::ui::Renderer, so unlike
+    // this file it compiles into test_media_browser_unit — which is the point
+    // of the split. The filter and sort semantics had no coverage at all while
+    // they lived here, and that is how the cutoff bug described below shipped.
 
-    // ---- Filter pass ----
     // Driven by display_settings.mb_library_filter (the v1.6.x persisted
     // overlay choice), NOT the legacy Filter enum member filter_ which
     // is now dead config. The legacy enum stays in the header for any
@@ -348,10 +353,10 @@ void LibraryScreen::rebuild_view() {
     using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
     const F filter = state_.display_settings.mb_library_filter;
     // "Recently added" cutoff: 30 days ago, formatted as an ISO-8601
-    // string so we can compare lexicographically against Movie.added_at
-    // (which Radarr emits as ISO-8601, e.g. "2024-12-31T08:15:42Z").
-    // ISO-8601 strings sort chronologically as plain strings — no
-    // parsing required.
+    // string so the filter can compare lexicographically against
+    // Movie.added_at (which Radarr emits as ISO-8601, e.g.
+    // "2024-12-31T08:15:42Z"). ISO-8601 strings sort chronologically as
+    // plain strings — no parsing required.
     //
     // utils::iso8601_utc returns "" if the conversion fails. That MUST be
     // branched on rather than compared: "" is less than every non-empty string,
@@ -364,7 +369,9 @@ void LibraryScreen::rebuild_view() {
     // Falling back to show-all is the deliberate choice over showing nothing:
     // an empty grid reads as "your library is empty", which is a scarier and
     // more misleading failure on an appliance than an unfiltered one. The log
-    // line is what makes it diagnosable instead of silent.
+    // line is what makes it diagnosable instead of silent, and
+    // library_row_kept() takes the validity as its own argument so the fallback
+    // is a branch a test can reach rather than one that needs a broken clock.
     std::string thirty_days_ago_iso;
     bool recent_cutoff_valid = false;
     if (filter == F::RecentlyAdded) {
@@ -385,56 +392,13 @@ void LibraryScreen::rebuild_view() {
                          "'Recently added' will show the whole library");
         }
     }
-    for (const Movie& m : library_) {
-        bool keep = true;
-        switch (filter) {
-            case F::All:
-                keep = true;
-                break;
-            case F::Unwatched:
-                // Placeholder: kiosk doesn't track watched-history yet.
-                // Accept all rows so the operator sees something while
-                // the (soon) feature is in development. Will switch to
-                // `keep = !m.watched;` once Movie.watched lands.
-                keep = true;
-                break;
-            case F::MissingFiles:
-                keep = !m.has_file;
-                break;
-            case F::RecentlyAdded:
-                // Movie.added_at is a Radarr ISO-8601 string. Empty
-                // strings (which Radarr should never emit but we guard
-                // anyway) compare less-than the cutoff and are dropped.
-                // No usable cutoff -> show all (see the warn above).
-                keep = !recent_cutoff_valid ||
-                       (!m.added_at.empty() && m.added_at >= thirty_days_ago_iso);
-                break;
-        }
-        if (keep) view_.push_back(&m);
-    }
-
-    // ---- Sort pass ----
-    using S = ::app::AppState::DisplaySettings::MbLibrarySort;
-    const S sort = state_.display_settings.mb_library_sort;
-    auto cmp_recent = [](const Movie* a, const Movie* b) {
-        return a->added_at > b->added_at;  // newest first (ISO-8601 lex sort)
-    };
-    auto cmp_title = [](const Movie* a, const Movie* b) {
-        return ::strcasecmp(a->title.c_str(), b->title.c_str()) < 0;
-    };
-    auto cmp_year = [](const Movie* a, const Movie* b) {
-        if (a->year != b->year) return a->year > b->year;  // newest first
-        return ::strcasecmp(a->title.c_str(), b->title.c_str()) < 0;
-    };
-    auto cmp_size = [](const Movie* a, const Movie* b) {
-        return a->file_size_bytes > b->file_size_bytes;  // largest first
-    };
-    switch (sort) {
-        case S::Recent: std::sort(view_.begin(), view_.end(), cmp_recent); break;
-        case S::Title:  std::sort(view_.begin(), view_.end(), cmp_title);  break;
-        case S::Year:   std::sort(view_.begin(), view_.end(), cmp_year);   break;
-        case S::Size:   std::sort(view_.begin(), view_.end(), cmp_size);   break;
-    }
+    // ---- Filter + sort ----
+    // view_ holds raw Movie* into library_, so this MUST stay on the render
+    // thread and immediately follow the library_ swap in apply_pending() — any
+    // reallocation of library_ invalidates every pointer built here.
+    view_ = build_library_view(library_, filter,
+                               state_.display_settings.mb_library_sort,
+                               thirty_days_ago_iso, recent_cutoff_valid);
 
     // Clamp the grid cursor + scroll row to the new view's bounds.
     // After a sort/filter change, the cursor may land far outside the

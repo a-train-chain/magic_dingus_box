@@ -224,6 +224,12 @@ if(BUILD_KIOSK)
             src/media_browser/tmdb_client.cpp
             src/media_browser/artwork/artwork_cache.cpp
             src/media_browser/ui/mb_ui_utils.cpp
+            # Renderer-free, so it is ALSO in MEDIA_BROWSER_SOURCES and gets
+            # unit-tested — but library_screen.cpp calls into it, so the kiosk
+            # binary needs its own copy here or the link fails on an undefined
+            # build_library_view. Same arrangement as mb_ui_utils.cpp above: the
+            # two lists feed different targets and neither includes the other.
+            src/media_browser/ui/library_view.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -394,6 +400,11 @@ if(ENABLE_MEDIA_BROWSER)
         # Renderer-shaped truncate_to_width convenience overload lives in
         # mb_chrome.cpp, which stays kiosk-only.
         src/media_browser/ui/mb_ui_utils.cpp
+        # The Library grid's filter + sort decision logic, split out of
+        # library_screen.cpp for the same reason: it names no ::ui::Renderer, so
+        # unlike the screen it lives in it can be compiled and asserted on here.
+        # That coverage gap is what let the "recently added" cutoff bug ship.
+        src/media_browser/ui/library_view.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -420,6 +431,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_download_watchdog.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         tests/media_browser/test_mb_ui_utils.cpp
+        tests/media_browser/test_library_view.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
