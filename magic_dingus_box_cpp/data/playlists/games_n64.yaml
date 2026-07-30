@@ -1,0 +1,145 @@
+title: "Nintendo 64 Classics"
+playlist_type: game
+curator: Alex Chaney
+description: "Nintendo 64 classics"
+loop: false
+items:
+  - title: Banjo-Kazooie
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Banjo-Kazooie (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Banjo-Tooie
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Banjo-Tooie (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: "Conker's Bad Fur Day"
+    artist: ''
+    source_type: emulated_game
+    path: "data/roms/n64/Conker's Bad Fur Day (USA).z64"
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Diddy Kong Racing
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Diddy Kong Racing (USA) (En,Fr).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Donkey Kong 64
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Donkey Kong 64 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: F-Zero X
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/F-Zero X (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: GoldenEye 007
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/GoldenEye 007 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Jet Force Gemini
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Jet Force Gemini (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: "Kirby 64: The Crystal Shards"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Kirby 64 - The Crystal Shards (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: "The Legend of Zelda: Majora's Mask"
+    artist: ''
+    source_type: emulated_game
+    path: "data/roms/n64/Legend of Zelda, The - Majora's Mask (USA).z64"
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: "The Legend of Zelda: Ocarina of Time"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Legend of Zelda, The - Ocarina of Time (USA) (Rev 2).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Mario Kart 64
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Mario Kart 64 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Mario Party 3
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Mario Party 3 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Mario Tennis
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Mario Tennis (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Paper Mario
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Paper Mario (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Perfect Dark
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Perfect Dark (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Star Fox 64
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Star Fox 64 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Super Mario 64
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Super Mario 64 (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: Super Smash Bros.
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Super Smash Bros. (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64
+
+  - title: "Wave Race 64: Kawasaki Jet Ski"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/n64/Wave Race 64 - Kawasaki Jet Ski (USA).z64
+    emulator_core: mupen64plus_next_libretro
+    emulator_system: N64

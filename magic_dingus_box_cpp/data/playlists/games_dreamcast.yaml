@@ -1,0 +1,124 @@
+title: "Dreamcast Classics"
+playlist_type: game
+curator: Alex Chaney
+description: "Sega Dreamcast classics"
+loop: false
+items:
+  - title: Bangai-O
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Bangai-O (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: "ChuChu Rocket!"
+    artist: ''
+    source_type: emulated_game
+    path: "data/roms/dreamcast/ChuChu Rocket! (USA) (En,Ja,Fr,De,Es).chd"
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Crazy Taxi
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Crazy Taxi (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Dead or Alive 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Dead or Alive 2 (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Grandia II
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Grandia II (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Jet Grind Radio
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Jet Grind Radio (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Marvel vs. Capcom 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Marvel vs. Capcom 2 (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Phantasy Star Online Ver. 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Phantasy Star Online Ver. 2 (USA) (En,Ja,Fr,De,Es).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Power Stone 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Power Stone 2 (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: "Rayman 2: The Great Escape"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Rayman 2 - The Great Escape (USA) (En,Fr,De,Es,It).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: "Resident Evil: Code - Veronica"
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Resident Evil - Code - Veronica (USA).m3u
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Skies of Arcadia
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Skies of Arcadia (USA).m3u
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Sonic Adventure
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Sonic Adventure (USA) (En,Ja,Fr,De,Es) (Rev A).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Sonic Adventure 2
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Sonic Adventure 2 (USA) (En,Ja,Fr,De,Es).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Soulcalibur
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Soulcalibur (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Space Channel 5
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Space Channel 5 (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
+
+  - title: Virtua Tennis
+    artist: ''
+    source_type: emulated_game
+    path: data/roms/dreamcast/Virtua Tennis (USA).chd
+    emulator_core: flycast_libretro
+    emulator_system: Dreamcast
