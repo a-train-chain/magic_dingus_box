@@ -103,4 +103,75 @@ if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
       libpugixml-dev
 fi
 
+# --- Persistent journal -------------------------------------------------------
+# Without this the box cannot explain its own reboots.
+#
+# Raspberry Pi OS deliberately ships
+# /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf with
+# `Storage=volatile`, to spare the SD card. The consequence is that the journal
+# lives entirely in /run (RAM) and every reboot erases it. Observed 2026-07-29
+# on a Pi 5 that rebooted mid-deploy: /var/log/journal existed but held 0 journal
+# files, `journalctl --disk-usage` reported 6.5 MB all under /run, and
+# `journalctl --list-boots` knew exactly one boot. There was no prior boot, no
+# shutdown reason and no watchdog history — the cause of that reboot is
+# permanently unknowable. On a unit in a customer's house that is the difference
+# between "it rebooted, here is why" and a shrug.
+#
+# We override the distro default ON PURPOSE, and mitigate the thing it was
+# protecting: the caps below bound total size (200M), per-file size (20M), file
+# count (10) and age (1 month), and journald compresses by default. A kiosk emits
+# a few MB per boot, so this buys several boots of history for a trivial amount
+# of flash wear. If SD longevity ever becomes the pressing concern, lower
+# SystemMaxUse rather than reverting to volatile — losing all history is not a
+# wear-levelling strategy.
+#
+# THE FILENAME PREFIX IS LOAD-BEARING. Drop-ins apply in lexical order and the
+# last assignment wins, so this MUST sort after 40-rpi-volatile-storage.conf.
+# A first attempt named 10-mdb-persistent.conf was silently overridden by the
+# distro file and the journal stayed in RAM — `systemd-analyze cat-config
+# systemd/journald.conf` showed Storage=persistent followed by Storage=volatile.
+# Hence 99-.
+JOURNALD_DROPIN=/etc/systemd/journald.conf.d/99-mdb-persistent.conf
+if [[ -d /etc/systemd ]]; then
+    if [[ -f "$JOURNALD_DROPIN" ]] \
+       && grep -qE '^\s*Storage\s*=\s*persistent' "$JOURNALD_DROPIN" \
+       && [[ -n "$(find /var/log/journal -name '*.journal' -print -quit 2>/dev/null)" ]]; then
+        echo "Persistent journal already configured."
+    else
+        echo "Enabling persistent journal (so reboots stay diagnosable)..."
+        # Remove the mis-ordered name an earlier version of this script wrote,
+        # so a box provisioned with it does not keep a dead file around.
+        sudo rm -f /etc/systemd/journald.conf.d/10-mdb-persistent.conf
+        sudo mkdir -p /etc/systemd/journald.conf.d
+        sudo tee "$JOURNALD_DROPIN" >/dev/null <<'JOURNALCFG'
+# Managed by Magic Dingus Box install_deps.sh — see the rationale there.
+#
+# Overrides Raspberry Pi OS's 40-rpi-volatile-storage.conf. The 99- prefix is
+# required: drop-ins load in lexical order and the last assignment wins, so a
+# lower number is silently beaten by the distro's Storage=volatile.
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+SystemMaxFileSize=20M
+SystemMaxFiles=10
+MaxRetentionSec=1month
+JOURNALCFG
+        sudo mkdir -p /var/log/journal
+        sudo systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+        sudo systemctl restart systemd-journald
+        # Move what is currently in /run onto disk so THIS boot is retained too,
+        # rather than the history starting at the next reboot.
+        sudo journalctl --flush 2>/dev/null || true
+        if [[ -n "$(find /var/log/journal -name '*.journal' -print -quit 2>/dev/null)" ]]; then
+            echo "  ✓ journal now persists across reboots"
+        else
+            echo "  ⚠ journald restarted but no on-disk journal appeared."
+            echo "    Check load order:  systemd-analyze cat-config systemd/journald.conf"
+            echo "    A later drop-in setting Storage=volatile will win over this one."
+        fi
+    fi
+else
+    echo "  ⚠ /etc/systemd not present — skipping persistent-journal setup"
+fi
+
 echo "✓ All dependencies installed!"

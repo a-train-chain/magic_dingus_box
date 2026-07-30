@@ -340,6 +340,33 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   and the borrowed-pointer contract by address.
 
 ### Fixed
+- **The box could not explain its own reboots** — Raspberry Pi OS ships
+  `/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf` with
+  `Storage=volatile` to spare the SD card, so the journal lived entirely in RAM
+  and every reboot erased it. Found the hard way: a Pi 5 rebooted mid-deploy on
+  2026-07-29 and the cause is permanently unknowable — `/var/log/journal` existed
+  but held zero journal files, `journalctl --disk-usage` reported 6.5 MB all under
+  `/run`, and `journalctl --list-boots` knew exactly one boot. No prior boot, no
+  shutdown reason, no watchdog history. On a fielded unit that is the difference
+  between "it rebooted, here's why" and a shrug.
+
+  `install_deps.sh` now installs a drop-in overriding that default, with caps that
+  mitigate the very thing it was protecting: 200M total, 20M per file, 10 files,
+  one month retention, and journald compresses by default. A kiosk emits a few MB
+  per boot, so this buys several boots of history for negligible flash wear. If SD
+  longevity ever becomes pressing, lower `SystemMaxUse` rather than reverting to
+  volatile — losing all history is not a wear-levelling strategy.
+
+  Lives in `install_deps.sh` specifically because `update.sh` re-runs it on every
+  OTA, so **already-shipped boxes self-heal** rather than only new clones getting
+  it.
+
+  **The filename prefix is load-bearing.** Drop-ins apply in lexical order and the
+  last assignment wins. The first attempt was named `10-mdb-persistent.conf` and
+  was silently beaten by the distro's `40-`; `systemd-analyze cat-config` showed
+  `Storage=persistent` followed by `Storage=volatile`. Hence `99-`. The script's
+  success check verifies an on-disk journal actually appeared rather than assuming
+  the write worked, and its failure message points at the load order.
 - **PS1 gets its second analog stick and its stick clicks** — on a
   PlayStation-style pad, PS1 ran with `core_option_pad_type = "analog"`, so
   `pcsx_rearmed` presented a DUALSHOCK to the game: two sticks, two stick
