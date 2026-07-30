@@ -224,6 +224,7 @@ TEST_CASE("PS1 core disables frame skipping and preserves native performance opt
 
     REQUIRE(config.find("pcsx_rearmed_pad1type") == std::string::npos);
     REQUIRE(config.find("pcsx_rearmed_pad2type") == std::string::npos);
+    require_line(config, "pcsx_rearmed_analog_combo = \"disabled\"");
     require_line(config, "pcsx_rearmed_spu_thread = \"enabled\"");
     require_line(config, "pcsx_rearmed_nocdaudio = \"disabled\"");
     require_line(config, "pcsx_rearmed_noxadecoding = \"disabled\"");

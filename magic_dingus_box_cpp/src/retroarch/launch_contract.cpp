@@ -653,6 +653,10 @@ void write_core_options(std::ostream& out, const std::string& core_name,
     }
     const Ps1TitleOverride* title_override = find_ps1_override(rom_path);
 
+    // This controller has no dedicated DualShock Analog button. PCSX's default
+    // L1+R1+Select toggle overlaps the former menu chord and can persist ANALOG
+    // OFF in auto-states, so keep DualShock mode under the core/game's control.
+    out << "pcsx_rearmed_analog_combo = \"disabled\"\n";
     // Offload SPU audio to a separate CPU core (Pi 4B has four cores).
     out << "pcsx_rearmed_spu_thread = \"enabled\"\n";
     // Retain CD audio and XA decoding for the complete game soundtrack.
