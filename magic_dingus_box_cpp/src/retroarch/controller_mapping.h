@@ -56,8 +56,8 @@ struct ControllerMapping {
     // Stick clicks. RetroPad L3/R3, which on a DualShock are the two
     // analog-stick buttons. Default "" like l2/r2 rather than a physical
     // index, so a core whose semantic table never binds them (every console
-    // but PS1 -- none of the others HAS a stick click) emits an honest empty
-    // value instead of whatever button happens to sit at some index.
+    // but PS1 -- none of the others HAS a stick click) keeps them unassigned
+    // in memory; write_player_binds() serializes that state as "nul".
     std::string l3_btn = "";      // L3 (Optional)
     std::string r3_btn = "";      // R3 (Optional)
 

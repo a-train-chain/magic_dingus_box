@@ -584,9 +584,9 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             // 2-5. Apply the full input_player1_* bind block (settings,
             // buttons, d-pad, analog axes, right stick, d-pad axes). See
             // write_player_binds() in controller_mapping.cpp for the exact
-            // field order and the unconditional-emission rule (empty values
-            // still write a `= ""` line — RetroArch treats that differently
-            // from an absent line).
+            // field order and the unconditional-emission rule (empty
+            // in-memory button tokens still write a line, serialized as
+            // `= "nul"` rather than omitted).
             write_player_binds(script_file, map, 1);
 
             // 5b. Player 2's own mapping, resolved above from port 1's
