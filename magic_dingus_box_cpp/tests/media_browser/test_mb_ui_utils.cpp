@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "media_browser/ui/mb_ui_utils.h"
+#include "ui/text_utf8.h"  // decode_utf8, to prove results re-decode cleanly
 #include "ui/theme.h"
 
 namespace mbu = media_browser::ui;
@@ -121,31 +122,24 @@ TEST_CASE("truncate_to_width forwards font_size to the measurer",
 }
 
 // ---------------------------------------------------------------------
-// UTF-8: these three cases encode a KNOWN BUG.
+// UTF-8 correctness.
 //
-// truncate_to_width cuts on BYTES, not codepoints (`text.substr(0, n)` with n
-// counted down one byte at a time), so it will happily slice a multi-byte
-// UTF-8 sequence in half and emit the orphaned lead bytes followed by "...".
-// On screen that is a replacement glyph or a dropped character -- mojibake.
+// truncate_to_width used to cut on BYTES (`text.substr(0, n)` with n counted
+// down one byte at a time), so it sliced multi-byte sequences in half and
+// emitted orphaned lead bytes before the "...". ui::decode_utf8 turns those
+// into U+FFFD, so on screen they render as a replacement box -- mojibake.
 //
-// This is NOT fixed here, deliberately: all six copies behaved this way, the
-// refactor's contract is behavior parity, and a UTF-8-correct cut is a
-// separate reviewed change. But the premise of merging six copies was "one
-// TESTED implementation", and until now the one defect anyone knows about was
-// the one thing no test touched.
+// The cut is now snapped back to a codepoint boundary. These cases used to
+// pin the mojibake outputs; they now pin the clean ones. Every expectation
+// below is plain arithmetic in the 10-px-per-byte measurer: the helper
+// returns `prefix + "..."` for the LONGEST prefix that both ends on a
+// codepoint boundary and keeps the total byte length <= max_w / 10.
 //
-// So these assertions pin PRESENT BEHAVIOR. They do not claim it is correct.
-// When someone makes the cut codepoint-aware, these will fail, and that is
-// their entire purpose: the failure tells the author exactly which outputs
-// changed and lets them replace mojibake expectations with clean ones on
-// purpose, instead of discovering the difference from a user.
-//
-// Budgets are in the deterministic 10-px-per-byte measurer, so every
-// expectation below is plain arithmetic: the helper returns the longest
-// `prefix + "..."` whose BYTE length is <= max_w / 10.
+// The contract that did NOT change: `<=` comparisons, and the bare "..."
+// when even a one-codepoint prefix plus the ellipsis will not fit.
 // ---------------------------------------------------------------------
 
-TEST_CASE("truncate_to_width splits an accented character (KNOWN BUG, pinned)",
+TEST_CASE("truncate_to_width never splits a 2-byte sequence",
           "[mb_ui_utils][truncate][utf8]") {
     // "Amélie Poulain" is 15 BYTES for 14 characters: "é" is U+00E9, encoded
     // as the two bytes 0xC3 0xA9. Byte layout:
@@ -154,61 +148,103 @@ TEST_CASE("truncate_to_width splits an accented character (KNOWN BUG, pinned)",
     const std::string title = "Amélie Poulain";
     REQUIRE(title.size() == 15);
 
-    // Budget 60 px = 6 bytes of output, 3 of them the ellipsis => 3 bytes of
-    // title survive: 41 6D C3. That third byte is the LEAD HALF of "é" with
-    // its continuation byte left behind -- an invalid sequence.
-    const std::string split = mbu::truncate_to_width(title, 16, 60.0f,
-                                                     measure_10px_per_byte);
-    CHECK(split == std::string("Am\xC3") + "...");
-    CHECK(split.size() == 6);
-    // Spelled out as bytes so the expectation is checkable by eye.
-    CHECK(static_cast<unsigned char>(split[2]) == 0xC3);
-    CHECK(split[3] == '.');
+    // Budget 60 px = 6 bytes of output, 3 of them the ellipsis => a 3-byte
+    // prefix would fit, but byte 3 is 0xA9, the CONTINUATION half of "é".
+    // Cutting there orphans the 0xC3 lead byte, so the cut snaps back to 2.
+    // Result is 5 bytes, one under budget -- giving a byte back is the price
+    // of not emitting an invalid sequence.
+    const std::string out = mbu::truncate_to_width(title, 16, 60.0f,
+                                                  measure_10px_per_byte);
+    CHECK(out == "Am...");
+    CHECK(out.size() == 5);
+    CHECK(measure_10px_per_byte(out, 16) <= 60.0f);
 
-    // Budget 70 px = 7 bytes => 4 bytes of title: 41 6D C3 A9. The cut lands
-    // on a codepoint boundary purely by luck, and the output is clean UTF-8.
-    // Nothing in the implementation aimed for that -- which is the point.
+    // Budget 70 px = 7 bytes => a 4-byte prefix, which already ends on a
+    // boundary (41 6D C3 A9 = "Amé"). No snapping needed, nothing given up.
     CHECK(mbu::truncate_to_width(title, 16, 70.0f, measure_10px_per_byte)
           == "Amé...");
 }
 
-TEST_CASE("truncate_to_width splits a CJK character (KNOWN BUG, pinned)",
+TEST_CASE("truncate_to_width never splits a 3-byte sequence",
           "[mb_ui_utils][truncate][utf8]") {
     // "千と千尋の神隠し" (Spirited Away) is 8 characters and 24 BYTES -- every
     // one is a 3-byte sequence. The first, 千 (U+5343), is E5 8D 83; the
-    // second, と (U+3068), is E3 81 A8.
+    // second, と (U+3068), is E3 81 A8. With 3 bytes per character, two byte
+    // offsets in three land mid-sequence, so CJK was the worst-hit case.
     const std::string title = "千と千尋の神隠し";
     REQUIRE(title.size() == 24);
 
-    // Budget 50 px = 5 bytes => 2 bytes of title: E5 8D. Two THIRDS of one
-    // character, so not one readable glyph survives -- the whole visible
-    // result is a replacement box plus the ellipsis. This is the worst case
-    // for CJK: with 3 bytes per character, two cuts in three are mid-sequence.
-    const std::string two_thirds = mbu::truncate_to_width(
-        title, 16, 50.0f, measure_10px_per_byte);
-    CHECK(two_thirds == std::string("\xE5\x8D") + "...");
-    CHECK(two_thirds.size() == 5);
+    // Budget 50 px = 5 bytes => a 2-byte prefix, which is two THIRDS of 千.
+    // There is no shorter boundary than 0, so nothing survives but the
+    // ellipsis. Correct: one replacement box was never better than nothing.
+    CHECK(mbu::truncate_to_width(title, 16, 50.0f, measure_10px_per_byte)
+          == "...");
 
-    // Budget 60 px = 6 bytes => 3 bytes: E5 8D 83, exactly 千. Clean.
-    CHECK(mbu::truncate_to_width(title, 16, 60.0f, measure_10px_per_byte)
+    // Budget 70 px = 7 bytes => a 4-byte prefix: a whole 千 plus the lone
+    // lead byte of と. Snaps back to 3 -- exactly 千.
+    CHECK(mbu::truncate_to_width(title, 16, 70.0f, measure_10px_per_byte)
           == "千...");
-
-    // Budget 70 px = 7 bytes => 4 bytes: E5 8D 83 E3 -- a complete 千 followed
-    // by the lone lead byte of と.
-    const std::string plus_one_byte = mbu::truncate_to_width(
-        title, 16, 70.0f, measure_10px_per_byte);
-    CHECK(plus_one_byte == std::string("千\xE3") + "...");
-    CHECK(plus_one_byte.size() == 7);
+    // ...and 80 px = 8 bytes (千 + two thirds of と) snaps to the same place.
+    CHECK(mbu::truncate_to_width(title, 16, 80.0f, measure_10px_per_byte)
+          == "千...");
 }
 
-TEST_CASE("truncate_to_width splits the separator glyphs the screens embed "
-          "(KNOWN BUG, pinned)",
+TEST_CASE("truncate_to_width never splits a 4-byte sequence",
+          "[mb_ui_utils][truncate][utf8]") {
+    // Emoji are the 4-byte case: 🎬 is U+1F3AC, encoded F0 9F 8E AC. Byte
+    // layout of "Alien 🎬 Extra" (16 bytes):
+    //   41 6C 69 65 6E 20 | F0 9F 8E AC | 20 45 78 74 72 61
+    //    A  l  i  e  n  _ |     🎬      |  _  E  x  t  r  a
+    const std::string title = "Alien 🎬 Extra";
+    REQUIRE(title.size() == 16);
+
+    // Budget 120 px = 12 bytes => a 9-byte prefix, which keeps THREE of the
+    // emoji's four bytes. Snaps back to 6, dropping the emoji whole.
+    const std::string out = mbu::truncate_to_width(title, 16, 120.0f,
+                                                   measure_10px_per_byte);
+    CHECK(out == "Alien ...");
+    CHECK(out.size() == 9);
+
+    // Budget 130 px = 13 bytes => a 10-byte prefix == the boundary just past
+    // the emoji, so the whole glyph survives.
+    CHECK(mbu::truncate_to_width(title, 16, 130.0f, measure_10px_per_byte)
+          == "Alien 🎬...");
+}
+
+TEST_CASE("truncate_to_width does not over-trim a cut already on a boundary",
+          "[mb_ui_utils][truncate][utf8]") {
+    // The regression guard for the obvious wrong fix. "Walk back one
+    // codepoint, then cut" is UTF-8-safe but throws away a character that
+    // fit, so a boundary-aligned budget would silently lose a glyph.
+    //
+    // Budget 60 px = 6 bytes = a 3-byte prefix, and 3 is exactly the boundary
+    // after 千. The correct answer keeps it.
+    const std::string cjk = "千と千尋の神隠し";
+    CHECK(mbu::truncate_to_width(cjk, 16, 60.0f, measure_10px_per_byte)
+          == "千...");
+    // Not the over-trimmed answer:
+    CHECK(mbu::truncate_to_width(cjk, 16, 60.0f, measure_10px_per_byte)
+          != "...");
+
+    // Same check on a 2-byte sequence: 70 px = 7 bytes = a 4-byte prefix,
+    // which is exactly the boundary after "é".
+    CHECK(mbu::truncate_to_width("Amélie Poulain", 16, 70.0f,
+                                 measure_10px_per_byte) == "Amé...");
+
+    // And on pure ASCII, where every offset is a boundary: nothing about the
+    // snapping may perturb the plain case.
+    CHECK(mbu::truncate_to_width("Blade Runner 2049", 16, 100.0f,
+                                 measure_10px_per_byte) == "Blade R...");
+}
+
+TEST_CASE("truncate_to_width keeps the separator glyphs the screens embed "
+          "intact",
           "[mb_ui_utils][truncate][utf8]") {
     // Higher exposure than movie titles, because this text is written BY the
     // screens: the metadata lines join fields with "•" (U+2022 = E2 80 A2) and
     // some labels carry "…" (U+2026 = E2 80 A6) -- same 3-byte shape, same
-    // failure. So a genre/runtime line can be mangled on a box whose library
-    // contains nothing but ASCII titles.
+    // failure. So a genre/runtime line could be mangled on a box whose
+    // library contains nothing but ASCII titles.
     //
     // "Drama • Fantasy" is 15 characters, 17 BYTES:
     //   44 72 61 6D 61 20 | E2 80 A2 | 20 46 61 6E 74 61 73 79
@@ -216,17 +252,86 @@ TEST_CASE("truncate_to_width splits the separator glyphs the screens embed "
     const std::string meta = "Drama • Fantasy";
     REQUIRE(meta.size() == 17);
 
-    // Budget 100 px = 10 bytes => 7 bytes of text: "Drama " plus E2, the lead
-    // byte of the bullet.
-    const std::string split = mbu::truncate_to_width(meta, 16, 100.0f,
-                                                     measure_10px_per_byte);
-    CHECK(split == std::string("Drama \xE2") + "...");
-    CHECK(split.size() == 10);
+    // Budget 100 px = 10 bytes => a 7-byte prefix, which keeps "Drama " plus
+    // E2, the lead byte of the bullet. Snaps back to 6.
+    CHECK(mbu::truncate_to_width(meta, 16, 100.0f, measure_10px_per_byte)
+          == "Drama ...");
 
-    // One byte less of budget (90 px = 9 bytes) stops just short of the bullet
-    // and is clean, trailing space and all: "Drama ...".
+    // 90 px = 9 bytes stops just short of the bullet on its own, so both
+    // budgets now render the same clean string instead of one of them
+    // flipping to a replacement box.
     CHECK(mbu::truncate_to_width(meta, 16, 90.0f, measure_10px_per_byte)
           == "Drama ...");
+
+    // 120 px = 12 bytes => a 9-byte prefix == the boundary past the bullet.
+    CHECK(mbu::truncate_to_width(meta, 16, 120.0f, measure_10px_per_byte)
+          == "Drama •...");
+}
+
+TEST_CASE("truncate_to_width emits no orphaned bytes at any budget",
+          "[mb_ui_utils][truncate][utf8]") {
+    // Sweeps every budget from 0 to well past the full width and re-decodes
+    // each result, asserting no U+FFFD comes back. This is the property the
+    // three per-width cases above sample: the old implementation failed it at
+    // 20 of the 30 budgets below, and no hand-picked expectation set can
+    // prove absence of mojibake the way a sweep can.
+    const std::vector<std::string> subjects = {
+        "Amélie Poulain",   // 2-byte
+        "千と千尋の神隠し",   // 3-byte, every character
+        "Alien 🎬 Extra",   // 4-byte
+        "Drama • Fantasy",  // 3-byte separator mid-string
+        "Léon: The Professional",
+        "Blade Runner 2049",  // pure ASCII control
+    };
+
+    for (const std::string& subject : subjects) {
+        for (int budget_bytes = 0; budget_bytes <= 30; ++budget_bytes) {
+            const std::string out = mbu::truncate_to_width(
+                subject, 16, 10.0f * static_cast<float>(budget_bytes),
+                measure_10px_per_byte);
+
+            std::size_t pos = 0;
+            while (pos < out.size()) {
+                const std::size_t before = pos;
+                const char32_t cp = ::ui::decode_utf8(out, pos);
+                INFO("subject=" << subject << " budget_bytes=" << budget_bytes
+                     << " out=" << out << " byte_offset=" << before);
+                CHECK(cp != 0xFFFD);
+                REQUIRE(pos > before);  // decoder must always advance
+            }
+        }
+    }
+}
+
+TEST_CASE("truncate_to_width binary-searches instead of scanning byte by byte",
+          "[mb_ui_utils][truncate][perf]") {
+    // The header called the linear scan out as the real cost: one measure()
+    // per byte, and measure() is a font/GL round-trip on the kiosk, so a long
+    // synopsis burned hundreds of them per frame. The search over codepoint
+    // boundaries is O(log n) in measure() calls.
+    //
+    // Counting calls is the only way to assert this -- the return value is
+    // identical either way, so a regression to the linear scan would be
+    // invisible to every other test in this file.
+    int calls = 0;
+    auto counting_measure = [&calls](const std::string& s, int) -> float {
+        ++calls;
+        return 10.0f * static_cast<float>(s.size());
+    };
+
+    const std::string synopsis(1000, 'x');
+
+    calls = 0;
+    const std::string out = mbu::truncate_to_width(synopsis, 16, 500.0f,
+                                                   counting_measure);
+    REQUIRE(out.size() == 50);  // 47 bytes of text + "..."
+    // 1 fits-check + ~log2(1000) probes. The old scan took ~951.
+    CHECK(calls <= 20);
+
+    // A string that fits costs exactly one call, unchanged from before.
+    calls = 0;
+    mbu::truncate_to_width(synopsis, 16, 100000.0f, counting_measure);
+    CHECK(calls == 1);
 }
 
 // =====================================================================

@@ -6,6 +6,7 @@
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
+#include "ui/text_utf8.h"
 #include "ui/theme.h"
 
 #include <algorithm>
@@ -101,7 +102,7 @@ void cap_lines(::ui::Renderer& r, std::vector<std::string>& lines,
     if (lines.empty()) return;
     auto& last = lines.back();
     while (!last.empty() && r.mb_text_width(last + "...", font_size) > max_w) {
-        last.pop_back();
+        ::ui::utf8_pop_back(last);
     }
     last += "...";
 }
@@ -289,13 +290,13 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
         std::string title_drawn = meta_.title;
         while (!title_drawn.empty() &&
                r.mb_title_text_width(title_drawn, sz) > col_w) {
-            title_drawn.pop_back();
+            ::ui::utf8_pop_back(title_drawn);
         }
         if (title_drawn.size() < meta_.title.size() && !title_drawn.empty()) {
             // Back off 3 chars for "..." suffix.
             while (title_drawn.size() >= 3 &&
                    r.mb_title_text_width(title_drawn + "...", sz) > col_w) {
-                title_drawn.pop_back();
+                ::ui::utf8_pop_back(title_drawn);
             }
             title_drawn += "...";
         }
@@ -394,14 +395,14 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float max_cast_w = static_cast<float>(col_w - label_w);
         while (!cast_str.empty() &&
                r.mb_text_width(cast_str, sz) > static_cast<int>(max_cast_w)) {
-            cast_str.pop_back();
+            ::ui::utf8_pop_back(cast_str);
         }
         if (!cast_str.empty() &&
             cast_str.size() < meta_.cast[0].size() + 2) {
             // Fell back too far — show truncated with ...
             while (cast_str.size() > 3 &&
                    r.mb_text_width(cast_str + "...", sz) > static_cast<int>(max_cast_w)) {
-                cast_str.pop_back();
+                ::ui::utf8_pop_back(cast_str);
             }
             cast_str += "...";
         }
@@ -425,7 +426,7 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
         std::string dir = meta_.director;
         float max_dir_w = static_cast<float>(col_w - label_w);
         while (!dir.empty() && r.mb_text_width(dir, sz) > static_cast<int>(max_dir_w)) {
-            dir.pop_back();
+            ::ui::utf8_pop_back(dir);
         }
         r.mb_draw_text(dir,
                        static_cast<float>(col_x + label_w), cursor_y,
@@ -535,7 +536,7 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     std::string candidate = title;
                     while (!candidate.empty() &&
                            r.mb_text_width(candidate + "...", kMetaFontPx) > static_cast<int>(max_w_f)) {
-                        candidate.pop_back();
+                        ::ui::utf8_pop_back(candidate);
                     }
                     line1 = candidate.empty() ? title : (candidate + "...");
                 } else {
@@ -547,7 +548,7 @@ void PlaybackOverlay::render(::ui::Renderer& r, int screen_w, int screen_h) {
                         std::string candidate = rem;
                         while (!candidate.empty() &&
                                r.mb_text_width(candidate + "...", kMetaFontPx) > static_cast<int>(max_w_f)) {
-                            candidate.pop_back();
+                            ::ui::utf8_pop_back(candidate);
                         }
                         line2 = candidate.empty() ? rem : (candidate + "...");
                     }

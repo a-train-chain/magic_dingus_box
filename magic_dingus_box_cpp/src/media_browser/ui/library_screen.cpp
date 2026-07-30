@@ -4,6 +4,7 @@
 #include <cstdio>
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_ui_utils.h"
+#include "ui/text_utf8.h"
 
 #include <algorithm>
 #include <chrono>
@@ -813,7 +814,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     while (!candidate.empty()
                            && r.mb_text_width(candidate + "...", kMetaFontPx)
                               > max_w_f) {
-                        candidate.pop_back();
+                        ::ui::utf8_pop_back(candidate);
                     }
                     line1 = candidate.empty() ? title : (candidate + "...");
                 } else {
@@ -826,7 +827,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                         while (!candidate.empty()
                                && r.mb_text_width(candidate + "...", kMetaFontPx)
                                   > max_w_f) {
-                            candidate.pop_back();
+                            ::ui::utf8_pop_back(candidate);
                         }
                         line2 = candidate.empty() ? rem : (candidate + "...");
                     }

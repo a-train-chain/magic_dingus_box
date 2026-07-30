@@ -54,23 +54,51 @@ using TextMeasureFn = std::function<float(const std::string& text,
 // Shortens `text` so it fits `max_w` pixels at `font_size`, appending "..."
 // when it has to cut.
 //
-// Behavior is preserved verbatim from the six copies this replaces, including
-// the edge cases:
+// Contract, carried over unchanged from the six copies this replaces:
 //   - text that already fits (measured <=, not <) is returned untouched;
 //   - when even a single character plus the ellipsis will not fit, the bare
 //     "..." is returned -- which does NOT itself fit, and the caller draws it
 //     anyway. Callers rely on always getting something back.
 //
-// Known limitations, preserved deliberately rather than fixed here (changing
-// them would be a behavior change, not a refactor):
-//   - the scan is linear and calls `measure` once per byte, so a long synopsis
-//     costs hundreds of text-width calls per frame where a binary search over
-//     the monotonic width would cost ~10;
-//   - the first probe is always wasted: it appends the ellipsis to the FULL
-//     string, which is by definition wider than the string that just failed;
-//   - the cut is by BYTE, so a multi-byte UTF-8 sequence can be split, leaving
-//     an invalid trailing byte before the "...". Movie titles with accents and
-//     the "…"/"•" glyphs the screens embed are exposed to this.
+// The cut lands on a UTF-8 CODEPOINT BOUNDARY. It used to be a raw byte cut,
+// which split multi-byte sequences and left an orphaned lead byte before the
+// "..."; ui::decode_utf8 turns that into U+FFFD, so the kiosk drew a
+// replacement box. Accented titles ("Amélie", "Léon: The Professional"), CJK
+// ("千と千尋の神隠し") and the "…"/"•" glyphs the screens themselves embed in
+// composed metadata lines were all exposed, and truncation is the common case
+// in the poster grid. Snapping back to a boundary gives up whatever partial
+// sequence the byte budget landed in -- up to 3 bytes for a 4-byte emoji,
+// which is why a tight budget on CJK can now come back as the bare "..."
+// where it used to come back as one replacement box. That is the trade, and
+// it is the right way round. `ui::utf8_floor_boundary` in ui/text_utf8.h is
+// the primitive; anything else that shrinks a string to a pixel budget must
+// use it too.
+//
+// ASSUMPTION -- rendered width is non-decreasing in prefix length. This is
+// what licenses the binary search over boundaries (and lets the full-string
+// probe be skipped, since the full string already failed). It holds for the
+// left-to-right text the kiosk renders, where each glyph adds a non-negative
+// advance. It would NOT hold under a shaper that applies negative kerning or
+// RTL reordering across a cut; the kiosk has no shaping engine, so this is
+// safe today and is the first thing to revisit if one is ever added.
+//
+// SCOPE -- boundaries are codepoints, NOT grapheme clusters. A combining
+// accent (U+0065 U+0301) or an emoji ZWJ sequence can still be cut between
+// its codepoints. Deliberate, on two grounds: full segmentation needs the
+// UAX #29 property tables, which is a real dependency for a kiosk whose whole
+// text stack is stb_truetype; and ui/font_manager.cpp already draws one glyph
+// per codepoint with no cluster composition, so a combining mark renders as a
+// separate spacing glyph whether or not it is cut. Cutting mid-cluster is
+// therefore no worse on screen than cutting anywhere else, while cutting
+// mid-codepoint produced an actual replacement box. The invalid-UTF-8 class of
+// failure is gone; cluster fidelity only starts to pay once the font stack can
+// compose clusters at all.
+//
+// COST -- O(log n) `measure` calls (a font/GL round-trip each on the kiosk),
+// down from one per byte: a 1000-byte synopsis went from ~950 calls per frame
+// to ~11, pinned by a call-counting test. Finding the boundaries is still one
+// O(n) pass over the bytes, but that is plain pointer arithmetic, not text
+// measurement.
 std::string truncate_to_width(const std::string& text, int font_size,
                               float max_w, const TextMeasureFn& measure);
 

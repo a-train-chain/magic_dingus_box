@@ -15,6 +15,7 @@
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_ui_utils.h"
+#include "ui/text_utf8.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
@@ -186,7 +187,7 @@ void truncate_wrapped(::ui::Renderer& r, std::vector<std::string>& lines,
     std::string& last = lines.back();
     while (!last.empty() &&
            r.mb_text_width(last + "...", font_size) > max_w) {
-        last.pop_back();
+        ::ui::utf8_pop_back(last);
     }
     last += "...";
 }
