@@ -344,6 +344,40 @@ TEST_CASE("N64 core leaves the 8MB Expansion Pak enabled",
     require_line(output.str(), "mupen64plus-ForceDisableExtraMem = \"False\"");
 }
 
+TEST_CASE("N64 core gives the C-buttons their own slots",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "mupen64plus_next_libretro",
+                                  "data/roms/n64/Super Mario 64 (USA).z64");
+    // With alt-map off, mupen64plus-next OVERLAYS the C-buttons onto the A/B
+    // slots -- visible in the core's own input descriptors, which read
+    // "A Button (C3)" and "B Button (C2)" instead of plain "A Button" /
+    // "B Button". One RetroPad slot then serves two N64 controls and the
+    // C-button behaviour wins.
+    //
+    // Observed on hardware 2026-07-29 with a third-party SHANWAN pad
+    // (2563:0526) in Super Mario 64: the button bound to RetroPad B zoomed the
+    // camera (acting as C2) instead of jumping, and NO button on the pad
+    // produced a jump at all. RetroArch's Port 1 Controls screen reported the
+    // binding as correct throughout, because at the RetroPad layer it was --
+    // the collision is inside the core, one layer below.
+    //
+    // The core's own description of this option is "useful for some 3rdparty
+    // controllers", which is exactly the case. Every pad and every N64 title
+    // depends on it, so it is pinned rather than left to the core default.
+    require_line(output.str(), "mupen64plus-alt-map = \"True\"");
+}
+
+TEST_CASE("the backup N64 core also gets independent C-buttons",
+          "[retroarch][core-options][n64]") {
+    std::ostringstream output;
+    retroarch::write_core_options(output, "parallel_n64_libretro",
+                                  "data/roms/n64/Super Mario 64 (USA).z64");
+    // Both N64 cores are reachable from the kiosk, so a pad that works on one
+    // must not silently break on the other.
+    require_line(output.str(), "mupen64plus-alt-map = \"True\"");
+}
+
 TEST_CASE("N64 renders at a Pi-5-safe internal resolution",
           "[retroarch][core-options][n64]") {
     std::ostringstream output;

@@ -466,6 +466,24 @@ void write_n64_core_options(std::ostream& out, const std::string& core_name,
     // without it and Perfect Dark loses most of its content, so extra
     // memory must stay available. ("False" = do not force-disable.)
     out << "mupen64plus-ForceDisableExtraMem = \"False\"\n";
+    // INDEPENDENT C-BUTTON CONTROLS. The core calls this "alt-map" and
+    // describes it as "useful for some 3rdparty controllers"; leaving it off
+    // is why a third-party pad could not jump in Super Mario 64.
+    //
+    // With alt-map off, mupen64plus-next OVERLAYS the four C-buttons onto the
+    // A/B slots -- which is what the core's own input descriptors are saying
+    // when they read "A Button (C3)" and "B Button (C2)" rather than plain
+    // "A Button"/"B Button". A RetroPad slot then does double duty, and the
+    // C-button behaviour wins. Observed on hardware 2026-07-29 with a SHANWAN
+    // pad (2563:0526): the button bound to RetroPad B zoomed the camera out
+    // (acting as C2) instead of jumping, and NO button on the pad produced a
+    // jump at all. RetroArch's own Port 1 Controls screen showed the binding
+    // as correct the whole time, because at the RetroPad layer it was.
+    //
+    // Turning it on gives the C-buttons their own slots, so A and B mean A and
+    // B. This is a CORE-level fix: it applies to every N64 game and every pad,
+    // and it is why the mapping tables looked right while the game did not.
+    out << "mupen64plus-alt-map = \"True\"\n";
     // 2x native (the N64 renders at 320x240). The kiosk scales this into
     // its 4:3 viewport regardless, and N64 is the thermally sensitive tier
     // on this board — internal resolution is the first thing to give back
