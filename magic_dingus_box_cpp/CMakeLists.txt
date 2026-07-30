@@ -476,8 +476,22 @@ if(ENABLE_MEDIA_BROWSER)
         pthread
     )
     target_compile_options(test_media_browser_unit PRIVATE -Wall -Wextra)
+    add_test(NAME MediaBrowserUnit COMMAND test_media_browser_unit)
 
     # --- test_media_browser CLI ---
+    #
+    # NOT registered with add_test, and must not be: despite the name this is
+    # not a test binary. It is a subcommand-driven CLI for exercising the
+    # subsystems by hand on real hardware ("test_media_browser tmdb-search
+    # alien"). Invoked bare it prints help and returns 2, so a naive
+    # add_test() would add a permanently failing test; every real subcommand
+    # needs API keys from the environment plus a live TMDB / Radarr /
+    # libtorrent stack, which no test run has. Live scaffolding, not dead
+    # code — keep building it, just never through ctest.
+    #
+    # Its name is also why the missing MediaBrowserUnit registration above
+    # went unnoticed: two similarly-named targets, one of which genuinely
+    # should not be a ctest entry.
     add_executable(test_media_browser
         src/media_browser/test_cli/main.cpp
         ${MEDIA_BROWSER_SOURCES}
