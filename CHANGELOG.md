@@ -252,13 +252,20 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   same shape as the "Recently added" bug below: two copies of one
   function drift, the one missing a check silently breaks something, and
   no test can see either because both live in translation units that
-  only compile into the kiosk binary — they name `ui::Renderer`,
-  `Renderer` pulls in GLES, and GLES exists in no test target. They are
+  name `ui::Renderer` — `Renderer` pulls in GLES, GLES exists in no test
+  target, so the whole TU cannot compile outside the kiosk binary — and
+  because each copy sat in an anonymous namespace with no external
+  linkage to reach it by. Only the truncator names a `Renderer` itself;
+  the tint, the two easings and the byte formatter are pure and name
+  nothing, and were untestable purely by association with the file they
+  happened to live in. They are
   now one implementation each in `media_browser/ui/mb_ui_utils.{h,cpp}`,
   which deliberately names no `Renderer` — that is what makes them the
-  first UI helpers in this directory with actual unit tests (18 cases
-  pinning the exact tint RGB for specific ids, every unit boundary, and
-  the truncator's edge cases). The ~20 existing `truncate_to_width` call
+  first UI helpers in this directory with actual unit tests (20 cases
+  pinning the exact tint RGB for specific ids, every unit boundary, the
+  truncator's edge cases, and — as present behavior, not as correct
+  behavior — the mojibake the truncator emits when its byte-wise cut
+  lands inside a multi-byte UTF-8 sequence). The ~20 existing `truncate_to_width` call
   sites are untouched: a one-line forwarding overload in `mb_chrome`
   carries their exact signature.
 
@@ -268,6 +275,17 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   so Library's "N titles · X used · Y free" line and the same readout in
   its slide-in overlay now say **`500 MB` where they said `500.0 MB`**.
   Queue and the release picker are unchanged.
+
+  Library's copy actually moved the decimal in *both* directions, and the
+  other direction is the opposite of "always printed one": below 1024 B
+  it short-circuited to `std::to_string(bytes) + " B"`, so it printed
+  **no** decimal at all — `99 B`, `1 B` — where the shared helper now
+  says `99.0 B`, `1.0 B` (and `-5 B` becomes `0 B`). Unreachable in
+  practice rather than a risk worth weighing: Library's two inputs are
+  `std::filesystem::space().available` (0, or ≥ 4096 on ext4) and a sum
+  of movie `file_size_bytes`, and neither lands in the 1–99 byte window
+  or goes negative. Noted because the majority rule was applied here
+  too, not special-cased.
 
   The formatter's `<= 0` behavior was deliberately **not** unified. The
   three copies rendered it as `"0 B"`, `"?"` and a plain integer, and

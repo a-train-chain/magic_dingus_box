@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -36,10 +37,6 @@ float measure_10px_per_byte(const std::string& s, int /*font_size*/) {
 // forwarded to the measurer rather than swallowed.
 float measure_size_scaled(const std::string& s, int font_size) {
     return static_cast<float>(font_size) * static_cast<float>(s.size());
-}
-
-bool same_color(const ::ui::Color& a, const ::ui::Color& b) {
-    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
 }
 
 }  // namespace
@@ -123,16 +120,118 @@ TEST_CASE("truncate_to_width forwards font_size to the measurer",
             == "Me...");
 }
 
+// ---------------------------------------------------------------------
+// UTF-8: these three cases encode a KNOWN BUG.
+//
+// truncate_to_width cuts on BYTES, not codepoints (`text.substr(0, n)` with n
+// counted down one byte at a time), so it will happily slice a multi-byte
+// UTF-8 sequence in half and emit the orphaned lead bytes followed by "...".
+// On screen that is a replacement glyph or a dropped character -- mojibake.
+//
+// This is NOT fixed here, deliberately: all six copies behaved this way, the
+// refactor's contract is behavior parity, and a UTF-8-correct cut is a
+// separate reviewed change. But the premise of merging six copies was "one
+// TESTED implementation", and until now the one defect anyone knows about was
+// the one thing no test touched.
+//
+// So these assertions pin PRESENT BEHAVIOR. They do not claim it is correct.
+// When someone makes the cut codepoint-aware, these will fail, and that is
+// their entire purpose: the failure tells the author exactly which outputs
+// changed and lets them replace mojibake expectations with clean ones on
+// purpose, instead of discovering the difference from a user.
+//
+// Budgets are in the deterministic 10-px-per-byte measurer, so every
+// expectation below is plain arithmetic: the helper returns the longest
+// `prefix + "..."` whose BYTE length is <= max_w / 10.
+// ---------------------------------------------------------------------
+
+TEST_CASE("truncate_to_width splits an accented character (KNOWN BUG, pinned)",
+          "[mb_ui_utils][truncate][utf8]") {
+    // "Amélie Poulain" is 15 BYTES for 14 characters: "é" is U+00E9, encoded
+    // as the two bytes 0xC3 0xA9. Byte layout:
+    //   41 6D | C3 A9 | 6C 69 65 20 50 6F 75 6C 61 69 6E
+    //    A  m |   é    |  l  i  e  _  P  o  u  l  a  i  n
+    const std::string title = "Amélie Poulain";
+    REQUIRE(title.size() == 15);
+
+    // Budget 60 px = 6 bytes of output, 3 of them the ellipsis => 3 bytes of
+    // title survive: 41 6D C3. That third byte is the LEAD HALF of "é" with
+    // its continuation byte left behind -- an invalid sequence.
+    const std::string split = mbu::truncate_to_width(title, 16, 60.0f,
+                                                     measure_10px_per_byte);
+    CHECK(split == std::string("Am\xC3") + "...");
+    CHECK(split.size() == 6);
+    // Spelled out as bytes so the expectation is checkable by eye.
+    CHECK(static_cast<unsigned char>(split[2]) == 0xC3);
+    CHECK(split[3] == '.');
+
+    // Budget 70 px = 7 bytes => 4 bytes of title: 41 6D C3 A9. The cut lands
+    // on a codepoint boundary purely by luck, and the output is clean UTF-8.
+    // Nothing in the implementation aimed for that -- which is the point.
+    CHECK(mbu::truncate_to_width(title, 16, 70.0f, measure_10px_per_byte)
+          == "Amé...");
+}
+
+TEST_CASE("truncate_to_width splits a CJK character (KNOWN BUG, pinned)",
+          "[mb_ui_utils][truncate][utf8]") {
+    // "千と千尋の神隠し" (Spirited Away) is 8 characters and 24 BYTES -- every
+    // one is a 3-byte sequence. The first, 千 (U+5343), is E5 8D 83; the
+    // second, と (U+3068), is E3 81 A8.
+    const std::string title = "千と千尋の神隠し";
+    REQUIRE(title.size() == 24);
+
+    // Budget 50 px = 5 bytes => 2 bytes of title: E5 8D. Two THIRDS of one
+    // character, so not one readable glyph survives -- the whole visible
+    // result is a replacement box plus the ellipsis. This is the worst case
+    // for CJK: with 3 bytes per character, two cuts in three are mid-sequence.
+    const std::string two_thirds = mbu::truncate_to_width(
+        title, 16, 50.0f, measure_10px_per_byte);
+    CHECK(two_thirds == std::string("\xE5\x8D") + "...");
+    CHECK(two_thirds.size() == 5);
+
+    // Budget 60 px = 6 bytes => 3 bytes: E5 8D 83, exactly 千. Clean.
+    CHECK(mbu::truncate_to_width(title, 16, 60.0f, measure_10px_per_byte)
+          == "千...");
+
+    // Budget 70 px = 7 bytes => 4 bytes: E5 8D 83 E3 -- a complete 千 followed
+    // by the lone lead byte of と.
+    const std::string plus_one_byte = mbu::truncate_to_width(
+        title, 16, 70.0f, measure_10px_per_byte);
+    CHECK(plus_one_byte == std::string("千\xE3") + "...");
+    CHECK(plus_one_byte.size() == 7);
+}
+
+TEST_CASE("truncate_to_width splits the separator glyphs the screens embed "
+          "(KNOWN BUG, pinned)",
+          "[mb_ui_utils][truncate][utf8]") {
+    // Higher exposure than movie titles, because this text is written BY the
+    // screens: the metadata lines join fields with "•" (U+2022 = E2 80 A2) and
+    // some labels carry "…" (U+2026 = E2 80 A6) -- same 3-byte shape, same
+    // failure. So a genre/runtime line can be mangled on a box whose library
+    // contains nothing but ASCII titles.
+    //
+    // "Drama • Fantasy" is 15 characters, 17 BYTES:
+    //   44 72 61 6D 61 20 | E2 80 A2 | 20 46 61 6E 74 61 73 79
+    //    D  r  a  m  a  _ |    •     |  _  F  a  n  t  a  s  y
+    const std::string meta = "Drama • Fantasy";
+    REQUIRE(meta.size() == 17);
+
+    // Budget 100 px = 10 bytes => 7 bytes of text: "Drama " plus E2, the lead
+    // byte of the bullet.
+    const std::string split = mbu::truncate_to_width(meta, 16, 100.0f,
+                                                     measure_10px_per_byte);
+    CHECK(split == std::string("Drama \xE2") + "...");
+    CHECK(split.size() == 10);
+
+    // One byte less of budget (90 px = 9 bytes) stops just short of the bullet
+    // and is clean, trailing space and all: "Drama ...".
+    CHECK(mbu::truncate_to_width(meta, 16, 90.0f, measure_10px_per_byte)
+          == "Drama ...");
+}
+
 // =====================================================================
 // stable_tint_for_id
 // =====================================================================
-
-TEST_CASE("stable_tint_for_id is deterministic", "[mb_ui_utils][tint]") {
-    for (int id : {0, 1, 550, 27205, 123456, -1}) {
-        REQUIRE(same_color(mbu::stable_tint_for_id(id),
-                           mbu::stable_tint_for_id(id)));
-    }
-}
 
 TEST_CASE("stable_tint_for_id pins the exact hash output",
           "[mb_ui_utils][tint]") {
@@ -171,8 +270,24 @@ TEST_CASE("stable_tint_for_id stays inside the palette's channel ranges",
     // The bases + masks are chosen so the tint is always a mid-dark,
     // slightly purple-leaning placeholder -- never black, never a blown-out
     // white that would swallow the title text drawn on top of it.
-    for (int id = -200; id <= 200; ++id) {
+    //
+    // STRUCTURAL BACKSTOP ONLY. The pinned-value test above is the primary
+    // guard -- it catches any change to a base, shift or mask exactly, and it
+    // names the wrong value when it fails. What this adds is coverage of the
+    // *claim* (bounded, opaque) rather than of specific outputs, which is why
+    // a handful of representative ids is the right size: the bounds follow
+    // structurally from `base + (h >> k) & mask`, so id 137 tells you nothing
+    // that id 136 did not. It used to sweep -200..200, which was 2807
+    // assertions -- 87% of this file -- restating the same six inequalities
+    // and one alpha literal 401 times over.
+    const int ids[] = {
+        0, 1, -1, 2, -2, 7, 42, 550, -550, 27205, 123456, -123456, 65536,
+        1000000007,
+        std::numeric_limits<int>::max(), std::numeric_limits<int>::min(),
+    };
+    for (int id : ids) {
         const ::ui::Color c = mbu::stable_tint_for_id(id);
+        INFO("id = " << id);
         CHECK(c.r >= 64);
         CHECK(c.r <= 64 + 0x7F);
         CHECK(c.g >= 40);
@@ -228,8 +343,15 @@ TEST_CASE("easing curves are monotonic across the unit interval",
         const float in = mbu::ease_in_cubic(t);
         const float out = mbu::ease_out_cubic(t);
         INFO("t = " << t);
-        CHECK(in >= prev_in);
-        CHECK(out >= prev_out);
+        // STRICTLY greater, not >=. Both t^3 and 1-(1-t)^3 are strictly
+        // increasing, and at a 1/100 step every neighbouring pair is separated
+        // by far more than one float ulp -- the tightest gap is at the flat end
+        // of each curve (ease_out at t = 0.99 -> 1.00 differs by ~1e-6 against
+        // an ulp of ~1.2e-7, roughly 8 ulp of headroom). So `>` holds, and it
+        // is the assertion that actually has teeth: `>=` would sit there
+        // green while a curve flat-lined into a constant.
+        CHECK(in > prev_in);
+        CHECK(out > prev_out);
         prev_in = in;
         prev_out = out;
     }

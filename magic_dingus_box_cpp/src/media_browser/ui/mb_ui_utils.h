@@ -2,12 +2,14 @@
 
 // Pure helpers shared by every Marquee (Media Browser) screen.
 //
-// These four functions each existed as six or seven byte-similar copies in the
-// screens' anonymous namespaces. That is how the "recently added" filter bug
-// happened: two copies of one formatter drifted, the copy with the missing
-// error check silently turned a date filter into a pass-everything filter, and
-// no test could see either copy because both lived in translation units that
-// only compile into the kiosk binary.
+// Every one of these existed as byte-similar copies in the screens' anonymous
+// namespaces: truncate_to_width SIX times, the tint SIX (under three different
+// names -- poster_tint_for_tmdb, library_tint_for_tmdb, tint_for_queue_id),
+// ease_in_cubic and ease_out_cubic TWO each, and format_bytes THREE. That is
+// how the "recently added" filter bug happened: two copies of one formatter
+// drifted, the copy with the missing error check silently turned a date filter
+// into a pass-everything filter, and no test could see either copy because
+// both lived in translation units that only compile into the kiosk binary.
 //
 // Nothing here touches ::ui::Renderer. That is the whole point -- Renderer
 // pulls in GLES, which does not exist on the mac dev box or in any test
@@ -19,6 +21,21 @@
 // ui/theme.h is safe to include from a test target: it declares ui::Color as
 // four uint8_t channels over <cstdint> and <string> only, with inline
 // constructors, so it neither drags in GL nor adds a link dependency.
+//
+// ============================ READ THIS FIRST ============================
+// DO NOT RE-DECLARE ANY OF THESE NAMES IN A SCREEN'S ANONYMOUS NAMESPACE.
+//
+// All five went from internal linkage (each screen's anonymous namespace) to
+// external linkage in media_browser::ui. A screen that declares its own
+// `format_bytes` or `ease_in_cubic` in its anonymous namespace SILENTLY WINS
+// unqualified lookup at every call site in that file: the local declaration is
+// found first, name lookup stops, and the shared definition is never
+// considered. There is no warning and no link error, because both symbols are
+// legitimate and only one is ever referenced -- so the exact drift class this
+// header exists to eliminate comes right back, quietly, in one file. If a
+// screen genuinely needs different behavior, give it a different NAME, or
+// extend the shared helper here and test the extension.
+// =========================================================================
 
 #include <cstdint>
 #include <functional>
@@ -88,6 +105,20 @@ float ease_out_cubic(float t);
 // drift. Unifying them would destroy information, so every caller keeps its
 // own `<= 0` branch at the call site and must not rely on what this returns
 // there. For safety it is defined rather than undefined: `<= 0` yields "0 B".
+//
+// FOLLOW-UPS, recorded here rather than done (each is a separate change):
+//   - mb_settings_screen.cpp's `format_gb_short` is a FIFTH copy of the same
+//     `>= 100 ? "%.0f" : "%.1f"` rounding idiom, just hard-wired to GB for the
+//     Storage row's "FREE: 124 GB" readout. It is the next consolidation
+//     candidate -- most likely as a thin GB-only wrapper over this, since its
+//     `<= 0` string ("0 GB") is its own caller-level decision in exactly the
+//     way described above.
+//   - there is NO TB unit, so a 2 TB library drive reads as "1863 GB"
+//     (2e12 / 1024^3 = 1862.6, rounded by the >= 100 rule). That is faithful
+//     to all three copies this replaces and is pinned by an existing test
+//     (1 TiB -> "1024 GB"), so it is deliberate, not an oversight. Adding a
+//     TB branch is a two-line change plus that test's expectation if drive
+//     sizes ever make it worth doing.
 std::string format_bytes(int64_t bytes);
 
 }  // namespace media_browser::ui
