@@ -145,20 +145,70 @@ TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
     }
 }
 
-TEST_CASE("Dreamcast is playable on the N64 adapter",
-          "[retroarch][mapping][dreamcast]") {
-    const auto map = get_mapping(ControllerType::N64_ADAPTER,
-                                 "flycast_libretro");
+TEST_CASE("N64 adapter uses the role-consistent Dreamcast layout",
+          "[retroarch][mapping][dreamcast][n64_style]") {
+    const auto map =
+        get_mapping(ControllerType::N64_ADAPTER, "flycast_libretro");
 
-    REQUIRE(map.b_btn == "2");   // physical A -> DC A
-    REQUIRE(map.a_btn == "1");   // physical B -> DC B
-    REQUIRE(map.y_btn == "0");   // C-Left    -> DC X
-    REQUIRE(map.x_btn == "3");   // C-Down    -> DC Y
-    // The DC's analog triggers land on the only shoulders this pad has.
-    REQUIRE(map.l2_btn == "4");
-    REQUIRE(map.r2_btn == "5");
-    REQUIRE(map.start_btn == "12");
-    REQUIRE(map.enable_hotkey_btn == "6");
+    CHECK(map.name == "Dreamcast (N64 pad)");
+    CHECK(map.analog_dpad_mode == "0");
+    CHECK(map.b_btn == "2");       // N64 A      -> DC A
+    CHECK(map.y_btn == "1");       // N64 B      -> DC X
+    CHECK(map.x_btn == "0");       // C-Left     -> DC Y
+    CHECK(map.a_btn == "3");       // C-Down     -> DC B
+    CHECK(map.l2_btn == "4");      // L          -> left trigger
+    CHECK(map.r2_btn == "5");      // R          -> right trigger
+    CHECK(map.start_btn == "12");
+
+    CHECK(map.select_btn.empty());
+    CHECK(map.l_btn.empty());
+    CHECK(map.r_btn.empty());
+    CHECK(map.l3_btn.empty());
+    CHECK(map.r3_btn.empty());
+    CHECK(map.r_x_plus.empty());
+    CHECK(map.r_x_plus_btn.empty());
+    CHECK(map.up_axis.empty());
+    CHECK(map.down_axis.empty());
+    CHECK(map.left_axis.empty());
+    CHECK(map.right_axis.empty());
+
+    CHECK(map.up_btn == "h0up");
+    CHECK(map.down_btn == "h0down");
+    CHECK(map.left_btn == "h0left");
+    CHECK(map.right_btn == "h0right");
+    CHECK(map.l_x_plus == "+0");
+    CHECK(map.l_x_minus == "-0");
+    CHECK(map.l_y_plus == "+1");
+    CHECK(map.l_y_minus == "-1");
+
+    CHECK(map.enable_hotkey_btn == "6");
+    CHECK(map.menu_toggle_btn == "12");
+
+    for (int player : {1, 2}) {
+        INFO("player=" << player);
+        std::ostringstream out;
+        retroarch::write_player_binds(out, map, player);
+        const std::string cfg = out.str();
+        const std::string p =
+            "input_player" + std::to_string(player) + "_";
+
+        CHECK(cfg.find(p + "b_btn = \"2\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "y_btn = \"1\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "select_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "start_btn = \"12\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "a_btn = \"3\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "x_btn = \"0\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l2_btn = \"4\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r2_btn = \"5\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "l3_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r3_btn = \"nul\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "up_axis = \"\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "down_axis = \"\"\n") != std::string::npos);
+        CHECK(cfg.find(p + "r_x_") == std::string::npos);
+        CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
+    }
 }
 
 TEST_CASE("PS-style pads use the universal N64 layout",

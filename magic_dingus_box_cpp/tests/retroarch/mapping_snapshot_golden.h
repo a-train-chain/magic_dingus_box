@@ -113,7 +113,7 @@ hotkeys=6,12,
 extra=)GOLD"},
 {"N64|flycast_libretro", R"GOLD(name=Dreamcast (N64 pad)
 adm=0|drv=udev|pad=
-btn=2,0,10,12,1,3,5,6,4,5
+btn=2,1,,12,3,0,,,4,5
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
@@ -365,7 +365,7 @@ hotkeys=6,12,
 extra=)GOLD"},
 {"UNKNOWN|flycast_libretro", R"GOLD(name=Dreamcast (N64 pad)
 adm=0|drv=udev|pad=
-btn=2,0,10,12,1,3,5,6,4,5
+btn=2,1,,12,3,0,,,4,5
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1

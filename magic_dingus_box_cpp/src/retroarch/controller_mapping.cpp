@@ -152,23 +152,25 @@ SemanticMapping semantic_n64_style(const std::string& core) {
 
     } else if (core.find("flycast") != std::string::npos) {
         // ---- Sega Dreamcast on an N64 pad --------------------------
-        // Awkward but workable: the DC's four face buttons land on the
-        // N64's two face buttons plus two of the C cluster, and the DC's
-        // two ANALOG triggers land on the N64's digital shoulders (so
-        // they read as fully-pressed — fine for most titles, imprecise
-        // for the racing games). The PS-style pad is the better fit for
-        // Dreamcast if one is to hand.
-        //
-        // UNVALIDATED ON HARDWARE — see the N64 note above.
-        s.name = "Dreamcast (N64 pad)"; s.analog_dpad_mode = "0";
-        s.b = L::N64_A;       // DC A
-        s.a = L::N64_B;       // DC B
-        s.y = L::N64_C_LEFT;  // DC X
-        s.x = L::N64_C_DOWN;  // DC Y
-        s.l2 = L::N64_L;      // DC left trigger
-        s.r2 = L::N64_R;      // DC right trigger
+        // Match the approved PS1 muscle memory: primary on A,
+        // attack/secondary on B, upper action on C-Left, and
+        // back/alternate on C-Down.
+        s.name = "Dreamcast (N64 pad)";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;        // DC A
+        s.y = L::N64_B;        // DC X
+        s.x = L::N64_C_LEFT;   // DC Y
+        s.a = L::N64_C_DOWN;   // DC B
+        s.l2 = L::N64_L;       // DC left trigger, digital full press
+        s.r2 = L::N64_R;       // DC right trigger, digital full press
         s.start = L::N64_START;
-        stick(); s.left_stick = true; dpad(); hotkeys();
+
+        stick();
+        s.left_stick = true;
+        dpad();
+        hotkeys();             // Z + Start
     }
     return s;
 }
