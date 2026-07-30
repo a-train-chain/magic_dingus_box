@@ -47,14 +47,14 @@ hotkeys=6,12,
 extra=)GOLD"},
 {"N64|pcsx_rearmed_libretro", R"GOLD(name=PS1 (N64 Controller)
 adm=0|drv=udev|pad=analog
-btn=2,3,9,12,1,0,4,5,,8
+btn=2,1,9,12,3,0,4,5,6,8
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
-dpad_axis=-1,+1,-0,+0
-hotkeys=6,12,
+dpad_axis=,,,
+hotkeys=,,
 extra=)GOLD"},
 {"N64|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=
@@ -299,14 +299,14 @@ hotkeys=6,12,
 extra=)GOLD"},
 {"UNKNOWN|pcsx_rearmed_libretro", R"GOLD(name=PS1 (N64 Controller)
 adm=0|drv=udev|pad=analog
-btn=2,3,9,12,1,0,4,5,,8
+btn=2,1,9,12,3,0,4,5,6,8
 l3r3=,
 dpad=h0up,h0down,h0left,h0right
 ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
-dpad_axis=-1,+1,-0,+0
-hotkeys=6,12,
+dpad_axis=,,,
+hotkeys=,,
 extra=)GOLD"},
 {"UNKNOWN|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=

@@ -15,7 +15,9 @@ using L = LogicalControl;
 // builtin_n64_adapter_profile(); see controller_profile.cpp for that
 // adapter's physical button IDs and hardware evidence.
 //
-// Hotkey combo across all cores: Z trigger + Start = toggle RetroArch menu.
+// Default N64-style hotkey combo: Z trigger + Start.
+// PS1 is the exception: Z is L2 there, so that branch relies on RetroArch's
+// global L1 + R1 + Start + Select gamepad combination instead.
 SemanticMapping semantic_n64_style(const std::string& core) {
     SemanticMapping s;
     auto stick = [&] {
@@ -46,18 +48,34 @@ SemanticMapping semantic_n64_style(const std::string& core) {
                          "nestopia_audio_vol_noise = \"100\"\n"
                          "nestopia_audio_vol_dpcm = \"100\"\n";
 
-    } else if (core.find("pcsx") != std::string::npos || core.find("beetle_psx") != std::string::npos || core.find("swanstation") != std::string::npos) {
-        s.name = "PS1 (N64 Controller)"; s.core_option_pad_type = "analog"; s.analog_dpad_mode = "0";
-        // PS1 face buttons land on the N64's A/B plus two of the C cluster.
-        s.b = L::N64_A;       // Cross (primary action)
-        s.a = L::N64_B;       // Circle (secondary)
-        s.y = L::N64_C_DOWN;  // Square (attack/action)
-        s.x = L::N64_C_LEFT;  // Triangle (menu/special)
-        s.start = L::N64_START;
+    } else if (core.find("pcsx") != std::string::npos ||
+               core.find("beetle_psx") != std::string::npos ||
+               core.find("swanstation") != std::string::npos) {
+        // ---- Sony PlayStation on an N64 pad ------------------------
+        // Layer-free original PlayStation layout. The physical D-pad and
+        // analog stick stay independent; DualShock right-stick/L3/R3
+        // functions are intentionally outside this controller's scope.
+        s.name = "PS1 (N64 Controller)";
+        s.core_option_pad_type = "analog";
+        s.analog_dpad_mode = "0";
+        s.clear_unassigned_buttons = true;
+
+        s.b = L::N64_A;        // Cross
+        s.y = L::N64_B;        // Square
+        s.x = L::N64_C_LEFT;   // Triangle
+        s.a = L::N64_C_DOWN;   // Circle
+        s.l = L::N64_L;        // L1
+        s.r = L::N64_R;        // R1
+        s.l2 = L::N64_Z;       // L2
+        s.r2 = L::N64_C_RIGHT; // R2
         s.select = L::N64_C_UP;
-        s.l = L::N64_L; s.r = L::N64_R; s.r2 = L::N64_C_RIGHT;
+        s.start = L::N64_START;
+
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick();
+        s.left_stick = true;
+        // No stick_to_dpad and no explicit hotkeys. RetroArch's global
+        // L1+R1+Start+Select combo opens the menu.
 
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800"; s.analog_dpad_mode = "0";

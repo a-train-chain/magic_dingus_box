@@ -68,6 +68,83 @@ TEST_CASE("N64 adapter keeps the established menu hotkey on N64 games",
     REQUIRE(map.menu_toggle_btn == "12");
 }
 
+TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
+          "[retroarch][mapping][ps1][n64_style]") {
+    for (const auto& core : {"pcsx_rearmed_libretro",
+                             "beetle_psx_libretro",
+                             "swanstation_libretro"}) {
+        INFO("core=" << core);
+        const auto map = get_mapping(ControllerType::N64_ADAPTER, core);
+
+        CHECK(map.name == "PS1 (N64 Controller)");
+        CHECK(map.core_option_pad_type == "analog");
+        CHECK(map.analog_dpad_mode == "0");
+
+        CHECK(map.b_btn == "2");       // N64 A      -> Cross
+        CHECK(map.y_btn == "1");       // N64 B      -> Square
+        CHECK(map.x_btn == "0");       // C-Left     -> Triangle
+        CHECK(map.a_btn == "3");       // C-Down     -> Circle
+        CHECK(map.l_btn == "4");       // L           -> L1
+        CHECK(map.r_btn == "5");       // R           -> R1
+        CHECK(map.l2_btn == "6");      // Z           -> L2
+        CHECK(map.r2_btn == "8");      // C-Right     -> R2
+        CHECK(map.select_btn == "9");  // C-Up        -> Select
+        CHECK(map.start_btn == "12");
+
+        CHECK(map.up_btn == "h0up");
+        CHECK(map.down_btn == "h0down");
+        CHECK(map.left_btn == "h0left");
+        CHECK(map.right_btn == "h0right");
+        CHECK(map.l_x_plus == "+0");
+        CHECK(map.l_x_minus == "-0");
+        CHECK(map.l_y_plus == "+1");
+        CHECK(map.l_y_minus == "-1");
+
+        CHECK(map.up_axis.empty());
+        CHECK(map.down_axis.empty());
+        CHECK(map.left_axis.empty());
+        CHECK(map.right_axis.empty());
+        CHECK(map.r_x_plus.empty());
+        CHECK(map.r_x_minus.empty());
+        CHECK(map.r_y_plus.empty());
+        CHECK(map.r_y_minus.empty());
+        CHECK(map.r_x_plus_btn.empty());
+        CHECK(map.r_x_minus_btn.empty());
+        CHECK(map.r_y_plus_btn.empty());
+        CHECK(map.r_y_minus_btn.empty());
+        CHECK(map.l3_btn.empty());
+        CHECK(map.r3_btn.empty());
+        CHECK(map.enable_hotkey_btn.empty());
+        CHECK(map.menu_toggle_btn.empty());
+
+        for (int player : {1, 2}) {
+            INFO("player=" << player);
+            std::ostringstream out;
+            retroarch::write_player_binds(out, map, player);
+            const std::string cfg = out.str();
+            const std::string p =
+                "input_player" + std::to_string(player) + "_";
+
+            CHECK(cfg.find(p + "b_btn = \"2\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "y_btn = \"1\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "select_btn = \"9\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "start_btn = \"12\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "a_btn = \"3\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "x_btn = \"0\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l_btn = \"4\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r_btn = \"5\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l2_btn = \"6\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r2_btn = \"8\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "l3_btn = \"nul\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r3_btn = \"nul\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "up_axis = \"\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "down_axis = \"\"\n") != std::string::npos);
+            CHECK(cfg.find(p + "r_x_") == std::string::npos);
+            CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
+        }
+    }
+}
+
 TEST_CASE("Dreamcast is playable on the N64 adapter",
           "[retroarch][mapping][dreamcast]") {
     const auto map = get_mapping(ControllerType::N64_ADAPTER,
