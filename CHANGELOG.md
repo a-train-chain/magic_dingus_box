@@ -340,6 +340,84 @@ bezels) and the two shipped pads' emitted mappings unchanged byte-for-byte.
   and the borrowed-pointer contract by address.
 
 ### Fixed
+- **PS1 gets its second analog stick and its stick clicks** — on a
+  PlayStation-style pad, PS1 ran with `core_option_pad_type = "analog"`, so
+  `pcsx_rearmed` presented a DUALSHOCK to the game: two sticks, two stick
+  clicks. Only one of those sticks was ever bound. A pad captured through the
+  Controller Setup wizard (SHANWAN "Android Gamepad", 2563:0526) yielded 24
+  controls, and inspecting the binds a launched PS1 game actually received
+  showed **18 of the 24 reaching it**. Missing: the whole right stick
+  (captured as `-2`/`+2` on X, `-3`/`+3` on Y) and L3/R3 (`13`/`14`).
+
+  The pad was never at fault. The wizard captured all 24 correctly and the
+  physical profile stored them; the gap was downstream, in two different
+  places:
+
+  `semantic_ps_style()`'s PS1 branch set face buttons, L1/R1/L2/R2,
+  Select/Start and the D-pad, and simply never set `r_up`/`r_down`/`r_left`/
+  `r_right` — so `build_mapping()`'s right-stick block had nothing to
+  resolve and left the four `r_*_axis` fields empty. Only the two N64
+  mappings had ever populated them, which is why the right stick worked on
+  N64 (as the C-button cluster) and nowhere else.
+
+  L3/R3 were worse: **the plumbing did not exist at all.**
+  `ControllerMapping` had no `l3_btn`/`r3_btn` fields and
+  `write_player_binds()` emitted no `l3`/`r3` lines, so no pad on any core
+  had ever been able to reach a stick click. RetroArch has always exposed
+  them (`input_playerN_l3_btn` / `input_playerN_r3_btn`), and the
+  `LogicalControl` vocabulary has always had `L3`/`R3` — the wizard was
+  asking for two controls that had nowhere to go.
+
+  Practical effect: dual-analog PS1 titles were broken. Ape Escape is built
+  entirely around both sticks and is unplayable with one; right-stick camera
+  games had no camera.
+
+  PS1 ONLY, deliberately. Every other PS-style mapping was audited and left
+  alone, because each is already right: NES, SNES, Genesis, Atari 7800, PC
+  Engine and Arcade have neither a second stick nor stick clicks; the N64's
+  right stick is correctly spent on the C cluster and the console has no
+  stick clicks; the Dreamcast has one stick plus two analog triggers. A
+  dedicated test asserts every one of those cores keeps emitting EMPTY
+  `l3_btn`/`r3_btn` — present but empty, since RetroArch treats an empty
+  value differently from an absent line — so the fix cannot leak into a
+  console that never had the hardware.
+
+  `stick_to_dpad` was deliberately NOT cleared for PS1, even though the
+  adjacent N64 branch clears it. The two are unrelated: `stick_to_dpad`
+  governs the `*_axis` D-pad binds and reads the LEFT stick, a disjoint set
+  of RetroArch settings on disjoint axes (0/1 vs 2/3) from the right-stick
+  fields this change adds. The N64 branch clears it to match what the legacy
+  N64 table emitted, not because it gained a right stick. Clearing it here
+  would have removed four currently-emitted binds and stopped the left stick
+  doubling as the D-pad on every fielded box — a behavior change PS1 never
+  asked for.
+
+  A partially-captured profile degrades cleanly rather than guessing: L3/R3
+  route through the same kind-aware `put_btn` contract as the face buttons,
+  so a control the operator skipped, or one captured as an axis, emits `""`.
+  The shipped built-in DragonRise profile is exactly that case — it has a
+  real right stick but no L3/R3 — and it now gets the stick with empty
+  clicks.
+
+  The `[mapping_snapshot]` golden was regenerated, which needs justifying
+  because it had been byte-identical since it was created. 34 lines moved,
+  all accounted for: **33 additions** of a new `l3r3=,` line, one per golden
+  entry (11 cores x 3 controller types), EMPTY in all 33 because neither
+  built-in pad has an L3/R3 binding — so no core gains a stick click through
+  `get_mapping()`; and **1 modification**, `rs_axis=,,,` to
+  `rs_axis=+2,-2,+3,-3` on `PS|pcsx_rearmed_libretro` alone, which is the
+  fix itself. Nothing else: no face buttons, no D-pad, no left stick, no
+  hotkeys, no `pad_type`, no `analog_dpad_mode`. The new fields were added to
+  the snapshot's serializer on purpose (as their own line rather than
+  appended to the face-button line, so a genuine face-button regression
+  cannot hide inside a line the reviewer already expects to move) — leaving
+  them out would have put two shipping fields outside the safety net.
+
+  Two other byte-exact tests moved for the same reason and are annotated
+  inline: the production-hardware capture regression and the
+  legacy-equivalence transcription each gained two lines per player. Neither
+  could have contained them — L3/R3 had no plumbing when that hardware
+  capture was taken or when that legacy block was written.
 - **Truncated text no longer mangles accented, CJK and emoji titles** —
   `media_browser::ui::truncate_to_width` cut on BYTES
   (`text.substr(0, n)`, n counted down one byte at a time), so any cut
