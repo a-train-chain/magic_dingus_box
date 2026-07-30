@@ -54,7 +54,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=,,
+hotkeys=6,12,
 extra=)GOLD"},
 {"N64|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=
@@ -131,7 +131,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=,,
+hotkeys=6,12,
 extra=)GOLD"},
 {"PS|nestopia_libretro", R"GOLD(name=NES (PS-style)
 adm=0|drv=udev|pad=
@@ -306,7 +306,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=,,
+hotkeys=6,12,
 extra=)GOLD"},
 {"UNKNOWN|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine / TurboGrafx-16
 adm=0|drv=udev|pad=
@@ -383,7 +383,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=,,
+hotkeys=6,12,
 extra=)GOLD"},
     };
     return kMappingGolden;

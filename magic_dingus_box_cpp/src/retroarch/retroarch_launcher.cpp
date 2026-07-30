@@ -618,17 +618,7 @@ bool RetroArchLauncher::launch_drm(const GameLaunchInfo& game_info, int system_v
             write_player_binds(script_file, map_p2, 2);
 
             // 5c. Apply Hotkeys
-            if (!map.enable_hotkey_btn.empty()) {
-                script_file << "input_enable_hotkey_btn = \"" << map.enable_hotkey_btn << "\"\n";
-                
-                if (!map.menu_toggle_btn.empty()) {
-                    script_file << "input_menu_toggle_btn = \"" << map.menu_toggle_btn << "\"\n";
-                }
-                
-                if (!map.exit_emulator_btn.empty()) {
-                    script_file << "input_exit_emulator_btn = \"" << map.exit_emulator_btn << "\"\n";
-                }
-            }
+            write_hotkey_binds(script_file, map);
 
             // 8. Apply Extra Config (if any)
             if (!map.extra_config.empty()) {

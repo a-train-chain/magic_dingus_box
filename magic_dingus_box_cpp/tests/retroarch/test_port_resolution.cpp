@@ -226,6 +226,9 @@ TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N6
     REQUIRE(ps1.r2_btn == "8");
     REQUIRE(ps1.select_btn == "9");
     REQUIRE(ps1.start_btn == "12");
+    REQUIRE(ps1.enable_hotkey_btn == "6");
+    REQUIRE(ps1.menu_toggle_btn == "12");
+    REQUIRE(ps1.exit_emulator_btn.empty());
 
     const auto dreamcast =
         resolve_mapping_for_pad(kUnknownVid, kUnknownPid, store, "flycast_libretro");

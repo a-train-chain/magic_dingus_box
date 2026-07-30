@@ -238,6 +238,9 @@ PortMappings resolve_port_mappings(
 void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
                              int player);
 
+void write_hotkey_binds(std::ostream& out,
+                        const ControllerMapping& map);
+
 // Emit the full input_player<N>_* RetroArch bind block for one player:
 // analog_dpad_mode, the face/shoulder buttons, the d-pad buttons, the stick
 // clicks (l3/r3), the left stick axes, the right stick (via

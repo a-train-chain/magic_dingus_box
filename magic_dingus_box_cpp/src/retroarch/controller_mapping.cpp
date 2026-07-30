@@ -15,16 +15,16 @@ using L = LogicalControl;
 // builtin_n64_adapter_profile(); see controller_profile.cpp for that
 // adapter's physical button IDs and hardware evidence.
 //
-// Default N64-style hotkey combo: Z trigger + Start.
-// PS1 is the exception: Z is L2 there, so that branch relies on RetroArch's
-// global L1 + R1 + Start + Select gamepad combination instead.
+// Z trigger + Start is the universal N64-style hotkey combo for every core
+// mapping, including PS1.
 SemanticMapping semantic_n64_style(const std::string& core) {
     SemanticMapping s;
+    s.hotkey_enable = L::N64_Z;
+    s.menu_toggle = L::N64_START;
     auto stick = [&] {
         s.stick_up = L::N64_STICK_UP; s.stick_down = L::N64_STICK_DOWN;
         s.stick_left = L::N64_STICK_LEFT; s.stick_right = L::N64_STICK_RIGHT;
     };
-    auto hotkeys = [&] { s.hotkey_enable = L::N64_Z; s.menu_toggle = L::N64_START; };
     auto dpad = [&] {
         s.up = L::N64_DPAD_UP; s.down = L::N64_DPAD_DOWN;
         s.left = L::N64_DPAD_LEFT; s.right = L::N64_DPAD_RIGHT;
@@ -41,7 +41,6 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.y = L::N64_C_LEFT;  // Turbo B
         dpad();
         stick(); s.left_stick = true; s.stick_to_dpad = true;  // stick -> d-pad, so it works for Mario
-        hotkeys();
         s.extra_config = "nestopia_audio_vol_sq1 = \"100\"\n"
                          "nestopia_audio_vol_sq2 = \"100\"\n"
                          "nestopia_audio_vol_tri = \"100\"\n"
@@ -74,8 +73,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         dpad();
         stick();
         s.left_stick = true;
-        // No stick_to_dpad and no explicit hotkeys. RetroArch's global
-        // L1+R1+Start+Select combo opens the menu.
+        // No stick_to_dpad.
 
     } else if (core.find("prosystem") != std::string::npos) {
         s.name = "Atari 7800"; s.analog_dpad_mode = "0";
@@ -84,7 +82,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         // default, and physical button 10 is unused on this pad, so the
         // slot stays nullopt and the default carries it. Same for the
         // other branches below that "set" a field to its default.
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("genesis_plus_gx") != std::string::npos) {
         s.name = "Sega Genesis"; s.analog_dpad_mode = "0";
@@ -93,14 +91,14 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.b = L::N64_B;       // B
         s.y = L::N64_C_DOWN;  // A
         s.start = L::N64_START;
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("snes9x") != std::string::npos) {
         s.name = "Super Nintendo"; s.analog_dpad_mode = "0";
         // SNES layout: B, A, Y, X, L, R
         s.b = L::N64_B; s.a = L::N64_A; s.y = L::N64_C_DOWN; s.x = L::N64_C_LEFT;
         s.l = L::N64_L; s.r = L::N64_R; s.start = L::N64_START;
-        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        dpad(); stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("mednafen_pce_fast") != std::string::npos) {
         s.name = "PC Engine / TurboGrafx-16"; s.analog_dpad_mode = "0";
@@ -111,7 +109,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.y = L::N64_C_LEFT;  // Turbo II
         s.x = L::N64_C_DOWN;  // Turbo I
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("fbneo") != std::string::npos) {
         s.name = "Arcade (FinalBurn Neo)"; s.analog_dpad_mode = "0";
@@ -123,7 +121,7 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         s.select = L::N64_C_UP;  // Coin
         s.start = L::N64_START;
         dpad();
-        stick(); s.left_stick = true; s.stick_to_dpad = true; hotkeys();
+        stick(); s.left_stick = true; s.stick_to_dpad = true;
 
     } else if (core.find("mupen64plus") != std::string::npos || core.find("parallel_n64") != std::string::npos) {
         // ---- Nintendo 64 on a real N64 pad -------------------------
@@ -148,7 +146,6 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         stick();
         s.left_stick = true;
         dpad();
-        hotkeys();               // physical Z + Start
 
     } else if (core.find("flycast") != std::string::npos) {
         // ---- Sega Dreamcast on an N64 pad --------------------------
@@ -170,7 +167,6 @@ SemanticMapping semantic_n64_style(const std::string& core) {
         stick();
         s.left_stick = true;
         dpad();
-        hotkeys();             // Z + Start
     }
     return s;
 }
@@ -591,6 +587,22 @@ void write_right_stick_binds(std::ostream& out, const ControllerMapping& map,
         out << p << "x_minus_btn = \"" << map.r_x_minus_btn << "\"\n";
         out << p << "y_plus_btn = \"" << map.r_y_plus_btn << "\"\n";
         out << p << "y_minus_btn = \"" << map.r_y_minus_btn << "\"\n";
+    }
+}
+
+void write_hotkey_binds(std::ostream& out,
+                        const ControllerMapping& map) {
+    if (map.enable_hotkey_btn.empty()) return;
+
+    out << "input_enable_hotkey_btn = \""
+        << map.enable_hotkey_btn << "\"\n";
+    if (!map.menu_toggle_btn.empty()) {
+        out << "input_menu_toggle_btn = \""
+            << map.menu_toggle_btn << "\"\n";
+    }
+    if (!map.exit_emulator_btn.empty()) {
+        out << "input_exit_emulator_btn = \""
+            << map.exit_emulator_btn << "\"\n";
     }
 }
 

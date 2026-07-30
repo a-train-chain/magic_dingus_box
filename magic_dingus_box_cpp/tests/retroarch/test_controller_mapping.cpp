@@ -94,8 +94,8 @@ TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
         CHECK(map.r_y_minus_btn.empty());
         CHECK(map.l3_btn.empty());
         CHECK(map.r3_btn.empty());
-        CHECK(map.enable_hotkey_btn.empty());
-        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.menu_toggle_btn == "12");
 
         for (int player : {1, 2}) {
             INFO("player=" << player);
@@ -123,6 +123,48 @@ TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
             CHECK(cfg.find("_btn = \"\"\n") == std::string::npos);
         }
     }
+}
+
+TEST_CASE("N64-style controllers use physical Z+Start on every core",
+          "[retroarch][mapping][hotkeys][n64_style]") {
+    const std::vector<std::string> cores = {
+        "nestopia_libretro",
+        "fceumm_libretro",
+        "snes9x2010_libretro",
+        "genesis_plus_gx_libretro",
+        "pcsx_rearmed_libretro",
+        "beetle_psx_libretro",
+        "swanstation_libretro",
+        "mednafen_pce_fast_libretro",
+        "prosystem_libretro",
+        "fbneo_libretro",
+        "mupen64plus_next_libretro",
+        "parallel_n64_libretro",
+        "flycast_libretro",
+        "totally_unknown_core",
+    };
+
+    for (const auto& core : cores) {
+        INFO("core=" << core);
+        const auto map =
+            get_mapping(ControllerType::N64_ADAPTER, core);
+        CHECK(map.enable_hotkey_btn == "6");
+        CHECK(map.menu_toggle_btn == "12");
+        CHECK(map.exit_emulator_btn.empty());
+    }
+}
+
+TEST_CASE("N64-style hotkeys serialize once as a menu chord, never exit",
+          "[retroarch][mapping][hotkeys][config]") {
+    const auto map = get_mapping(
+        ControllerType::N64_ADAPTER, "pcsx_rearmed_libretro");
+    std::ostringstream out;
+    retroarch::write_hotkey_binds(out, map);
+    CHECK(out.str() ==
+          "input_enable_hotkey_btn = \"6\"\n"
+          "input_menu_toggle_btn = \"12\"\n");
+    CHECK(out.str().find("input_exit_emulator_btn") ==
+          std::string::npos);
 }
 
 TEST_CASE("N64 adapter uses the role-consistent Dreamcast layout",
