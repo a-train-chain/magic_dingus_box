@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Games now launch ONLY from Settings → Video Games — never from
+  main-menu playlists.** Playlists are partitioned between the two UI
+  surfaces at load time (`PlaylistLoader::split_for_ui`): the main menu
+  sees only a playlist's video items, the Settings game browser only its
+  game items, and a mixed video+game playlist simply appears in both
+  places. Previously a mixed playlist rode the main menu whole (any
+  video item made it a "video playlist"), so a finished video could
+  auto-advance into a RetroArch launch with nobody in the room — and
+  its games were meanwhile invisible to the Settings browser (which
+  required ALL items to be games). Auto-advance, next/prev, and Master
+  Shuffle can now never encounter a game item, as data rather than as
+  scattered guards. Covered by 8 unit tests and verified on hardware
+  with a live mixed playlist (appears on both surfaces; counts restore
+  on removal). Pure video and pure game playlists behave exactly as
+  before.
+
 ### Fixed
 - **Settings and controller-profile saves now survive a power cut.**
   Both used tmp-write + atomic rename with no fsync, so a power cut

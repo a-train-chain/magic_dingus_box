@@ -389,16 +389,18 @@ int main(int /* argc */, char* /* argv */[]) {
         LOG_INFO("Loaded {} playlists from: {}", all_playlists.size(), playlist_dir);
     }
     
-    // Separate video and game playlists (matching Python version)
-    std::vector<Playlist> video_playlists;
-    std::vector<Playlist> game_playlists;
-    for (const auto& pl : all_playlists) {
-        if (pl.is_video_playlist()) {
-            video_playlists.push_back(pl);
-        } else if (pl.is_game_playlist()) {
-            game_playlists.push_back(pl);
-        }
-    }
+    // Partition playlists between the two UI surfaces: the main menu
+    // gets only non-game items (it plays unattended — auto-advance,
+    // next/prev, Master Shuffle must never launch RetroArch), the
+    // Settings game browser gets only game items. A mixed playlist
+    // appears on both sides, each holding its kind. Replaces the old
+    // whole-playlist classification, under which a mixed playlist rode
+    // the main menu INTACT (any video item made it a "video playlist")
+    // and its games were meanwhile invisible to the Settings browser
+    // (which required ALL items to be games).
+    auto ui_split = PlaylistLoader::split_for_ui(all_playlists);
+    std::vector<Playlist> video_playlists = std::move(ui_split.video);
+    std::vector<Playlist> game_playlists = std::move(ui_split.games);
     
 #ifdef MEDIA_BROWSER_ENABLED
     // Media Browser V2: append a synthetic "Movies" playlist populated from

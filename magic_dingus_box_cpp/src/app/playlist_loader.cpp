@@ -85,6 +85,49 @@ std::vector<Playlist> PlaylistLoader::filter_for_platform(
     return kept;
 }
 
+PlaylistLoader::UiPlaylistSplit PlaylistLoader::split_for_ui(
+        const std::vector<Playlist>& playlists) {
+    UiPlaylistSplit split;
+    for (const auto& pl : playlists) {
+        Playlist video_copy = pl;
+        video_copy.items.erase(
+            std::remove_if(video_copy.items.begin(), video_copy.items.end(),
+                [](const PlaylistItem& item) {
+                    return item.source_type == "emulated_game";
+                }),
+            video_copy.items.end());
+
+        Playlist game_copy = pl;
+        game_copy.items.erase(
+            std::remove_if(game_copy.items.begin(), game_copy.items.end(),
+                [](const PlaylistItem& item) {
+                    return item.source_type != "emulated_game";
+                }),
+            game_copy.items.end());
+
+        const bool on_both = video_copy.is_video_playlist() &&
+                             !game_copy.items.empty();
+        if (on_both) {
+            std::cerr << "UI split: mixed playlist '" << pl.title
+                      << "' — " << video_copy.items.size()
+                      << " video item(s) on the main menu, "
+                      << game_copy.items.size()
+                      << " game(s) in Settings > Video Games" << std::endl;
+        }
+
+        // Video side qualifies on a REAL video item, not merely on being
+        // non-empty — a playlist of only unknown source_types stays off
+        // the menu exactly as it did before the split existed.
+        if (video_copy.is_video_playlist()) {
+            split.video.push_back(std::move(video_copy));
+        }
+        if (!game_copy.items.empty()) {
+            split.games.push_back(std::move(game_copy));
+        }
+    }
+    return split;
+}
+
 Playlist PlaylistLoader::load_playlist(const std::string& path) {
     Playlist pl;
     pl.path = path;

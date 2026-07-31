@@ -23,6 +23,24 @@ public:
         std::vector<Playlist> playlists,
         const platform::PlatformProfile& profile);
 
+    // Partition playlists between the two UI surfaces. The main menu is
+    // lean-back (auto-advance, next/prev, Master Shuffle run unattended),
+    // so it must never hold an emulated_game item — games launch ONLY
+    // from the Settings game browser, which is deliberate/lean-forward.
+    // A mixed video+game playlist appears on BOTH sides, each copy
+    // holding only its kind of item:
+    //   - video: game items removed; kept only if at least one real
+    //     video item remains (unknown source_types ride along, matching
+    //     the old main-menu behavior)
+    //   - games: emulated_game items only; kept only if non-empty
+    // Runs AFTER filter_for_platform, so a Pi 4B's split never
+    // resurrects N64/Dreamcast items.
+    struct UiPlaylistSplit {
+        std::vector<Playlist> video;   // main menu
+        std::vector<Playlist> games;   // Settings game browser
+    };
+    static UiPlaylistSplit split_for_ui(const std::vector<Playlist>& playlists);
+
     // Load single playlist from YAML file
     static Playlist load_playlist(const std::string& path);
 
