@@ -37,6 +37,7 @@ jobs:
                 libevdev-dev libgpiod-dev \
                 libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
                 libtorrent-rasterbar-dev libsqlite3-dev libboost-dev \
+                libsystemd-dev \
                 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
                 gstreamer1.0-plugins-base gstreamer1.0-gl
 
@@ -52,6 +53,22 @@ jobs:
               make -j$(nproc)
 
               file magic_dingus_box_cpp
+
+              # Release-blocking assertions. Both of these failed SILENTLY
+              # in the past — the binary builds fine, runs fine, and dies
+              # in the field:
+              #   READY=1  — sd_notify support. libsystemd is an OPTIONAL
+              #     CMake dep; without libsystemd-dev in this container the
+              #     binary compiles without it and systemd (Type=notify)
+              #     kills the healthy process at TimeoutStartSec on every
+              #     box. Caught live on the v1.7.2 first-publish attempt.
+              #   prowlarr — Media Browser compiled in. ENABLE_MEDIA_BROWSER
+              #     defaults OFF; shipping an MB-less binary removes the
+              #     movie kiosk from every box that installs it.
+              file magic_dingus_box_cpp | grep -q aarch64 || { echo "FATAL: not an aarch64 binary"; exit 1; }
+              strings magic_dingus_box_cpp | grep -q "READY=1" || { echo "FATAL: binary lacks sd_notify support (libsystemd-dev missing?)"; exit 1; }
+              strings magic_dingus_box_cpp | grep -qi "prowlarr" || { echo "FATAL: Media Browser not compiled in"; exit 1; }
+              echo "Binary assertions passed: aarch64, sd_notify, Media Browser"
             '
 
       - name: Package binary
