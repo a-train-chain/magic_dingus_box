@@ -64,6 +64,19 @@ struct PlatformProfile {
     // pause unconditionally (GameQuietMode in main.cpp) — that one also
     // frees CPU, which CPU-bound emulators genuinely benefit from.
     bool pause_services_during_movie = true;
+
+    // Game systems this board cannot run at an acceptable quality bar,
+    // as normalized tokens (see normalize_game_system). ONE golden image
+    // serves both boards, so the image carries every system's content;
+    // this list is what keeps Pi 5-only systems off the Pi 4 menu.
+    //   Pi 4: {"n64", "dreamcast"} — mupen64plus needs more CPU than the
+    //         4B has, and flycast's fill-rate needs measured Pi 5 V3D.
+    //   Pi 5 / Unknown: empty (Unknown = dev machines; hide nothing).
+    // first_boot.sh also prunes these systems' ROMs on Pi 4 clones to
+    // reclaim SD space, but THIS gate is the source of truth — it
+    // protects the menu regardless of what content is on disk (e.g. an
+    // operator uploading an N64 ROM to a Pi 4 box via the web admin).
+    std::vector<std::string> unsupported_game_systems;
 };
 
 // Parse the contents of /proc/device-tree/model (may carry a trailing
@@ -77,6 +90,20 @@ PlatformProfile profile_for(PiModel model);
 // Missing/unreadable file yields the Unknown profile (dev machines).
 PlatformProfile detect_platform(
     const std::string& model_path = "/proc/device-tree/model");
+
+// --- Game-system support gating ---------------------------------------
+
+// Normalize an emulator_system value for comparison: lowercase, with
+// spaces, quotes, and NULs stripped ("PC Engine" -> "pcengine",
+// "Dreamcast" -> "dreamcast").
+std::string normalize_game_system(const std::string& emulator_system);
+
+// False only when `emulator_system` normalizes into the profile's
+// unsupported_game_systems list. Empty and unrecognized system strings
+// are SUPPORTED — the gate must never hide content it doesn't
+// understand.
+bool supports_game_system(const PlatformProfile& profile,
+                          const std::string& emulator_system);
 
 // --- PulseAudio sink resolution -------------------------------------
 // All take the raw output of `pactl list short sinks`, whose lines are

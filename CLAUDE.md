@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Magic Dingus Box is a retro gaming and video playback kiosk for Raspberry Pi 4B and Raspberry Pi 5. The board is detected at runtime (`src/platform/platform_profile.{h,cpp}` reads `/proc/device-tree/model`); audio sinks, the GPIO header chip, and video-decode expectations all resolve dynamically — never hardcode Pi 4 sink names, `/dev/gpiochip0`, or `v4l2h264dec` availability. It consists of:
+Magic Dingus Box is a retro gaming and video playback kiosk for Raspberry Pi 4B and Raspberry Pi 5. The board is detected at runtime (`src/platform/platform_profile.{h,cpp}` reads `/proc/device-tree/model`); audio sinks, the GPIO header chip, and video-decode expectations all resolve dynamically — never hardcode Pi 4 sink names, `/dev/gpiochip0`, or `v4l2h264dec` availability. ONE golden image serves both boards: `PlatformProfile::unsupported_game_systems` + `PlaylistLoader::filter_for_platform` hide Pi 5-only systems (N64, Dreamcast) on a Pi 4B, `first_boot.sh` prunes their ROMs from Pi 4 clones, and `config.txt` uses `[pi4]`/`[pi5]` conditional sections — see `scripts/golden_image/CLONING.md` "One image, two boards". It consists of:
 
 1. **C++ Kiosk Engine** (`magic_dingus_box_cpp/`) - Primary application using DRM/KMS for true kiosk mode with direct GPU access, no X11/Wayland
 2. **Python Web Admin** (`magic_dingus_box/web/`) - Flask-based remote playlist/content management interface

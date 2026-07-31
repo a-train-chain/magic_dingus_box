@@ -611,6 +611,9 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # playlist_loader is here for the trim/loop parsing tests; it pulls in
         # yaml-cpp, hence the extra include/link directories below.
         src/app/playlist_loader.cpp
+        # platform_profile backs filter_for_platform (the Pi 4 game-system
+        # gate) — pure logic, no Linux-only deps.
+        src/platform/platform_profile.cpp
     )
     target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS})
     target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS})

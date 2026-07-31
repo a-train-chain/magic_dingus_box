@@ -66,6 +66,9 @@ PlatformProfile profile_for(PiModel model) {
             p.has_analog_audio = true;
             p.gpiochip_labels = {"pinctrl-bcm2711"};
             p.rotary_events_per_detent = 2;  // long-shipped default
+            // Pi 5-only systems (see header). Tokens must already be in
+            // normalize_game_system() form.
+            p.unsupported_game_systems = {"n64", "dreamcast"};
             break;
         case PiModel::Pi5:
             p.has_analog_audio = false;
@@ -95,6 +98,26 @@ PlatformProfile detect_platform(const std::string& model_path) {
     std::stringstream ss;
     ss << f.rdbuf();
     return profile_for(parse_pi_model(ss.str()));
+}
+
+std::string normalize_game_system(const std::string& emulator_system) {
+    std::string out;
+    out.reserve(emulator_system.size());
+    for (char c : emulator_system) {
+        if (c == ' ' || c == '"' || c == '\'' || c == '\0') continue;
+        out.push_back(static_cast<char>(
+            std::tolower(static_cast<unsigned char>(c))));
+    }
+    return out;
+}
+
+bool supports_game_system(const PlatformProfile& profile,
+                          const std::string& emulator_system) {
+    const std::string key = normalize_game_system(emulator_system);
+    if (key.empty()) return true;
+    return std::find(profile.unsupported_game_systems.begin(),
+                     profile.unsupported_game_systems.end(),
+                     key) == profile.unsupported_game_systems.end();
 }
 
 std::optional<std::string> find_hdmi_sink(const std::string& pactl_short_sinks) {

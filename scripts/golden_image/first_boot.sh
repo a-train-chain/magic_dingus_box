@@ -483,6 +483,44 @@ if [[ -d "$BACKUP_DIR" ]]; then
     fi
 fi
 
+# Step 6e: Prune Pi 5-only game content on Pi 4 boards.
+#
+# ONE golden image serves both boards. The image is cloned from the
+# Pi 5 production box, so it carries N64 + Dreamcast ROMs, per-game
+# thumbnails, and playlists — systems the Pi 4B cannot run acceptably
+# (mupen64plus needs more CPU than the 4B has; flycast's fill rate
+# needs the Pi 5's V3D headroom). The kiosk ALSO hides these systems
+# at runtime (PlatformProfile::unsupported_game_systems — that gate
+# is the source of truth and protects the menu no matter what is on
+# disk), so this pruning is purely about disk space: the Dreamcast
+# CHDs alone are multiple GB of SD card a Pi 4 unit can never use,
+# reclaimed here for operator videos instead.
+#
+# Board detection mirrors the kiosk's own parse_pi_model(): prefix
+# match on /proc/device-tree/model (which carries a trailing NUL).
+PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
+if [[ "$PI_MODEL" == "Raspberry Pi 4 "* ]]; then
+    log "[6/7] Pi 4B detected — pruning Pi 5-only game content..."
+    pruned_kb=0
+    for path in \
+        "${DATA_DIR}/roms/n64" \
+        "${DATA_DIR}/roms/dreamcast" \
+        "${DATA_DIR}/thumbnails/n64" \
+        "${DATA_DIR}/thumbnails/dreamcast" \
+        "${DATA_DIR}/playlists/games_n64.yaml" \
+        "${DATA_DIR}/playlists/games_dreamcast.yaml"; do
+        if [[ -e "$path" ]]; then
+            sz=$(du -sk "$path" 2>/dev/null | cut -f1) || sz=0
+            rm -rf "$path"
+            pruned_kb=$((pruned_kb + sz))
+            log "    pruned: ${path#${INSTALL_DIR}/} (${sz} KB)"
+        fi
+    done
+    log "[6/7] Pi 5-only content pruned (~$((pruned_kb / 1024)) MB reclaimed for operator use)"
+else
+    log "[6/7] Board is '${PI_MODEL:-unknown}' — no platform pruning needed"
+fi
+
 # NOTE on data/saves, data/states, data/media:
 #
 # These three directories are deliberately PRESERVED on cloned

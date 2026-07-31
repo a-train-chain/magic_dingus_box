@@ -1891,11 +1891,16 @@ fi
 # 16. Radarr quality definitions (custom 720p/1080p size limits).
 #
 # Radarr ships with default size limits per quality (e.g. WEBDL-1080p
-# default maxSize≈400 MB/min). For a Pi 4 + small SSD kiosk that's
-# wasteful — the third layer of the quality filter (CLAUDE.md
-# "Quality configuration") tightens the budget to:
-#   720p qualities → maxSize 60 MB/min, preferredSize 25 MB/min
-#   1080p qualities → maxSize 100 MB/min, preferredSize 40 MB/min
+# default maxSize≈400 MB/min). Wasteful for a kiosk — the third layer
+# of the quality filter (CLAUDE.md "Quality configuration") tightens
+# the budget. The fixture carries the Pi 5 tuning (2026-07-26 retune):
+#   720p qualities → maxSize 60 MB/min, preferredSize 40 MB/min
+#   1080p qualities → maxSize 100 MB/min, preferredSize 70 MB/min
+# One golden image serves both boards, so the Python below overrides
+# preferredSize back to the original lean values (25/40) when it finds
+# itself on a Pi 4B — hardware H.264 decodes either size fine there,
+# but Pi 4 units ship with tighter storage and small-files-preferred
+# was the deliberate Pi 4-era choice. maxSize is identical on both.
 #
 # The fixture lists every quality (including SD + 4K + Remux) so
 # re-running the script also corrects values that may have drifted
@@ -1922,6 +1927,24 @@ def http(method, path, body=None):
 
 with open(qd_path) as f:
     desired_qds = json.load(f)
+
+# Board gate: the fixture is the Pi 5 tuning; a Pi 4B keeps the lean
+# preferred sizes (see the shell comment above). Quality ids are the
+# stable Radarr identifiers: 720p family (HDTV/WEBDL/WEBRip/Bluray) and
+# 1080p family respectively.
+def pi_model():
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            return f.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+if pi_model().startswith("Raspberry Pi 4 "):
+    PI4_PREFERRED = {4: 25, 5: 25, 14: 25, 6: 25,   # 720p family
+                     9: 40, 3: 40, 15: 40, 7: 40}   # 1080p family
+    for d in desired_qds:
+        if d["quality"]["id"] in PI4_PREFERRED:
+            d["preferredSize"] = PI4_PREFERRED[d["quality"]["id"]]
 
 live_qds = http("GET", "/qualitydefinition") or []
 # Live response: each entry has top-level `id` (definition id) and

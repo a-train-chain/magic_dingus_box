@@ -369,7 +369,15 @@ int main(int /* argc */, char* /* argv */[]) {
         std::ifstream test(path + "/test");
         if (test.good() || fs::exists(path)) {
             test.close();
-            all_playlists = PlaylistLoader::load_playlists(path);
+            // Platform gate runs at load time: one golden image serves
+            // Pi 4B and Pi 5, and the image carries every system's
+            // content — the Pi 4 profile hides Pi 5-only systems
+            // (N64/Dreamcast). detect_platform() here is a plain file
+            // read; state.platform_profile is populated later in the
+            // init sequence from the same source.
+            all_playlists = PlaylistLoader::filter_for_platform(
+                PlaylistLoader::load_playlists(path),
+                platform::detect_platform());
             playlist_dir = path;
             break;
         }

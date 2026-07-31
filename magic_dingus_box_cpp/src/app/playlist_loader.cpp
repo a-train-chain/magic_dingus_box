@@ -49,6 +49,42 @@ std::vector<Playlist> PlaylistLoader::load_playlists(const std::string& director
     return playlists;
 }
 
+std::vector<Playlist> PlaylistLoader::filter_for_platform(
+        std::vector<Playlist> playlists,
+        const platform::PlatformProfile& profile) {
+    if (profile.unsupported_game_systems.empty()) {
+        return playlists;  // Pi 5 / dev machines: nothing to hide
+    }
+
+    std::vector<Playlist> kept;
+    kept.reserve(playlists.size());
+    for (auto& pl : playlists) {
+        const size_t before = pl.items.size();
+        pl.items.erase(
+            std::remove_if(pl.items.begin(), pl.items.end(),
+                [&profile](const PlaylistItem& item) {
+                    return item.source_type == "emulated_game" &&
+                           !platform::supports_game_system(
+                               profile, item.emulator_system);
+                }),
+            pl.items.end());
+
+        if (pl.items.empty() && before > 0) {
+            std::cerr << "Platform gate: hiding playlist '" << pl.title
+                      << "' (no items runnable on this board)" << std::endl;
+            continue;
+        }
+        if (pl.items.size() < before) {
+            std::cerr << "Platform gate: dropped "
+                      << (before - pl.items.size())
+                      << " unsupported item(s) from playlist '"
+                      << pl.title << "'" << std::endl;
+        }
+        kept.push_back(std::move(pl));
+    }
+    return kept;
+}
+
 Playlist PlaylistLoader::load_playlist(const std::string& path) {
     Playlist pl;
     pl.path = path;

@@ -261,6 +261,43 @@ the first Pi 5 golden image:
   and Pi 5's HEVC block both go through that element. Only lift the
   disable if playback proves stable.
 
+## One image, two boards (2026-07-30)
+
+The golden image cloned from the Pi 5 production box now serves **both**
+the Pi 5 and Pi 4B products. Flash the same image either way; the box
+configures itself. Four layers make that true:
+
+1. **Boot config** — `/boot/firmware/config.txt` uses conditional
+   sections: `[pi5]` carries `v3d_freq=1000` + `kernel=kernel8.img`
+   (4 KB pages for flycast); `[pi4]` carries `gpu_mem=76`. The shared
+   `[all]` overlays (USB gadget, rotary encoder) are the original Pi 4
+   lines and work identically on both. Backup of the pre-dual-board
+   file: `config.txt.bak-dualboard` on the source Pi.
+2. **Kiosk runtime gate** — `PlatformProfile::unsupported_game_systems`
+   (Pi 4: n64 + dreamcast). `PlaylistLoader::filter_for_platform`
+   removes those items/playlists from the menu at load time. This is
+   the source of truth: even if N64 content lands on a Pi 4 box later
+   (web-admin upload), the menu never shows what the board can't run.
+3. **First-boot pruning** — `first_boot.sh` Step 6e detects a Pi 4B and
+   deletes the N64/Dreamcast ROMs, per-game thumbnails, and playlists
+   from the flashed card, reclaiming multiple GB of SD space for
+   operator videos. (The runtime gate would hide them anyway; this
+   step is purely about disk.)
+4. **Service tuning gate** — `setup_services.sh` applies Radarr
+   preferredSize 40/70 MB/min (the Pi 5 retune) normally, but drops
+   back to the lean 25/40 values when it detects a Pi 4B at provision
+   time. Same maxSize on both.
+
+New units of either board type: flash this image, done. Units already
+in the field on Bookworm (the pre-Trixie Pi 4 fleet, frozen at
+v1.6.4): use `migrate_box.sh` — `backup` a box over SSH, reflash its
+SD with this image, boot once, `restore`. It preserves the owner's
+videos/ROMs/saves/playlists, settings, controller profiles, WiFi,
+hostname, Media Browser credentials + library, and paired phones, and
+finishes with `verify_box.sh`. Game playlists restore through a
+same-system dedupe so the image's `games_*` set doesn't end up next to
+the old-name playlists as duplicate menu rows.
+
 ## Performance notes
 
 | Network | ~32 GB SD clone time |

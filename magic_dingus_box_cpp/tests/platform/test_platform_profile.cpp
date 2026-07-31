@@ -278,3 +278,48 @@ TEST_CASE("Pi 4 keeps pausing media services during movie playback") {
 TEST_CASE("unknown boards keep the pause (conservative default)") {
     REQUIRE(profile_for(PiModel::Unknown).pause_services_during_movie);
 }
+
+// ---------------------------------------------------------------
+// Game-system support gating (one golden image, two boards)
+// ---------------------------------------------------------------
+
+TEST_CASE("normalize_game_system lowercases and strips spaces/quotes") {
+    REQUIRE(normalize_game_system("N64") == "n64");
+    REQUIRE(normalize_game_system("Dreamcast") == "dreamcast");
+    REQUIRE(normalize_game_system("\"PC Engine\"") == "pcengine");
+    REQUIRE(normalize_game_system("'Atari 7800'") == "atari7800");
+    REQUIRE(normalize_game_system("") == "");
+}
+
+TEST_CASE("Pi 4 profile marks N64 and Dreamcast unsupported") {
+    PlatformProfile p = profile_for(PiModel::Pi4);
+    REQUIRE_FALSE(supports_game_system(p, "N64"));
+    REQUIRE_FALSE(supports_game_system(p, "n64"));
+    REQUIRE_FALSE(supports_game_system(p, "Dreamcast"));
+    REQUIRE_FALSE(supports_game_system(p, "\"Dreamcast\""));
+}
+
+TEST_CASE("Pi 4 profile still supports the original seven systems") {
+    PlatformProfile p = profile_for(PiModel::Pi4);
+    for (const char* sys : {"NES", "SNES", "Genesis", "PS1", "Arcade",
+                            "PC Engine", "Atari 7800"}) {
+        INFO("system: " << sys);
+        REQUIRE(supports_game_system(p, sys));
+    }
+}
+
+TEST_CASE("unknown and empty system strings are always supported") {
+    // The gate must never hide content it doesn't understand — a future
+    // system added to playlists before this table learns about it has to
+    // keep working on the board that CAN run it.
+    PlatformProfile p = profile_for(PiModel::Pi4);
+    REQUIRE(supports_game_system(p, "Saturn"));
+    REQUIRE(supports_game_system(p, ""));
+}
+
+TEST_CASE("Pi 5 and Unknown profiles hide nothing") {
+    REQUIRE(profile_for(PiModel::Pi5).unsupported_game_systems.empty());
+    REQUIRE(profile_for(PiModel::Unknown).unsupported_game_systems.empty());
+    REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "N64"));
+    REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "Dreamcast"));
+}
