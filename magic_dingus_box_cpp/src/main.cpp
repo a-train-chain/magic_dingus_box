@@ -402,7 +402,7 @@ int main(int /* argc */, char* /* argv */[]) {
     
 #ifdef MEDIA_BROWSER_ENABLED
     // Media Browser V2: append a synthetic "Movies" playlist populated from
-    // the Radarr download root (/mnt/ssd/library/Movies). Only add it if at
+    // the Radarr library root (/mnt/ssd/library). Only add it if at
     // least one movie has been downloaded — an empty "Movies" row would
     // confuse users on a fresh install before any content lands.
     {
