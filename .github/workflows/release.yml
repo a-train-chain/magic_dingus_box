@@ -35,13 +35,19 @@ jobs:
                 build-essential cmake pkg-config git file \
                 libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
                 libevdev-dev libgpiod-dev \
-                libyaml-cpp-dev libjsoncpp-dev \
+                libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
                 libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
                 gstreamer1.0-plugins-base gstreamer1.0-gl
 
               cd /workspace/magic_dingus_box_cpp
               mkdir -p build && cd build
-              cmake -DCMAKE_BUILD_TYPE=Release ..
+              # ENABLE_MEDIA_BROWSER defaults OFF in CMakeLists. Production
+              # boxes are always built with it ON (deploy_cpp.sh passes it;
+              # the feature is triple-gated at runtime so un-provisioned
+              # boxes never show it). Omitting it here shipped a binary
+              # asset with the entire movie kiosk compiled out — and
+              # update.sh PREFERS this binary over compiling on-Pi.
+              cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON ..
               make -j$(nproc)
 
               file magic_dingus_box_cpp

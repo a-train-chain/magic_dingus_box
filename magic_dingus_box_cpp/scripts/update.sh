@@ -130,7 +130,13 @@ run_build() {
     mkdir -p "$build_dir"
     cd "$build_dir"
 
-    if ! cmake .. > /dev/null 2>&1; then
+    # ENABLE_MEDIA_BROWSER defaults OFF in CMakeLists; production boxes
+    # always build with it ON (runtime triple-gating hides it until
+    # unlocked + VPN-provisioned). Before the clean-build fix above, the
+    # long-lived build dir's CMake cache carried the ON from the last
+    # deploy_cpp.sh run and masked this; with a fresh build dir, a plain
+    # `cmake ..` would compile the movie kiosk OUT on every OTA.
+    if ! cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON .. > /dev/null 2>&1; then
         return 1
     fi
 
@@ -323,11 +329,16 @@ check_update() {
         return 1
     fi
 
-    # Parse download URL for the tarball
+    # Parse download URL for the SOURCE tarball specifically. Releases carry
+    # two .tar.gz assets: the source tarball (magic-dingus-box-*.tar.gz) and
+    # the pre-compiled binary (magic_dingus_box_cpp-arm64-*.tar.gz). A
+    # generic first-match grep here depended on asset upload ORDER to pick
+    # the right one — if the binary asset ever sorted first, install would
+    # rsync --delete a binary-only tree over the whole install dir.
     local download_url
-    download_url=$(echo "$response" | grep -o '"browser_download_url": *"[^"]*\.tar\.gz"' | head -1 | sed 's/.*"\(http[^"]*\)".*/\1/')
+    download_url=$(echo "$response" | grep -o '"browser_download_url": *"[^"]*/magic-dingus-box-[^"/]*\.tar\.gz"' | head -1 | sed 's/.*"\(http[^"]*\)".*/\1/')
 
-    # Fallback to tarball URL if no release asset
+    # Fallback to GitHub's auto-generated source tarball if no release asset
     if [ -z "$download_url" ]; then
         download_url=$(echo "$response" | grep -o '"tarball_url": *"[^"]*"' | head -1 | sed 's/.*"\(http[^"]*\)".*/\1/')
     fi
@@ -462,6 +473,16 @@ install_update() {
 
     log "Using content directory: $content_dir"
 
+    # Sanity-check that this is actually a source tree BEFORE the backup /
+    # rsync steps run. If the wrong asset was downloaded (e.g. the ARM64
+    # binary tarball, which contains a single executable), the install
+    # rsync's --delete would wipe every non-excluded file in INSTALL_DIR.
+    if [ ! -d "$content_dir/magic_dingus_box_cpp/src" ] || [ ! -f "$content_dir/magic_dingus_box_cpp/CMakeLists.txt" ]; then
+        json_response "false" "Update package is not a source tree (wrong asset downloaded?)"
+        rm -rf "$TEMP_DIR"
+        return 1
+    fi
+
     json_progress "backing_up" 45 "Creating backup of current installation..."
 
     # Backup current installation
@@ -478,6 +499,7 @@ install_update() {
     # install rsync below); no point round-tripping them through
     # backup. Saves significant disk space on a populated kiosk.
     rsync -a --delete --no-group --no-owner \
+        --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -509,7 +531,12 @@ install_update() {
     #   - data/saves/*      - Game save files (SRAM per core)
     #   - data/states/*     - Save states (per core)
     #   - data/playlists/*  - User-created playlist YAML files
-    #   - data/thumbnails/* - Game cover art populated externally
+    #   - data/thumbnails/* - Game cover art populated externally.
+    #                          EXCEPTION: data/thumbnails/systems/ IS
+    #                          updated (see --include above the
+    #                          excludes) — the system tiles are tracked
+    #                          in git and new consoles need their tile
+    #                          to reach existing boxes via OTA.
     #                          (deploy_cpp.sh syncs these from the
     #                          operator's local thumbnails dir, NOT
     #                          tracked in git, so the GitHub release
@@ -518,6 +545,18 @@ install_update() {
     #                          wipe every thumbnail when the operator
     #                          OTA-updates)
     #   - data/device_info.json - Device identity (UUID, hostname)
+    #   - data/paired_remotes.json, data/flask_secret.key,
+    #     data/pairing_session.json, data/pairing_audit.log
+    #                       - Phone Remote pairing state. None of these
+    #                          are in the release tarball, so without
+    #                          excludes the rsync --delete below would
+    #                          DELETE them → every paired phone silently
+    #                          unpaired on every OTA.
+    #   - data/kiosk_status.json, data/text_input_queue.jsonl,
+    #     data/seek_request.json
+    #                       - Transient kiosk<->web runtime files;
+    #                          excluded so an OTA can't yank them out
+    #                          from under the running web admin.
     #   - config/*          - User settings (settings.json, WiFi)
     #   - services/.env     - Per-Pi Media Browser config (WireGuard
     #                          private key, ProtonVPN credentials,
@@ -554,6 +593,7 @@ install_update() {
     log "Installing new files..."
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
+        --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -561,11 +601,83 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/paired_remotes.json' \
+        --exclude 'magic_dingus_box_cpp/data/flask_secret.key' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_session.json' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_audit.log' \
+        --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
+        --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
+        --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$content_dir/" "$INSTALL_DIR/" 2>&2 || rsync_exit=$?
+
+    # Add-only playlist sync: ship NEW default playlists (e.g. a new
+    # console's playlist) without ever touching a playlist file that
+    # already exists on the box — operator edits to existing playlists
+    # stay untouched. Two gates keep this from polluting fielded boxes:
+    #
+    #   1. Same-system dedupe: if ANY existing playlist on the box already
+    #      covers the same emulator_system, skip. Older boxes have
+    #      pre-`games_*`-naming playlists (arcade.yaml vs games_arcade.yaml)
+    #      — without this gate every rename in the repo would duplicate a
+    #      menu row on every fielded box.
+    #   2. Content existence: only add a playlist if at least one item is
+    #      actually playable on this box (a youtube item, or a local path
+    #      that exists). ROMs/videos are not in the release tarball, so a
+    #      new console's playlist must wait until the box has its content
+    #      — the next OTA after content arrives will add it.
+    #
+    # Side effect (deliberate): a default playlist the operator deleted
+    # comes back on the next OTA if its content is still present.
+    local box_pl_dir="$INSTALL_DIR/magic_dingus_box_cpp/data/playlists"
+    if [ -d "$content_dir/magic_dingus_box_cpp/data/playlists" ]; then
+        mkdir -p "$box_pl_dir"
+        for new_pl in "$content_dir"/magic_dingus_box_cpp/data/playlists/*.yaml; do
+            [ -e "$new_pl" ] || continue
+            local pl_base
+            pl_base="$(basename "$new_pl")"
+            local pl_dest="$box_pl_dir/$pl_base"
+            [ -e "$pl_dest" ] && continue
+
+            # Gate 1: same-system dedupe (game playlists only)
+            local new_sys existing_systems
+            new_sys=$(grep -m1 -iE '^[[:space:]]*emulator_system:' "$new_pl" 2>/dev/null \
+                        | awk -F: '{gsub(/[ "\047]/,"",$2); print tolower($2)}') || true
+            if [ -n "$new_sys" ]; then
+                existing_systems=$(grep -rhiE '^[[:space:]]*emulator_system:' "$box_pl_dir"/*.yaml 2>/dev/null \
+                        | awk -F: '{gsub(/[ "\047]/,"",$2); print tolower($2)}' | sort -u) || true
+                if echo "$existing_systems" | grep -qx "$new_sys"; then
+                    log "Skipping $pl_base (box already has a playlist for system '$new_sys')"
+                    continue
+                fi
+            fi
+
+            # Gate 2: at least one item must be playable on this box
+            local pl_playable=0
+            if grep -qiE '^[[:space:]]*source_type:[[:space:]]*["'\'']?youtube' "$new_pl" 2>/dev/null; then
+                pl_playable=1
+            else
+                while IFS= read -r item_path; do
+                    [ -n "$item_path" ] || continue
+                    if [ -e "$INSTALL_DIR/magic_dingus_box_cpp/$item_path" ] || [ -e "$INSTALL_DIR/$item_path" ]; then
+                        pl_playable=1
+                        break
+                    fi
+                done < <(grep -E '^[[:space:]]*path:' "$new_pl" 2>/dev/null \
+                        | sed -E 's/^[[:space:]]*path:[[:space:]]*//; s/^["'\'']//; s/["'\'']$//')
+            fi
+            if [ "$pl_playable" -eq 0 ]; then
+                log "Skipping $pl_base (no referenced content present on this box yet)"
+                continue
+            fi
+
+            cp "$new_pl" "$pl_dest"
+            log "Added new default playlist: $pl_base"
+        done
+    fi
 
     # Exit code 23 = some files couldn't transfer attrs (OK), 24 = vanished files (OK)
     if [ "$rsync_exit" -ne 0 ] && [ "$rsync_exit" -ne 23 ] && [ "$rsync_exit" -ne 24 ]; then
@@ -665,6 +777,43 @@ install_update() {
         log "Phone Remote: deps already provisioned; skipping bootstrap"
     fi
 
+    # RetroArch core bootstrap (idempotent). New releases can reference new
+    # emulator cores (v1.7.x added N64 + Dreamcast); the cores are binary
+    # .so files that are NOT in the release tarball (gitignored). Scan the
+    # box's live playlists for every referenced core and run
+    # install_cores.sh (apt + aarch64 core repo) only if one is missing.
+    # Scanning the BOX's playlists (not the release's) is deliberate: the
+    # add-only playlist sync above only adds a game playlist when its
+    # content is present, so a box only fetches cores it can actually use.
+    json_progress "cores_bootstrap" 87 "Checking emulator cores..."
+    local cores_user="${SUDO_USER:-$(id -un)}"
+    local cores_home
+    cores_home="$(getent passwd "$cores_user" | cut -d: -f6)"
+    [ -n "$cores_home" ] || cores_home="$HOME"
+    local cores_dir="${cores_home}/.config/retroarch/cores"
+    local missing_core=0
+    while IFS= read -r core_name; do
+        [ -n "$core_name" ] || continue
+        if [ ! -f "${cores_dir}/${core_name}.so" ]; then
+            log "Emulator core missing: ${core_name}.so"
+            missing_core=1
+        fi
+    done < <(grep -rhE '^[[:space:]]*emulator_core:' \
+                "$INSTALL_DIR/magic_dingus_box_cpp/data/playlists/"*.yaml 2>/dev/null \
+                | awk -F: '{gsub(/[ "\047]/,"",$2); print $2}' | sort -u)
+    if [ "$missing_core" -eq 1 ]; then
+        if [ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_cores.sh" ]; then
+            log "Installing missing RetroArch cores..."
+            json_progress "cores_bootstrap" 88 "Installing emulator cores..."
+            bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/install_cores.sh" \
+                || log_warn "install_cores.sh failed (new-system games may not launch)"
+        else
+            log_warn "install_cores.sh not found; skipping core bootstrap"
+        fi
+    else
+        log "All referenced emulator cores present"
+    fi
+
     json_progress "restarting_services" 90 "Restarting services..."
 
     # Reload systemd and start C++ app
@@ -736,6 +885,7 @@ rollback_internal() {
     #     rollback wipes VPN credentials → operator's Media Browser
     #     dies even though the kiosk binary rolled back successfully.
     rsync -a --delete --no-group --no-owner \
+        --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -743,6 +893,13 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/paired_remotes.json' \
+        --exclude 'magic_dingus_box_cpp/data/flask_secret.key' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_session.json' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_audit.log' \
+        --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
+        --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
+        --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
@@ -792,6 +949,7 @@ rollback() {
     log "Restoring from backup..."
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
+        --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -799,6 +957,13 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/playlists/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
         --exclude 'magic_dingus_box_cpp/data/device_info.json' \
+        --exclude 'magic_dingus_box_cpp/data/paired_remotes.json' \
+        --exclude 'magic_dingus_box_cpp/data/flask_secret.key' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_session.json' \
+        --exclude 'magic_dingus_box_cpp/data/pairing_audit.log' \
+        --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
+        --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
+        --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
         --exclude 'config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \

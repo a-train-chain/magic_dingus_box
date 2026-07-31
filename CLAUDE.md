@@ -189,7 +189,7 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 
 ## RetroArch Cores
 
-7 cores installed via `--cores` flag (`scripts/install_cores.sh`):
+10 cores installed via `--cores` flag (`scripts/install_cores.sh`). OTA also self-heals cores: `update.sh` scans the box's live playlists for referenced `emulator_core` values and runs `install_cores.sh` if any `.so` is missing from the runtime cores dir.
 
 | System | Core | Notes |
 |--------|------|-------|
@@ -200,6 +200,8 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 | PC Engine | `mednafen_pce_fast_libretro` | I/II + turbo buttons |
 | Atari 7800 | `prosystem_libretro` | 2-button |
 | Arcade | `fbneo_libretro` | 6-button layout |
+| N64 | `mupen64plus_next_libretro` | Primary N64 core (`parallel_n64_libretro` is the backup with the identical core-option contract); per-title overscan crop in `launch_contract.cpp` |
+| Dreamcast | `flycast_libretro` | Requires the 4 KB-page kernel (`kernel=kernel8.img` on Pi 5); no BIOS shipped — falls back to REIOS |
 
 BIOS location: `~/.config/retroarch/system/`
 Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/libretro/` (system)
