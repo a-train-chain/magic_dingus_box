@@ -295,6 +295,18 @@ private:
     bool remove_ok_ = false;
     std::string remove_error_;
     int remove_radarr_id_ = -1;            // render-thread only
+
+    // Async Add-to-Library — same shape as the remove pipeline above.
+    // Only radarr_.add_movie() runs on the worker (the profile pick and
+    // disk preflight are local); the toast, watchdog registration,
+    // fetch() refresh, and Queue navigation happen in the drain on the
+    // render thread, gated on the tmdb_id still being the one on screen.
+    Screen drain_add_result();
+    std::thread add_worker_;
+    std::atomic<bool> add_in_flight_{false};
+    std::atomic<bool> add_done_{false};
+    bool add_ok_ = false;
+    int add_tmdb_id_ = -1;                 // render-thread only
     Screen do_play();
     Screen do_retry();
     Screen do_more_info();

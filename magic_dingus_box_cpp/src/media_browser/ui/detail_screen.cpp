@@ -606,8 +606,9 @@ DetailScreen::~DetailScreen() {
     // handle, separate from tmdb_workers_).
     lib_poll_gen_.fetch_add(1);
     if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
-    // The remove worker publishes into members — join before they die.
+    // The remove/add workers publish into members — join before they die.
     if (remove_worker_.joinable()) remove_worker_.join();
+    if (add_worker_.joinable()) add_worker_.join();
     for (auto& w : tmdb_workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
@@ -700,6 +701,9 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
     if (Screen s = drain_remove_result(); s != Screen::Detail) {
         return s;
     }
+    if (Screen s = drain_add_result(); s != Screen::Detail) {
+        return s;
+    }
     for (const auto& e : events) {
         // BTN4 (SETTINGS_MENU, black) — short-press returns to the screen
         // that opened this Detail (Browse / Library / Search / Queue) via
@@ -741,6 +745,10 @@ Screen DetailScreen::on_activate() {
     // that is mid-deletion can only produce inconsistent state.
     if (remove_in_flight_.load(std::memory_order_acquire)) {
         show_banner("Removing…");
+        return Screen::Detail;
+    }
+    if (add_in_flight_.load(std::memory_order_acquire)) {
+        show_banner("Adding…");
         return Screen::Detail;
     }
     if (buttons_.empty()) return Screen::Detail;
@@ -820,12 +828,46 @@ Screen DetailScreen::do_add_to_library() {
         // real error if disk really is full at import time.
     }
 
-    bool ok = radarr_.add_movie(tmdb_id_, qp, /*monitor=*/true);
-    if (!ok) {
+    // The add itself runs on a worker: a single Radarr POST, but its 5s
+    // timeout froze the render loop — and stacked with any other stall
+    // toward the 10s watchdog budget. One add at a time; completion is
+    // drained by drain_add_result() at the top of handle_input.
+    if (add_in_flight_.load(std::memory_order_acquire)) {
+        return Screen::Detail;
+    }
+    if (add_worker_.joinable()) add_worker_.join();  // finished run
+    add_tmdb_id_ = tmdb_id_;
+    add_in_flight_.store(true, std::memory_order_release);
+    show_banner("Adding…");
+    const int tmdb_id = tmdb_id_;
+    try {
+        add_worker_ = std::thread([this, tmdb_id, qp]() {
+            add_ok_ = radarr_.add_movie(tmdb_id, qp, /*monitor=*/true);
+            add_done_.store(true, std::memory_order_release);
+            add_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        add_in_flight_.store(false, std::memory_order_release);
+        show_banner("Add failed to start; try again");
+    }
+    return Screen::Detail;
+}
+
+Screen DetailScreen::drain_add_result() {
+    if (!add_done_.exchange(false, std::memory_order_acq_rel)) {
+        return Screen::Detail;
+    }
+    if (!add_ok_) {
         // Keep the in-screen banner and also surface a top-level toast so
         // the failure is visible outside the action button row context.
         show_banner("Add failed — see Radarr logs");
         ::ui::Toast::show("Add failed — see Radarr logs");
+        return Screen::Detail;
+    }
+    // The user may have opened a different movie while the POST ran —
+    // don't register a watch or navigate over the new record.
+    if (tmdb_id_ != add_tmdb_id_) {
+        ::ui::Toast::show("Added to library — downloading");
         return Screen::Detail;
     }
     // Success: pop a toast confirming the action, refresh the library
