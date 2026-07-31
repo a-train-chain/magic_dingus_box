@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include <memory>
@@ -376,6 +377,14 @@ private:
     int bezel_width_ = 0;
     int bezel_height_ = 0;
     std::string current_bezel_path_;
+    // Paths whose last load FAILED. The success dedupe above requires a
+    // live texture, so a missing bezel/marquee file used to re-probe the
+    // disk (3 stat+open attempts) and print a stderr line on EVERY
+    // frame, forever. Failure is sticky per path; cleared in reset_gl()
+    // so a file that appears later (asset sync) gets one retry per
+    // context rebuild.
+    std::string failed_bezel_path_;
+    std::string failed_marquee_path_;
 
     // Game thumbnail
     uint32_t thumbnail_texture_id_ = 0;
@@ -390,10 +399,32 @@ private:
     // context lifetime. Pointer keeps the artwork_cache.h include out
     // of this header.
     std::unique_ptr<media_browser::ArtworkCache> artwork_cache_;
-    // Textured-quad drawing helper (used by mb_draw_poster_or_tint).
+#endif
+
+    // Textured-quad drawing helper. Generic GL (no MB types) — used by
+    // mb_draw_poster_or_tint AND the QR texture cache below, so it lives
+    // outside the MEDIA_BROWSER_ENABLED gate.
     void draw_textured_quad(uint32_t tex_id, float x, float y, float w, float h,
                             float alpha_multiplier);
-#endif
+
+    // Uniform-location cache for the per-frame shader passes (CRT,
+    // composite, bloom, logo draws). glGetUniformLocation is a
+    // string-lookup round-trip into the GL driver; these passes issued
+    // ~20 of them EVERY frame. Keyed by (program id, name literal) —
+    // and cleared wherever programs are deleted (cleanup/reset_gl),
+    // because GL recycles program ids and a stale entry would silently
+    // point at the wrong uniform in the recompiled program.
+    std::map<std::pair<uint32_t, const char*>, int> uniform_loc_cache_;
+    int cached_uniform(uint32_t program, const char* name);
+
+    // QR texture cache. render_qr_code used to re-encode the payload and
+    // draw ~500 individual module quads EVERY FRAME on the pairing and
+    // Content Manager screens. Now: one GL_NEAREST texture per payload,
+    // rebuilt only when the URL changes; freed with the other texture
+    // caches in cleanup()/reset_gl().
+    std::string qr_cache_url_;
+    uint32_t    qr_cache_tex_ = 0;
+    int         qr_cache_modules_ = 0;
 
     // System logo cache (white-on-transparent logos for each console)
     struct CachedLogo {

@@ -619,6 +619,9 @@ void Renderer::reset_gl() {
     std::cout << "UI Renderer: Resetting GL resources after external context takeover" << std::endl;
     
     // Delete old resources (they may be invalid but try anyway for cleanliness)
+    // Program ids are being deleted (and will be recycled by GL) —
+    // cached uniform locations keyed by those ids must go with them.
+    uniform_loc_cache_.clear();
     if (shader_program_ != 0) {
         glDeleteProgram(shader_program_);
         shader_program_ = 0;
@@ -675,6 +678,17 @@ void Renderer::reset_gl() {
         }
     }
     system_logo_cache_.clear();
+    // QR texture belongs to the dead context too — clear the cache key so
+    // the next render_qr_code call rebuilds it in the fresh context.
+    if (qr_cache_tex_ != 0) {
+        glDeleteTextures(1, &qr_cache_tex_);
+        qr_cache_tex_ = 0;
+    }
+    qr_cache_url_.clear();
+    // Allow one fresh bezel/marquee attempt per context rebuild — the
+    // asset may have arrived since the failure was recorded.
+    failed_bezel_path_.clear();
+    failed_marquee_path_.clear();
 
     // Reset font manager GL resources (keep font data for re-rasterization)
     if (title_font_manager_) {
@@ -755,6 +769,12 @@ bool Renderer::load_bezel(const std::string& path) {
     if (path == current_bezel_path_ && bezel_texture_id_ != 0) {
         return true;
     }
+    // Don't re-attempt a path that already failed — callers invoke this
+    // per frame, and the failure path re-probed the disk and logged to
+    // stderr 60x/second (see failed_bezel_path_ in the header).
+    if (!path.empty() && path == failed_bezel_path_) {
+        return false;
+    }
     
     // Delete old texture if exists
     if (bezel_texture_id_ != 0) {
@@ -788,7 +808,9 @@ bool Renderer::load_bezel(const std::string& path) {
     }
     
     if (!data) {
-        std::cerr << "Failed to load bezel: " << path << std::endl;
+        std::cerr << "Failed to load bezel: " << path
+                  << " (won't retry until GL reset)" << std::endl;
+        failed_bezel_path_ = path;
         return false;
     }
     
@@ -838,7 +860,7 @@ void Renderer::render_bezel() {
     
     // Ensure we are using Texture Unit 0 and tell the shader
     glActiveTexture(GL_TEXTURE0);
-    glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
+    glUniform1i(cached_uniform(shader_program_, "tex"), 0);
     
     // Enable blending for transparent areas of the bezel
     glEnable(GL_BLEND);
@@ -881,6 +903,10 @@ bool Renderer::load_marquee_frame(const std::string& path) {
     if (path == marquee_frame_loaded_path_ && marquee_frame_texture_id_ != 0) {
         return true;
     }
+    // Sticky failure — same per-frame retry/log-spam class as load_bezel.
+    if (!path.empty() && path == failed_marquee_path_) {
+        return false;
+    }
     if (marquee_frame_texture_id_ != 0) {
         glDeleteTextures(1, &marquee_frame_texture_id_);
         marquee_frame_texture_id_ = 0;
@@ -907,7 +933,9 @@ bool Renderer::load_marquee_frame(const std::string& path) {
         }
     }
     if (!data) {
-        std::cerr << "Failed to load Marquee frame overlay: " << path << std::endl;
+        std::cerr << "Failed to load Marquee frame overlay: " << path
+                  << " (won't retry until GL reset)" << std::endl;
+        failed_marquee_path_ = path;
         return false;
     }
 
@@ -938,7 +966,7 @@ void Renderer::render_marquee_frame() {
     glUniform4f(u_color_loc_, 1.0f, 1.0f, 1.0f, 1.0f);
     glUniform1i(u_use_texture_loc_, 1);
     glActiveTexture(GL_TEXTURE0);
-    glUniform1i(glGetUniformLocation(shader_program_, "tex"), 0);
+    glUniform1i(cached_uniform(shader_program_, "tex"), 0);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1081,7 +1109,8 @@ bool Renderer::initialize(const std::string& title_font_path, const std::string&
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo_width_, logo_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
+        // could never be sampled — generating it only cost upload time.
         
         stbi_image_free(data);
         std::cout << "Loaded logo from: " << loaded_logo_path << " (" << logo_width_ << "x" << logo_height_ << ")" << std::endl;
@@ -2215,6 +2244,35 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     }
 }
 
+void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
+                                  float w, float h, float alpha_multiplier) {
+    // Same vertex layout as draw_quad, but switch the shader into
+    // textured mode and bind the supplied texture. Mirrors the
+    // render_title() logo-drawing idiom.
+    float vertices[] = {
+        x, y,         0.0f, 0.0f,
+        x + w, y,     1.0f, 0.0f,
+        x, y + h,     0.0f, 1.0f,
+        x + w, y + h, 1.0f, 1.0f
+    };
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glUniform4f(u_color_loc_,
+                1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier);
+    glUniform1i(u_use_texture_loc_, 1);
+
+    glBindTexture(GL_TEXTURE_2D, tex_id);
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    // Restore solid-color mode so the next draw_quad doesn't sample
+    // whatever texture was bound.
+    glUniform1i(u_use_texture_loc_, 0);
+}
+
 #ifdef MEDIA_BROWSER_ENABLED
 void Renderer::render_media_browser_placeholder() {
     // Solid near-black background covering the full screen.
@@ -2477,34 +2535,6 @@ media_browser::ArtworkCache& Renderer::artwork_cache() {
     return *artwork_cache_;
 }
 
-void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
-                                  float w, float h, float alpha_multiplier) {
-    // Same vertex layout as draw_quad, but switch the shader into
-    // textured mode and bind the supplied texture. Mirrors the
-    // render_title() logo-drawing idiom.
-    float vertices[] = {
-        x, y,         0.0f, 0.0f,
-        x + w, y,     1.0f, 0.0f,
-        x, y + h,     0.0f, 1.0f,
-        x + w, y + h, 1.0f, 1.0f
-    };
-
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
-
-    glUniform4f(u_color_loc_,
-                1.0f, 1.0f, 1.0f, ui_alpha_ * alpha_multiplier);
-    glUniform1i(u_use_texture_loc_, 1);
-
-    glBindTexture(GL_TEXTURE_2D, tex_id);
-    glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    // Restore solid-color mode so the next draw_quad doesn't sample
-    // whatever texture was bound.
-    glUniform1i(u_use_texture_loc_, 0);
-}
 
 void Renderer::mb_draw_poster_or_tint(const std::string& url,
                                       float x, float y, float w, float h,
@@ -3034,7 +3064,8 @@ bool Renderer::load_thumbnail(const std::string& rom_path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbnail_width_, thumbnail_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    glGenerateMipmap(GL_TEXTURE_2D);
+    // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
+    // could never be sampled — generating it only cost upload time.
     stbi_image_free(data);
 
     return true;
@@ -3125,7 +3156,8 @@ const Renderer::CachedLogo* Renderer::get_system_logo(const std::string& system_
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, logo.width, logo.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    glGenerateMipmap(GL_TEXTURE_2D);
+    // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
+    // could never be sampled — generating it only cost upload time.
     stbi_image_free(data);
 
     system_logo_cache_[system_key] = logo;
@@ -3857,7 +3889,10 @@ void Renderer::ensure_bloom_fbos(uint32_t base_w, uint32_t base_h) {
 // uniforms, upload the quad geometry, and draw.
 //
 // File-scope static so it's invisible outside this translation unit
-// and doesn't pollute the Renderer class header.
+// and doesn't pollute the Renderer class header. Uses direct
+// glGetUniformLocation (not Renderer::cached_uniform — no member access
+// here): 4 lookups per bloom pass, a fraction of what the member-pass
+// caching already saves.
 namespace {
 void bloom_pass_draw(uint32_t shader_program,
                      uint32_t vbo,
@@ -3974,40 +4009,40 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     glUseProgram(crt_composite_shader_program_);
 
     // Uniform setup mirrors render_crt_effects, plus the scene + bloom textures.
-    glUniform2f(glGetUniformLocation(crt_composite_shader_program_, "screenSize"),
+    glUniform2f(cached_uniform(crt_composite_shader_program_, "screenSize"),
                 static_cast<float>(original_width_),
                 static_cast<float>(original_height_));
 
     auto now = std::chrono::steady_clock::now();
     float time = std::chrono::duration<float>(now.time_since_epoch()).count();
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "time"), time);
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "time"), time);
 
     float effective_scanline_intensity =
         last_scanlines_enabled_ ? s.scanline_intensity : 0.0f;
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "scanlineIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "scanlineIntensity"),
                 effective_scanline_intensity);
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "warmthIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "warmthIntensity"),
                 s.warmth_intensity);
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "glowIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "glowIntensity"),
                 s.glow_intensity);
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "rgbMaskIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "rgbMaskIntensity"),
                 s.rgb_mask_intensity);
     // Bloom intensity gates BOTH the bloom build above and the
     // composite-side screen-blend. If the build failed (bloom_built
     // false) we force the composite-side intensity to 0 so the
     // shader's `if (bloomIntensity > 0.0)` branch doesn't try to
     // sample a stale or unbound bloom texture.
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "bloomIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "bloomIntensity"),
                 bloom_built ? s.bloom_intensity : 0.0f);
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "interlacingIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "interlacingIntensity"),
                 s.interlacing_intensity);
-    glUniform1f(glGetUniformLocation(crt_composite_shader_program_, "flickerIntensity"),
+    glUniform1f(cached_uniform(crt_composite_shader_program_, "flickerIntensity"),
                 s.flicker_intensity);
 
     // Bind the scene texture on unit 0 for sampling.
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, scene_color_tex_);
-    glUniform1i(glGetUniformLocation(crt_composite_shader_program_, "sceneTexture"), 0);
+    glUniform1i(cached_uniform(crt_composite_shader_program_, "sceneTexture"), 0);
 
     // Bind the bloom (halation) texture on unit 1 if available; the
     // shader only reads this when its bloomIntensity uniform > 0,
@@ -4016,7 +4051,7 @@ void Renderer::end_scene_fbo_and_composite(const app::AppState& state) {
     // valid on drivers that warn about unbound samplers.
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, bloom_built ? bloom_b_tex_ : 0u);
-    glUniform1i(glGetUniformLocation(crt_composite_shader_program_, "bloomTexture"), 1);
+    glUniform1i(cached_uniform(crt_composite_shader_program_, "bloomTexture"), 1);
 
     // Composite is opaque (the shader inlines the OVER blend against
     // sceneRGB). Disabling blend avoids accidental further compositing
@@ -4079,25 +4114,25 @@ void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_ena
     glUseProgram(crt_shader_program_);
     
     // Set uniforms
-    glUniform2f(glGetUniformLocation(crt_shader_program_, "screenSize"), static_cast<float>(width_), static_cast<float>(height_));
+    glUniform2f(cached_uniform(crt_shader_program_, "screenSize"), static_cast<float>(width_), static_cast<float>(height_));
     
     auto now = std::chrono::steady_clock::now();
     float time = std::chrono::duration<float>(now.time_since_epoch()).count();
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "time"), time);
+    glUniform1f(cached_uniform(crt_shader_program_, "time"), time);
     
     // Scanlines are only enabled if the UI is visible (scanlines_enabled flag)
     // OR if scanline intensity is set to a value > 0 and we want to force them?
     // User request: "except for the scan lines. Make these only present during the video UI."
     // So if scanlines_enabled is false, we force intensity to 0.
     float effective_scanline_intensity = scanlines_enabled ? s.scanline_intensity : 0.0f;
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "scanlineIntensity"), effective_scanline_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "scanlineIntensity"), effective_scanline_intensity);
     
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "warmthIntensity"), s.warmth_intensity);
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "glowIntensity"), s.glow_intensity);
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "rgbMaskIntensity"), s.rgb_mask_intensity);
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "bloomIntensity"), s.bloom_intensity);
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "interlacingIntensity"), s.interlacing_intensity);
-    glUniform1f(glGetUniformLocation(crt_shader_program_, "flickerIntensity"), s.flicker_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "warmthIntensity"), s.warmth_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "glowIntensity"), s.glow_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "rgbMaskIntensity"), s.rgb_mask_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "bloomIntensity"), s.bloom_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "interlacingIntensity"), s.interlacing_intensity);
+    glUniform1f(cached_uniform(crt_shader_program_, "flickerIntensity"), s.flicker_intensity);
     
     // Draw full screen quad
     // We reuse the existing VBO which has a quad from (-1,-1) to (1,1) in clip space?
@@ -4147,6 +4182,9 @@ void Renderer::render_crt_effects(const app::AppState& state, bool scanlines_ena
 }
 
 void Renderer::cleanup() {
+    // Program ids are being deleted (and will be recycled by GL) —
+    // cached uniform locations keyed by those ids must go with them.
+    uniform_loc_cache_.clear();
     if (shader_program_ != 0) {
         glDeleteProgram(shader_program_);
         shader_program_ = 0;
@@ -4195,6 +4233,11 @@ void Renderer::cleanup() {
         }
     }
     system_logo_cache_.clear();
+    if (qr_cache_tex_ != 0) {
+        glDeleteTextures(1, &qr_cache_tex_);
+        qr_cache_tex_ = 0;
+    }
+    qr_cache_url_.clear();
     if (title_font_manager_) {
         title_font_manager_->cleanup();
     }
@@ -4203,41 +4246,78 @@ void Renderer::cleanup() {
     }
 }
 
+int Renderer::cached_uniform(uint32_t program, const char* name) {
+    const auto key = std::make_pair(program, name);
+    auto it = uniform_loc_cache_.find(key);
+    if (it != uniform_loc_cache_.end()) return it->second;
+    const int loc = glGetUniformLocation(program, name);
+    uniform_loc_cache_.emplace(key, loc);
+    return loc;
+}
+
 void Renderer::render_qr_code(const std::string& url, float x, float y, float size, float alpha_multiplier) {
     if (url.empty()) return;
-    
-    try {
-        // Generate QR code from URL
-        qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
-        int qr_size = qr.getSize();
-        if (qr_size <= 0) return;
-        
-        // Calculate module (cell) size
-        float module_size = size / static_cast<float>(qr_size);
-        
-        // Add quiet zone (border) around QR code - standard is 4 modules
-        int quiet_zone = 2;  // Use 2 for compact display
-        float total_size = size + (quiet_zone * 2 * module_size);
-        
-        // Draw white background for QR code (including quiet zone)
-        ui::Color white(255, 255, 255, 255);
-        ui::Color black(0, 0, 0, 255);
-        draw_quad(x - quiet_zone * module_size, y - quiet_zone * module_size, 
-                  total_size, total_size, white, alpha_multiplier);
-        
-        // Draw black modules
-        for (int row = 0; row < qr_size; row++) {
-            for (int col = 0; col < qr_size; col++) {
-                if (qr.getModule(col, row)) {  // True = black module
-                    float px = x + col * module_size;
-                    float py = y + row * module_size;
-                    draw_quad(px, py, module_size, module_size, black, alpha_multiplier);
+
+    // Rebuild the cached texture only when the payload changes (pairing
+    // codes rotate every ~2 minutes; the screens calling this render at
+    // 60fps). The old per-frame path re-ran the QR encoder AND issued
+    // one draw_quad per black module — ~500 buffer uploads + draw calls
+    // per frame for the whole time the pairing or Content Manager
+    // screen was open.
+    if (qr_cache_tex_ == 0 || url != qr_cache_url_) {
+        try {
+            qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
+                url.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+            int qr_size = qr.getSize();
+            if (qr_size <= 0) return;
+
+            // One RGBA pixel per module; GL_NEAREST scaling reproduces
+            // the crisp square modules the per-quad path drew.
+            std::vector<unsigned char> pixels(
+                static_cast<size_t>(qr_size) * qr_size * 4);
+            for (int row = 0; row < qr_size; row++) {
+                for (int col = 0; col < qr_size; col++) {
+                    const bool black = qr.getModule(col, row);
+                    const unsigned char v = black ? 0 : 255;
+                    unsigned char* px =
+                        &pixels[(static_cast<size_t>(row) * qr_size + col) * 4];
+                    px[0] = v; px[1] = v; px[2] = v; px[3] = 255;
                 }
             }
+
+            if (qr_cache_tex_ == 0) {
+                glGenTextures(1, &qr_cache_tex_);
+            }
+            glBindTexture(GL_TEXTURE_2D, qr_cache_tex_);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, qr_size, qr_size, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            qr_cache_url_ = url;
+            qr_cache_modules_ = qr_size;
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to generate QR code: " << e.what() << std::endl;
+            return;
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to generate QR code: " << e.what() << std::endl;
     }
+    if (qr_cache_tex_ == 0 || qr_cache_modules_ <= 0) return;
+
+    // Same geometry as the per-quad path: white background including the
+    // 2-module quiet zone, QR modules over the inner [x, x+size] square.
+    const float module_size = size / static_cast<float>(qr_cache_modules_);
+    const int quiet_zone = 2;
+    const float total_size = size + (quiet_zone * 2 * module_size);
+
+    draw_quad(x - quiet_zone * module_size, y - quiet_zone * module_size,
+              total_size, total_size,
+              ui::Color(255, 255, 255, 255), alpha_multiplier);
+    draw_textured_quad(qr_cache_tex_, x, y, size, size, alpha_multiplier);
 }
 
 } // namespace ui

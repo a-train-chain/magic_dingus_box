@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 9 — render performance)
+- **The pairing/Content Manager QR code renders as one cached texture**
+  instead of re-running the QR encoder and issuing ~500 per-module
+  quads (each a buffer upload + draw call) every frame. Rebuilt only
+  when the payload changes; freed with the other texture caches on
+  cleanup/GL reset. Visual output unchanged (GL_NEAREST reproduces the
+  crisp module squares).
+- **CRT / composite / bloom shader passes stop looking up uniforms by
+  string every frame** (~20 driver round-trips/frame). Locations are
+  cached per (program, name) and the cache is invalidated wherever
+  programs are deleted — GL recycles program ids, so a stale entry
+  would silently target the wrong uniform after a reset.
+- **A missing bezel or marquee asset no longer costs 3 disk probes and
+  a stderr line per frame, forever.** Failed paths are remembered and
+  skipped; one fresh attempt is allowed per GL reset in case the asset
+  arrived since.
+- **Dropped dead mipmap generation** on logo/thumbnail/system-logo
+  uploads — their min filter is GL_LINEAR, so the generated chain could
+  never be sampled; it only cost upload time on every texture load.
+
 ### Fixed (hardening batch 8 — platform/input layer)
 - **Unplugged keyboards and rotary encoders no longer leak.** The
   hotplug drop path was gated on `is_joystick`, so a non-joystick
