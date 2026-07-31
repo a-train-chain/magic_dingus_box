@@ -1452,6 +1452,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
     roms_dir = data_dir / "roms"
     device_info_file = data_dir / "device_info.json"
 
+    # Sweep crashed transcode staging files. run_transcode_job encodes
+    # into media_dir/<name>.mp4.part and os.replace()s onto the final
+    # name only on success; a restart or power cut mid-encode leaves the
+    # .part behind. It is invisible to the *.mp4 globs, so unlike the old
+    # encode-in-place scheme it can't reach a playlist — but it still
+    # holds gigabytes. Same rule as the upload_temp sweep above: no
+    # encode survives a restart, so at startup every .part is garbage.
+    if media_dir.is_dir():
+        _part_bytes = 0
+        for _part in media_dir.rglob("*.part"):
+            try:
+                _part_bytes += _part.stat().st_size
+                _part.unlink()
+            except OSError:
+                pass
+        if _part_bytes:
+            print(f"[media] swept {_part_bytes / (1024 * 1024):.1f} MB of "
+                  "interrupted transcode staging (.part) files", flush=True)
+
     def get_device_info() -> dict:
         """Get device identity and stats."""
         try:
@@ -2664,6 +2683,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
         _TRANSCODE_SEMAPHORE.acquire()
         stderr_file = None
 
+        # Encode into a staging name BESIDE the final path, and os.replace()
+        # onto it only when ffmpeg exits 0. Encoding straight into
+        # media_dir/<name>.mp4 meant the growing, moov-less (+faststart
+        # writes moov at finalize) file was listed by /admin/media and
+        # addable to a playlist for the whole multi-minute encode — and a
+        # service restart or power cut mid-encode stranded it there forever,
+        # indistinguishable from a real video. The .part suffix keeps it out
+        # of every *.mp4 glob; same-directory staging guarantees os.replace
+        # is an atomic same-filesystem rename wherever media_dir lives.
+        # Crashed leftovers are swept at startup alongside upload_temp.
+        staging_path = output_path.with_name(output_path.name + ".part")
+
         # Build FFmpeg command with center crop (no black bars, no distortion)
         ffmpeg_cmd = [
             'ffmpeg', '-y',
@@ -2697,7 +2728,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
             '-movflags', '+faststart',
             '-progress', 'pipe:1',
             '-nostats',
-            str(output_path)
+            # Explicit muxer: ffmpeg normally infers it from the output
+            # extension, and the .part staging name would defeat that.
+            '-f', 'mp4',
+            str(staging_path)
         ])
 
         try:
@@ -2768,6 +2802,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
             # Check result
             if process.returncode == 0:
+                # Atomic publish: the finished encode appears in the media
+                # library all at once, or not at all.
+                os.replace(staging_path, output_path)
                 job['status'] = 'complete'
                 job['progress'] = 100
                 job['message'] = 'Transcoding complete!'
@@ -2795,13 +2832,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 except Exception:
                     pass
                 try:
-                    output_path.unlink()
+                    staging_path.unlink()
                 except Exception:
                     pass
 
         except Exception as e:
             job['status'] = 'error'
             job['message'] = str(e)
+            try:
+                staging_path.unlink()
+            except Exception:
+                pass
         finally:
             # Always remove the stderr temp file.
             if stderr_file is not None:

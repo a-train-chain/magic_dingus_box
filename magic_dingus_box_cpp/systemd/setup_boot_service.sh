@@ -95,57 +95,37 @@ else
     echo "    $GPIO_OVERLAY"
 fi
 
-# Step 4: Create service file with correct paths
+# Step 4: Install the canonical service file
 echo ""
-echo "Step 4: Creating service file..."
+echo "Step 4: Installing service file..."
 SERVICE_FILE="/etc/systemd/system/magic-dingus-box-cpp.service"
+CANONICAL_UNIT="$SCRIPT_DIR/magic-dingus-box-cpp.service"
 
-# Create service file with detected paths
-cat > "$SERVICE_FILE" << EOF
-[Unit]
-Description=Magic Dingus Box C++ Kiosk Engine
-After=network-online.target systemd-user-sessions.service
-Wants=network-online.target
-# Start early, before X11 (we use DRM/KMS directly)
-Before=graphical.target lightdm.service
-# Don't require X11 - we bypass it entirely
-Conflicts=lightdm.service
+# The unit's single source of truth is magic-dingus-box-cpp.service in
+# this directory — the same file deploy_cpp.sh installs. This script used
+# to generate a THIRD variant from a heredoc: User=root, Restart=always,
+# and After=network-online.target — the exact ordering the canonical
+# unit's comments document as a measured ~14s black-screen regression —
+# with no sd_notify/watchdog and no EnvironmentFile (Media Browser API
+# keys never reached the binary). Three hand-maintained unit copies is
+# how those divergences went unnoticed.
+#
+# The canonical unit hardcodes the production install paths
+# (/opt/magic_dingus_box, User=magic), so refuse to install it from a
+# checkout living anywhere else rather than enable a unit whose
+# ExecStart points at a path that does not exist.
+if [ "$PROJECT_ROOT_ABS" != "/opt/magic_dingus_box/magic_dingus_box_cpp" ]; then
+    echo "ERROR: this checkout is at $PROJECT_ROOT_ABS"
+    echo "The canonical unit expects /opt/magic_dingus_box/magic_dingus_box_cpp"
+    echo "(User=magic, ExecStart under /opt). Move the install there, or use"
+    echo "scripts/deploy_cpp.sh from a dev machine instead."
+    exit 1
+fi
 
-[Service]
-Type=simple
-# Run as root for DRM access (required for drmSetMaster)
-User=root
-Group=root
-# Working directory where executable and assets are located
-WorkingDirectory=$BUILD_DIR_ABS
-# Path to executable
-ExecStartPre=/bin/bash -c 'systemctl stop lightdm.service || true'
-ExecStart=$APP_PATH
-# Restart on failure
-Restart=always
-RestartSec=5
-# Give service time to start properly on boot
-StartLimitIntervalSec=300
-StartLimitBurst=5
-# Standard output/error logging
-StandardOutput=journal
-StandardError=journal
-# Environment (if needed)
-Environment=HOME=/root
-Environment=DISPLAY=
-# Kill all processes in the service's cgroup on stop
-KillMode=mixed
-KillSignal=SIGTERM
-TimeoutStopSec=5
+cp "$CANONICAL_UNIT" "$SERVICE_FILE"
 
-[Install]
-# Start at multi-user target (before X11)
-WantedBy=multi-user.target
-EOF
-
-echo "  ✓ Service file created at: $SERVICE_FILE"
-echo "    Working directory: $BUILD_DIR_ABS"
-echo "    Executable: $APP_PATH"
+echo "  ✓ Canonical service file installed at: $SERVICE_FILE"
+echo "    Source: $CANONICAL_UNIT"
 
 # Step 5: Reload systemd
 echo ""

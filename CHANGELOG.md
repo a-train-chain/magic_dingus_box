@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **One kiosk systemd unit, not three.** The canonical unit
+  (`magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service`:
+  Type=notify, WatchdogSec=10, Restart=on-failure, EnvironmentFile for
+  the Media Browser keys, scheduling priority) was installed only by
+  deploy_cpp.sh. `scripts/setup_pi.sh` installed a stale root-level copy
+  — Type=simple with NO Restart= (a crash meant a dead box until
+  power-cycle) and no EnvironmentFile — and `setup_boot_service.sh`
+  generated a third variant from a heredoc (User=root, Restart=always,
+  and the After=network-online.target ordering the canonical unit
+  documents as a measured ~14s black-screen regression). Both installers
+  now install the canonical file (setup_boot_service.sh refuses to run
+  from a non-/opt checkout rather than enable a unit with wrong paths),
+  and the stale root-level copy is deleted.
+- **Partial transcodes can no longer appear in the media library.**
+  ffmpeg encoded straight into `media_dir/<name>.mp4`, so for the whole
+  multi-minute encode a growing, moov-less (unplayable) file was listed
+  by the Content Manager and addable to a playlist — and a service
+  restart or power cut mid-encode stranded it there forever,
+  indistinguishable from a real video. Encodes now go to a
+  `<name>.mp4.part` staging name (invisible to every `*.mp4` glob, with
+  an explicit `-f mp4` since the muxer can no longer be inferred from
+  the extension) and are published with an atomic same-directory
+  `os.replace` only when ffmpeg exits 0; failures unlink the staging
+  file, and startup sweeps crashed leftovers alongside upload_temp.
+  Verified with a real encode on the box: output probes as valid mp4,
+  no `.part` residue, final file appears atomically.
 - **One flaky core download no longer aborts every remaining core
   install.** install_cores.sh runs under `set -e`, and its download
   loop's failure branch was dead code: a failed bare `wget` killed the
