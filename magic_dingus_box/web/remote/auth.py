@@ -69,6 +69,16 @@ def verify_cookie(cookie_value: str) -> Optional[str]:
     return device_id
 
 
+# Cap on pairing_audit.log. Nothing ever pruned it, so on an appliance
+# with years of uptime (or a hostile LAN device hammering /pair) it grew
+# without bound on the SD card. 512 KB holds ~5000 recent entries — far
+# more than any pairing investigation needs; the diagnostic value of this
+# log is "did the phone's request ARRIVE at all" (see CLAUDE.md's pairing
+# notes), which the recent tail answers.
+_AUDIT_MAX_BYTES = 512 * 1024
+_AUDIT_KEEP_BYTES = 256 * 1024
+
+
 def _audit(outcome: str, code_attempt: str, ip: str) -> None:
     line = json.dumps({
         "ts": int(time.time()),
@@ -76,7 +86,21 @@ def _audit(outcome: str, code_attempt: str, ip: str) -> None:
         "outcome": outcome,
         "code": (code_attempt[:2] + "****") if len(code_attempt) >= 2 else "****",
     })
-    with _audit_path().open("a") as f:
+    path = _audit_path()
+    try:
+        if path.exists() and path.stat().st_size > _AUDIT_MAX_BYTES:
+            # Keep the newest chunk, aligned to a line boundary. Plain
+            # truncate-rewrite (not rename) so an open tail keeps working;
+            # audit lines are diagnostics, so a lost line during the
+            # rewrite window is acceptable where unbounded growth is not.
+            tail = path.read_bytes()[-_AUDIT_KEEP_BYTES:]
+            nl = tail.find(b"\n")
+            if nl >= 0:
+                tail = tail[nl + 1:]
+            path.write_bytes(tail)
+    except OSError:
+        pass  # rotation is best-effort; the append below still runs
+    with path.open("a") as f:
         f.write(line + "\n")
 
 

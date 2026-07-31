@@ -150,3 +150,30 @@ def test_reap_revocations_removes_matching_devices(tmp_path):
 def test_reap_revocations_is_noop_when_file_missing(tmp_path):
     from remote.auth import reap_revocations
     assert reap_revocations(tmp_path) == 0
+
+
+def test_audit_log_rotates_at_size_cap(tmp_path, monkeypatch):
+    """pairing_audit.log must not grow without bound — nothing else prunes
+    it, and an appliance runs for years (or a hostile LAN device hammers
+    /pair). Rotation keeps the newest tail and the fresh entry."""
+    from remote import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "_data_dir", lambda: tmp_path)
+    log = tmp_path / "pairing_audit.log"
+
+    filler = (b'{"ts": 0, "ip": "10.0.0.9", "outcome": "bad_code", '
+              b'"code": "12****"}\n')
+    log.write_bytes(filler * ((auth_mod._AUDIT_MAX_BYTES // len(filler)) + 10))
+    oversized = log.stat().st_size
+    assert oversized > auth_mod._AUDIT_MAX_BYTES
+
+    auth_mod._audit("paired", "123456", "10.0.0.7")
+
+    assert log.stat().st_size <= auth_mod._AUDIT_KEEP_BYTES + 4096
+    lines = log.read_bytes().splitlines()
+    assert b'"outcome": "paired"' in lines[-1]
+    # Every surviving line is intact JSON — rotation must cut on a line
+    # boundary, not mid-record.
+    import json as _json
+    for ln in lines:
+        _json.loads(ln)

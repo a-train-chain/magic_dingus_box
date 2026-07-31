@@ -22,3 +22,51 @@ jobs:
 
       - name: Run local test tier
         run: ./tests/run_local_tests.sh --tap
+
+  # The C++ unit suites (Catch2/CTest — the same ones a dev runs from
+  # build-test/ on a Mac). Until this job existed they ran in NO
+  # workflow, so the drift they exist to catch was invisible unless
+  # someone remembered a manual run. BUILD_KIOSK=OFF skips every
+  # Linux-kiosk dependency (DRM/GStreamer/evdev) exactly like the Mac
+  # configure does; Catch2 and spdlog arrive via FetchContent.
+  cpp-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config git \
+            libjsoncpp-dev libyaml-cpp-dev
+
+      - name: Configure (tests only, no kiosk)
+        run: cmake -S magic_dingus_box_cpp -B build-ci -DBUILD_KIOSK=OFF
+
+      - name: Build test suites
+        run: cmake --build build-ci -j"$(nproc)"
+
+      - name: Run suites
+        run: ctest --test-dir build-ci --output-on-failure
+
+  # The Flask web-admin pytest suite (playlist CRUD, OTA endpoints,
+  # pairing, backup/restore, storage eligibility, upload staging).
+  # Same gap as above: it ran nowhere in CI. Must run from the repo
+  # root — from web/ the package-style imports fail collection.
+  web-pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install flask pyyaml pytest
+
+      - name: Run web suite
+        run: python -m pytest magic_dingus_box/web/tests/ -q

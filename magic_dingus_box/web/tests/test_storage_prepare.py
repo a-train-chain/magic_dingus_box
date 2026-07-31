@@ -205,3 +205,49 @@ def test_the_destructive_endpoint_is_a_post_not_a_get(client):
     # A GET that formats a drive could be triggered by a prefetch or a stray
     # link. Assert the method surface explicitly.
     assert client.get("/admin/media-browser/storage/prepare").status_code in (403, 405)
+
+
+# ---------------------------------------------------------------------------
+# movies_drive_devices — which disks are (or could become) the MOVIES drive.
+# The prepare endpoint uses this twice: to REFUSE formatting a second disk
+# while the current MOVIES drive is attached (two MOVIES labels would make
+# which one mounts at boot arbitrary), and to scope its umount of /mnt/ssd
+# to the case where the TARGET disk is what backs it (the old code
+# lazy-unmounted /mnt/ssd unconditionally, detaching the live library from
+# the running containers even when formatting an unrelated disk).
+# ---------------------------------------------------------------------------
+
+def test_movies_drive_found_by_mountpoint():
+    from storage_prepare import movies_drive_devices
+    assert movies_drive_devices(PI_LSBLK) == ["sda"]
+
+
+def test_movies_drive_found_by_label_even_when_unmounted():
+    from storage_prepare import movies_drive_devices
+    listing = {"blockdevices": [
+        disk("sdb", children=[part("sdb1", mountpoint=None, label="MOVIES")]),
+        disk("sdc"),
+    ]}
+    assert movies_drive_devices(listing) == ["sdb"]
+
+
+def test_no_movies_drive_returns_empty():
+    from storage_prepare import movies_drive_devices
+    listing = {"blockdevices": [disk("sdb"), disk("sdc")]}
+    assert movies_drive_devices(listing) == []
+
+
+def test_two_movies_disks_both_reported():
+    from storage_prepare import movies_drive_devices
+    listing = {"blockdevices": [
+        disk("sda", children=[part("sda1", mountpoint="/mnt/ssd", label="MOVIES")]),
+        disk("sdb", children=[part("sdb1", label="MOVIES")]),
+    ]}
+    assert movies_drive_devices(listing) == ["sda", "sdb"]
+
+
+def test_movies_drive_devices_tolerates_malformed_input():
+    from storage_prepare import movies_drive_devices
+    assert movies_drive_devices(None) == []
+    assert movies_drive_devices({}) == []
+    assert movies_drive_devices({"blockdevices": "garbage"}) == []

@@ -19,12 +19,14 @@ try:  # noqa: E402
     from storage_prepare import (
         PROTECTED_MOUNTPOINTS,
         eligible_devices,
+        movies_drive_devices,
         protected_disk_names,
     )
 except ImportError:  # pragma: no cover - exercised by whichever form runs
     from .storage_prepare import (
         PROTECTED_MOUNTPOINTS,
         eligible_devices,
+        movies_drive_devices,
         protected_disk_names,
     )
 import secrets
@@ -366,6 +368,34 @@ class _ExtractTooLarge(Exception):
     by one handler rather than at each bail-out point. Never escapes the import
     endpoint.
     """
+
+
+def _staged_save_upload(file_storage, dest: Path, mode: int = 0o644) -> None:
+    """Save a werkzeug upload to dest via same-directory staging + os.replace.
+
+    A direct f.save(dest) writes the final name from byte 0: an interrupted
+    transfer leaves a truncated file that lists as real content (a video the
+    kiosk fails to play, a ROM that fails to launch), and re-uploading over
+    an existing file destroys the ORIGINAL the moment the transfer starts
+    rather than when it succeeds. Staging in the same directory keeps the
+    os.replace atomic (one filesystem), and the dot-prefix + .tmp suffix
+    keeps the staging file out of the extension globs the listings use.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        file_storage.save(str(tmp_path))
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, dest)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8",
@@ -1753,8 +1783,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
                             yaml.safe_load(content.decode('utf-8'))
 
                             dest = playlists_dir / safe_name
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            dest.write_bytes(content)
+                            # Atomic + fsync'd: the kiosk reads these files
+                            # and a torn playlist silently vanishes from the
+                            # menu (loader treats parse failure as empty).
+                            _atomic_write_text(dest, content.decode("utf-8"))
                             restored["playlists"].append(safe_name)
                         except Exception as e:
                             errors.append(f"Failed to restore {playlist_name}: {e}")
@@ -1766,9 +1798,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # Validate it's valid JSON
                         json.loads(content.decode('utf-8'))
 
-                        kiosk_config_dir.mkdir(parents=True, exist_ok=True)
                         settings_dest = kiosk_config_dir / "settings.json"
-                        settings_dest.write_bytes(content)
+                        # Atomic + fsync'd — a torn settings.json reads as
+                        # CRT_NATIVE on the kiosk's peek and flips the
+                        # display mode silently.
+                        _atomic_write_text(settings_dest, content.decode("utf-8"))
                         restored["settings"] = True
                     except Exception as e:
                         errors.append(f"Failed to restore settings: {e}")
@@ -1780,8 +1814,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # Validate it's valid JSON
                         json.loads(content.decode('utf-8'))
 
-                        data_dir.mkdir(parents=True, exist_ok=True)
-                        device_info_file.write_bytes(content)
+                        _atomic_write_text(device_info_file, content.decode("utf-8"))
                         restored["device_info"] = True
                     except Exception as e:
                         errors.append(f"Failed to restore device info: {e}")
@@ -2565,8 +2598,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not _is_within(out_resolved, media_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
-        out.parent.mkdir(parents=True, exist_ok=True)
-        f.save(str(out))
+        _staged_save_upload(f, out)
         return success_response(data={"path": str(out.relative_to(data_dir.parent))}, message="File uploaded")
 
     @app.delete("/admin/media/<path:filepath>")
@@ -3179,9 +3211,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not _is_within(out_resolved, roms_dir_resolved):
             return error_response("VALIDATION_ERROR", "Invalid path")
 
-        out.parent.mkdir(parents=True, exist_ok=True)
-        f.save(str(out))
-        
+        _staged_save_upload(f, out)
+
         # Auto-generate M3U playlists for multi-disc games.
         #
         # This was gated on 'ps1' and invoked the generator with no argument,
@@ -3736,17 +3767,42 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 "VALIDATION_ERROR",
                 "confirm must exactly match the device name", status=400)
 
+        # Refuse to mint a SECOND MOVIES drive. mkfs stamps LABEL=MOVIES and
+        # fstab mounts by label, so formatting a new disk while another
+        # MOVIES-labeled disk is attached makes which one mounts at boot
+        # arbitrary — and the old code here made it worse by lazy-unmounting
+        # /mnt/ssd unconditionally first, detaching the LIVE library out from
+        # under the running containers even when the target was an unrelated
+        # disk (writes continued into the detached filesystem; imports failed
+        # with nothing in any log). Formatting the current MOVIES drive
+        # itself remains allowed — that's the wipe-and-rebuild flow.
+        movies_disks = movies_drive_devices(json.loads(listing))
+        movies_elsewhere = [n for n in movies_disks if n != device]
+        if movies_elsewhere:
+            return error_response(
+                "VALIDATION_ERROR",
+                f"{movies_elsewhere[0]} is currently the MOVIES drive. "
+                f"Formatting {device} too would leave two MOVIES-labeled "
+                "disks and which one holds the library after a reboot would "
+                "be arbitrary. Unplug the old drive first (or format that "
+                "drive instead).", status=409)
+
         path = target["path"]
         try:
             # Unmount everything on the target before touching it, or wipefs
             # fails with "device is busy" — a confusing way for this to end.
             #
+            # /mnt/ssd is released ONLY when the target itself is the MOVIES
+            # drive (the guard above means any other MOVIES disk already
+            # blocked the request, so this is scoped by construction).
+            #
             # Mountpoints are queried live rather than read from the listing
             # above: the eligible-device records deliberately carry no
             # partition detail, and state can change between listing and
             # formatting anyway.
-            subprocess.run(["sudo", "umount", "-l", "/mnt/ssd"],
-                           capture_output=True, timeout=30)
+            if device in movies_disks:
+                subprocess.run(["sudo", "umount", "-l", "/mnt/ssd"],
+                               capture_output=True, timeout=30)
             for mp in _mountpoints_under(path):
                 subprocess.run(["sudo", "umount", "-l", mp],
                                capture_output=True, timeout=30)

@@ -587,7 +587,16 @@ if ! cmake .. ${CMAKE_FLAGS}; then
 fi
 
 echo "  Compiling..."
-if ! make -j4; then
+# Match update.sh's parallelism rule: -j4 OOMs the 1.5 GB Pi 4B — the OOM
+# killer takes a cc1plus mid-build and the failure presents as a random
+# compiler crash (update.sh:143 learned this and dropped to -j2). The Pi 5
+# keeps -j4. grep -a: the device-tree model file ends in a NUL byte.
+BUILD_JOBS=4
+if grep -qa "Raspberry Pi 4" /proc/device-tree/model 2>/dev/null; then
+    BUILD_JOBS=2
+    echo "  (Pi 4B detected — building with -j2 to stay inside 1.5 GB RAM)"
+fi
+if ! make -j${BUILD_JOBS}; then
     echo "  ✗ Build failed!"
     exit 1
 fi

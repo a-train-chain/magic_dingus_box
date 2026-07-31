@@ -122,6 +122,15 @@ private:
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::function<void(const app::PlaylistItem&)> game_session_begin_;
     std::function<void()> game_session_end_;
+
+    // Deferred amixer apply (see set_system_volume): the fork+exec pair
+    // runs from update_state(), at most once per call, so a burst of
+    // rotary detents in one frame costs ONE amixer pair instead of one
+    // per event — and identical re-applies (knob pinned at 0/100) cost
+    // nothing. -1 = nothing pending / never applied.
+    void apply_system_volume_now(int percent);
+    int pending_system_volume_ = -1;
+    int last_applied_system_volume_ = -1;
     std::string text_input_queue_path_;
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch

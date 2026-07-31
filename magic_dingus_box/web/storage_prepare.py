@@ -131,3 +131,29 @@ def eligible_devices(lsblk_json, protected):
             "is_current_movies_drive": _is_current_movies_drive(device),
         })
     return out
+
+
+def movies_drive_devices(lsblk_json):
+    """Kernel names of disks that are — or on next boot could become — the
+    MOVIES drive: anything mounted at the movies mountpoint or carrying the
+    MOVIES label. fstab mounts by label, so a disk with the label but no
+    current mount still contends for /mnt/ssd at boot.
+
+    Same fail-closed posture as eligible_devices: malformed input yields [].
+    Order follows lsblk's device order.
+    """
+    if not isinstance(lsblk_json, dict):
+        return []
+    blockdevices = lsblk_json.get("blockdevices")
+    if not isinstance(blockdevices, list):
+        return []
+    out = []
+    for device in blockdevices:
+        if not isinstance(device, dict):
+            continue
+        name = device.get("name")
+        if not name or not isinstance(name, str):
+            continue
+        if _is_current_movies_drive(device):
+            out.append(name)
+    return out

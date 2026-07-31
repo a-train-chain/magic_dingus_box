@@ -50,6 +50,20 @@ void Controller::set_system_volume(int percent) {
 
     current_system_volume_ = percent;
 
+    // The software volume applies immediately (cheap — no subprocess), so
+    // the audible level and the slider track every detent. The amixer
+    // fork+exec pair is DEFERRED to the next update_state() tick: it costs
+    // ~10-30ms per invocation on a loaded Pi 4 and used to run twice per
+    // rotary event on the render thread — a fast spin queued several
+    // events in one frame and stalled rendering >100ms exactly while the
+    // user watched the volume slider animate.
+    if (player_) {
+        player_->set_volume(percent);
+    }
+    pending_system_volume_ = percent;
+}
+
+void Controller::apply_system_volume_now(int percent) {
     std::string pct = std::to_string(percent) + "%";
 
     auto run_amixer = [](const std::string& control, const std::string& pct_str) -> int {
@@ -71,11 +85,6 @@ void Controller::set_system_volume(int percent) {
 
     if (ret_master != 0 && ret_pcm != 0) {
         std::cerr << "Warning: Failed to set system volume (amixer Master/PCM both failed)" << std::endl;
-    }
-    
-    // 3. Set player software volume as well (belt and suspenders)
-    if (player_) {
-        player_->set_volume(percent);
     }
 }
 
@@ -252,7 +261,18 @@ void Controller::update_state(AppState& state) {
     if (!player_) {
         return;
     }
-    
+
+    // Flush any deferred system-volume change: one amixer pair per frame
+    // maximum, identical values skipped. Sits after the player_ guard so
+    // unit tests with a null player never fork subprocesses.
+    if (pending_system_volume_ >= 0) {
+        if (pending_system_volume_ != last_applied_system_volume_) {
+            apply_system_volume_now(pending_system_volume_);
+            last_applied_system_volume_ = pending_system_volume_;
+        }
+        pending_system_volume_ = -1;
+    }
+
     state.update_playback_state(get_position(), get_duration());
     state.paused = is_paused();
 

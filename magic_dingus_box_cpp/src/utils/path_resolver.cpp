@@ -28,16 +28,15 @@ static std::string find_fuzzy_match(const fs::path& dir, const std::string& file
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (fs::is_regular_file(entry)) {
             std::string entry_name = entry.path().filename().string();
-            
-            // Check if entry starts with stem
-            // We want to match "Title" with "Title (ID).mp4" or "Title.mp4"
-            // But be careful not to match "Title 2" with "Title"
-            if (entry_name.find(target_stem) == 0) {
-                // Check if it has the same extension (optional, but good practice)
-                if (entry.path().extension() == target_ext) {
-                    std::cout << "Fuzzy match found: " << filename << " -> " << entry_name << std::endl;
-                    return entry.path().string();
-                }
+
+            // Boundary-checked stem match — see fuzzy_name_matches in
+            // path_resolver.h. The old bare prefix test here matched
+            // "Title 2.mp4" for "Title" (the exact case the comment above
+            // it warned about), with the winner decided by unspecified
+            // directory-iteration order.
+            if (fuzzy_name_matches(entry_name, target_stem, target_ext)) {
+                std::cout << "Fuzzy match found: " << filename << " -> " << entry_name << std::endl;
+                return entry.path().string();
             }
         }
     }

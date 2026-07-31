@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 4)
+- **Formatting a new drive can no longer detach the live movie
+  library.** The storage-prepare endpoint lazy-unmounted `/mnt/ssd`
+  unconditionally before touching ANY disk — formatting a second drive
+  while the MOVIES drive was in use yanked the library out from under
+  the running containers (downloads kept writing into a detached
+  filesystem; imports failed with nothing in any log). It now refuses
+  outright to create a second MOVIES-labeled disk (fstab mounts by
+  label, so which one wins after a reboot would be arbitrary) and only
+  releases `/mnt/ssd` when the target itself is the MOVIES drive.
+  Wipe-and-rebuild of the current drive still works.
+- **Interrupted uploads no longer corrupt the library.** Media and ROM
+  uploads saved straight onto the final filename from byte 0 — a
+  dropped transfer left a truncated file that listed as real content,
+  and re-uploading over an existing file destroyed the original the
+  moment the transfer STARTED. Uploads now stage into a same-directory
+  dot-tmp file and atomically replace on success only. Backup restores
+  likewise now use the fsync'd atomic writer for playlists, settings,
+  and device identity instead of bare `write_bytes`.
+- **The fuzzy video-path fallback can no longer resolve to the wrong
+  title.** `find_fuzzy_match` accepted any file merely STARTING with
+  the target name, so a playlist entry for "Title.mp4" silently played
+  "Title 2.mp4" when the real file went missing — winner decided by
+  directory-iteration order. The stem must now be followed by a
+  recognized suffix boundary: exact end, ` (` (ID/year), ` [` (yt-dlp
+  source IDs — what shipped media actually uses), or `.` (encode
+  variants). 15 unit tests pin the rule.
+- **Rotary volume no longer stalls the render thread.** Each detent
+  forked amixer twice, synchronously, on the render thread (~10-30ms
+  per fork on a loaded Pi 4) — a fast spin queued several events in one
+  frame and stalled rendering >100ms exactly while the user watched the
+  volume slider. The software volume still applies per-detent; the
+  amixer pair is deferred to the next state tick, coalescing bursts to
+  one apply per frame and skipping identical values entirely.
+- **deploy_cpp.sh builds with `-j2` on a Pi 4B** (detected from the
+  device tree) — `-j4` OOMs the 1.5 GB board and presents as a random
+  compiler crash; update.sh learned this long ago and deploy never did.
+- **pairing_audit.log is capped at 512 KB** (rotates to the newest
+  256 KB on a line boundary). Nothing ever pruned it, and its
+  diagnostic value is the recent tail.
+- **The C++ unit suites and the web pytest suite now run in CI** on
+  every push (`test-local.yml`: cpp-unit via `-DBUILD_KIOSK=OFF` +
+  ctest, web-pytest from the repo root). Until now they ran in no
+  workflow at all — the drift they exist to catch was invisible unless
+  someone remembered a manual run.
+
 ### Changed
 - **Games now launch ONLY from Settings → Video Games — never from
   main-menu playlists.** Playlists are partitioned between the two UI
