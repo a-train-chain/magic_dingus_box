@@ -71,7 +71,7 @@ See [`tests/README.md`](tests/README.md) for tiers, helpers, and the pre-image g
 
 ## Build & dependencies
 
-The kiosk engine targets Raspberry Pi OS Lite 64-bit (Bookworm). Required system packages — install via [`magic_dingus_box_cpp/scripts/install_deps.sh`](magic_dingus_box_cpp/scripts/install_deps.sh):
+The kiosk engine targets Raspberry Pi OS Lite 64-bit on **Trixie (Debian 13)**. Bookworm is no longer supported as of v1.7.0 — the Pi 5 groundwork (2026-07-20) moved `gpio_manager` to the libgpiod 2.x API, which Bookworm does not ship, and the CI release binary links Trixie's glibc. **v1.6.4 is the last Bookworm-compatible release**; Bookworm-era Pi 4B units cannot OTA past it (the update fails cleanly and rolls back) and need an OS migration to rejoin the release train. Required system packages — install via [`magic_dingus_box_cpp/scripts/install_deps.sh`](magic_dingus_box_cpp/scripts/install_deps.sh):
 
 - `libdrm`, `libgbm`, `libegl`, `libgles2` — DRM/KMS + EGL + OpenGL ES rendering substrate
 - `libevdev` — input device events
