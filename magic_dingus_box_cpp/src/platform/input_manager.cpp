@@ -522,8 +522,25 @@ std::vector<InputEvent> InputManager::poll() {
             input_ev.pressed = false;
             
             if (rc == LIBEVDEV_READ_STATUS_SYNC) {
-                // Handle sync events
-                std::cout << "InputManager: SYNC event received" << std::endl;
+                // SYN_DROPPED: the kernel overflowed this device's event
+                // buffer and dropped events — possibly a button/d-pad
+                // RELEASE. Drain libevdev's resync stream (FLAG_SYNC until
+                // it stops returning SYNC) so its internal state is ground
+                // truth again, then clear the manager-level d-pad latches:
+                // a direction held at overflow time may have released
+                // inside the gap, and a stale latch makes
+                // generate_dpad_repeats() scroll the menu forever. Same
+                // protective reset the unplug path does. The old code read
+                // past the marker with FLAG_NORMAL, which both discarded
+                // the replay and left the latches wrong.
+                std::cout << "InputManager: SYN_DROPPED on " << device->name
+                          << " — resyncing device state" << std::endl;
+                while (libevdev_next_event(device->dev,
+                                           LIBEVDEV_READ_FLAG_SYNC, &ev)
+                       == LIBEVDEV_READ_STATUS_SYNC) {
+                }
+                dpad_held_x_ = 0;
+                dpad_held_y_ = 0;
                 rc = libevdev_next_event(device->dev, LIBEVDEV_READ_FLAG_NORMAL, &ev);
                 continue;
             }
@@ -898,17 +915,21 @@ std::vector<InputEvent> InputManager::poll() {
 
         // The loop above ends on the first non-event return code, normally
         // -EAGAIN ("nothing pending"). -ENODEV means the node is gone: the
-        // pad was unplugged. Drop it so device_caps() reports it as absent
-        // (the wizard's unplug-abort path keys off exactly that) instead of
-        // us re-reading a dead fd forever.
-        if (device->is_joystick && rc == -ENODEV) {
+        // device was unplugged. Drop it so device_caps() reports it as
+        // absent (the wizard's unplug-abort path keys off exactly that)
+        // instead of us re-reading a dead fd forever. This used to be
+        // gated on is_joystick, so an unplugged KEYBOARD or rotary
+        // encoder leaked its fd + libevdev handle on every hotplug cycle
+        // and stayed in the poll loop as a dead node for the process
+        // lifetime.
+        if (rc == -ENODEV) {
             dead_devices.push_back(device.get());
         }
     }
 
     if (!dead_devices.empty()) {
         for (Device* d : dead_devices) {
-            std::cout << "  Joystick disconnected, dropping: " << d->name << std::endl;
+            std::cout << "  Input device disconnected, dropping: " << d->name << std::endl;
         }
         // A device that vanishes mid-hold never delivers its release event,
         // so the manager-level D-pad latch would stay set and

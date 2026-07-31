@@ -247,7 +247,14 @@ bool DrmDisplay::find_crtc() {
         return false;
     }
 
-    // Save current CRTC state for restoration
+    // Save current CRTC state for restoration. Free any previous
+    // snapshot first — repeated initialize() (the RetroArch return path
+    // re-inits the display) used to overwrite the pointer and leak the
+    // old drmModeCrtc allocation each cycle.
+    if (saved_crtc_) {
+        drmModeFreeCrtc(static_cast<drmModeCrtc*>(saved_crtc_));
+        saved_crtc_ = nullptr;
+    }
     saved_crtc_ = drmModeGetCrtc(drm_fd_, crtc_id_);
     if (saved_crtc_) {
         saved_crtc_id_ = crtc_id_;
@@ -376,6 +383,16 @@ void DrmDisplay::cleanup(bool restore_mode) {
         close(drm_fd_);
         drm_fd_ = -1;
     }
+    // Free the saved-CRTC snapshot on EVERY cleanup path. restore_crtc()
+    // frees it when it runs, but the no-restore path (RetroArch handoff)
+    // left the drmModeCrtc allocation live and the pointer dangling into
+    // the next initialize() — one leaked snapshot per cycle, and a
+    // stale-fd restore hazard if restore_crtc() ever ran afterwards.
+    if (saved_crtc_) {
+        drmModeFreeCrtc(static_cast<drmModeCrtc*>(saved_crtc_));
+        saved_crtc_ = nullptr;
+    }
+    saved_crtc_id_ = 0;
     connector_id_ = 0;
     crtc_id_ = 0;
     encoder_id_ = 0;

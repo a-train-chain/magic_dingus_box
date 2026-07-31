@@ -114,7 +114,6 @@ private:
 #endif
 
     // Encoder state
-    int last_clk_state_ = 1;
     
     // Restart button state
     ButtonState restart_btn_state_;

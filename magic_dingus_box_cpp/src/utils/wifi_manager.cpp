@@ -29,6 +29,10 @@ WifiManager::WifiManager()
 }
 
 WifiManager::~WifiManager() {
+    // Workers capture `this` — join before members die. Bounded by
+    // exec_command_argv's timeouts (15s default).
+    if (scan_thread_.joinable()) scan_thread_.join();
+    if (connect_thread_.joinable()) connect_thread_.join();
 }
 
 bool WifiManager::initialize() {
@@ -49,7 +53,10 @@ void WifiManager::scan_networks_async() {
     }
 
     std::cout << "WifiManager: Starting async scan..." << std::endl;
-    std::thread([this]() {
+    // Join the PREVIOUS scan thread (instant — the CAS gate above proves
+    // it already finished) so the handle is free for reuse.
+    if (scan_thread_.joinable()) scan_thread_.join();
+    scan_thread_ = std::thread([this]() {
         // Adaptive two-phase scan.
         //
         // `nmcli dev wifi list --rescan yes` returns cached results
@@ -102,7 +109,7 @@ void WifiManager::scan_networks_async() {
                   << " networks." << std::endl;
 
         is_scanning_ = false;
-    }).detach();
+    });
 }
 
 std::vector<WifiNetwork> WifiManager::get_scan_results() {
@@ -125,7 +132,8 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
     }
     connection_result_ = ConnectionResult::IN_PROGRESS;
 
-    std::thread([this, ssid, password, fresh_credentials]() {
+    if (connect_thread_.joinable()) connect_thread_.join();
+    connect_thread_ = std::thread([this, ssid, password, fresh_credentials]() {
         // Clear previous error
         {
             std::lock_guard<std::mutex> lock(error_mutex_);
@@ -264,7 +272,7 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
             }
         }
         is_connecting_ = false;
-    }).detach();
+    });
 }
 
 std::string WifiManager::get_last_failed_ssid() const {

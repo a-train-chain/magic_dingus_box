@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 8 — platform/input layer)
+- **Unplugged keyboards and rotary encoders no longer leak.** The
+  hotplug drop path was gated on `is_joystick`, so a non-joystick
+  device that vanished leaked its fd + libevdev handle and stayed in
+  the poll loop as a dead node forever. Any device reporting `-ENODEV`
+  is now dropped.
+- **Event-buffer overflow can no longer latch a stuck d-pad.** On
+  `SYN_DROPPED` the poller read past the marker with the NORMAL flag,
+  discarding libevdev's resync replay — a direction held at overflow
+  time whose release fell in the gap scrolled the menu forever. The
+  resync stream is now drained properly and the d-pad latches cleared
+  (the same protective reset the unplug path uses).
+- **A wedged NetworkManager can no longer hang the kiosk.** WifiManager
+  subprocesses defaulted to NO timeout; nmcli D-Bus stalls blocked the
+  calling thread forever — permanently latching the scan/connect flags
+  ("scanning…" until reboot) or freezing the render thread into the
+  watchdog. Default is now 15s (the existing timeout+kill machinery,
+  just actually engaged). Worker threads are also tracked and joined
+  instead of detached — a detached worker capturing the singleton could
+  outlive it at process exit and publish into freed memory.
+- **DRM CRTC snapshots stop leaking across RetroArch cycles.** The
+  saved-CRTC allocation was freed only on the restore path; the
+  handoff path left it live with the pointer dangling into the next
+  `initialize()`, which overwrote it — one leaked snapshot (plus a
+  stale-fd restore hazard) per game session.
+- Removed GpioManager's dead encoder-CLK initialization (read a GPIO
+  line the request never asked for; nothing consumed the value) and
+  corrected its startup log — encoder rotation comes via evdev, only
+  the push-switch is GPIO.
+
 ### Fixed (hardening batch 7 — Media Browser thread safety)
 - **All four HTTP clients' error strings are now race-free.** Screens
   read `last_error()` / `peek_error()` on the render thread while their

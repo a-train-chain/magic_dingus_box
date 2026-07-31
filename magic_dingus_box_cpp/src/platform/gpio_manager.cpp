@@ -188,15 +188,16 @@ bool GpioManager::initialize() {
         return false;
     }
     
-    // Initialize encoder state
-    last_clk_state_ = read_line(gpio::ENCODER_CLK);
-    
-    // Note: Power switch on GPIO3 is handled by device tree overlay, not software
-    
+    // Note: Power switch on GPIO3 is handled by device tree overlay, not
+    // software. Encoder ROTATION (CLK/DT) comes through evdev via the
+    // rotary-encoder overlay, not this GPIO path — only the encoder's
+    // push-switch is requested here. (An old line initialized
+    // last_clk_state_ from ENCODER_CLK, a line this request never asked
+    // for — the read always failed and nothing ever consumed the value.)
+
     available_ = true;
     std::cout << "  GPIO initialized successfully" << std::endl;
-    std::cout << "    Inputs: Encoder (CLK=" << gpio::ENCODER_CLK << ", DT=" << gpio::ENCODER_DT 
-              << ", SW=" << gpio::ENCODER_SW << ")" << std::endl;
+    std::cout << "    Inputs: Encoder switch (SW=" << gpio::ENCODER_SW << ")" << std::endl;
     std::cout << "    Inputs: Buttons (5, 6, 13, 19), Restart Button (" << gpio::RESTART_BTN << ")" << std::endl;
     std::cout << "    Outputs: LEDs (12, 16, 26, 20)" << std::endl;
     std::cout << "    Power: GPIO3 (hardware controlled via device tree overlay)" << std::endl;

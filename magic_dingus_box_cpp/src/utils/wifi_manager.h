@@ -4,6 +4,7 @@
 #include <vector>
 #include <future>
 #include <mutex>
+#include <thread>
 #include <atomic>
 
 namespace utils {
@@ -84,7 +85,15 @@ private:
 
     // Execute command with argument vector (no shell injection)
     // timeout_seconds: if > 0, kill child after this many seconds
-    std::string exec_command_argv(const std::vector<std::string>& args, int timeout_seconds = 0);
+    // Default timeout 15s: every caller here runs nmcli/which, none of
+    // which legitimately takes longer. The old default of 0 (no timeout)
+    // meant a wedged NetworkManager D-Bus call blocked the calling
+    // thread FOREVER — on the scan/connect workers that permanently
+    // latched is_scanning_/is_connecting_ (the UI showed "scanning..."
+    // until reboot), and on render-thread callers it froze the kiosk
+    // into the systemd watchdog. Callers with tighter or looser needs
+    // still pass their own value.
+    std::string exec_command_argv(const std::vector<std::string>& args, int timeout_seconds = 15);
 
     std::vector<WifiNetwork> parse_nmcli_scan_output(const std::string& output);
 
@@ -92,6 +101,15 @@ private:
     std::mutex scan_mutex_;
     std::vector<WifiNetwork> scan_results_;
     std::atomic<bool> is_scanning_;
+
+    // Worker threads are TRACKED, not detached: a detached worker
+    // capturing `this` could outlive the singleton at process exit and
+    // publish into freed members. The is_scanning_/is_connecting_ CAS
+    // gates serialize each thread's use; joins happen before respawn
+    // (instant — the gate guarantees the old thread finished) and in
+    // the destructor (bounded by exec_command_argv's timeouts).
+    std::thread scan_thread_;
+    std::thread connect_thread_;
 
     std::atomic<bool> is_connecting_;
     std::atomic<ConnectionResult> connection_result_;
