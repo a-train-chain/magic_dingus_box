@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Backups now actually contain the device settings.** The web admin's
+  Backup/Restore derived the settings.json path as
+  `magic_dingus_box_cpp/config` — a directory the kiosk never reads —
+  so settings were silently omitted from every backup ZIP ever made,
+  and a restore wrote them where nothing would find them while
+  reporting success. Both endpoints now use the kiosk's real
+  `/opt/magic_dingus_box/config` (pinned by regression tests, verified
+  against the live box). Backups made before this fix restore fine —
+  they just never had settings inside to begin with.
+- **migrate_box.sh backups can no longer capture torn SQLite
+  databases.** Backup mode rsynced `services/config/` while Radarr /
+  Prowlarr / qBittorrent were still writing (WAL mode) — an
+  inconsistency that SQLite would only report at restore time, onto the
+  freshly flashed box, after the owner's original SD was wiped. The
+  backup now stops those three containers (~30s; Gluetun stays up),
+  copies, and restarts them — with an EXIT trap so the owner's stack
+  comes back even if a copy fails mid-way. Also fixed in passing: the
+  `.env` rsync always died on the missing `services/` parent directory
+  (rsync only creates the last path component), so backup mode had
+  never actually survived past the content copy on a provisioned box.
+  Verified end-to-end against real hardware: clean-stop copy checkpoints
+  the WAL (no `-wal`/`-shm` sidecars in the copy) and both databases
+  pass `PRAGMA integrity_check`.
+- **The main-menu "Movies" playlist scans Radarr's real library root.** The
+  synthetic Movies playlist defaulted to `/mnt/ssd/library/Movies` — a
+  subdirectory Radarr never wrote to (movies land directly at
+  `library/<Title (Year)>/`; setup_services.sh dropped the empty `Movies/`
+  dir long ago) — so the row silently never appeared on the main menu no
+  matter how many movies were downloaded. The default now lives in
+  `PlaylistLoader::kMoviesLibraryRoot = "/mnt/ssd/library"`, pinned by a
+  unit test to Radarr's actual root (must agree with
+  `RadarrClient::Config::host_library_prefix`), with scan tests covering
+  the one-subdir-per-movie layout, the legacy empty `Movies/` leftover,
+  non-movie clutter, and case-insensitive extensions
+  (`tests/app/test_movies_library.cpp`).
+
+### Fixed
 - **Games launched outside the Settings browser no longer get killed by
   the systemd watchdog.** The launch bracketing (watchdog disable,
   phone-remote status writes, GPIO restart-button polling, media-stack

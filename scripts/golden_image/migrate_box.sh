@@ -14,7 +14,9 @@ set -euo pipefail
 #
 #   ./migrate_box.sh backup  magic@<box-host> <backup-dir>
 #       Pull every preserved-content path off the box into <backup-dir>.
-#       Run BEFORE reflashing the SD card. Read-only; safe to re-run.
+#       Run BEFORE reflashing the SD card. Safe to re-run; briefly stops
+#       the Radarr/Prowlarr/qBittorrent containers (~30s) so their
+#       SQLite databases copy in a consistent state.
 #
 #   ./migrate_box.sh restore magic@<box-host> <backup-dir>
 #       Push the backup onto the freshly flashed box. Run AFTER the new
@@ -36,7 +38,7 @@ set -euo pipefail
 INSTALL_DIR="/opt/magic_dingus_box"
 DATA_REL="magic_dingus_box_cpp/data"
 
-usage() { sed -n '3,30p' "$0"; exit 1; }
+usage() { sed -n '3,32p' "$0"; exit 1; }
 
 [[ $# -eq 3 ]] || usage
 MODE="$1"; BOX="$2"; BACKUP_DIR="$3"
@@ -75,6 +77,42 @@ backup)
     # Media Browser per-box state. Root-owned bits inside services/config
     # need sudo on the box side.
     if ssh_box "test -f $INSTALL_DIR/services/.env" 2>/dev/null; then
+        # Quiesce the database writers before copying services/config.
+        # Radarr, Prowlarr and qBittorrent write their SQLite databases
+        # (WAL mode) continuously; rsync reads a .db and its -wal/-shm
+        # sidecars at different instants, and a checkpoint landing between
+        # those reads yields a copy whose parts are mutually inconsistent.
+        # SQLite reports "database disk image is malformed" only at
+        # RESTORE time — onto the freshly flashed box, after the owner's
+        # original SD has been wiped. prepare_for_cloning.sh stops the
+        # same stack before touching the same files for the same reason.
+        # Gluetun and byparr keep running: nothing in services/config of
+        # theirs mutates.
+        STACK_QUIESCED=0
+        resume_stack() {
+            if [[ "$STACK_QUIESCED" -eq 1 ]]; then
+                STACK_QUIESCED=0
+                log "  Restarting media stack containers..."
+                ssh_box "cd $INSTALL_DIR/services && sudo docker compose start radarr prowlarr qbittorrent" \
+                    || log "  WARNING: could not restart the media stack — run 'sudo docker compose start radarr prowlarr qbittorrent' in $INSTALL_DIR/services on the box"
+            fi
+        }
+        log "  Pausing media stack containers for a consistent DB copy..."
+        if ssh_box "cd $INSTALL_DIR/services && sudo docker compose stop radarr prowlarr qbittorrent" 2>/dev/null; then
+            STACK_QUIESCED=1
+            # set -e aborts this script on a failed rsync below; the trap
+            # guarantees the owner's box gets its media stack back even
+            # then. Cleared again right after the normal-path resume.
+            trap resume_stack EXIT
+        else
+            log "  (could not stop containers — stack not running? copying as-is)"
+        fi
+
+        # rsync creates only the LAST path component of its destination —
+        # without this mkdir the .env copy dies on the missing services/
+        # parent (found the first time this block ran against real
+        # hardware; the script had never been exercised before).
+        mkdir -p "$BACKUP_DIR/services"
         rsync -az --rsync-path="sudo rsync" \
             "$BOX:$INSTALL_DIR/services/.env" \
             "$BACKUP_DIR/services/.env"
@@ -82,6 +120,9 @@ backup)
             "$BOX:$INSTALL_DIR/services/config/" \
             "$BACKUP_DIR/services/config/"
         log "  Media Browser state captured"
+
+        resume_stack
+        trap - EXIT
     else
         log "  (no services/.env — Media Browser never provisioned)"
     fi

@@ -1575,6 +1575,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return alt_version_file.read_text().strip()
         return "0.0.0"  # Fallback for pre-versioning installations
 
+    # The kiosk reads settings.json from <base>/config where <base> is
+    # /opt/magic_dingus_box in production (the path MEDIA_BROWSER_SETTINGS_PATH
+    # hardcodes) — TWO levels up from data_dir, same as the VERSION file
+    # above. Backup and restore used to derive this as data_dir.parent /
+    # "config" (= magic_dingus_box_cpp/config), a directory the kiosk never
+    # touches: settings were silently omitted from every backup ZIP, and a
+    # restore wrote settings.json somewhere it would never be read while
+    # reporting success.
+    kiosk_config_dir = data_dir.parent.parent / "config"
+
     @app.get("/admin/backup")
     def create_backup():  # type: ignore[no-redef]
         """Create a backup of all playlists, settings, and device info.
@@ -1607,9 +1617,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     zf.write(playlist_file, arcname)
                     manifest["contents"]["playlists"].append(playlist_file.name)
 
-            # Add settings file (from config directory)
-            config_dir = data_dir.parent / "config"
-            settings_file = config_dir / "settings.json"
+            # Add settings file (from the kiosk's real config directory)
+            settings_file = kiosk_config_dir / "settings.json"
             if settings_file.exists():
                 zf.write(settings_file, "config/settings.json")
                 manifest["contents"]["settings"] = True
@@ -1712,9 +1721,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # Validate it's valid JSON
                         json.loads(content.decode('utf-8'))
 
-                        config_dir = data_dir.parent / "config"
-                        config_dir.mkdir(parents=True, exist_ok=True)
-                        settings_dest = config_dir / "settings.json"
+                        kiosk_config_dir.mkdir(parents=True, exist_ok=True)
+                        settings_dest = kiosk_config_dir / "settings.json"
                         settings_dest.write_bytes(content)
                         restored["settings"] = True
                     except Exception as e:
