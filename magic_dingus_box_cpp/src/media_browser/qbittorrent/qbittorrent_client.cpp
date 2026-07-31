@@ -72,7 +72,7 @@ bool QbittorrentClient::login_locked() {
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        last_error_ = "curl init failed";
+        set_error("curl init failed");
         return false;
     }
 
@@ -106,21 +106,21 @@ bool QbittorrentClient::login_locked() {
     curl_easy_cleanup(curl);
 
     if (rc != CURLE_OK) {
-        last_error_ = std::string("qbit login: ") + curl_easy_strerror(rc);
+        set_error(std::string("qbit login: ") + curl_easy_strerror(rc));
         return false;
     }
     if (http_code != 200 || resp_body != "Ok.") {
-        last_error_ = "qbit login HTTP " + std::to_string(http_code)
-                    + " body='" + resp_body + "'";
+        set_error("qbit login HTTP " + std::to_string(http_code)
+                    + " body='" + resp_body + "'");
         return false;
     }
     if (set_cookie.empty()) {
-        last_error_ = "qbit login: no SID cookie returned";
+        set_error("qbit login: no SID cookie returned");
         return false;
     }
 
     sid_cookie_ = std::move(set_cookie);
-    last_error_.clear();
+    set_error({});
     return true;
 }
 
@@ -161,7 +161,7 @@ std::string QbittorrentClient::http_get(const std::string& path) {
 
         if (rc != CURLE_OK) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+            set_error(std::string("curl: ") + curl_easy_strerror(rc));
             return {0, {}};
         }
         return {http_code, body};
@@ -188,14 +188,14 @@ std::string QbittorrentClient::http_get(const std::string& path) {
         auto [c2, b2] = perform();
         if (c2 >= 400) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            last_error_ = "qbit HTTP " + std::to_string(c2);
+            set_error("qbit HTTP " + std::to_string(c2));
             return {};
         }
         return b2;
     }
     if (code >= 400) {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
-        last_error_ = "qbit HTTP " + std::to_string(code);
+        set_error("qbit HTTP " + std::to_string(code));
         return {};
     }
     return body;
@@ -218,7 +218,7 @@ std::string QbittorrentClient::http_post(const std::string& path,
         CURL* curl = curl_easy_init();
         if (!curl) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            last_error_ = "curl init failed";
+            set_error("curl init failed");
             return {0, {}};
         }
 
@@ -254,7 +254,7 @@ std::string QbittorrentClient::http_post(const std::string& path,
 
         if (rc != CURLE_OK) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+            set_error(std::string("curl: ") + curl_easy_strerror(rc));
             return {0, {}};
         }
         return {http_code, resp};
@@ -273,14 +273,14 @@ std::string QbittorrentClient::http_post(const std::string& path,
         auto [c2, r2] = perform();
         if (c2 >= 400) {
             std::lock_guard<std::mutex> lk(cookie_mtx_);
-            last_error_ = "qbit HTTP " + std::to_string(c2);
+            set_error("qbit HTTP " + std::to_string(c2));
             return {};
         }
         return r2;
     }
     if (code >= 400) {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
-        last_error_ = "qbit HTTP " + std::to_string(code);
+        set_error("qbit HTTP " + std::to_string(code));
         return {};
     }
     return resp;
@@ -293,7 +293,7 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
         if (sid_cookie_.empty()) {
             if (!login_locked()) {
-                spdlog::warn("[qbit] login failed: {}", last_error_);
+                spdlog::warn("[qbit] login failed: {}", last_error());
                 return {};
             }
         }
@@ -307,7 +307,7 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
     std::string err;
     std::istringstream is(body);
     if (!Json::parseFromStream(rb, is, &root, &err) || !root.isArray()) {
-        last_error_ = "qbit response not a JSON array";
+        set_error("qbit response not a JSON array");
         return {};
     }
 
@@ -336,7 +336,7 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
         qt.state          = t.get("state", "").asString();
         out.push_back(std::move(qt));
     }
-    last_error_.clear();
+    set_error({});
     return out;
 }
 
@@ -364,9 +364,9 @@ bool QbittorrentClient::delete_torrent(const std::string& hash,
     // qBit returns 200 with empty body on success, even when the hash
     // doesn't exist (no-op). last_error_ is set by http_post if the
     // call itself failed (network, 4xx, etc.).
-    if (!last_error_.empty()) {
+    if (!last_error().empty()) {
         spdlog::warn("[qbit] delete_torrent({}) failed: {}",
-                     lower_hash, last_error_);
+                     lower_hash, last_error());
         return false;
     }
     spdlog::info("[qbit] delete_torrent({}, files={})",
@@ -386,15 +386,15 @@ bool QbittorrentClient::pause_all() {
         }
     }
     // hashes=all is qBit's documented "select all torrents" sentinel.
-    last_error_.clear();
+    set_error({});
     http_post("/api/v2/torrents/stop", "hashes=all");  // qBit 5.x
-    if (!last_error_.empty()) {
+    if (!last_error().empty()) {
         // Fall back to legacy 4.x alias.
-        last_error_.clear();
+        set_error({});
         http_post("/api/v2/torrents/pause", "hashes=all");
     }
-    if (!last_error_.empty()) {
-        spdlog::warn("[qbit] pause_all failed: {}", last_error_);
+    if (!last_error().empty()) {
+        spdlog::warn("[qbit] pause_all failed: {}", last_error());
         return false;
     }
     spdlog::info("[qbit] paused all torrents (playback start)");
@@ -408,14 +408,14 @@ bool QbittorrentClient::resume_all() {
             if (!login_locked()) return false;
         }
     }
-    last_error_.clear();
+    set_error({});
     http_post("/api/v2/torrents/start", "hashes=all");  // qBit 5.x
-    if (!last_error_.empty()) {
-        last_error_.clear();
+    if (!last_error().empty()) {
+        set_error({});
         http_post("/api/v2/torrents/resume", "hashes=all");  // qBit 4.x
     }
-    if (!last_error_.empty()) {
-        spdlog::warn("[qbit] resume_all failed: {}", last_error_);
+    if (!last_error().empty()) {
+        spdlog::warn("[qbit] resume_all failed: {}", last_error());
         return false;
     }
     spdlog::info("[qbit] resumed all torrents (playback end)");

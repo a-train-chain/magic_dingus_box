@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "media_browser/ui/mb_screen.h"
@@ -58,6 +60,12 @@ public:
                    ::media_browser::RadarrClient& radarr,
                    QbittorrentClient* qbit = nullptr);
 
+    // The quick-add worker publishes into members — join before they
+    // die (a joinable std::thread member at destruction is terminate()).
+    ~PlaybackScreen() override {
+        if (quickadd_worker_.joinable()) quickadd_worker_.join();
+    }
+
     // Caller (main.cpp dispatcher, on Detail->Playback) sets these BEFORE
     // returning Screen::Playback. Last setter wins.
     void set_movie(std::string host_path, std::string title);
@@ -93,6 +101,17 @@ private:
     bool was_video_active_ = false;
     bool exit_pending_ = false;
     std::string deferred_toast_;
+
+    // Async quick-add (overlay SELECT). get_quality_profiles + add_movie
+    // are two 5s-timeout HTTP calls — run inline they froze the PLAYING
+    // MOVIE for up to ~10s (and on a Pi 4B, where the Radarr container is
+    // docker-paused during playback, the freeze was guaranteed and the
+    // add could never succeed until playback ended). The worker composes
+    // the result toast; update() drains it. One at a time.
+    std::thread quickadd_worker_;
+    std::atomic<bool> quickadd_in_flight_{false};
+    std::atomic<bool> quickadd_done_{false};
+    std::string quickadd_toast_;   // worker → render, ordered by quickadd_done_
 
     // Frames remaining during which we suppress end-of-stream detection.
     // Counted down by update(). The state.video_active flag flickers

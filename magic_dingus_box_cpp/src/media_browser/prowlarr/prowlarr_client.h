@@ -144,8 +144,13 @@ public:
     // — the result remains available until the next search_async().
     std::optional<ReleaseSummary> peek_result() const;
 
-    // Latest error string when state == Failed.
-    const std::string& peek_error() const { return last_error_; }
+    // Latest error string when state == Failed. Copy under err_mtx_ —
+    // the render thread reads while search workers write; the old
+    // by-reference accessor was a data race on std::string.
+    std::string peek_error() const {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        return last_error_;
+    }
 
     // Stop any in-flight search and join the worker thread. Called by
     // the destructor; exposed so callers can force-cancel before another
@@ -203,7 +208,16 @@ private:
     // ReleaseSummary.
     mutable std::mutex result_mtx_;
     std::optional<ReleaseSummary> result_;
-    std::string last_error_;
+    // Error string has its own mutex (set_error never touches
+    // result_mtx_, so callers already holding result_mtx_ can safely
+    // call set_error with no lock-ordering hazard).
+    mutable std::mutex err_mtx_;
+    std::string last_error_;  // guarded by err_mtx_ — set_error()/peek_error()
+
+    void set_error(std::string msg) {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        last_error_ = std::move(msg);
+    }
 
     // Per-release records + per-indexer stats from the most recent
     // search. Populated alongside `result_` on search completion. Kept

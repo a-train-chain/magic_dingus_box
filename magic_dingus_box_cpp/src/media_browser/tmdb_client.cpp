@@ -101,7 +101,7 @@ std::string TmdbClient::http_get(const std::string& url) {
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         CURL* curl = curl_easy_init();
         if (!curl) {
-            last_error_ = "curl init failed";
+            set_error("curl init failed");
             return {};
         }
         body.clear();
@@ -160,15 +160,15 @@ std::string TmdbClient::http_get(const std::string& url) {
     }
 
     if (rc != CURLE_OK) {
-        last_error_ = curl_easy_strerror(rc);
-        spdlog::error("[media_browser] TMDB HTTP failed after retries: {}", last_error_);
+        set_error(curl_easy_strerror(rc));
+        spdlog::error("[media_browser] TMDB HTTP failed after retries: {}", last_error());
         return {};
     }
     if (http_code >= 400) {
         std::ostringstream os;
         os << "TMDB HTTP " << http_code;
-        last_error_ = os.str();
-        spdlog::error("[media_browser] {} body={}", last_error_, body);
+        set_error(os.str());
+        spdlog::error("[media_browser] {} body={}", last_error(), body);
         return {};
     }
     return body;

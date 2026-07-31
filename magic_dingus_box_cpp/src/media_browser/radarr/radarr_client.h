@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -106,10 +107,20 @@ public:
     // the end. Defense against /library2/foo falsely matching /library.
     static std::string normalize_prefix(std::string s);
 
-    // Diagnostics
-    const std::string& last_error() const { return last_error_; }
+    // Diagnostics. Returns a COPY under the error mutex: screens read
+    // this on the render thread while their workers run client calls
+    // that write it — the old by-reference accessor was a data race on
+    // std::string (torn reads, use-after-free of the old buffer).
+    std::string last_error() const {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        return last_error_;
+    }
 
 protected:
+    void set_error(std::string msg) {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        last_error_ = std::move(msg);
+    }
     // Virtual for mocking (see radarr_mock.h)
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path, const std::string& body);
@@ -123,7 +134,10 @@ protected:
     virtual std::string http_get_long(const std::string& path, int timeout_secs);
 
     Config cfg_;
-    std::string last_error_;
+
+private:
+    mutable std::mutex err_mtx_;
+    std::string last_error_;  // guarded by err_mtx_ — set_error()/last_error()
 };
 
 }  // namespace media_browser

@@ -11,6 +11,7 @@
 
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/worker_pool.h"
 #include "ui/virtual_keyboard.h"
 
 namespace media_browser { class RadarrClient; }
@@ -177,7 +178,7 @@ private:
     LibFetchResult            lib_pending_;
     std::atomic<bool>         lib_result_ready_{false};
     bool                      lib_loading_ = false;
-    std::vector<std::thread>  lib_workers_;
+    WorkerPool lib_workers_;      // reaped each update() tick
 
     // --- Async lookup_ pipeline ---------------------------------------
     // The Radarr /movie/lookup call runs through Radarr's TMDB proxy and
@@ -192,7 +193,7 @@ private:
     std::vector<MovieSearchHit>      lookup_pending_;
     std::atomic<bool>                lookup_result_ready_{false};
     bool                             lookup_loading_ = false;
-    std::vector<std::thread>         lookup_workers_;
+    WorkerPool lookup_workers_;   // reaped each update() tick
 };
 
 }  // namespace media_browser::ui

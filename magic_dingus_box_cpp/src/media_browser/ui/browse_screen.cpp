@@ -453,7 +453,7 @@ void BrowseScreen::ensure_genres_loaded() {
     }
     genres_fetching_.store(true, std::memory_order_release);
     try {
-        tmdb_workers_.emplace_back([this]() {
+        tmdb_workers_.spawn([this]() {
             auto g = tmdb_.get_genres();
             {
                 std::lock_guard<std::mutex> lk(genres_mtx_);
@@ -513,11 +513,13 @@ void BrowseScreen::spawn_page_worker(Category cat, int page) {
         // load_category(Filter) and scroll-driven follow-up pages both
         // hit the right endpoint. Pass filter by value to avoid races
         // with the user mutating current_filter_ while we fetch.
-        tmdb_workers_.emplace_back(&BrowseScreen::run_reload_filter_page,
-                                   this, gen, current_filter_, page);
+        tmdb_workers_.spawn([this, gen, filter = current_filter_, page]() {
+            run_reload_filter_page(gen, filter, page);
+        });
     } else {
-        tmdb_workers_.emplace_back(&BrowseScreen::run_load_page,
-                                   this, gen, cat, page);
+        tmdb_workers_.spawn([this, gen, cat, page]() {
+            run_load_page(gen, cat, page);
+        });
     }
 }
 
@@ -699,6 +701,8 @@ void BrowseScreen::maybe_load_more_pages() {
 
 void BrowseScreen::update() {
     filter_overlay_.tick();
+    // Join+drop finished page/genre workers (instant — see worker_pool.h).
+    tmdb_workers_.reap();
     apply_pending();             // TMDB page workers → movies_
     apply_library_pending();     // Radarr library/queue worker → id-sets
     // Genre worker → genres_ (single-flight; see ensure_genres_loaded).
@@ -726,9 +730,7 @@ BrowseScreen::~BrowseScreen() {
     // complete in 1-7s. The longer ceiling is an accepted trade for
     // resilience under transient VPN-egress flakiness.
     tmdb_current_gen_.fetch_add(1);
-    for (auto& t : tmdb_workers_) {
-        if (t.joinable()) t.join();
-    }
+    tmdb_workers_.join_all();
     // Join the Radarr library-refresh worker too, so a thread mid-CURL can't
     // outlive the screen and publish into freed members. Bounded by
     // RadarrClient's per-attempt curl timeout.

@@ -155,6 +155,14 @@ private:
     std::atomic<bool>          refresh_in_flight_{false};
     std::thread                worker_;
 
+    // Library snapshot cache — WORKER-THREAD-ONLY (one refresh worker at
+    // a time, serialized by refresh_in_flight_). See run_refresh: the
+    // full library is the heaviest Radarr response and feeds only
+    // slow-changing data, so it refreshes on a 30s TTL (or immediately
+    // when the queue references a movie the snapshot doesn't know).
+    std::vector<Movie> lib_cache_;
+    std::chrono::steady_clock::time_point lib_cache_at_{};
+
     // Cancel-confirmation state.
     bool cancel_pending_ = false;
     int cancel_pending_queue_id_ = 0;

@@ -259,46 +259,62 @@ Screen PlaybackScreen::handle_input(
                 return Screen::Playback;
             }
 
-            // Pick the best available quality profile. Mirrors
-            // detail_screen.cpp's pick_quality_profile_id() heuristic:
-            // prefer "Any" so we don't block on a profile mismatch.
-            // get_quality_profiles() is a single HTTP call (~5s in worst
-            // case) — acceptable for a user-triggered press action.
-            int qp = 0;
-            {
-                auto profiles = radarr_.get_quality_profiles();
-                for (const auto& p : profiles) {
-                    if (p.name == "Any") { qp = p.id; break; }
-                }
-                if (qp == 0) {
-                    for (const auto& p : profiles) {
-                        if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
-                    }
-                }
-                if (qp == 0 && !profiles.empty()) {
-                    qp = profiles.front().id;
-                }
-            }
-            if (qp == 0) {
-                overlay_.show_toast("No quality profile");
+            // Quick-add runs on a worker — get_quality_profiles +
+            // add_movie are two 5s-timeout HTTP calls, and this handler
+            // runs while a MOVIE IS PLAYING (see the header note on
+            // quickadd_worker_). The worker composes the outcome toast;
+            // update() shows it when it lands.
+            if (quickadd_in_flight_.load(std::memory_order_acquire)) {
+                overlay_.show_toast("Adding\xe2\x80\xa6");
                 return Screen::Playback;
             }
+            if (quickadd_worker_.joinable()) quickadd_worker_.join();
+            quickadd_in_flight_.store(true, std::memory_order_release);
+            overlay_.show_toast("Adding\xe2\x80\xa6");
+            const int add_tmdb_id = film->tmdb_id;
+            try {
+                quickadd_worker_ = std::thread([this, add_tmdb_id]() {
+                    std::string toast;
+                    // Profile pick mirrors detail_screen.cpp's
+                    // pick_quality_profile_id heuristic: prefer "Any" so
+                    // we don't block on a profile mismatch.
+                    int qp = 0;
+                    auto profiles = radarr_.get_quality_profiles();
+                    for (const auto& p : profiles) {
+                        if (p.name == "Any") { qp = p.id; break; }
+                    }
+                    if (qp == 0) {
+                        for (const auto& p : profiles) {
+                            if (p.name == "HD - 720p/1080p") { qp = p.id; break; }
+                        }
+                    }
+                    if (qp == 0 && !profiles.empty()) qp = profiles.front().id;
 
-            bool added = radarr_.add_movie(film->tmdb_id, qp, /*monitor=*/true);
-            if (added) {
-                overlay_.show_toast("Added \xe2\x80\x94 searching");
-            } else {
-                const std::string& err = radarr_.last_error();
-                // Radarr returns HTTP 400 with "This movie has already been
-                // added" in the body when the title is already in the library.
-                // The last_error_ string is "HTTP 400: <json body>" so we
-                // search the body text for "already" to distinguish that case.
-                if (err.find("already") != std::string::npos ||
-                    err.find("Already") != std::string::npos) {
-                    overlay_.show_toast("Already in library");
-                } else {
-                    overlay_.show_toast("Couldn\xe2\x80\x99t add \xe2\x80\x94 try again");
-                }
+                    if (qp == 0) {
+                        toast = "No quality profile";
+                    } else if (radarr_.add_movie(add_tmdb_id, qp,
+                                                 /*monitor=*/true)) {
+                        toast = "Added \xe2\x80\x94 searching";
+                    } else {
+                        const std::string err = radarr_.last_error();
+                        // Radarr returns HTTP 400 with "This movie has
+                        // already been added" in the body when the title is
+                        // already in the library; the error string is
+                        // "HTTP 400: <json body>".
+                        if (err.find("already") != std::string::npos ||
+                            err.find("Already") != std::string::npos) {
+                            toast = "Already in library";
+                        } else {
+                            toast = "Couldn\xe2\x80\x99t add \xe2\x80\x94 try again";
+                        }
+                    }
+                    quickadd_toast_ = std::move(toast);
+                    quickadd_done_.store(true, std::memory_order_release);
+                    quickadd_in_flight_.store(false, std::memory_order_release);
+                });
+            } catch (const std::system_error&) {
+                quickadd_in_flight_.store(false, std::memory_order_release);
+                overlay_.show_toast("Couldn\xe2\x80\x99t add \xe2\x80\x94 try again");
             }
             return Screen::Playback;
         }
@@ -399,6 +415,12 @@ Screen PlaybackScreen::handle_input(
 }
 
 void PlaybackScreen::update() {
+    // Quick-add outcome from the worker (see handle_input's SELECT
+    // branch). Toast state is render-thread-only, hence the drain here.
+    if (quickadd_done_.exchange(false, std::memory_order_acq_rel)) {
+        overlay_.show_toast(quickadd_toast_);
+    }
+
     // Decay the post-seek / post-enter EOS suppression counter. While
     // it's positive, we ignore the state.video_active true→false
     // transition that GStreamer's FLUSH-seek state-machine produces;

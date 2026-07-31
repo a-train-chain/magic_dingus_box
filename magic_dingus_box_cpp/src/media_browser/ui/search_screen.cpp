@@ -111,12 +111,8 @@ SearchScreen::~SearchScreen() {
     // in ~200ms.
     lib_current_gen_.fetch_add(1);
     lookup_current_gen_.fetch_add(1);
-    for (auto& t : lib_workers_) {
-        if (t.joinable()) t.join();
-    }
-    for (auto& t : lookup_workers_) {
-        if (t.joinable()) t.join();
-    }
+    lib_workers_.join_all();
+    lookup_workers_.join_all();
 }
 
 void SearchScreen::enter() {
@@ -153,7 +149,7 @@ void SearchScreen::start_lib_fetch() {
     lib_loading_ = true;
     const uint64_t my_gen = lib_current_gen_.fetch_add(1) + 1;
     spdlog::info("[SearchScreen] start_lib_fetch (gen={})", my_gen);
-    lib_workers_.emplace_back(&SearchScreen::run_lib_fetch, this, my_gen);
+    lib_workers_.spawn([this, my_gen]() { run_lib_fetch(my_gen); });
 }
 
 void SearchScreen::run_lib_fetch(uint64_t gen) {
@@ -315,8 +311,9 @@ void SearchScreen::start_lookup(std::string query) {
                  my_gen, query);
     // Pass query by value into the worker — the user keeps typing, so
     // query_ might mutate in flight. Each worker captures its own copy.
-    lookup_workers_.emplace_back(&SearchScreen::run_lookup, this,
-                                 my_gen, std::move(query));
+    lookup_workers_.spawn([this, my_gen, q = std::move(query)]() mutable {
+        run_lookup(my_gen, std::move(q));
+    });
 }
 
 void SearchScreen::run_lookup(uint64_t gen, std::string query) {
@@ -349,6 +346,11 @@ void SearchScreen::apply_pending_lookup() {
 }
 
 void SearchScreen::update() {
+    // Join+drop finished workers (instant — see worker_pool.h). Without
+    // this, every lookup left its thread object pinned until shutdown.
+    lib_workers_.reap();
+    lookup_workers_.reap();
+
     // Phone Remote text input: the on-screen-keyboard SELECT path syncs
     // keyboard_.get_text() into query_ inside handle_input() — but when
     // the Phone Remote calls keyboard_.type_char() / backspace() /

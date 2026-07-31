@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
 #include <optional>
@@ -108,8 +109,13 @@ public:
                                           const DiscoverFilter& filter,
                                           int page);
 
-    // Testing / diagnostics.
-    const std::string& last_error() const { return last_error_; }
+    // Testing / diagnostics. Copy under the error mutex — screens read
+    // this on the render thread while their workers run client calls
+    // that write it (same race the Radarr client had).
+    std::string last_error() const {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        return last_error_;
+    }
 
     // True when a key was supplied at construction. Every endpoint here
     // 401s without one, so a keyless box gets zero results from all of
@@ -124,8 +130,14 @@ private:
     std::string http_get(const std::string& url);
     static int extract_year(const std::string& date_yyyy_mm_dd);
 
+    void set_error(std::string msg) {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        last_error_ = std::move(msg);
+    }
+
     std::string api_key_;
-    std::string last_error_;
+    mutable std::mutex err_mtx_;
+    std::string last_error_;  // guarded by err_mtx_ — set_error()/last_error()
 };
 
 }  // namespace media_browser

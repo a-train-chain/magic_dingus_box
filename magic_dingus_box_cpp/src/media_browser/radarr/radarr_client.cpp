@@ -40,7 +40,7 @@ std::string RadarrClient::http_get(const std::string& path) {
 
 std::string RadarrClient::http_get_long(const std::string& path, int timeout_secs) {
     CURL* curl = curl_easy_init();
-    if (!curl) { last_error_ = "curl init failed"; return {}; }
+    if (!curl) { set_error("curl init failed"); return {}; }
     std::string url = cfg_.base_url + path;
     std::string body;
     struct curl_slist* headers = nullptr;
@@ -56,10 +56,10 @@ std::string RadarrClient::http_get_long(const std::string& path, int timeout_sec
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { last_error_ = curl_easy_strerror(rc); return {}; }
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
-        last_error_ = os.str();
+        set_error(os.str());
         return {};
     }
     return body;
@@ -67,7 +67,7 @@ std::string RadarrClient::http_get_long(const std::string& path, int timeout_sec
 
 std::string RadarrClient::http_post(const std::string& path, const std::string& body) {
     CURL* curl = curl_easy_init();
-    if (!curl) { last_error_ = "curl init failed"; return {}; }
+    if (!curl) { set_error("curl init failed"); return {}; }
     std::string url = cfg_.base_url + path;
     std::string resp;
     struct curl_slist* headers = nullptr;
@@ -84,10 +84,10 @@ std::string RadarrClient::http_post(const std::string& path, const std::string& 
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { last_error_ = curl_easy_strerror(rc); return {}; }
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code << ": " << resp;
-        last_error_ = os.str();
+        set_error(os.str());
         return {};
     }
     return resp;
@@ -95,7 +95,7 @@ std::string RadarrClient::http_post(const std::string& path, const std::string& 
 
 std::string RadarrClient::http_delete(const std::string& path) {
     CURL* curl = curl_easy_init();
-    if (!curl) { last_error_ = "curl init failed"; return {}; }
+    if (!curl) { set_error("curl init failed"); return {}; }
     std::string url = cfg_.base_url + path;
     std::string resp;
     struct curl_slist* headers = nullptr;
@@ -111,10 +111,10 @@ std::string RadarrClient::http_delete(const std::string& path) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { last_error_ = curl_easy_strerror(rc); return {}; }
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
-        last_error_ = os.str();
+        set_error(os.str());
         return {};
     }
     return resp;
@@ -160,7 +160,7 @@ std::optional<Movie> RadarrClient::get_movie(int radarr_id) {
 }
 
 bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) {
-    last_error_.clear();
+    set_error({});
 
     // Radarr v3 requires the full movie record (title, year, slug, images,
     // minimumAvailability, etc.) when POSTing to /api/v3/movie. The minimum
@@ -171,8 +171,8 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
                             + std::to_string(tmdb_id);
     std::string lookup_resp = http_get(lookup_path);
     if (lookup_resp.empty()) {
-        last_error_ = "Radarr lookup failed for tmdb:" + std::to_string(tmdb_id);
-        spdlog::error("[radarr] add_movie: {}", last_error_);
+        set_error("Radarr lookup failed for tmdb:" + std::to_string(tmdb_id));
+        spdlog::error("[radarr] add_movie: {}", last_error());
         return false;
     }
 
@@ -181,8 +181,8 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     std::string err;
     std::istringstream is(lookup_resp);
     if (!Json::parseFromStream(rb, is, &root, &err)) {
-        last_error_ = "Radarr lookup parse failed: " + err;
-        spdlog::error("[radarr] add_movie: {}", last_error_);
+        set_error("Radarr lookup parse failed: " + err);
+        spdlog::error("[radarr] add_movie: {}", last_error());
         return false;
     }
 
@@ -191,16 +191,16 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     Json::Value movie;
     if (root.isArray()) {
         if (root.size() == 0) {
-            last_error_ = "Radarr lookup returned no results";
-            spdlog::error("[radarr] add_movie: {}", last_error_);
+            set_error("Radarr lookup returned no results");
+            spdlog::error("[radarr] add_movie: {}", last_error());
             return false;
         }
         movie = root[0u];
     } else if (root.isObject()) {
         movie = root;
     } else {
-        last_error_ = "Radarr lookup returned unexpected JSON shape";
-        spdlog::error("[radarr] add_movie: {}", last_error_);
+        set_error("Radarr lookup returned unexpected JSON shape");
+        spdlog::error("[radarr] add_movie: {}", last_error());
         return false;
     }
 
@@ -223,8 +223,8 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     // grabbed today than wait three months for a Bluray.
     auto roots = get_root_folders();
     if (roots.empty()) {
-        last_error_ = "No root folder configured in Radarr";
-        spdlog::error("[radarr] add_movie: {}", last_error_);
+        set_error("No root folder configured in Radarr");
+        spdlog::error("[radarr] add_movie: {}", last_error());
         return false;
     }
     movie["qualityProfileId"]    = quality_profile_id;
@@ -244,7 +244,7 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     auto resp = http_post("/api/v3/movie", body);
     if (resp.empty()) {
         // last_error_ already set by http_post on failure.
-        spdlog::error("[radarr] add_movie POST failed: {}", last_error_);
+        spdlog::error("[radarr] add_movie POST failed: {}", last_error());
         return false;
     }
     spdlog::info("[radarr] add_movie ok: tmdb_id={} title='{}' rootFolder='{}'",
@@ -257,9 +257,9 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
 bool RadarrClient::remove_movie(int radarr_id, bool delete_files) {
     std::string path = "/api/v3/movie/" + std::to_string(radarr_id)
                      + "?deleteFiles=" + (delete_files ? "true" : "false");
-    last_error_.clear();
+    set_error({});
     http_delete(path);
-    return last_error_.empty();
+    return last_error().empty();
 }
 
 bool RadarrClient::trigger_search(int radarr_id) {
@@ -282,10 +282,10 @@ ActiveSearches RadarrClient::get_active_searches() {
 }
 
 bool RadarrClient::cancel_queue_item(int queue_id) {
-    last_error_.clear();
+    set_error({});
     http_delete("/api/v3/queue/" + std::to_string(queue_id)
                 + "?removeFromClient=true&blocklist=false");
-    return last_error_.empty();
+    return last_error().empty();
 }
 
 bool RadarrClient::grab_release(const Json::Value& release) {
@@ -340,7 +340,7 @@ RadarrClient::get_movie_download_hashes(int movie_id) {
     std::string err;
     std::istringstream is(resp);
     if (!Json::parseFromStream(rb, is, &root, &err)) {
-        last_error_ = "history parse error";
+        set_error("history parse error");
         spdlog::warn("[radarr] history parse failed for movie {}: {}",
                      movie_id, err);
         return {};

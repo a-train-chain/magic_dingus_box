@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 7 — Media Browser thread safety)
+- **All four HTTP clients' error strings are now race-free.** Screens
+  read `last_error()` / `peek_error()` on the render thread while their
+  workers run client calls that write it — every accessor returned a
+  bare reference to the live `std::string` (torn reads, use-after-free
+  of the old buffer). Radarr, TMDB, Prowlarr, and qBittorrent clients
+  now write through a mutex-guarded `set_error()` and return copies.
+- **Quick-add from the playback overlay no longer freezes the movie.**
+  It ran `get_quality_profiles` + `add_movie` (two 5s-timeout calls)
+  inline while video played — ~10s frozen picture worst-case, and on a
+  Pi 4B (Radarr docker-paused during playback) the freeze was
+  guaranteed. Both calls now run on a worker that composes the outcome
+  toast; the overlay shows "Adding…" meanwhile.
+- **Browse/Search background workers are reaped as they finish** via a
+  shared `WorkerPool` (the Prowlarr done-flag pattern extracted). The
+  screens previously kept every finished page-fetch/lookup thread
+  pinned — stack and kernel task — until process exit.
+- **QueueScreen stops re-downloading the entire Radarr library every
+  1.5 seconds.** The full library (heaviest Radarr response, fetched
+  ~57,000×/day) only feeds poster backfill and the awaiting list — it
+  now refreshes on a 30s TTL, with an immediate bypass when the queue
+  contains a movie the snapshot doesn't know. Queue + live qBit
+  telemetry keep the 1.5s cadence.
+
 ### Fixed (hardening batch 6 — Media Browser render thread)
 - **Confirm Remove no longer risks a watchdog kill.** The 4-step
   cleanup (queue cancel → history walk + qBittorrent purges →

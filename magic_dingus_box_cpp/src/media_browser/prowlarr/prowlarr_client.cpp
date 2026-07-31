@@ -125,8 +125,8 @@ void ProwlarrClient::search_async(const std::string& title, int year) {
         // distinguish from a network failure via peek_error().
         std::lock_guard<std::mutex> lk(result_mtx_);
         result_.reset();
-        last_error_ = "Prowlarr API key not configured "
-                      "(set MDB_PROWLARR_API_KEY)";
+        set_error("Prowlarr API key not configured "
+                      "(set MDB_PROWLARR_API_KEY)");
         state_.store(State::Failed);
         return;
     }
@@ -157,7 +157,7 @@ void ProwlarrClient::search_async(const std::string& title, int year) {
     {
         std::lock_guard<std::mutex> lk(result_mtx_);
         result_.reset();
-        last_error_.clear();
+        set_error({});
     }
 
     auto done = std::make_shared<std::atomic<bool>>(false);
@@ -230,7 +230,7 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
     if (body.empty()) {
         std::lock_guard<std::mutex> lk(result_mtx_);
         if (stale()) return;  // Re-check under the lock — defensive.
-        if (last_error_.empty()) {
+        if (peek_error().empty()) {
             // http_get sets last_error_ for hard failures; if it didn't,
             // an empty body with no curl error is an empty result set
             // (treat as zero releases rather than an error).
@@ -254,7 +254,7 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
         if (stale()) return;
         std::lock_guard<std::mutex> lk(result_mtx_);
         if (stale()) return;
-        last_error_ = "Prowlarr returned non-array response";
+        set_error("Prowlarr returned non-array response");
         spdlog::warn("[prowlarr] parse error for query '{}': {}",
                      q.str(), err);
         state_.store(State::Failed);
@@ -321,7 +321,7 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
         std::lock_guard<std::mutex> lk(result_mtx_);
         if (stale()) return;
         result_ = summary;
-        last_error_.clear();
+        set_error({});
     }
     state_.store(State::Ready);
 }
@@ -431,7 +431,7 @@ bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) {
     std::istringstream is(get_resp);
     if (!Json::parseFromStream(rb, is, &obj, &err) || !obj.isObject()) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = "Prowlarr indexer GET returned non-object";
+        set_error("Prowlarr indexer GET returned non-object");
         return false;
     }
 
@@ -468,7 +468,7 @@ std::string ProwlarrClient::http_get_long(const std::string& path, int timeout_s
     CURL* curl = curl_easy_init();
     if (!curl) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = "curl init failed";
+        set_error("curl init failed");
         return {};
     }
 
@@ -499,12 +499,12 @@ std::string ProwlarrClient::http_get_long(const std::string& path, int timeout_s
 
     if (rc != CURLE_OK) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+        set_error(std::string("curl: ") + curl_easy_strerror(rc));
         return {};
     }
     if (http_code >= 400) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = "Prowlarr HTTP " + std::to_string(http_code);
+        set_error("Prowlarr HTTP " + std::to_string(http_code));
         return {};
     }
     return body;
@@ -517,7 +517,7 @@ std::string ProwlarrClient::http_put(const std::string& path,
     CURL* curl = curl_easy_init();
     if (!curl) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = "curl init failed";
+        set_error("curl init failed");
         return {};
     }
 
@@ -549,12 +549,12 @@ std::string ProwlarrClient::http_put(const std::string& path,
 
     if (rc != CURLE_OK) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+        set_error(std::string("curl: ") + curl_easy_strerror(rc));
         return {};
     }
     if (http_code >= 400) {
         std::lock_guard<std::mutex> lk(result_mtx_);
-        last_error_ = "Prowlarr HTTP " + std::to_string(http_code);
+        set_error("Prowlarr HTTP " + std::to_string(http_code));
         return {};
     }
     // Some Prowlarr endpoints respond with 202 Accepted + empty body on

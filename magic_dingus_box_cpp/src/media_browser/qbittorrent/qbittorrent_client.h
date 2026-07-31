@@ -114,10 +114,21 @@ public:
     virtual bool pause_all();
     virtual bool resume_all();
 
-    // Diagnostics
-    const std::string& last_error() const { return last_error_; }
+    // Diagnostics. Copy under err_mtx_ — the render thread reads this
+    // while worker threads run client calls that write it (same race
+    // class the Radarr/TMDB/Prowlarr clients had).
+    std::string last_error() const {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        return last_error_;
+    }
 
 protected:
+    // err_mtx_ is a LEAF mutex: set_error never touches cookie_mtx_, so
+    // the call sites that already hold cookie_mtx_ nest it safely.
+    void set_error(std::string msg) {
+        std::lock_guard<std::mutex> lk(err_mtx_);
+        last_error_ = std::move(msg);
+    }
     // Virtual seam for tests (mock client).
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path,
@@ -132,7 +143,8 @@ protected:
 private:
     std::mutex  cookie_mtx_;
     std::string sid_cookie_;     // contents of "Set-Cookie: SID=..."
-    std::string last_error_;
+    mutable std::mutex err_mtx_;
+    std::string last_error_;     // guarded by err_mtx_ — set_error()/last_error()
 };
 
 }  // namespace media_browser

@@ -181,13 +181,37 @@ void QueueScreen::run_refresh() {
     PendingResult r;
     r.queue = radarr_.get_queue();
 
-    // Fetch library once. We use it for two things:
+    // Library snapshot — used for two things:
     //   1. The "awaiting release" list (monitored, no file, not in queue).
     //   2. Filling in poster_url on each queue item — Radarr's /queue
     //      API doesn't include movie images, so without this cross-ref
     //      every queue row would render the deterministic-tint
     //      placeholder instead of the actual poster.
-    auto library = radarr_.get_library();
+    // CACHED with a 30s TTL: this is the full movie list — the heaviest
+    // Radarr response — and it only feeds data that changes on add/
+    // remove/import, not per-second. Re-fetching it on every 1.5s tick
+    // re-downloaded and re-parsed the entire library ~57,000 times a
+    // day. The queue itself and the qBit live overlay keep the 1.5s
+    // cadence. Bypass: a queue item whose movie_id is missing from the
+    // snapshot (a just-added movie) forces an immediate refetch so its
+    // poster and awaiting-state appear right away. lib_cache_* members
+    // are worker-thread-only (one refresh worker at a time, serialized
+    // by refresh_in_flight_).
+    const auto now = std::chrono::steady_clock::now();
+    bool lib_stale = (now - lib_cache_at_) > std::chrono::seconds(30);
+    if (!lib_stale) {
+        std::unordered_set<int> cached_ids;
+        cached_ids.reserve(lib_cache_.size());
+        for (const auto& m : lib_cache_) cached_ids.insert(m.radarr_id);
+        for (const auto& q : r.queue) {
+            if (cached_ids.count(q.movie_id) == 0) { lib_stale = true; break; }
+        }
+    }
+    if (lib_stale) {
+        lib_cache_ = radarr_.get_library();
+        lib_cache_at_ = now;
+    }
+    const auto& library = lib_cache_;
 
     // Build a movie_id -> poster_url lookup for the queue cross-ref.
     std::unordered_map<int, std::string> id_to_poster;
@@ -210,11 +234,13 @@ void QueueScreen::run_refresh() {
 
     // Build "awaiting release" list — monitored library movies that
     // don't have a file yet and aren't already in the active queue.
-    for (auto& m : library) {
+    // COPY (not move) out of the cached snapshot — moving would gut
+    // lib_cache_ for the next tick.
+    for (const auto& m : library) {
         if (!m.monitored) continue;
         if (m.has_file) continue;
         if (active_movie_ids.count(m.radarr_id) > 0) continue;
-        r.awaiting.push_back(std::move(m));
+        r.awaiting.push_back(m);
     }
 
     // Which of those are being actively searched right now (add-time

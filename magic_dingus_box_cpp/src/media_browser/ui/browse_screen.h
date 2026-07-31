@@ -13,6 +13,7 @@
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_filter_overlay.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/worker_pool.h"
 
 namespace media_browser {
 class RadarrClient;
@@ -206,7 +207,9 @@ private:
     // All worker threads spawned during this screen's lifetime.
     // Joined in the destructor so a worker mid-CURL doesn't outlive
     // the BrowseScreen and segfault on result publication.
-    std::vector<std::thread>   tmdb_workers_;
+    // Reaped each update() tick — finished workers no longer pin their
+    // thread objects for the process lifetime (see worker_pool.h).
+    WorkerPool tmdb_workers_;
 
     // --- Pagination state (per-category) ---------------------------
     // The active category accumulates pages as the user scrolls. State
