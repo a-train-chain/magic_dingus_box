@@ -1,5 +1,6 @@
 #include "settings_persistence.h"
 #include "../utils/config.h"
+#include "../utils/fsync_util.h"
 #include "../utils/logger.h"
 #include <json/json.h>
 #include <fstream>
@@ -303,6 +304,17 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
         return utils::Result<>::fail(error);
     }
 
+    // Durability: flush the temp file's DATA before the rename, or a
+    // power cut can journal the rename ahead of the data and leave a
+    // zero-length settings.json — which peek_is_crt_native() silently
+    // reads as "reboot into CRT mode". Best-effort (see fsync_util.h):
+    // a failed fsync degrades to exactly the old behavior, so it warns
+    // rather than failing the save. Saves happen only on operator
+    // actions, so the fsync cost is irrelevant here.
+    if (!utils::fsync_file(tmp_path)) {
+        LOG_WARN("fsync of {} failed — save proceeds without durability guarantee", tmp_path);
+    }
+
     // Atomically rename temp file to target
     std::error_code ec;
     fs::rename(tmp_path, path, ec);
@@ -312,6 +324,9 @@ utils::Result<> SettingsPersistence::save_settings(const AppState& state) {
         fs::remove(tmp_path, ec);
         return utils::Result<>::fail(error);
     }
+
+    // Make the rename itself durable (directory entry update).
+    (void)utils::fsync_parent_dir(path);
 
     LOG_DEBUG("Settings saved to {}", path);
     return utils::Result<>::ok();

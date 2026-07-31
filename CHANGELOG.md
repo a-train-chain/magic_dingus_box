@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Settings and controller-profile saves now survive a power cut.**
+  Both used tmp-write + atomic rename with no fsync, so a power cut
+  could journal the rename ahead of the file's data and leave a
+  zero-length file — and `peek_is_crt_native()` treats an unreadable
+  settings.json as CRT_NATIVE, silently rebooting a MODERN_TV 1080p
+  unit into 720p CRT mode with no error anywhere. A captured controller
+  profile (minutes of wizard work) could vanish the same way. Saves now
+  fsync the temp file's data before the rename and the directory after
+  (`utils/fsync_util.h`), warn-only on failure so save semantics are
+  unchanged. Deliberately NOT applied to StatusWriter's 5-per-second
+  status file — fsync there would burn SD lifespan for a file that's
+  rewritten 200ms later.
 - **One kiosk systemd unit, not three.** The canonical unit
   (`magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service`:
   Type=notify, WatchdogSec=10, Restart=on-failure, EnvironmentFile for

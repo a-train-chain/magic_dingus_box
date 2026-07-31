@@ -9,6 +9,7 @@
 #include <sstream>
 
 #include "../utils/config.h"
+#include "../utils/fsync_util.h"
 
 #ifdef __linux__
 #include <linux/input-event-codes.h>  // only for the code constants; see below
@@ -421,12 +422,20 @@ bool save_profile_store(const std::map<std::string, PhysicalProfile>& profiles) 
         }
     }
 
+    // Durability: flush the temp file's data before the rename so a power
+    // cut can't zero out a captured controller profile (the wizard's work
+    // is minutes of button mapping — worth a few ms of fsync). Best-effort
+    // by design: a failed fsync degrades to exactly the old behavior, so
+    // it never fails the save. See utils/fsync_util.h.
+    (void)utils::fsync_file(tmp);
+
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec);
     if (ec) {
         std::filesystem::remove(tmp, ec);
         return false;
     }
+    (void)utils::fsync_parent_dir(path);
     return true;
 }
 
