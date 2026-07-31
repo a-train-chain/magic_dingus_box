@@ -1386,6 +1386,32 @@ def create_app(data_dir: Path, config=None) -> Flask:
     import tempfile
     tempfile.tempdir = str(upload_temp_dir)
 
+    # Sweep leftovers from previous runs. Transcode inputs, probe files,
+    # import staging ZIPs and ffmpeg-stderr temps all rely on in-process
+    # cleanup by daemon worker threads whose job state is in-memory only —
+    # a service restart, OOM kill, or power cut mid-job orphaned them here
+    # permanently (a single interrupted upload can strand up to
+    # MAX_CONTENT_LENGTH bytes on the SD card with nothing in any UI
+    # pointing at the cause). No upload or transcode survives a restart,
+    # so at this point in startup nothing in the directory can be live.
+    _swept_bytes = 0
+    for _leftover in upload_temp_dir.iterdir():
+        try:
+            if _leftover.is_dir() and not _leftover.is_symlink():
+                _swept_bytes += sum(
+                    f.stat().st_size
+                    for f in _leftover.rglob("*") if f.is_file())
+                shutil.rmtree(_leftover, ignore_errors=True)
+            else:
+                _swept_bytes += _leftover.stat().st_size
+                _leftover.unlink()
+        except OSError:
+            pass  # vanished mid-sweep or unreadable — not worth failing startup
+    if _swept_bytes:
+        print(f"[upload_temp] swept {_swept_bytes / (1024 * 1024):.1f} MB "
+              "of orphaned upload/transcode temp files from previous runs",
+              flush=True)
+
     
     # Optional simple token auth for admin APIs (disabled by default)
     _admin_token = os.getenv("MAGIC_ADMIN_TOKEN")

@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **One flaky core download no longer aborts every remaining core
+  install.** install_cores.sh runs under `set -e`, and its download
+  loop's failure branch was dead code: a failed bare `wget` killed the
+  whole script mid-loop, so a single transient network error left every
+  remaining core uninstalled — worst from update.sh's OTA cores
+  bootstrap, which then continued with games that cannot launch (and
+  `--pi` bench mode masked the bug by shipping the function without the
+  `set -e` prologue). The wget/unzip pair now runs as the `if` condition
+  with `--timeout=30 --tries=2`, failed downloads log ✗ and move on, and
+  the temp zip is always cleaned up. Pinned by a bats test that runs the
+  real script with a stubbed failing download (verified on the Pi: 9/10
+  cores install around a failed one).
+- **Orphaned upload/transcode temp files are swept at web-admin
+  startup.** `data/upload_temp` (where TMPDIR points, holding transcode
+  inputs, probe files, and import staging ZIPs) was never cleaned after
+  a crash: job state is in-memory and the workers are daemon threads, so
+  a service restart or power cut mid-job stranded up to 8GB per incident
+  on the SD card, forever, with nothing pointing at the cause.
+  create_app now empties the directory at startup — nothing in it can be
+  live then — and logs the megabytes reclaimed. Verified live on the
+  box: planted 32MB orphan swept on restart with a journal line.
+- **tests/local/update_rsync_excludes.bats works again** — the suite
+  went silently red when the 2026-07-30 OTA fix added
+  `--include thumbnails/systems/***` lines to update.sh's rsync blocks
+  (the block parser only tolerated `--exclude`). The parser now accepts
+  both, and a new test pins the include's presence and its
+  before-the-blanket-exclude ordering in all four blocks.
 - **Backups now actually contain the device settings.** The web admin's
   Backup/Restore derived the settings.json path as
   `magic_dingus_box_cpp/config` — a directory the kiosk never reads —

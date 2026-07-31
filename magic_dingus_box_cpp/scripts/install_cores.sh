@@ -138,7 +138,10 @@ install_cores_logic() {
     # which would leave the kiosk unable to read its own cores.
     place_core() {
         local so="$1"
-        [ -f "$CORE_DIR/$so" ] && cp -f "$CORE_DIR/$so" "$APP_CORE_DIR/$so"
+        # `|| true`: under set -e a failing bare AND-list aborts the whole
+        # script — a zip that unpacked without the expected .so would have
+        # killed the run here instead of moving to the next core.
+        { [ -f "$CORE_DIR/$so" ] && cp -f "$CORE_DIR/$so" "$APP_CORE_DIR/$so"; } || true
         chown "$TARGET_USER" "$CORE_DIR/$so" "$APP_CORE_DIR/$so" 2>/dev/null || true
         chmod 755 "$CORE_DIR/$so" "$APP_CORE_DIR/$so" 2>/dev/null || true
     }
@@ -158,15 +161,26 @@ install_cores_logic() {
         else
             echo "  Downloading $core_so..."
             zip_file="${CORES_MAP[$core_so]}"
-            wget -q "$BUILDBOT_URL/$zip_file" -O "/tmp/$zip_file"
-            if [ $? -eq 0 ]; then
-                unzip -o -d "$CORE_DIR" "/tmp/$zip_file"
+            # wget/unzip run as the `if` condition, NOT as bare commands
+            # followed by `[ $? -eq 0 ]`: under this script's set -e a
+            # failing bare command kills the whole run mid-loop, so the ✗
+            # branch below was unreachable and one transient network
+            # failure left every remaining core uninstalled — worst from
+            # update.sh's OTA cores bootstrap, which then continues with
+            # games that cannot launch. --pi mode masked this on the
+            # bench: typeset -f ships this function WITHOUT the set -e
+            # prologue. The timeout bounds a wedged connection — the OTA
+            # path has no other clock on this download.
+            if wget -q --timeout=30 --tries=2 "$BUILDBOT_URL/$zip_file" -O "/tmp/$zip_file" \
+                    && unzip -o -d "$CORE_DIR" "/tmp/$zip_file"; then
                 place_core "$core_so"
-                rm "/tmp/$zip_file"
                 echo "  ✓ $core_so downloaded and installed"
             else
-                echo "  ✗ Failed to download $core_so"
+                echo "  ✗ Failed to download $core_so — continuing with the remaining cores"
             fi
+            # Always remove the temp zip: a failed wget -O still leaves a
+            # zero-byte (or truncated) file behind.
+            rm -f "/tmp/$zip_file"
         fi
     done
     

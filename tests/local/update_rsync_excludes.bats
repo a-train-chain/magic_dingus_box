@@ -37,10 +37,13 @@ extract_blocks() {
 import re, sys
 with open("magic_dingus_box_cpp/scripts/update.sh") as f:
     src = f.read()
-# Match rsync command + its --exclude list up to the source/dest pair on the
+# Match rsync command + its filter list up to the source/dest pair on the
 # closing line. Endpoint vars vary in case ($content_dir, $INSTALL_DIR,
-# $BACKUP_DIR), so the regex is permissive about variable names.
-pattern = r'rsync -[a-z]+\s+--delete[^\n]*\n((?:\s*--exclude\s+\'[^\']+\'[^\n]*\n)+)\s*"\$[A-Za-z_]+/?"\s+"\$[A-Za-z_]+/?"'
+# $BACKUP_DIR), so the regex is permissive about variable names. Blocks
+# carry --include lines as well as --exclude since the 2026-07-30 OTA fix
+# (thumbnails/systems/*** must flow before the blanket thumbnails
+# exclude) — the filter-line matcher accepts both, or it finds 0 blocks.
+pattern = r'rsync -[a-z]+\s+--delete[^\n]*\n((?:\s*--(?:exclude|include)\s+\'[^\']+\'[^\n]*\n)+)\s*"\$[A-Za-z_]+/?"\s+"\$[A-Za-z_]+/?"'
 blocks = re.findall(pattern, src)
 if len(blocks) != 4:
     sys.exit(f"Expected exactly 4 rsync blocks; found {len(blocks)}")
@@ -144,4 +147,27 @@ parse_blocks() {
         printf '    %s\n' "${missing[@]}"
         return 1
     fi
+}
+
+@test "all 4 blocks carry the thumbnails/systems/*** include before the blanket exclude" {
+    # System tiles are delivered content: the include must appear in every
+    # block, and it must come BEFORE the thumbnails exclude on the command
+    # line or rsync never sees it (first-match-wins). Regression guard for
+    # the 2026-07-30 OTA fix; this suite went silently red when the
+    # include lines were first added, so this pins them explicitly.
+    local count
+    count=$(grep -c -- "--include 'magic_dingus_box_cpp/data/thumbnails/systems/\*\*\*'" "$UPDATE_SH")
+    [ "$count" -eq 4 ]
+    # In each block the include line number must precede the thumbnails
+    # exclude line number.
+    python3 - "$UPDATE_SH" <<'PY'
+import sys
+src = open(sys.argv[1]).read().splitlines()
+inc = [i for i, l in enumerate(src) if "--include 'magic_dingus_box_cpp/data/thumbnails/systems/***'" in l]
+exc = [i for i, l in enumerate(src) if "--exclude 'magic_dingus_box_cpp/data/thumbnails/*'" in l]
+assert len(inc) == 4, f"expected 4 include lines, found {len(inc)}"
+assert len(exc) == 4, f"expected 4 thumbnails excludes, found {len(exc)}"
+for i, e in zip(inc, exc):
+    assert i < e, f"include at line {i+1} does not precede exclude at line {e+1}"
+PY
 }
