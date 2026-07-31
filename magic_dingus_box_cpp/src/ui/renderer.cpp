@@ -1,4 +1,5 @@
-#define STB_IMAGE_IMPLEMENTATION
+// Declaration-only include — the implementation TU is
+// utils/stb_image_impl.cpp, so renderer edits stop recompiling stb.
 #include "../utils/stb_image.h"
 
 #include "renderer.h"
@@ -27,6 +28,9 @@
 #include <sstream>
 #include <cmath>
 #include <chrono>
+#include <cstring> // strlen — was reaching us transitively through
+                   // stb_image's implementation until that moved to its
+                   // own TU (utils/stb_image_impl.cpp)
 #include <iomanip>
 #include <vector>
 #include <algorithm> // Added for std::min/max

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -19,11 +20,29 @@ def _load(path: Path) -> dict:
 
 
 def _save_atomic(path: Path, data: dict) -> None:
-    # Use path.name + ".tmp" rather than .with_suffix(".tmp") to avoid
-    # replacing the real suffix: paired_remotes.json → paired_remotes.json.tmp
-    tmp = path.parent / (path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, path)
+    # Unique staging file per write (mkstemp), fsync'd before the rename.
+    # The old fixed "<name>.tmp" was shared by every writer — pairing,
+    # last-seen updates, and revocation reaping run on different threads,
+    # and two concurrent saves could promote each other's half-written
+    # staging file (losing a freshly paired device) or crash on a
+    # FileNotFoundError when the other writer renamed first. fsync
+    # matters here too: this file is the phone-remote trust store, and a
+    # power cut that zeroes it silently unpairs every phone.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data, indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def add_device(path: Path, nickname: str, user_agent_hint: str = "") -> str:

@@ -49,7 +49,10 @@ jobs:
               # boxes never show it). Omitting it here shipped a binary
               # asset with the entire movie kiosk compiled out — and
               # update.sh PREFERS this binary over compiling on-Pi.
-              cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON ..
+              # BUILD_TESTS=OFF: the release binary build has no use for
+              # the Catch2 suites (they run in test-local.yml), and under
+              # QEMU every extra TU costs multiplied minutes.
+              cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF ..
               make -j$(nproc)
 
               file magic_dingus_box_cpp

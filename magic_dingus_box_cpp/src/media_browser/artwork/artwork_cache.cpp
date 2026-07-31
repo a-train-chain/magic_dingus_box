@@ -1,8 +1,8 @@
 #include "media_browser/artwork/artwork_cache.h"
 
-// stb_image implementation is already defined in renderer.cpp — here we
+// stb_image implementation lives in utils/stb_image_impl.cpp — here we
 // include the header in "decoder only" mode (no STB_IMAGE_IMPLEMENTATION
-// define) so the symbols resolve against renderer.cpp's copy.
+// define) so the symbols resolve against that TU's copy.
 #include "../../utils/stb_image.h"
 
 #include <spdlog/spdlog.h>
@@ -346,8 +346,8 @@ bool ArtworkCache::try_load_from_disk(const std::string& url,
                                       int& w, int& h,
                                       std::vector<std::uint8_t>& pixels_rgba) {
 #ifdef ARTWORK_CACHE_TEST_MODE
-    // stb_image's symbols come from renderer.cpp's STB_IMAGE_IMPLEMENTATION
-    // define — that file isn't linked into the test binary. The disk
+    // stb_image's symbols come from utils/stb_image_impl.cpp's
+    // STB_IMAGE_IMPLEMENTATION define — not linked into the test binary. The disk
     // read+decode path is exercised live on the Pi (perf_report.sh
     // captures hit/miss counters); tests just verify the wiring around
     // it (dir creation, stats accessors, pause/resume).

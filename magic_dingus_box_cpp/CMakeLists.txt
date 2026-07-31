@@ -36,6 +36,15 @@ else()
 endif()
 option(BUILD_KIOSK "Build the kiosk executable (requires Linux kiosk deps)" ${BUILD_KIOSK_DEFAULT})
 
+# Unit-test targets (all Catch2 suites + the MB test CLI). Default ON so
+# dev builds and CI test jobs are unchanged. Production build paths pass
+# -DBUILD_TESTS=OFF — update.sh's on-Pi OTA rebuild and the release
+# workflow's binary build were compiling the ENTIRE test suite they never
+# run (and fetching Catch2 from GitHub to do it — a needless network
+# dependency in the OTA path, on a Pi where every compiled TU costs real
+# minutes).
+option(BUILD_TESTS "Build unit test targets" ON)
+
 # Declare ENABLE_MEDIA_BROWSER up here, BEFORE any source-list block uses it.
 # Previously this option() was declared near line 268 (next to the
 # MEDIA_BROWSER_SOURCES block) but the if(ENABLE_MEDIA_BROWSER) gates at
@@ -156,6 +165,7 @@ set(APP_SOURCES
 set(UTILS_SOURCES
     src/utils/config.cpp
     src/utils/path_resolver.cpp
+    src/utils/stb_image_impl.cpp
     src/utils/time_format.cpp
     src/utils/wifi_manager.cpp
 )
@@ -374,12 +384,14 @@ if(ENABLE_MEDIA_BROWSER)
     find_package(Boost REQUIRED)  # libtorrent header dependency (headers only)
 
     # --- Catch2 v3 via FetchContent (header-only test framework) ---
-    FetchContent_Declare(
-        Catch2
-        GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-        GIT_TAG v3.5.2
-    )
-    FetchContent_MakeAvailable(Catch2)
+    if(BUILD_TESTS)
+        FetchContent_Declare(
+            Catch2
+            GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+            GIT_TAG v3.5.2
+        )
+        FetchContent_MakeAvailable(Catch2)
+    endif()
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
@@ -416,7 +428,9 @@ if(ENABLE_MEDIA_BROWSER)
     # it existed to keep them OUT of the test binary. It did nothing, and it sent
     # anyone tracing where those files get compiled down a dead end.
 
-    # --- Unit test runner ---
+    # --- Unit test runner (and the MB diagnostic CLI) — test-only targets,
+    # skipped entirely when BUILD_TESTS=OFF (production OTA/CI builds).
+    if(BUILD_TESTS)
     set(MEDIA_BROWSER_TEST_SOURCES
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_movie_drive.cpp
@@ -519,11 +533,16 @@ if(ENABLE_MEDIA_BROWSER)
         pthread
     )
     target_compile_options(test_media_browser PRIVATE -Wall -Wextra)
+    endif()  # BUILD_TESTS
 endif()
 
 # ============================================================
 # Phone Remote feature tests — no Linux-only deps, runs on Mac.
 # ============================================================
+
+# Every standalone unit suite below (retroarch/ui/app/platform/display/
+# utils/video/phone-remote) is test-only — one gate covers them all.
+if(BUILD_TESTS)
 
 # Ensure Catch2 is available (may already be fetched if ENABLE_MEDIA_BROWSER
 # is ON; FetchContent_Declare is idempotent with a matching name).
@@ -706,6 +725,8 @@ if(PHONE_REMOTE_TEST_SOURCES)
     add_test(NAME PhoneRemoteUnit COMMAND test_phone_remote_unit)
     target_compile_options(test_phone_remote_unit PRIVATE -Wall -Wextra)
 endif()
+
+endif()  # BUILD_TESTS — standalone unit suites
 
 # ---------------------------------------------------------------------------
 # controller_probe — on-Pi diagnostic tool, NOT part of the kiosk binary.

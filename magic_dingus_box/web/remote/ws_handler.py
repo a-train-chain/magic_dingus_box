@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,11 +130,19 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                 pos = float(msg.get("pos", 0.0))
                 pos = max(0.0, min(1.0, pos))
                 seek_path = data_dir / "seek_request.json"
-                tmp = data_dir / "seek_request.json.tmp"
-                tmp.write_text(json.dumps({
-                    "schema": 1, "pos": pos, "ts": time.time(),
-                }))
-                os.replace(tmp, seek_path)
+                # Unique staging name per write: each WS connection runs in
+                # its own thread, and two phones scrubbing at once used to
+                # share ONE fixed .tmp name — writer A's os.replace could
+                # promote writer B's half-written file (or hit
+                # FileNotFoundError when B replaced first). Latest-wins on
+                # the FINAL name is fine; the staging file must be private.
+                fd, tmp_name = tempfile.mkstemp(
+                    dir=str(data_dir), prefix=".seek_request.", suffix=".tmp")
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(json.dumps({
+                        "schema": 1, "pos": pos, "ts": time.time(),
+                    }))
+                os.replace(tmp_name, seek_path)
                 ws.send(json.dumps({"t": "ack", "of": "seek", "ok": True}))
             elif t == "type_char":
                 c = msg.get("c", "")

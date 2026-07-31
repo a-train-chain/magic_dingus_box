@@ -136,7 +136,10 @@ run_build() {
     # long-lived build dir's CMake cache carried the ON from the last
     # deploy_cpp.sh run and masked this; with a fresh build dir, a plain
     # `cmake ..` would compile the movie kiosk OUT on every OTA.
-    if ! cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON .. > /dev/null 2>&1; then
+    # BUILD_TESTS=OFF: the OTA rebuild used to compile the ENTIRE Catch2
+    # test suite it never runs — real minutes on a Pi, plus a needless
+    # GitHub fetch (Catch2) in the update path.
+    if ! cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. > /dev/null 2>&1; then
         return 1
     fi
 

@@ -87,6 +87,22 @@
 #include <systemd/sd-daemon.h>
 #endif
 
+#include <csignal>
+
+// `systemctl stop` (and therefore every OTA restart) delivers SIGTERM.
+// Without a handler the default action killed the kiosk mid-frame: the
+// STOPPING=1 notification was never sent and the GL/EGL/DRM/pipeline
+// cleanup below the main loop never ran — the clean shutdown path
+// existed but was unreachable from the one place that stops the service.
+// The handler only requests a loop exit; the normal end-of-main path
+// does the rest, and TimeoutStopSec=5 still bounds a wedged cleanup
+// with SIGKILL. SA_RESTART keeps blocking syscalls (waitpid during a
+// game session, poll in the input layer) from surfacing EINTR to code
+// that never expected it — the render loop notices the flag within a
+// frame anyway.
+static volatile sig_atomic_t g_shutdown_requested = 0;
+static void handle_shutdown_signal(int) { g_shutdown_requested = 1; }
+
 using namespace platform;
 using namespace video;
 using namespace ui;
@@ -1081,6 +1097,17 @@ int main(int /* argc */, char* /* argv */[]) {
     sd_notify(0, "READY=1");
 #endif
 
+    // Graceful-stop signals — see handle_shutdown_signal at the top of
+    // this file.
+    {
+        struct sigaction sa{};
+        sa.sa_handler = handle_shutdown_signal;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART;
+        sigaction(SIGTERM, &sa, nullptr);
+        sigaction(SIGINT, &sa, nullptr);
+    }
+
     // Main loop
     bool running = true;
     auto last_frame = std::chrono::steady_clock::now();
@@ -1417,7 +1444,7 @@ int main(int /* argc */, char* /* argv */[]) {
     bool prev_vpn_healthy = state.media_browser_vpn_healthy;
 #endif
 
-    while (running) {
+    while (running && !g_shutdown_requested) {
 #ifdef HAVE_SYSTEMD
         sd_notify(0, "WATCHDOG=1");
 #endif
@@ -3797,6 +3824,9 @@ int main(int /* argc */, char* /* argv */[]) {
 #endif
 
     // Cleanup
+    if (g_shutdown_requested) {
+        LOG_INFO("Shutdown requested by signal (systemctl stop / SIGTERM)");
+    }
     LOG_INFO("Shutting down...");
     ui_renderer.cleanup();
     gst_renderer.cleanup();

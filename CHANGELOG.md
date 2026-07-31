@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 5)
+- **`systemctl stop` now shuts the kiosk down cleanly.** Every OTA
+  restart delivered SIGTERM to a process with no handler — the kiosk
+  died mid-frame, `STOPPING=1` was never sent, and the GL/EGL/DRM/
+  pipeline cleanup after the main loop never ran even though it
+  existed. A SIGTERM/SIGINT handler (SA_RESTART, sig_atomic_t flag) now
+  requests a normal loop exit; `TimeoutStopSec=5` still bounds a wedged
+  cleanup.
+- **Production builds no longer compile the test suite.** New
+  `BUILD_TESTS` option (default ON — dev builds and CI unchanged);
+  update.sh's on-Pi OTA rebuild and the release workflow pass
+  `-DBUILD_TESTS=OFF`, skipping every Catch2 suite, the MB test CLI,
+  and the Catch2 GitHub fetch — real minutes per OTA on a Pi, and one
+  less network dependency in the update path.
+- **Concurrent phone-remote writers can no longer corrupt shared
+  files.** Two phones seeking at once raced on one fixed
+  `seek_request.json.tmp` staging name; `paired_remotes.json` had three
+  unsynchronized writers sharing one `.tmp` (a lost race could drop a
+  freshly paired phone). Both now stage through unique `mkstemp` files;
+  the pairing trust store is also fsync'd before rename so a power cut
+  can't zero it and silently unpair every phone.
+- **Removed the dead MPV-era files in `src/video/`** (`controller.cpp`
+  — an un-compiled divergent twin of the real `app::Controller` —
+  plus `mpv_player` and `mpv_renderer`), which invited edits to files
+  nothing builds.
+- **`stb_image`'s implementation moved out of `renderer.cpp`** (the
+  project's largest TU) into its own tiny TU — renderer edits stop
+  recompiling the whole decoder on every build.
+
 ### Fixed (hardening batch 4)
 - **Formatting a new drive can no longer detach the live movie
   library.** The storage-prepare endpoint lazy-unmounted `/mnt/ssd`
