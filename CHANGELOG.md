@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-07-30
+
+The release-infrastructure release: the OTA pipeline was audited end to
+end ahead of the Pi 5 golden image, and one golden image now serves both
+Pi 4B and Pi 5 units.
+
+### Fixed (OTA pipeline)
+- **Media Browser is no longer compiled out of OTA builds.** Both the CI
+  release binary and update.sh's on-Pi rebuild now pass
+  `-DENABLE_MEDIA_BROWSER=ON` (the option defaults OFF and was only ever
+  set by deploy_cpp.sh; the clean-build fix removed the CMake cache that
+  masked this — the very next OTA would have removed the movie kiosk
+  from every box).
+- **The Release workflow builds green for the first time** — the
+  MB-OFF-only compile error (`ui::Toast` include inside the MB `#ifdef`)
+  broke every tagged build v1.6.2 → v1.7.1, so no release ever shipped
+  assets. v1.7.2 ships the source tarball + a pre-built MB-ON ARM64
+  binary (installs in ~1 min instead of an 8-10 min on-Pi compile).
+- **Phone Remote pairing state survives OTA** (paired_remotes.json,
+  flask_secret.key, pairing session/audit — previously deleted by the
+  install rsync's `--delete` on every update, silently unpairing every
+  phone).
+- **System-tile thumbnails actually update via OTA** (an `--include` for
+  `data/thumbnails/systems/` ahead of the blanket thumbnails exclude —
+  the guarantees doc always promised this; per-game cover art stays
+  preserved).
+- **Installer hardening**: the source tarball is selected by name
+  (never by asset order), the extracted tree is sanity-checked before
+  any rsync, and the pre-built binary is `ldd`-probed so an
+  incompatible-OS binary falls back to source compile instead of
+  wedging the box in an install/rollback loop.
+
+### Added (OTA pipeline)
+- **Add-only playlist sync with two gates** — new default playlists
+  reach existing boxes, but never duplicate a system the box already
+  has a playlist for, and never before the box has the content.
+- **Emulator-core self-healing** — after install, update.sh scans the
+  box's playlists for referenced cores and runs install_cores.sh if any
+  are missing (how N64/Dreamcast cores reach fielded Pi 5 boxes).
+
+### Added (dual-board golden image)
+- **One golden image serves Pi 4B and Pi 5.** The kiosk hides Pi 5-only
+  game systems (N64, Dreamcast) on a Pi 4B at runtime
+  (`PlatformProfile::unsupported_game_systems` +
+  `PlaylistLoader::filter_for_platform`); first_boot.sh prunes their
+  ROMs from Pi 4 clones to reclaim SD space; config.txt gained
+  `[pi4]`/`[pi5]` conditional sections; setup_services.sh keeps the
+  lean Radarr size preferences on Pi 4B.
+- **White-glove migration** (`scripts/golden_image/migrate_box.sh`) for
+  the fielded Bookworm-era Pi 4B units frozen at v1.6.4 (Trixie is the
+  OS floor since v1.7.0 — the libgpiod 2.x migration).
+- Tracked playlists reconciled with the golden image (`games_*` set +
+  the four default video playlists; N64/Dreamcast playlists now in the
+  repo so OTA can deliver them).
+
 RetroArch performance-headroom round: quiet the media stack during game
 sessions, reclaim PS1 audio latency, add heavy-scene video options, and
 cool the boot config. Video contract (Vulkan/khr_display, viewports,
