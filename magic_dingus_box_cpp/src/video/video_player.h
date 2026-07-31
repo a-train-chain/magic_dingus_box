@@ -20,6 +20,11 @@ public:
     
     virtual bool is_playing() const = 0;
     virtual bool is_paused() const = 0;
+    // True after the stream posted end-of-stream, until the next
+    // load/stop/seek. Lets callers distinguish "stopped at natural end"
+    // from "paused mid-stream" — both report is_playing()==false with a
+    // position > 0. Default false for backends without EOS tracking.
+    virtual bool at_eos() const { return false; }
     virtual double get_position() const = 0;
     virtual double get_duration() const = 0;
     

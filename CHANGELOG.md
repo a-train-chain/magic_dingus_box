@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Games launched outside the Settings browser no longer get killed by
+  the systemd watchdog.** The launch bracketing (watchdog disable,
+  phone-remote status writes, GPIO restart-button polling, media-stack
+  quiet mode, artwork pause) lived only in the Settings game-browser
+  SELECT branch; the four other routes into a game item — main-UI SELECT
+  on a mixed playlist, NEXT/PREV, auto-advance, Master Shuffle — left
+  WatchdogSec=10 armed while the main thread blocked in waitpid, so
+  systemd SIGABRT'd the kiosk (and the running game) ~10s in. The
+  bracketing now runs inside `Controller::load_playlist_item` via
+  session hooks installed once at startup, exception-safe on every exit
+  path.
+- **Media Browser playback exits to the movie's page at natural end
+  instead of freezing on the last frame.** A GStreamer pipeline stays in
+  PLAYING after posting EOS, so `update_state()`'s state poll overwrote
+  the EOS flag within the same call and the player could never report
+  "stopped" — `state.video_active` stayed latched true and the
+  natural-end detector never fired. An EOS latch (cleared on stop, new
+  load, or a seek out of EOS) fixes it; scrubbing back from the end
+  still resumes playback.
+- **qBittorrent session expiry no longer wedges the kiosk.** The 403
+  re-login path in `http_get` called the request lambda while holding
+  the non-recursive cookie mutex the lambda itself locks — a guaranteed
+  self-deadlock whenever the SID went stale (~1h expiry, or any qBit
+  restart under the Gluetun cascade). The wedged worker then blocked the
+  next render-thread qBit call forever, and the watchdog killed the
+  kiosk mid-"Play movie". The lock is now scoped to the cookie reset +
+  re-login only.
+- **qBittorrent pause/resume/delete no longer report success on auth
+  failure.** `http_post` only checked the curl transport code, so a
+  stale-but-present SID got a 403 that looked like success: `pause_all`
+  logged "paused all torrents" while torrents kept hammering the drive
+  during playback, and Confirm Remove counted purges that never
+  happened. It now mirrors `http_get` — status check, one re-login
+  retry, `last_error_` set on every failure — which also makes the
+  documented qBit 4.x endpoint fallback actually trigger on 404.
+
 ## [1.7.2] - 2026-07-30
 
 The release-infrastructure release: the OTA pipeline was audited end to

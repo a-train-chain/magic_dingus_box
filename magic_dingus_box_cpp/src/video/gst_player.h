@@ -31,6 +31,7 @@ public:
     
     bool is_playing() const override;
     bool is_paused() const override;
+    bool at_eos() const override { return at_eos_.load(); }
     double get_position() const override;
     double get_duration() const override;
     
@@ -67,6 +68,14 @@ private:
     bool initialized_;
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_paused_;
+    // Latched by bus_call on GST_MESSAGE_EOS; cleared by stop() (which
+    // every load_file() runs through) and by fire_seek() (a FLUSH seek
+    // out of EOS resumes playback). Needed because a pipeline REMAINS in
+    // GST_STATE_PLAYING after posting EOS — without the latch,
+    // update_state()'s state poll overwrote bus_call's is_playing_=false
+    // within the same call and the player could never report "stopped"
+    // after natural end-of-stream.
+    std::atomic<bool> at_eos_{false};
     std::atomic<double> duration_;
     std::atomic<double> position_;
     

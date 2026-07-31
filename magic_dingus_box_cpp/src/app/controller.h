@@ -26,6 +26,22 @@ public:
     
     // Set input manager reference for controller release before RetroArch launch
     void set_input_manager(platform::InputManager* input_manager) { input_manager_ = input_manager; }
+
+    // RetroArch session bracketing hooks — installed once from main().
+    // begin runs at the top of load_playlist_item's emulated_game branch;
+    // end is guaranteed to run when the branch exits, on every path
+    // (normal return, validation early-return, exception). They carry the
+    // side effects that must wrap EVERY game session — systemd watchdog
+    // disable/re-enable, phone-remote status writes, GPIO restart-button
+    // polling, media-stack quiet mode — so all five launch routes get
+    // them (main-UI select on a mixed playlist, NEXT/PREV, auto-advance,
+    // Master Shuffle, Settings game browser), not just the Settings
+    // branch that used to inline this logic.
+    void set_game_session_hooks(std::function<void(const app::PlaylistItem&)> begin,
+                                std::function<void()> end) {
+        game_session_begin_ = std::move(begin);
+        game_session_end_   = std::move(end);
+    }
     
     // Playback control
     void load_file(const std::string& path, double start = 0.0, double end = 0.0, bool loop = false);
@@ -104,6 +120,8 @@ private:
 
     video::VideoPlayer* player_;
     retroarch::RetroArchLauncher retroarch_launcher_;
+    std::function<void(const app::PlaylistItem&)> game_session_begin_;
+    std::function<void()> game_session_end_;
     std::string text_input_queue_path_;
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch

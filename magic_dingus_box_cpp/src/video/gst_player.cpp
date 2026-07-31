@@ -296,6 +296,7 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_EOS:
             LOG_DEBUG("End of stream");
+            player->at_eos_ = true;
             player->is_playing_ = false;
             player->is_paused_ = false;
             if (player->eos_callback_) {
@@ -613,6 +614,9 @@ void GstPlayer::request_seek(gint64 target_ns, GstSeekFlags snap) {
 void GstPlayer::fire_seek() {
     seek_in_progress_ = true;
     has_pending_seek_ = false;
+    // A FLUSH seek out of EOS resumes playback — the stream is no longer
+    // at its end, so the latch must release or is_playing_ stays false.
+    at_eos_ = false;
     seek_started_at_ = std::chrono::steady_clock::now();
     gboolean ok = gst_element_seek_simple(pipeline_, GST_FORMAT_TIME,
         static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH |
@@ -650,6 +654,7 @@ void GstPlayer::stop() {
     // Force update of our internal state immediately
     is_playing_ = false;
     is_paused_ = false;
+    at_eos_ = false;
     position_ = 0.0;
     duration_ = 0.0;
 
@@ -768,6 +773,16 @@ void GstPlayer::update_state() {
         if (!now_playing && ret == GST_STATE_CHANGE_ASYNC
             && pending_state == GST_STATE_PLAYING) {
             now_playing = true;
+        }
+
+        // After EOS the pipeline legitimately REMAINS in PLAYING, so
+        // without this gate the poll would overwrite bus_call's
+        // is_playing_=false within the same update_state() call and the
+        // player could never report "stopped" at natural end-of-stream
+        // (Media Browser playback froze on the last frame forever). The
+        // latch clears on stop()/load_file()/fire_seek().
+        if (at_eos_.load()) {
+            now_playing = false;
         }
 
         is_playing_ = now_playing;

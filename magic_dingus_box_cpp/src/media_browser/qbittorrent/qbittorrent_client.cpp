@@ -173,11 +173,21 @@ std::string QbittorrentClient::http_get(const std::string& path) {
     // because if the second auth fails too the credentials are wrong
     // and looping won't help.
     if (code == 403) {
-        std::lock_guard<std::mutex> lk(cookie_mtx_);
-        sid_cookie_.clear();
-        if (!login_locked()) return {};
+        // Scope the lock to the cookie reset + re-login only. The retry
+        // perform() MUST run after the guard releases: perform() takes
+        // cookie_mtx_ itself to read the SID (and again on error), and
+        // std::mutex is non-recursive — calling it under the lock
+        // self-deadlocked the worker thread, and the next render-thread
+        // caller then blocked on the wedged mutex until the systemd
+        // watchdog killed the kiosk.
+        {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            sid_cookie_.clear();
+            if (!login_locked()) return {};
+        }
         auto [c2, b2] = perform();
         if (c2 >= 400) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
             last_error_ = "qbit HTTP " + std::to_string(c2);
             return {};
         }
@@ -194,44 +204,83 @@ std::string QbittorrentClient::http_get(const std::string& path) {
 std::string QbittorrentClient::http_post(const std::string& path,
                                           const std::string& body) {
     // qBit's mutating endpoints (pause/resume/delete) all use POST with
-    // form-urlencoded body. Not used by QueueScreen (which only reads),
-    // but kept symmetric with http_get for future cancel-via-qBit
-    // functionality and easier mocking.
+    // form-urlencoded body. Mirrors http_get's status handling: this
+    // used to check only the curl transport code, so a stale-but-present
+    // SID (qBit's ~1h session expiry, or any qBit container restart
+    // under the gluetun cascade) got a 403 that looked like success —
+    // pause_all logged "paused all torrents" while torrents kept
+    // hammering the drive, and delete_torrent counted purges that never
+    // happened. Callers detect failure via last_error_, so every failure
+    // path here must set it.
     std::string url = cfg_.base_url + path;
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        last_error_ = "curl init failed";
-        return {};
-    }
-    std::string resp;
-    curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST,           1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
 
-    struct curl_slist* hdrs = nullptr;
-    std::string cookie_hdr;
-    {
-        std::lock_guard<std::mutex> lk(cookie_mtx_);
-        if (!sid_cookie_.empty()) {
-            cookie_hdr = "Cookie: " + sid_cookie_;
-            hdrs = curl_slist_append(hdrs, cookie_hdr.c_str());
+    auto perform = [&]() -> std::pair<long, std::string> {
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            last_error_ = "curl init failed";
+            return {0, {}};
         }
-    }
-    std::string referer = "Referer: " + cfg_.base_url;
-    hdrs = curl_slist_append(hdrs, referer.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
 
-    CURLcode rc = curl_easy_perform(curl);
-    curl_slist_free_all(hdrs);
-    curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) {
+        std::string resp;
+        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POST,           1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        static_cast<long>(cfg_.timeout_secs));
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL,       1L);
+
+        struct curl_slist* hdrs = nullptr;
+        std::string cookie_hdr;
+        {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            if (!sid_cookie_.empty()) {
+                cookie_hdr = "Cookie: " + sid_cookie_;
+                hdrs = curl_slist_append(hdrs, cookie_hdr.c_str());
+            }
+        }
+        std::string referer = "Referer: " + cfg_.base_url;
+        hdrs = curl_slist_append(hdrs, referer.c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+
+        CURLcode rc = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+        curl_slist_free_all(hdrs);
+        curl_easy_cleanup(curl);
+
+        if (rc != CURLE_OK) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+            return {0, {}};
+        }
+        return {http_code, resp};
+    };
+
+    auto [code, resp] = perform();
+    if (code == 403) {
+        // One re-login retry, with the lock scoped exactly as in
+        // http_get — the retry perform() relocks cookie_mtx_ and would
+        // self-deadlock if called under the guard.
+        {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            sid_cookie_.clear();
+            if (!login_locked()) return {};
+        }
+        auto [c2, r2] = perform();
+        if (c2 >= 400) {
+            std::lock_guard<std::mutex> lk(cookie_mtx_);
+            last_error_ = "qbit HTTP " + std::to_string(c2);
+            return {};
+        }
+        return r2;
+    }
+    if (code >= 400) {
         std::lock_guard<std::mutex> lk(cookie_mtx_);
-        last_error_ = std::string("curl: ") + curl_easy_strerror(rc);
+        last_error_ = "qbit HTTP " + std::to_string(code);
         return {};
     }
     return resp;

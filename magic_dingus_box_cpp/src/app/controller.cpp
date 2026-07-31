@@ -268,8 +268,16 @@ void Controller::update_state(AppState& state) {
     // AND either it's playing or has a position > 0
     // During playlist switches, allow video_active to become true when new video loads
     // but prevent it from being set to false prematurely
+    //
+    // at_eos() gate: after natural end-of-stream the pipeline still
+    // reports a position > 0, which reads exactly like "paused at end" —
+    // so the (position > 0) arm kept video_active latched true forever
+    // and the Media Browser's natural-end detector (edge on video_active
+    // true→false) could never fire. A seek out of EOS or a new load
+    // clears the latch, so scrubbing back from the end still works.
     bool was_active = state.video_active;
-    bool should_be_active = (cur_duration > 0.0) && (mpv_playing || (cur_position > 0.0));
+    bool should_be_active = (cur_duration > 0.0) && !player_->at_eos()
+                            && (mpv_playing || (cur_position > 0.0));
 
     // Debounce single-frame negatives. Once video_active is true, a
     // transient should_be_active=false (GStreamer reporting PAUSED for
@@ -535,6 +543,17 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             return utils::Result<>::fail(error);
         }
     } else if (item.source_type == "emulated_game") {
+        // Bracket the whole session — validation early-returns included —
+        // with the hooks installed via set_game_session_hooks. The end
+        // hook re-enables the systemd watchdog and joins the GPIO poll
+        // thread, so it MUST fire on every exit path; the guard makes
+        // that hold for exceptions too.
+        if (game_session_begin_) game_session_begin_(item);
+        struct GameSessionEndGuard {
+            const std::function<void()>& end;
+            ~GameSessionEndGuard() { if (end) end(); }
+        } game_session_end_guard{game_session_end_};
+
         // Handle RetroArch game launch
         std::cout << "Launching RetroArch game: " << item.title << std::endl;
         std::cout << "  Core: " << item.emulator_core << std::endl;

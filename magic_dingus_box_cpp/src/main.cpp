@@ -911,7 +911,81 @@ int main(int /* argc */, char* /* argv */[]) {
         return state.media_browser_vpn_healthy.load(std::memory_order_acquire);
     });
 #endif
-    
+
+    // ── RetroArch session bracketing ─────────────────────────────────────
+    // Installed on the controller so EVERY route into an emulated_game
+    // item gets it — main-UI SELECT on a mixed playlist, NEXT/PREV,
+    // auto-advance at video end, Master Shuffle, and the Settings game
+    // browser. The Settings branch used to inline this and the other four
+    // routes had none: the watchdog stayed armed while load_playlist_item
+    // blocked in waitpid, so ~10s into any game launched outside Settings,
+    // systemd SIGABRT'd the kiosk (KillMode=mixed took RetroArch with it).
+    std::atomic<bool> game_session_running{false};
+    std::thread game_session_gpio_thread;
+    controller.set_game_session_hooks(
+        [&](const app::PlaylistItem& item) {
+            state.is_loading_game = true;
+#ifdef MEDIA_BROWSER_ENABLED
+            // Quiet the media stack for the whole session (async — never
+            // delays launch) and drop poster textures while the GL
+            // context is still current.
+            game_quiet_mode.request_pause();
+            if (ui_renderer.artwork_cache_initialized()) {
+                ui_renderer.artwork_cache().pause();
+                ui_renderer.artwork_cache().clear_textures();
+            }
+#endif
+            // GPIO polling thread so the restart button works during
+            // gameplay while the main loop blocks on waitpid.
+            game_session_running.store(true);
+            game_session_gpio_thread = std::thread([&gpio, &game_session_running]() {
+                while (game_session_running.load()) {
+                    gpio.poll();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            });
+#ifdef HAVE_SYSTEMD
+            // Disable watchdog during RetroArch (blocks on waitpid)
+            sd_notify(0, "WATCHDOG_USEC=0");
+#endif
+            // Phone-remote: the per-frame deriver never executes while the
+            // main loop blocks, so set the mode explicitly and flush
+            // status so the companion app sees "retroarch" immediately.
+            state.retroarch_rom_name = item.title;
+            state.retroarch_core     = item.emulator_core;
+            state.screen_mode.store(app::ScreenMode::RetroArch);
+            status_writer.write_now(state);
+        },
+        [&]() {
+#ifdef HAVE_SYSTEMD
+            // Re-enable watchdog after RetroArch exits (10s = 10000000 usec)
+            sd_notify(0, "WATCHDOG_USEC=10000000");
+#endif
+            game_session_running.store(false);
+            if (game_session_gpio_thread.joinable()) {
+                game_session_gpio_thread.join();
+            }
+            // Reset loading state. loading_is_exit must clear too or the
+            // NEXT launch would open on the return wording and the green
+            // frame.
+            state.is_loading_game = false;
+            state.loading_is_exit.store(false);
+            state.loading_progress.store(0.0f);
+            state.loading_phase.clear();
+#ifdef MEDIA_BROWSER_ENABLED
+            if (ui_renderer.artwork_cache_initialized()) {
+                ui_renderer.artwork_cache().resume();
+            }
+            game_quiet_mode.request_resume();
+#endif
+            // Clear the retroarch fields so kiosk_status.json never has
+            // stale ROM/core values.
+            state.retroarch_rom_name.clear();
+            state.retroarch_core.clear();
+            state.screen_mode.store(app::ScreenMode::Playlist);
+            try { status_writer.write_now(state); } catch (...) {}
+        });
+
     // Try to load intro video at startup
     // Look for intro video in common locations (prefer .30fps version)
     std::vector<std::string> intro_paths = config::get_intro_search_paths();
@@ -2343,21 +2417,6 @@ int main(int /* argc */, char* /* argv */[]) {
                                         settings_menu.exit_game_list();
                                     } else if (game_idx >= 0 && game_idx < static_cast<int>(playlist.items.size())) {
                                         std::cout << "Launching game: " << playlist.items[game_idx].title << std::endl;
-                                        
-                                        // Set loading state
-                                        state.is_loading_game = true;
-
-#ifdef MEDIA_BROWSER_ENABLED
-                                        // Quiet the media stack for the whole
-                                        // session (async — never delays launch)
-                                        // and drop poster textures while the GL
-                                        // context is still current.
-                                        game_quiet_mode.request_pause();
-                                        if (ui_renderer.artwork_cache_initialized()) {
-                                            ui_renderer.artwork_cache().pause();
-                                            ui_renderer.artwork_cache().clear_textures();
-                                        }
-#endif
 
                                         // Create progress callback to keep UI alive during launch
                                         auto progress_callback = [&]() {
@@ -2389,76 +2448,13 @@ int main(int /* argc */, char* /* argv */[]) {
                                             present_frame();
                                         };
                                         
-                                        // Launch the game
-                                        // Spawn GPIO polling thread so restart button works during gameplay
-                                        std::atomic<bool> game_running{true};
-                                        std::thread gpio_poll_thread([&gpio, &game_running]() {
-                                            while (game_running.load()) {
-                                                gpio.poll();
-                                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                                            }
-                                        });
-
-#ifdef HAVE_SYSTEMD
-                                        // Disable watchdog during RetroArch (blocks on waitpid)
-                                        sd_notify(0, "WATCHDOG_USEC=0");
-#endif
-                                        // ── Phone-remote: transition INTO RetroArch ──────────────────────
-                                        // The main loop blocks on waitpid() while RetroArch runs, so the
-                                        // per-frame deriver never executes.  Set the mode explicitly here
-                                        // and flush status so the companion app sees "retroarch" immediately.
-                                        {
-                                            const auto& game_item = playlist.items[game_idx];
-                                            state.retroarch_rom_name = game_item.title;
-                                            state.retroarch_core     = game_item.emulator_core;
-                                            state.screen_mode.store(app::ScreenMode::RetroArch);
-                                            status_writer.write_now(state);
-                                        }
-                                        // ────────────────────────────────────────────────────────────────
-
-                                        // RAII cleanup guard — runs whether load_playlist_item returns,
-                                        // throws, or fails silently. Clears the retroarch fields so
-                                        // kiosk_status.json never has stale ROM/core values.
-                                        struct RetroArchExitGuard {
-                                            app::AppState& state;
-                                            app::StatusWriter& writer;
-                                            ~RetroArchExitGuard() {
-                                                state.retroarch_rom_name.clear();
-                                                state.retroarch_core.clear();
-                                                state.screen_mode.store(app::ScreenMode::Playlist);
-                                                try { writer.write_now(state); } catch (...) {}
-                                            }
-                                        } ra_guard{state, status_writer};
-
+                                        // Launch the game. All session bracketing — watchdog
+                                        // disable/re-enable, GPIO poll thread, phone-remote
+                                        // status writes, quiet mode, artwork pause, loading
+                                        // state — happens inside load_playlist_item via the
+                                        // game-session hooks installed at startup, shared with
+                                        // every other launch route.
                                         auto launch_result = controller.load_playlist_item(state, playlist, game_idx, playlist_directory, progress_callback);
-                                        // ra_guard destructor runs here on normal return (and on exception)
-                                        // ────────────────────────────────────────────────────────────────
-
-#ifdef HAVE_SYSTEMD
-                                        // Re-enable watchdog after RetroArch exits (10s = 10000000 usec)
-                                        sd_notify(0, "WATCHDOG_USEC=10000000");
-#endif
-
-                                        game_running.store(false);
-                                        if (gpio_poll_thread.joinable()) {
-                                            gpio_poll_thread.join();
-                                        }
-
-                                        // Reset loading state. loading_is_exit
-                                        // must clear too or the NEXT launch
-                                        // would open on the return wording and
-                                        // the green frame.
-                                        state.is_loading_game = false;
-                                        state.loading_is_exit.store(false);
-                                        state.loading_progress.store(0.0f);
-                                        state.loading_phase.clear();
-
-#ifdef MEDIA_BROWSER_ENABLED
-                                        if (ui_renderer.artwork_cache_initialized()) {
-                                            ui_renderer.artwork_cache().resume();
-                                        }
-                                        game_quiet_mode.request_resume();
-#endif
 
                                         if (launch_result) {
                                             std::cout << "Game launched successfully" << std::endl;
