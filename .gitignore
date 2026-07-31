@@ -87,6 +87,7 @@ docs/
 *.md
 !README.md
 !CLAUDE.md
+!AGENTS.md
 !CHANGELOG.md
 # DO track design specs + implementation plans — they're versioned
 # design history, not runtime reference docs. Specs and plans land in

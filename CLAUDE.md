@@ -9,6 +9,57 @@ Magic Dingus Box is a retro gaming and video playback kiosk for Raspberry Pi 4B 
 1. **C++ Kiosk Engine** (`magic_dingus_box_cpp/`) - Primary application using DRM/KMS for true kiosk mode with direct GPU access, no X11/Wayland
 2. **Python Web Admin** (`magic_dingus_box/web/`) - Flask-based remote playlist/content management interface
 
+## Dual-board contract (Pi 4B + Pi 5) — read before adding ANY feature
+
+Units of BOTH board types are sold from ONE golden image and update from
+ONE release artifact. Every change must compile for and run on both. The
+rules, each earned by a real bug:
+
+1. **Board differences resolve at RUNTIME, never at compile time.**
+   `platform::PlatformProfile` (detected once from
+   `/proc/device-tree/model`) is the only legitimate branch point. Never
+   `#ifdef` a board, never hardcode a sink name, GPIO chip path, decoder
+   element, or clock. If your feature needs a per-board value, add a
+   field to `PlatformProfile` with explicit values for Pi4 / Pi5 /
+   Unknown + unit tests in `tests/platform/` (pure logic — they run on
+   the Mac).
+2. **A Pi 5-only feature needs a gate, not an assumption.** Game systems:
+   add the token to the Pi 4 profile's `unsupported_game_systems` (the
+   kiosk menu filter), add the content paths to `first_boot.sh` Step 6e
+   (Pi 4 disk pruning), and remember the OTA playlist sync's
+   content-existence gate keeps the playlist off boxes without the ROMs.
+   Other feature classes: branch on `profile.model` and make sure the
+   Unknown (dev-machine) path does something sane.
+3. **The performance envelope is the Pi 4B's.** 1.5 GB RAM (`make -j2`
+   on-Pi builds), hardware H.264 decode but NO spare CPU for software
+   codecs, emulation ceiling = PS1 (N64/Dreamcast are gated OFF).
+   The Pi 5 (2 GB, software-decodes everything comfortably, runs
+   N64/DC) is the roomy target — if it fits the Pi 4, it fits both.
+4. **New system dependencies go in THREE places or they will bite:**
+   `scripts/install_deps.sh` (on-Pi builds), the apt list in
+   `.github/workflows/release.yml` (the CI release binary), and the
+   README dependency list. An OPTIONAL CMake dep that silently changes
+   runtime behavior is a trap — libsystemd being absent in CI compiled
+   out sd_notify and made systemd kill a perfectly healthy binary on
+   every box (caught live, v1.7.2). If a capability is load-bearing,
+   either make the dep REQUIRED or add a release-blocking `strings`
+   assertion to the workflow next to the existing three (aarch64,
+   READY=1, prowlarr).
+5. **`config.txt` model-specific settings live under `[pi4]` / `[pi5]`
+   conditional sections, never `[all]`.** Current split: `[pi5]` has
+   `v3d_freq=1000` + `kernel=kernel8.img` (4 KB pages — flycast dies
+   without it); `[pi4]` has `gpu_mem=76`.
+6. **OS floor is Trixie (Debian 13) on both boards** — libgpiod 2.x API
+   and the CI binary's glibc. Anything older can neither build nor run
+   the kiosk (v1.6.4 was the last Bookworm release).
+7. **Before a release that touches the platform layer**, run the Mac
+   suites (all 8), and validate on real hardware of BOTH boards when the
+   change plausibly differs between them — the sd_notify failure was
+   invisible in every off-Pi test.
+
+Full background: `scripts/golden_image/CLONING.md` "One image, two
+boards" and `OTA_UPDATE_GUARANTEES.md`.
+
 ## Build Commands
 
 ### C++ Build (on Pi or cross-compile)
