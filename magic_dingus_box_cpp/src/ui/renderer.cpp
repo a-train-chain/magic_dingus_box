@@ -3013,77 +3013,115 @@ bool Renderer::load_thumbnail(const std::string& rom_path) {
         thumb_path = thumb_path.substr(0, dot_pos) + ".png";
     }
 
-    if (thumb_path == current_thumbnail_path_) {
-        return thumbnail_texture_id_ != 0; // Already loaded
+    // Pump: upload a completed background decode (this function is
+    // called every frame by the game-browser draw site, so this is the
+    // natural render-thread drain point).
+    if (thumb_done_.exchange(false, std::memory_order_acq_rel)) {
+        const bool still_wanted = (thumb_result_path_ == current_thumbnail_path_);
+        if (still_wanted && thumb_result_pixels_ != nullptr) {
+            thumbnail_width_ = thumb_result_w_;
+            thumbnail_height_ = thumb_result_h_;
+            glGenTextures(1, &thumbnail_texture_id_);
+            glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbnail_width_,
+                         thumbnail_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                         thumb_result_pixels_);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        if (thumb_result_pixels_ != nullptr) {
+            stbi_image_free(thumb_result_pixels_);
+            thumb_result_pixels_ = nullptr;
+        }
+        // Selection moved on while we decoded — chase it.
+        if (!still_wanted && !current_thumbnail_path_.empty()) {
+            spawn_thumbnail_decode(current_thumbnail_path_);
+        }
     }
 
-    // Free old texture
+    if (thumb_path == current_thumbnail_path_) {
+        return thumbnail_texture_id_ != 0; // Loaded (or decode in flight / miss)
+    }
+
+    // Selection changed: free the old texture immediately (same visual
+    // behavior as the synchronous path — the outgoing thumbnail
+    // disappears at once) and hand the disk read + PNG decode to the
+    // worker. The decode used to run right here on the render thread —
+    // tens of ms per selection change on a Pi 4, a visible hitch while
+    // scrolling the game list. The thumbnail now appears a frame or two
+    // later instead of stalling the frame.
     if (thumbnail_texture_id_ != 0) {
         glDeleteTextures(1, &thumbnail_texture_id_);
         thumbnail_texture_id_ = 0;
     }
     current_thumbnail_path_ = thumb_path;
 
-    // Try to resolve to absolute path
-    std::string abs_path = thumb_path;
-    // Also try relative to working directory with ../
-    std::vector<std::string> search_paths = {
-        thumb_path,
-        "../" + thumb_path,
-    };
+    if (!thumb_in_flight_.load(std::memory_order_acquire)) {
+        spawn_thumbnail_decode(thumb_path);
+    }
+    // else: worker busy with a stale path — the pump above respawns for
+    // the current path when it finishes.
 
-    // Try progressively simpler filename variants
-    for (const auto& sp : std::vector<std::string>{thumb_path, "../" + thumb_path}) {
-        std::string base = sp;
+    return false;
+}
 
-        // Strip " (Disc N)" patterns
-        size_t disc_pos = base.find(" (Disc ");
-        if (disc_pos != std::string::npos) {
-            search_paths.push_back(base.substr(0, disc_pos) + ".png");
-        }
+void Renderer::spawn_thumbnail_decode(const std::string& thumb_path) {
+    if (thumb_worker_.joinable()) thumb_worker_.join();  // finished run
+    thumb_in_flight_.store(true, std::memory_order_release);
+    try {
+        thumb_worker_ = std::thread([this, thumb_path]() {
+            // Candidate list — identical to the old synchronous search:
+            // exact path, ../-relative, then progressively simpler
+            // filename variants (disc/version/region suffix stripping).
+            std::vector<std::string> search_paths = {
+                thumb_path,
+                "../" + thumb_path,
+            };
+            for (const auto& sp :
+                 std::vector<std::string>{thumb_path, "../" + thumb_path}) {
+                const std::string& base = sp;
 
-        // Strip version info: " (v1.1)" etc.
-        size_t ver_pos = base.find(" (v");
-        if (ver_pos != std::string::npos) {
-            // Strip everything from (vN.N) onward, keep region code before it
-            search_paths.push_back(base.substr(0, ver_pos) + ".png");
-        }
+                size_t disc_pos = base.find(" (Disc ");
+                if (disc_pos != std::string::npos) {
+                    search_paths.push_back(base.substr(0, disc_pos) + ".png");
+                }
 
-        // Strip everything after region code: "Game (USA) (anything).png" -> "Game (USA).png"
-        // Look for common region codes
-        for (const char* region : {"(USA)", "(Europe)", "(Japan)", "(World)"}) {
-            size_t region_pos = base.find(region);
-            if (region_pos != std::string::npos) {
-                std::string stripped = base.substr(0, region_pos + strlen(region)) + ".png";
-                search_paths.push_back(stripped);
-                break;
+                size_t ver_pos = base.find(" (v");
+                if (ver_pos != std::string::npos) {
+                    search_paths.push_back(base.substr(0, ver_pos) + ".png");
+                }
+
+                for (const char* region :
+                     {"(USA)", "(Europe)", "(Japan)", "(World)"}) {
+                    size_t region_pos = base.find(region);
+                    if (region_pos != std::string::npos) {
+                        search_paths.push_back(
+                            base.substr(0, region_pos + strlen(region)) + ".png");
+                        break;
+                    }
+                }
             }
-        }
+
+            int w = 0, h = 0, channels = 0;
+            unsigned char* data = nullptr;
+            for (const auto& path : search_paths) {
+                data = stbi_load(path.c_str(), &w, &h, &channels, 4);
+                if (data) break;
+            }
+
+            thumb_result_pixels_ = data;  // null = not found (texture stays 0)
+            thumb_result_w_ = w;
+            thumb_result_h_ = h;
+            thumb_result_path_ = thumb_path;
+            thumb_done_.store(true, std::memory_order_release);
+            thumb_in_flight_.store(false, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        thumb_in_flight_.store(false, std::memory_order_release);
     }
-
-    int channels;
-    unsigned char* data = nullptr;
-    for (const auto& path : search_paths) {
-        data = stbi_load(path.c_str(), &thumbnail_width_, &thumbnail_height_, &channels, 4);
-        if (data) break;
-    }
-
-    if (!data) {
-        return false;
-    }
-
-    glGenTextures(1, &thumbnail_texture_id_);
-    glBindTexture(GL_TEXTURE_2D, thumbnail_texture_id_);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, thumbnail_width_, thumbnail_height_, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-    // No glGenerateMipmap: min filter is GL_LINEAR, so the mip chain
-    // could never be sampled — generating it only cost upload time.
-    stbi_image_free(data);
-
-    return true;
 }
 
 std::string Renderer::get_system_key(const app::Playlist& playlist) const {
@@ -4253,6 +4291,13 @@ void Renderer::cleanup() {
         qr_cache_tex_ = 0;
     }
     qr_cache_url_.clear();
+    // The thumbnail decode worker publishes into members — join before
+    // they die, and free any undelivered pixel buffer.
+    if (thumb_worker_.joinable()) thumb_worker_.join();
+    if (thumb_result_pixels_ != nullptr) {
+        stbi_image_free(thumb_result_pixels_);
+        thumb_result_pixels_ = nullptr;
+    }
     if (title_font_manager_) {
         title_font_manager_->cleanup();
     }

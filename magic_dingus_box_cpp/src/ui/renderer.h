@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 #include <memory>
 #include <unordered_map>
@@ -388,6 +390,24 @@ private:
 
     // Game thumbnail
     uint32_t thumbnail_texture_id_ = 0;
+
+    // Async thumbnail decode. The PNG used to be stbi_load'ed (disk read
+    // + full decode, tens of ms on a Pi 4) ON THE RENDER THREAD on every
+    // game-browser selection change — a visible hitch while scrolling
+    // the list. One tracked worker decodes into a pixel buffer; the
+    // pump at the top of load_thumbnail (called every frame by the draw
+    // site) uploads on the render thread when the result lands, and
+    // respawns if the selection moved on mid-decode. Result fields are
+    // written by the worker BEFORE the release store to thumb_done_ and
+    // read only after the acquire exchange — that pair is the ordering.
+    void spawn_thumbnail_decode(const std::string& thumb_path);
+    std::thread thumb_worker_;
+    std::atomic<bool> thumb_in_flight_{false};
+    std::atomic<bool> thumb_done_{false};
+    std::string thumb_result_path_;
+    unsigned char* thumb_result_pixels_ = nullptr;  // stbi buffer; null = not found
+    int thumb_result_w_ = 0;
+    int thumb_result_h_ = 0;
     int thumbnail_width_ = 0;
     int thumbnail_height_ = 0;
     std::string current_thumbnail_path_;

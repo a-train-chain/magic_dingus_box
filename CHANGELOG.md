@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (glyph atlas)
+### Changed (glyph atlas + thumbnails)
+- **Game-browser thumbnails decode off the render thread.** Selecting a
+  game used to stbi_load the thumbnail PNG (disk read + full decode,
+  tens of ms on a Pi 4) synchronously mid-frame — a visible hitch on
+  every selection change while scrolling the list. The decode now runs
+  on a worker (same candidate-path search, including the disc/version/
+  region filename fallbacks) and the render thread uploads the pixels
+  when they land — the thumbnail appears a frame or two later instead
+  of stalling the frame, and a fast scroll chases the newest selection
+  rather than queueing stale decodes.
 - **Text rendering moved from per-glyph textures to shelf-packed atlas
   pages with batched draws.** Every glyph used to own its own GL
   texture, and `draw_text` paid one texture bind + vertex-buffer upload
