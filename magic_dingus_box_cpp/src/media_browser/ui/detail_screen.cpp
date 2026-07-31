@@ -606,6 +606,8 @@ DetailScreen::~DetailScreen() {
     // handle, separate from tmdb_workers_).
     lib_poll_gen_.fetch_add(1);
     if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
+    // The remove worker publishes into members — join before they die.
+    if (remove_worker_.joinable()) remove_worker_.join();
     for (auto& w : tmdb_workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
@@ -692,6 +694,12 @@ void DetailScreen::update() {
 }
 
 Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& events) {
+    // Async remove completion — must run before input dispatch so the
+    // post-remove navigation/state can never interleave with an action
+    // against the removed movie.
+    if (Screen s = drain_remove_result(); s != Screen::Detail) {
+        return s;
+    }
     for (const auto& e : events) {
         // BTN4 (SETTINGS_MENU, black) — short-press returns to the screen
         // that opened this Detail (Browse / Library / Search / Queue) via
@@ -729,6 +737,12 @@ Screen DetailScreen::handle_input(const std::vector<platform::InputEvent>& event
 }
 
 Screen DetailScreen::on_activate() {
+    // While a remove runs, every action is a no-op — acting on a movie
+    // that is mid-deletion can only produce inconsistent state.
+    if (remove_in_flight_.load(std::memory_order_acquire)) {
+        show_banner("Removing…");
+        return Screen::Detail;
+    }
     if (buttons_.empty()) return Screen::Detail;
     if (focus_ < 0 || focus_ >= static_cast<int>(buttons_.size())) return Screen::Detail;
     const Action act = buttons_[focus_].action;
@@ -865,12 +879,67 @@ Screen DetailScreen::do_remove_stage1() {
 
 Screen DetailScreen::do_remove_confirm() {
     remove_pending_ = false;
+    if (remove_in_flight_.load(std::memory_order_acquire)) {
+        return Screen::Detail;  // one remove at a time
+    }
     if (!movie_.has_value()) {
         show_banner("No movie record");
         rebuild_buttons();
         return Screen::Detail;
     }
 
+    // The cleanup below chains 3+ sequential HTTP calls (Radarr queue,
+    // per-item cancels, history walk, qBit deletes, remove_movie), each
+    // with its own timeout. Run on the render thread — as it was until
+    // the 2026-07-31 hardening — a hung Radarr blew past WatchdogSec=10
+    // and systemd killed the kiosk mid-"Confirm Remove". The worker runs
+    // the identical steps; the result is drained at the top of
+    // handle_input (called every frame) which applies the state
+    // mutations and navigates on the render thread.
+    if (remove_worker_.joinable()) remove_worker_.join();  // finished run
+    const int radarr_id = movie_->radarr_id;
+    remove_radarr_id_ = radarr_id;
+    remove_in_flight_.store(true, std::memory_order_release);
+    show_banner("Removing…");
+    try {
+        remove_worker_ = std::thread(&DetailScreen::run_remove, this, radarr_id);
+    } catch (const std::system_error&) {
+        remove_in_flight_.store(false, std::memory_order_release);
+        show_banner("Remove failed to start; try again");
+    }
+    return Screen::Detail;
+}
+
+Screen DetailScreen::drain_remove_result() {
+    if (!remove_done_.exchange(false, std::memory_order_acq_rel)) {
+        return Screen::Detail;
+    }
+    if (!remove_ok_) {
+        show_banner(remove_error_);
+        rebuild_buttons();
+        return Screen::Detail;
+    }
+    // Same-movie guard: the user may have backed out and opened a
+    // DIFFERENT movie while the worker ran — never clobber that record's
+    // state or yank the user to Library over it.
+    if (movie_.has_value() && movie_->radarr_id != remove_radarr_id_) {
+        return Screen::Detail;
+    }
+    // Invalidate our cached movie record + force a refetch on the next
+    // entry, exactly as the synchronous flow did (see the comment block
+    // in run_remove for why each piece matters).
+    movie_.reset();
+    needs_refresh_ = true;
+    mode_          = Mode::NotInLibrary;
+    import_in_progress_ = false;
+    lib_poll_gen_.fetch_add(1);
+    lib_poll_ready_.store(false);
+    rebuild_buttons();
+    // After a successful remove, the library view is the natural home.
+    return Screen::Library;
+}
+
+void DetailScreen::run_remove(int radarr_id) {
     // Four-step cleanup, in this order so each step's prerequisite has
     // happened before it runs:
     //
@@ -896,7 +965,13 @@ Screen DetailScreen::do_remove_confirm() {
     //
     //  4. Navigate back to the library view (the screen the user
     //     conceptually came from when they decided to remove).
-    int radarr_id = movie_->radarr_id;
+    auto publish = [this](bool ok, std::string err) {
+        remove_ok_ = ok;
+        remove_error_ = std::move(err);
+        remove_done_.store(true, std::memory_order_release);
+        remove_in_flight_.store(false, std::memory_order_release);
+    };
+
     int cancelled = 0;
     int cancel_failed = 0;
     auto queue = radarr_.get_queue();
@@ -921,11 +996,11 @@ Screen DetailScreen::do_remove_confirm() {
     // before: orphan-torrent state is worse than a "remove failed"
     // toast. User can fix qBit connectivity and retry.
     if (cancel_failed > 0) {
-        show_banner("Cancel failed for " + std::to_string(cancel_failed)
-                    + " in-flight torrent(s). Movie not removed; "
-                      "check qBittorrent connectivity and retry.");
-        rebuild_buttons();
-        return Screen::Detail;
+        publish(false,
+                "Cancel failed for " + std::to_string(cancel_failed)
+                + " in-flight torrent(s). Movie not removed; "
+                  "check qBittorrent connectivity and retry.");
+        return;
     }
 
     // Step 2: history-walk + qBit delete for any historical torrent
@@ -953,29 +1028,16 @@ Screen DetailScreen::do_remove_confirm() {
 
     bool ok = radarr_.remove_movie(radarr_id, /*delete_files=*/true);
     if (!ok) {
-        show_banner("Remove failed: " + radarr_.last_error());
-        rebuild_buttons();
-        return Screen::Detail;
+        publish(false, "Remove failed: " + radarr_.last_error());
+        return;
     }
-    // Invalidate our cached movie record + force a refetch on the next
-    // entry. Without this, navigating back into Detail for the same
-    // tmdb_id (e.g. via Browse → Popular → re-tap the just-removed
-    // movie) hits the enter() short-circuit and re-renders the stale
-    // InLibrary{NoFile,WithFile} mode for a movie Radarr no longer
-    // knows about. The next fetch will return mode=NotInLibrary
-    // correctly so the UI shows "Add to Library" instead of
-    // "Search Again / Pick a source / Remove".
-    movie_.reset();
-    needs_refresh_ = true;
-    mode_          = Mode::NotInLibrary;
-    import_in_progress_ = false;
-    // Invalidate any in-flight library poll so it can't resurrect a
-    // "ready" flip for the movie we just removed.
-    lib_poll_gen_.fetch_add(1);
-    lib_poll_ready_.store(false);
-    rebuild_buttons();
-    // After a successful remove, the library view is the natural home.
-    return Screen::Library;
+    // Success. The render-thread state invalidation (movie_.reset(),
+    // needs_refresh_, mode_, library-poll gen bump — see the comment in
+    // drain_remove_result) is applied by the drain: without it,
+    // navigating back into Detail for the same tmdb_id hits the enter()
+    // short-circuit and re-renders the stale InLibrary mode for a movie
+    // Radarr no longer knows about.
+    publish(true, {});
 }
 
 DetailScreen::PlayTarget DetailScreen::get_play_target() const {

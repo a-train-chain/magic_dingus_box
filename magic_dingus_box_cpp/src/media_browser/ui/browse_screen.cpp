@@ -443,10 +443,27 @@ const char* BrowseScreen::label_for_category(Category cat) {
 }
 
 void BrowseScreen::ensure_genres_loaded() {
-    if (genres_loaded_) return;
-    genres_ = tmdb_.get_genres();
-    genres_loaded_ = true;
-    spdlog::info("[BrowseScreen] genres loaded: {} entries", genres_.size());
+    // Kick-off only — the fetch itself runs on a worker (see the note on
+    // genres_fetching_ in the header). The Filter picker renders an
+    // empty genre list until update() drains the result, which beats the
+    // render thread stalling into the systemd watchdog when the egress
+    // is down.
+    if (genres_loaded_ || genres_fetching_.load(std::memory_order_acquire)) {
+        return;
+    }
+    genres_fetching_.store(true, std::memory_order_release);
+    try {
+        tmdb_workers_.emplace_back([this]() {
+            auto g = tmdb_.get_genres();
+            {
+                std::lock_guard<std::mutex> lk(genres_mtx_);
+                pending_genres_ = std::move(g);
+            }
+            genres_ready_.store(true, std::memory_order_release);
+        });
+    } catch (const std::system_error&) {
+        genres_fetching_.store(false, std::memory_order_release);
+    }
 }
 
 void BrowseScreen::load_category(Category cat) {
@@ -684,6 +701,17 @@ void BrowseScreen::update() {
     filter_overlay_.tick();
     apply_pending();             // TMDB page workers → movies_
     apply_library_pending();     // Radarr library/queue worker → id-sets
+    // Genre worker → genres_ (single-flight; see ensure_genres_loaded).
+    if (genres_ready_.exchange(false, std::memory_order_acq_rel)) {
+        {
+            std::lock_guard<std::mutex> lk(genres_mtx_);
+            genres_ = std::move(pending_genres_);
+        }
+        genres_loaded_ = true;
+        genres_fetching_.store(false, std::memory_order_release);
+        spdlog::info("[BrowseScreen] genres loaded: {} entries",
+                     genres_.size());
+    }
     maybe_load_more_pages();
 }
 

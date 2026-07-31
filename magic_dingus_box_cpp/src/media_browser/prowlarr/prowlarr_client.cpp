@@ -106,7 +106,7 @@ void ProwlarrClient::cancel() {
     // ProwlarrClient instance and segfault on result publication.
     current_gen_.fetch_add(1);
     abort_.store(true);
-    for (auto& t : workers_) {
+    for (auto& [done, t] : workers_) {
         if (t.joinable()) t.join();
     }
     workers_.clear();
@@ -131,20 +131,26 @@ void ProwlarrClient::search_async(const std::string& title, int year) {
         return;
     }
 
-    // Opportunistically reap finished workers from prior search_async
-    // calls. std::thread doesn't expose a non-blocking "is finished"
-    // check, but we can join() a thread whose work has clearly ended
-    // by checking whether it still maps to a running OS thread. We
-    // settle for a simpler heuristic: if we have more than a handful
-    // tracked, force-join the oldest few. They're either done (instant
-    // join) or near done (CURL timeout is 12s — a worker that's been
-    // alive that long is about to finish anyway).
-    if (workers_.size() > 4) {
-        // Join the oldest one. abort_ is already false from the
-        // constructor / previous search_async, so this just waits for
-        // its current iteration to finish naturally.
-        if (workers_.front().joinable()) workers_.front().join();
-        workers_.erase(workers_.begin());
+    // Reap finished workers WITHOUT blocking: each worker flips its done
+    // flag as its final act, so joining a flagged worker returns
+    // immediately. The old heuristic here force-joined the oldest worker
+    // once more than 4 were tracked — "near done" assumed the 12s CURL
+    // timeout, but the search timeout is 30s, and this runs on the
+    // render thread: a hung Prowlarr held the UI well past the systemd
+    // watchdog's 10s budget. Un-finished workers now simply stay tracked
+    // (each is bounded by its own timeout and self-flags on exit).
+    workers_.erase(
+        std::remove_if(workers_.begin(), workers_.end(),
+            [](SearchWorker& w) {
+                if (!w.done->load(std::memory_order_acquire)) return false;
+                if (w.thread.joinable()) w.thread.join();  // instant
+                return true;
+            }),
+        workers_.end());
+    if (workers_.size() > 16) {
+        spdlog::warn("[prowlarr] {} search workers still in flight "
+                     "(hung upstream?) — each self-reaps at its timeout",
+                     workers_.size());
     }
 
     state_.store(State::Searching);
@@ -154,8 +160,13 @@ void ProwlarrClient::search_async(const std::string& title, int year) {
         last_error_.clear();
     }
 
-    workers_.emplace_back(&ProwlarrClient::run_search, this,
-                          my_gen, title, year);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    workers_.push_back(SearchWorker{
+        done,
+        std::thread([this, my_gen, title, year, done]() {
+            run_search(my_gen, title, year);
+            done->store(true, std::memory_order_release);
+        })});
 }
 
 std::optional<ReleaseSummary> ProwlarrClient::peek_result() const {

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 6 — Media Browser render thread)
+- **Confirm Remove no longer risks a watchdog kill.** The 4-step
+  cleanup (queue cancel → history walk + qBittorrent purges →
+  `remove_movie`) chained 3+ sequential HTTP calls on the render
+  thread; a hung Radarr blew past `WatchdogSec=10` and systemd killed
+  the kiosk mid-remove. The identical steps now run on a worker thread
+  with a "Removing…" banner, actions gated while in flight, a
+  same-movie guard on completion, and the state invalidation +
+  Library navigation applied on the render thread.
+- **The Filter view's genre load no longer blocks the render thread.**
+  `get_genres()` was called synchronously ("only ~200ms" — the happy
+  path; the TMDB client's retry ladder holds a dead egress up to ~76s).
+  Now single-flight on a worker; the picker shows an empty genre list
+  until the result lands.
+- **Prowlarr's release search can no longer freeze the UI on a hung
+  upstream.** `search_async` force-joined its oldest worker on the
+  render thread once more than 4 were tracked — up to the full 30s
+  search timeout. Workers now flag their own completion and are reaped
+  with instant joins only.
+- **Artwork fetch failures back off.** A 404 poster or an egress outage
+  re-enqueued the same URL every UI frame, forever, with per-attempt
+  log spam. Network failures now hold the URL for 30s before retry, and
+  repeated 4xx responses mark it dead through the same counter the
+  decode-failure poison already used.
+
 ### Fixed (hardening batch 5)
 - **`systemctl stop` now shuts the kiosk down cleanly.** Every OTA
   restart delivered SIGTERM to a process with no handler — the kiosk

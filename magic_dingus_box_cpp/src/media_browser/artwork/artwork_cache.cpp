@@ -130,6 +130,18 @@ std::uint32_t ArtworkCache::get_or_fetch(const std::string& url) {
             dead_url_skips_.fetch_add(1, std::memory_order_relaxed);
             return 0;
         }
+        // Failed-fetch backoff: a URL whose last network attempt failed
+        // is not retried until its hold expires. Without this, a 404
+        // poster or an egress outage re-enqueued every UI frame — full-
+        // speed retries with per-attempt log spam for as long as the
+        // screen showed the poster slot.
+        auto rb = retry_not_before_.find(url);
+        if (rb != retry_not_before_.end()) {
+            if (std::chrono::steady_clock::now() < rb->second) {
+                return 0;
+            }
+            retry_not_before_.erase(rb);
+        }
     }
 
     // Cold path: enqueue a fetch if we haven't already. In-flight dedup
@@ -585,7 +597,28 @@ void ArtworkCache::fetcher_thread_main() {
         if (cc != CURLE_OK || http_code >= 400 || body.empty()) {
             spdlog::warn("[artwork] fetch failed url='{}' curl={} http={} bytes={}",
                          url, static_cast<int>(cc), http_code, body.size());
-            // Drop the in-flight marker so a future get_or_fetch() can retry.
+            {
+                std::lock_guard<std::mutex> elock(entries_mutex_);
+                if (http_code >= 400 && http_code < 500) {
+                    // Permanent-looking (404 poster path): count it like a
+                    // decode failure so the URL eventually goes DEAD
+                    // rather than re-fetching for the kiosk's lifetime.
+                    int& count = failure_counts_[url];
+                    if (++count >= kMaxDecodeFailures) {
+                        dead_urls_.insert(url);
+                        failure_counts_.erase(url);
+                        spdlog::warn("[artwork] url marked DEAD after {} "
+                                     "fetch failures: '{}'",
+                                     kMaxDecodeFailures, url);
+                    }
+                }
+                // Transient or not-yet-dead: hold retries for 30s so a
+                // network outage backs off instead of spinning the queue.
+                retry_not_before_[url] = std::chrono::steady_clock::now()
+                                         + std::chrono::seconds(30);
+            }
+            // Drop the in-flight marker so a future get_or_fetch() can
+            // retry once the hold expires.
             std::lock_guard<std::mutex> lock(work_mutex_);
             in_flight_.erase(url);
             continue;

@@ -233,6 +233,15 @@ private:
     DiscoverFilter current_filter_;
     std::vector<Genre> genres_;
     bool genres_loaded_ = false;
+    // Async genre fetch. "Only ~200ms" was the happy path — the TMDB
+    // client's retry ladder holds a dead egress for up to ~76s, and the
+    // old synchronous call ran on the render thread (WatchdogSec=10).
+    // Single-flight via genres_fetching_; worker publishes under the
+    // mutex, render thread drains in update().
+    std::atomic<bool> genres_fetching_{false};
+    std::atomic<bool> genres_ready_{false};
+    std::mutex genres_mtx_;
+    std::vector<Genre> pending_genres_;
     FilterRow filter_row_ = FilterRow::Genre;  // Focused row in the panel.
 
     // Available sort-by strings (paired with display labels in the .cpp).

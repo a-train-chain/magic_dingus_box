@@ -227,6 +227,12 @@ private:
     static constexpr int kMaxDecodeFailures = 3;
     std::unordered_map<std::string, int> failure_counts_;  // url -> count, guarded by entries_mutex_
     std::unordered_set<std::string> dead_urls_;            // guarded by entries_mutex_
+    // Per-URL retry hold after a failed NETWORK fetch (30s) — decode
+    // failures use failure_counts_/dead_urls_ above. Guarded by
+    // entries_mutex_. Entries are erased on expiry in get_or_fetch, so
+    // the map stays bounded by the number of currently-failing URLs.
+    std::unordered_map<std::string,
+                       std::chrono::steady_clock::time_point> retry_not_before_;
     std::atomic<std::size_t> dead_url_skips_{0};           // diagnostic counter
     mutable std::mutex entries_mutex_;
     std::unordered_map<std::string, Entry> entries_;

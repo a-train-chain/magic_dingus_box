@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -227,7 +228,16 @@ private:
     // window, so even an actively-browsing user accumulates only a
     // handful before earlier workers complete. cancel() opportunistically
     // joins finished threads to keep this vector small.
-    std::vector<std::thread> workers_;
+    // Search workers with per-worker completion flags. The flag is each
+    // worker's LAST act, so a join on a done==true worker is instant —
+    // which is what lets search_async reap without ever blocking the
+    // render thread (the old force-join of the oldest worker held the
+    // UI for up to the full 30s search timeout when Prowlarr hung).
+    struct SearchWorker {
+        std::shared_ptr<std::atomic<bool>> done;
+        std::thread thread;
+    };
+    std::vector<SearchWorker> workers_;
 };
 
 }  // namespace media_browser

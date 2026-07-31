@@ -280,6 +280,21 @@ private:
     Screen do_search_again();
     Screen do_remove_stage1();
     Screen do_remove_confirm();
+    // Async Confirm-Remove. The 4-step cleanup chains 3+ sequential HTTP
+    // calls; on the render thread a hung Radarr blew past WatchdogSec=10
+    // and systemd killed the kiosk. One worker at a time (do_remove_confirm
+    // gates on remove_in_flight_); the outcome fields are written by the
+    // worker BEFORE the release store to remove_done_, and read on the
+    // render thread only after the acquire exchange in
+    // drain_remove_result() — that pair is the ordering.
+    Screen drain_remove_result();          // render thread, every frame
+    void run_remove(int radarr_id);        // worker body
+    std::thread remove_worker_;
+    std::atomic<bool> remove_in_flight_{false};
+    std::atomic<bool> remove_done_{false};
+    bool remove_ok_ = false;
+    std::string remove_error_;
+    int remove_radarr_id_ = -1;            // render-thread only
     Screen do_play();
     Screen do_retry();
     Screen do_more_info();
