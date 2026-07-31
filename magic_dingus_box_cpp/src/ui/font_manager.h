@@ -10,6 +10,10 @@
 namespace ui {
 
 struct Glyph {
+    // The ATLAS PAGE texture this glyph lives in — shared by hundreds of
+    // glyphs (pre-atlas, every glyph owned its own GL texture and the
+    // renderer paid one texture bind + buffer upload + draw call PER
+    // GLYPH PER FRAME).
     uint32_t texture_id;
     int width;
     int height;
@@ -17,6 +21,8 @@ struct Glyph {
     int bearing_y;  // Distance from baseline to top of bitmap
     int advance;
     int yoff;  // Raw yoff from stb_truetype (offset from top of bitmap to baseline)
+    // This glyph's rect within texture_id, in normalized UVs.
+    float u0 = 0.0f, v0 = 0.0f, u1 = 0.0f, v1 = 0.0f;
 };
 
 class FontManager {
@@ -103,6 +109,26 @@ private:
     static constexpr std::size_t kWidthCacheMaxEntries = 4096;
     std::unordered_map<std::string, int> width_cache_;
     
+    // ── Glyph atlas ──────────────────────────────────────────────────
+    // Shelf-packed 1024x1024 RGBA pages; new pages are appended when the
+    // current one fills. Each glyph gets a 1px transparent border so
+    // LINEAR sampling at sub-pixel positions can't bleed a neighbor in.
+    // Pages are the ONLY glyph GL objects now — cleanup/reset_textures
+    // delete pages, and glyphs re-rasterize into fresh pages on demand.
+    struct AtlasPage {
+        uint32_t texture = 0;
+        int shelf_x = 0;   // next free x on the current shelf
+        int shelf_y = 0;   // top of the current shelf
+        int shelf_h = 0;   // height of the current shelf
+    };
+    static constexpr int kAtlasSize = 1024;
+    static constexpr int kGlyphPad = 1;
+    std::vector<AtlasPage> atlas_pages_;
+    // Allocate a w×h glyph rect (padding handled internally). On success
+    // returns the page index and the top-left of the USABLE rect.
+    bool atlas_alloc(int w, int h, int& page_idx, int& x, int& y);
+    void destroy_atlas_pages();
+
     // Rasterize a glyph using stb_truetype (at base font size)
     Glyph rasterize_glyph(char32_t codepoint);
     

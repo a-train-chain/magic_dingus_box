@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (glyph atlas)
+- **Text rendering moved from per-glyph textures to shelf-packed atlas
+  pages with batched draws.** Every glyph used to own its own GL
+  texture, and `draw_text` paid one texture bind + vertex-buffer upload
+  + draw call PER GLYPH PER FRAME — a full menu spent hundreds of
+  driver round-trips a frame on text alone. Glyphs now rasterize
+  (identically — same stb_truetype path, same RGBA conversion) into
+  1024×1024 shared pages with a 1px transparent border against LINEAR-
+  sampling bleed, and `draw_text` accumulates all quads into a single
+  buffer upload + draw call per atlas page (in practice one per call).
+  Atlas pages are the only glyph GL objects, freed/rebuilt on
+  cleanup/reset_gl exactly like the other texture caches.
+
 ### Fixed (hardening batch 10 — SD wear, display policy, Wi-Fi UI)
 - **kiosk_status.json writes drop from ~432k/day to a 2s heartbeat at
   idle.** The status file was rewritten 5×/second unconditionally —

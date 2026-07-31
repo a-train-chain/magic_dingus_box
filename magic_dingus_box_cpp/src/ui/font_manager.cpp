@@ -115,6 +115,62 @@ Glyph FontManager::rasterize_glyph(char32_t codepoint) {
     return rasterize_glyph_at_size(codepoint, font_size_);
 }
 
+bool FontManager::atlas_alloc(int w, int h, int& page_idx, int& x, int& y) {
+    const int pw = w + 2 * kGlyphPad;
+    const int ph = h + 2 * kGlyphPad;
+    if (pw > kAtlasSize || ph > kAtlasSize) {
+        // A glyph bigger than a whole page can't exist at kiosk font
+        // sizes; refuse rather than corrupt the shelf state.
+        return false;
+    }
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (!atlas_pages_.empty()) {
+            AtlasPage& p = atlas_pages_.back();
+            if (p.shelf_x + pw > kAtlasSize) {
+                // Shelf full — open a new one below.
+                p.shelf_y += p.shelf_h;
+                p.shelf_x = 0;
+                p.shelf_h = 0;
+            }
+            if (p.shelf_y + ph <= kAtlasSize) {
+                x = p.shelf_x + kGlyphPad;
+                y = p.shelf_y + kGlyphPad;
+                p.shelf_x += pw;
+                if (ph > p.shelf_h) p.shelf_h = ph;
+                page_idx = static_cast<int>(atlas_pages_.size()) - 1;
+                return true;
+            }
+        }
+        // No page yet, or the last page is out of vertical space: append
+        // a fresh page (zero-initialized so glyph padding samples
+        // transparent) and retry once.
+        AtlasPage page;
+        glGenTextures(1, &page.texture);
+        glBindTexture(GL_TEXTURE_2D, page.texture);
+        std::vector<uint8_t> zeros(
+            static_cast<size_t>(kAtlasSize) * kAtlasSize * 4, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kAtlasSize, kAtlasSize, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, zeros.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        atlas_pages_.push_back(page);
+    }
+    return false;  // unreachable in practice
+}
+
+void FontManager::destroy_atlas_pages() {
+    for (auto& p : atlas_pages_) {
+        if (p.texture != 0) {
+            glDeleteTextures(1, &p.texture);
+        }
+    }
+    atlas_pages_.clear();
+}
+
 Glyph FontManager::rasterize_glyph_at_size(char32_t codepoint, int size) {
     Glyph glyph = {};
     
@@ -175,36 +231,52 @@ Glyph FontManager::rasterize_glyph_at_size(char32_t codepoint, int size) {
     int ascent, descent, line_gap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &line_gap);
     
-    // Create texture
-    GLuint texture;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    
-    // Convert to RGBA (use actual bitmap dimensions)
-    // The bitmap from stb_truetype is grayscale alpha, so we use it as the alpha channel
-    std::vector<uint8_t> rgba_data(bitmap_width * bitmap_height * 4);
-    for (int i = 0; i < bitmap_width * bitmap_height; i++) {
-        rgba_data[i * 4 + 0] = 255;  // R (white, will be tinted by color uniform)
-        rgba_data[i * 4 + 1] = 255;  // G
-        rgba_data[i * 4 + 2] = 255;  // B
-        rgba_data[i * 4 + 3] = bitmap[i];  // A (from stb_truetype bitmap)
+    // Upload into the shared glyph atlas. Same rasterization, same RGBA
+    // conversion (grayscale alpha → white RGB + alpha, tinted by the
+    // color uniform at draw time) — only the destination changed from a
+    // per-glyph texture to a region of a shared page.
+    int page_idx = 0, ax = 0, ay = 0;
+    if (!atlas_alloc(bitmap_width, bitmap_height, page_idx, ax, ay)) {
+        std::cerr << "FontManager: glyph " << static_cast<uint32_t>(codepoint)
+                  << " (" << bitmap_width << "x" << bitmap_height
+                  << ") exceeds atlas page — rendered as blank" << std::endl;
+        stbtt_FreeBitmap(bitmap, nullptr);
+        glyph.advance = static_cast<int>(advance_width * scale);
+        return glyph;
     }
-    
-    // Use GL_RGBA as internal format (OpenGL ES 3.0 compatible)
-    // Note: GL_RGBA8 may not be available in all OpenGL ES implementations
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bitmap_width, bitmap_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba_data.data());
-    
-    // Use linear filtering for smooth text (not nearest which causes blockiness)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    
+
+    // Padded upload: the glyph sits inset by kGlyphPad inside a
+    // zero-initialized border so LINEAR sampling at sub-pixel positions
+    // blends toward transparent, never toward a neighboring glyph.
+    const int pw = bitmap_width + 2 * kGlyphPad;
+    const int ph = bitmap_height + 2 * kGlyphPad;
+    std::vector<uint8_t> rgba_data(static_cast<size_t>(pw) * ph * 4, 0);
+    for (int row = 0; row < bitmap_height; row++) {
+        for (int col = 0; col < bitmap_width; col++) {
+            uint8_t* px = &rgba_data[
+                ((static_cast<size_t>(row) + kGlyphPad) * pw +
+                 (col + kGlyphPad)) * 4];
+            px[0] = 255;  // R (white, tinted by color uniform)
+            px[1] = 255;  // G
+            px[2] = 255;  // B
+            px[3] = bitmap[row * bitmap_width + col];  // A
+        }
+    }
+    const AtlasPage& page = atlas_pages_[static_cast<size_t>(page_idx)];
+    glBindTexture(GL_TEXTURE_2D, page.texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, ax - kGlyphPad, ay - kGlyphPad,
+                    pw, ph, GL_RGBA, GL_UNSIGNED_BYTE, rgba_data.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
     glBindTexture(GL_TEXTURE_2D, 0);
-    
+
     stbtt_FreeBitmap(bitmap, nullptr);
-    
-    glyph.texture_id = texture;
+
+    glyph.texture_id = page.texture;
+    glyph.u0 = static_cast<float>(ax) / kAtlasSize;
+    glyph.v0 = static_cast<float>(ay) / kAtlasSize;
+    glyph.u1 = static_cast<float>(ax + bitmap_width) / kAtlasSize;
+    glyph.v1 = static_cast<float>(ay + bitmap_height) / kAtlasSize;
     glyph.width = bitmap_width;
     glyph.height = bitmap_height;
     glyph.bearing_x = xoff;
@@ -295,20 +367,10 @@ int FontManager::get_text_width(const std::string& text, int font_size) {
 }
 
 void FontManager::cleanup() {
-    // Free all glyph textures from base cache
-    for (auto& pair : glyph_cache_) {
-        if (pair.second.texture_id != 0) {
-            glDeleteTextures(1, &pair.second.texture_id);
-        }
-    }
+    // Glyphs no longer own textures — the atlas pages are the only glyph
+    // GL objects.
+    destroy_atlas_pages();
     glyph_cache_.clear();
-    
-    // Free all glyph textures from per-size cache
-    for (auto& pair : size_glyph_cache_) {
-        if (pair.second.texture_id != 0) {
-            glDeleteTextures(1, &pair.second.texture_id);
-        }
-    }
     size_glyph_cache_.clear();
 
     font_data_.clear();
@@ -319,23 +381,10 @@ void FontManager::cleanup() {
 void FontManager::reset_textures() {
     // Clear GL textures but KEEP font_data_ so glyphs can be re-rasterized
     // This is used when EGL context is restored after external app (RetroArch)
-    
-    // Free all glyph textures from base cache
-    for (auto& pair : glyph_cache_) {
-        if (pair.second.texture_id != 0) {
-            glDeleteTextures(1, &pair.second.texture_id);
-        }
-    }
+    destroy_atlas_pages();
     glyph_cache_.clear();
-    
-    // Free all glyph textures from per-size cache
-    for (auto& pair : size_glyph_cache_) {
-        if (pair.second.texture_id != 0) {
-            glDeleteTextures(1, &pair.second.texture_id);
-        }
-    }
     size_glyph_cache_.clear();
-    
+
     // NOTE: font_data_ is NOT cleared - glyphs will be re-rasterized on demand
 }
 } // namespace ui

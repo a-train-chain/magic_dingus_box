@@ -1511,7 +1511,44 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
     // Y is the baseline position in screen coordinates (Y increases downward)
     // All glyphs will be aligned to this common baseline
     float baseline_y = y;
-    
+
+    // Batched atlas path. Pre-atlas, this loop bound a texture, uploaded
+    // a 4-vertex buffer, and issued a draw call PER GLYPH — a full menu
+    // paid hundreds of driver round-trips per frame for text alone. Now
+    // glyph quads accumulate into one vertex buffer and flush as a
+    // single draw per atlas page (in practice: one per draw_text call —
+    // a page holds hundreds of glyphs).
+    //
+    // Color uniform set once: it is constant across the call, and text
+    // colors deliberately do NOT multiply RGB by ui_alpha_ (ui_alpha_ is
+    // background transparency, not text dimming; alpha_multiplier is the
+    // fade animation, which does apply).
+    if (u_color_loc_ >= 0) {
+        glUniform4f(u_color_loc_, color.r / 255.0f, color.g / 255.0f,
+                    color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
+    }
+    if (u_use_texture_loc_ >= 0) {
+        glUniform1i(u_use_texture_loc_, 1);
+    }
+
+    std::vector<float> verts;
+    verts.reserve(text.size() * 24);  // 6 verts x 4 floats per glyph
+    uint32_t run_texture = 0;
+
+    auto flush = [&]() {
+        if (verts.empty() || run_texture == 0) return;
+        glBindTexture(GL_TEXTURE_2D, run_texture);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
+                     verts.data(), GL_DYNAMIC_DRAW);
+        glBindVertexArray(vao_);
+        glDrawArrays(GL_TRIANGLES, 0,
+                     static_cast<GLsizei>(verts.size() / 4));
+        glBindVertexArray(0);
+        verts.clear();
+    };
+
     std::size_t pos = 0;
     while (pos < text.size()) {
         char32_t c = ::ui::decode_utf8(text, pos);
@@ -1539,61 +1576,37 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
             current_x += glyph.advance;
             continue;
         }
-        
-        // Draw glyph as a textured quad
-        // bearing_y is the distance from baseline to top of bitmap (positive = above baseline)
-        // In screen coords (Y down): top_of_bitmap = baseline_y - bearing_y
-        float glyph_x = current_x + glyph.bearing_x;
-        float glyph_y = baseline_y - glyph.bearing_y;  // Top of glyph bitmap
-        
-        glBindTexture(GL_TEXTURE_2D, glyph.texture_id);
 
-        // Texture params (LINEAR filtering, CLAMP wrap) are per-texture-
-        // object state set once at glyph creation (font_manager.cpp
-        // rasterize path) and re-applied automatically when glyphs are
-        // re-rasterized after reset_textures() (RetroArch return). The
-        // per-glyph re-set + glGetTexParameteriv verification that used to
-        // live here cost 2 driver READBACKS per glyph per frame (~36k
-        // pipeline syncs/sec on a full menu) for a condition that could
-        // never be false — removed.
+        // Rare: a glyph landed on a different atlas page than the run in
+        // progress — flush the old run first.
+        if (glyph.texture_id != run_texture) {
+            flush();
+            run_texture = glyph.texture_id;
+        }
 
-        // Set color uniform
-        // IMPORTANT: For text, we want colors to stay vibrant, so we DON'T multiply RGB by ui_alpha_
-        // ui_alpha_ is only for background transparency, not text dimming
-        // alpha_multiplier controls fade in/out animation, which we do want
-        GLint colorLoc = u_color_loc_;
-        if (colorLoc >= 0) {
-            glUniform4f(colorLoc, color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
-        }
-        
-        GLint useTextureLoc = u_use_texture_loc_;
-        if (useTextureLoc >= 0) {
-            glUniform1i(useTextureLoc, 1);
-        }
-        
-        // Draw quad for glyph
-        // The shader flips Y coordinate (normalizedPos.y = -normalizedPos.y)
-        // So in screen space (Y increases downward), we position glyphs normally
-        // glyph_y is the top of the glyph bitmap
-        // Texture coordinates: (0,0) is top-left of texture, (1,1) is bottom-right
-        float vertices[] = {
-            glyph_x, glyph_y,                     0.0f, 0.0f,  // Top-left (screen and texture)
-            glyph_x + glyph.width, glyph_y,       1.0f, 0.0f,  // Top-right
-            glyph_x, glyph_y + glyph.height,      0.0f, 1.0f,  // Bottom-left
-            glyph_x + glyph.width, glyph_y + glyph.height, 1.0f, 1.0f  // Bottom-right
+        // Same positioning math as the per-glyph path: bearing_y is the
+        // distance from baseline to top of bitmap; screen Y grows down.
+        const float gx0 = current_x + glyph.bearing_x;
+        const float gy0 = baseline_y - glyph.bearing_y;
+        const float gx1 = gx0 + glyph.width;
+        const float gy1 = gy0 + glyph.height;
+
+        // Two triangles per glyph, UVs from the glyph's atlas rect.
+        const float quad[] = {
+            gx0, gy0, glyph.u0, glyph.v0,
+            gx1, gy0, glyph.u1, glyph.v0,
+            gx0, gy1, glyph.u0, glyph.v1,
+            gx1, gy0, glyph.u1, glyph.v0,
+            gx1, gy1, glyph.u1, glyph.v1,
+            gx0, gy1, glyph.u0, glyph.v1,
         };
-        
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
-        
-        glBindVertexArray(vao_);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glBindVertexArray(0);
-        
-        glBindTexture(GL_TEXTURE_2D, 0);
-        
+        verts.insert(verts.end(), std::begin(quad), std::end(quad));
+
         current_x += glyph.advance;
     }
+
+    flush();
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void Renderer::draw_glyph(char32_t codepoint, float x, float baseline_y, int font_size, const ui::Color& color, float alpha_multiplier) {
@@ -1614,11 +1627,13 @@ void Renderer::draw_glyph(char32_t codepoint, float x, float baseline_y, int fon
     GLint useTextureLoc = u_use_texture_loc_;
     if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 1);
 
+    // Atlas UVs — the glyph's rect within its shared page. Full 0..1
+    // coordinates here would draw the entire atlas.
     float vertices[] = {
-        glyph_x, glyph_y,                                     0.0f, 0.0f,
-        glyph_x + glyph.width, glyph_y,                       1.0f, 0.0f,
-        glyph_x, glyph_y + glyph.height,                      0.0f, 1.0f,
-        glyph_x + glyph.width, glyph_y + glyph.height,        1.0f, 1.0f
+        glyph_x, glyph_y,                                     glyph.u0, glyph.v0,
+        glyph_x + glyph.width, glyph_y,                       glyph.u1, glyph.v0,
+        glyph_x, glyph_y + glyph.height,                      glyph.u0, glyph.v1,
+        glyph_x + glyph.width, glyph_y + glyph.height,        glyph.u1, glyph.v1
     };
 
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
