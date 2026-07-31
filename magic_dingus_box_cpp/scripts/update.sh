@@ -709,15 +709,26 @@ install_update() {
                     mkdir -p "$TEMP_DIR/binary_extracted"
                     tar -xzf "$TEMP_DIR/binary.tar.gz" -C "$TEMP_DIR/binary_extracted"
 
-                    # Verify binary architecture
-                    if file "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>/dev/null | grep -q "aarch64"; then
+                    # Verify binary architecture AND loadability. The CI
+                    # binary is built on Debian Trixie; on a box running an
+                    # older Debian (older glibc, libgpiod 1.x) it passes the
+                    # arch check but cannot load — it would install, fail
+                    # the service-start check, and roll back the ENTIRE
+                    # update, leaving the box permanently unable to update
+                    # via the binary path. ldd surfaces both missing
+                    # libraries ("not found") and glibc version gaps
+                    # ("version GLIBC_x.yz not found"); either means this
+                    # box must compile from source instead.
+                    if ! file "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>/dev/null | grep -q "aarch64"; then
+                        log_warn "Binary architecture mismatch, will compile from source"
+                    elif ldd "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" 2>&1 | grep -q "not found"; then
+                        log_warn "Pre-compiled binary needs newer system libraries than this OS provides; will compile from source"
+                    else
                         mkdir -p "$INSTALL_DIR/magic_dingus_box_cpp/build"
                         cp "$TEMP_DIR/binary_extracted/magic_dingus_box_cpp" "$INSTALL_DIR/magic_dingus_box_cpp/build/"
                         chmod +x "$INSTALL_DIR/magic_dingus_box_cpp/build/magic_dingus_box_cpp"
                         use_binary=true
                         log "Using pre-compiled ARM64 binary"
-                    else
-                        log_warn "Binary architecture mismatch, will compile from source"
                     fi
                 else
                     log_warn "Binary download corrupt, will compile from source"
