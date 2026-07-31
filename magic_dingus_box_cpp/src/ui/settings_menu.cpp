@@ -936,8 +936,15 @@ static std::string get_interface_ipv4(const char* iface_name) {
 std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     auto& wifi = utils::WifiManager::instance();
 
+    // Cached snapshot: this rebuild runs every second on the RENDER
+    // thread, and the synchronous getters each fork nmcli (50-300ms on a
+    // loaded Pi 4B) — the "cheap" claim in the old comment measured the
+    // happy path only. The snapshot refreshes off-thread on a 3s TTL;
+    // first-open can lag one refresh cycle.
+    const auto wifi_status = wifi.get_status_cached();
+
     bool usb_active = is_interface_active("usb0");
-    bool wifi_active = wifi.is_connected();
+    bool wifi_active = wifi_status.connected;
 
     // Determine primary connection (USB priority)
     std::string primary_url = "";
@@ -954,11 +961,11 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
         connection_label = "USB Connection (Active)";
         sub_label = "Fastest / Recommended";
     } else if (wifi_active) {
-        std::string ip = wifi.get_ip_address();
+        const std::string& ip = wifi_status.ip;
         if (!ip.empty()) {
             primary_url = "http://" + ip + ":5000";
             connection_label = "Wi-Fi Connection";
-            sub_label = wifi.get_current_ssid();
+            sub_label = wifi_status.ssid;
         }
     }
 
@@ -975,8 +982,8 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     if (app_state_) {
         app_state_->usb_url = (usb_active && !usb_ip.empty())
             ? ("http://" + usb_ip + ":5000") : "";
-        app_state_->wifi_url = wifi_active
-            ? ("http://" + wifi.get_ip_address() + ":5000") : "";
+        app_state_->wifi_url = (wifi_active && !wifi_status.ip.empty())
+            ? ("http://" + wifi_status.ip + ":5000") : "";
         app_state_->content_manager_url = primary_url;
     }
     
@@ -1054,9 +1061,10 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
         std::string target = wifi.get_connecting_ssid();
         status = "Connecting to " + (target.empty() ? std::string("Wi-Fi") : target) + "...";
         meta = "Verifying credentials...";
-    } else if (wifi.is_connected()) {
-        status = "Connected: " + wifi.get_current_ssid();
-        meta = wifi.get_ip_address();
+    } else if (auto ws = utils::WifiManager::instance().get_status_cached();
+               ws.connected) {
+        status = "Connected: " + ws.ssid;
+        meta = ws.ip;
     } else {
         status = "Not Connected";
     }
@@ -1073,7 +1081,8 @@ std::vector<MenuItem> SettingsMenuManager::build_wifi_submenu() {
     // when nothing was connected). Name the network in both the item
     // and the confirm step so the operator knows exactly what they're
     // forgetting, and toast the outcome.
-    std::string current = wifi.is_connected() ? wifi.get_current_ssid() : "";
+    const auto ws = wifi.get_status_cached();
+    std::string current = ws.connected ? ws.ssid : "";
     if (!current.empty()) {
         items.emplace_back(
             wifi_disconnect_confirm_ ? "Confirm: forget " + current + "?"

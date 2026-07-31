@@ -282,7 +282,8 @@ bool DrmDisplay::set_connector_mode(uint32_t width, uint32_t height) {
         const drmModeModeInfo& m = conn->modes[i];
         candidates.push_back(platform::ModeCandidate{
             m.hdisplay, m.vdisplay, m.vrefresh,
-            (m.type & DRM_MODE_TYPE_PREFERRED) != 0});
+            (m.type & DRM_MODE_TYPE_PREFERRED) != 0,
+            (m.flags & DRM_MODE_FLAG_INTERLACE) != 0});
     }
 
     const int chosen = platform::pick_mode(candidates, width, height);

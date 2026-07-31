@@ -94,3 +94,41 @@ TEST_CASE("selection is stable — first of equally-ranked modes") {
     };
     REQUIRE(pick_mode(modes, 1920, 1080) == 0);
 }
+
+
+TEST_CASE("progressive beats interlaced even at lower refresh") {
+    // A TV advertising 1080i60 alongside only lower-rate progressive
+    // timings: raw refresh comparison picked i60, and the kiosk's
+    // pipeline never deinterlaces — combing on every menu and video.
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 60, false, /*interlaced=*/true},
+        {1920, 1080, 30, false, /*interlaced=*/false},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 1);
+}
+
+TEST_CASE("among progressive modes refresh still decides") {
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 60, false, /*interlaced=*/true},
+        {1920, 1080, 30, false, /*interlaced=*/false},
+        {1920, 1080, 50, false, /*interlaced=*/false},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 2);
+}
+
+TEST_CASE("an interlaced-only size is still selectable") {
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 60, false, /*interlaced=*/true},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 0);
+}
+
+TEST_CASE("EDID-preferred outranks progressive-ness") {
+    // A panel whose PREFERRED timing is interlaced is interlaced-native;
+    // honoring the EDID stays the safer bet on cheap kiosk displays.
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 30, false, /*interlaced=*/false},
+        {1920, 1080, 60, true,  /*interlaced=*/true},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 1);
+}

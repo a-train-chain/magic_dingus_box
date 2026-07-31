@@ -13,6 +13,9 @@ struct ModeCandidate {
     uint32_t height;
     uint32_t vrefresh;    // whole Hz, as drmModeModeInfo reports it
     bool is_preferred;    // DRM_MODE_TYPE_PREFERRED (the EDID-preferred mode)
+    // DRM_MODE_FLAG_INTERLACE. NSDMI'd false so existing 4-element
+    // aggregate initializers stay valid.
+    bool interlaced = false;
 };
 
 // Choose which mode to set.
@@ -61,6 +64,17 @@ inline int pick_mode(const std::vector<ModeCandidate>& modes,
         // Preferred beats non-preferred outright.
         if (m.is_preferred != b.is_preferred) {
             if (m.is_preferred) best = static_cast<int>(i);
+            continue;
+        }
+        // Progressive beats interlaced — the kiosk's pipeline never
+        // deinterlaces, so an interlaced mode combs every menu and
+        // video. A raw-refresh comparison used to pick 1080i60 over
+        // 1080p30/50 on TVs that advertise both. Sits BELOW the
+        // EDID-preferred rule: a panel whose preferred timing is
+        // interlaced is interlaced-native, and honoring the EDID stays
+        // the safer bet. Interlaced-only sizes remain selectable.
+        if (m.interlaced != b.interlaced) {
+            if (!m.interlaced) best = static_cast<int>(i);
             continue;
         }
         // Same preferred-ness: higher refresh wins. Strictly greater, so

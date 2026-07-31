@@ -33,6 +33,7 @@ WifiManager::~WifiManager() {
     // exec_command_argv's timeouts (15s default).
     if (scan_thread_.joinable()) scan_thread_.join();
     if (connect_thread_.joinable()) connect_thread_.join();
+    if (status_thread_.joinable()) status_thread_.join();
 }
 
 bool WifiManager::initialize() {
@@ -271,6 +272,9 @@ void WifiManager::connect_async(const std::string& ssid, const std::string& pass
                 last_failed_saved_ = false;
             }
         }
+        // Ground truth just changed — make the next cached-status read
+        // refresh promptly instead of waiting out its TTL.
+        invalidate_status_cache();
         is_connecting_ = false;
     });
 }
@@ -295,6 +299,49 @@ void WifiManager::reset_connection_state() {
         last_failed_ssid_.clear();
     }
     last_failed_saved_ = false;
+}
+
+WifiManager::Status WifiManager::get_status_cached() {
+    Status snap;
+    bool stale = false;
+    {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        snap = status_cache_;
+        stale = !status_cache_.valid ||
+                std::chrono::steady_clock::now() - status_at_ >
+                    std::chrono::seconds(3);
+    }
+    if (stale) {
+        bool expected = false;
+        if (status_refreshing_.compare_exchange_strong(expected, true)) {
+            if (status_thread_.joinable()) status_thread_.join();
+            try {
+                status_thread_ = std::thread([this]() {
+                    Status s;
+                    s.connected = is_connected();
+                    if (s.connected) {
+                        s.ssid = get_current_ssid();
+                        s.ip   = get_ip_address();
+                    }
+                    s.valid = true;
+                    {
+                        std::lock_guard<std::mutex> lock(status_mutex_);
+                        status_cache_ = s;
+                        status_at_ = std::chrono::steady_clock::now();
+                    }
+                    status_refreshing_.store(false, std::memory_order_release);
+                });
+            } catch (const std::system_error&) {
+                status_refreshing_.store(false, std::memory_order_release);
+            }
+        }
+    }
+    return snap;
+}
+
+void WifiManager::invalidate_status_cache() {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    status_cache_.valid = false;
 }
 
 std::string WifiManager::get_current_ssid() {
@@ -403,6 +450,7 @@ bool WifiManager::forget_network(const std::string& ssid) {
                 || (!del_out.empty() && del_out.find("Error:") == std::string::npos
                                      && del_out.find("error:") == std::string::npos);
     std::cout << "WifiManager: forget_network → " << (deleted ? "OK" : "FAILED") << std::endl;
+    if (deleted) invalidate_status_cache();
     return deleted;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <vector>
 #include <future>
@@ -71,10 +72,30 @@ public:
     std::string get_last_failed_ssid() const;
     bool last_failure_was_saved_profile() const { return last_failed_saved_; }
 
-    // Status
+    // Status (synchronous — each forks nmcli, bounded at 15s)
     std::string get_current_ssid();
     std::string get_ip_address();
     bool is_connected();
+
+    // Cached status snapshot for per-second UI reads. The Settings INFO
+    // submenu rebuilt every second and called the synchronous getters
+    // above on the RENDER thread — 1-3 nmcli fork+D-Bus round-trips per
+    // second (50-300ms each on a loaded Pi 4B), a visible stutter on the
+    // very screen an operator watches during setup. get_status_cached()
+    // returns the last snapshot immediately and refreshes on a tracked
+    // worker when stale (>3s) — the first read after startup/invalidate
+    // can lag one refresh cycle, which is the accepted trade.
+    struct Status {
+        bool connected = false;
+        std::string ssid;
+        std::string ip;
+        bool valid = false;   // false until the first refresh publishes
+    };
+    Status get_status_cached();
+    // Force the next get_status_cached() to refresh (connect/forget just
+    // changed the ground truth). Keeps the stale fields for display
+    // continuity until the refresh lands.
+    void invalidate_status_cache();
 
     // Forget network
     bool forget_network(const std::string& ssid);
@@ -110,6 +131,14 @@ private:
     // the destructor (bounded by exec_command_argv's timeouts).
     std::thread scan_thread_;
     std::thread connect_thread_;
+    std::thread status_thread_;
+
+    // get_status_cached state — snapshot under status_mutex_, refresh
+    // single-flighted by the CAS on status_refreshing_.
+    std::mutex status_mutex_;
+    Status status_cache_;
+    std::chrono::steady_clock::time_point status_at_{};
+    std::atomic<bool> status_refreshing_{false};
 
     std::atomic<bool> is_connecting_;
     std::atomic<ConnectionResult> connection_result_;

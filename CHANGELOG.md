@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (hardening batch 10 — SD wear, display policy, Wi-Fi UI)
+- **kiosk_status.json writes drop from ~432k/day to a 2s heartbeat at
+  idle.** The status file was rewritten 5×/second unconditionally —
+  every write a temp-file + rename cycle of SD metadata churn — even
+  when nothing but the embedded timestamp changed. The writer now
+  serializes without the timestamp as a change-detection key: real
+  content changes (playback position, screen transitions, game
+  sessions) still write immediately, identical bodies write only every
+  2 seconds. Both freshness consumers stay honest — verify_box asserts
+  the embedded ts is under 5s old, and the phone remote's broadcaster
+  (which polls mtime) also gets fewer no-op parse wakeups.
+- **Interlaced display modes are no longer preferred over progressive.**
+  `pick_mode` compared raw refresh, so a TV advertising 1080i60
+  alongside only lower-rate progressive timings landed the whole kiosk
+  on an interlaced mode — which the pipeline never deinterlaces.
+  Progressive now outranks interlaced (below the EDID-preferred rule,
+  so interlaced-native panels are still honored; interlaced-only sizes
+  remain selectable). Four new mode-selection tests.
+- **The Settings INFO screen stops forking nmcli on the render
+  thread.** Its once-per-second rebuild called the synchronous Wi-Fi
+  status getters — 1-3 fork + D-Bus round-trips per second, 50-300ms
+  each on a loaded Pi 4B, a visible stutter on the very screen an
+  operator watches during setup. Status reads now come from a cached
+  snapshot refreshed off-thread on a 3s TTL, warmed at boot and
+  invalidated the moment a connect/forget changes ground truth.
+
 ### Fixed (hardening batch 9 — render performance)
 - **The pairing/Content Manager QR code renders as one cached texture**
   instead of re-running the QR encoder and issuing ~500 per-module

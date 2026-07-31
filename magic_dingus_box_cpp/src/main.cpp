@@ -609,6 +609,10 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Initialize Wifi Manager
     utils::WifiManager::instance().initialize(); // Check for nmcli
+    // Warm the cached status snapshot (kicks an off-thread refresh) so
+    // the first Settings/INFO open shows real state instead of lagging
+    // one refresh cycle.
+    (void)utils::WifiManager::instance().get_status_cached();
     auto retroarch_result = controller.initialize_retroarch_launcher();
     if (!retroarch_result) {
         std::cerr << "Warning: " << retroarch_result.error() << std::endl;
