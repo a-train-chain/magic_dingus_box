@@ -1,0 +1,125 @@
+title: "Atari 7800 Games"
+curator: "MDB"
+description: ''
+loop: false
+items:
+- title: "Alien Brigade"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Alien Brigade (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Asteroids"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Asteroids (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Ballblazer"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Ballblazer (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Centipede"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Centipede (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Commando"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Commando (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Desert Falcon"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Desert Falcon (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Dig Dug"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Dig Dug (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Donkey Kong Junior"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Donkey Kong Junior (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Double Dragon"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Double Dragon (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Food Fight"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Food Fight (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Galaga"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Galaga (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Ikari Warriors"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Ikari Warriors (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Joust"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Joust (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Mario Bros."
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Mario Bros. (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Midnight Mutants"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Midnight Mutants (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Ms. Pac-Man"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Ms. Pac-Man (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Ninja Golf"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Ninja Golf (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Robotron - 2084"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Robotron - 2084 (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Tower Toppler"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Tower Toppler (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"
+- title: "Xevious"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/atari7800/Xevious (USA).zip"
+  emulator_core: "prosystem_libretro"
+  emulator_system: "Atari 7800"

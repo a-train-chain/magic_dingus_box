@@ -1,0 +1,125 @@
+title: "SNES Games"
+curator: "MDB"
+description: ''
+loop: false
+items:
+- title: "Chrono Trigger"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Chrono Trigger (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Contra III - The Alien Wars"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Contra III - The Alien Wars (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Donkey Kong Country"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Donkey Kong Country (USA) (Rev 2).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Donkey Kong Country 2 - Diddy's Kong Quest"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Donkey Kong Country 2 - Diddy's Kong Quest (USA) (En,Fr) (Rev 1).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "EarthBound"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/EarthBound (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "F-Zero"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/F-Zero (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Final Fantasy III"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Final Fantasy III (USA) (Rev 1).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Legend of Zelda, The - A Link to the Past"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Legend of Zelda, The - A Link to the Past (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Mega Man X"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Mega Man X (USA) (Rev 1).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Secret of Mana"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Secret of Mana (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Star Fox"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Star Fox (USA) (Rev 2).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Street Fighter II Turbo"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Street Fighter II Turbo (USA) (Rev 1).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Castlevania IV"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Castlevania IV (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Mario Kart"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Mario Kart (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Mario RPG - Legend of the Seven Stars"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Mario RPG - Legend of the Seven Stars (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Mario World"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Mario World (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Mario World 2 - Yoshi's Island"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Mario World 2 - Yoshi's Island (USA) (Rev 1).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Metroid"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Metroid (Japan, USA) (En,Ja).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Super Punch-Out!!"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Super Punch-Out!! (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"
+- title: "Teenage Mutant Ninja Turtles IV - Turtles in Time"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/snes/Teenage Mutant Ninja Turtles IV - Turtles in Time (USA).7z"
+  emulator_core: "snes9x2010_libretro"
+  emulator_system: "SNES"

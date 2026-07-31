@@ -1,0 +1,125 @@
+title: "Genesis Games"
+curator: "MDB"
+description: ''
+loop: false
+items:
+- title: "Aladdin"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Aladdin (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Castlevania - Bloodlines"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Castlevania - Bloodlines (USA) (Castlevania Anniversary Collection).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Comix Zone"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Comix Zone (USA) (Sega Smash Pack 2).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Contra - Hard Corps"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Contra - Hard Corps (USA, Korea).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Earthworm Jim"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Earthworm Jim (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Ecco the Dolphin"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Ecco the Dolphin (USA, Europe, Korea).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Golden Axe"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Golden Axe (World) (Rev B) (Sega Smash Pack).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Gunstar Heroes"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Gunstar Heroes (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Mortal Kombat II"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Mortal Kombat II (World).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "NHL '94"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/NHL '94 (USA, Europe).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Phantasy Star IV"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Phantasy Star IV (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Ristar"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Ristar (USA, Europe).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Rocket Knight Adventures"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Rocket Knight Adventures (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Shining Force II"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Shining Force II (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Shinobi III - Return of the Ninja Master"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Shinobi III - Return of the Ninja Master (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Sonic The Hedgehog 2"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Sonic The Hedgehog 2 (USA, Europe) (Rev A) (Virtual Console).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Sonic The Hedgehog 3"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Sonic The Hedgehog 3 (USA) (Sonic Classic Collection).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Street Fighter II' - Special Champion Edition"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Street Fighter II' - Special Champion Edition (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "Streets of Rage 2"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/Streets of Rage 2 (USA).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
+- title: "ToeJam & Earl"
+  artist: ''
+  source_type: emulated_game
+  path: "data/roms/genesis/ToeJam & Earl (USA, Europe, Korea).zip"
+  emulator_core: "genesis_plus_gx_libretro"
+  emulator_system: "Genesis"
