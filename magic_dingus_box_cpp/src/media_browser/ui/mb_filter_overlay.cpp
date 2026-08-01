@@ -115,6 +115,7 @@ void FilterOverlay::open(FilterTabKind tab, const FilterState& current) {
     if (state_ == State::Open || state_ == State::SlidingIn) return;
     tab_      = tab;
     working_  = current;
+    opened_   = current;
     focus_row_ = 0;
     mode_     = Mode::RowSelect;   // always start in row-navigation mode
     state_    = State::SlidingIn;
@@ -208,8 +209,8 @@ bool FilterOverlay::on_rotate(int delta) {
         cycle_focused_value(delta);
     } else {
         int new_focus = focus_row_ + (delta > 0 ? 1 : -1);
-        if (new_focus < 0)                  new_focus = 0;
-        if (new_focus >= kFocusableRowCount) new_focus = kFocusableRowCount - 1;
+        if (new_focus < 0)               new_focus = 0;
+        if (new_focus >= row_count())    new_focus = row_count() - 1;
         focus_row_ = new_focus;
     }
     return true;
@@ -217,8 +218,13 @@ bool FilterOverlay::on_rotate(int delta) {
 
 // ---------------------------------------------------------------------------
 // on_select (rotary press)
-//   RowSelect + value row (0-5) → enter ValueSelect for that row
-//   RowSelect + RESET ALL (row 6) → reset working_, stay in RowSelect
+//   RowSelect + value row (Popular/TopRated rows 0-5) → enter ValueSelect
+//     for that row.
+//   RowSelect + RESET ALL (Popular/TopRated row 6) → reset working_, stay
+//     in RowSelect, no commit fired.
+//   RowSelect + SHUFFLE (Popular/TopRated row 7; ForYou's only row, 0) →
+//     fire the shuffle callback once with the staged state, then close via
+//     the commit-free close() path.
 //   ValueSelect → save current value (already in working_ via rotate), exit to RowSelect
 // ---------------------------------------------------------------------------
 bool FilterOverlay::on_select() {
@@ -229,12 +235,25 @@ bool FilterOverlay::on_select() {
         mode_ = Mode::RowSelect;
     } else {
         // RowSelect
-        if (focus_row_ == 6) {
-            // RESET ALL — clear staging area, stay in RowSelect, no commit.
-            working_ = FilterState{};
-        } else {
-            // Enter value-editing mode for this row.
-            mode_ = Mode::ValueSelect;
+        switch (role_for_row(focus_row_)) {
+            case RowRole::Reset:
+                // RESET ALL — clear staging area, stay in RowSelect, no commit.
+                working_ = FilterState{};
+                break;
+            case RowRole::Shuffle:
+                // SHUFFLE — close (commit-free path) and hand staged state to
+                // the handler, which persists it and performs one shuffle load.
+                if (on_shuffle_) on_shuffle_(working_, tab_);
+                // Re-sync the snapshot so a stray input landing during the
+                // SlidingOut animation (on_btn4_close only gates on
+                // is_input_active() now, but keep this belt-and-braces) sees
+                // no diff and cannot re-fire on_commit_ behind the shuffle.
+                opened_ = working_;
+                close();
+                break;
+            case RowRole::Value:
+                mode_ = Mode::ValueSelect;
+                break;
         }
     }
     return true;
@@ -243,10 +262,15 @@ bool FilterOverlay::on_select() {
 // ---------------------------------------------------------------------------
 // on_btn4_close
 //   ValueSelect → exit to RowSelect (first press just saves the current edit)
-//   RowSelect   → fire commit callback ONCE with accumulated working_ state, then close
+//   RowSelect   → fire on_commit_ only when working_ differs from the
+//                 open()-time snapshot (opened_), then close either way.
 // ---------------------------------------------------------------------------
 bool FilterOverlay::on_btn4_close() {
-    if (!is_visible()) return false;
+    // Only accept input while fully Open — matches on_rotate/on_select.
+    // (Previously gated on is_visible(), which stayed true through the
+    // SlidingOut animation and let a stray BTN4 press re-evaluate the
+    // commit check after SHUFFLE had already closed the overlay.)
+    if (!is_input_active()) return false;
 
     if (mode_ == Mode::ValueSelect) {
         // User pressed BTN4 while editing a value — treat as "done editing this row".
@@ -255,8 +279,16 @@ bool FilterOverlay::on_btn4_close() {
         return true;
     }
 
-    // RowSelect: apply all staged changes in one shot.
-    if (on_commit_) on_commit_(working_, tab_);
+    // RowSelect: apply staged changes in one shot — but only when something
+    // actually changed since open(). Unconditional commit used to refetch the
+    // tab on every overlay peek, which would silently replace a shuffled grid
+    // with the canonical chart (spec 1b).
+    if (on_commit_ && working_ != opened_) {
+        on_commit_(working_, tab_);
+        // Re-sync so a residual repeat fire (defensive — is_input_active()
+        // above should already prevent this) is structurally a no-op.
+        opened_ = working_;
+    }
     close();
     return true;
 }
@@ -329,6 +361,20 @@ void FilterOverlay::render_reset_row(::ui::Renderer& r, int panel_x, int x, int 
                    kSectionHeadingFontPx, th.fg);
 }
 
+void FilterOverlay::render_shuffle_row(::ui::Renderer& r, int panel_x, int x, int y,
+                                        bool focused) {
+    const auto& th = r.mb_theme();
+    if (focused) draw_cursor_marker(r, panel_x, y, th.accent);
+    const float fy = static_cast<float>(y + kOverlayRowHeight - 10);
+    r.mb_draw_text("SHUFFLE", static_cast<float>(x + 18), fy,
+                   kRowFontPx, focused ? th.accent : th.dim);
+    const char* hint = "press for new results";
+    const int right_x = x + kOverlayPanelW - 2 * kOverlayPanelInnerPadX;
+    const int tw = r.mb_text_width(hint, kSectionHeadingFontPx);
+    r.mb_draw_text(hint, static_cast<float>(right_x - tw), fy,
+                   kSectionHeadingFontPx, th.fg);
+}
+
 // ---------------------------------------------------------------------------
 // render — panel chrome + content mirrors LibraryScreen overlay exactly.
 // ---------------------------------------------------------------------------
@@ -359,6 +405,24 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
     const int content_x = panel_x + kOverlayPanelInnerPadX;
     // Right-edge x for divider lines — mirrors Library's panel_x + W - padX.
     const int content_right = panel_x + kOverlayPanelW - kOverlayPanelInnerPadX;
+
+    // ForYou variant (spec 1c): title + single SHUFFLE row, nothing else.
+    if (!has_filter_rows()) {
+        const int title_baseline2 = kOverlayPanelTopY + kOverlayPanelInnerPadY +
+                                    kPanelTitleFontPx - 2;
+        r.mb_draw_title_text("FOR YOU",
+                             static_cast<float>(content_x),
+                             static_cast<float>(title_baseline2),
+                             kPanelTitleFontPx, th.accent);
+        const int row_y = title_baseline2 + 20 + kOverlaySectionGap;
+        render_shuffle_row(r, panel_x, content_x, row_y, focus_row_ == 0);
+        const int hint_y2 = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
+        chrome::draw_hint_row(r, content_x, hint_y2, {
+            {chrome::HintIcon::Btn4Black,   "Close"},
+            {chrome::HintIcon::RotaryPress, "Shuffle"},
+        });
+        return;
+    }
 
     // ---- Title heading — "FILTERS" in gold ZenDots at 22 px ----
     const int title_baseline = kOverlayPanelTopY + kOverlayPanelInnerPadY +
@@ -456,6 +520,10 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
     // ---- RESET ALL row (row 6) ----
     const int reset_row_y = divider3_y + kOverlaySectionGap / 2;
     render_reset_row(r, panel_x, content_x, reset_row_y, (focus_row_ == 6));
+
+    // ---- SHUFFLE row (row 7) ----
+    const int shuffle_row_y = reset_row_y + kOverlayRowHeight;
+    render_shuffle_row(r, panel_x, content_x, shuffle_row_y, (focus_row_ == 7));
 
     // ---- Footer hint inside the panel — mirrors Library overlay ----
     const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;

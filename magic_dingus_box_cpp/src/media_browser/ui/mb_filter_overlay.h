@@ -14,6 +14,7 @@ namespace media_browser::ui {
 enum class FilterTabKind {
     Popular,
     TopRated,
+    ForYou,   // SHUFFLE-only overlay in Phase 1 (spec 1c)
 };
 
 // View-level snapshot of the per-tab filter state. Consumers (BrowseScreen)
@@ -27,6 +28,13 @@ struct FilterState {
     int language = 0;     // matches MbLanguage enum value
     int sort = 0;         // matches MbDiscoverSort enum value
 };
+
+inline bool operator==(const FilterState& a, const FilterState& b) {
+    return a.genre_mask == b.genre_mask && a.decade == b.decade &&
+           a.min_rating == b.min_rating && a.runtime == b.runtime &&
+           a.language == b.language && a.sort == b.sort;
+}
+inline bool operator!=(const FilterState& a, const FilterState& b) { return !(a == b); }
 
 // Returns TMDB genre IDs in bit-position order. Index i corresponds to
 // bit i in FilterState::genre_mask. Used by callers to translate the mask
@@ -56,26 +64,45 @@ public:
     // Per-frame animation tick. Call from screen's tick() / before render().
     void tick();
 
-    // Input handlers. Return true if the input was consumed.
+    // Input handlers. Return true if the input was consumed. Only accepted
+    // while fully Open (is_input_active()) — on_rotate/on_select/
+    // on_btn4_close all reject input during the SlidingIn/SlidingOut
+    // animation windows.
     //   on_rotate: negative = up/prev, positive = down/next.
-    //     Mode::RowSelect  → moves cursor through filter rows.
+    //     Mode::RowSelect  → moves cursor through the tab's rows
+    //       (row_count()/role_for_row() — Popular/TopRated: 0-5 value rows,
+    //       6 RESET ALL, 7 SHUFFLE; ForYou: single SHUFFLE row).
     //     Mode::ValueSelect → cycles the focused row's value in working_.
     //   on_select: rotary press.
-    //     Mode::RowSelect + value row → enter ValueSelect (no commit fired).
-    //     Mode::RowSelect + RESET ALL → reset working_ to defaults (no commit fired).
+    //     RowRole::Value   → enter ValueSelect (no commit fired).
+    //     RowRole::Reset   → reset working_ to defaults, stay in RowSelect
+    //       (no commit fired).
+    //     RowRole::Shuffle → fire the shuffle callback with the staged
+    //       state, then close via the commit-free close() path (on_commit_
+    //       is never touched).
     //     Mode::ValueSelect → save value to working_, exit back to RowSelect (no commit fired).
     //   on_btn4_close:
     //     Mode::ValueSelect → exit to RowSelect (no commit fired).
-    //     Mode::RowSelect   → fire commit callback ONCE, then close overlay.
+    //     Mode::RowSelect   → fire on_commit_ only when working_ differs
+    //       from the open()-time snapshot, then close overlay either way.
     bool on_rotate(int delta);
     bool on_select();
     bool on_btn4_close();
 
     // Commits go through this callback. The caller's commit handler is
     // responsible for persisting the new state and triggering a refetch.
-    // Fires exactly ONCE per overlay session (on BTN4 close from RowSelect).
+    // Fires at most once per overlay session, only when the staged state
+    // differs from the open()-time snapshot.
     using CommitCallback = std::function<void(const FilterState&, FilterTabKind)>;
     void set_on_commit(CommitCallback cb) { on_commit_ = std::move(cb); }
+
+    // SHUFFLE row callback (spec 1b). Fires synchronously from on_select()
+    // while the overlay is still Open, with the staged working_ state; the
+    // handler persists it and performs exactly one shuffle load. The
+    // overlay then closes itself via the commit-free close() path — on_commit_
+    // is never invoked for this session.
+    using ShuffleCallback = std::function<void(const FilterState&, FilterTabKind)>;
+    void set_on_shuffle(ShuffleCallback cb) { on_shuffle_ = std::move(cb); }
 
     // Render the overlay panel. Caller is responsible for screen geometry.
     void render(::ui::Renderer& r, int screen_w, int screen_h);
@@ -93,11 +120,27 @@ private:
 
     FilterTabKind tab_ = FilterTabKind::Popular;
     FilterState working_;       // staging area — edits accumulate here until BTN4 close
-    int focus_row_ = 0;         // 0..kFocusableRowCount-1
+    int focus_row_ = 0;         // 0..row_count()-1
 
     CommitCallback on_commit_;
 
-    static constexpr int kFocusableRowCount = 7;  // 6 filters + Reset
+    // Per-tab row model (spec 1b): the row count and roles vary by tab kind.
+    // Popular/TopRated: rows 0-5 = filter/sort values, 6 = RESET ALL,
+    // 7 = SHUFFLE. ForYou: single SHUFFLE row.
+    enum class RowRole { Value, Reset, Shuffle };
+    bool has_filter_rows() const { return tab_ != FilterTabKind::ForYou; }
+    int  row_count() const { return has_filter_rows() ? 8 : 1; }
+    RowRole role_for_row(int row) const {
+        if (!has_filter_rows()) return RowRole::Shuffle;
+        if (row == 6) return RowRole::Reset;
+        if (row == 7) return RowRole::Shuffle;
+        return RowRole::Value;
+    }
+    FilterState opened_;          // snapshot at open() — commit skipped when unchanged
+    ShuffleCallback on_shuffle_;
+    void render_shuffle_row(::ui::Renderer& r, int panel_x, int x, int y,
+                            bool focused);
+
     static constexpr int kSlideInMs  = 200;
     static constexpr int kSlideOutMs = 150;
     static constexpr int kPanelWidthPx = 380;

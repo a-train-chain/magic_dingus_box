@@ -240,6 +240,13 @@ if(BUILD_KIOSK)
             # build_library_view. Same arrangement as mb_ui_utils.cpp above: the
             # two lists feed different targets and neither includes the other.
             src/media_browser/ui/library_view.cpp
+            # Renderer-free For You merge/rank helper (spec 1c step 4). Same
+            # dual-list arrangement as mb_ui_utils/library_view above: this
+            # file also lives in MEDIA_BROWSER_SOURCES for unit testing, and
+            # browse_screen.cpp's For You state machine calls into it, so the
+            # kiosk binary needs its own copy here or the link fails on an
+            # undefined merge_recommendations.
+            src/media_browser/ui/mb_recs.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -417,6 +424,7 @@ if(ENABLE_MEDIA_BROWSER)
         # unlike the screen it lives in it can be compiled and asserted on here.
         # That coverage gap is what let the "recently added" cutoff bug ship.
         src/media_browser/ui/library_view.cpp
+        src/media_browser/ui/mb_recs.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -436,6 +444,8 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_browse_logic.cpp
+        tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
         tests/media_browser/test_radarr_parsers.cpp
         tests/media_browser/test_radarr_client.cpp

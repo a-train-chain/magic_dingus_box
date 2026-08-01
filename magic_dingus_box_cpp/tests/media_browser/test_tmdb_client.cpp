@@ -278,3 +278,45 @@ TEST_CASE("TmdbClient::has_api_key reports whether a key is configured", "[tmdb]
         REQUIRE(c.has_api_key());
     }
 }
+
+// --- TmdbList / parse_list() ------------------------------------------
+TEST_CASE("TmdbClient::parse_list carries ok + total_pages + hits", "[tmdb][list]") {
+    const std::string json = R"({
+        "page": 1,
+        "total_pages": 42,
+        "results": [
+            {"id": 11, "title": "Star Wars", "release_date": "1977-05-25",
+             "vote_average": 8.2, "poster_path": "/sw.jpg"},
+            {"id": 12, "title": "Adult Junk", "adult": true,
+             "release_date": "2001-01-01", "vote_average": 1.0, "poster_path": "/x.jpg"}
+        ]
+    })";
+    auto list = media_browser::TmdbClient::parse_list(json);
+    REQUIRE(list.ok);
+    REQUIRE(list.total_pages == 42);
+    REQUIRE(list.hits.size() == 1);  // adult row dropped, same as parse_list_response
+    CHECK(list.hits[0].tmdb_id == 11);
+    CHECK(list.hits[0].poster_path == "https://image.tmdb.org/t/p/w500/sw.jpg");
+}
+
+TEST_CASE("TmdbClient::parse_list flags malformed and error payloads", "[tmdb][list]") {
+    CHECK_FALSE(media_browser::TmdbClient::parse_list("not json {{{").ok);
+    // TMDB error payload: valid JSON, no results array → NOT ok.
+    CHECK_FALSE(media_browser::TmdbClient::parse_list(
+        R"({"status_code": 34, "status_message": "not found"})").ok);
+    // Empty results array is still ok (a real, empty page).
+    auto empty = media_browser::TmdbClient::parse_list(
+        R"({"page": 1, "total_pages": 1, "results": []})");
+    CHECK(empty.ok);
+    CHECK(empty.hits.empty());
+}
+
+TEST_CASE("TmdbClient::parse_list parses the recommendations fixture", "[tmdb][list]") {
+    const std::string json = load_fixture("recommendations.json");
+    REQUIRE_FALSE(json.empty());
+    auto list = media_browser::TmdbClient::parse_list(json);
+    REQUIRE(list.ok);
+    CHECK(list.total_pages == 2);
+    REQUIRE(list.hits.size() == 3);   // 4 entries in fixture, 1 adult dropped
+    CHECK(list.hits[0].tmdb_id == 27205);
+}

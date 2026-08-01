@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Media Browser)
+- **"For You" tab** — personalized recommendations seeded from the Radarr
+  library: up to 8 random library titles fan out to TMDB's recommendations
+  endpoint (with the similar-films fallback), merged and ranked by how many
+  seeds agree, library titles excluded, capped at 100. Re-sampling on
+  shuffle, 6-hour expiry, and boot gives genuinely different-but-personal
+  results each time.
+- **SHUFFLE row in the filter overlay** (Popular / Top Rated / For You) —
+  reloads the grid from a random page of the chart (or of the filtered
+  discover result), so the same page-1 titles stop appearing every visit.
+  Committing filter edits and shuffling in one gesture works; closing the
+  overlay without edits no longer refetches the tab.
+- **Browse grids refresh themselves after 6 hours** (stale-while-revalidate:
+  the old grid stays on screen and is replaced only when a fresh page
+  actually arrives — a failed refresh changes nothing).
+- TMDB list endpoints now report success/failure and total pages
+  (`TmdbList`), so an empty page and a dead egress are distinguishable.
+
 ### Removed
 - **The synthetic "Movies" playlist no longer appears in the main menu.**
   Since Media Browser V2 the kiosk scanned the Radarr library at boot

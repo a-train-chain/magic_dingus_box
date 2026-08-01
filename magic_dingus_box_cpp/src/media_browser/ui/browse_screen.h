@@ -2,16 +2,20 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
+#include "media_browser/ui/mb_recs.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
 
@@ -75,10 +79,11 @@ private:
         TopRated = 2,
         Upcoming = 3,
         Filter = 4,
-        Search = 5,
-        Library = 6,
-        Queue = 7,
-        Settings = 8,
+        ForYou = 5,
+        Search = 6,
+        Library = 7,
+        Queue = 8,
+        Settings = 9,
     };
     enum class Focus {
         CategoryStrip,
@@ -89,8 +94,8 @@ private:
     // Filter panel row / control identifiers.
     enum class FilterRow { Genre = 0, Year = 1, SortBy = 2, Count = 3 };
 
-    static constexpr int kNumContentCategories = 5;  // Popular..Filter
-    static constexpr int kNumCategories = 9;
+    static constexpr int kNumContentCategories = 6;  // Popular..ForYou
+    static constexpr int kNumCategories = 10;
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
     // 45 px breathing room before the bottom bar. 18 posters visible per
@@ -102,6 +107,21 @@ private:
     static bool is_nav_chip(Category cat) {
         return static_cast<int>(cat) >= kNumContentCategories;
     }
+
+    // Single source of truth for the Marquee strip — consumed by BOTH
+    // handle_input() and render(). Was duplicated in the two functions
+    // with a "keep in sync" comment.
+    static constexpr Category kVisibleTabs[] = {
+        Category::Popular,
+        Category::TopRated,
+        Category::ForYou,
+        Category::Search,
+        Category::Library,
+        Category::Queue,
+        Category::Settings,
+    };
+    static constexpr int kNumVisibleTabs =
+        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
 
     // Public load entry point. Spawns a background thread that does
     // the (slow, ~6s) TMDB fetch off the render thread; render() can
@@ -115,14 +135,32 @@ private:
     // are active; switches to /discover/movie when any filter is set.
     // Called from the FilterOverlay commit callback.
     void reload_for_category();
+    // Shared persist half of the overlay commit (spec 1b): write per-tab
+    // filter state + save settings.json, WITHOUT the reload — the commit
+    // path adds reload_for_category(), the shuffle path adds do_shuffle().
+    void persist_filter_state(FilterTabKind tab, const FilterState& fs);
+    // Spec 1b shuffle dispatch for the active tab.
+    void do_shuffle();
+    // Shuffle entry points (spec 1b): mirror load_category's synchronous
+    // reset, then spawn the base page of a fresh window.
+    void load_shuffle(Category cat, int base_page);
+    void load_shuffle_discover(int base_page);
+    // Background TTL refresh for the active chart tab (spec 1a): no clear,
+    // no Loading state; swap happens in apply_pending only when the result
+    // is ok and non-empty.
+    void revalidate_active_chart();
+    // True when the committed filter state for the active chart tab routes
+    // it through /discover (extracted from reload_for_category).
+    bool active_chart_filters_active() const;
     // Worker entry — runs the synchronous TMDB call off-thread.
     // Each spawned worker fetches ONE page; multiple page workers may be
     // in flight concurrently for the same category load (page 1 + a
     // prefetched page 2 + a scroll-driven page 3 etc.). Results are
     // tagged with their page number so apply_pending() can replace on
     // page 1 / append on page > 1.
-    void run_load_page(uint64_t gen, Category cat, int page);
-    void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page);
+    void run_load_page(uint64_t gen, Category cat, int page, bool is_revalidate = false);
+    void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,
+                                bool is_revalidate = false);
     // Spawn a fresh worker for the given category + page under the
     // current generation. Sets fetching_more_ before returning.
     void spawn_page_worker(Category cat, int page);
@@ -197,8 +235,21 @@ private:
     // replaces (page == 1) or appends (page > 1).
     struct PendingPage {
         std::vector<TmdbSearchHit> movies;
-        int  page;       // 1, 2, 3, ...
-        bool no_more;    // true if this fetch indicates we hit the end of the list
+        int  page;         // absolute TMDB page number (window base .. base+4)
+        bool no_more;      // true if this fetch indicates we hit the end of the list
+        bool ok = true;    // TmdbList.ok — false = fetch/parse failure
+        int  total_pages = 0;      // TmdbList.total_pages (0 when unknown)
+        bool is_revalidate = false;  // background TTL refresh — skip swap on failure/empty
+        std::string discover_sig;    // non-empty for discover fetches → total_pages cache key
+        // Generation captured at publish time. The publish-side gen check
+        // in run_load_page/run_reload_filter_page only proves the page was
+        // current when it was PUSHED — a page can still sit in the queue
+        // while Browse isn't ticking update() (user on Detail/Playback) and
+        // get drained after a LATER generation bump (e.g. revalidate_active_
+        // chart(), which — unlike load_category/load_shuffle — clears none
+        // of the pagination state on bump). apply_pending() re-checks this
+        // against tmdb_current_gen_ at drain time and skips stale entries.
+        uint64_t gen = 0;
     };
     std::vector<PendingPage>   tmdb_pending_pages_;
     // result_ready_ is the fast atomic check update() uses to skip
@@ -231,6 +282,30 @@ private:
     // tiles in the grid. Different cuts of the same movie have distinct
     // tmdb_ids, so this is exact-duplicate suppression only.
     std::unordered_set<int> loaded_tmdb_ids_;
+
+    // First page of the active pagination window. 1 for normal loads; the
+    // random base after a shuffle. maybe_load_more_pages() loads
+    // [page_window_base_, window_last_page(page_window_base_)] — the old code
+    // treated kMaxLoadedPages as an ABSOLUTE page cap, which would have made
+    // any shuffled base >= 6 load a single page and stop (spec 1b).
+    int page_window_base_ = 1;
+    // True when the active window's follow-up pages must be fetched through
+    // /discover rather than the curated /popular or /top_rated endpoint.
+    // Pre-existing bug fixed alongside the window-base work: maybe_load_more_
+    // pages() used to always spawn scroll-driven pages against `category_`
+    // (Popular/TopRated), so a filtered grid's pages 2+ silently came back
+    // from the curated endpoint and mixed unfiltered results into a
+    // supposedly-filtered grid.
+    bool window_is_discover_ = false;
+    // When a shuffled base page comes back genuinely empty (ok but 0 hits —
+    // possible on the /discover path), fall back to a plain page-1 load.
+    bool shuffle_retry_base1_ = false;
+    // Age of the active chart grid (Popular/TopRated, curated or discover).
+    // Default-constructed = never loaded. Drives the 6h TTL (spec 1a).
+    std::chrono::steady_clock::time_point chart_loaded_at_{};
+    // Last-seen total_pages per discover filter signature (spec 1b) —
+    // key = TmdbClient::build_discover_url("", filter, 1).
+    std::unordered_map<std::string, int> discover_total_pages_;
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;
@@ -268,6 +343,34 @@ private:
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
 
+    // --- For You state (spec 1c) -----------------------------------
+    // Cached merged list — activation re-renders this without refetching;
+    // a new sample runs only on first entry, TTL expiry, or SHUFFLE.
+    std::vector<TmdbSearchHit> foryou_movies_;
+    std::chrono::steady_clock::time_point foryou_loaded_at_{};
+    // One in-flight sample job. Workers capture the shared_ptr; a stale job
+    // (gen mismatch) is simply never consumed. remaining==0 → ready to merge.
+    struct SeedResult {
+        bool ok = false;                    // TmdbList.ok of whichever call served it
+        std::vector<TmdbSearchHit> hits;
+    };
+    struct ForYouJob {
+        uint64_t gen = 0;
+        bool background = false;            // TTL refresh — keep old grid on total failure
+        std::atomic<int> remaining{0};
+        std::mutex mtx;
+        std::vector<SeedResult> results;
+    };
+    std::shared_ptr<ForYouJob> foryou_job_;
+    bool foryou_waiting_for_library_ = false;  // sample deferred until refresh lands
+    bool foryou_failed_ = false;               // all seeds failed on an explicit load
+    // Library-refresh outcome flags (spec 1c): set by apply_library_pending.
+    bool lib_refresh_done_once_ = false;
+    bool lib_fetch_ok_ = false;
+    void activate_foryou();
+    void start_foryou_sample(bool background);
+    void apply_foryou_pending();
+
     // --- Async Radarr library/services refresh (mirrors LibraryScreen) ---
     // enter() used to call is_reachable() + get_library() + get_queue()
     // (+ get_quality_profiles() on first entry) SYNCHRONOUSLY on the render
@@ -290,6 +393,7 @@ private:
         std::unordered_set<int>     downloading_ids;
         std::vector<QualityProfile> quality_profiles;
         bool                        quality_fetched = false;
+        bool                        library_fetch_ok = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
     void run_library_refresh(bool fetch_quality);  // worker body (off render)

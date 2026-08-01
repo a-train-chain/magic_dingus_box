@@ -59,6 +59,10 @@ std::vector<MovieSearchHit> RadarrMockClient::lookup(const std::string& query) {
 
 std::vector<Movie> RadarrMockClient::get_library() { return library_; }
 
+std::optional<std::vector<Movie>> RadarrMockClient::get_library_checked() {
+    return library_;
+}
+
 std::optional<Movie> RadarrMockClient::get_movie(int radarr_id) {
     for (const auto& m : library_) if (m.radarr_id == radarr_id) return m;
     return std::nullopt;
