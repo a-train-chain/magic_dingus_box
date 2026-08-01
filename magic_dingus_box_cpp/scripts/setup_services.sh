@@ -2124,6 +2124,137 @@ show("unchanged", s["unchanged"])
     fi
 fi
 
+# 15-S0. Sonarr root folder /data/library/tv.
+#
+# Greenfield — Sonarr uses the hardlink-capable /data mount from day one
+# (host /mnt/ssd/library/tv, created in Step 2). POST /rootfolder requires
+# the path to exist and be writable by PUID; the mkdir + chown in Step 2
+# guarantees both. Idempotent: skip if already present.
+echo "Configuring Sonarr root folder /data/library/tv..."
+# The curl inside the substitution MUST be ||-guarded: under the script's
+# set -euo pipefail, a bare failing curl in a $(pipeline) aborts the whole
+# run before the tolerant python path ever executes (same convention as
+# PROFILE_JSON at Step 8: `curl ... || echo "[]"`).
+SONARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${SONARR_KEY}" \
+    http://localhost:8989/api/v3/rootfolder 2>/dev/null || echo "[]") \
+    | python3 -c "import sys,json
+try: print(any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)))
+except Exception: print(False)")
+if [[ "${SONARR_RF_PRESENT}" == "True" ]]; then
+    echo "  ✓ Sonarr root folder /data/library/tv already present"
+else
+    if curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        -d '{"path":"/data/library/tv"}' \
+        http://localhost:8989/api/v3/rootfolder >/dev/null 2>&1; then
+        echo "  ✓ Sonarr root folder /data/library/tv created"
+    else
+        echo "  WARN: failed to create Sonarr root folder; verify /data/library/tv is writable"
+    fi
+fi
+
+# 15-S. Sonarr → qBittorrent download client.
+#
+# Sonarr twin of the Radarr download-client block. Same qBittorrent
+# container (reachable via gluetun:8080), category=sonarr so Sonarr's
+# torrents segregate from Radarr's. Password injected from .env at apply
+# time; masked on GET so drift-detection ignores it. Field name is
+# tvCategory (Sonarr) vs Radarr's movieCategory — compared generically.
+echo "Configuring Sonarr → qBittorrent download client..."
+SONARR_DLCLIENTS_FILE="${SCRIPT_DIR}/data/sonarr_downloadclients.json"
+if [[ ! -f "${SONARR_DLCLIENTS_FILE}" ]]; then
+    echo "  WARN: ${SONARR_DLCLIENTS_FILE} not found — skipping."
+else
+    QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+    if [[ -z "${QBIT_PW}" ]]; then
+        echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    else
+        SONARR_DLCLIENT_SUMMARY=$(python3 - "${SONARR_DLCLIENTS_FILE}" "${SONARR_KEY}" "${QBIT_PW}" <<'PYEOF'
+import json, sys, urllib.request
+clients_path, api_key, qbit_pw = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:8989/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def inject_password(payload):
+    new_fields = []
+    for f in payload.get("fields", []):
+        if f.get("name") == "password":
+            f = dict(f)
+            f["value"] = qbit_pw
+        new_fields.append(f)
+    payload = dict(payload)
+    payload["fields"] = new_fields
+    return payload
+
+def shape_payload(desired):
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    return inject_password(payload)
+
+def match(live, desired_payload):
+    keys = ("name", "enable", "protocol", "priority", "implementation",
+            "configContract", "removeCompletedDownloads",
+            "removeFailedDownloads")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    live_fd.pop("password", None)
+    des_fd.pop("password", None)
+    for k in des_fd:
+        if live_fd.get(k) != des_fd[k]:
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    return True
+
+with open(clients_path) as f:
+    desired_clients = json.load(f)
+
+live_clients = http("GET", "/downloadclient") or []
+live_by_name = {c["name"]: c for c in live_clients}
+
+created, updated, unchanged = [], [], []
+for desired in desired_clients:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/downloadclient/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/downloadclient", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+        echo "${SONARR_DLCLIENT_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+    fi
+fi
+
 # 16. Radarr quality definitions (custom 720p/1080p size limits).
 #
 # Radarr ships with default size limits per quality (e.g. WEBDL-1080p
@@ -2224,6 +2355,93 @@ import json, sys
 s = json.loads(sys.stdin.read())
 # Quality definitions tend to be many (30+). Print a count summary
 # rather than spelling each one to keep output readable.
+def count(label, items):
+    if items:
+        print("  " + label + ": " + str(len(items)) + " (" + ", ".join(items[:3]) + ("..." if len(items) > 3 else "") + ")")
+count("updated  ", s["updated"])
+count("unchanged", s["unchanged"])
+count("missing  ", s["missing"])
+'
+fi
+
+# 16-S. Sonarr quality definitions (720p/1080p MB-per-minute caps).
+#
+# Sonarr twin of the Radarr block. Its quality-id space differs, so the
+# fixture (sonarr_qualitydefinitions.json) was captured LIVE from this
+# Sonarr and carries Sonarr's own ids. Match by quality.id (stable), PUT
+# on drift. Pi 4B keeps leaner preferred sizes, selected by leaf NAME
+# (Sonarr ids aren't known ahead of time, unlike Radarr's hardcoded map).
+echo "Configuring Sonarr quality definitions..."
+SONARR_QUALITY_FILE="${SCRIPT_DIR}/data/sonarr_qualitydefinitions.json"
+if [[ ! -f "${SONARR_QUALITY_FILE}" ]]; then
+    echo "  WARN: ${SONARR_QUALITY_FILE} not found — skipping."
+else
+    SONARR_QD_SUMMARY=$(python3 - "${SONARR_QUALITY_FILE}" "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+qd_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:8989/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+with open(qd_path) as f:
+    desired_qds = json.load(f)
+
+# Board gate: fixture is the Pi 5 tuning; a Pi 4B keeps leaner preferred
+# sizes. Select by leaf NAME (720p family → 25, 1080p family → 40).
+CAP720  = {"HDTV-720p", "WEBDL-720p", "WEBRip-720p", "Bluray-720p"}
+CAP1080 = {"HDTV-1080p", "WEBDL-1080p", "WEBRip-1080p", "Bluray-1080p"}
+def pi_model():
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            return f.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+if pi_model().startswith("Raspberry Pi 4 "):
+    for d in desired_qds:
+        nm = d["quality"]["name"]
+        if nm in CAP720:
+            d["preferredSize"] = 25
+        elif nm in CAP1080:
+            d["preferredSize"] = 40
+
+live_qds = http("GET", "/qualitydefinition") or []
+live_by_quality_id = {q["quality"]["id"]: q for q in live_qds}
+
+unchanged, updated, missing = [], [], []
+for desired in desired_qds:
+    qid = desired["quality"]["id"]
+    if qid not in live_by_quality_id:
+        missing.append(desired["quality"]["name"])
+        continue
+    live = live_by_quality_id[qid]
+    drift = (
+        live.get("minSize") != desired.get("minSize")
+        or live.get("maxSize") != desired.get("maxSize")
+        or live.get("preferredSize") != desired.get("preferredSize")
+    )
+    if not drift:
+        unchanged.append(desired["quality"]["name"])
+        continue
+    payload = dict(live)
+    payload["minSize"] = desired.get("minSize")
+    payload["maxSize"] = desired.get("maxSize")
+    payload["preferredSize"] = desired.get("preferredSize")
+    http("PUT", "/qualitydefinition/%d" % live["id"], payload)
+    updated.append(desired["quality"]["name"])
+
+print(json.dumps({"updated": updated, "unchanged": unchanged, "missing": missing}))
+PYEOF
+)
+    echo "${SONARR_QD_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
 def count(label, items):
     if items:
         print("  " + label + ": " + str(len(items)) + " (" + ", ".join(items[:3]) + ("..." if len(items) > 3 else "") + ")")
@@ -2381,6 +2599,32 @@ if [[ "${RECONCILE_OK}" == "✓" ]]; then
     echo "  ✓ Radarr scan + import triggered (any orphaned downloads will reconcile within ~30s)"
 else
     echo "  WARN: failed to trigger Radarr import scan; verify via web UI"
+fi
+
+# 17-S. Sonarr import reconcile — catch completed-but-orphaned episodes.
+#
+# Sonarr twin of the Radarr reconcile above. RefreshMonitoredDownloads
+# polls the now-configured download client; DownloadedEpisodesScan walks
+# the sonarr category's save dir and imports anything matching a
+# monitored series. The path mirrors the live qBit wiring chosen at
+# provisioning time (see qbit_categories.json): /data-based on a
+# hardlink-migrated box, /downloads/complete otherwise.
+# Both commands no-op on a clean setup with no orphaned downloads.
+echo "Reconciling Sonarr import state (catches completed-but-orphaned episodes)..."
+SONARR_RECONCILE_OK="✓"
+curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+    -d '{"name":"RefreshMonitoredDownloads"}' \
+    "http://localhost:8989/api/v3/command" >/dev/null \
+    || SONARR_RECONCILE_OK="WARN"
+sleep 5
+curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+    -d '{"name":"DownloadedEpisodesScan","path":"/downloads/complete","importMode":"Auto"}' \
+    "http://localhost:8989/api/v3/command" >/dev/null \
+    || SONARR_RECONCILE_OK="WARN"
+if [[ "${SONARR_RECONCILE_OK}" == "✓" ]]; then
+    echo "  ✓ Sonarr scan + import triggered (any orphaned downloads reconcile within ~30s)"
+else
+    echo "  WARN: failed to trigger Sonarr import scan; verify via web UI"
 fi
 
 # 18. Run smoke test. Hard-asserts every link in the chain (indexers,

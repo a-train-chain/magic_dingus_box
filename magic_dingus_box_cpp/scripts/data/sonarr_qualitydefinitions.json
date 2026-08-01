@@ -1,0 +1,200 @@
+[
+  {
+    "quality": {
+      "id": 0,
+      "name": "Unknown"
+    },
+    "minSize": 1,
+    "maxSize": 199.9,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 1,
+      "name": "SDTV"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 12,
+      "name": "WEBRip-480p"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 8,
+      "name": "WEBDL-480p"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 2,
+      "name": "DVD"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 13,
+      "name": "Bluray-480p"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 22,
+      "name": "Bluray-576p"
+    },
+    "minSize": 2,
+    "maxSize": 100,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 4,
+      "name": "HDTV-720p"
+    },
+    "minSize": 0,
+    "maxSize": 60,
+    "preferredSize": 40
+  },
+  {
+    "quality": {
+      "id": 9,
+      "name": "HDTV-1080p"
+    },
+    "minSize": 0,
+    "maxSize": 100,
+    "preferredSize": 70
+  },
+  {
+    "quality": {
+      "id": 10,
+      "name": "Raw-HD"
+    },
+    "minSize": 4,
+    "maxSize": null,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 14,
+      "name": "WEBRip-720p"
+    },
+    "minSize": 0,
+    "maxSize": 60,
+    "preferredSize": 40
+  },
+  {
+    "quality": {
+      "id": 5,
+      "name": "WEBDL-720p"
+    },
+    "minSize": 0,
+    "maxSize": 60,
+    "preferredSize": 40
+  },
+  {
+    "quality": {
+      "id": 6,
+      "name": "Bluray-720p"
+    },
+    "minSize": 0,
+    "maxSize": 60,
+    "preferredSize": 40
+  },
+  {
+    "quality": {
+      "id": 15,
+      "name": "WEBRip-1080p"
+    },
+    "minSize": 0,
+    "maxSize": 100,
+    "preferredSize": 70
+  },
+  {
+    "quality": {
+      "id": 3,
+      "name": "WEBDL-1080p"
+    },
+    "minSize": 0,
+    "maxSize": 100,
+    "preferredSize": 70
+  },
+  {
+    "quality": {
+      "id": 7,
+      "name": "Bluray-1080p"
+    },
+    "minSize": 0,
+    "maxSize": 100,
+    "preferredSize": 70
+  },
+  {
+    "quality": {
+      "id": 20,
+      "name": "Bluray-1080p Remux"
+    },
+    "minSize": 35,
+    "maxSize": null,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 16,
+      "name": "HDTV-2160p"
+    },
+    "minSize": 35,
+    "maxSize": 199.9,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 17,
+      "name": "WEBRip-2160p"
+    },
+    "minSize": 35,
+    "maxSize": null,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 18,
+      "name": "WEBDL-2160p"
+    },
+    "minSize": 35,
+    "maxSize": null,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 19,
+      "name": "Bluray-2160p"
+    },
+    "minSize": 35,
+    "maxSize": null,
+    "preferredSize": 95
+  },
+  {
+    "quality": {
+      "id": 21,
+      "name": "Bluray-2160p Remux"
+    },
+    "minSize": 35,
+    "maxSize": null,
+    "preferredSize": 95
+  }
+]
