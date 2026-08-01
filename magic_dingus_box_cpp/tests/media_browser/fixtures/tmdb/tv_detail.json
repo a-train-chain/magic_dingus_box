@@ -1,0 +1,53 @@
+{
+  "adult": false,
+  "backdrop_path": "/tsRy63Mu5cu8etL1X7ZLyf7UP1M.jpg",
+  "created_by": [
+    {"id": 66633, "credit_id": "52542286760ee31328001a7b", "name": "Vince Gilligan"}
+  ],
+  "episode_run_time": [45],
+  "first_air_date": "2008-01-20",
+  "genres": [
+    {"id": 18, "name": "Drama"},
+    {"id": 80, "name": "Crime"}
+  ],
+  "id": 1396,
+  "in_production": false,
+  "last_air_date": "2013-09-29",
+  "name": "Breaking Bad",
+  "number_of_episodes": 62,
+  "number_of_seasons": 5,
+  "original_language": "en",
+  "original_name": "Breaking Bad",
+  "overview": "Walter White, a New Mexico chemistry teacher, is diagnosed with cancer.",
+  "popularity": 289.1,
+  "poster_path": "/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+  "seasons": [
+    {"air_date": "2009-02-17", "episode_count": 5, "id": 3577, "name": "Specials",
+     "overview": "", "poster_path": "/40dT79mDEZwXkQiZNBgSaydQFDP.jpg",
+     "season_number": 0, "vote_average": 0},
+    {"air_date": "2008-01-20", "episode_count": 7, "id": 3572, "name": "Season 1",
+     "overview": "High school chemistry teacher Walter White.",
+     "poster_path": "/1BP4xYv9ZG4ZVHkL7ocOziBbSYH.jpg",
+     "season_number": 1, "vote_average": 8.2},
+    {"air_date": "2009-03-08", "episode_count": 13, "id": 3573, "name": "Season 2",
+     "overview": "", "poster_path": null,
+     "season_number": 2, "vote_average": 8.3}
+  ],
+  "status": "Ended",
+  "tagline": "Change the equation.",
+  "type": "Scripted",
+  "vote_average": 8.906,
+  "vote_count": 13500,
+  "credits": {
+    "cast": [
+      {"order": 0, "name": "Bryan Cranston", "character": "Walter White"},
+      {"order": 1, "name": "Aaron Paul", "character": "Jesse Pinkman"},
+      {"order": 2, "name": "Anna Gunn", "character": "Skyler White"},
+      {"order": 3, "name": "Dean Norris", "character": "Hank Schrader"},
+      {"order": 4, "name": "Betsy Brandt", "character": "Marie Schrader"},
+      {"order": 5, "name": "RJ Mitte", "character": "Walter White Jr."},
+      {"order": 6, "name": "Bob Odenkirk", "character": "Saul Goodman"}
+    ],
+    "crew": []
+  }
+}

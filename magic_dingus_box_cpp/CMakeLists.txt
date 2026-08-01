@@ -223,6 +223,9 @@ if(BUILD_KIOSK)
     set(KIOSK_MEDIA_BROWSER_SOURCES "")
     if(ENABLE_MEDIA_BROWSER)
         list(APPEND KIOSK_MEDIA_BROWSER_SOURCES
+            src/media_browser/sonarr/sonarr_parsers.cpp
+            src/media_browser/sonarr/sonarr_client.cpp
+            src/media_browser/sonarr/sonarr_mock.cpp
             src/media_browser/radarr/radarr_parsers.cpp
             src/media_browser/radarr/radarr_client.cpp
             src/media_browser/radarr/radarr_mock.cpp
@@ -402,6 +405,9 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
+        src/media_browser/sonarr/sonarr_parsers.cpp
+        src/media_browser/sonarr/sonarr_client.cpp
+        src/media_browser/sonarr/sonarr_mock.cpp
         src/media_browser/library/library_db.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
@@ -444,11 +450,14 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
         tests/media_browser/test_radarr_parsers.cpp
         tests/media_browser/test_radarr_client.cpp
+        tests/media_browser/test_sonarr_parsers.cpp
+        tests/media_browser/test_sonarr_client.cpp
         tests/media_browser/test_artwork_cache.cpp
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp

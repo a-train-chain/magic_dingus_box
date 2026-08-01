@@ -14,6 +14,7 @@
 
 #include "media_browser/library/library_db.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/torrent/torrent_session.h"
 
@@ -28,6 +29,8 @@ struct Config {
     std::string tmdb_api_key;
     std::string radarr_api_key;
     std::string radarr_base_url = "http://localhost:7878";
+    std::string sonarr_api_key;
+    std::string sonarr_base_url = "http://localhost:8989";
 };
 
 std::string read_file_trimmed(const fs::path& p) {
@@ -56,6 +59,8 @@ Config load_config() {
     if (const char* d = std::getenv("MDB_COMPLETE_DIR")) c.complete_dir = d;
     if (const char* k = std::getenv("MDB_RADARR_API_KEY")) c.radarr_api_key = k;
     if (const char* u = std::getenv("MDB_RADARR_BASE_URL")) c.radarr_base_url = u;
+    if (const char* k = std::getenv("MDB_SONARR_API_KEY")) c.sonarr_api_key = k;
+    if (const char* u = std::getenv("MDB_SONARR_BASE_URL")) c.sonarr_base_url = u;
     return c;
 }
 
@@ -82,6 +87,10 @@ void print_help() {
         "  radarr-queue                 Show active download queue.\n"
         "  radarr-add <tmdb_id>         Add movie to library (triggers search).\n"
         "  radarr-profiles              List quality profiles.\n"
+        "  sonarr-status                Ping Sonarr, show version + reachability.\n"
+        "  sonarr-lookup <tmdb_id>      Sonarr /series/lookup?term=tmdb:<id>.\n"
+        "  sonarr-library               Show all series in library (per-season state).\n"
+        "  sonarr-queue                 Show the per-episode download queue.\n"
         "\n"
         "Environment:\n"
         "  MDB_TMDB_API_KEY   TMDB v3 API key (or ~/.config/magic_dingus_box/tmdb_api_key).\n"
@@ -89,7 +98,9 @@ void print_help() {
         "  MDB_DOWNLOAD_DIR   Override incomplete dir (default: data/downloads/incomplete).\n"
         "  MDB_COMPLETE_DIR   Override complete dir (default: data/library).\n"
         "  MDB_RADARR_API_KEY Radarr v3 API key (required for radarr-* commands).\n"
-        "  MDB_RADARR_BASE_URL Radarr base URL (default: http://localhost:7878).\n");
+        "  MDB_RADARR_BASE_URL Radarr base URL (default: http://localhost:7878).\n"
+        "  MDB_SONARR_API_KEY Sonarr v4 API key (required for sonarr-* commands).\n"
+        "  MDB_SONARR_BASE_URL Sonarr base URL (default: http://localhost:8989).\n");
 }
 
 // Forward declarations for dispatch (implemented in Tasks 8-10).
@@ -108,6 +119,10 @@ int cmd_radarr_library(const Config& c);
 int cmd_radarr_queue(const Config& c);
 int cmd_radarr_add(const Config& c, int tmdb_id);
 int cmd_radarr_profiles(const Config& c);
+int cmd_sonarr_status(const Config& c);
+int cmd_sonarr_lookup(const Config& c, int tmdb_id);
+int cmd_sonarr_library(const Config& c);
+int cmd_sonarr_queue(const Config& c);
 
 }  // namespace
 
@@ -166,6 +181,13 @@ int main(int argc, char** argv) {
         return cmd_radarr_add(cfg, std::atoi(argv[2]));
     }
     if (cmd == "radarr-profiles") return cmd_radarr_profiles(cfg);
+    if (cmd == "sonarr-status") return cmd_sonarr_status(cfg);
+    if (cmd == "sonarr-lookup") {
+        if (argc < 3) { print_help(); return 2; }
+        return cmd_sonarr_lookup(cfg, std::atoi(argv[2]));
+    }
+    if (cmd == "sonarr-library") return cmd_sonarr_library(cfg);
+    if (cmd == "sonarr-queue") return cmd_sonarr_queue(cfg);
 
     spdlog::error("Unknown command: {}", cmd);
     print_help();
@@ -473,6 +495,108 @@ int cmd_radarr_profiles(const Config& c) {
     auto p = r.get_quality_profiles();
     for (const auto& q : p) {
         spdlog::info("  [{:>3}] {}", q.id, q.name);
+    }
+    return 0;
+}
+
+// --- sonarr commands -------------------------------------------------
+
+media_browser::SonarrClient::Config make_sonarr_config(const Config& c) {
+    media_browser::SonarrClient::Config sc;
+    sc.base_url = c.sonarr_base_url;
+    sc.api_key = c.sonarr_api_key;
+    return sc;
+}
+
+int cmd_sonarr_status(const Config& c) {
+    if (c.sonarr_api_key.empty()) {
+        spdlog::error("no Sonarr API key - set MDB_SONARR_API_KEY");
+        return 1;
+    }
+    media_browser::SonarrClient s(make_sonarr_config(c));
+    auto status = s.get_status();
+    if (!status) {
+        spdlog::error("fetch failed: {}", s.last_error());
+        return 1;
+    }
+    spdlog::info("Sonarr: {} (reachable: true)", status->version);
+    auto profiles = s.get_quality_profiles();
+    for (const auto& p : profiles) {
+        spdlog::info("  profile [{:>3}] {}", p.id, p.name);
+    }
+    for (const auto& r : s.get_root_folders()) {
+        spdlog::info("  root    [{:>3}] {}  free={} GB",
+                     r.id, r.path, r.free_space_bytes / 1'000'000'000);
+    }
+    return 0;
+}
+
+int cmd_sonarr_lookup(const Config& c, int tmdb_id) {
+    if (c.sonarr_api_key.empty()) {
+        spdlog::error("no Sonarr API key - set MDB_SONARR_API_KEY");
+        return 1;
+    }
+    media_browser::SonarrClient s(make_sonarr_config(c));
+    auto hits = s.lookup_by_tmdb(tmdb_id);
+    if (hits.empty()) {
+        spdlog::error("no results for tmdb:{} ({})", tmdb_id, s.last_error());
+        return 1;
+    }
+    spdlog::info("{} result(s) for tmdb:{}:", hits.size(), tmdb_id);
+    for (const auto& h : hits) {
+        spdlog::info("  {} ({})  tvdb={} tmdb={} runtime={}min status={} seasons={}",
+                     h.title, h.year, h.tvdb_id, h.tmdb_id,
+                     h.runtime_minutes, h.status, h.seasons.size());
+        for (const auto& season : h.seasons) {
+            spdlog::info("     S{:02d} monitored={} episodes={}",
+                         season.season_number, season.monitored,
+                         season.episode_count);
+        }
+    }
+    return 0;
+}
+
+int cmd_sonarr_library(const Config& c) {
+    if (c.sonarr_api_key.empty()) {
+        spdlog::error("no Sonarr API key - set MDB_SONARR_API_KEY");
+        return 1;
+    }
+    media_browser::SonarrClient s(make_sonarr_config(c));
+    auto checked = s.get_library_checked();
+    if (!checked) {
+        spdlog::error("library fetch failed: {}", s.last_error());
+        return 1;
+    }
+    spdlog::info("Library: {} series", checked->size());
+    for (const auto& series : *checked) {
+        spdlog::info("  [{:>5}] {} ({})  files={} size={} GB  path={}",
+                     series.sonarr_id, series.title, series.year,
+                     series.episode_file_count,
+                     series.size_on_disk_bytes / 1'000'000'000, series.path);
+        for (const auto& season : series.seasons) {
+            spdlog::info("     S{:02d} monitored={} files={}/{}",
+                         season.season_number, season.monitored,
+                         season.episode_file_count, season.episode_count);
+        }
+    }
+    return 0;
+}
+
+int cmd_sonarr_queue(const Config& c) {
+    if (c.sonarr_api_key.empty()) {
+        spdlog::error("no Sonarr API key - set MDB_SONARR_API_KEY");
+        return 1;
+    }
+    media_browser::SonarrClient s(make_sonarr_config(c));
+    auto q = s.get_queue();
+    // Per-episode records, deliberately ungrouped — a season pack shows N
+    // rows sharing one downloadId. Phase 2c collapses them for display.
+    spdlog::info("Queue: {} episode record(s)", q.size());
+    for (const auto& it : q) {
+        spdlog::info("  [{:>5}] S{:02d}E{:02d} {} {:.1f}% state={} dl={}",
+                     it.id, it.season_number, it.episode.episode_number,
+                     it.episode.title.empty() ? it.title : it.episode.title,
+                     it.progress * 100.0, it.state, it.download_id);
     }
     return 0;
 }

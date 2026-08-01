@@ -7,6 +7,31 @@
 
 namespace media_browser {
 
+// Which TMDB namespace a row came from. Defaults to Movie on every hit so
+// the entire pre-TV movie path (Browse, Search, For You, playback overlay)
+// is untouched by the TV work — a TV row is only ever produced by the
+// parse_tv_* family, which sets this explicitly.
+//
+// *** TMDB's movie and TV id spaces OVERLAP COMPLETELY. *** tmdb_id 1396 is
+// Breaking Bad (TV) AND an unrelated movie — the two id spaces are
+// independently assigned, so a bare `int tmdb_id` is NOT a unique key across
+// kinds. Any set/map keyed on tmdb_id alone (std::unordered_set<int>,
+// std::unordered_map<int, ...>, etc.) MUST hold entries of a single kind
+// only; mixing Movie and Tv ids in one such container is a correctness bug
+// — it will silently collapse an unrelated movie and show into one entry
+// (dedupe, "owned"/"in library" checks, exclude-lists, ...). The safe form
+// is a `{kind, id}` pair (e.g. a future MediaRef), not a bare id.
+//
+// Currently-safe-because-movie-only int-keyed collections (all four will
+// become hazards the moment a caller starts mixing TV ids into them —
+// nothing in Phase 2b does, since it ships no TV UI, but Phase 2c's
+// Library/Queue work is expected to; audit these first):
+//   - browse_screen.cpp: library_tmdb_ids_.count(m.tmdb_id) (owned/hide
+//     filter, two call sites)
+//   - browse_screen.h:   loaded_tmdb_ids_ (append-page dedupe)
+//   - mb_recs.cpp:       by_id / exclude (recommendation merge/exclude)
+enum class MediaKind { Movie, Tv };
+
 struct TmdbSearchHit {
     int tmdb_id = 0;
     std::string title;
@@ -18,6 +43,11 @@ struct TmdbSearchHit {
     std::string poster_path;
     int year = 0;                // extracted from release_date/first_air_date
     double rating = 0.0;         // vote_average
+    // See MediaKind above. parse_list() (and its TV counterpart parse_tv_list)
+    // set this explicitly via fill_list_row for every row; only the two
+    // legacy parsers — parse_search_response and parse_list_response, which
+    // never touch fill_list_row — rely on this default.
+    MediaKind kind = MediaKind::Movie;
 };
 
 // Result of any TMDB "results[]" list endpoint. `ok` distinguishes a fetch/
@@ -52,6 +82,50 @@ struct TmdbMovieDetail {
     std::vector<std::string> directors;  // Names from credits.crew where job=="Director".
 };
 
+// One row of /tv/{id}'s seasons[]. Includes season 0 ("Specials") when TMDB
+// returns it — the caller decides whether to show it. Sonarr's
+// addOptions.monitor="firstSeason" leaves specials unmonitored, so the UI
+// needs to know the season exists to render its state honestly.
+struct TmdbTvSeason {
+    int season_number = 0;
+    std::string name;          // "Season 1" / "Specials"
+    std::string overview;
+    std::string air_date;      // ISO yyyy-mm-dd; frequently empty
+    int episode_count = 0;
+    std::string poster_path;   // full w500 URL; empty when TMDB has none
+};
+
+// /tv/{id}?append_to_response=credits. Mirrors TmdbMovieDetail's conventions
+// (full w500 image URLs, display-name genre strings, cast capped at 6) so the
+// series detail screen can reuse the movie detail layout.
+//
+// Deliberately carries NO runtime field: the disk estimate uses Sonarr's
+// series.runtime, and TMDB's episode_run_time is an array that is frequently
+// empty on modern entries.
+struct TmdbTvDetail {
+    int tmdb_id = 0;
+    std::string title;           // TMDB "name"
+    std::string original_title;  // TMDB "original_name"
+    std::string overview;
+    std::string tagline;
+    std::string poster_path;     // full w500 URL
+    std::string backdrop_path;   // full w500 URL
+    int year = 0;                // from first_air_date
+    double rating = 0.0;         // vote_average
+    int vote_count = 0;
+    std::string first_air_date;  // ISO yyyy-mm-dd
+    std::string last_air_date;   // ISO yyyy-mm-dd; empty while airing
+    std::string original_language;
+    std::string status;          // "Ended" / "Returning Series" / "Canceled" / ...
+    bool in_production = false;
+    int number_of_seasons = 0;
+    int number_of_episodes = 0;
+    std::vector<std::string> genres;    // display names, in TMDB order
+    std::vector<std::string> cast_top;  // up to 6 from credits.cast
+    std::vector<std::string> creators;  // created_by[].name — TV's "directors"
+    std::vector<TmdbTvSeason> seasons;  // TMDB order; includes season 0
+};
+
 // Inline filter used for /discover/movie queries.
 struct DiscoverFilter {
     std::vector<int> genre_ids;                    // multi-select with OR semantics (URL-emitted as with_genres=28|12 → films matching any genre)
@@ -63,6 +137,26 @@ struct DiscoverFilter {
     std::optional<int> with_runtime_lte;
     std::optional<std::string> with_original_language;  // ISO 639-1
     std::string sort_by = "popularity.desc";
+};
+
+// Inline filter used for /discover/tv queries. Deliberately a separate type
+// from DiscoverFilter, not a shared one: the date params differ
+// (first_air_date.* vs primary_release_date.*) and — the sharp edge — the
+// genre id spaces are DIFFERENT. TV has 16 genres; 10759 "Action & Adventure"
+// and 10765 "Sci-Fi & Fantasy" replace the movie ids 28/12 and 878/14, and
+// 11 movie ids (28, 12, 14, 27, 36, 53, 878, 10402, 10749, 10752, 10770) are
+// invalid for TV. A shared struct would invite a caller to carry movie ids
+// into a TV query and silently get an empty grid.
+struct TvDiscoverFilter {
+    std::vector<int> genre_ids;                     // TV ids only (see /genre/tv/list); URL-emitted as with_genres=18%7C80 → OR
+    std::optional<int> first_air_date_year_gte;     // formatted "YYYY-01-01" in URL
+    std::optional<int> first_air_date_year_lte;     // formatted "YYYY-12-31" in URL
+    std::optional<float> vote_average_gte;
+    std::optional<int> vote_count_gte;
+    std::optional<int> with_runtime_gte;            // per-episode minutes
+    std::optional<int> with_runtime_lte;
+    std::optional<std::string> with_original_language;  // ISO 639-1
+    std::string sort_by = "popularity.desc";        // popularity|vote_average|vote_count|first_air_date|name .asc/.desc
 };
 
 // A TMDB movie genre — id + display name.
@@ -101,6 +195,28 @@ public:
     // back to get_similar when this returns empty hits.
     TmdbList get_recommendations(int tmdb_id, int page = 1);
 
+    // --- TV -------------------------------------------------------------
+    // Same TmdbList shape as the movie endpoints; hits come back tagged
+    // kind == MediaKind::Tv. None of these four accepts include_adult (it
+    // exists only on /search/tv and /discover/tv), so parse_tv_list is the
+    // family-safe gate — see its comment.
+    TmdbList get_tv_popular(int page = 1);
+    TmdbList get_tv_top_rated(int page = 1);
+    TmdbList get_tv_recommendations(int tmdb_id, int page = 1);
+    TmdbList get_tv_similar(int tmdb_id, int page = 1);
+
+    // /discover/tv. Note there are NO certification params for TV (movie-only),
+    // so a rating-based pre-filter is impossible server-side — the spec's
+    // decision is no TV certification gate at all.
+    TmdbList discover_tv(const TvDiscoverFilter& filter, int page = 1);
+
+    // Series detail (by id), with seasons[] and credits in one round-trip.
+    std::optional<TmdbTvDetail> get_tv_detail(int tmdb_id);
+
+    // TV genre list. A SEPARATE call from get_genres() on purpose — the id
+    // spaces differ (see TvDiscoverFilter). Cache client-side; changes rarely.
+    std::vector<Genre> get_tv_genres();
+
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
 
@@ -119,11 +235,35 @@ public:
     // vector-shaped parser stays for its existing tests and callers.
     static TmdbList parse_list(const std::string& json);
 
+    // TV-shaped variant of parse_list. TMDB's TV rows name their fields
+    // differently (name / original_name / first_air_date instead of
+    // title / original_title / release_date) and OMIT `adult` entirely on
+    // /tv/popular and /tv/top_rated — so `adult` is read as
+    // optional-default-false and only true rows are dropped. Every hit
+    // comes back tagged kind == MediaKind::Tv.
+    static TmdbList parse_tv_list(const std::string& json);
+
+    static std::optional<TmdbTvDetail> parse_tv_detail(const std::string& json);
+
     // URL builders — exposed so unit tests can verify query-string construction
     // without a network round-trip.
     static std::string build_discover_url(const std::string& api_key,
                                           const DiscoverFilter& filter,
                                           int page);
+
+    // Shared builder for the four paged TV list endpoints. `endpoint_path`
+    // is the API-relative path with a leading slash, e.g. "/tv/popular" or
+    // "/tv/1396/recommendations".
+    static std::string build_tv_list_url(const std::string& api_key,
+                                         const std::string& endpoint_path,
+                                         int page);
+
+    static std::string build_tv_discover_url(const std::string& api_key,
+                                             const TvDiscoverFilter& filter,
+                                             int page);
+
+    static std::string build_tv_detail_url(const std::string& api_key, int tmdb_id);
+    static std::string build_tv_genres_url(const std::string& api_key);
 
     // Testing / diagnostics. Copy under the error mutex — screens read
     // this on the render thread while their workers run client calls
@@ -144,7 +284,6 @@ public:
 
 private:
     std::string http_get(const std::string& url);
-    static int extract_year(const std::string& date_yyyy_mm_dd);
 
     void set_error(std::string msg) {
         std::lock_guard<std::mutex> lk(err_mtx_);
