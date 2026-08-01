@@ -43,6 +43,13 @@ public:
     // Movie discovery
     virtual std::vector<MovieSearchHit> lookup(const std::string& query);
     virtual std::vector<Movie> get_library();
+    // Library fetch with an explicit success signal (spec 1c): nullopt on
+    // HTTP failure, a possibly-empty vector on success. get_library() keeps
+    // its old bare-vector shape as a wrapper — an empty library and a failed
+    // fetch were previously indistinguishable, which would have made For You
+    // show "add movies to your library" on a full box whenever the GET
+    // failed after a successful ping.
+    virtual std::optional<std::vector<Movie>> get_library_checked();
     virtual std::optional<Movie> get_movie(int radarr_id);
 
     // Library management

@@ -417,6 +417,7 @@ if(ENABLE_MEDIA_BROWSER)
         # unlike the screen it lives in it can be compiled and asserted on here.
         # That coverage gap is what let the "recently added" cutoff bug ship.
         src/media_browser/ui/library_view.cpp
+        src/media_browser/ui/mb_recs.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -437,6 +438,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_browse_logic.cpp
+        tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
         tests/media_browser/test_radarr_parsers.cpp
         tests/media_browser/test_radarr_client.cpp

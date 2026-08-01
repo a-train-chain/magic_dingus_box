@@ -14,6 +14,7 @@ public:
     std::optional<SystemStatus> get_status() override;
     std::vector<MovieSearchHit> lookup(const std::string& query) override;
     std::vector<Movie> get_library() override;
+    std::optional<std::vector<Movie>> get_library_checked() override;
     std::optional<Movie> get_movie(int radarr_id) override;
     bool add_movie(int tmdb_id, int quality_profile_id, bool monitor) override;
     bool remove_movie(int radarr_id, bool delete_files) override;

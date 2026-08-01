@@ -147,10 +147,14 @@ std::vector<MovieSearchHit> RadarrClient::lookup(const std::string& query) {
     return RadarrParsers::parse_movie_lookup(resp);
 }
 
-std::vector<Movie> RadarrClient::get_library() {
+std::optional<std::vector<Movie>> RadarrClient::get_library_checked() {
     auto resp = http_get("/api/v3/movie");
-    if (resp.empty()) return {};
+    if (resp.empty()) return std::nullopt;
     return RadarrParsers::parse_movie_list(resp);
+}
+
+std::vector<Movie> RadarrClient::get_library() {
+    return get_library_checked().value_or(std::vector<Movie>{});
 }
 
 std::optional<Movie> RadarrClient::get_movie(int radarr_id) {

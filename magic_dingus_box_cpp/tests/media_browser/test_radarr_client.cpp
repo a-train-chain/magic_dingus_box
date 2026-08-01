@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <json/json.h>
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/radarr/radarr_mock.h"
 
 namespace mb = media_browser;
 
@@ -162,4 +163,12 @@ TEST_CASE("RadarrClient::get_history parses history records",
     REQUIRE(events[0].event_type == "grabbed");
     REQUIRE(events[1].event_type == "downloadFailed");
     REQUIRE(events[1].movie_id == 99);
+}
+
+TEST_CASE("RadarrMockClient::get_library_checked reports success with canned data",
+          "[radarr][mock]") {
+    media_browser::RadarrMockClient mock;
+    auto checked = mock.get_library_checked();
+    REQUIRE(checked.has_value());
+    CHECK(checked->size() == mock.get_library().size());
 }
