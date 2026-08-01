@@ -1,0 +1,200 @@
+#include <catch2/catch_test_macros.hpp>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include "media_browser/sonarr/sonarr_parsers.h"
+
+namespace fs = std::filesystem;
+namespace mb = media_browser;
+
+static std::string read_fixture(const std::string& name) {
+    fs::path p = fs::path(__FILE__).parent_path() / "fixtures" / "sonarr" / name;
+    std::ifstream f(p);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+TEST_CASE("parse_series_lookup extracts the not-yet-added series", "[sonarr][parsers]") {
+    auto hits = mb::SonarrParsers::parse_series_lookup(read_fixture("series_lookup.json"));
+    REQUIRE(hits.size() == 1);
+    const auto& h = hits[0];
+    CHECK(h.title == "Breaking Bad");
+    CHECK(h.tvdb_id == 81189);
+    CHECK(h.tmdb_id == 1396);
+    CHECK(h.imdb_id == "tt0903747");
+    CHECK(h.year == 2008);
+    // Sonarr's series.runtime is PER EPISODE — it is what the whole-series
+    // disk estimate multiplies by, so it must survive the parse.
+    CHECK(h.runtime_minutes == 47);
+    CHECK(h.status == "ended");
+    // Lookup results carry every season monitored:true — that is Sonarr's
+    // pre-add default, NOT what the add will persist.
+    REQUIRE(h.seasons.size() == 6);
+    CHECK(h.seasons[0].season_number == 0);
+    for (const auto& s : h.seasons) CHECK(s.monitored);
+}
+
+TEST_CASE("parse_series_lookup normalizes TMDB artwork to w500 and passes "
+          "TVDB URLs through", "[sonarr][parsers]") {
+    auto hits = mb::SonarrParsers::parse_series_lookup(read_fixture("series_lookup.json"));
+    REQUIRE(hits.size() == 1);
+    // TMDB poster: rewritten so it shares the artwork-cache key TmdbClient
+    // already emits, and so a 2000x3000 original never reaches the 256MB cache.
+    CHECK(hits[0].poster_url.find("/t/p/w500/") != std::string::npos);
+    CHECK(hits[0].poster_url.find("/original/") == std::string::npos);
+    // TVDB fanart: not a TMDB URL, so it passes through untouched.
+    CHECK(hits[0].fanart_url ==
+          "https://artworks.thetvdb.com/banners/fanart/original/81189-3.jpg");
+}
+
+TEST_CASE("parse_series reads per-season monitored flags and statistics",
+          "[sonarr][parsers]") {
+    auto s = mb::SonarrParsers::parse_series(read_fixture("series_added.json"));
+    REQUIRE(s.has_value());
+    CHECK(s->sonarr_id == 7);
+    CHECK(s->tvdb_id == 81189);
+    CHECK(s->tmdb_id == 1396);
+    CHECK(s->monitored);
+    CHECK(s->path == "/data/library/tv/Breaking Bad");
+    CHECK(s->added_at == "2026-08-01T09:00:00Z");
+    CHECK(s->episode_file_count == 7);
+    CHECK(s->size_on_disk_bytes == 8589934592LL);
+
+    REQUIRE(s->seasons.size() == 6);
+    CHECK(s->seasons[0].season_number == 0);
+    CHECK_FALSE(s->seasons[0].monitored);          // Specials
+    CHECK(s->seasons[0].episode_count == 5);
+    CHECK(s->seasons[1].season_number == 1);
+    CHECK(s->seasons[1].monitored);                // the ONLY monitored season
+    CHECK(s->seasons[1].episode_count == 7);
+    CHECK(s->seasons[1].episode_file_count == 7);
+    CHECK(s->seasons[1].size_on_disk_bytes == 8589934592LL);
+    for (size_t i = 2; i < s->seasons.size(); ++i) {
+        CHECK_FALSE(s->seasons[i].monitored);
+    }
+}
+
+TEST_CASE("parse_series_list parses the library array", "[sonarr][parsers]") {
+    auto list = mb::SonarrParsers::parse_series_list(read_fixture("series_list.json"));
+    REQUIRE(list.size() == 1);
+    CHECK(list[0].sonarr_id == 7);
+    CHECK(list[0].title == "Breaking Bad");
+    CHECK(list[0].seasons.size() == 2);
+}
+
+TEST_CASE("parse_series_list and parse_series reject wrong shapes",
+          "[sonarr][parsers]") {
+    CHECK(mb::SonarrParsers::parse_series_list("not json {{{").empty());
+    CHECK(mb::SonarrParsers::parse_series_list(R"({"error":"x"})").empty());
+    CHECK_FALSE(mb::SonarrParsers::parse_series("not json {{{").has_value());
+    CHECK_FALSE(mb::SonarrParsers::parse_series("[]").has_value());
+}
+
+TEST_CASE("parse_queue keeps one record per EPISODE and never groups",
+          "[sonarr][parsers][queue]") {
+    auto q = mb::SonarrParsers::parse_queue(read_fixture("queue.json"));
+    // A season pack is N episode rows sharing ONE downloadId. The client
+    // deliberately does not collapse them — grouping is Phase 2c's UI job,
+    // and it needs the raw rows plus the shared id to do it.
+    REQUIRE(q.size() == 3);
+    CHECK(q[0].id == 101);
+    CHECK(q[1].id == 102);
+    CHECK(q[2].id == 103);
+    CHECK(q[0].download_id == q[1].download_id);
+    CHECK(q[1].download_id == q[2].download_id);
+    // Raw casing preserved (uppercase hex), matching RadarrParsers::parse_queue
+    // — QueueScreen lowercases at comparison time against qBit.
+    CHECK(q[0].download_id == "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678");
+
+    CHECK(q[0].series_id == 7);
+    CHECK(q[0].episode_id == 5001);
+    CHECK(q[0].season_number == 2);
+    CHECK(q[0].size_bytes == 12884901888LL);
+    CHECK(q[0].sizeleft_bytes == 6442450944LL);
+    CHECK(q[0].progress > 0.49);
+    CHECK(q[0].progress < 0.51);
+    CHECK(q[0].eta_seconds == 4800);            // "01:20:00"
+    CHECK(q[0].state == "downloading");
+    CHECK(q[0].tracked_download_state == "downloading");
+    // Embedded episode (requested via includeEpisode=true) gives 2c the
+    // "S02E01 — Seven Thirty-Seven" label without a second round-trip.
+    CHECK(q[0].episode.id == 5001);
+    CHECK(q[0].episode.episode_number == 1);
+    CHECK(q[0].episode.title == "Seven Thirty-Seven");
+    CHECK(q[0].episode.air_date == "2009-03-08");
+    CHECK(q[2].episode.episode_number == 3);
+}
+
+TEST_CASE("parse_queue accepts the staged sizeLeft rename", "[sonarr][parsers][queue]") {
+    // 'sizeleft' is marked [Obsolete] upstream with 'SizeLeft' staged but
+    // commented out. Parse both so a Sonarr upgrade cannot silently zero
+    // every progress bar.
+    const std::string json = R"({"records":[
+      {"id": 1, "seriesId": 7, "episodeId": 2, "seasonNumber": 1,
+       "title": "T", "size": 1000, "sizeLeft": 250, "status": "downloading"}
+    ]})";
+    auto q = mb::SonarrParsers::parse_queue(json);
+    REQUIRE(q.size() == 1);
+    CHECK(q[0].sizeleft_bytes == 250);
+    CHECK(q[0].progress > 0.74);
+    CHECK(q[0].progress < 0.76);
+}
+
+TEST_CASE("parse_queue survives an empty/absent records array",
+          "[sonarr][parsers][queue]") {
+    CHECK(mb::SonarrParsers::parse_queue(R"({"records":[]})").empty());
+    CHECK(mb::SonarrParsers::parse_queue(R"({"page":1})").empty());
+    CHECK(mb::SonarrParsers::parse_queue("not json {{{").empty());
+}
+
+TEST_CASE("parse_queue_total reads totalRecords for the pagination loop",
+          "[sonarr][parsers][queue]") {
+    // get_queue pages through the queue; without totalRecords it cannot tell
+    // "that was the last page" from "the page happened to be full".
+    CHECK(mb::SonarrParsers::parse_queue_total(read_fixture("queue.json")) == 3);
+    CHECK(mb::SonarrParsers::parse_queue_total(R"({"totalRecords":250,"records":[]})") == 250);
+    // Absent/malformed → 0, which the loop treats as "no total available"
+    // and falls back to the short-page test.
+    CHECK(mb::SonarrParsers::parse_queue_total(R"({"records":[]})") == 0);
+    CHECK(mb::SonarrParsers::parse_queue_total("not json {{{") == 0);
+}
+
+TEST_CASE("parse_history_download_ids dedupes case-insensitively and lowercases",
+          "[sonarr][parsers][history]") {
+    auto ids = mb::SonarrParsers::parse_history_download_ids(
+        read_fixture("history_series.json"));
+    // 4 records: two are the same hash in different case, one distinct, one
+    // empty. qBittorrent stores hashes lowercase, so the orphan-proof remove
+    // must hand it lowercase and must not ask twice for the same torrent.
+    REQUIRE(ids.size() == 2);
+    CHECK(ids[0] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
+    CHECK(ids[1] == "ffeeddccbbaa99887766554433221100aabbccdd");
+}
+
+TEST_CASE("parse_history_download_ids accepts a paged body too",
+          "[sonarr][parsers][history]") {
+    // /history/series is unpaginated, but /history is paged — tolerate both
+    // so a caller switching endpoints does not silently get nothing.
+    const std::string paged =
+        R"({"records":[{"id":1,"downloadId":"ABC"},{"id":2,"downloadId":"abc"}]})";
+    auto ids = mb::SonarrParsers::parse_history_download_ids(paged);
+    REQUIRE(ids.size() == 1);
+    CHECK(ids[0] == "abc");
+}
+
+TEST_CASE("parse_quality_profiles and parse_root_folders reuse the Radarr shapes",
+          "[sonarr][parsers]") {
+    auto profiles = mb::SonarrParsers::parse_quality_profiles(
+        read_fixture("quality_profiles.json"));
+    REQUIRE(profiles.size() == 1);
+    CHECK(profiles[0].id == 1);
+    // Resolve BY NAME at every call site — the id is 1 on this box only.
+    CHECK(profiles[0].name == "Any");
+
+    auto roots = mb::SonarrParsers::parse_root_folders(read_fixture("root_folders.json"));
+    REQUIRE(roots.size() == 1);
+    CHECK(roots[0].id == 1);
+    CHECK(roots[0].path == "/data/library/tv");
+    CHECK(roots[0].free_space_bytes == 187904819200LL);
+}
