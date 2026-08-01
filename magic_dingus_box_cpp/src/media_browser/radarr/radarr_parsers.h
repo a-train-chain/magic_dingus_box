@@ -17,6 +17,13 @@ public:
     static std::vector<RootFolder> parse_root_folders(const std::string& json);
     static std::optional<SystemStatus> parse_system_status(const std::string& json);
     static ActiveSearches parse_active_searches(const std::string& json);
+
+    // Rewrites the "/t/p/<size>/" segment of a TMDB image URL to w500;
+    // non-TMDB URLs (TVDB, fanart.tv) pass through unchanged. Public because
+    // SonarrParsers needs the identical behaviour — Sonarr serves a mix of
+    // TMDB and TVDB artwork and the 256MB artwork-cache budget applies to
+    // both libraries. Was a file-local helper until Phase 2b.
+    static std::string normalize_tmdb_poster_url(const std::string& url);
 };
 
 }  // namespace media_browser

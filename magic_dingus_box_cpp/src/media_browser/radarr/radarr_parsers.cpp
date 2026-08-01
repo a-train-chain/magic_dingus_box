@@ -18,40 +18,11 @@ bool parse_json(const std::string& text, Json::Value& out) {
     return Json::parseFromStream(rb, is, &out, &err);
 }
 
-// Normalize a TMDB image URL to the w500 size variant. Radarr hands us
-// remoteUrls at the "original" size (e.g.
-//   https://image.tmdb.org/t/p/original/abc.jpg
-// which is 1000x1500 up to 2000x3000 — 246KB-1MB+ on the wire and, once
-// decoded to RGBA, 6-24MB of GPU texture memory EACH). The kiosk only ever
-// draws posters into a ~119px library cell / ~500px detail panel, so the
-// full-res image is pure waste: it blows the artwork cache's 256MB byte
-// budget after ~10 recent posters, forcing LRU to evict the on-screen
-// textures every frame — which re-downloads + re-decodes + re-uploads
-// them ~1/sec = the "recent-5 thumbnails flicker" bug.
-//
-// Rewriting the TMDB size path segment to w500 (~88KB, ~500x750, ~1.5MB
-// texture) fixes the thrash AND makes these URLs share the exact cache key
-// the TMDB-sourced Browse/Detail screens already use (they emit w500
-// directly — see tmdb_client.cpp kImageBase), so a movie's poster is
-// fetched once and reused everywhere. Non-TMDB / unrecognized URLs pass
-// through unchanged.
-std::string normalize_tmdb_poster_url(const std::string& url) {
-    // Match ".../t/p/<size>/..." and replace <size> with w500. <size> is
-    // "original" or a "w###"/"h###" token; we only touch that one segment.
-    static const std::string kMarker = "/t/p/";
-    auto marker_pos = url.find(kMarker);
-    if (marker_pos == std::string::npos) return url;  // not a TMDB image URL
-    const std::size_t size_start = marker_pos + kMarker.size();
-    const auto size_end = url.find('/', size_start);
-    if (size_end == std::string::npos) return url;    // malformed — leave it
-    return url.substr(0, size_start) + "w500" + url.substr(size_end);
-}
-
 std::string pick_image(const Json::Value& images, const std::string& coverType) {
     if (!images.isArray()) return "";
     for (const auto& img : images) {
         if (img["coverType"].asString() == coverType) {
-            return normalize_tmdb_poster_url(img["remoteUrl"].asString());
+            return RadarrParsers::normalize_tmdb_poster_url(img["remoteUrl"].asString());
         }
     }
     return "";
@@ -121,6 +92,35 @@ void fill_library_fields(const Json::Value& r, Movie& m) {
 }
 
 }  // namespace
+
+// Normalize a TMDB image URL to the w500 size variant. Radarr hands us
+// remoteUrls at the "original" size (e.g.
+//   https://image.tmdb.org/t/p/original/abc.jpg
+// which is 1000x1500 up to 2000x3000 — 246KB-1MB+ on the wire and, once
+// decoded to RGBA, 6-24MB of GPU texture memory EACH). The kiosk only ever
+// draws posters into a ~119px library cell / ~500px detail panel, so the
+// full-res image is pure waste: it blows the artwork cache's 256MB byte
+// budget after ~10 recent posters, forcing LRU to evict the on-screen
+// textures every frame — which re-downloads + re-decodes + re-uploads
+// them ~1/sec = the "recent-5 thumbnails flicker" bug.
+//
+// Rewriting the TMDB size path segment to w500 (~88KB, ~500x750, ~1.5MB
+// texture) fixes the thrash AND makes these URLs share the exact cache key
+// the TMDB-sourced Browse/Detail screens already use (they emit w500
+// directly — see tmdb_client.cpp kImageBase), so a movie's poster is
+// fetched once and reused everywhere. Non-TMDB / unrecognized URLs pass
+// through unchanged.
+std::string RadarrParsers::normalize_tmdb_poster_url(const std::string& url) {
+    // Match ".../t/p/<size>/..." and replace <size> with w500. <size> is
+    // "original" or a "w###"/"h###" token; we only touch that one segment.
+    static const std::string kMarker = "/t/p/";
+    auto marker_pos = url.find(kMarker);
+    if (marker_pos == std::string::npos) return url;  // not a TMDB image URL
+    const std::size_t size_start = marker_pos + kMarker.size();
+    const auto size_end = url.find('/', size_start);
+    if (size_end == std::string::npos) return url;    // malformed — leave it
+    return url.substr(0, size_start) + "w500" + url.substr(size_end);
+}
 
 std::vector<MovieSearchHit> RadarrParsers::parse_movie_lookup(const std::string& json) {
     std::vector<MovieSearchHit> out;
