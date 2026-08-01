@@ -492,6 +492,7 @@ void BrowseScreen::load_category(Category cat) {
     loaded_tmdb_ids_.clear();
     page_window_base_ = 1;
     shuffle_retry_base1_ = false;
+    window_is_discover_ = false;
     if (is_nav_chip(cat)) {
         loading_ = false;
         return;
@@ -524,6 +525,7 @@ void BrowseScreen::load_shuffle(Category cat, int base_page) {
     loaded_tmdb_ids_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
+    window_is_discover_ = false;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
     spdlog::info("[BrowseScreen] load_shuffle: {} base={} (gen={})",
@@ -540,6 +542,7 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
     loaded_tmdb_ids_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
+    window_is_discover_ = true;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
     spdlog::info("[BrowseScreen] load_shuffle_discover: base={} (gen={})",
@@ -568,6 +571,7 @@ void BrowseScreen::revalidate_active_chart() {
     spdlog::info("[BrowseScreen] TTL revalidate: {} (gen={})",
                  label_for_category(category_), gen);
     if (active_chart_filters_active()) {
+        window_is_discover_ = true;
         FilterTabKind tab = (category_ == Category::Popular)
                             ? FilterTabKind::Popular : FilterTabKind::TopRated;
         current_filter_ = build_discover_filter(
@@ -576,6 +580,7 @@ void BrowseScreen::revalidate_active_chart() {
             run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
         });
     } else {
+        window_is_discover_ = false;
         tmdb_workers_.spawn([this, gen, cat = category_]() {
             run_load_page(gen, cat, /*page=*/1, /*is_revalidate=*/true);
         });
@@ -640,6 +645,7 @@ void BrowseScreen::reload_filter_results() {
     more_available_ = true;
     fetching_more_ = false;
     loaded_tmdb_ids_.clear();
+    window_is_discover_ = true;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
     spdlog::info(
@@ -755,6 +761,11 @@ void BrowseScreen::apply_pending() {
             }
             grid_cursor_ = 0;
             scroll_row_ = 0;
+            // A successful base-page swap (normal load, shuffle, or a
+            // revalidate that succeeds after an earlier one failed) must
+            // unfreeze pagination — the immediate no_more check below can
+            // still legitimately re-clear it for a genuinely short list.
+            more_available_ = true;
             // Timestamp rule (spec 1a/1b): the grid is fresh whenever its
             // base page lands ok and non-empty — normal load, shuffle, or
             // revalidate alike.
@@ -811,7 +822,11 @@ void BrowseScreen::maybe_load_more_pages() {
     spdlog::info("[BrowseScreen] auto-fetching page {} ({})",
                  next_page_to_fetch_,
                  prefetch_second ? "second-page prefetch" : "scroll-driven");
-    spawn_page_worker(category_, next_page_to_fetch_);
+    // Route follow-up pages through the same endpoint the window base used
+    // (spec 1b fix): scroll-driven pages must not silently fall back to the
+    // curated endpoint for a filtered/discover window.
+    spawn_page_worker(window_is_discover_ ? Category::Filter : category_,
+                       next_page_to_fetch_);
 }
 
 void BrowseScreen::update() {

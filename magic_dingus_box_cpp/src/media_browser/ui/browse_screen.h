@@ -256,6 +256,14 @@ private:
     // treated kMaxLoadedPages as an ABSOLUTE page cap, which would have made
     // any shuffled base >= 6 load a single page and stop (spec 1b).
     int page_window_base_ = 1;
+    // True when the active window's follow-up pages must be fetched through
+    // /discover rather than the curated /popular or /top_rated endpoint.
+    // Pre-existing bug fixed alongside the window-base work: maybe_load_more_
+    // pages() used to always spawn scroll-driven pages against `category_`
+    // (Popular/TopRated), so a filtered grid's pages 2+ silently came back
+    // from the curated endpoint and mixed unfiltered results into a
+    // supposedly-filtered grid.
+    bool window_is_discover_ = false;
     // When a shuffled base page comes back genuinely empty (ok but 0 hits —
     // possible on the /discover path), fall back to a plain page-1 load.
     bool shuffle_retry_base1_ = false;
