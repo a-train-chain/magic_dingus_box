@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=104">
+    <link rel="stylesheet" href="/static/style.css?v=105">
 </head>
 
 <body class="faceplate">
@@ -225,9 +225,14 @@
                             <div class="upload-content" id="libraryUploadContent" style="display: none;">
                                 <div class="resolution-row">
                                     <label>Format:</label>
+                                    <!-- Values must match TRANSCODE_RESOLUTIONS in admin.py;
+                                         crt_hd is the master default (4:3, 1:1 in the kiosk's
+                                         4:3 viewport at 720p output). -->
                                     <select id="targetResolution" class="resolution-select-compact">
-                                        <option value="crt" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT 640×480</option>
-                                        <option value="modern"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Modern 1280×720</option>
+                                        <option value="crt_hd" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT HD 960×720 (default)</option>
+                                        <option value="crt_fhd"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT FHD 1440×1080</option>
+                                        <option value="modern"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Widescreen 1280×720</option>
+                                        <option value="crt"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT Legacy 640×480</option>
                                     </select>
                                 </div>
                                 <div class="normalize-row" style="margin-bottom: 0.5rem;">
