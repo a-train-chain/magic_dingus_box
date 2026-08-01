@@ -1804,6 +1804,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # display mode silently.
                         _atomic_write_text(settings_dest, content.decode("utf-8"))
                         restored["settings"] = True
+                        # Poke the running kiosk to reload: it polls for
+                        # this marker (~1s cadence) and re-reads
+                        # settings.json into memory. Without the poke, the
+                        # kiosk's next operator-action save would clobber
+                        # the restore with its stale in-memory settings.
+                        _atomic_write_text(
+                            data_dir / "settings_reload_request",
+                            str(time.time()))
                     except Exception as e:
                         errors.append(f"Failed to restore settings: {e}")
 

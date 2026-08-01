@@ -3765,6 +3765,43 @@ int main(int /* argc */, char* /* argv */[]) {
         controller.poll_seek_request();
         controller.poll_text_input_queue(state);
 
+        // Web-admin settings restore poke. The restore endpoint replaces
+        // settings.json on disk and then writes this marker — without the
+        // reload, the running kiosk's next operator-action save would
+        // clobber the restored file with its stale in-memory state.
+        // Checked ~once a second (restore is rare; no need to stat every
+        // frame like the seek queue).
+        {
+            static int settings_reload_check = 0;
+            if (++settings_reload_check >= 60) {
+                settings_reload_check = 0;
+                const std::string reload_marker =
+                    config::get_data_path() + "/settings_reload_request";
+                if (fs::exists(reload_marker)) {
+                    std::error_code rm_ec;
+                    fs::remove(reload_marker, rm_ec);
+                    const auto prev_mode = state.display_settings.mode;
+                    app::SettingsPersistence::load_settings(state);
+                    // Same per-board reconcile the boot path runs (e.g. a
+                    // Pi 4 backup restored onto a Pi 5 saying "headphone").
+                    state.audio_settings.sanitize_for_platform(
+                        state.platform_profile.has_analog_audio);
+                    // Apply what applies at runtime.
+                    state.audio_settings.apply_output();
+                    controller.set_system_volume(state.master_volume);
+                    if (state.display_settings.mode != prev_mode) {
+                        // The DRM mode + logical canvas are chosen at boot
+                        // (peek_is_crt_native) — be honest about that.
+                        ui::Toast::show(
+                            "Settings restored — restart to apply display mode");
+                    } else {
+                        ui::Toast::show("Settings restored");
+                    }
+                    LOG_INFO("Settings reloaded from disk (web-admin restore poke)");
+                }
+            }
+        }
+
         // ── Phone Remote: 1 Hz tick for active pairing screen ────────────────
         if (settings_menu.is_pairing_screen_active()) {
             static auto last_pairing_tick = std::chrono::steady_clock::time_point{};

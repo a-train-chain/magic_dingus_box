@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Restoring a backup now updates the running kiosk immediately.** The
+  web admin's Restore used to write settings.json that the kiosk's next
+  operator-action save would silently clobber with stale in-memory
+  state — the restore looked successful and then evaporated. The
+  restore endpoint now drops a reload marker; the kiosk polls it (~1s),
+  re-reads settings.json, re-runs the per-board audio reconcile,
+  applies volume/audio output live, and shows a "Settings restored"
+  toast — or "restart to apply display mode" when the restored display
+  mode differs, since the DRM mode and logical canvas are chosen at
+  boot. Verified live end-to-end on the box.
+
 ### Changed (glyph atlas + thumbnails)
 - **Game-browser thumbnails decode off the render thread.** Selecting a
   game used to stbi_load the thumbnail PNG (disk read + full decode,

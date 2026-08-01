@@ -87,3 +87,36 @@ def test_restore_writes_settings_to_kiosk_config_dir(client, temp_data_dir,
     assert json.loads(restored.read_text()) == {"playback": {"volume": 77}}
     # And nothing may resurrect the legacy wrong path.
     assert not (temp_data_dir.parent / "config" / "settings.json").exists()
+
+
+def test_restore_pokes_the_kiosk_to_reload_settings(client, temp_data_dir,
+                                                    kiosk_config_dir):
+    """The kiosk polls data/settings_reload_request (~1s) and re-reads
+    settings.json when it appears — without the poke, its next
+    operator-action save clobbers the restore with stale memory."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("config/settings.json", json.dumps({"playback": {}}))
+    buf.seek(0)
+
+    resp = client.post(
+        "/admin/restore",
+        data={"file": (buf, "backup.zip")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    assert (temp_data_dir / "settings_reload_request").exists()
+
+
+def test_restore_without_settings_does_not_poke(client, temp_data_dir,
+                                                kiosk_config_dir):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("playlists/mix.yaml", "title: Mix\nitems: []\n")
+    buf.seek(0)
+
+    resp = client.post(
+        "/admin/restore",
+        data={"file": (buf, "backup.zip")},
+        content_type="multipart/form-data")
+    assert resp.status_code == 200
+    assert not (temp_data_dir / "settings_reload_request").exists()
