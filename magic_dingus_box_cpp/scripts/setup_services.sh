@@ -188,6 +188,7 @@ TZ=$(timedatectl show -p Timezone --value 2>/dev/null || echo "UTC")
 STORAGE_ROOT=${STORAGE_ROOT}
 RADARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
 PROWLARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
+SONARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
 QBITTORRENT_ADMIN_PASSWORD=${QBIT_PW}
 EOF
     chmod 600 "${ENV_FILE}"
@@ -630,8 +631,9 @@ sleep 60
 # 6. Extract auto-generated API keys from Radarr/Prowlarr configs
 RADARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/radarr/config.xml" 2>/dev/null || echo "")
 PROWLARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/prowlarr/config.xml" 2>/dev/null || echo "")
+SONARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/sonarr/config.xml" 2>/dev/null || echo "")
 
-if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ]; then
+if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ] || [ -z "${SONARR_KEY}" ]; then
     echo "WARNING: Could not extract API keys. Services may still be starting."
     echo "Re-run this script in a minute, or extract them manually from config.xml files."
     exit 1
@@ -640,6 +642,15 @@ fi
 # 7. Write keys back to .env
 sed -i "s|RADARR_API_KEY=.*|RADARR_API_KEY=${RADARR_KEY}|" "${ENV_FILE}"
 sed -i "s|PROWLARR_API_KEY=.*|PROWLARR_API_KEY=${PROWLARR_KEY}|" "${ENV_FILE}"
+
+# Sonarr key: append-if-missing. On boxes provisioned before Sonarr
+# existed, the .env has no SONARR_API_KEY= line, so a plain `sed`
+# replace above would silently no-op and the key would never land.
+if grep -q '^SONARR_API_KEY=' "${ENV_FILE}"; then
+    sed -i "s|^SONARR_API_KEY=.*|SONARR_API_KEY=${SONARR_KEY}|" "${ENV_FILE}"
+else
+    echo "SONARR_API_KEY=${SONARR_KEY}" >> "${ENV_FILE}"
+fi
 
 # 7.5. qBittorrent security hardening: set the WebUI password to the
 # random secret already in .env, and disable the localhost-auth-bypass.
@@ -2186,6 +2197,7 @@ surface). Admin access requires an SSH tunnel from a trusted device:
 
   ssh -L 7878:localhost:7878 \\
       -L 9696:localhost:9696 \\
+      -L 8989:localhost:8989 \\
       -L 8080:localhost:8080 \\
       -L 8191:localhost:8191 \\
       magic@magicpi.local
@@ -2194,6 +2206,9 @@ Then from that device:
 
 Radarr    → http://localhost:7878 (via SSH tunnel only — see operator guide)
             API key: ${RADARR_KEY}
+
+Sonarr    → http://localhost:8989 (via SSH tunnel only — see operator guide)
+            API key: ${SONARR_KEY}
 
 Prowlarr  → http://localhost:9696 (via SSH tunnel only — see operator guide)
             API key: ${PROWLARR_KEY}
