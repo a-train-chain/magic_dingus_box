@@ -335,7 +335,7 @@ private:
     // refreshed after a successful add.
     std::unordered_set<MediaRef> library_refs_;
     // tmdb_ids of movies currently in the Radarr download queue. Populated
-    // alongside library_tmdb_ids_ on enter() by calling get_queue() and
+    // alongside library_refs_ on enter() by calling get_queue() and
     // cross-referencing with the library's radarr_id → tmdb_id mapping.
     // Drives the DOWNLOADING badge on poster cards.
     std::unordered_set<MediaRef> downloading_refs_;
@@ -378,7 +378,7 @@ private:
     // marquee. Those calls now run on lib_refresh_worker_; apply_library_pending()
     // drains the result on the render thread on the next update() tick.
     //
-    // Correctness note for quick_add_focused(): it reads library_tmdb_ids_ and
+    // Correctness note for quick_add_focused(): it reads library_refs_ and
     // quality_profiles_. During the async window those sets keep the PREVIOUS
     // visit's data (they're only replaced atomically in apply_library_pending(),
     // never cleared first), so quick-add always sees complete — if up to one

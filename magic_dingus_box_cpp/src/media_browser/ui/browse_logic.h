@@ -80,6 +80,11 @@ inline ForYouEntry decide_foryou_entry(bool has_cached_list,
 // other's contribution. Runs entirely on the render thread inside one
 // apply_library_pending() call, so the momentary mid-erase state is never
 // observable by another reader.
+// Unsupported: passing the same set as both `dst` and `fresh` (i.e.
+// replace_refs_of_kind(s, k, s)) — `fresh` would be erased-from-under-you
+// as `dst` is mutated, since it's the same underlying set. No caller does
+// this today; noted because this helper is about to become the TV task's
+// API surface.
 inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
                                  MediaKind kind,
                                  const std::unordered_set<MediaRef>& fresh) {

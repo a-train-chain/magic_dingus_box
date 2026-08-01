@@ -403,11 +403,19 @@ void BrowseScreen::apply_library_pending() {
                  services_ok_, r.movie_refs.size(), r.downloading_refs.size());
     // Only replace the id-sets when Radarr answered. When it didn't, keep the
     // previous visit's cache intact (matches the old code, where the clear +
-    // rebuild lived entirely inside the services_ok_ branch). Replacing
-    // atomically — never clearing first — means quick_add_focused() always
-    // reads a complete set, never a momentarily-empty one.
+    // rebuild lived entirely inside the services_ok_ branch). Both this
+    // update and quick_add_focused()'s reads happen only on the render
+    // thread (single-threaded access, see browse_logic.h), so there is no
+    // window where a reader can observe library_refs_ mid-rebuild.
     if (r.services_ok) {
         replace_refs_of_kind(library_refs_, MediaKind::Movie, r.movie_refs);
+        // Deliberate asymmetry for now: downloading_refs_ is still a full
+        // replace, not kind-aware like library_refs_ above. Safe today
+        // because only Radarr (movies) feeds this. Once Sonarr feeds TV
+        // downloading refs, a movie-only refresh landing here will wipe
+        // every TV DOWNLOADING badge — switch this to
+        // replace_refs_of_kind(downloading_refs_, MediaKind::Movie,
+        // r.downloading_refs) when that lands.
         downloading_refs_ = std::move(r.downloading_refs);
         if (r.quality_fetched) {
             quality_profiles_ = std::move(r.quality_profiles);
@@ -467,6 +475,10 @@ void BrowseScreen::activate_foryou() {
     // WaitForLibrary case below re-sets it when it actually applies.
     foryou_waiting_for_library_ = false;
     foryou_failed_ = false;
+    // Movie-scoped decision: library_refs_.empty() is checked kind-blind.
+    // Once TV lands, a TV-only library reads as non-empty here and routes
+    // to Sample with an all-TV pool (see start_foryou_sample's kind
+    // filter) — the TV task must revisit this EmptyLibrary check too.
     switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
                                 lib_fetch_ok_, library_refs_.empty())) {
         case ForYouEntry::UseCache:
@@ -492,9 +504,18 @@ void BrowseScreen::activate_foryou() {
 
 void BrowseScreen::start_foryou_sample(bool background) {
     // Sample min(8, library size) seeds uniformly without replacement.
+    // Movie-only: TMDB's movie and TV id spaces OVERLAP (e.g. id 1396 is
+    // both Breaking Bad and an unrelated film), and get_recommendations
+    // hits the movie-only /movie/{id}/recommendations endpoint. A TV ref
+    // fed through here would silently return valid recommendations for
+    // the wrong, unrelated movie — no error, no log line. Nothing
+    // produces Tv refs into library_refs_ yet, so this filter is a no-op
+    // today; keep it so a later TV task extends it deliberately.
     std::vector<int> pool;
     pool.reserve(library_refs_.size());
-    for (const auto& ref : library_refs_) pool.push_back(ref.id);
+    for (const auto& ref : library_refs_) {
+        if (ref.kind == MediaKind::Movie) pool.push_back(ref.id);
+    }
     if (pool.empty()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
@@ -1496,6 +1517,9 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             draw_baseline_footer();
             return;
         }
+        // Movie-scoped decision (see activate_foryou's matching note): a
+        // TV-only library will read as non-empty here once TV lands, and
+        // this "Add movies..." messaging will need to be revisited too.
         if (!loading_ && movies_.empty() && lib_refresh_done_once_ &&
             library_refs_.empty()) {
             draw_centered_msg("Add movies to your library to get recommendations",
