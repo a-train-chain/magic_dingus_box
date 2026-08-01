@@ -251,6 +251,7 @@ if(BUILD_KIOSK)
             # kiosk binary needs its own copy here or the link fails on an
             # undefined merge_recommendations.
             src/media_browser/ui/mb_recs.cpp
+            src/media_browser/ui/mb_filter_state.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -432,6 +433,12 @@ if(ENABLE_MEDIA_BROWSER)
         # That coverage gap is what let the "recently added" cutoff bug ship.
         src/media_browser/ui/library_view.cpp
         src/media_browser/ui/mb_recs.cpp
+        # Renderer-free filter logic (per-mode filter storage, the two genre
+        # catalogs, the mode-toggle transaction, both discover-filter
+        # builders). Same dual-list arrangement as mb_recs/library_view above:
+        # also listed in KIOSK_MEDIA_BROWSER_SOURCES because browse_screen and
+        # the filter overlay call into it.
+        src/media_browser/ui/mb_filter_state.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -454,6 +461,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_mb_filter_persistence.cpp
+        tests/media_browser/test_mb_filter_state.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp

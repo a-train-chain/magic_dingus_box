@@ -36,11 +36,6 @@ inline bool operator==(const FilterState& a, const FilterState& b) {
 }
 inline bool operator!=(const FilterState& a, const FilterState& b) { return !(a == b); }
 
-// Returns TMDB genre IDs in bit-position order. Index i corresponds to
-// bit i in FilterState::genre_mask. Used by callers to translate the mask
-// into a TMDB DiscoverFilter::genre_ids vector.
-const std::vector<int>& filter_overlay_genre_ids();
-
 class FilterOverlay {
 public:
     enum class State {

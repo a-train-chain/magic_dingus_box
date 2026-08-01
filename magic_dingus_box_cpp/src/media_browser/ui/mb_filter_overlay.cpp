@@ -1,6 +1,7 @@
 #include "media_browser/ui/mb_filter_overlay.h"
 
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 
@@ -59,38 +60,16 @@ constexpr int kRowFontPx             = 16;
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
 
-// Genre catalog — index in this list maps to bit position in genre_mask.
-struct GenreEntry { int tmdb_id; const char* display; };
-constexpr GenreEntry kGenres[] = {
-    {28,    "Action"},    {12,    "Adventure"}, {16,    "Animation"}, {35,    "Comedy"},
-    {80,    "Crime"},     {99,    "Doc"},        {18,    "Drama"},     {10751, "Family"},
-    {14,    "Fantasy"},   {36,    "History"},    {27,    "Horror"},    {10402, "Music"},
-    {9648,  "Mystery"},   {10749, "Romance"},    {878,   "Sci-Fi"},    {10770, "TV Movie"},
-    {53,    "Thriller"},  {10752, "War"},
-};
-constexpr int kNumGenres = static_cast<int>(sizeof(kGenres) / sizeof(kGenres[0]));
-
 const char* kDecadeLabels[]   = {"Any", "2020s", "2010s", "2000s", "1990s", "1980s", "1970s", "Classic"};
 const char* kRatingLabels[]   = {"Any", "6.0+", "7.0+", "8.0+"};
-const char* kRuntimeLabels[]  = {"Any", "<90m", "90-120m", "2-3hr", "3hr+"};
 const char* kLanguageLabels[] = {"Any", "English", "Japanese", "French", "Spanish",
                                   "Korean", "Italian", "German", "Hindi", "Mandarin"};
 const char* kSortLabels[]     = {"Popularity", "Top Rated", "Most Voted", "Recent Release"};
 
 constexpr int kNumDecades   = static_cast<int>(sizeof(kDecadeLabels)   / sizeof(kDecadeLabels[0]));
 constexpr int kNumRatings   = static_cast<int>(sizeof(kRatingLabels)   / sizeof(kRatingLabels[0]));
-constexpr int kNumRuntimes  = static_cast<int>(sizeof(kRuntimeLabels)  / sizeof(kRuntimeLabels[0]));
 constexpr int kNumLanguages = static_cast<int>(sizeof(kLanguageLabels) / sizeof(kLanguageLabels[0]));
 constexpr int kNumSorts     = static_cast<int>(sizeof(kSortLabels)     / sizeof(kSortLabels[0]));
-
-// Returns the display string for the current genre_mask in single-select mode.
-// "All" if mask is 0, else the genre name corresponding to the lowest set bit.
-const char* genre_display_name(uint32_t mask) {
-    if (mask == 0) return "All";
-    const int bit = __builtin_ctz(mask);
-    if (bit < kNumGenres) return kGenres[bit].display;
-    return "?";
-}
 
 // Wrapping modular arithmetic for signed indices.
 inline int wrap(int val, int count) {
@@ -98,16 +77,6 @@ inline int wrap(int val, int count) {
 }
 
 }  // namespace
-
-const std::vector<int>& filter_overlay_genre_ids() {
-    static const std::vector<int> ids = []() {
-        std::vector<int> v;
-        v.reserve(kNumGenres);
-        for (int i = 0; i < kNumGenres; ++i) v.push_back(kGenres[i].tmdb_id);
-        return v;
-    }();
-    return ids;
-}
 
 FilterOverlay::FilterOverlay() = default;
 
