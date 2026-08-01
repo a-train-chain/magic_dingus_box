@@ -632,6 +632,7 @@ void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page,
         pp.ok = list.ok;
         pp.total_pages = list.total_pages;
         pp.is_revalidate = is_revalidate;
+        pp.gen = gen;
         tmdb_pending_pages_.push_back(std::move(pp));
     }
     tmdb_result_ready_.store(true);
@@ -645,6 +646,8 @@ void BrowseScreen::reload_filter_results() {
     more_available_ = true;
     fetching_more_ = false;
     loaded_tmdb_ids_.clear();
+    page_window_base_ = 1;
+    shuffle_retry_base1_ = false;
     window_is_discover_ = true;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
@@ -701,6 +704,7 @@ void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
         pp.total_pages = list.total_pages;
         pp.is_revalidate = is_revalidate;
         pp.discover_sig = TmdbClient::build_discover_url("", filter, 1);
+        pp.gen = gen;
         tmdb_pending_pages_.push_back(std::move(pp));
     }
     tmdb_result_ready_.store(true);
@@ -720,7 +724,19 @@ void BrowseScreen::apply_pending() {
               [](const PendingPage& a, const PendingPage& b) {
                   return a.page < b.page;
               });
+    // Set for any drained entry whose gen still matches at DRAIN time (not
+    // just at publish time — see the gen field comment in PendingPage).
+    // Gates the post-loop loading_/fetching_more_ reset: if every drained
+    // entry turned out to be from a superseded generation, the current-gen
+    // fetch is still in flight and owns those flags — leave them alone.
+    bool applied_any = false;
     for (auto& pp : drained) {
+        if (pp.gen != tmdb_current_gen_.load()) {
+            spdlog::info("[BrowseScreen] page={} gen={} stale at drain (current={}); discarding",
+                         pp.page, pp.gen, tmdb_current_gen_.load());
+            continue;
+        }
+        applied_any = true;
         // total_pages cache for the discover shuffle clamp (spec 1b) — keyed
         // by filter signature, learned from any discover page that reports it.
         if (!pp.discover_sig.empty() && pp.total_pages > 0) {
@@ -788,7 +804,7 @@ void BrowseScreen::apply_pending() {
                      "skipped (total {})",
                      pp.page, added, dups, movies_.size());
     }
-    if (!drained.empty()) {
+    if (applied_any) {
         loading_ = false;
         fetching_more_ = false;
     }

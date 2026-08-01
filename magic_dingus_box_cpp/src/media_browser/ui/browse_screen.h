@@ -217,6 +217,15 @@ private:
         int  total_pages = 0;      // TmdbList.total_pages (0 when unknown)
         bool is_revalidate = false;  // background TTL refresh — skip swap on failure/empty
         std::string discover_sig;    // non-empty for discover fetches → total_pages cache key
+        // Generation captured at publish time. The publish-side gen check
+        // in run_load_page/run_reload_filter_page only proves the page was
+        // current when it was PUSHED — a page can still sit in the queue
+        // while Browse isn't ticking update() (user on Detail/Playback) and
+        // get drained after a LATER generation bump (e.g. revalidate_active_
+        // chart(), which — unlike load_category/load_shuffle — clears none
+        // of the pagination state on bump). apply_pending() re-checks this
+        // against tmdb_current_gen_ at drain time and skips stale entries.
+        uint64_t gen = 0;
     };
     std::vector<PendingPage>   tmdb_pending_pages_;
     // result_ready_ is the fast atomic check update() uses to skip
