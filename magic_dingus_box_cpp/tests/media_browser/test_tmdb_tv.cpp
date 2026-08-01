@@ -108,3 +108,92 @@ TEST_CASE("movie parse_list still defaults kind to Movie", "[tmdb][tv]") {
     CHECK(list.hits[0].title == "The Matrix");
     CHECK(list.hits[0].year == 1999);
 }
+
+// --- TV list URL builder -------------------------------------------------
+
+TEST_CASE("build_tv_list_url builds a paged TV list URL", "[tmdb][tv][url]") {
+    const std::string url = mb::TmdbClient::build_tv_list_url("KEY", "/tv/popular", 3);
+    CHECK(url.find("https://api.themoviedb.org/3/tv/popular") == 0);
+    CHECK(url.find("api_key=KEY") != std::string::npos);
+    CHECK(url.find("language=en-US") != std::string::npos);
+    CHECK(url.find("page=3") != std::string::npos);
+    // include_adult does NOT exist on /tv/popular, /tv/top_rated,
+    // /tv/{id}/similar or /tv/{id}/recommendations. Sending it would be a
+    // lie about where the family-safe gate lives (it lives in parse_tv_list).
+    CHECK(url.find("include_adult") == std::string::npos);
+}
+
+TEST_CASE("build_tv_list_url works for the per-series endpoints",
+          "[tmdb][tv][url]") {
+    const std::string rec =
+        mb::TmdbClient::build_tv_list_url("KEY", "/tv/1396/recommendations", 1);
+    CHECK(rec.find("/tv/1396/recommendations") != std::string::npos);
+    const std::string sim =
+        mb::TmdbClient::build_tv_list_url("KEY", "/tv/1396/similar", 2);
+    CHECK(sim.find("/tv/1396/similar") != std::string::npos);
+    CHECK(sim.find("page=2") != std::string::npos);
+}
+
+// --- TV discover URL builder ---------------------------------------------
+
+TEST_CASE("build_tv_discover_url uses first_air_date, never air_date",
+          "[tmdb][tv][url]") {
+    mb::TvDiscoverFilter f;
+    f.first_air_date_year_gte = 2015;
+    f.first_air_date_year_lte = 2020;
+
+    const std::string url = mb::TmdbClient::build_tv_discover_url("KEY", f, 1);
+    CHECK(url.find("/discover/tv") != std::string::npos);
+    CHECK(url.find("first_air_date.gte=2015-01-01") != std::string::npos);
+    CHECK(url.find("first_air_date.lte=2020-12-31") != std::string::npos);
+    // air_date.* matches ANY episode's air date, which is not what the
+    // filter means. The '&' prefix is load-bearing: without it the needle
+    // would match inside "first_air_date.gte".
+    CHECK(url.find("&air_date.gte=") == std::string::npos);
+    CHECK(url.find("&air_date.lte=") == std::string::npos);
+}
+
+TEST_CASE("build_tv_discover_url joins multi-genre with pipe (OR semantics)",
+          "[tmdb][tv][url]") {
+    mb::TvDiscoverFilter f;
+    // TV genre id space: 10759 Action & Adventure, 10765 Sci-Fi & Fantasy,
+    // 18 Drama. Movie ids (28, 878) are INVALID here.
+    f.genre_ids = {10759, 10765, 18};
+    const std::string url = mb::TmdbClient::build_tv_discover_url("KEY", f, 1);
+    CHECK(url.find("with_genres=10759%7C10765%7C18") != std::string::npos);
+}
+
+TEST_CASE("build_tv_discover_url emits include_adult=false and the rest of the "
+          "filter", "[tmdb][tv][url]") {
+    mb::TvDiscoverFilter f;
+    f.vote_average_gte = 7.5f;
+    f.vote_count_gte = 200;
+    f.with_runtime_gte = 20;
+    f.with_runtime_lte = 70;
+    f.with_original_language = "en";
+    f.sort_by = "vote_average.desc";
+    const std::string url = mb::TmdbClient::build_tv_discover_url("KEY", f, 4);
+    // include_adult DOES exist on /discover/tv (unlike the list endpoints).
+    CHECK(url.find("include_adult=false") != std::string::npos);
+    CHECK(url.find("vote_average.gte=7.5") != std::string::npos);
+    CHECK(url.find("vote_count.gte=200") != std::string::npos);
+    CHECK(url.find("with_runtime.gte=20") != std::string::npos);
+    CHECK(url.find("with_runtime.lte=70") != std::string::npos);
+    CHECK(url.find("with_original_language=en") != std::string::npos);
+    CHECK(url.find("sort_by=vote_average.desc") != std::string::npos);
+    CHECK(url.find("page=4") != std::string::npos);
+    // /discover/tv has NO certification params (movie-only) — never emit them.
+    CHECK(url.find("certification") == std::string::npos);
+}
+
+TEST_CASE("build_tv_discover_url omits unset filters", "[tmdb][tv][url]") {
+    mb::TvDiscoverFilter f;  // all defaults
+    const std::string url = mb::TmdbClient::build_tv_discover_url("KEY", f, 1);
+    CHECK(url.find("with_genres") == std::string::npos);
+    CHECK(url.find("first_air_date.gte") == std::string::npos);
+    CHECK(url.find("first_air_date.lte") == std::string::npos);
+    CHECK(url.find("vote_average.gte") == std::string::npos);
+    CHECK(url.find("with_runtime") == std::string::npos);
+    CHECK(url.find("with_original_language") == std::string::npos);
+    CHECK(url.find("sort_by=popularity.desc") != std::string::npos);
+}

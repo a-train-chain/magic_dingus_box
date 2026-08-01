@@ -296,6 +296,101 @@ TmdbList TmdbClient::get_recommendations(int tmdb_id, int page) {
     return parse_list(body);
 }
 
+std::string TmdbClient::build_tv_list_url(const std::string& api_key,
+                                          const std::string& endpoint_path,
+                                          int page) {
+    std::ostringstream url;
+    url << kApiBase << endpoint_path
+        << "?api_key=" << url_encode(api_key)
+        << "&language=en-US"
+        << "&page=" << page;
+    // No include_adult: /tv/popular, /tv/top_rated, /tv/{id}/similar and
+    // /tv/{id}/recommendations do not accept it. parse_tv_list drops
+    // adult==true rows client-side instead.
+    return url.str();
+}
+
+TmdbList TmdbClient::get_tv_popular(int page) {
+    auto body = http_get(build_tv_list_url(api_key_, "/tv/popular", page));
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_tv_list(body);
+}
+
+TmdbList TmdbClient::get_tv_top_rated(int page) {
+    auto body = http_get(build_tv_list_url(api_key_, "/tv/top_rated", page));
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_tv_list(body);
+}
+
+TmdbList TmdbClient::get_tv_recommendations(int tmdb_id, int page) {
+    // Algorithmic mix; callers fall back to get_tv_similar when hits is empty
+    // — the same documented contract the movie For You path already uses.
+    const std::string path =
+        "/tv/" + std::to_string(tmdb_id) + "/recommendations";
+    auto body = http_get(build_tv_list_url(api_key_, path, page));
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_tv_list(body);
+}
+
+TmdbList TmdbClient::get_tv_similar(int tmdb_id, int page) {
+    const std::string path = "/tv/" + std::to_string(tmdb_id) + "/similar";
+    auto body = http_get(build_tv_list_url(api_key_, path, page));
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_tv_list(body);
+}
+
+std::string TmdbClient::build_tv_discover_url(const std::string& api_key,
+                                              const TvDiscoverFilter& filter,
+                                              int page) {
+    std::ostringstream url;
+    url << kApiBase << "/discover/tv"
+        << "?api_key=" << url_encode(api_key)
+        << "&include_adult=false"   // exists on /discover/tv (unlike the list endpoints)
+        << "&language=en-US"
+        << "&page=" << page;
+    if (!filter.sort_by.empty()) {
+        url << "&sort_by=" << url_encode(filter.sort_by);
+    }
+    if (!filter.genre_ids.empty()) {
+        url << "&with_genres=";
+        for (size_t i = 0; i < filter.genre_ids.size(); ++i) {
+            if (i > 0) url << "%7C";  // URL-encoded pipe → OR (comma would mean AND)
+            url << filter.genre_ids[i];
+        }
+    }
+    // first_air_date.* = the SERIES premiere. air_date.* (which also exists)
+    // matches any episode's air date and would let a 1960s show through a
+    // "2020s" filter — never use it here.
+    if (filter.first_air_date_year_gte) {
+        url << "&first_air_date.gte=" << *filter.first_air_date_year_gte << "-01-01";
+    }
+    if (filter.first_air_date_year_lte) {
+        url << "&first_air_date.lte=" << *filter.first_air_date_year_lte << "-12-31";
+    }
+    if (filter.vote_average_gte) {
+        url << "&vote_average.gte=" << *filter.vote_average_gte;
+    }
+    if (filter.vote_count_gte) {
+        url << "&vote_count.gte=" << *filter.vote_count_gte;
+    }
+    if (filter.with_runtime_gte) {
+        url << "&with_runtime.gte=" << *filter.with_runtime_gte;
+    }
+    if (filter.with_runtime_lte) {
+        url << "&with_runtime.lte=" << *filter.with_runtime_lte;
+    }
+    if (filter.with_original_language) {
+        url << "&with_original_language=" << url_encode(*filter.with_original_language);
+    }
+    return url.str();
+}
+
+TmdbList TmdbClient::discover_tv(const TvDiscoverFilter& filter, int page) {
+    auto body = http_get(build_tv_discover_url(api_key_, filter, page));
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_tv_list(body);
+}
+
 std::string TmdbClient::build_discover_url(const std::string& api_key,
                                            const DiscoverFilter& filter,
                                            int page) {

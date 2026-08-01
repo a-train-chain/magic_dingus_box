@@ -72,6 +72,26 @@ struct DiscoverFilter {
     std::string sort_by = "popularity.desc";
 };
 
+// Inline filter used for /discover/tv queries. Deliberately a separate type
+// from DiscoverFilter, not a shared one: the date params differ
+// (first_air_date.* vs primary_release_date.*) and — the sharp edge — the
+// genre id spaces are DIFFERENT. TV has 16 genres; 10759 "Action & Adventure"
+// and 10765 "Sci-Fi & Fantasy" replace the movie ids 28/12 and 878/14, and
+// 11 movie ids (28, 12, 14, 27, 36, 53, 878, 10402, 10749, 10752, 10770) are
+// invalid for TV. A shared struct would invite a caller to carry movie ids
+// into a TV query and silently get an empty grid.
+struct TvDiscoverFilter {
+    std::vector<int> genre_ids;                     // TV ids only (see /genre/tv/list); URL-emitted as with_genres=18%7C80 → OR
+    std::optional<int> first_air_date_year_gte;     // formatted "YYYY-01-01" in URL
+    std::optional<int> first_air_date_year_lte;     // formatted "YYYY-12-31" in URL
+    std::optional<float> vote_average_gte;
+    std::optional<int> vote_count_gte;
+    std::optional<int> with_runtime_gte;            // per-episode minutes
+    std::optional<int> with_runtime_lte;
+    std::optional<std::string> with_original_language;  // ISO 639-1
+    std::string sort_by = "popularity.desc";        // popularity|vote_average|vote_count|first_air_date|name .asc/.desc
+};
+
 // A TMDB movie genre — id + display name.
 struct Genre {
     int id = 0;
@@ -108,6 +128,21 @@ public:
     // back to get_similar when this returns empty hits.
     TmdbList get_recommendations(int tmdb_id, int page = 1);
 
+    // --- TV -------------------------------------------------------------
+    // Same TmdbList shape as the movie endpoints; hits come back tagged
+    // kind == MediaKind::Tv. None of these four accepts include_adult (it
+    // exists only on /search/tv and /discover/tv), so parse_tv_list is the
+    // family-safe gate — see its comment.
+    TmdbList get_tv_popular(int page = 1);
+    TmdbList get_tv_top_rated(int page = 1);
+    TmdbList get_tv_recommendations(int tmdb_id, int page = 1);
+    TmdbList get_tv_similar(int tmdb_id, int page = 1);
+
+    // /discover/tv. Note there are NO certification params for TV (movie-only),
+    // so a rating-based pre-filter is impossible server-side — the spec's
+    // decision is no TV certification gate at all.
+    TmdbList discover_tv(const TvDiscoverFilter& filter, int page = 1);
+
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
 
@@ -139,6 +174,17 @@ public:
     static std::string build_discover_url(const std::string& api_key,
                                           const DiscoverFilter& filter,
                                           int page);
+
+    // Shared builder for the four paged TV list endpoints. `endpoint_path`
+    // is the API-relative path with a leading slash, e.g. "/tv/popular" or
+    // "/tv/1396/recommendations".
+    static std::string build_tv_list_url(const std::string& api_key,
+                                         const std::string& endpoint_path,
+                                         int page);
+
+    static std::string build_tv_discover_url(const std::string& api_key,
+                                             const TvDiscoverFilter& filter,
+                                             int page);
 
     // Testing / diagnostics. Copy under the error mutex — screens read
     // this on the render thread while their workers run client calls
