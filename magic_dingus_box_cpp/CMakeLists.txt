@@ -223,6 +223,9 @@ if(BUILD_KIOSK)
     set(KIOSK_MEDIA_BROWSER_SOURCES "")
     if(ENABLE_MEDIA_BROWSER)
         list(APPEND KIOSK_MEDIA_BROWSER_SOURCES
+            src/media_browser/sonarr/sonarr_parsers.cpp
+            src/media_browser/sonarr/sonarr_client.cpp
+            src/media_browser/sonarr/sonarr_mock.cpp
             src/media_browser/radarr/radarr_parsers.cpp
             src/media_browser/radarr/radarr_client.cpp
             src/media_browser/radarr/radarr_mock.cpp

@@ -28,6 +28,8 @@
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/radarr/radarr_mock.h"
+#include "media_browser/sonarr/sonarr_client.h"
+#include "media_browser/sonarr/sonarr_mock.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_screen.h"
 #include "media_browser/ui/search_screen.h"
@@ -689,6 +691,75 @@ int main(int /* argc */, char* /* argv */[]) {
         std::cout << "[media_browser] No Radarr API key found — using RadarrMockClient" << std::endl;
     }
     media_browser::RadarrClient& radarr = *radarr_owned;
+
+    // Sonarr client (Phase 2b). Same three-stage key chain as Radarr above:
+    //   1. MDB_SONARR_API_KEY env var (explicit kiosk config)
+    //   2. SONARR_API_KEY env var (systemd EnvironmentFile of services/.env)
+    //   3. Parse /opt/magic_dingus_box/services/.env directly
+    // setup_services.sh writes SONARR_API_KEY into that .env after Sonarr's
+    // first container start; a box provisioned before the Sonarr stack landed
+    // simply has no line and falls through to the mock.
+    std::unique_ptr<media_browser::SonarrClient> sonarr_owned;
+    std::string sonarr_key;
+    if (const char* sk = std::getenv("MDB_SONARR_API_KEY"); sk && *sk) sonarr_key = sk;
+    else if (const char* sk2 = std::getenv("SONARR_API_KEY"); sk2 && *sk2) sonarr_key = sk2;
+    else sonarr_key = read_env_file_key("/opt/magic_dingus_box/services/.env", "SONARR_API_KEY");
+
+    if (!sonarr_key.empty()) {
+        media_browser::SonarrClient::Config sonarr_cfg;
+        if (const char* base = std::getenv("MDB_SONARR_BASE_URL"); base && *base) {
+            sonarr_cfg.base_url = base;
+        }
+        sonarr_cfg.api_key = sonarr_key;
+        // TV path prefixes, resolved in three tiers.
+        //
+        // The TV subtree is /data/library/tv ↔ /mnt/ssd/library/tv — one level
+        // below the movie library root — so it cannot simply reuse the Radarr
+        // vars (every TV path would translate one directory too high). But it
+        // must not ignore them either: MDB_HOST_LIBRARY_PREFIX exists so
+        // STORAGE_ROOT can move without a recompile, and a box where the
+        // operator points movies at /mnt/nvme/library/ while Sonarr keeps a
+        // compiled-in /mnt/ssd/library/tv/ would hand GStreamer an
+        // unresolvable container path — with nothing but a spdlog::warn to say
+        // so, and none of the legacy-alternate fallbacks the Radarr resolver
+        // has. Nothing in provisioning writes MDB_*_TV_PREFIX, so deriving
+        // from the parent is what actually fires in the field.
+        //
+        // Order: explicit TV var → parent movie var + "tv" → compiled default.
+        auto tv_prefix = [](const char* tv_var, const char* parent_var,
+                            const std::string& compiled_default) -> std::string {
+            if (const char* p = std::getenv(tv_var); p && *p) {
+                return media_browser::SonarrClient::normalize_prefix(p);
+            }
+            if (const char* p = std::getenv(parent_var); p && *p) {
+                return media_browser::SonarrClient::normalize_prefix(
+                    media_browser::SonarrClient::normalize_prefix(p) + "tv");
+            }
+            return compiled_default;
+        };
+        sonarr_cfg.container_library_prefix =
+            tv_prefix("MDB_CONTAINER_TV_PREFIX", "MDB_CONTAINER_LIBRARY_PREFIX",
+                      sonarr_cfg.container_library_prefix);
+        sonarr_cfg.host_library_prefix =
+            tv_prefix("MDB_HOST_TV_PREFIX", "MDB_HOST_LIBRARY_PREFIX",
+                      sonarr_cfg.host_library_prefix);
+        std::cout << "[media_browser] sonarr tv prefixes: "
+                  << sonarr_cfg.container_library_prefix << " -> "
+                  << sonarr_cfg.host_library_prefix << std::endl;
+        std::string sonarr_url_for_log = sonarr_cfg.base_url;
+        sonarr_owned = std::make_unique<media_browser::SonarrClient>(std::move(sonarr_cfg));
+        std::cout << "[media_browser] Using real SonarrClient (base_url="
+                  << sonarr_url_for_log << ")" << std::endl;
+    } else {
+        sonarr_owned = std::make_unique<media_browser::SonarrMockClient>();
+        std::cout << "[media_browser] No Sonarr API key found — using SonarrMockClient"
+                  << std::endl;
+    }
+    media_browser::SonarrClient& sonarr = *sonarr_owned;
+    // Phase 2b wires construction only. No screen consumes `sonarr` yet — the
+    // Movies/TV toggle, series detail and grouped queue land in Phase 2c. The
+    // cast keeps -Wunused-variable quiet without leaving a dangling TODO.
+    (void)sonarr;
 
     // TMDB client — Phase A: Discover endpoints for Browse categories.
     // Radarr still handles library/add/queue; TMDB only drives discovery.
