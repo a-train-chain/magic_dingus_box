@@ -1,0 +1,62 @@
+#include <catch2/catch_test_macros.hpp>
+#include "media_browser/ui/browse_logic.h"
+
+using namespace media_browser::ui;
+using clock_tp = std::chrono::steady_clock::time_point;
+
+TEST_CASE("tmdb_grid_stale: default timestamp is stale; 6h TTL", "[browse_logic]") {
+    const clock_tp t0{std::chrono::hours(1000)};
+    CHECK(tmdb_grid_stale(clock_tp{}, t0));                          // never loaded
+    CHECK_FALSE(tmdb_grid_stale(t0, t0 + std::chrono::hours(5)));    // fresh
+    CHECK_FALSE(tmdb_grid_stale(t0, t0 + std::chrono::hours(6)));    // boundary: exactly 6h is fresh
+    CHECK(tmdb_grid_stale(t0, t0 + std::chrono::hours(7)));          // stale
+}
+
+TEST_CASE("window_last_page is base-relative", "[browse_logic]") {
+    CHECK(window_last_page(1) == 5);
+    CHECK(window_last_page(12) == 16);
+    CHECK(window_last_page(26) == 30);
+}
+
+TEST_CASE("discover_max_base clamps to known total_pages", "[browse_logic]") {
+    CHECK(discover_max_base(0) == 26);     // unknown → optimistic ceiling
+    CHECK(discover_max_base(-1) == 26);
+    CHECK(discover_max_base(500) == 26);   // huge → ceiling
+    CHECK(discover_max_base(8) == 4);      // 8 - 5 + 1
+    CHECK(discover_max_base(5) == 1);
+    CHECK(discover_max_base(2) == 1);      // fewer pages than the window → base 1 only
+}
+
+TEST_CASE("pick_shuffle_base excludes current base when possible", "[browse_logic]") {
+    // Collapsed range → plain refetch of page 1.
+    CHECK(pick_shuffle_base(1, 1, 0u) == 1);
+    CHECK(pick_shuffle_base(1, 0, 7u) == 1);
+    // Current base outside range → plain uniform draw over 1..max.
+    CHECK(pick_shuffle_base(0, 4, 0u) == 1);
+    CHECK(pick_shuffle_base(0, 4, 3u) == 4);
+    CHECK(pick_shuffle_base(99, 4, 5u) == 2);  // 5 % 4 = 1 → base 2
+    // Exclusion: current=3, max=5 → candidates {1,2,4,5} in rand order.
+    CHECK(pick_shuffle_base(3, 5, 0u) == 1);
+    CHECK(pick_shuffle_base(3, 5, 1u) == 2);
+    CHECK(pick_shuffle_base(3, 5, 2u) == 4);
+    CHECK(pick_shuffle_base(3, 5, 3u) == 5);
+    CHECK(pick_shuffle_base(3, 5, 4u) == 1);   // wraps
+    // Exclusion with exactly 2 candidates always picks the other one.
+    CHECK(pick_shuffle_base(1, 2, 0u) == 2);
+    CHECK(pick_shuffle_base(2, 2, 0u) == 1);
+    CHECK(pick_shuffle_base(1, 2, 41u) == 2);
+}
+
+TEST_CASE("decide_foryou_entry three-way rule", "[browse_logic]") {
+    // Cached list always wins — activation never refetches (spec 1c).
+    CHECK(decide_foryou_entry(true, true, true, false) == ForYouEntry::UseCache);
+    CHECK(decide_foryou_entry(true, false, false, true) == ForYouEntry::UseCache);
+    // No refresh completed yet → wait (caller shows Loading + kicks a refresh).
+    CHECK(decide_foryou_entry(false, false, false, false) == ForYouEntry::WaitForLibrary);
+    // Refresh done but library GET failed → service state, NOT the teach message.
+    CHECK(decide_foryou_entry(false, true, false, true) == ForYouEntry::ServiceUnavailable);
+    // Refresh done, fetch ok, genuinely empty → teach message.
+    CHECK(decide_foryou_entry(false, true, true, true) == ForYouEntry::EmptyLibrary);
+    // Refresh done, fetch ok, library populated → sample.
+    CHECK(decide_foryou_entry(false, true, true, false) == ForYouEntry::Sample);
+}
