@@ -451,6 +451,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_tmdb_tv.cpp
+        tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
