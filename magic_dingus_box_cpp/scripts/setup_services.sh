@@ -1530,6 +1530,13 @@ import json, sys, urllib.request
 indexers_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
 BASE = "http://localhost:9696/api/v1"
 
+# EZTV is enabled for season-pack coverage but is cloudflare-tagged and
+# routes through Byparr — its Cardigann definition can 404/challenge at
+# apply time. Treat an EZTV apply failure as a warning, not fatal, so a
+# transient Byparr/EZTV outage never bricks a whole setup run. The stable
+# indexers the smoke test asserts on are unaffected.
+NON_FATAL_ENABLED = {"EZTV"}
+
 LABEL_TO_ID = {}
 if cloudflare_tag_id:
     LABEL_TO_ID["cloudflare"] = int(cloudflare_tag_id)
@@ -1612,10 +1619,12 @@ for desired in desired_indexers:
         else:
             http("POST", "/indexer", payload)
             created.append(name)
-    except urllib.error.HTTPError as e:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
         # Re-raise for ENABLED indexers — a live/active indexer failing
-        # is a real problem the operator needs to see fail loudly.
-        if desired.get("enable", False):
+        # is a real problem the operator needs to see fail loudly. EZTV is
+        # the deliberate exception: enabled but allowed to fail soft
+        # (HTTP error OR Byparr-challenge timeout).
+        if desired.get("enable", False) and name not in NON_FATAL_ENABLED:
             sys.stderr.write("FATAL: enabled indexer %r failed: %s\n" % (name, e))
             raise
         skipped.append(name)
@@ -1633,7 +1642,7 @@ def show(label, items):
 show("created  ", s["created"])
 show("updated  ", s["updated"])
 show("unchanged", s["unchanged"])
-show("skipped (disabled, stale upstream definition)", s.get("skipped", []))
+show("skipped (disabled or soft-fail, stale/unreachable upstream)", s.get("skipped", []))
 '
 fi
 
@@ -1672,9 +1681,9 @@ else
         fi
         sleep 2
     done
-    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" <<'PYEOF'
+    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
-apps_path, prowlarr_key, radarr_key = sys.argv[1], sys.argv[2], sys.argv[3]
+apps_path, prowlarr_key, radarr_key, sonarr_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 BASE = "http://localhost:9696/api/v1"
 
 def http(method, path, body=None):
@@ -1689,14 +1698,17 @@ def fields_to_dict(fields):
     return {f["name"]: f.get("value") for f in (fields or [])}
 
 def inject_api_key(payload):
-    # The fixture has `value: "********"` for the apiKey field; replace
-    # with the live RADARR_KEY in-place. We mutate a deep-copied list
-    # so the source dict stays untouched.
+    # Select the key by target application: the Radarr app gets
+    # RADARR_KEY, the Sonarr app gets SONARR_KEY. Before this fix the
+    # single radarr_key was injected into every app, so a Sonarr app
+    # would have been configured with Radarr's key and silently failed
+    # to sync. Mutate a deep-copied list so the source dict stays clean.
+    key = sonarr_key if payload.get("implementation") == "Sonarr" else radarr_key
     new_fields = []
     for f in payload.get("fields", []):
         if f.get("name") == "apiKey":
             f = dict(f)
-            f["value"] = radarr_key
+            f["value"] = key
         new_fields.append(f)
     payload = dict(payload)
     payload["fields"] = new_fields
@@ -1851,6 +1863,66 @@ show("already at 5      ", s["unchanged"])
 show("skipped (disabled)", s["skipped_disabled"])
 '
 
+# 14b-S. Sonarr: minimum-seeders threshold per indexer.
+#
+# Sonarr twin of the Radarr 14b block above — same rationale (dead-swarm
+# releases from Prowlarr's sync default of 1 hang qBit at metaDL 0%),
+# same idempotency (PUT only when the live value differs from 3), same
+# caveat (a Prowlarr apps re-sync can reset these to 1; a script re-run
+# restores them).
+echo "Configuring Sonarr indexer minimum_seeders threshold..."
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — skipping Sonarr indexer minimum-seeders bump (later runs will apply it)."
+else
+    SONARR_SEEDER_SUMMARY=$(python3 - "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+api_key = sys.argv[1]
+BASE = "http://localhost:8989/api/v3"
+TARGET = 3
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+result = {"updated": [], "unchanged": [], "skipped_disabled": []}
+for ix in http("GET", "/indexer") or []:
+    name = ix.get("name", "?")
+    if not (ix["enableRss"] or ix["enableAutomaticSearch"] or ix["enableInteractiveSearch"]):
+        result["skipped_disabled"].append(name)
+        continue
+    bumped = False
+    for fld in ix.get("fields", []):
+        if fld["name"] == "minimumSeeders":
+            old = fld.get("value")
+            if old != TARGET:
+                fld["value"] = TARGET
+                bumped = True
+            break
+    if bumped:
+        http("PUT", "/indexer/%d?forceSave=true" % ix["id"], ix)
+        result["updated"].append(name)
+    else:
+        result["unchanged"].append(name)
+
+print(json.dumps(result))
+PYEOF
+)
+    echo "${SONARR_SEEDER_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("updated to min=3  ", s["updated"])
+show("already at 3      ", s["unchanged"])
+show("skipped (disabled)", s["skipped_disabled"])
+'
+fi
+
 # 14c. Indexer-sync fallback: directly inject Prowlarr indexers that
 # failed Radarr's add-time test.
 #
@@ -1915,9 +1987,19 @@ radarr_idx = http_get("http://localhost:7878/api/v3/indexer", radarr_key)
 radarr_names = {i["name"] for i in radarr_idx}
 
 # 3) Diff: which Prowlarr-enabled indexers are absent from Radarr?
+# Skip indexers with no Movies capability (e.g. EZTV, TV-only): Prowlarr
+# rightly never syncs them to Radarr, so their absence from Radarr is
+# CORRECT — not a sync failure for this fallback to repair. Injecting
+# one would point Radarr's movie searches at a TV-only indexer and trip
+# the smoke test's exact-set indexer assertion.
+def has_movies_caps(p):
+    cats = (p.get("capabilities") or {}).get("categories") or []
+    return any(c.get("name") == "Movies" for c in cats)
+
 missing = [
     p for p in prowlarr_enabled
     if f"{p['name']} (Prowlarr)" not in radarr_names
+    and has_movies_caps(p)
 ]
 
 if not missing:
@@ -2167,6 +2249,8 @@ else
     QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
     if [[ -z "${QBIT_PW}" ]]; then
         echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    elif [ "${SONARR_READY:-0}" -ne 1 ]; then
+        echo "  WARN: Sonarr not reachable — skipping Sonarr download-client reconciliation (later runs will apply it)."
     else
         SONARR_DLCLIENT_SUMMARY=$(python3 - "${SONARR_DLCLIENTS_FILE}" "${SONARR_KEY}" "${QBIT_PW}" <<'PYEOF'
 import json, sys, urllib.request
@@ -2375,6 +2459,8 @@ echo "Configuring Sonarr quality definitions..."
 SONARR_QUALITY_FILE="${SCRIPT_DIR}/data/sonarr_qualitydefinitions.json"
 if [[ ! -f "${SONARR_QUALITY_FILE}" ]]; then
     echo "  WARN: ${SONARR_QUALITY_FILE} not found — skipping."
+elif [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — skipping Sonarr quality-definition reconciliation (later runs will apply it)."
 else
     SONARR_QD_SUMMARY=$(python3 - "${SONARR_QUALITY_FILE}" "${SONARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
