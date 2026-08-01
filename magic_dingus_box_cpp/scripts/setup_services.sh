@@ -1102,6 +1102,210 @@ else:
 '
 fi
 
+# 10-S. Codify Sonarr Custom Formats + Any-profile score map.
+#
+# Sonarr twin of the Radarr block above. Same codec/quality policy: the
+# kiosk decodes H.264 720p/1080p; AV1/HEVC-1080p+/HDR/Remux and non-English
+# / scam releases are pushed below the -200 minFormatScore floor. All CF
+# specs are ReleaseTitleSpecification title regexes (identical fixture to
+# Radarr's), so they port verbatim. Two Sonarr-specific choices:
+#   * SCORE_MAP omits the legacy "Trusted small-release groups" (0) entry —
+#     that entry only exists to neutralize pre-2026-07-26 RADARR boxes;
+#     Sonarr is greenfield and never had it.
+#   * ALLOWED_QUALITY_NAMES lists LEAF quality names (HDTV-720p, WEBDL-720p,
+#     …) rather than group names. Sonarr's default profile grouping isn't
+#     assumed; a leaf is allowed when its own name matches, and group rows
+#     reflect their leaves. No profile-language mutation (Sonarr v4 handles
+#     language separately from the quality profile).
+echo "Configuring Sonarr Custom Formats + 'Any' profile score map..."
+SONARR_CF_DATA_FILE="${SCRIPT_DIR}/data/sonarr_custom_formats.json"
+if [[ ! -f "${SONARR_CF_DATA_FILE}" ]]; then
+    echo "  WARN: ${SONARR_CF_DATA_FILE} not found — skipping. Verify Sonarr Custom Formats via web UI."
+else
+    # Sonarr readiness probe. This is the script's FIRST hard-fail Sonarr
+    # API contact (the python below makes ~10 unguarded urllib calls), so
+    # the warm-up wait lives HERE, not later: a still-initializing Sonarr
+    # either answers within this loop or every later Sonarr step was
+    # doomed anyway. (Radarr's equivalent probe sits in Step 14 because
+    # its earlier contacts at Steps 8-9 are ||-guarded.)
+    for i in {1..30}; do
+        if curl -fsS -o /dev/null -H "X-Api-Key: ${SONARR_KEY}" \
+            http://localhost:8989/api/v3/system/status; then
+            break
+        fi
+        sleep 2
+    done
+    SONARR_CF_SUMMARY=$(python3 - "${SONARR_CF_DATA_FILE}" "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request, urllib.error
+
+cf_data_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:8989/api/v3"
+
+SCORE_MAP = {
+    "AV1 codec (UNWATCHABLE on Pi 4)": -1000,
+    "x265/HEVC 1080p+":                -250,
+    "HDR / Dolby Vision":              -200,
+    "Remux / Raw-HD":                  -500,
+    "x264 codec (BONUS)":               50,
+    "Quality release groups":           30,
+    "Low-bitrate size-optimized groups": -30,
+    "Malware/scam executable in title": -10000,
+    "Known scam aggregator branding":   -10000,
+    "Non-English title signals":        -10000,
+}
+MIN_FORMAT_SCORE = -200
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def cf_specs_match(live, desired):
+    if live.get("name") != desired.get("name"): return False
+    if live.get("includeCustomFormatWhenRenaming") != desired.get("includeCustomFormatWhenRenaming"): return False
+    ls, ds = live.get("specifications", []), desired.get("specifications", [])
+    if len(ls) != len(ds): return False
+    for a, b in zip(ls, ds):
+        if a.get("name") != b.get("name"): return False
+        if a.get("implementation") != b.get("implementation"): return False
+        if bool(a.get("negate")) != bool(b.get("negate")): return False
+        if bool(a.get("required")) != bool(b.get("required")): return False
+        av = next((f.get("value") for f in a.get("fields", []) if f.get("name") == "value"), None)
+        bv = next((f.get("value") for f in b.get("fields", []) if f.get("name") == "value"), None)
+        if av != bv: return False
+    return True
+
+with open(cf_data_path) as f:
+    desired_cfs = json.load(f)
+
+live_cfs = http("GET", "/customformat")
+live_by_name = {c["name"]: c for c in live_cfs}
+
+created, updated, unchanged = [], [], []
+name_to_id = {}
+
+for desired in desired_cfs:
+    name = desired["name"]
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    if name in live_by_name:
+        live = live_by_name[name]
+        if cf_specs_match(live, payload):
+            unchanged.append(name)
+            name_to_id[name] = live["id"]
+        else:
+            payload["id"] = live["id"]
+            result = http("PUT", "/customformat/%d" % live["id"], payload)
+            updated.append(name)
+            name_to_id[name] = result["id"]
+    else:
+        result = http("POST", "/customformat", payload)
+        created.append(name)
+        name_to_id[name] = result["id"]
+
+profiles = http("GET", "/qualityprofile")
+any_profile = next((p for p in profiles if p["name"] == "Any"), None)
+profile_changed = False
+score_changes = []
+
+if any_profile is None:
+    print("WARN: 'Any' profile missing; cannot apply score map", file=sys.stderr)
+    print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged,
+                      "profile_changed": False, "score_changes": []}))
+    sys.exit(0)
+
+if any_profile.get("minFormatScore") != MIN_FORMAT_SCORE:
+    any_profile["minFormatScore"] = MIN_FORMAT_SCORE
+    profile_changed = True
+    score_changes.append("minFormatScore=%d" % MIN_FORMAT_SCORE)
+for fi in any_profile.get("formatItems", []):
+    fname = fi.get("name")
+    if fname in SCORE_MAP:
+        want = SCORE_MAP[fname]
+        if fi.get("score") != want:
+            fi["score"] = want
+            profile_changed = True
+            score_changes.append("%s=%+d" % (fname, want))
+
+# Leaf-name allowed set: only the eight H.264 720p/1080p tiers.
+ALLOWED_QUALITY_NAMES = {
+    "HDTV-720p", "WEBDL-720p", "WEBRip-720p", "Bluray-720p",
+    "HDTV-1080p", "WEBDL-1080p", "WEBRip-1080p", "Bluray-1080p",
+}
+DESIRED_CUTOFF_QUALITY_NAME = "Bluray-720p"
+
+def find_quality_id(items, target_name):
+    for item in items:
+        if item.get("name") == target_name and item.get("id"):
+            return item["id"]
+        for sub in (item.get("items") or []):
+            q = sub.get("quality") or {}
+            if q.get("name") == target_name:
+                return q.get("id")
+        q = item.get("quality") or {}
+        if q.get("name") == target_name:
+            return q.get("id")
+    return None
+
+desired_cutoff = find_quality_id(any_profile.get("items", []), DESIRED_CUTOFF_QUALITY_NAME)
+if desired_cutoff and any_profile.get("cutoff") != desired_cutoff:
+    any_profile["cutoff"] = desired_cutoff
+    profile_changed = True
+    score_changes.append("cutoff=%s(id=%d)" % (DESIRED_CUTOFF_QUALITY_NAME, desired_cutoff))
+
+def item_name(item):
+    return item.get("name") or (item.get("quality") or {}).get("name")
+
+def enforce_allowed(items, group_allowed=False):
+    changed = False
+    for item in items:
+        nm = item_name(item)
+        named = nm in ALLOWED_QUALITY_NAMES if nm else False
+        want_allowed = named or group_allowed
+        children = item.get("items") or []
+        if children:
+            if enforce_allowed(children, want_allowed):
+                changed = True
+            want_allowed = any(c.get("allowed") for c in children)
+        if item.get("allowed") != want_allowed:
+            item["allowed"] = want_allowed
+            changed = True
+            score_changes.append("%s.allowed=%s" % (nm, want_allowed))
+    return changed
+
+if enforce_allowed(any_profile.get("items", [])):
+    profile_changed = True
+
+if profile_changed:
+    http("PUT", "/qualityprofile/%d" % any_profile["id"], any_profile)
+
+print(json.dumps({
+    "created": created,
+    "updated": updated,
+    "unchanged": unchanged,
+    "profile_changed": profile_changed,
+    "score_changes": score_changes,
+}))
+PYEOF
+)
+    printf '%s' "${SONARR_CF_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+if s["profile_changed"]:
+    print("  ✓ Sonarr Any profile score map updated: " + ", ".join(s["score_changes"]))
+else:
+    print("  ✓ Sonarr Any profile score map already matches desired state")
+'
+fi
+
 # 11. Prowlarr: cloudflare tag.
 #
 # A handful of indexers (Demonoid, EZTV, Internet Archive, Magnetz,
