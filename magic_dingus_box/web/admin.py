@@ -242,6 +242,17 @@ def error_response(code: str, message: str, status: int = 400, details: Any = No
 
 MEDIA_BROWSER_SETTINGS_PATH = "/opt/magic_dingus_box/config/settings.json"
 
+# Written by playback_services_pause.sh while the kiosk has intentionally
+# stopped the RAM-heavy Media Browser containers for a game/movie. Lives in
+# /tmp (tmpfs) so a marker orphaned by a power cut cannot survive into the
+# next boot; neither this service's unit nor the kiosk's uses PrivateTmp, so
+# both processes see the same file.
+PLAYBACK_PAUSE_MARKER = Path("/tmp/mdb_playback_services_paused")
+
+# The containers that script stops. Gluetun (VPN netns) and qBittorrent
+# (active downloads) intentionally stay up during playback.
+PLAYBACK_PAUSED_CONTAINERS = frozenset({"mdb_radarr", "mdb_prowlarr", "mdb_byparr"})
+
 
 def _media_browser_unlocked() -> bool:
     """Return True iff the kiosk's persisted media_browser_unlocked flag is set.
@@ -3580,25 +3591,49 @@ def create_app(data_dir: Path, config=None) -> Flask:
         return "UTC"
 
     def _docker_ps_table() -> list[dict]:
-        """Return [{name, status}] for the expected media-browser containers."""
+        """Return [{name, status, paused_for_playback}] for the expected
+        media-browser containers.
+
+        paused_for_playback marks the state where playback_services_pause.sh
+        stopped the container to free RAM for a game/movie. Radarr and
+        Prowlarr never survive the script's 2 s SIGTERM grace, so their raw
+        docker status during every playback session is "Exited (137)" —
+        indistinguishable from a crash/OOM without this flag. Requires all
+        three signals: the script's marker file, membership in the pause
+        set, and an Exited status (an Up container beats a stale marker,
+        and "not found"/"unknown" is not the pause signature).
+        """
         try:
             result = subprocess.run(
                 ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"],
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode != 0:
-                return [{"name": n, "status": "unknown"} for n in EXPECTED_CONTAINERS]
+                return [{"name": n, "status": "unknown",
+                         "paused_for_playback": False}
+                        for n in EXPECTED_CONTAINERS]
             running = {}
             for line in result.stdout.splitlines():
                 parts = line.split("\t", 1)
                 if len(parts) == 2:
                     running[parts[0].strip()] = parts[1].strip()
+            playback_paused = PLAYBACK_PAUSE_MARKER.exists()
             return [
-                {"name": n, "status": running.get(n, "not found")}
+                {
+                    "name": n,
+                    "status": running.get(n, "not found"),
+                    "paused_for_playback": (
+                        playback_paused
+                        and n in PLAYBACK_PAUSED_CONTAINERS
+                        and running.get(n, "").lower().startswith("exited")
+                    ),
+                }
                 for n in EXPECTED_CONTAINERS
             ]
         except Exception:
-            return [{"name": n, "status": "unknown"} for n in EXPECTED_CONTAINERS]
+            return [{"name": n, "status": "unknown",
+                     "paused_for_playback": False}
+                    for n in EXPECTED_CONTAINERS]
 
     def _vpn_exit_info() -> dict:
         """Hit gluetun's local control server for current exit IP + country.

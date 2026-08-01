@@ -6237,6 +6237,18 @@ function _renderMediaBrowserStatus(data) {
     const tableEl = document.getElementById('mbContainerTable');
     if (tableEl) {
         const rows = (data.containers || []).map(c => {
+            // Intentional stop by playback_services_pause.sh — the kiosk
+            // frees RAM while a game/movie runs. Not an error: label it
+            // honestly, keep the raw docker state as secondary detail
+            // (Radarr/Prowlarr always land at "Exited (137)" here).
+            if (c.paused_for_playback) {
+                return `
+                <div class="health-row">
+                    <span class="health-label">${escapeHtml(c.name)}</span>
+                    <span class="health-value" style="color: var(--accent);">Paused while a game/movie is playing
+                        <span style="opacity: 0.6;">— ${escapeHtml(c.status)}</span></span>
+                </div>`;
+            }
             const isUp = (c.status || '').toLowerCase().startsWith('up');
             const color = isUp ? 'var(--success)' : 'var(--error)';
             return `

@@ -47,6 +47,15 @@ fi
 ACTION="${1}"
 CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
 
+# Marker read by the Content Manager (admin.py PLAYBACK_PAUSE_MARKER) so the
+# services panel can label these containers "paused for playback" instead of
+# their raw docker exit codes — Radarr/Prowlarr always blow the 2 s SIGTERM
+# grace below and land at "Exited (137)", which reads as a crash/OOM (caused
+# a support question, 2026-07-31). /tmp is tmpfs, so a marker orphaned by a
+# power cut cannot survive into the next boot; neither the kiosk's unit nor
+# magic-dingus-web uses PrivateTmp, so both processes see the same file.
+PAUSE_MARKER=/tmp/mdb_playback_services_paused
+
 # `docker stop -t TIMEOUT` gives the container TIMEOUT seconds for a
 # SIGTERM-clean shutdown before SIGKILL. We pass ALL containers in a
 # single `docker stop` so they're stopped in PARALLEL — sequential stop
@@ -65,11 +74,19 @@ for c in "${CONTAINERS[@]}"; do
 done
 
 if [ ${#EXISTING[@]} -eq 0 ]; then
+    # Still clear the marker on unpause: covers a stack that was reset
+    # (containers removed) while paused, so no stale marker outlives the
+    # containers it described.
+    [ "$ACTION" = "unpause" ] && rm -f "$PAUSE_MARKER"
     echo "[playback-services] no media browser containers on this Pi — nothing to do"
     exit 0
 fi
 
 if [ "$ACTION" = "pause" ]; then
+    # Marker goes down BEFORE the stop so a Content Manager status poll
+    # racing the ~3 s stop window already reads "paused". Timestamp
+    # content is for debugging only; only existence matters.
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$PAUSE_MARKER" 2>/dev/null || true
     # Parallel stop. `docker stop` is a no-op on already-stopped
     # containers and also works on paused containers (Docker unpauses
     # them first internally). `|| true` swallows benign warnings so
@@ -89,6 +106,10 @@ else
             echo "[playback-services] WARN: failed to bring $c back up" >&2
         fi
     done
+    # Marker comes up AFTER the start attempts — removed unconditionally:
+    # if a container failed to restart, showing its raw exited state is
+    # correct (a down container with no playback active IS alarming).
+    rm -f "$PAUSE_MARKER"
 fi
 
 # Tiny success log so journalctl shows when each transition fired.
