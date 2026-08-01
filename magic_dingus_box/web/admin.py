@@ -251,7 +251,7 @@ PLAYBACK_PAUSE_MARKER = Path("/tmp/mdb_playback_services_paused")
 
 # The containers that script stops. Gluetun (VPN netns) and qBittorrent
 # (active downloads) intentionally stay up during playback.
-PLAYBACK_PAUSED_CONTAINERS = frozenset({"mdb_radarr", "mdb_prowlarr", "mdb_byparr"})
+PLAYBACK_PAUSED_CONTAINERS = frozenset({"mdb_radarr", "mdb_sonarr", "mdb_prowlarr", "mdb_byparr"})
 
 
 def _media_browser_unlocked() -> bool:
@@ -3676,6 +3676,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
     EXPECTED_CONTAINERS = [
         "mdb_gluetun",
         "mdb_radarr",
+        "mdb_sonarr",
         "mdb_prowlarr",
         "mdb_qbittorrent",
         "mdb_byparr",

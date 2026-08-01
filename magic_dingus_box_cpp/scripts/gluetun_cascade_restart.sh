@@ -32,7 +32,7 @@ set -euo pipefail
 # test_gluetun_cascade.py) can point COMPOSE_DIR at a fixture and zero
 # the sleeps; production (systemd unit, no env) gets the defaults.
 COMPOSE_DIR="${COMPOSE_DIR:-/opt/magic_dingus_box/services}"
-DEPENDENTS=(radarr prowlarr qbittorrent byparr)
+DEPENDENTS=(radarr sonarr prowlarr qbittorrent byparr)
 STABILIZE_SLEEP="${STABILIZE_SLEEP:-5}"      # seconds after Gluetun start before cascading dependents
 UNHEALTHY_CONFIRM_S="${UNHEALTHY_CONFIRM_S:-300}"  # seconds to wait before declaring an unhealthy event a real failure
 
@@ -48,7 +48,7 @@ UNHEALTHY_CONFIRM_S="${UNHEALTHY_CONFIRM_S:-300}"  # seconds to wait before decl
 # kiosk's unpause brings them back. The service/container name pairs must
 # stay in sync with CONTAINERS in playback_services_pause.sh.
 PAUSE_MARKER=/tmp/mdb_playback_services_paused
-PAUSED_CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
+PAUSED_CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 
 if ! [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
     echo "[gluetun-cascade] no compose file at ${COMPOSE_DIR} — exiting (services not provisioned)"

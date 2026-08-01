@@ -103,10 +103,10 @@ class CascadeStartEventTests(StubDockerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         compose = self.compose_lines()
         self.assertTrue(
-            any("restart radarr prowlarr qbittorrent byparr" in l
+            any("restart radarr sonarr prowlarr qbittorrent byparr" in l
                 for l in compose), compose)
         self.assertTrue(
-            any("up -d radarr prowlarr qbittorrent byparr" in l
+            any("up -d radarr sonarr prowlarr qbittorrent byparr" in l
                 for l in compose), compose)
         # No enforcement stop when nothing is paused.
         self.assertFalse(
@@ -133,7 +133,7 @@ class CascadeStartEventTests(StubDockerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         stops = [l for l in self.log_lines() if l.startswith("stop")]
         self.assertEqual(len(stops), 1, self.log_lines())
-        for name in ("mdb_radarr", "mdb_prowlarr", "mdb_byparr"):
+        for name in ("mdb_radarr", "mdb_sonarr", "mdb_prowlarr", "mdb_byparr"):
             self.assertIn(name, stops[0])
         self.assertNotIn("mdb_qbittorrent", stops[0])
 
@@ -145,7 +145,7 @@ class UnpauseFallbackTests(StubDockerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         compose = self.compose_lines()
         self.assertTrue(
-            any("up -d radarr prowlarr byparr" in l for l in compose),
+            any("up -d radarr sonarr prowlarr byparr" in l for l in compose),
             f"no compose fallback despite failed starts: {self.log_lines()}")
         # The failure WARN must survive for journal grep-ability.
         self.assertIn("WARN: failed to bring", result.stderr)

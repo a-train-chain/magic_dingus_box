@@ -88,7 +88,7 @@ if (( host_count > 0 && cont_count == 0 )); then
     #
     # Sweep orphaned renames first so a box that already hit the conflict
     # can self-heal instead of failing forever.
-    for orphan in $(docker ps -aq --filter 'name=_mdb_radarr' --filter 'name=_mdb_qbittorrent' 2>/dev/null); do
+    for orphan in $(docker ps -aq --filter 'name=_mdb_radarr' --filter 'name=_mdb_sonarr' --filter 'name=_mdb_qbittorrent' 2>/dev/null); do
         log "removing orphaned renamed container ${orphan}"
         docker rm -f "$orphan" >/dev/null 2>&1
     done
@@ -100,8 +100,8 @@ if (( host_count > 0 && cont_count == 0 )); then
     # discard the error — swallowing stderr here once turned a one-line
     # diagnosis into a debugging session.
     out=$(cd "$COMPOSE_DIR" && {
-            timeout 120 docker compose rm -s -f radarr qbittorrent 2>&1
-            timeout 300 docker compose up -d radarr qbittorrent 2>&1
+            timeout 120 docker compose rm -s -f radarr sonarr qbittorrent 2>&1
+            timeout 300 docker compose up -d radarr sonarr qbittorrent 2>&1
           })
     rc=$?
     if (( rc == 0 )); then

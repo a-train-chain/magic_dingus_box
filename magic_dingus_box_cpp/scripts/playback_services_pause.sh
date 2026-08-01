@@ -45,7 +45,7 @@ if [ "${1:-}" != "pause" ] && [ "${1:-}" != "unpause" ]; then
 fi
 
 ACTION="${1}"
-CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
+CONTAINERS=(mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 
 # Marker read by the Content Manager (admin.py PLAYBACK_PAUSE_MARKER) so the
 # services panel can label these containers "paused for playback" instead of

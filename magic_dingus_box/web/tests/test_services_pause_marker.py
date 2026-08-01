@@ -37,11 +37,12 @@ PAUSE_SCRIPT = (
 
 # The three containers the kiosk stops for playback. Gluetun and qBittorrent
 # intentionally stay up (VPN netns + active downloads).
-PAUSED_SET = {"mdb_radarr", "mdb_prowlarr", "mdb_byparr"}
+PAUSED_SET = {"mdb_radarr", "mdb_sonarr", "mdb_prowlarr", "mdb_byparr"}
 
 DOCKER_PS_PAUSED = "\n".join([
     "mdb_gluetun\tUp 17 minutes (healthy)",
     "mdb_radarr\tExited (137) 6 minutes ago",
+    "mdb_sonarr\tExited (137) 6 minutes ago",
     "mdb_prowlarr\tExited (137) 6 minutes ago",
     "mdb_qbittorrent\tUp 17 minutes",
     "mdb_byparr\tExited (143) 6 minutes ago",
@@ -50,6 +51,7 @@ DOCKER_PS_PAUSED = "\n".join([
 DOCKER_PS_ALL_UP = "\n".join([
     "mdb_gluetun\tUp 17 minutes (healthy)",
     "mdb_radarr\tUp 2 minutes",
+    "mdb_sonarr\tUp 2 minutes",
     "mdb_prowlarr\tUp 2 minutes",
     "mdb_qbittorrent\tUp 17 minutes",
     "mdb_byparr\tUp 2 minutes",
