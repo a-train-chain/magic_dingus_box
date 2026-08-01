@@ -113,6 +113,7 @@ require_env() {
     : "${RADARR_API_KEY:?RADARR_API_KEY missing from .env}"
     : "${PROWLARR_API_KEY:?PROWLARR_API_KEY missing from .env}"
     : "${QBITTORRENT_ADMIN_PASSWORD:?QBITTORRENT_ADMIN_PASSWORD missing from .env}"
+    : "${SONARR_API_KEY:?SONARR_API_KEY missing from .env}"
 }
 
 # ── Checks ──────────────────────────────────────────────────────────
@@ -315,6 +316,183 @@ PYEOF
     fi
 }
 
+check_sonarr_root_folder() {
+    header "Sonarr root folder (/data/library/tv)"
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+        "http://localhost:8989/api/v3/rootfolder" 2>/dev/null) || {
+        fail "Sonarr /api/v3/rootfolder unreachable"
+        return
+    }
+    if echo "${response}" | python3 -c "import sys,json; sys.exit(0 if any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)) else 1)" 2>/dev/null; then
+        pass "Sonarr root folder /data/library/tv present"
+    else
+        fail "Sonarr root folder /data/library/tv missing"
+    fi
+}
+
+check_sonarr_indexers() {
+    header "Sonarr indexers (TV-capable subset)"
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+        "http://localhost:8989/api/v3/indexer" 2>/dev/null) || {
+        fail "Sonarr /api/v3/indexer unreachable"
+        return
+    }
+    local result
+    result=$(python3 - "${response}" <<'PYEOF'
+import json, re, sys
+# TV-capable indexers Prowlarr's 5000-category app-sync can push into
+# Sonarr. YTS + Knaben are movies-only and never sync here. EZTV is
+# enabled but soft-fails when Byparr/EZTV is flaky, so we require a
+# THRESHOLD (>=2 present) rather than an exact set — this catches a
+# totally-broken sync without flaking on per-indexer quirks.
+POOL = {"The Pirate Bay", "TorrentDownload", "LimeTorrents", "EZTV"}
+SUFFIX_RE = re.compile(r"\s*\((?:Prowlarr|Jackett)\)\s*$", re.I)
+data = json.loads(sys.argv[1])
+got = sorted(
+    SUFFIX_RE.sub("", ix["name"])
+    for ix in data
+    if ix.get("enableAutomaticSearch")
+)
+tv = [n for n in got if n in POOL]
+if len(tv) >= 2:
+    print("OK:" + ",".join(tv))
+else:
+    print("FAIL:only " + str(len(tv)) + " TV indexers synced (" + ",".join(tv) + "); want >=2 of " + ",".join(sorted(POOL)))
+PYEOF
+)
+    if [[ "${result}" == OK* ]]; then
+        pass "Sonarr has TV indexers (${result#OK:})"
+    else
+        fail "Sonarr indexer sync weak: ${result#FAIL:}"
+    fi
+}
+
+check_sonarr_download_client() {
+    header "Sonarr → qBittorrent download client"
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+        "http://localhost:8989/api/v3/downloadclient" 2>/dev/null) || {
+        fail "Sonarr /api/v3/downloadclient unreachable"
+        return
+    }
+    local result
+    result=$(python3 - "${response}" <<'PYEOF'
+import json, sys
+data = json.loads(sys.argv[1])
+qbit = next((c for c in data if c.get("implementation") == "QBittorrent" and c.get("enable")), None)
+if not qbit:
+    print("FAIL:no enabled QBittorrent client"); sys.exit()
+fields = {f["name"]: f.get("value") for f in qbit.get("fields", [])}
+checks = []
+if not fields.get("host"):        checks.append("host empty")
+if not fields.get("port"):        checks.append("port empty")
+if not fields.get("tvCategory"):  checks.append("tvCategory empty")
+if not qbit.get("name"):          checks.append("name empty")
+if checks:
+    print("FAIL:" + ",".join(checks))
+else:
+    print(f"OK:host={fields.get('host')}:{fields.get('port')} category={fields.get('tvCategory')}")
+PYEOF
+)
+    if [[ "${result}" == OK* ]]; then
+        pass "Sonarr qBittorrent download client wired (${result#OK:})"
+    else
+        fail "Sonarr download client misconfigured: ${result#FAIL:}"
+    fi
+}
+
+check_sonarr_quality_profile() {
+    header "Sonarr quality profile (Any → Bluray-720p cutoff)"
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+        "http://localhost:8989/api/v3/qualityprofile" 2>/dev/null) || {
+        fail "Sonarr /api/v3/qualityprofile unreachable"
+        return
+    }
+    local result
+    result=$(python3 - "${response}" <<'PYEOF'
+import json, sys
+data = json.loads(sys.argv[1])
+expected_allowed = {
+    "HDTV-720p", "WEBDL-720p", "WEBRip-720p", "Bluray-720p",
+    "HDTV-1080p", "WEBDL-1080p", "WEBRip-1080p", "Bluray-1080p",
+}
+prof = next((p for p in data if p.get("name") == "Any"), None)
+if not prof:
+    print("FAIL:profile 'Any' not found"); sys.exit()
+problems = []
+if prof.get("minFormatScore") != -200:
+    problems.append(f"minFormatScore={prof.get('minFormatScore')} (want -200)")
+def walk(items):
+    for it in items:
+        q = it.get("quality")
+        if q is not None: yield it, q
+        for si, sq in walk(it.get("items", [])): yield si, sq
+allowed = {q["name"] for it, q in walk(prof.get("items", [])) if it.get("allowed")}
+missing = expected_allowed - allowed
+extra = allowed - expected_allowed
+if missing: problems.append("missing-allowed=" + ",".join(sorted(missing)))
+if extra:   problems.append("extra-allowed=" + ",".join(sorted(extra)))
+cutoff_id = prof.get("cutoff")
+def name_by_id(items, target):
+    for it in items:
+        q = it.get("quality")
+        if q and q.get("id") == target: return q.get("name")
+        if it.get("id") == target: return it.get("name")
+        sub = name_by_id(it.get("items", []), target)
+        if sub: return sub
+    return None
+if name_by_id(prof.get("items", []), cutoff_id) != "Bluray-720p":
+    problems.append(f"cutoff={name_by_id(prof.get('items', []), cutoff_id)} (want Bluray-720p)")
+print("FAIL:" + "; ".join(problems) if problems else f"OK:allowed={len(allowed)}")
+PYEOF
+)
+    if [[ "${result}" == OK* ]]; then
+        pass "Sonarr quality profile correct (${result#OK:})"
+    else
+        fail "Sonarr quality profile drift: ${result#FAIL:}"
+    fi
+}
+
+check_sonarr_custom_formats() {
+    header "Sonarr Custom Formats"
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
+        "http://localhost:8989/api/v3/customformat" 2>/dev/null) || {
+        fail "Sonarr /api/v3/customformat unreachable"
+        return
+    }
+    local expected=(
+        "AV1 codec (UNWATCHABLE on Pi 4)"
+        "x265/HEVC 1080p+"
+        "HDR / Dolby Vision"
+        "Remux / Raw-HD"
+        "x264 codec (BONUS)"
+        "Quality release groups"
+        "Low-bitrate size-optimized groups"
+        "Malware/scam executable in title"
+        "Known scam aggregator branding"
+        "Non-English title signals"
+    )
+    local result
+    result=$(python3 - "${response}" "${expected[@]}" <<'PYEOF'
+import json, sys
+data = json.loads(sys.argv[1])
+expected = set(sys.argv[2:])
+got = {cf["name"] for cf in data}
+missing = expected - got
+print("FAIL:missing=" + ",".join(sorted(missing)) if missing else f"OK:{len(got)} formats present")
+PYEOF
+)
+    if [[ "${result}" == OK* ]]; then
+        pass "Sonarr Custom Formats applied (${result#OK:})"
+    else
+        fail "Sonarr Custom Formats drift: ${result#FAIL:}"
+    fi
+}
+
 check_qbit_auth() {
     header "qBittorrent auth (post-Step-7.5 hardening)"
     # Step 7.5 disables localhost-bypass and applies QBITTORRENT_ADMIN_PASSWORD
@@ -450,6 +628,11 @@ check_radarr_indexers
 check_radarr_download_client
 check_radarr_quality_profile
 check_radarr_custom_formats
+check_sonarr_root_folder
+check_sonarr_indexers
+check_sonarr_download_client
+check_sonarr_quality_profile
+check_sonarr_custom_formats
 check_qbit_auth
 check_kiosk_qbit_password
 check_no_active_cooldowns
