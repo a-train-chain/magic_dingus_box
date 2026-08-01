@@ -662,10 +662,22 @@ sed -i "s|PROWLARR_API_KEY=.*|PROWLARR_API_KEY=${PROWLARR_KEY}|" "${ENV_FILE}"
 # Sonarr key: append-if-missing. On boxes provisioned before Sonarr
 # existed, the .env has no SONARR_API_KEY= line, so a plain `sed`
 # replace above would silently no-op and the key would never land.
-if grep -q '^SONARR_API_KEY=' "${ENV_FILE}"; then
-    sed -i "s|^SONARR_API_KEY=.*|SONARR_API_KEY=${SONARR_KEY}|" "${ENV_FILE}"
-else
-    echo "SONARR_API_KEY=${SONARR_KEY}" >> "${ENV_FILE}"
+#
+# Guarded on a non-empty key: extraction above is now WARN-and-continue
+# (a Sonarr-only fault must not abort the run before qBit hardening), so
+# an empty SONARR_KEY reaches here whenever config.xml is momentarily
+# absent or half-written — Sonarr rewriting it on a settings change is
+# enough. Without this guard that transient would blank a previously
+# GOOD key on a healthy box, and because the smoke test now *skips*
+# rather than fails on a missing key, the degraded state would be quiet.
+# There is nothing to write when the key is empty, so preserving the
+# prior value is never worse.
+if [ -n "${SONARR_KEY}" ]; then
+    if grep -q '^SONARR_API_KEY=' "${ENV_FILE}"; then
+        sed -i "s|^SONARR_API_KEY=.*|SONARR_API_KEY=${SONARR_KEY}|" "${ENV_FILE}"
+    else
+        echo "SONARR_API_KEY=${SONARR_KEY}" >> "${ENV_FILE}"
+    fi
 fi
 
 # 7.5. qBittorrent security hardening: set the WebUI password to the
