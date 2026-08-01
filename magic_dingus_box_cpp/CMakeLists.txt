@@ -462,6 +462,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_media_ref.cpp
         tests/media_browser/test_mb_filter_persistence.cpp
         tests/media_browser/test_mb_filter_state.cpp
+        tests/media_browser/test_filter_rows.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
