@@ -6,7 +6,9 @@
 #include <curl/curl.h>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <sstream>
+#include <thread>
 
 namespace media_browser {
 
@@ -256,6 +258,270 @@ std::optional<std::vector<Series>> SonarrClient::find_series_by_tvdb(int tvdb_id
     auto resp = http_get("/api/v3/series?tvdbId=" + std::to_string(tvdb_id));
     if (resp.empty()) return std::nullopt;  // transport/HTTP failure — NOT "absent"
     return SonarrParsers::parse_series_list(resp);
+}
+
+AddSeriesResult SonarrClient::add_series(int tmdb_id,
+                                         int quality_profile_id,
+                                         bool monitor,
+                                         const std::string& title_fallback) {
+    AddSeriesResult result;
+    set_error({});
+
+    // Sonarr requires the full series resource on POST (title, tvdbId, images,
+    // seasons, …), so the flow is lookup-then-mutate — same pattern as
+    // RadarrClient::add_movie. Parse the RAW lookup body rather than going
+    // through SonarrParsers: the POST needs every field, not just the ones
+    // SeriesSearchHit models.
+    std::string lookup_resp = http_get(build_lookup_path_tmdb(tmdb_id));
+    Json::Value root;
+    auto parse_into_root = [&root](const std::string& text) {
+        Json::CharReaderBuilder rb;
+        Json::Value parsed;
+        std::string err;
+        std::istringstream is(text);
+        if (!Json::parseFromStream(rb, is, &parsed, &err)) return false;
+        root = std::move(parsed);
+        return true;
+    };
+    bool have = !lookup_resp.empty() && parse_into_root(lookup_resp)
+                && ((root.isArray() && root.size() > 0) || root.isObject());
+    if (!have && !title_fallback.empty()) {
+        // No TMDB->TVDB mapping in SkyHook; retry as free text.
+        spdlog::info("[sonarr] add_series: tmdb:{} unmapped, retrying title '{}'",
+                     tmdb_id, title_fallback);
+        lookup_resp = http_get(build_lookup_path_term(title_fallback));
+        have = !lookup_resp.empty() && parse_into_root(lookup_resp)
+               && ((root.isArray() && root.size() > 0) || root.isObject());
+    }
+    if (!have) {
+        set_error("Sonarr lookup returned no results for tmdb:"
+                  + std::to_string(tmdb_id));
+        spdlog::error("[sonarr] add_series: {}", last_error());
+        return result;  // ok=false
+    }
+
+    Json::Value series = root.isArray() ? root[0u] : root;
+
+    // Already in the library? POSTing would 400 on seriesExistsValidator.
+    //
+    // The CHECKED probe matters here: nullopt means the request itself failed
+    // (Sonarr rides Gluetun's netns, so this is a routine transport blip), and
+    // treating that as "not present" would POST a duplicate and replace the
+    // real network error with Sonarr's validation text. Abort instead.
+    const int tvdb_id = series.get("tvdbId", 0).asInt();
+    if (tvdb_id > 0) {
+        auto probe = find_series_by_tvdb(tvdb_id);
+        if (!probe) {
+            set_error("Could not reach Sonarr to check whether tvdb:"
+                      + std::to_string(tvdb_id) + " is already in the library");
+            spdlog::error("[sonarr] add_series: {}", last_error());
+            return result;  // ok=false — deliberately NO POST
+        }
+        if (!probe->empty()) {
+            result.ok = true;
+            result.settled = true;  // an existing library record is settled
+            result.series = probe->front();
+            spdlog::info("[sonarr] add_series: tvdb:{} already in library "
+                         "(id={}); returning existing record",
+                         tvdb_id, result.series.sonarr_id);
+            return result;
+        }
+    }
+
+    auto roots = get_root_folders();
+    if (roots.empty()) {
+        set_error("No root folder configured in Sonarr");
+        spdlog::error("[sonarr] add_series: {}", last_error());
+        return result;  // ok=false
+    }
+
+    series["qualityProfileId"] = quality_profile_id;
+    series["rootFolderPath"]   = roots.front().path;
+    series["monitored"]        = monitor;
+    series["seasonFolder"]     = true;
+    // NO minimumAvailability — that field does not exist on Sonarr's
+    // SeriesResource (it is a Radarr concept).
+    Json::Value addOptions;
+    // Derive the enum from the caller's intent — never hardcode "firstSeason".
+    // "firstSeason" monitors the first regular season and unmonitors everything
+    // else INCLUDING specials (the spec's season-at-a-time default). "none"
+    // unmonitors everything unconditionally, which is the only correct value
+    // for an unmonitored add: Sonarr applies addOptions.monitor independently
+    // of series.monitored, so sending "firstSeason" here would leave season 1
+    // armed and it would start grabbing the moment anything re-monitors the
+    // series. Enum values serialize camelCase.
+    addOptions["monitor"] = monitor ? "firstSeason" : "none";
+    addOptions["searchForMissingEpisodes"] = monitor;
+    addOptions["searchForCutoffUnmetEpisodes"] = false;
+    series["addOptions"] = addOptions;
+
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    const std::string body = Json::writeString(wb, series);
+
+    const std::string resp = http_post("/api/v3/series", body);
+    if (resp.empty()) {
+        spdlog::error("[sonarr] add_series POST failed: {}", last_error());
+        return result;  // ok=false
+    }
+
+    // The POST response IS the stored resource (RestController.Created
+    // serializes GetResourceById) — but the row was inserted microseconds ago
+    // and addOptions has not been applied yet, so its seasons[] still reads
+    // exactly what we submitted: all monitored. Take the id and nothing else.
+    int new_id = 0;
+    {
+        Json::CharReaderBuilder rb;
+        Json::Value posted;
+        std::string err;
+        std::istringstream is(resp);
+        if (Json::parseFromStream(rb, is, &posted, &err) && posted.isObject()) {
+            new_id = posted.get("id", 0).asInt();
+        }
+    }
+    if (new_id <= 0 && tvdb_id > 0) {
+        // POST response carried no usable id — find the row by the key Sonarr
+        // indexes on.
+        if (auto probe = find_series_by_tvdb(tvdb_id); probe && !probe->empty()) {
+            new_id = probe->front().sonarr_id;
+        }
+    }
+    if (new_id <= 0) {
+        set_error("Sonarr accepted the add but no series id could be resolved");
+        spdlog::error("[sonarr] add_series: {}", last_error());
+        return result;  // ok=false
+    }
+
+    // *** Bounded settle poll ***
+    // AddSeriesService published SeriesAddedEvent, which queued a
+    // RefreshSeriesCommand. Only after that refresh pulls the episode list from
+    // SkyHook does EpisodeMonitoredService apply addOptions.monitor and null
+    // addOptions out. Poll until we can SEE that happen:
+    //   - addOptions was populated and is now gone  → the refresh ran, or
+    //   - statistics.totalEpisodeCount > 0          → episodes exist, which is
+    //     exactly the precondition EpisodeMonitoredService needs.
+    // The first clause needs the transition (not merely "absent"), because a
+    // Sonarr build that omits addOptions from the GET resource entirely would
+    // otherwise look settled on the very first poll. The second clause is the
+    // fallback for that case.
+    //
+    // THIS SLEEPS — worker thread only.
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(cfg_.add_settle_timeout_ms);
+    const std::string series_path = "/api/v3/series/" + std::to_string(new_id);
+    bool saw_add_options = false;
+    for (;;) {
+        const std::string cur = http_get(series_path);
+        if (!cur.empty()) {
+            Json::Value obj;
+            Json::CharReaderBuilder rb;
+            std::string err;
+            std::istringstream is(cur);
+            if (Json::parseFromStream(rb, is, &obj, &err) && obj.isObject()) {
+                const bool has_add_options =
+                    obj.isMember("addOptions") && obj["addOptions"].isObject();
+                const bool has_episodes =
+                    obj["statistics"].get("totalEpisodeCount", 0).asInt() > 0;
+                if (has_add_options) saw_add_options = true;
+
+                if (auto parsed = SonarrParsers::parse_series(cur)) {
+                    result.ok = true;
+                    result.series = *parsed;   // keep the freshest read we have
+                }
+                if ((saw_add_options && !has_add_options) || has_episodes) {
+                    result.settled = true;
+                    break;
+                }
+            }
+        }
+        if (std::chrono::steady_clock::now() >= deadline) break;
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(cfg_.add_settle_poll_ms));
+    }
+
+    if (!result.ok) {
+        set_error("Sonarr accepted the add but its state could not be read back");
+        spdlog::error("[sonarr] add_series: {}", last_error());
+        return result;
+    }
+    if (!result.settled) {
+        // Not an error — the add succeeded. But the season flags in
+        // `result.series` are the submitted view, not the applied one.
+        spdlog::warn("[sonarr] add_series: tmdb={} id={} did not settle within "
+                     "{}ms; returning provisional state (caller must re-fetch)",
+                     tmdb_id, new_id, cfg_.add_settle_timeout_ms);
+    } else {
+        spdlog::info("[sonarr] add_series ok: tmdb={} tvdb={} id={} '{}'",
+                     tmdb_id, tvdb_id, new_id,
+                     series.get("title", "?").asString());
+    }
+    return result;
+}
+
+bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
+                                        bool monitored) {
+    set_error({});
+    const std::string path = "/api/v3/series/" + std::to_string(sonarr_id);
+    const std::string current = http_get(path);
+    if (current.empty()) {
+        set_error("Sonarr series " + std::to_string(sonarr_id) + " not readable");
+        return false;
+    }
+    Json::Value series;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(current);
+        if (!Json::parseFromStream(rb, is, &series, &err) || !series.isObject()) {
+            set_error("Sonarr series parse failed: " + err);
+            return false;
+        }
+    }
+    Json::Value& seasons = series["seasons"];
+    if (!seasons.isArray()) {
+        set_error("Sonarr series " + std::to_string(sonarr_id) + " has no seasons[]");
+        return false;
+    }
+    bool found = false;
+    for (auto& s : seasons) {
+        if (s.get("seasonNumber", -1).asInt() == season_number) {
+            s["monitored"] = monitored;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        set_error("season " + std::to_string(season_number) + " not found on series "
+                  + std::to_string(sonarr_id));
+        return false;
+    }
+    // PUT replaces the whole resource — send the object back intact apart from
+    // the one flag we changed.
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    return !http_put(path, Json::writeString(wb, series)).empty();
+}
+
+bool SonarrClient::trigger_season_search(int sonarr_id, int season_number) {
+    std::ostringstream body;
+    body << R"({"name":"SeasonSearch","seriesId":)" << sonarr_id
+         << R"(,"seasonNumber":)" << season_number << R"(})";
+    return !http_post("/api/v3/command", body.str()).empty();
+}
+
+bool SonarrClient::trigger_series_search(int sonarr_id) {
+    std::ostringstream body;
+    body << R"({"name":"SeriesSearch","seriesId":)" << sonarr_id << R"(})";
+    return !http_post("/api/v3/command", body.str()).empty();
+}
+
+bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
+    set_error({});
+    const std::string path = "/api/v3/series/" + std::to_string(sonarr_id)
+                           + "?deleteFiles=" + (delete_files ? "true" : "false")
+                           + "&addImportListExclusion=false";
+    http_delete(path);
+    return last_error().empty();
 }
 
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {

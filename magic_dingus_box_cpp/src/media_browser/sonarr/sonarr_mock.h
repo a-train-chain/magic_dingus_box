@@ -25,6 +25,13 @@ public:
     std::vector<Series> get_library() override;
     std::optional<Series> get_series(int sonarr_id) override;
     std::optional<std::vector<Series>> find_series_by_tvdb(int tvdb_id) override;
+    AddSeriesResult add_series(int tmdb_id, int quality_profile_id,
+                               bool monitor,
+                               const std::string& title_fallback) override;
+    bool set_season_monitored(int sonarr_id, int season_number, bool monitored) override;
+    bool trigger_season_search(int sonarr_id, int season_number) override;
+    bool trigger_series_search(int sonarr_id) override;
+    bool remove_series(int sonarr_id, bool delete_files) override;
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
 

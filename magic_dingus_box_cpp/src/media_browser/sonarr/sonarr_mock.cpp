@@ -1,5 +1,7 @@
 #include "media_browser/sonarr/sonarr_mock.h"
 
+#include <algorithm>
+
 namespace media_browser {
 
 SonarrMockClient::SonarrMockClient() : SonarrClient({/* empty config */}) {
@@ -78,6 +80,66 @@ std::optional<std::vector<Series>> SonarrMockClient::find_series_by_tvdb(int tvd
     std::vector<Series> out;
     for (const auto& s : library_) if (s.tvdb_id == tvdb_id) out.push_back(s);
     return out;
+}
+
+AddSeriesResult SonarrMockClient::add_series(int tmdb_id,
+                                             int /*quality_profile_id*/,
+                                             bool monitor,
+                                             const std::string& title_fallback) {
+    AddSeriesResult r;
+    // The mock has no async refresh, so everything it returns is settled.
+    r.settled = true;
+    for (const auto& s : library_) {
+        if (s.tmdb_id == tmdb_id) {  // idempotent
+            r.ok = true;
+            r.series = s;
+            return r;
+        }
+    }
+    Series s;
+    s.sonarr_id       = next_id_++;
+    s.tmdb_id         = tmdb_id;
+    s.tvdb_id         = 100000 + tmdb_id;
+    s.title           = title_fallback.empty()
+                          ? ("Mock Series " + std::to_string(tmdb_id))
+                          : title_fallback;
+    s.monitored       = monitor;
+    s.runtime_minutes = 45;
+    s.path            = "/data/library/tv/" + s.title;
+    // Mirror a real firstSeason add: specials off, season 1 on, rest off.
+    s.seasons.push_back({0, false, 3, 0, 0});
+    s.seasons.push_back({1, monitor, 10, 0, 0});   // "none" when monitor==false
+    s.seasons.push_back({2, false, 10, 0, 0});
+    library_.push_back(s);
+    r.ok = true;
+    r.series = s;
+    return r;
+}
+
+bool SonarrMockClient::set_season_monitored(int sonarr_id, int season_number,
+                                            bool monitored) {
+    for (auto& s : library_) {
+        if (s.sonarr_id != sonarr_id) continue;
+        for (auto& season : s.seasons) {
+            if (season.season_number == season_number) {
+                season.monitored = monitored;
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+bool SonarrMockClient::trigger_season_search(int /*id*/, int /*season*/) { return true; }
+bool SonarrMockClient::trigger_series_search(int /*id*/) { return true; }
+
+bool SonarrMockClient::remove_series(int sonarr_id, bool /*delete_files*/) {
+    auto it = std::remove_if(library_.begin(), library_.end(),
+                             [&](const Series& s) { return s.sonarr_id == sonarr_id; });
+    const bool removed = (it != library_.end());
+    library_.erase(it, library_.end());
+    return removed;
 }
 
 std::vector<QualityProfile> SonarrMockClient::get_quality_profiles() {

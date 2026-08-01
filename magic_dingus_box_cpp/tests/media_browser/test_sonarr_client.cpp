@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <json/json.h>
 #include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/sonarr/sonarr_mock.h"
 
@@ -251,4 +252,277 @@ TEST_CASE("SonarrMockClient serves a coherent seeded library", "[sonarr][mock]")
     REQUIRE(profiles.size() == 1);
     CHECK(profiles[0].name == "Any");
     CHECK(m.get_root_folders().front().path == "/data/library/tv");
+}
+
+// --- add_series ----------------------------------------------------------
+
+namespace {
+// Reproduces the live box's ACTUAL behaviour. Sonarr's POST returns the
+// STORED resource (RestController.Created serializes GetResourceById), but
+// addOptions is applied ASYNCHRONOUSLY — AddSeriesService persists, publishes
+// SeriesAddedEvent, which queues a RefreshSeriesCommand; only once
+// RefreshSeriesService has pulled episodes from SkyHook does
+// EpisodeMonitoredService apply the monitor enum and null addOptions out.
+//
+// So both the POST response AND any immediate GET show every season
+// monitored:true. This stub models exactly that: the POST and the first GET
+// return the pending fixture, later GETs return the settled one.
+class AddSonarr : public mb::SonarrClient {
+public:
+    static Config fast_settle() {
+        Config c;
+        // Tight budget: the settle path needs only two polls, and the
+        // never-settles path must not spin for long.
+        c.add_settle_timeout_ms = 50;
+        c.add_settle_poll_ms = 0;   // never actually sleep in the suite
+        return c;
+    }
+    AddSonarr() : SonarrClient(fast_settle()) {}
+    std::vector<std::string> gets;
+    std::string post_path, post_body;
+    bool already_added = false;
+    bool never_settles = false;   // simulate a refresh that never completes
+    bool probe_fails = false;     // simulate a Gluetun blip on the tvdbId probe
+    int series_gets = 0;
+
+    std::string http_get(const std::string& path) override {
+        gets.push_back(path);
+        if (path.rfind("/api/v3/series/lookup?term=tmdb:1396", 0) == 0) {
+            return read_fixture("series_lookup.json");
+        }
+        if (path.rfind("/api/v3/series?tvdbId=81189", 0) == 0) {
+            if (probe_fails) return "";  // transport failure, NOT "absent"
+            return already_added ? read_fixture("series_list.json") : "[]";
+        }
+        if (path.rfind("/api/v3/rootfolder", 0) == 0) {
+            return read_fixture("root_folders.json");
+        }
+        if (path.rfind("/api/v3/series/7", 0) == 0) {
+            // First read races the refresh; later reads see it landed.
+            ++series_gets;
+            if (never_settles || series_gets == 1) {
+                return read_fixture("series_added_pending.json");
+            }
+            return read_fixture("series_added.json");
+        }
+        return "";
+    }
+    std::string http_post(const std::string& path, const std::string& body) override {
+        post_path = path;
+        post_body = body;
+        // The stored resource as it exists the instant after the insert:
+        // id assigned, addOptions still populated, seasons untouched.
+        return read_fixture("series_added_pending.json");
+    }
+    std::string http_put(const std::string&, const std::string&) override { return ""; }
+    std::string http_delete(const std::string&) override { return ""; }
+};
+}  // namespace
+
+TEST_CASE("add_series polls until Sonarr's async refresh settles",
+          "[sonarr][add]") {
+    // THE load-bearing test of this phase. A single read — of the POST body OR
+    // of an immediate GET — returns every season monitored:true, because the
+    // monitor enum has not been applied yet. A client that trusted it would
+    // tell the UI the whole series is monitored, and "download next season"
+    // would target the wrong season forever.
+    AddSonarr s;
+    auto added = s.add_series(1396, /*quality_profile_id=*/1, /*monitor=*/true);
+    REQUIRE(added.ok);
+    REQUIRE(added.settled);           // the poll saw the refresh land
+    CHECK(added.series.sonarr_id == 7);
+    REQUIRE(added.series.seasons.size() == 6);
+    CHECK_FALSE(added.series.seasons[0].monitored);  // Specials
+    CHECK(added.series.seasons[1].monitored);        // Season 1 — the only one
+    CHECK_FALSE(added.series.seasons[2].monitored);
+    CHECK_FALSE(added.series.seasons[3].monitored);
+    CHECK_FALSE(added.series.seasons[4].monitored);
+    CHECK_FALSE(added.series.seasons[5].monitored);
+
+    // Proof it POLLED rather than reading once: the first GET returned the
+    // pending state and was correctly rejected.
+    CHECK(s.series_gets >= 2);
+}
+
+TEST_CASE("add_series returns a PROVISIONAL result when the refresh never lands",
+          "[sonarr][add]") {
+    // Bounded, not unbounded: a wedged SkyHook fetch must not hang the worker.
+    // The caller still gets the series (the add DID happen) but settled=false
+    // tells Phase 2c to re-fetch instead of caching an all-monitored season list.
+    AddSonarr s;
+    s.never_settles = true;
+    auto added = s.add_series(1396, 1, true);
+    CHECK(added.ok);                 // the add succeeded
+    CHECK_FALSE(added.settled);      // ...but the season flags are not trustworthy
+    CHECK(added.series.sonarr_id == 7);
+}
+
+TEST_CASE("add_series POSTs a valid Sonarr payload", "[sonarr][add]") {
+    AddSonarr s;
+    REQUIRE(s.add_series(1396, 1, true).ok);
+    CHECK(s.post_path == "/api/v3/series");
+    CHECK(s.post_body.find(R"("qualityProfileId":1)") != std::string::npos);
+    CHECK(s.post_body.find(R"("rootFolderPath":"/data/library/tv")") != std::string::npos);
+    CHECK(s.post_body.find(R"("monitor":"firstSeason")") != std::string::npos);
+    CHECK(s.post_body.find(R"("searchForMissingEpisodes":true)") != std::string::npos);
+    CHECK(s.post_body.find(R"("seasonFolder":true)") != std::string::npos);
+    // minimumAvailability is a Radarr-only concept; sending it to Sonarr is
+    // meaningless noise at best.
+    CHECK(s.post_body.find("minimumAvailability") == std::string::npos);
+}
+
+TEST_CASE("add_series with monitor=false sends monitor:none, not firstSeason",
+          "[sonarr][add]") {
+    // Sonarr honours addOptions.monitor INDEPENDENTLY of series.monitored. An
+    // unmonitored add that still said "firstSeason" would leave a fully
+    // monitored season 1 underneath, and the moment anything flips
+    // series.monitored true — a user toggle, a 2c "resume", a seasonpass bulk
+    // edit — Sonarr grabs the whole season with nobody having asked for it.
+    AddSonarr s;
+    REQUIRE(s.add_series(1396, 1, /*monitor=*/false).ok);
+    CHECK(s.post_body.find(R"("monitor":"none")") != std::string::npos);
+    CHECK(s.post_body.find("firstSeason") == std::string::npos);
+    CHECK(s.post_body.find(R"("searchForMissingEpisodes":false)") != std::string::npos);
+}
+
+TEST_CASE("add_series is idempotent when the series is already in the library",
+          "[sonarr][add]") {
+    // POSTing an already-added tvdbId 400s on seriesExistsValidator. Detect it
+    // first and return the existing record instead of surfacing an error.
+    AddSonarr s;
+    s.already_added = true;
+    auto added = s.add_series(1396, 1, true);
+    REQUIRE(added.ok);
+    CHECK(added.settled);  // an existing library record is settled by definition
+    CHECK(added.series.sonarr_id == 7);
+    CHECK(s.post_path.empty());  // nothing was POSTed
+}
+
+TEST_CASE("add_series ABORTS when the existence probe cannot reach Sonarr",
+          "[sonarr][add]") {
+    // Sonarr shares Gluetun's netns, so the probe failing mid-add is routine.
+    // Treating that as "not in the library" would POST a duplicate and hand the
+    // user Sonarr's 400 validation text instead of the real network fault.
+    AddSonarr s;
+    s.probe_fails = true;
+    auto added = s.add_series(1396, 1, true);
+    CHECK_FALSE(added.ok);
+    CHECK(s.post_path.empty());  // crucially: no POST was issued
+    CHECK_FALSE(s.last_error().empty());
+}
+
+TEST_CASE("add_series fails cleanly when the lookup finds nothing",
+          "[sonarr][add]") {
+    class EmptyLookup : public mb::SonarrClient {
+    public:
+        EmptyLookup() : SonarrClient(Config{}) {}
+        std::string http_get(const std::string& path) override {
+            if (path.rfind("/api/v3/series/lookup", 0) == 0) return "[]";
+            return "";
+        }
+        std::string http_post(const std::string&, const std::string&) override {
+            FAIL("add_series must not POST without a lookup result");
+            return "";
+        }
+        std::string http_put(const std::string&, const std::string&) override { return ""; }
+        std::string http_delete(const std::string&) override { return ""; }
+    };
+    EmptyLookup s;
+    CHECK_FALSE(s.add_series(1396, 1, true).ok);
+    CHECK_FALSE(s.last_error().empty());
+}
+
+// --- season monitoring ---------------------------------------------------
+
+namespace {
+class PutSonarr : public mb::SonarrClient {
+public:
+    PutSonarr() : SonarrClient(Config{}) {}
+    std::string put_path, put_body, post_path, post_body, delete_path;
+    std::string http_get(const std::string& path) override {
+        if (path.rfind("/api/v3/series/7", 0) == 0) {
+            return read_fixture("series_added.json");
+        }
+        return "";
+    }
+    std::string http_put(const std::string& path, const std::string& body) override {
+        put_path = path;
+        put_body = body;
+        return body;  // Sonarr returns the updated resource
+    }
+    std::string http_post(const std::string& path, const std::string& body) override {
+        post_path = path;
+        post_body = body;
+        return R"({"id":1,"name":"SeasonSearch","status":"queued"})";
+    }
+    std::string http_delete(const std::string& path) override {
+        delete_path = path;
+        return "{}";
+    }
+};
+}  // namespace
+
+TEST_CASE("set_season_monitored flips exactly one season and PUTs the whole "
+          "resource", "[sonarr][seasons]") {
+    // Sonarr's PUT /api/v3/series/{id} replaces the resource — sending a
+    // partial object silently wipes the fields left out.
+    PutSonarr s;
+    REQUIRE(s.set_season_monitored(7, 2, true));
+    CHECK(s.put_path == "/api/v3/series/7");
+
+    Json::Value sent;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(s.put_body);
+        REQUIRE(Json::parseFromStream(rb, is, &sent, &err));
+    }
+    // Non-season fields survive the round-trip.
+    CHECK(sent["id"].asInt() == 7);
+    CHECK(sent["path"].asString() == "/data/library/tv/Breaking Bad");
+    CHECK(sent["qualityProfileId"].asInt() == 1);
+    REQUIRE(sent["seasons"].isArray());
+    REQUIRE(sent["seasons"].size() == 6);
+    for (const auto& season : sent["seasons"]) {
+        const int n = season["seasonNumber"].asInt();
+        const bool mon = season["monitored"].asBool();
+        if (n == 1 || n == 2) CHECK(mon);   // 1 was already on, 2 just flipped
+        else                  CHECK_FALSE(mon);
+    }
+}
+
+TEST_CASE("set_season_monitored reports failure for an unknown season",
+          "[sonarr][seasons]") {
+    PutSonarr s;
+    CHECK_FALSE(s.set_season_monitored(7, 99, true));
+    CHECK(s.put_path.empty());  // nothing sent
+    CHECK_FALSE(s.last_error().empty());
+}
+
+// --- commands + delete ---------------------------------------------------
+
+TEST_CASE("trigger_season_search posts the SeasonSearch command",
+          "[sonarr][commands]") {
+    PutSonarr s;
+    REQUIRE(s.trigger_season_search(7, 2));
+    CHECK(s.post_path == "/api/v3/command");
+    CHECK(s.post_body == R"({"name":"SeasonSearch","seriesId":7,"seasonNumber":2})");
+}
+
+TEST_CASE("trigger_series_search posts the SeriesSearch command",
+          "[sonarr][commands]") {
+    PutSonarr s;
+    REQUIRE(s.trigger_series_search(7));
+    CHECK(s.post_path == "/api/v3/command");
+    CHECK(s.post_body == R"({"name":"SeriesSearch","seriesId":7})");
+}
+
+TEST_CASE("remove_series deletes with files and no import-list exclusion",
+          "[sonarr][remove]") {
+    PutSonarr s;
+    REQUIRE(s.remove_series(7, /*delete_files=*/true));
+    // addImportListExclusion=false: excluding it would make Sonarr refuse to
+    // ever re-add the show, which is not what "remove from my box" means.
+    CHECK(s.delete_path ==
+          "/api/v3/series/7?deleteFiles=true&addImportListExclusion=false");
 }

@@ -9,6 +9,15 @@
 
 namespace media_browser {
 
+// Outcome of add_series. `settled` is the part callers must not ignore: see
+// SonarrClient::add_series for why a "successful" add can still hand back a
+// season list that does not reflect the requested monitoring.
+struct AddSeriesResult {
+    bool ok = false;       // the series is in Sonarr and `series` identifies it
+    bool settled = false;  // Sonarr's async refresh finished; seasons[] are authoritative
+    Series series;         // when !settled, every season may still read monitored:true
+};
+
 // HTTP client for Sonarr v4 (which still serves its API under /api/v3 — there
 // is no /api/v4 namespace). Mirrors RadarrClient: every public method is
 // virtual so SonarrMockClient can replace them wholesale, and the four http_*
@@ -79,6 +88,59 @@ public:
     // as "not present" would POST a duplicate and surface Sonarr's 400
     // validation text instead of the real network fault.
     virtual std::optional<std::vector<Series>> find_series_by_tvdb(int tvdb_id);
+
+    // Library management.
+    //
+    // Adds a series with addOptions.monitor = "firstSeason" (the spec's
+    // season-at-a-time default) when `monitor` is true, or "none" when it is
+    // false — NEVER "firstSeason" for an unmonitored add, because Sonarr
+    // honours addOptions.monitor independently of series.monitored and would
+    // leave a fully monitored season 1 armed underneath.
+    //
+    // *** Sonarr applies addOptions ASYNCHRONOUSLY. ***
+    // The POST returns the STORED resource (RestController.Created serializes
+    // GetResourceById), but at that moment AddSeriesService has only inserted
+    // the row and published SeriesAddedEvent, which queues a
+    // RefreshSeriesCommand. Not until RefreshSeriesService has fetched the
+    // episode list from SkyHook does EpisodeMonitoredService apply the monitor
+    // enum and null out addOptions. Until then BOTH the POST response and any
+    // GET show every season monitored:true — so a single immediate re-GET is
+    // no better than trusting the POST body.
+    //
+    // This method therefore BOUNDED-POLLS GET /api/v3/series/{id} until the
+    // refresh has visibly landed (addOptions cleared, or episode statistics
+    // populated), capped by Config::add_settle_timeout_ms. On timeout it
+    // returns ok=true, settled=false with the record it has — the add really
+    // did happen — and the caller MUST re-fetch rather than cache those season
+    // flags.
+    //
+    // *** WORKER THREAD ONLY. *** This sleeps between polls. cfg_.timeout_secs
+    // is 5 and the kiosk unit's WatchdogSec is 10; calling it from the render
+    // thread risks a watchdog kill.
+    //
+    // Idempotent: when the tvdbId is already in the library the existing record
+    // is returned (settled) instead of POSTing, which would 400 on
+    // seriesExistsValidator. ok=false on any failure; see last_error().
+    virtual AddSeriesResult add_series(int tmdb_id,
+                                       int quality_profile_id,
+                                       bool monitor = true,
+                                       const std::string& title_fallback = "");
+
+    // Flips one season's monitored flag. Sonarr's PUT replaces the whole
+    // resource, so this GETs the current record, edits one season, and PUTs
+    // it back untouched otherwise. false when the series or season is not
+    // found, or the PUT failed.
+    virtual bool set_season_monitored(int sonarr_id, int season_number, bool monitored);
+
+    // POST /api/v3/command. Command names are the C# class name minus
+    // "Command". Always pass a seriesId — MissingEpisodeSearch without one
+    // sweeps the entire library.
+    virtual bool trigger_season_search(int sonarr_id, int season_number);
+    virtual bool trigger_series_search(int sonarr_id);
+
+    // DELETE /api/v3/series/{id}. Never sets addImportListExclusion — the
+    // user is deleting a download, not blacklisting the show.
+    virtual bool remove_series(int sonarr_id, bool delete_files = false);
 
     // Profiles / storage. Resolve the quality profile BY NAME at the call
     // site ("Any" on this box, id 1 — the id is not portable).
