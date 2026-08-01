@@ -813,23 +813,86 @@ fi
 # — every release from a 14-result search was rejected with "English
 # is wanted, but found Spanish" until the profile was relaxed.
 echo "Setting 'Any' quality profile language to 'Original' (auto-adapts per movie)..."
-ANY_PROFILE=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
-    http://localhost:7878/api/v3/qualityprofile 2>/dev/null \
-    | python3 -c "import sys,json
-ps = json.load(sys.stdin)
-p = next((p for p in ps if p['name']=='Any'), None)
+# Fetch is ||-guarded exactly like Step 8's, and for the same reason: Step 6
+# proves only that Radarr WROTE its config.xml, not that its API answers. On a
+# cold SD card / slow first-time DB init, Radarr reaches this line with a valid
+# key and a dead API. Unguarded, curl emits nothing, `json.load(sys.stdin)`
+# raises, and the `VAR=$(...)` assignment aborts the ENTIRE provisioning run
+# under `set -euo pipefail` — silently skipping Prowlarr indexers, the Radarr
+# Apps integration, the qBit category, quality definitions and the smoke test,
+# none of which have anything to do with this one profile tweak. The "[]"
+# fallback flows through the parser to an empty ANY_PROFILE and a WARN.
+#
+# The parse is hardened alongside it: a `try` around json.load covers a
+# truncated/HTML body, and the isinstance() check covers Radarr answering 200
+# with an error OBJECT instead of the expected list (iterating a dict yields
+# str keys, and `p['name']` on a str raises TypeError — same fatal path).
+QUALITY_PROFILE_LIST=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
+    http://localhost:7878/api/v3/qualityprofile 2>/dev/null || echo "[]")
+ANY_PROFILE=$(printf '%s' "${QUALITY_PROFILE_LIST}" | python3 -c "import sys,json
+try:
+    ps = json.load(sys.stdin)
+except Exception:
+    ps = []
+p = next((p for p in ps if isinstance(p, dict) and p.get('name')=='Any'), None)
 if p:
     p['language'] = {'id':-2, 'name':'Original'}
     print(json.dumps(p))
 else:
     print('')")
 if [[ -n "${ANY_PROFILE}" ]]; then
-    PROFILE_ID=$(echo "${ANY_PROFILE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+    PROFILE_ID=$(printf '%s' "${ANY_PROFILE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
     curl -fsS -X PUT -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
         -d "${ANY_PROFILE}" \
         "http://localhost:7878/api/v3/qualityprofile/${PROFILE_ID}" >/dev/null \
         && echo "  ✓ 'Any' profile language set to Original" \
         || echo "  WARN: failed to update 'Any' profile language; verify via web UI"
+else
+    echo "  WARN: Radarr 'Any' profile not readable (service may still be starting) — language left unchanged; a later run applies it."
+fi
+
+# 9.5. Radarr API readiness probe — gates every hard-fail Radarr step below.
+#
+# Mirrors the Sonarr probe in Step 10-S, and sits HERE for the same reason it
+# sits there: this is the last point before the script's FIRST hard-fail
+# Radarr contact. Steps 8 and 9 above are ||-guarded and degrade to a WARN,
+# but Step 10 onward run `VAR=$(python3 <<PYEOF ...)` heredocs that make
+# unguarded urllib calls — under `set -euo pipefail` any one of them aborts
+# the ENTIRE run the moment Radarr doesn't answer.
+#
+# Step 6's key extraction is NOT this check: it proves Radarr wrote its
+# config.xml, which happens early in startup, well before the DB is ready to
+# serve /api/v3. A cold SD card reaches Step 10 with a good key and a dead API.
+#
+# The probe result GATES the steps below — it must not merely delay them. A
+# bare for-loop-then-continue (which is what Step 14 used to do) falls through
+# identically whether Radarr answered or never came up, so it bought time
+# without buying safety. If Radarr is still down after 60s, we WARN-and-skip
+# the Radarr-specific steps: dooming those on an unreachable Radarr is fine and
+# intended, but taking Prowlarr's tag/proxy/indexers, the qBit category and the
+# smoke test down with it is not. Every skipped step is idempotent, so a later
+# re-run applies it.
+#
+# --max-time bounds the loop in WALL CLOCK, not just iterations. A stopped
+# container refuses the connection and fails instantly, but a container that
+# is up with its port bound and the app wedged mid-init accepts the socket and
+# never answers — an untimed curl blocks there indefinitely and the "60s"
+# probe becomes unbounded. 5s is generous for a loopback /system/status, and a
+# single slow response costs one iteration rather than failing the probe.
+echo "Probing Radarr API readiness..."
+RADARR_READY=0
+for i in {1..30}; do
+    if curl -fsS --max-time 5 -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
+        http://localhost:7878/api/v3/system/status 2>/dev/null; then
+        RADARR_READY=1
+        break
+    fi
+    sleep 2
+done
+if [ "${RADARR_READY}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable after 60s — Radarr-specific steps below will skip and self-heal on the next run."
+else
+    echo "  ✓ Radarr API responding"
 fi
 
 # 10. Codify Radarr Custom Formats + Any-profile score map.
@@ -862,6 +925,8 @@ echo "Configuring Radarr Custom Formats + 'Any' profile score map..."
 CF_DATA_FILE="${SCRIPT_DIR}/data/radarr_custom_formats.json"
 if [[ ! -f "${CF_DATA_FILE}" ]]; then
     echo "  WARN: ${CF_DATA_FILE} not found — skipping. Custom Formats may already be configured manually; verify via web UI."
+elif [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — skipping Custom Formats/profile reconciliation (later runs will apply it)."
 else
     # Run the full GET → match → POST/PUT for each CF, then PATCH the
     # Any profile's formatItems, all in one python heredoc so we can
@@ -1690,25 +1755,21 @@ fi
 #     match, we no-op; if they don't, we PUT with the freshly-injected
 #     real key (which won't drift because we control RADARR_KEY).
 #
-# Wait/retry: on a fresh Pi this step runs ~60s after `docker compose
-# up`, which is usually enough for Radarr to be reachable, but we add
-# a short retry just in case the API is still warming up.
+# Radarr readiness: gated on RADARR_READY from Step 9.5 (Radarr is the API
+# key consumer here — if it's down we can't even prove our key works). This
+# block used to run its own bare `for i in {1..30}` warm-up loop that broke
+# out on success and simply fell through on failure — identical control flow
+# either way, so a never-ready Radarr proceeded straight into the python
+# below, whose first http() call raised an uncaught urllib error and took the
+# whole script down with it. The wait now happens once, at Step 9.5, and its
+# result actually decides whether this block runs.
 echo "Configuring Prowlarr → Radarr Apps integration..."
 PROWLARR_APPS_FILE="${SCRIPT_DIR}/data/prowlarr_applications.json"
 if [[ ! -f "${PROWLARR_APPS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_APPS_FILE} not found — skipping."
+elif [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — skipping Prowlarr → Radarr Apps integration (later runs will apply it)."
 else
-    # Brief readiness check on Radarr (it's the API key consumer; if
-    # Radarr were down we couldn't even prove our key works). Doesn't
-    # block; we just give it a chance to finish its first-time init
-    # if this is a fresh Pi.
-    for i in {1..30}; do
-        if curl -fsS -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
-            http://localhost:7878/api/v3/system/status; then
-            break
-        fi
-        sleep 2
-    done
     APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
 apps_path, prowlarr_key, radarr_key, sonarr_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -1843,7 +1904,10 @@ fi
 # re-run this script or the standalone bump if downloads start
 # stalling at metaDL again.
 echo "Configuring Radarr indexer minimum_seeders threshold..."
-SEEDER_SUMMARY=$(python3 - "${RADARR_KEY}" <<'PYEOF'
+if [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — skipping Radarr indexer minimum-seeders bump (later runs will apply it)."
+else
+    SEEDER_SUMMARY=$(python3 - "${RADARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
 api_key = sys.argv[1]
 BASE = "http://localhost:7878/api/v3"
@@ -1880,7 +1944,7 @@ for ix in http("GET", "/indexer") or []:
 print(json.dumps(result))
 PYEOF
 )
-echo "${SEEDER_SUMMARY}" | python3 -c '
+    echo "${SEEDER_SUMMARY}" | python3 -c '
 import json, sys
 s = json.loads(sys.stdin.read())
 def show(label, items):
@@ -1890,6 +1954,7 @@ show("updated to min=5  ", s["updated"])
 show("already at 5      ", s["unchanged"])
 show("skipped (disabled)", s["skipped_disabled"])
 '
+fi
 
 # 14b-S. Sonarr: minimum-seeders threshold per indexer.
 #
@@ -1993,7 +2058,10 @@ fi
 # picks up the new rows.
 echo "Configuring Radarr indexer fallback (direct DB insert for test-failed indexers)..."
 RADARR_DB="/opt/magic_dingus_box/services/config/radarr/radarr.db"
-INDEXER_FALLBACK_SUMMARY=$(python3 - "${PROWLARR_KEY}" "${RADARR_KEY}" "${RADARR_DB}" <<'PYEOF'
+if [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — skipping indexer fallback injection (later runs will apply it)."
+else
+    INDEXER_FALLBACK_SUMMARY=$(python3 - "${PROWLARR_KEY}" "${RADARR_KEY}" "${RADARR_DB}" <<'PYEOF'
 import json, sys, sqlite3, urllib.request, os
 
 prowlarr_key, radarr_key, radarr_db = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -2094,28 +2162,41 @@ con.close()
 print(json.dumps({"injected": injected, "already_synced": list(radarr_names)}))
 PYEOF
 )
-INJECTED=$(echo "${INDEXER_FALLBACK_SUMMARY}" | python3 -c '
+    INJECTED=$(printf '%s' "${INDEXER_FALLBACK_SUMMARY}" | python3 -c '
 import json, sys
-s = json.loads(sys.stdin.read())
+try:
+    s = json.loads(sys.stdin.read())
+except Exception:
+    s = {}
 inj = s.get("injected", [])
 if inj: print(",".join(inj))
 ')
-if [[ -n "${INJECTED}" ]]; then
-    echo "  injected (DB direct): ${INJECTED}"
-    echo "  Restarting Radarr so it reloads the indexer cache..."
-    docker restart mdb_radarr >/dev/null
-    # Wait for Radarr to be reachable again so subsequent steps
-    # (qBit download client config, custom format scoring) don't
-    # race against an unhealthy API.
-    for i in {1..30}; do
-        if curl -fsS -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
-            http://localhost:7878/api/v3/system/status; then
-            break
+    if [[ -n "${INJECTED}" ]]; then
+        echo "  injected (DB direct): ${INJECTED}"
+        echo "  Restarting Radarr so it reloads the indexer cache..."
+        docker restart mdb_radarr >/dev/null
+        # Wait for Radarr to be reachable again so subsequent steps
+        # (qBit download client config, custom format scoring) don't
+        # race against an unhealthy API. Re-arm RADARR_READY from the
+        # result: we just took the API down deliberately, so the flag
+        # set back at Step 9.5 is stale until it answers again. If it
+        # never comes back, clearing the flag makes Steps 15/16 skip
+        # with a WARN instead of aborting the rest of the run.
+        RADARR_READY=0
+        for i in {1..30}; do
+            if curl -fsS --max-time 5 -o /dev/null -H "X-Api-Key: ${RADARR_KEY}" \
+                http://localhost:7878/api/v3/system/status 2>/dev/null; then
+                RADARR_READY=1
+                break
+            fi
+            sleep 2
+        done
+        if [ "${RADARR_READY}" -ne 1 ]; then
+            echo "  WARN: Radarr did not come back within 60s of the restart — remaining Radarr steps will skip."
         fi
-        sleep 2
-    done
-else
-    echo "  all enabled Prowlarr indexers already present in Radarr"
+    else
+        echo "  all enabled Prowlarr indexers already present in Radarr"
+    fi
 fi
 
 # 15. Radarr → qBittorrent download client.
@@ -2139,6 +2220,8 @@ else
     QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
     if [[ -z "${QBIT_PW}" ]]; then
         echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    elif [ "${RADARR_READY:-0}" -ne 1 ]; then
+        echo "  WARN: Radarr not reachable — skipping Radarr → qBittorrent download client (later runs will apply it)."
     else
         DLCLIENT_SUMMARY=$(python3 - "${RADARR_DLCLIENTS_FILE}" "${RADARR_KEY}" "${QBIT_PW}" <<'PYEOF'
 import json, sys, urllib.request
@@ -2394,6 +2477,8 @@ echo "Configuring Radarr quality definitions..."
 RADARR_QUALITY_FILE="${SCRIPT_DIR}/data/radarr_qualitydefinitions.json"
 if [[ ! -f "${RADARR_QUALITY_FILE}" ]]; then
     echo "  WARN: ${RADARR_QUALITY_FILE} not found — skipping."
+elif [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — skipping Radarr quality definitions (later runs will apply it)."
 else
     QD_SUMMARY=$(python3 - "${RADARR_QUALITY_FILE}" "${RADARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request

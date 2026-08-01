@@ -221,9 +221,7 @@ fi
 #
 # Same tmpfs discipline as Step 2b: stash in RAM, overwrite in place, then
 # unlink. Restored by restore_after_cloning.sh.
-#   services/config/radarr/config.xml       Radarr API key
-#   services/config/prowlarr/config.xml     Prowlarr API key
-#   services/config/sonarr/config.xml       Sonarr API key
+#   services/config/<app>/config.xml        that app's API key
 #   services/config/radarr/radarr.db        the qBittorrent WebUI username and
 #                                           password, in plaintext, inside
 #                                           DownloadClients.Settings
@@ -236,7 +234,7 @@ fi
 #   services/config/qbittorrent/.../qBittorrent.conf
 #                                           WebUI\Password_PBKDF2 hash
 #
-# These four were missing from this list even though first_boot.sh Step 6 knows
+# These were missing from this list even though first_boot.sh Step 6 knows
 # about them and deletes services/config/* on the clone. That safety net has the
 # same limitation as everything else here: it protects the running unit, not the
 # .img.gz. So the qBittorrent password survived in radarr.db inside the artifact
@@ -246,26 +244,73 @@ fi
 # The SQLite -wal and -shm sidecars are listed explicitly. Removing a .db while
 # leaving its -wal behind would both leave the secret readable in the WAL and
 # corrupt the database on restore, since the two must travel together.
+#
+#   services/config/<app>/Backups/**        the app's OWN scheduled-backup task
+#                                           re-packages config.xml AND <app>.db
+#                                           into a zip — every secret the
+#                                           entries above strip, put back into
+#                                           the artifact under a filename
+#                                           nothing here was watching
+#   services/config/<app>/logs/**           a verbatim record of the operator's
+#   services/config/<app>/logs.db           own searches, grabs and imports
+#   services/config/<app>/logs.db-wal
+#   services/config/<app>/logs.db-shm
+#
+# Backups/ is the reason this list is now generated instead of typed. The
+# entries above name radarr.db and config.xml explicitly; the app then writes
+# both of them, on a timer, into
+# Backups/scheduled/<app>_backup_<version>_<timestamp>.zip — a path outside
+# every pattern this script knew. Measured on the live box before this commit:
+#
+#   radarr/Backups/scheduled/*.zip    Radarr API key, Prowlarr API key, and the
+#                                     qBittorrent WebUI password in plaintext
+#   prowlarr/Backups/scheduled/*.zip  Prowlarr API key, Radarr API key
+#
+# So the artifact shipped the qBittorrent password inside a zip sitting on the
+# same disk where the .env copy of that password had just been shredded — the
+# exact leak this list exists to prevent, routed around by the apps themselves.
+# Sonarr had no Backups/ yet only because its scheduled task had not fired since
+# install; it inherits the identical exposure within a week.
+#
+# logs/ and logs.db go in on a weaker but real basis, and the difference is
+# worth stating rather than blurring: current *arr builds DO redact credentials.
+# Every apikey occurrence in this box's 64 MB of logs reads `apikey=(removed)`,
+# and no live key value appears anywhere in them. They are stripped anyway
+# because (a) the artifact's safety must not rest on a third-party scrubber
+# staying correct across app upgrades we do not control, (b) the logs are a
+# verbatim record of the operator's personal activity — 158 Grabbed/Importing
+# lines on this box — which has no business shipping to a customer, and (c) they
+# are 64 MB of dead weight in every .img.gz.
+#
+# Generated per-app rather than enumerated, because the way this gap opened is a
+# literal list that did not grow. Sonarr arrived in Phase 2a and every one of
+# its paths had to be hand-copied in; the next *arr app is one word in ARR_APPS.
+ARR_APPS=(radarr sonarr prowlarr)
+
 SECRET_STASH="/dev/shm/mdb-secret-stash"
 SECRET_PATHS=(
     "/opt/magic_dingus_box/services/.env"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
-    "/opt/magic_dingus_box/services/config/radarr/config.xml"
-    "/opt/magic_dingus_box/services/config/radarr/radarr.db"
-    "/opt/magic_dingus_box/services/config/radarr/radarr.db-wal"
-    "/opt/magic_dingus_box/services/config/radarr/radarr.db-shm"
-    "/opt/magic_dingus_box/services/config/prowlarr/config.xml"
-    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db"
-    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-wal"
-    "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-shm"
-    "/opt/magic_dingus_box/services/config/sonarr/config.xml"
-    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db"
-    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db-wal"
-    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db-shm"
     "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
 )
+
+for _app in "${ARR_APPS[@]}"; do
+    _cfg="/opt/magic_dingus_box/services/config/${_app}"
+    SECRET_PATHS+=(
+        "${_cfg}/config.xml"
+        "${_cfg}/${_app}.db"
+        "${_cfg}/${_app}.db-wal"
+        "${_cfg}/${_app}.db-shm"
+        "${_cfg}/logs.db"
+        "${_cfg}/logs.db-wal"
+        "${_cfg}/logs.db-shm"
+        "${_cfg}/Backups/**"
+        "${_cfg}/logs/**"
+    )
+done
+unset _app _cfg
 
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray
@@ -274,8 +319,16 @@ SECRET_PATHS=(
 # the one place these secrets must never survive, because the image is what
 # gets copied around. Only entries containing '*' are re-split, so literal
 # paths are untouched.
+#
+# globstar is on so the `Backups/**` and `logs/**` entries recurse. A single '*'
+# is not enough: the apps file scheduled backups under Backups/scheduled/ and
+# operator-triggered ones under Backups/manual/, so `Backups/*` would match the
+# subdirectory and none of the zips inside it. '**' also yields the directories
+# themselves, which the `-f` test in the loop below skips — leaving an empty
+# Backups/ behind is correct, and restore rebuilds the tree on the way back in
+# via its own `mkdir -p "$(dirname "$dest")"`.
 _expanded=()
-shopt -s nullglob
+shopt -s nullglob globstar
 for _entry in "${SECRET_PATHS[@]}"; do
     if [[ "$_entry" == *'*'* ]]; then
         for _match in $_entry; do _expanded+=("$_match"); done
@@ -283,7 +336,7 @@ for _entry in "${SECRET_PATHS[@]}"; do
         _expanded+=("$_entry")
     fi
 done
-shopt -u nullglob
+shopt -u nullglob globstar
 SECRET_PATHS=("${_expanded[@]}")
 unset _expanded _entry _match
 
@@ -292,6 +345,16 @@ mkdir -p "$SECRET_STASH"
 chmod 700 "$SECRET_STASH"
 : > "${SECRET_STASH}/manifest"
 chmod 600 "${SECRET_STASH}/manifest"
+
+# Adding Backups/ and logs/ took this pass from 15 files / ~7 MB to 86 files /
+# ~72 MB on the production box, all of which is copied into $SECRET_STASH —
+# tmpfs, i.e. RAM — before being overwritten in place. That is comfortable:
+# /dev/shm is 992 MB there, it is empty at this point in the clone because every
+# service has already been stopped in Step 1, and 72 MB is 7% of it. The cost is
+# a shredding pass over ~72 MB plus one sync per file, seconds on the SSD-backed
+# boxes and longer on a slow SD. The count logged below is what confirms the
+# pass actually ran over the whole list.
+stripped=0
 
 for src in "${SECRET_PATHS[@]}"; do
     [[ -f "$src" ]] || continue
@@ -321,10 +384,11 @@ for src in "${SECRET_PATHS[@]}"; do
         sync
     fi
     rm -f "$src"
+    stripped=$((stripped + 1))
     log "[2c/5]   removed ${src}"
 done
 sync
-log "[2c/5] Application secrets removed (stash: ${SECRET_STASH})"
+log "[2c/5] ${stripped} application secret file(s) removed (stash: ${SECRET_STASH})"
 
 # ---------------------------------------------------------------------------
 # Step 3: Re-enable magic-first-boot.service
