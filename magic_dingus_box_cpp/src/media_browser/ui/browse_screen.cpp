@@ -277,6 +277,12 @@ void BrowseScreen::enter() {
     if (!loaded_) {
         load_category(category_);
         loaded_ = true;
+    } else if (!is_nav_chip(category_) && category_ != Category::Filter &&
+               tmdb_grid_stale(chart_loaded_at_, std::chrono::steady_clock::now())) {
+        // Spec 1a: 6h TTL, evaluated on enter() only (tab switches already
+        // refetch unconditionally). Stale-while-revalidate — the old grid
+        // stays on screen until a fresh page 1 lands.
+        revalidate_active_chart();
     }
     // Kick off the Radarr health-check + library/queue fetch on a worker
     // thread instead of blocking the render thread on 3-4 HTTP round-trips.
@@ -484,6 +490,8 @@ void BrowseScreen::load_category(Category cat) {
     more_available_ = true;
     fetching_more_ = false;
     loaded_tmdb_ids_.clear();
+    page_window_base_ = 1;
+    shuffle_retry_base1_ = false;
     if (is_nav_chip(cat)) {
         loading_ = false;
         return;
@@ -502,6 +510,76 @@ void BrowseScreen::load_category(Category cat) {
     spdlog::info("[BrowseScreen] load_category: {} (gen={})",
                  label_for_category(cat), tmdb_current_gen_.load());
     spawn_page_worker(cat, /*page=*/1);
+}
+
+void BrowseScreen::load_shuffle(Category cat, int base_page) {
+    // Mirror load_category's synchronous reset (spec 1b: the reset cannot be
+    // left to apply_pending — its replace branch only fires for the window
+    // base page, and spawn_page_worker alone does not bump the generation).
+    movies_.clear();
+    grid_cursor_ = 0;
+    scroll_row_ = 0;
+    more_available_ = true;
+    fetching_more_ = false;
+    loaded_tmdb_ids_.clear();
+    shuffle_retry_base1_ = false;
+    page_window_base_ = base_page;
+    loading_ = true;
+    tmdb_current_gen_.fetch_add(1);
+    spdlog::info("[BrowseScreen] load_shuffle: {} base={} (gen={})",
+                 label_for_category(cat), base_page, tmdb_current_gen_.load());
+    spawn_page_worker(cat, base_page);
+}
+
+void BrowseScreen::load_shuffle_discover(int base_page) {
+    movies_.clear();
+    grid_cursor_ = 0;
+    scroll_row_ = 0;
+    more_available_ = true;
+    fetching_more_ = false;
+    loaded_tmdb_ids_.clear();
+    shuffle_retry_base1_ = false;
+    page_window_base_ = base_page;
+    loading_ = true;
+    tmdb_current_gen_.fetch_add(1);
+    spdlog::info("[BrowseScreen] load_shuffle_discover: base={} (gen={})",
+                 base_page, tmdb_current_gen_.load());
+    spawn_page_worker(Category::Filter, base_page);
+}
+
+bool BrowseScreen::active_chart_filters_active() const {
+    if (category_ != Category::Popular && category_ != Category::TopRated) return false;
+    FilterTabKind tab = (category_ == Category::Popular)
+                        ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    return any_filter_active(read_filter_state(state_.display_settings, tab), tab);
+}
+
+void BrowseScreen::revalidate_active_chart() {
+    // Spec 1a stale-while-revalidate: bump the generation NOW so in-flight
+    // pages from the old (possibly shuffled) window are dropped rather than
+    // appended after the swap, reset the window base to 1, but defer every
+    // visible reset (grid, cursor, Loading) to the swap in apply_pending.
+    tmdb_current_gen_.fetch_add(1);
+    page_window_base_ = 1;
+    shuffle_retry_base1_ = false;
+    fetching_more_ = true;
+    next_page_to_fetch_ = 2;
+    const uint64_t gen = tmdb_current_gen_.load();
+    spdlog::info("[BrowseScreen] TTL revalidate: {} (gen={})",
+                 label_for_category(category_), gen);
+    if (active_chart_filters_active()) {
+        FilterTabKind tab = (category_ == Category::Popular)
+                            ? FilterTabKind::Popular : FilterTabKind::TopRated;
+        current_filter_ = build_discover_filter(
+            read_filter_state(state_.display_settings, tab), tab);
+        tmdb_workers_.spawn([this, gen, filter = current_filter_]() {
+            run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
+        });
+    } else {
+        tmdb_workers_.spawn([this, gen, cat = category_]() {
+            run_load_page(gen, cat, /*page=*/1, /*is_revalidate=*/true);
+        });
+    }
 }
 
 void BrowseScreen::spawn_page_worker(Category cat, int page) {
@@ -523,10 +601,8 @@ void BrowseScreen::spawn_page_worker(Category cat, int page) {
     }
 }
 
-void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
-    // Captured-by-value: do the slow TMDB call here. If the user
-    // switches categories before this returns, current_gen_ will
-    // bump and our publish will be silently discarded.
+void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page,
+                                 bool is_revalidate) {
     TmdbList list;
     switch (cat) {
         case Category::Popular:    list = tmdb_.get_popular(page);     break;
@@ -535,15 +611,7 @@ void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
         case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
         default: break;
     }
-    std::vector<TmdbSearchHit> result = std::move(list.hits);
-
-    // Heuristic for "no more pages": TMDB returns 20/page; the family-
-    // safe filter trims a few. < 5 means we've effectively run out.
-    const bool no_more = result.size() < 5;
-
-    // Stale-check: bail without publishing if a newer load_category
-    // has been requested. The new request's worker will write the
-    // current result; we'd just clobber its in-flight state.
+    const bool no_more = list.hits.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
         spdlog::info("[BrowseScreen] page={} gen={} stale at publish (current={}); discarding",
                      page, gen, tmdb_current_gen_.load());
@@ -551,8 +619,15 @@ void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
     }
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
-        if (gen != tmdb_current_gen_.load()) return;  // re-check under lock
-        tmdb_pending_pages_.push_back({std::move(result), page, no_more});
+        if (gen != tmdb_current_gen_.load()) return;
+        PendingPage pp;
+        pp.movies = std::move(list.hits);
+        pp.page = page;
+        pp.no_more = no_more;
+        pp.ok = list.ok;
+        pp.total_pages = list.total_pages;
+        pp.is_revalidate = is_revalidate;
+        tmdb_pending_pages_.push_back(std::move(pp));
     }
     tmdb_result_ready_.store(true);
 }
@@ -601,10 +676,9 @@ void BrowseScreen::reload_for_category() {
 }
 
 void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
-                                          int page) {
+                                          int page, bool is_revalidate) {
     auto list = tmdb_.discover(filter, page);
-    auto result = std::move(list.hits);
-    const bool no_more = result.size() < 5;
+    const bool no_more = list.hits.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
         spdlog::info("[BrowseScreen] discover page={} gen={} stale; discarding",
                      page, gen);
@@ -613,7 +687,15 @@ void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
     {
         std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
         if (gen != tmdb_current_gen_.load()) return;
-        tmdb_pending_pages_.push_back({std::move(result), page, no_more});
+        PendingPage pp;
+        pp.movies = std::move(list.hits);
+        pp.page = page;
+        pp.no_more = no_more;
+        pp.ok = list.ok;
+        pp.total_pages = list.total_pages;
+        pp.is_revalidate = is_revalidate;
+        pp.discover_sig = TmdbClient::build_discover_url("", filter, 1);
+        tmdb_pending_pages_.push_back(std::move(pp));
     }
     tmdb_result_ready_.store(true);
 }
@@ -633,13 +715,33 @@ void BrowseScreen::apply_pending() {
                   return a.page < b.page;
               });
     for (auto& pp : drained) {
-        // Page 1 is the canonical replacement — wipe state and rebuild
-        // the seen-set from scratch. Pages > 1 append, skipping any
-        // tmdb_id already loaded so TMDB's occasional cross-page
-        // duplicates (same movie listed on page 1 AND page 2 when its
-        // list shifts mid-fetch) don't produce duplicate poster tiles.
+        // total_pages cache for the discover shuffle clamp (spec 1b) — keyed
+        // by filter signature, learned from any discover page that reports it.
+        if (!pp.discover_sig.empty() && pp.total_pages > 0) {
+            discover_total_pages_[pp.discover_sig] = pp.total_pages;
+        }
+        // Background revalidate that failed or came back empty: skip the swap
+        // entirely — the old grid survives (spec 1a). Freeze pagination for
+        // the stale grid: its window state no longer matches its content.
+        if (pp.is_revalidate && (!pp.ok || pp.movies.empty())) {
+            spdlog::warn("[BrowseScreen] TTL revalidate failed (ok={}, hits={}); keeping stale grid",
+                         pp.ok, pp.movies.size());
+            fetching_more_ = false;
+            more_available_ = false;
+            continue;
+        }
+        // A shuffled base page that is genuinely empty (ok, 0 hits — possible
+        // on narrow /discover filters): fall back to page 1 (spec 1b).
+        if (!pp.is_revalidate && pp.page == page_window_base_ &&
+            page_window_base_ != 1 && pp.ok && pp.movies.empty()) {
+            spdlog::info("[BrowseScreen] shuffled base {} empty; falling back to page 1",
+                         page_window_base_);
+            shuffle_retry_base1_ = true;
+            continue;
+        }
         size_t added = 0, dups = 0;
-        if (pp.page == 1) {
+        if (pp.page == page_window_base_) {
+            // Window-base page — canonical replacement (was hardcoded page 1).
             movies_.clear();
             loaded_tmdb_ids_.clear();
             movies_.reserve(pp.movies.size());
@@ -653,6 +755,12 @@ void BrowseScreen::apply_pending() {
             }
             grid_cursor_ = 0;
             scroll_row_ = 0;
+            // Timestamp rule (spec 1a/1b): the grid is fresh whenever its
+            // base page lands ok and non-empty — normal load, shuffle, or
+            // revalidate alike.
+            if (pp.ok && !movies_.empty()) {
+                chart_loaded_at_ = std::chrono::steady_clock::now();
+            }
         } else {
             movies_.reserve(movies_.size() + pp.movies.size());
             for (auto& m : pp.movies) {
@@ -673,6 +781,13 @@ void BrowseScreen::apply_pending() {
         loading_ = false;
         fetching_more_ = false;
     }
+    // Deferred outside the drain loop so we don't mutate pagination state
+    // mid-iteration: rerun the shuffle as a plain page-1 load.
+    if (shuffle_retry_base1_) {
+        shuffle_retry_base1_ = false;
+        if (active_chart_filters_active()) load_shuffle_discover(1);
+        else load_shuffle(category_, 1);
+    }
 }
 
 void BrowseScreen::maybe_load_more_pages() {
@@ -682,22 +797,20 @@ void BrowseScreen::maybe_load_more_pages() {
     if (fetching_more_ || loading_) return;
     if (!more_available_) return;
     if (is_nav_chip(category_)) return;
-    if (next_page_to_fetch_ > kMaxLoadedPages) return;
+    // Base-relative window (spec 1b): load [base, base+kMaxLoadedPages-1].
+    if (next_page_to_fetch_ > window_last_page(page_window_base_, kMaxLoadedPages)) return;
 
-    // Auto-prefetch page 2 immediately after page 1 lands so the user
-    // has a full second screen ready before they scroll. After that,
-    // trigger when the focused row is within 1 row of the loaded end.
     const int rows_loaded = movies_.empty()
         ? 0
         : (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
     const int cursor_row = grid_cursor_ / kGridCols;
-    const bool prefetch_page2 = (next_page_to_fetch_ == 2);
+    const bool prefetch_second = (next_page_to_fetch_ == page_window_base_ + 1);
     const bool near_end = (rows_loaded > 0) && (cursor_row >= rows_loaded - 1);
-    if (!prefetch_page2 && !near_end) return;
+    if (!prefetch_second && !near_end) return;
 
     spdlog::info("[BrowseScreen] auto-fetching page {} ({})",
                  next_page_to_fetch_,
-                 prefetch_page2 ? "page-2 prefetch" : "scroll-driven");
+                 prefetch_second ? "second-page prefetch" : "scroll-driven");
     spawn_page_worker(category_, next_page_to_fetch_);
 }
 

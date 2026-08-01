@@ -5,12 +5,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
@@ -115,14 +117,26 @@ private:
     // are active; switches to /discover/movie when any filter is set.
     // Called from the FilterOverlay commit callback.
     void reload_for_category();
+    // Shuffle entry points (spec 1b): mirror load_category's synchronous
+    // reset, then spawn the base page of a fresh window.
+    void load_shuffle(Category cat, int base_page);
+    void load_shuffle_discover(int base_page);
+    // Background TTL refresh for the active chart tab (spec 1a): no clear,
+    // no Loading state; swap happens in apply_pending only when the result
+    // is ok and non-empty.
+    void revalidate_active_chart();
+    // True when the committed filter state for the active chart tab routes
+    // it through /discover (extracted from reload_for_category).
+    bool active_chart_filters_active() const;
     // Worker entry — runs the synchronous TMDB call off-thread.
     // Each spawned worker fetches ONE page; multiple page workers may be
     // in flight concurrently for the same category load (page 1 + a
     // prefetched page 2 + a scroll-driven page 3 etc.). Results are
     // tagged with their page number so apply_pending() can replace on
     // page 1 / append on page > 1.
-    void run_load_page(uint64_t gen, Category cat, int page);
-    void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page);
+    void run_load_page(uint64_t gen, Category cat, int page, bool is_revalidate = false);
+    void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,
+                                bool is_revalidate = false);
     // Spawn a fresh worker for the given category + page under the
     // current generation. Sets fetching_more_ before returning.
     void spawn_page_worker(Category cat, int page);
@@ -197,8 +211,12 @@ private:
     // replaces (page == 1) or appends (page > 1).
     struct PendingPage {
         std::vector<TmdbSearchHit> movies;
-        int  page;       // 1, 2, 3, ...
-        bool no_more;    // true if this fetch indicates we hit the end of the list
+        int  page;         // absolute TMDB page number (window base .. base+4)
+        bool no_more;      // true if this fetch indicates we hit the end of the list
+        bool ok = true;    // TmdbList.ok — false = fetch/parse failure
+        int  total_pages = 0;      // TmdbList.total_pages (0 when unknown)
+        bool is_revalidate = false;  // background TTL refresh — skip swap on failure/empty
+        std::string discover_sig;    // non-empty for discover fetches → total_pages cache key
     };
     std::vector<PendingPage>   tmdb_pending_pages_;
     // result_ready_ is the fast atomic check update() uses to skip
@@ -231,6 +249,22 @@ private:
     // tiles in the grid. Different cuts of the same movie have distinct
     // tmdb_ids, so this is exact-duplicate suppression only.
     std::unordered_set<int> loaded_tmdb_ids_;
+
+    // First page of the active pagination window. 1 for normal loads; the
+    // random base after a shuffle. maybe_load_more_pages() loads
+    // [page_window_base_, window_last_page(page_window_base_)] — the old code
+    // treated kMaxLoadedPages as an ABSOLUTE page cap, which would have made
+    // any shuffled base >= 6 load a single page and stop (spec 1b).
+    int page_window_base_ = 1;
+    // When a shuffled base page comes back genuinely empty (ok but 0 hits —
+    // possible on the /discover path), fall back to a plain page-1 load.
+    bool shuffle_retry_base1_ = false;
+    // Age of the active chart grid (Popular/TopRated, curated or discover).
+    // Default-constructed = never loaded. Drives the 6h TTL (spec 1a).
+    std::chrono::steady_clock::time_point chart_loaded_at_{};
+    // Last-seen total_pages per discover filter signature (spec 1b) —
+    // key = TmdbClient::build_discover_url("", filter, 1).
+    std::unordered_map<std::string, int> discover_total_pages_;
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;
