@@ -415,6 +415,26 @@ void BrowseScreen::apply_library_pending() {
 }
 
 void BrowseScreen::activate_foryou() {
+    // Invalidate any in-flight page worker from a different tab (spec 1c
+    // review fix, Critical): load_category's ForYou early-return runs
+    // BEFORE the unconditional gen bump other categories get, and only the
+    // Sample case below reaches start_foryou_sample's own bump — so without
+    // this, a slow Popular/TopRated page worker still in flight when the
+    // user tabs to For You would publish under a still-current gen and
+    // apply_pending (which has no category check) would overwrite whatever
+    // For You is showing with foreign posters, persistently, since none of
+    // UseCache/WaitForLibrary/ServiceUnavailable/EmptyLibrary schedule
+    // anything that would repaint over it. The Sample path's second bump
+    // via start_foryou_sample is harmless — that job captures the
+    // post-bump gen.
+    tmdb_current_gen_.fetch_add(1);
+    // Structural clear (spec 1c review fix, Important): the deferred hook in
+    // apply_library_pending() only fires this flag's reset when
+    // category_==ForYou at the moment a refresh happens to land, so a
+    // tab-away between WaitForLibrary and the refresh landing leaves it
+    // stuck true. Clearing here means every activation starts clean; the
+    // WaitForLibrary case below re-sets it when it actually applies.
+    foryou_waiting_for_library_ = false;
     foryou_failed_ = false;
     switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
                                 lib_fetch_ok_, library_tmdb_ids_.empty())) {
@@ -440,6 +460,12 @@ void BrowseScreen::activate_foryou() {
 }
 
 void BrowseScreen::start_foryou_sample(bool background) {
+    // Structural clear (spec 1c review fix, Important): covers the direct
+    // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
+    // this function without going through activate_foryou()'s own clear —
+    // a sample kicking off here means any earlier "waiting on the library"
+    // state is moot.
+    foryou_waiting_for_library_ = false;
     // Sample min(8, library size) seeds uniformly without replacement.
     std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
     if (pool.empty()) { loading_ = false; return; }
@@ -1365,7 +1391,14 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
     if (category_ == Category::ForYou) {
-        if (lib_refresh_done_once_ && !lib_fetch_ok_) {
+        // movies_.empty() guard (spec 1c review fix, Important): without it
+        // a transient get_library failure (Radarr reachable — services_ok_
+        // true — but the GET itself 500s/times out) replaces a fully-loaded
+        // For You grid with the offline message even though render needs
+        // nothing further from Radarr once the grid is cached. Matches
+        // decide_foryou_entry's cache-first priority (UseCache wins over
+        // ServiceUnavailable).
+        if (movies_.empty() && lib_refresh_done_once_ && !lib_fetch_ok_) {
             draw_centered_msg("Radarr service offline", th.highlight2);
             draw_baseline_footer();
             return;
