@@ -406,6 +406,30 @@ void BrowseScreen::apply_library_pending() {
             quality_profiles_ = std::move(r.quality_profiles);
             library_cached_   = true;
         }
+        // Retro-hide: pages can land before the (async) library refresh on a
+        // cold entry, and a title can join the library mid-session via
+        // Detail — sweep both the visible grid and the For You cache so
+        // owned titles disappear instead of wearing a badge. The ids stay in
+        // loaded_tmdb_ids_, so later append pages can't re-add them.
+        auto owned = [this](const TmdbSearchHit& m) {
+            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+        };
+        const size_t before = movies_.size();
+        movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
+                      movies_.end());
+        foryou_movies_.erase(std::remove_if(foryou_movies_.begin(),
+                                            foryou_movies_.end(), owned),
+                             foryou_movies_.end());
+        if (movies_.size() != before) {
+            if (grid_cursor_ >= static_cast<int>(movies_.size())) {
+                grid_cursor_ = movies_.empty()
+                    ? 0 : static_cast<int>(movies_.size()) - 1;
+            }
+            const int cursor_row = movies_.empty() ? 0 : grid_cursor_ / kGridCols;
+            scroll_row_ = (cursor_row / 2) * 2;
+            spdlog::info("[BrowseScreen] hid {} in-library title(s) from the grid",
+                         before - movies_.size());
+        }
     }
     // For You deferred-sample hook (spec 1c entry rule case b).
     if (foryou_waiting_for_library_ && category_ == Category::ForYou) {
@@ -984,18 +1008,29 @@ void BrowseScreen::apply_pending() {
             shuffle_retry_base1_ = true;
             continue;
         }
-        size_t added = 0, dups = 0;
+        size_t added = 0, dups = 0, owned = 0;
+        // Titles already in (or being fetched into) the owner's library are
+        // hidden from the chart grids entirely — the owner asked for
+        // discovery surfaces to show only what they DON'T have. The For You
+        // merge applies the same exclusion at merge time; this covers the
+        // page-based tabs. Note the id still enters loaded_tmdb_ids_ so a
+        // later append page can't resurrect it.
+        auto owned_by_library = [this](const TmdbSearchHit& m) {
+            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+        };
         if (pp.page == page_window_base_) {
             // Window-base page — canonical replacement (was hardcoded page 1).
             movies_.clear();
             loaded_tmdb_ids_.clear();
             movies_.reserve(pp.movies.size());
             for (auto& m : pp.movies) {
-                if (loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                    ++dups;
+                } else if (owned_by_library(m)) {
+                    ++owned;
+                } else {
                     movies_.push_back(std::move(m));
                     ++added;
-                } else {
-                    ++dups;
                 }
             }
             grid_cursor_ = 0;
@@ -1021,18 +1056,20 @@ void BrowseScreen::apply_pending() {
         } else {
             movies_.reserve(movies_.size() + pp.movies.size());
             for (auto& m : pp.movies) {
-                if (loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                    ++dups;
+                } else if (owned_by_library(m)) {
+                    ++owned;
+                } else {
                     movies_.push_back(std::move(m));
                     ++added;
-                } else {
-                    ++dups;
                 }
             }
         }
         if (pp.no_more) more_available_ = false;
-        spdlog::info("[BrowseScreen] applied page {}: +{} movies, {} dup(s) "
-                     "skipped (total {})",
-                     pp.page, added, dups, movies_.size());
+        spdlog::info("[BrowseScreen] applied page {}: +{} movies, {} dup(s), "
+                     "{} in-library hidden (total {})",
+                     pp.page, added, dups, owned, movies_.size());
     }
     if (applied_any) {
         loading_ = false;
