@@ -16,6 +16,7 @@
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
+#include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
 
@@ -137,7 +138,16 @@ private:
     // Shared persist half of the overlay commit (spec 1b): write per-tab
     // filter state + save settings.json, WITHOUT the reload — the commit
     // path adds reload_for_category(), the shuffle path adds do_shuffle().
-    void persist_filter_state(FilterTabKind tab, const FilterState& fs);
+    void persist_filter_state(MbMode mode, FilterTabKind tab, const FilterState& fs);
+    // The persisted Movies/TV mode. Single source of truth — BrowseScreen
+    // keeps no shadow copy, so a mode written by the overlay's toggle handler
+    // is visible to every reader on the next line.
+    MbMode mode() const { return state_.display_settings.mb_mode; }
+    bool tv_mode() const { return mode() == MbMode::Tv; }
+    // Applied immediately when the overlay's MODE row toggles: re-kick the
+    // library refresh (so the in-library hide has the new kind's set) and
+    // reload the active content tab under the new mode.
+    void apply_mode_change();
     // Spec 1b shuffle dispatch for the active tab.
     void do_shuffle();
     // Shuffle entry points (spec 1b): mirror load_category's synchronous
@@ -157,9 +167,15 @@ private:
     // prefetched page 2 + a scroll-driven page 3 etc.). Results are
     // tagged with their page number so apply_pending() can replace on
     // page 1 / append on page > 1.
-    void run_load_page(uint64_t gen, Category cat, int page, bool is_revalidate = false);
+    // `mode` is captured by VALUE at spawn time: a MODE toggle mid-flight
+    // bumps the generation, but pinning the mode keeps the worker's endpoint
+    // choice consistent with the filter it was handed.
+    void run_load_page(uint64_t gen, Category cat, MbMode mode, int page,
+                       bool is_revalidate = false);
     void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,
                                 bool is_revalidate = false);
+    void run_reload_tv_filter_page(uint64_t gen, TvDiscoverFilter filter, int page,
+                                   bool is_revalidate = false);
     // Spawn a fresh worker for the given category + page under the
     // current generation. Sets fetching_more_ before returning.
     void spawn_page_worker(Category cat, int page);
@@ -308,6 +324,10 @@ private:
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;
+    // TV's discover filter is a SEPARATE type from DiscoverFilter on purpose
+    // (different date params, different genre id space) — never one shared
+    // struct.
+    TvDiscoverFilter current_tv_filter_;
     std::vector<Genre> genres_;
     bool genres_loaded_ = false;
     // Async genre fetch. "Only ~200ms" was the happy path — the TMDB
@@ -345,8 +365,15 @@ private:
     // --- For You state (spec 1c) -----------------------------------
     // Cached merged list — activation re-renders this without refetching;
     // a new sample runs only on first entry, TTL expiry, or SHUFFLE.
-    std::vector<TmdbSearchHit> foryou_movies_;
-    std::chrono::steady_clock::time_point foryou_loaded_at_{};
+    struct ForYouCache {
+        std::vector<TmdbSearchHit> hits;
+        std::chrono::steady_clock::time_point loaded_at{};
+    };
+    // Per mode. Keeping both means a MODE toggle does not throw away a merged
+    // grid that cost 8 concurrent TMDB round-trips (~12 s worst case) to
+    // build, and each mode gets its own honest 6 h TTL.
+    ForYouCache foryou_[2];
+    ForYouCache& foryou() { return foryou_[static_cast<int>(mode())]; }
     // One in-flight sample job. Workers capture the shared_ptr; a stale job
     // (gen mismatch) is simply never consumed. remaining==0 → ready to merge.
     struct SeedResult {
@@ -356,6 +383,7 @@ private:
     struct ForYouJob {
         uint64_t gen = 0;
         bool background = false;            // TTL refresh — keep old grid on total failure
+        MbMode mode = MbMode::Movies;   // which cache this job's result belongs to
         std::atomic<int> remaining{0};
         std::mutex mtx;
         std::vector<SeedResult> results;
@@ -365,7 +393,9 @@ private:
     bool foryou_failed_ = false;               // all seeds failed on an explicit load
     // Library-refresh outcome flags (spec 1c): set by apply_library_pending.
     bool lib_refresh_done_once_ = false;
-    bool lib_fetch_ok_ = false;
+    // Indexed by mode: Radarr answers for Movies, Sonarr for Tv (Task 8).
+    // Until then only the Movies slot is ever set true.
+    bool lib_fetch_ok_[2] = {false, false};
     void activate_foryou();
     void start_foryou_sample(bool background);
     void apply_foryou_pending();

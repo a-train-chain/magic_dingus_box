@@ -154,10 +154,10 @@ void BrowseScreen::enter() {
         load_category(category_);
         loaded_ = true;
     } else if (category_ == Category::ForYou) {
-        if (tmdb_grid_stale(foryou_loaded_at_, std::chrono::steady_clock::now()) &&
-            !foryou_movies_.empty()) {
+        if (tmdb_grid_stale(foryou().loaded_at, std::chrono::steady_clock::now()) &&
+            !foryou().hits.empty()) {
             start_foryou_sample(/*background=*/true);   // spec 1a SWR for For You
-        } else if (foryou_movies_.empty()) {
+        } else if (foryou().hits.empty()) {
             activate_foryou();                          // never loaded — entry rule
         }
     } else if (!is_nav_chip(category_) && category_ != Category::Filter &&
@@ -248,7 +248,8 @@ void BrowseScreen::apply_library_pending() {
 
     services_ok_ = r.services_ok;
     lib_refresh_done_once_ = true;
-    lib_fetch_ok_ = r.services_ok && r.movie_fetch_ok;
+    lib_fetch_ok_[static_cast<int>(MbMode::Movies)] =
+        r.services_ok && r.movie_fetch_ok;
     spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
                  "in_library={}, downloading={}",
                  services_ok_, r.movie_refs.size(), r.downloading_refs.size());
@@ -283,9 +284,9 @@ void BrowseScreen::apply_library_pending() {
         const size_t before = movies_.size();
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
                       movies_.end());
-        foryou_movies_.erase(std::remove_if(foryou_movies_.begin(),
-                                            foryou_movies_.end(), owned),
-                             foryou_movies_.end());
+        foryou().hits.erase(std::remove_if(foryou().hits.begin(),
+                                            foryou().hits.end(), owned),
+                             foryou().hits.end());
         if (movies_.size() != before) {
             if (grid_cursor_ >= static_cast<int>(movies_.size())) {
                 grid_cursor_ = movies_.empty()
@@ -330,10 +331,11 @@ void BrowseScreen::activate_foryou() {
     // Once TV lands, a TV-only library reads as non-empty here and routes
     // to Sample with an all-TV pool (see start_foryou_sample's kind
     // filter) — the TV task must revisit this EmptyLibrary check too.
-    switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
-                                lib_fetch_ok_, library_refs_.empty())) {
+    switch (decide_foryou_entry(!foryou().hits.empty(), lib_refresh_done_once_,
+                                lib_fetch_ok_[static_cast<int>(mode())],
+                                library_refs_.empty())) {
         case ForYouEntry::UseCache:
-            movies_ = foryou_movies_;
+            movies_ = foryou().hits;
             loading_ = false;
             more_available_ = false;   // no scroll-driven pages on For You
             fetching_more_ = false;
@@ -457,12 +459,12 @@ void BrowseScreen::apply_foryou_pending() {
         }
         return;
     }
-    foryou_movies_ = merge_recommendations(per_seed, library_refs_);
-    foryou_loaded_at_ = std::chrono::steady_clock::now();
+    foryou().hits = merge_recommendations(per_seed, library_refs_);
+    foryou().loaded_at = std::chrono::steady_clock::now();
     spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
-                 foryou_movies_.size(), ok_seeds);
+                 foryou().hits.size(), ok_seeds);
     if (category_ == Category::ForYou) {
-        movies_ = foryou_movies_;
+        movies_ = foryou().hits;
         grid_cursor_ = 0;
         scroll_row_ = 0;
         loading_ = false;
@@ -655,9 +657,9 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
 
 bool BrowseScreen::active_chart_filters_active() const {
     if (category_ != Category::Popular && category_ != Category::TopRated) return false;
-    FilterTabKind tab = (category_ == Category::Popular)
-                        ? FilterTabKind::Popular : FilterTabKind::TopRated;
-    return any_filter_active(read_filter_state(state_.display_settings, tab), tab);
+    const FilterTabKind tab = (category_ == Category::Popular)
+                              ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    return any_filter_active(read_filter_state(state_.display_settings, mode(), tab), tab);
 }
 
 void BrowseScreen::revalidate_active_chart() {
@@ -688,19 +690,27 @@ void BrowseScreen::revalidate_active_chart() {
     if (movies_.empty()) {
         loading_ = true;
     }
+    const FilterTabKind rev_tab = (category_ == Category::Popular)
+                                  ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    const MbMode m = mode();
     if (active_chart_filters_active()) {
         window_is_discover_ = true;
-        FilterTabKind tab = (category_ == Category::Popular)
-                            ? FilterTabKind::Popular : FilterTabKind::TopRated;
-        current_filter_ = build_discover_filter(
-            read_filter_state(state_.display_settings, tab), tab);
-        tmdb_workers_.spawn([this, gen, filter = current_filter_]() {
-            run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
-        });
+        const FilterState fs = read_filter_state(state_.display_settings, m, rev_tab);
+        if (m == MbMode::Tv) {
+            current_tv_filter_ = build_tv_discover_filter(fs, rev_tab);
+            tmdb_workers_.spawn([this, gen, filter = current_tv_filter_]() {
+                run_reload_tv_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
+            });
+        } else {
+            current_filter_ = build_discover_filter(fs, rev_tab);
+            tmdb_workers_.spawn([this, gen, filter = current_filter_]() {
+                run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
+            });
+        }
     } else {
         window_is_discover_ = false;
-        tmdb_workers_.spawn([this, gen, cat = category_]() {
-            run_load_page(gen, cat, /*page=*/1, /*is_revalidate=*/true);
+        tmdb_workers_.spawn([this, gen, cat = category_, m]() {
+            run_load_page(gen, cat, m, /*page=*/1, /*is_revalidate=*/true);
         });
     }
 }
@@ -709,30 +719,45 @@ void BrowseScreen::spawn_page_worker(Category cat, int page) {
     fetching_more_ = true;
     next_page_to_fetch_ = page + 1;
     const uint64_t gen = tmdb_current_gen_.load();
+    const MbMode m = mode();
     if (cat == Category::Filter) {
-        // Filter goes through discover(); branch on category here so
-        // load_category(Filter) and scroll-driven follow-up pages both
-        // hit the right endpoint. Pass filter by value to avoid races
-        // with the user mutating current_filter_ while we fetch.
-        tmdb_workers_.spawn([this, gen, filter = current_filter_, page]() {
-            run_reload_filter_page(gen, filter, page);
-        });
+        // Filter goes through discover(); branch on mode here so the window's
+        // follow-up pages hit the same endpoint the base page did. Pass the
+        // filter by value to avoid racing the user mutating it while we fetch.
+        if (m == MbMode::Tv) {
+            tmdb_workers_.spawn([this, gen, filter = current_tv_filter_, page]() {
+                run_reload_tv_filter_page(gen, filter, page);
+            });
+        } else {
+            tmdb_workers_.spawn([this, gen, filter = current_filter_, page]() {
+                run_reload_filter_page(gen, filter, page);
+            });
+        }
     } else {
-        tmdb_workers_.spawn([this, gen, cat, page]() {
-            run_load_page(gen, cat, page);
+        tmdb_workers_.spawn([this, gen, cat, m, page]() {
+            run_load_page(gen, cat, m, page);
         });
     }
 }
 
-void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page,
-                                 bool is_revalidate) {
+void BrowseScreen::run_load_page(uint64_t gen, Category cat, MbMode mode, int page, bool is_revalidate) {
     TmdbList list;
-    switch (cat) {
-        case Category::Popular:    list = tmdb_.get_popular(page);     break;
-        case Category::NowPlaying: list = tmdb_.get_now_playing(page); break;
-        case Category::TopRated:   list = tmdb_.get_top_rated(page);   break;
-        case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
-        default: break;
+    if (mode == MbMode::Tv) {
+        // Only the two chart tabs exist in TV mode. NowPlaying/Upcoming have
+        // no TV analogue and are not in the visible strip anyway.
+        switch (cat) {
+            case Category::Popular:  list = tmdb_.get_tv_popular(page);   break;
+            case Category::TopRated: list = tmdb_.get_tv_top_rated(page); break;
+            default: break;
+        }
+    } else {
+        switch (cat) {
+            case Category::Popular:    list = tmdb_.get_popular(page);     break;
+            case Category::NowPlaying: list = tmdb_.get_now_playing(page); break;
+            case Category::TopRated:   list = tmdb_.get_top_rated(page);   break;
+            case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
+            default: break;
+        }
     }
     const bool no_more = list.hits.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
@@ -769,13 +794,25 @@ void BrowseScreen::reload_filter_results() {
     window_is_discover_ = true;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
-    spdlog::info(
-        "[BrowseScreen] discover (async, gen={}): genre_ids.size={} year_gte={} year_lte={} sort_by={}",
-        tmdb_current_gen_.load(),
-        current_filter_.genre_ids.size(),
-        current_filter_.primary_release_year_gte.value_or(-1),
-        current_filter_.primary_release_year_lte.value_or(-1),
-        current_filter_.sort_by);
+    if (tv_mode()) {
+        spdlog::info(
+            "[BrowseScreen] discover_tv (async, gen={}): genre_ids.size={} "
+            "first_air_gte={} first_air_lte={} sort_by={}",
+            tmdb_current_gen_.load(),
+            current_tv_filter_.genre_ids.size(),
+            current_tv_filter_.first_air_date_year_gte.value_or(-1),
+            current_tv_filter_.first_air_date_year_lte.value_or(-1),
+            current_tv_filter_.sort_by);
+    } else {
+        spdlog::info(
+            "[BrowseScreen] discover (async, gen={}): genre_ids.size={} "
+            "year_gte={} year_lte={} sort_by={}",
+            tmdb_current_gen_.load(),
+            current_filter_.genre_ids.size(),
+            current_filter_.primary_release_year_gte.value_or(-1),
+            current_filter_.primary_release_year_lte.value_or(-1),
+            current_filter_.sort_by);
+    }
     spawn_page_worker(Category::Filter, /*page=*/1);
 }
 
@@ -787,10 +824,11 @@ void BrowseScreen::reload_for_category() {
         FilterTabKind tab = (category_ == Category::Popular)
                             ? FilterTabKind::Popular
                             : FilterTabKind::TopRated;
-        FilterState fs = read_filter_state(state_.display_settings, tab);
+        FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
         if (any_filter_active(fs, tab)) {
-            // Filter active → route through /discover/movie.
-            current_filter_ = build_discover_filter(fs, tab);
+            // Filter active → route through /discover/movie or /discover/tv.
+            if (tv_mode()) current_tv_filter_ = build_tv_discover_filter(fs, tab);
+            else           current_filter_    = build_discover_filter(fs, tab);
             reload_filter_results();
             return;
         }
@@ -802,23 +840,54 @@ void BrowseScreen::reload_for_category() {
     load_category(category_);
 }
 
-void BrowseScreen::persist_filter_state(FilterTabKind tab, const FilterState& fs) {
-    // ForYou keeps no persisted filter state in Phase 1 (spec 1c).
+void BrowseScreen::persist_filter_state(MbMode mode_for_write, FilterTabKind tab,
+                                        const FilterState& fs) {
+    // KEEP this guard. write_filter_state is itself a no-op for ForYou, but
+    // the guard suppresses the SAVE as well — and save_settings is a
+    // synchronous serialize + tmp-write + fs::rename on the render thread.
+    // SHUFFLE is a repeat-press action that routes here on every press, so
+    // dropping the guard would cost one SD write per press for a payload that
+    // provably did not change.
     if (tab == FilterTabKind::ForYou) return;
-    write_filter_state(state_.display_settings, tab, fs);
+    write_filter_state(state_.display_settings, mode_for_write, tab, fs);
     ::app::SettingsPersistence::save_settings(state_);
+}
+
+void BrowseScreen::apply_mode_change() {
+    // The library cache holds both kinds, but the OTHER kind's set may be
+    // stale or never fetched — re-kick so the in-library hide is right for
+    // what is about to be drawn. CAS-guarded: a no-op when one is in flight.
+    refresh_library_async();
+    // reload_for_category(), NOT load_category(). load_category is the
+    // FILTER-BLIND entry point: it sets window_is_discover_ = false and routes
+    // to the curated /tv/popular or /popular endpoint regardless of what is
+    // persisted. Toggling into a mode that HAS active filters would then show
+    // the unfiltered chart while the overlay row and settings.json both say
+    // GENRE=Drama — and nothing self-corrects, because the overlay's commit
+    // only fires when working_ != opened_ and the toggle re-syncs both. Worse,
+    // active_chart_filters_active() would read true against a
+    // window_is_discover_ == false grid, so the next SHUFFLE or TTL
+    // revalidate would silently swap the same tab to a different result set.
+    // reload_for_category is a strict superset — it falls through to
+    // load_category(category_) for For You and for the no-filter case.
+    reload_for_category();
 }
 
 void BrowseScreen::do_shuffle() {
     static thread_local std::mt19937 rng{std::random_device{}()};
     if (category_ == Category::Popular || category_ == Category::TopRated) {
         if (active_chart_filters_active()) {
-            FilterTabKind tab = (category_ == Category::Popular)
-                                ? FilterTabKind::Popular : FilterTabKind::TopRated;
-            current_filter_ = build_discover_filter(
-                read_filter_state(state_.display_settings, tab), tab);
-            const std::string sig =
-                TmdbClient::build_discover_url("", current_filter_, 1);
+            const FilterTabKind tab = (category_ == Category::Popular)
+                                      ? FilterTabKind::Popular : FilterTabKind::TopRated;
+            const FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
+            std::string sig;
+            if (tv_mode()) {
+                current_tv_filter_ = build_tv_discover_filter(fs, tab);
+                sig = TmdbClient::build_tv_discover_url("", current_tv_filter_, 1);
+            } else {
+                current_filter_ = build_discover_filter(fs, tab);
+                sig = TmdbClient::build_discover_url("", current_filter_, 1);
+            }
             const auto it = discover_total_pages_.find(sig);
             const int max_base =
                 discover_max_base(it == discover_total_pages_.end() ? 0 : it->second,
@@ -857,6 +926,34 @@ void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
         pp.total_pages = list.total_pages;
         pp.is_revalidate = is_revalidate;
         pp.discover_sig = TmdbClient::build_discover_url("", filter, 1);
+        pp.gen = gen;
+        tmdb_pending_pages_.push_back(std::move(pp));
+    }
+    tmdb_result_ready_.store(true);
+}
+
+void BrowseScreen::run_reload_tv_filter_page(uint64_t gen, TvDiscoverFilter filter,
+                                             int page, bool is_revalidate) {
+    auto list = tmdb_.discover_tv(filter, page);
+    const bool no_more = list.hits.size() < 5;
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[BrowseScreen] discover_tv page={} gen={} stale; discarding",
+                     page, gen);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        if (gen != tmdb_current_gen_.load()) return;
+        PendingPage pp;
+        pp.movies = std::move(list.hits);
+        pp.page = page;
+        pp.no_more = no_more;
+        pp.ok = list.ok;
+        pp.total_pages = list.total_pages;
+        pp.is_revalidate = is_revalidate;
+        // The TV signature can never alias a movie one — build_tv_discover_url
+        // emits /discover/tv, build_discover_url emits /discover/movie.
+        pp.discover_sig = TmdbClient::build_tv_discover_url("", filter, 1);
         pp.gen = gen;
         tmdb_pending_pages_.push_back(std::move(pp));
     }
@@ -1186,21 +1283,37 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                     (category_ == Category::Popular)  ? FilterTabKind::Popular :
                     (category_ == Category::TopRated) ? FilterTabKind::TopRated :
                                                         FilterTabKind::ForYou;
-                // read_filter_state is only defined for Popular/TopRated
-                // (see its CONSTRAINT comment) — ForYou gets a default state
-                // since the SHUFFLE-only row never reads working_ values.
-                filter_overlay_.open(tk, tk == FilterTabKind::ForYou
-                                              ? FilterState{}
-                                              : read_filter_state(state_.display_settings, tk));
+                filter_overlay_.open(tk, mode(),
+                                     read_filter_state(state_.display_settings,
+                                                       mode(), tk));
                 filter_overlay_.set_on_commit(
                     [this](const FilterState& fs, FilterTabKind tk2) {
-                        this->persist_filter_state(tk2, fs);
+                        this->persist_filter_state(this->mode(), tk2, fs);
                         this->reload_for_category();
                     });
                 filter_overlay_.set_on_shuffle(
                     [this](const FilterState& fs, FilterTabKind tk2) {
-                        this->persist_filter_state(tk2, fs);
+                        this->persist_filter_state(this->mode(), tk2, fs);
                         this->do_shuffle();
+                    });
+                filter_overlay_.set_on_mode_toggle(
+                    [this](MbMode new_mode, FilterTabKind tk2,
+                           const FilterState& staged) {
+                        // One tested pure transaction (mb_filter_state's
+                        // apply_mode_toggle: staged edits -> the OUTGOING
+                        // mode's slot, mb_mode -> incoming, return the
+                        // incoming mode's persisted state), then exactly ONE
+                        // settings.json write. save_settings is a synchronous
+                        // serialize + tmp-write + rename on the render thread;
+                        // the earlier two-call shape cost an extra SD write
+                        // per press for no benefit.
+                        const MbMode outgoing = this->mode();
+                        const FilterState restaged = apply_mode_toggle(
+                            state_.display_settings, outgoing, new_mode,
+                            tk2, staged);
+                        ::app::SettingsPersistence::save_settings(state_);
+                        this->apply_mode_change();
+                        return restaged;
                     });
             }
             continue;
@@ -1311,8 +1424,10 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                       : chrome::TabState::Inactive;
         tabs.push_back(t);
     }
+    // The mode marker lives here, not in a chip label — see
+    // marquee_title_for_mode's comment for the measured reason.
     const int content_top = chrome::draw_screen_header(
-        r, screen_w, "Marquee", tabs, /*focused_tab=*/-1);
+        r, screen_w, marquee_title_for_mode(tv_mode()), tabs, /*focused_tab=*/-1);
 
     // Library/Search tabs are transition-only — handle_input() returns
     // Screen::Library/Search on tab activation, so render() should never
@@ -1357,7 +1472,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // nothing further from Radarr once the grid is cached. Matches
         // decide_foryou_entry's cache-first priority (UseCache wins over
         // ServiceUnavailable).
-        if (movies_.empty() && lib_refresh_done_once_ && !lib_fetch_ok_) {
+        if (movies_.empty() && lib_refresh_done_once_ &&
+            !lib_fetch_ok_[static_cast<int>(mode())]) {
             draw_centered_msg("Radarr service offline", th.highlight2);
             draw_baseline_footer();
             return;

@@ -95,4 +95,19 @@ inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
     dst.insert(fresh.begin(), fresh.end());
 }
 
+// The Marquee header title, carrying the Movies/TV mode indicator.
+//
+// The mode marker is NOT in the tab strip: with the shipped ZenDots metrics
+// the 7-chip strip is 915 px wide and starts at x=305 on the 1280-wide
+// logical canvas, and draw_screen_header right-aligns it with no overflow
+// guard — suffixing the three content-tab labels with " · TV" grows the
+// strip to 1080 px and runs it 63 px into the title. The title has 102 px of
+// slack, and "Marquee TV" consumes 57 of it, leaving +45.
+//
+// Re-measure with tools/measure_strip_fit.cpp before changing either string;
+// the unit test below pins the literal, not the fit.
+inline const char* marquee_title_for_mode(bool tv_mode) {
+    return tv_mode ? "Marquee TV" : "Marquee";
+}
+
 }  // namespace media_browser::ui

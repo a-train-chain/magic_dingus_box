@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <string>
 #include <unordered_set>
 
 #include "media_browser/media_ref.h"
@@ -104,4 +105,12 @@ TEST_CASE("replace_refs_of_kind: adding TV leaves movies intact",
     REQUIRE(dst.size() == 2);
     CHECK(dst.count(MediaRef{MediaKind::Movie, 1396}) == 1);
     CHECK(dst.count(MediaRef{MediaKind::Tv, 1396}) == 1);
+}
+
+TEST_CASE("marquee title carries the mode indicator", "[browse_logic]") {
+    // The strip is at its width limit and draw_screen_header has no overflow
+    // guard, so the mode marker lives in the TITLE, not in a chip label.
+    // Measured clearance at 1280 logical px: +45 px (see the plan).
+    CHECK(std::string(media_browser::ui::marquee_title_for_mode(false)) == "Marquee");
+    CHECK(std::string(media_browser::ui::marquee_title_for_mode(true)) == "Marquee TV");
 }
