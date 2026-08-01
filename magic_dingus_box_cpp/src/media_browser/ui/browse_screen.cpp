@@ -460,15 +460,20 @@ void BrowseScreen::activate_foryou() {
 }
 
 void BrowseScreen::start_foryou_sample(bool background) {
+    // Sample min(8, library size) seeds uniformly without replacement.
+    std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
+    if (pool.empty()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
     // this function without going through activate_foryou()'s own clear —
     // a sample kicking off here means any earlier "waiting on the library"
-    // state is moot.
+    // state is moot. Deferred until after the pool.empty() bail (final
+    // review fix): clearing it unconditionally meant a shuffle that hit an
+    // empty pool while WaitForLibrary was still pending erased the flag,
+    // starving the deferred hook in apply_library_pending() that would
+    // otherwise retry the sample once the library finishes loading —
+    // leaving a dead-end "No movies" state until the next tab activation.
     foryou_waiting_for_library_ = false;
-    // Sample min(8, library size) seeds uniformly without replacement.
-    std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
-    if (pool.empty()) { loading_ = false; return; }
     static thread_local std::mt19937 rng{std::random_device{}()};
     std::vector<int> seeds;
     const int want = std::min<int>(8, static_cast<int>(pool.size()));
@@ -1005,6 +1010,13 @@ void BrowseScreen::apply_pending() {
             // revalidate alike.
             if (pp.ok && !movies_.empty()) {
                 chart_loaded_at_ = std::chrono::steady_clock::now();
+            } else if (!pp.ok) {
+                // A failed base page (network failure during a normal load
+                // or shuffle) must not leave the PREVIOUS grid's timestamp
+                // in place — that would read as fresh and block any retry
+                // for up to the full TTL. Clear it so the next enter() sees
+                // a stale grid and revalidates.
+                chart_loaded_at_ = std::chrono::steady_clock::time_point{};
             }
         } else {
             movies_.reserve(movies_.size() + pp.movies.size());
