@@ -10,12 +10,18 @@
 namespace media_browser {
 
 // MediaKind and the kind-aware MediaRef key live in media_ref.h (included
-// above). The four int-keyed collections this comment used to warn about —
-// browse_screen's library/downloading/loaded id sets and mb_recs' by_id /
-// exclude — are all keyed on MediaRef as of Phase 2c-1, so mixing kinds is
-// no longer a hazard in them. Any NEW set or map that can see both kinds
-// must use MediaRef too; a bare tmdb id is only safe in a container whose
-// contents are single-kind by construction.
+// above).
+//
+// TMDB's movie and TV id spaces OVERLAP — id 1396 is Breaking Bad AND an
+// unrelated film — so any set or map that can see both kinds must be keyed
+// on MediaRef, never on a bare tmdb id. A bare id is only safe in a
+// container that is single-kind by construction.
+//
+// STILL BEING MIGRATED (Phase 2c-1, Tasks 2-3): browse_screen's
+// library/downloading/loaded id sets and mb_recs' by_id / exclude are
+// still `unordered_set<int>` at this commit. They are safe only because
+// nothing feeds them TV rows yet. Do not route TV data through them until
+// those tasks land.
 
 struct TmdbSearchHit {
     int tmdb_id = 0;
