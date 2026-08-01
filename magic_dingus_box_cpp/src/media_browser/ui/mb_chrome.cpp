@@ -38,9 +38,9 @@ constexpr int kBadgeFontPx       = 12;
 constexpr int kBadgePadX         = 6;
 constexpr int kBadgePadY         = 2;
 constexpr int kTabFontPx         = 24;          // ZenDots section size
-constexpr int kTabHorizPad       = kPad3;       // Inside-tab horizontal padding
+constexpr int kTabHorizPad       = 10;          // was kPad3 (16) — 7-chip strip fit
 constexpr int kTabVertPad        = kPad2;       // Inside-tab vertical padding
-constexpr int kTabGap            = kPad4;       // Gap between adjacent tabs
+constexpr int kTabGap            = 16;          // was kPad4 (24) — 7-chip strip fit
 constexpr int kTitleFontPx       = 32;          // ZenDots screen title
 }  // namespace
 

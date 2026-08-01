@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <iterator>
 #include <random>
 #include <string>
 #include <system_error>
@@ -137,6 +138,13 @@ int current_year_now() {
 using FilterTabKind = ::media_browser::ui::FilterTabKind;
 using FilterState   = ::media_browser::ui::FilterState;
 
+// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated.
+// Both branch `if (tab == Popular) ... else ...`, so FilterTabKind::ForYou
+// would silently alias TopRated's storage — ForYou keeps no persisted
+// filter state (spec 1c) and must never reach this helper. Every ForYou
+// call site routes around it instead (open() passes FilterState{} directly,
+// persist_filter_state() early-returns on ForYou, active_chart_filters_
+// active() only evaluates for Popular/TopRated).
 FilterState read_filter_state(const ::app::AppState::DisplaySettings& s, FilterTabKind tab) {
     FilterState fs;
     if (tab == FilterTabKind::Popular) {
@@ -157,6 +165,9 @@ FilterState read_filter_state(const ::app::AppState::DisplaySettings& s, FilterT
     return fs;
 }
 
+// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
+// see read_filter_state's comment above. persist_filter_state() early-returns
+// on ForYou before this is ever called with FilterTabKind::ForYou.
 void write_filter_state(::app::AppState::DisplaySettings& s, FilterTabKind tab,
                         const FilterState& fs) {
     using DS = ::app::AppState::DisplaySettings;
@@ -177,6 +188,11 @@ void write_filter_state(::app::AppState::DisplaySettings& s, FilterTabKind tab,
     }
 }
 
+// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
+// the default-sort comparison below is Popular-vs-TopRated only, so ForYou
+// would silently compare against TopRated's default. active_chart_filters_
+// active() (the only caller reachable from a ForYou-active screen) returns
+// false before category_ == ForYou can flow in here.
 bool any_filter_active(const FilterState& fs, FilterTabKind tab) {
     using DS = ::app::AppState::DisplaySettings;
     if (fs.genre_mask != 0) return true;
@@ -192,6 +208,11 @@ bool any_filter_active(const FilterState& fs, FilterTabKind tab) {
     return false;
 }
 
+// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
+// the vote_count_gte baseline below is a Popular-vs-TopRated ternary, so
+// ForYou would silently inherit TopRated's gate. Only reached via
+// reload_for_category()/do_shuffle()/revalidate_active_chart(), all of
+// which gate on category_ == Popular/TopRated before building a tab kind.
 ::media_browser::DiscoverFilter build_discover_filter(const FilterState& fs,
                                                       FilterTabKind tab) {
     ::media_browser::DiscoverFilter df;
@@ -278,6 +299,13 @@ void BrowseScreen::enter() {
     if (!loaded_) {
         load_category(category_);
         loaded_ = true;
+    } else if (category_ == Category::ForYou) {
+        if (tmdb_grid_stale(foryou_loaded_at_, std::chrono::steady_clock::now()) &&
+            !foryou_movies_.empty()) {
+            start_foryou_sample(/*background=*/true);   // spec 1a SWR for For You
+        } else if (foryou_movies_.empty()) {
+            activate_foryou();                          // never loaded — entry rule
+        }
     } else if (!is_nav_chip(category_) && category_ != Category::Filter &&
                tmdb_grid_stale(chart_loaded_at_, std::chrono::steady_clock::now())) {
         // Spec 1a: 6h TTL, evaluated on enter() only (tab switches already
@@ -317,7 +345,9 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     // actions even though Discovery is TMDB-powered.
     r.services_ok = radarr_.is_reachable();
     if (r.services_ok) {
-        auto lib = radarr_.get_library();
+        auto lib_checked = radarr_.get_library_checked();
+        r.library_fetch_ok = lib_checked.has_value();
+        const auto& lib = lib_checked ? *lib_checked : std::vector<Movie>{};
         // Build radarr_id → tmdb_id map for queue cross-reference below.
         std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
@@ -359,6 +389,8 @@ void BrowseScreen::apply_library_pending() {
     lib_result_ready_.store(false);
 
     services_ok_ = r.services_ok;
+    lib_refresh_done_once_ = true;
+    lib_fetch_ok_ = r.services_ok && r.library_fetch_ok;
     spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
                  "in_library={}, downloading={}",
                  services_ok_, r.library_ids.size(), r.downloading_ids.size());
@@ -374,6 +406,122 @@ void BrowseScreen::apply_library_pending() {
             quality_profiles_ = std::move(r.quality_profiles);
             library_cached_   = true;
         }
+    }
+    // For You deferred-sample hook (spec 1c entry rule case b).
+    if (foryou_waiting_for_library_ && category_ == Category::ForYou) {
+        foryou_waiting_for_library_ = false;
+        start_foryou_sample(/*background=*/false);
+    }
+}
+
+void BrowseScreen::activate_foryou() {
+    foryou_failed_ = false;
+    switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
+                                lib_fetch_ok_, library_tmdb_ids_.empty())) {
+        case ForYouEntry::UseCache:
+            movies_ = foryou_movies_;
+            loading_ = false;
+            more_available_ = false;   // no scroll-driven pages on For You
+            fetching_more_ = false;
+            break;
+        case ForYouEntry::WaitForLibrary:
+            loading_ = true;
+            foryou_waiting_for_library_ = true;
+            refresh_library_async();   // CAS-guarded no-op when already in flight
+            break;
+        case ForYouEntry::ServiceUnavailable:
+        case ForYouEntry::EmptyLibrary:
+            loading_ = false;          // render() branches on the flags below
+            break;
+        case ForYouEntry::Sample:
+            start_foryou_sample(/*background=*/false);
+            break;
+    }
+}
+
+void BrowseScreen::start_foryou_sample(bool background) {
+    // Sample min(8, library size) seeds uniformly without replacement.
+    std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
+    if (pool.empty()) { loading_ = false; return; }
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::vector<int> seeds;
+    const int want = std::min<int>(8, static_cast<int>(pool.size()));
+    std::sample(pool.begin(), pool.end(), std::back_inserter(seeds), want, rng);
+
+    if (!background) {
+        movies_.clear();
+        grid_cursor_ = 0;
+        scroll_row_ = 0;
+        loading_ = true;
+    }
+    more_available_ = false;
+    fetching_more_ = false;
+    foryou_failed_ = false;
+    tmdb_current_gen_.fetch_add(1);
+    auto job = std::make_shared<ForYouJob>();
+    job->gen = tmdb_current_gen_.load();
+    job->background = background;
+    job->remaining.store(static_cast<int>(seeds.size()));
+    foryou_job_ = job;
+    spdlog::info("[BrowseScreen] For You sample: {} seeds (gen={}, background={})",
+                 seeds.size(), job->gen, background);
+    for (int seed : seeds) {
+        tmdb_workers_.spawn([this, job, seed]() {
+            // Recommendations with documented get_similar fallback — the same
+            // contract the playback overlay uses (spec 1c step 2).
+            auto list = tmdb_.get_recommendations(seed, /*page=*/1);
+            if (list.hits.empty()) {
+                auto fb = tmdb_.get_similar(seed, /*page=*/1);
+                if (fb.ok || !list.ok) list = std::move(fb);
+            }
+            {
+                std::lock_guard<std::mutex> lk(job->mtx);
+                job->results.push_back({list.ok, std::move(list.hits)});
+            }
+            job->remaining.fetch_sub(1, std::memory_order_acq_rel);
+        });
+    }
+}
+
+void BrowseScreen::apply_foryou_pending() {
+    if (!foryou_job_) return;
+    if (foryou_job_->remaining.load(std::memory_order_acquire) != 0) return;
+    auto job = std::move(foryou_job_);
+    if (job->gen != tmdb_current_gen_.load()) return;  // preempted — discard
+    std::vector<SeedResult> results;
+    {
+        std::lock_guard<std::mutex> lk(job->mtx);
+        results = std::move(job->results);
+    }
+    int ok_seeds = 0;
+    std::vector<std::vector<TmdbSearchHit>> per_seed;
+    per_seed.reserve(results.size());
+    for (auto& sr : results) {
+        if (sr.ok) ++ok_seeds;
+        per_seed.push_back(std::move(sr.hits));
+    }
+    if (ok_seeds == 0) {
+        // Timestamp rule (spec 1c): all seeds failed → timestamp untouched so
+        // the next enter() retries. Explicit load shows the error state;
+        // background TTL keeps the old grid.
+        spdlog::warn("[BrowseScreen] For You: all {} seeds failed", results.size());
+        if (!job->background) {
+            loading_ = false;
+            foryou_failed_ = true;
+        }
+        return;
+    }
+    foryou_movies_ = merge_recommendations(per_seed, library_tmdb_ids_);
+    foryou_loaded_at_ = std::chrono::steady_clock::now();
+    spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
+                 foryou_movies_.size(), ok_seeds);
+    if (category_ == Category::ForYou) {
+        movies_ = foryou_movies_;
+        grid_cursor_ = 0;
+        scroll_row_ = 0;
+        loading_ = false;
+        more_available_ = false;
+        fetching_more_ = false;
     }
 }
 
@@ -441,6 +589,7 @@ const char* BrowseScreen::label_for_category(Category cat) {
         case Category::TopRated:   return "Top Rated";
         case Category::Upcoming:   return "Upcoming";
         case Category::Filter:     return "Filter";
+        case Category::ForYou:     return "For You";
         case Category::Search:     return "Search";
         case Category::Library:    return "Library";
         case Category::Queue:      return "Queue";
@@ -496,6 +645,13 @@ void BrowseScreen::load_category(Category cat) {
     window_is_discover_ = false;
     if (is_nav_chip(cat)) {
         loading_ = false;
+        return;
+    }
+    if (cat == Category::ForYou) {
+        // For You is exempt from the unconditional tab-activation refetch
+        // (spec 1c): activation re-renders the cached merged list when one
+        // exists. load_category was already called with cleared grid state.
+        activate_foryou();
         return;
     }
     if (cat == Category::Filter) {
@@ -715,7 +871,9 @@ void BrowseScreen::do_shuffle() {
                          pick_shuffle_base(page_window_base_, max_base, rng()));
         }
     }
-    // Category::ForYou is wired in the For You task — resample_foryou(false).
+    if (category_ == Category::ForYou) {
+        start_foryou_sample(/*background=*/false);  // fresh seed draw, clear + Loading
+    }
 }
 
 void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
@@ -858,6 +1016,7 @@ void BrowseScreen::maybe_load_more_pages() {
     if (fetching_more_ || loading_) return;
     if (!more_available_) return;
     if (is_nav_chip(category_)) return;
+    if (category_ == Category::ForYou) return;
     // Base-relative window (spec 1b): load [base, base+kMaxLoadedPages-1].
     if (next_page_to_fetch_ > window_last_page(page_window_base_, kMaxLoadedPages)) return;
 
@@ -884,6 +1043,7 @@ void BrowseScreen::update() {
     // Join+drop finished page/genre workers (instant — see worker_pool.h).
     tmdb_workers_.reap();
     apply_pending();             // TMDB page workers → movies_
+    apply_foryou_pending();
     apply_library_pending();     // Radarr library/queue worker → id-sets
     // Genre worker → genres_ (single-flight; see ensure_genres_loaded).
     if (genres_ready_.exchange(false, std::memory_order_acq_rel)) {
@@ -976,27 +1136,16 @@ void BrowseScreen::cycle_filter_value(int delta) {
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {
-    // Marquee 5-tab strip — content tabs left, transition tabs right.
-    // Display order, left-to-right:
-    //   Popular · Top Rated · Library · Search · Settings
-    // BTN1 (PREV, yellow) walks left; BTN3 (NEXT, green) walks right;
-    // movement stops at the ends (no wrap). Library, Search, and Settings
-    // are transition-only — selecting them returns the corresponding
-    // Screen enum value to the dispatcher in main.cpp, which swaps the
-    // active screen. Now Playing was removed in v1.6.x — it overlapped
-    // almost completely with Popular on TMDB's data, so collapsing them
-    // removes a confusing-looking duplicate. Settings replaces it on the
-    // right end of the strip.
-    static constexpr Category kVisibleTabs[] = {
-        Category::Popular,
-        Category::TopRated,
-        Category::Search,
-        Category::Library,
-        Category::Queue,
-        Category::Settings,
-    };
-    constexpr int kNumVisibleTabs =
-        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
+    // Marquee tab strip — content tabs left, transition tabs right. Display
+    // order, left-to-right: Popular · Top Rated · For You · Search ·
+    // Library · Queue · Settings (kVisibleTabs, class member — shared with
+    // render()). BTN1 (PREV, yellow) walks left; BTN3 (NEXT, green) walks
+    // right; movement stops at the ends (no wrap). Library, Search, Queue,
+    // and Settings are transition-only — selecting them returns the
+    // corresponding Screen enum value to the dispatcher in main.cpp, which
+    // swaps the active screen. Now Playing was removed in v1.6.x — it
+    // overlapped almost completely with Popular on TMDB's data, so
+    // collapsing them removes a confusing-looking duplicate.
 
     // Reverse-lookup: where is category_ in the visible strip? Default to
     // 0 (Popular) if category_ holds a value that isn't a Marquee tab
@@ -1039,17 +1188,25 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         // in main.cpp. It never reaches here; no per-screen handler needed.
 
         // BTN4 (SETTINGS_MENU, black) — toggles the filter overlay on
-        // Popular + TopRated tabs. On other tabs it remains a no-op
-        // (long-press still exits MB → MainMenu via the dispatcher).
+        // Popular + TopRated tabs (full filter panel) and For You (SHUFFLE-
+        // only row). On other tabs it remains a no-op (long-press still
+        // exits MB → MainMenu via the dispatcher).
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             if (filter_overlay_.is_visible()) {
                 filter_overlay_.on_btn4_close();
             } else if (category_ == Category::Popular ||
-                       category_ == Category::TopRated) {
-                FilterTabKind tk = (category_ == Category::Popular)
-                                   ? FilterTabKind::Popular
-                                   : FilterTabKind::TopRated;
-                filter_overlay_.open(tk, read_filter_state(state_.display_settings, tk));
+                       category_ == Category::TopRated ||
+                       category_ == Category::ForYou) {
+                FilterTabKind tk =
+                    (category_ == Category::Popular)  ? FilterTabKind::Popular :
+                    (category_ == Category::TopRated) ? FilterTabKind::TopRated :
+                                                        FilterTabKind::ForYou;
+                // read_filter_state is only defined for Popular/TopRated
+                // (see its CONSTRAINT comment) — ForYou gets a default state
+                // since the SHUFFLE-only row never reads working_ values.
+                filter_overlay_.open(tk, tk == FilterTabKind::ForYou
+                                              ? FilterState{}
+                                              : read_filter_state(state_.display_settings, tk));
                 filter_overlay_.set_on_commit(
                     [this](const FilterState& fs, FilterTabKind tk2) {
                         this->persist_filter_state(tk2, fs);
@@ -1154,21 +1311,11 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     r.mb_fill_background();
 
-    // Same 6-tab strip the handler uses — keep the two in sync.
-    // v1.6.x: Now Playing dropped; v1.6.x+: Queue inserted between Library
-    // and Settings, Search moved to the left of Library.
-    static constexpr Category kVisibleTabs[] = {
-        Category::Popular,
-        Category::TopRated,
-        Category::Search,
-        Category::Library,
-        Category::Queue,
-        Category::Settings,
-    };
-    constexpr int kNumVisibleTabs =
-        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
+    // Shared kVisibleTabs class member — same strip handle_input() uses,
+    // single source of truth (was duplicated here with a "keep in sync"
+    // comment prior to the For You tab).
 
-    // --- Header: "Marquee" title (left) + 5-tab strip (right) ---
+    // --- Header: "Marquee" title (left) + tab strip (right) ---
     std::vector<chrome::TabSpec> tabs;
     tabs.reserve(kNumVisibleTabs);
     for (int i = 0; i < kNumVisibleTabs; ++i) {
@@ -1199,12 +1346,14 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     };
     const bool filter_available = (category_ == Category::Popular ||
                                    category_ == Category::TopRated);
+    const bool shuffle_only = (category_ == Category::ForYou);
     auto draw_baseline_footer = [&]() {
         chrome::draw_footer_hints(r, screen_w, screen_h, {
             {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
             {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,   filter_available ? "Filters" : "\xE2\x80\x94"},
+            {chrome::HintIcon::Btn4Black,
+             filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
             {chrome::HintIcon::RotaryNav,   "Browse"},
             {chrome::HintIcon::RotaryPress, "Detail"},
         });
@@ -1214,6 +1363,26 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         draw_centered_msg("Radarr service offline", th.highlight2);
         draw_baseline_footer();
         return;
+    }
+    if (category_ == Category::ForYou) {
+        if (lib_refresh_done_once_ && !lib_fetch_ok_) {
+            draw_centered_msg("Radarr service offline", th.highlight2);
+            draw_baseline_footer();
+            return;
+        }
+        if (foryou_failed_) {
+            draw_centered_msg("Couldn't load recommendations \xE2\x80\x94 try again later",
+                              th.highlight2);
+            draw_baseline_footer();
+            return;
+        }
+        if (!loading_ && movies_.empty() && lib_refresh_done_once_ &&
+            library_tmdb_ids_.empty()) {
+            draw_centered_msg("Add movies to your library to get recommendations",
+                              th.dim);
+            draw_baseline_footer();
+            return;
+        }
     }
     if (loading_ && movies_.empty()) {
         draw_centered_msg("Loading...", th.dim);
@@ -1353,7 +1522,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
         {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-        {chrome::HintIcon::Btn4Black,   filter_available ? "Filters" : "\xE2\x80\x94"},
+        {chrome::HintIcon::Btn4Black,
+         filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
         {chrome::HintIcon::RotaryNav,   "Browse"},
         {chrome::HintIcon::RotaryPress, "Detail"},
     });

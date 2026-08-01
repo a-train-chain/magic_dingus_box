@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -14,6 +15,7 @@
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
+#include "media_browser/ui/mb_recs.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
 
@@ -77,10 +79,11 @@ private:
         TopRated = 2,
         Upcoming = 3,
         Filter = 4,
-        Search = 5,
-        Library = 6,
-        Queue = 7,
-        Settings = 8,
+        ForYou = 5,
+        Search = 6,
+        Library = 7,
+        Queue = 8,
+        Settings = 9,
     };
     enum class Focus {
         CategoryStrip,
@@ -91,8 +94,8 @@ private:
     // Filter panel row / control identifiers.
     enum class FilterRow { Genre = 0, Year = 1, SortBy = 2, Count = 3 };
 
-    static constexpr int kNumContentCategories = 5;  // Popular..Filter
-    static constexpr int kNumCategories = 9;
+    static constexpr int kNumContentCategories = 6;  // Popular..ForYou
+    static constexpr int kNumCategories = 10;
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
     // 45 px breathing room before the bottom bar. 18 posters visible per
@@ -104,6 +107,21 @@ private:
     static bool is_nav_chip(Category cat) {
         return static_cast<int>(cat) >= kNumContentCategories;
     }
+
+    // Single source of truth for the Marquee strip — consumed by BOTH
+    // handle_input() and render(). Was duplicated in the two functions
+    // with a "keep in sync" comment.
+    static constexpr Category kVisibleTabs[] = {
+        Category::Popular,
+        Category::TopRated,
+        Category::ForYou,
+        Category::Search,
+        Category::Library,
+        Category::Queue,
+        Category::Settings,
+    };
+    static constexpr int kNumVisibleTabs =
+        static_cast<int>(sizeof(kVisibleTabs) / sizeof(kVisibleTabs[0]));
 
     // Public load entry point. Spawns a background thread that does
     // the (slow, ~6s) TMDB fetch off the render thread; render() can
@@ -325,6 +343,34 @@ private:
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
 
+    // --- For You state (spec 1c) -----------------------------------
+    // Cached merged list — activation re-renders this without refetching;
+    // a new sample runs only on first entry, TTL expiry, or SHUFFLE.
+    std::vector<TmdbSearchHit> foryou_movies_;
+    std::chrono::steady_clock::time_point foryou_loaded_at_{};
+    // One in-flight sample job. Workers capture the shared_ptr; a stale job
+    // (gen mismatch) is simply never consumed. remaining==0 → ready to merge.
+    struct SeedResult {
+        bool ok = false;                    // TmdbList.ok of whichever call served it
+        std::vector<TmdbSearchHit> hits;
+    };
+    struct ForYouJob {
+        uint64_t gen = 0;
+        bool background = false;            // TTL refresh — keep old grid on total failure
+        std::atomic<int> remaining{0};
+        std::mutex mtx;
+        std::vector<SeedResult> results;
+    };
+    std::shared_ptr<ForYouJob> foryou_job_;
+    bool foryou_waiting_for_library_ = false;  // sample deferred until refresh lands
+    bool foryou_failed_ = false;               // all seeds failed on an explicit load
+    // Library-refresh outcome flags (spec 1c): set by apply_library_pending.
+    bool lib_refresh_done_once_ = false;
+    bool lib_fetch_ok_ = false;
+    void activate_foryou();
+    void start_foryou_sample(bool background);
+    void apply_foryou_pending();
+
     // --- Async Radarr library/services refresh (mirrors LibraryScreen) ---
     // enter() used to call is_reachable() + get_library() + get_queue()
     // (+ get_quality_profiles() on first entry) SYNCHRONOUSLY on the render
@@ -347,6 +393,7 @@ private:
         std::unordered_set<int>     downloading_ids;
         std::vector<QualityProfile> quality_profiles;
         bool                        quality_fetched = false;
+        bool                        library_fetch_ok = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
     void run_library_refresh(bool fetch_quality);  // worker body (off render)
