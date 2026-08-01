@@ -526,3 +526,161 @@ TEST_CASE("remove_series deletes with files and no import-list exclusion",
     CHECK(s.delete_path ==
           "/api/v3/series/7?deleteFiles=true&addImportListExclusion=false");
 }
+
+// --- queue ---------------------------------------------------------------
+
+namespace {
+class QueueSonarr : public mb::SonarrClient {
+public:
+    QueueSonarr() : SonarrClient(Config{}) {}
+    std::vector<std::string> gets;
+    std::string delete_path;
+    std::string http_get(const std::string& path) override {
+        gets.push_back(path);
+        if (path.rfind("/api/v3/queue", 0) == 0) return read_fixture("queue.json");
+        if (path.rfind("/api/v3/history/series", 0) == 0) {
+            return read_fixture("history_series.json");
+        }
+        return "";
+    }
+    std::string http_post(const std::string&, const std::string&) override { return ""; }
+    std::string http_put(const std::string&, const std::string&) override { return ""; }
+    std::string http_delete(const std::string& path) override {
+        delete_path = path;
+        return "{}";
+    }
+};
+}  // namespace
+
+TEST_CASE("get_queue requests embedded episodes and returns them ungrouped",
+          "[sonarr][queue]") {
+    QueueSonarr s;
+    auto q = s.get_queue();
+
+    // One page: the fixture's 3 records are a short page against the default
+    // pageSize of 100, so the loop stops without a second request.
+    REQUIRE(s.gets.size() == 1);
+    CHECK(s.gets[0].rfind("/api/v3/queue?", 0) == 0);
+    CHECK(s.gets[0].find("page=1") != std::string::npos);
+    CHECK(s.gets[0].find("pageSize=100") != std::string::npos);
+    // includeEpisode=true gets the S02E01 label in the same round-trip;
+    // Phase 2c's grouped row needs it to say "3 episodes" with names.
+    CHECK(s.gets[0].find("includeEpisode=true") != std::string::npos);
+
+    // Three episode rows for ONE season pack, deliberately NOT collapsed.
+    // Grouping by download_id is Phase 2c's UI concern; the client must not
+    // pre-empt it, because DELETE acts on the whole download and the UI needs
+    // to know which ids are siblings.
+    REQUIRE(q.size() == 3);
+    CHECK(q[0].download_id == q[2].download_id);
+    CHECK(q[0].season_number == 2);
+    CHECK(q[0].episode.episode_number == 1);
+    CHECK(q[2].episode.episode_number == 3);
+}
+
+TEST_CASE("get_queue pages until the queue is exhausted", "[sonarr][queue]") {
+    // Sonarr's queue is per EPISODE, so a single 20-episode season pack is 20
+    // records and ~5 concurrent packs saturate a 100-record page. Truncating
+    // silently looks exactly like "that download isn't queued".
+    //
+    // queue_page_size is configurable precisely so this can be proven without
+    // a 100-record fixture: set it to 3 and the existing fixture becomes a
+    // FULL page, forcing a second request.
+    class PagedSonarr : public mb::SonarrClient {
+    public:
+        static Config small_pages() {
+            Config c;
+            c.queue_page_size = 3;
+            return c;
+        }
+        PagedSonarr() : SonarrClient(small_pages()) {}
+        std::vector<std::string> gets;
+        std::string http_get(const std::string& path) override {
+            gets.push_back(path);
+            if (path.find("page=1") != std::string::npos) {
+                return read_fixture("queue.json");   // 3 records == a full page
+            }
+            if (path.find("page=2") != std::string::npos) {
+                return R"({"page":2,"pageSize":3,"totalRecords":4,"records":[
+                  {"id":104,"seriesId":7,"episodeId":5004,"seasonNumber":2,
+                   "title":"Breaking.Bad.S02.1080p.WEB-DL.x264-GROUPA",
+                   "size":12884901888,"sizeleft":6442450944,"status":"downloading",
+                   "downloadId":"A1B2C3D4E5F60718293A4B5C6D7E8F9012345678"}
+                ]})";
+            }
+            return "";
+        }
+        std::string http_post(const std::string&, const std::string&) override { return ""; }
+        std::string http_put(const std::string&, const std::string&) override { return ""; }
+        std::string http_delete(const std::string&) override { return ""; }
+    };
+    PagedSonarr s;
+    auto q = s.get_queue();
+    REQUIRE(s.gets.size() == 2);
+    CHECK(s.gets[0].find("page=1") != std::string::npos);
+    CHECK(s.gets[0].find("pageSize=3") != std::string::npos);
+    CHECK(s.gets[1].find("page=2") != std::string::npos);
+    REQUIRE(q.size() == 4);
+    CHECK(q[3].id == 104);
+}
+
+TEST_CASE("get_queue returns empty on transport failure", "[sonarr][queue]") {
+    class Dead : public mb::SonarrClient {
+    public:
+        Dead() : SonarrClient(Config{}) {}
+        std::string http_get(const std::string&) override { return ""; }
+        std::string http_post(const std::string&, const std::string&) override { return ""; }
+        std::string http_put(const std::string&, const std::string&) override { return ""; }
+        std::string http_delete(const std::string&) override { return ""; }
+    };
+    Dead d;
+    CHECK(d.get_queue().empty());
+}
+
+TEST_CASE("cancel_queue_item removes the whole download from the client",
+          "[sonarr][queue]") {
+    // Live-proven: DELETE /api/v3/queue/{id}?removeFromClient=true kills the
+    // entire download; the sibling episode rows then 404. blocklist=false so a
+    // user-initiated cancel does not poison the release for a later retry.
+    QueueSonarr s;
+    REQUIRE(s.cancel_queue_item(101));
+    CHECK(s.delete_path == "/api/v3/queue/101?removeFromClient=true&blocklist=false");
+}
+
+// --- history -------------------------------------------------------------
+
+TEST_CASE("get_series_download_hashes walks the series history",
+          "[sonarr][history]") {
+    // Powers the orphan-proof remove: the active queue only knows in-progress
+    // downloads, so finished-and-seeding torrents would be left behind in
+    // qBittorrent without this.
+    QueueSonarr s;
+    auto hashes = s.get_series_download_hashes(7);
+    REQUIRE(s.gets.size() == 1);
+    CHECK(s.gets[0] == "/api/v3/history/series?seriesId=7");
+    REQUIRE(hashes.size() == 2);
+    CHECK(hashes[0] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
+    CHECK(hashes[1] == "ffeeddccbbaa99887766554433221100aabbccdd");
+}
+
+// --- mock ----------------------------------------------------------------
+
+TEST_CASE("SonarrMockClient seeds a coherent season pack", "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    auto q = m.get_queue();
+    // Three episode rows sharing one downloadId — the shape 2c's grouping has
+    // to handle, available on a dev machine with no services running.
+    REQUIRE(q.size() == 3);
+    CHECK(q[0].download_id == q[1].download_id);
+    CHECK(q[1].download_id == q[2].download_id);
+    CHECK(q[0].series_id == 1);
+
+    auto hashes = m.get_series_download_hashes(1);
+    REQUIRE(hashes.size() == 1);
+    // Mock hashes come back lowercase, like the real client's.
+    CHECK(hashes[0] == q[0].download_id);
+
+    REQUIRE(m.cancel_queue_item(q[0].id));
+    // Cancelling one row removes the whole download, matching live behaviour.
+    CHECK(m.get_queue().empty());
+}

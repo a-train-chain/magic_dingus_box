@@ -524,6 +524,67 @@ bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
     return last_error().empty();
 }
 
+std::vector<SonarrQueueItem> SonarrClient::get_queue() {
+    // Sonarr's queue is per EPISODE, so a season pack contributes one record
+    // per episode and the queue genuinely outgrows a single page — page
+    // through it rather than silently truncating (a missing row is
+    // indistinguishable from "that download isn't queued").
+    //
+    // includeEpisode=true embeds each record's episode object so the UI can
+    // label "S02E01 — Seven Thirty-Seven" without a second round-trip.
+    // includeSeries stays false: the series is already in the library cache
+    // and the extra payload is pure weight on the 2 GB board.
+    //
+    // Continuation is driven ONLY by whether the page came back full
+    // (records.size() >= pageSize), never by comparing accumulated records
+    // against totalRecords. totalRecords reflects Sonarr's count as of THAT
+    // page's query, and with concurrent grabs/completions it can drift; a
+    // page that happens to land exactly on the running total would trip an
+    // early exit one page before the real end. total is still tracked, but
+    // only to report how badly a capped fetch got truncated.
+    constexpr int kMaxPages = 20;  // 2000 records at the default page size
+    const int page_size = cfg_.queue_page_size > 0 ? cfg_.queue_page_size : 100;
+    std::vector<SonarrQueueItem> out;
+    int total = 0;
+    int page = 1;
+    for (; page <= kMaxPages; ++page) {
+        const std::string resp = http_get(
+            "/api/v3/queue?page=" + std::to_string(page)
+            + "&pageSize=" + std::to_string(page_size)
+            + "&includeEpisode=true&includeSeries=false");
+        if (resp.empty()) break;  // transport failure — keep what we have
+        auto batch = SonarrParsers::parse_queue(resp);
+        const int batch_total = SonarrParsers::parse_queue_total(resp);
+        if (batch_total > 0) total = batch_total;
+        const bool full_page = static_cast<int>(batch.size()) >= page_size;
+        out.insert(out.end(), std::make_move_iterator(batch.begin()),
+                   std::make_move_iterator(batch.end()));
+        if (!full_page) break;  // short page: this was genuinely the last one
+    }
+    if (page > kMaxPages) {
+        spdlog::warn("[sonarr] get_queue hit the {}-page cap with {} records "
+                     "(totalRecords={}); the queue view is truncated",
+                     kMaxPages, out.size(), total);
+    }
+    return out;
+}
+
+bool SonarrClient::cancel_queue_item(int queue_id) {
+    set_error({});
+    http_delete("/api/v3/queue/" + std::to_string(queue_id)
+                + "?removeFromClient=true&blocklist=false");
+    return last_error().empty();
+}
+
+std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id) {
+    // /api/v3/history/series is UNPAGINATED (a bare array) — no pageSize
+    // parameter, unlike Radarr's /api/v3/history.
+    auto resp = http_get("/api/v3/history/series?seriesId="
+                         + std::to_string(sonarr_id));
+    if (resp.empty()) return {};
+    return SonarrParsers::parse_history_download_ids(resp);
+}
+
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {
     auto resp = http_get("/api/v3/qualityprofile");
     if (resp.empty()) return {};

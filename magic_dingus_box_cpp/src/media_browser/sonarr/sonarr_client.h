@@ -142,6 +142,29 @@ public:
     // user is deleting a download, not blacklisting the show.
     virtual bool remove_series(int sonarr_id, bool delete_files = false);
 
+    // Queue / downloads.
+    //
+    // Sonarr's queue is per EPISODE: a season pack yields N records sharing a
+    // single downloadId. These are returned RAW AND UNGROUPED on purpose —
+    // Phase 2c groups by download_id for display, and it needs to see the
+    // sibling rows to do that (and to know that cancelling any one of them
+    // takes the whole download with it).
+    //
+    // Pages internally (Config::queue_page_size per request) until the queue is
+    // exhausted — per-episode records make >100 genuinely reachable.
+    virtual std::vector<SonarrQueueItem> get_queue();
+
+    // Removes the download from the client. NOTE: this acts on the WHOLE
+    // download, not one episode — every sibling queue id 404s afterwards.
+    virtual bool cancel_queue_item(int queue_id);
+
+    // Distinct downloadIds from this series' history, lowercased for direct
+    // comparison with QbittorrentClient (which stores hashes lowercase).
+    // Feeds the orphan-proof remove: the queue only knows in-progress
+    // downloads, so finished-and-seeding torrents would otherwise survive a
+    // series deletion.
+    virtual std::vector<std::string> get_series_download_hashes(int sonarr_id);
+
     // Profiles / storage. Resolve the quality profile BY NAME at the call
     // site ("Any" on this box, id 1 — the id is not portable).
     virtual std::vector<QualityProfile> get_quality_profiles();
