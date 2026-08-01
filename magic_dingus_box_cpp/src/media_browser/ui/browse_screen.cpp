@@ -18,6 +18,7 @@
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/mb_recs.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -347,7 +348,11 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     if (r.services_ok) {
         auto lib_checked = radarr_.get_library_checked();
         r.library_fetch_ok = lib_checked.has_value();
-        const auto& lib = lib_checked ? *lib_checked : std::vector<Movie>{};
+        // Both ternary operands must be lvalues or this forces a full copy of
+        // the library on every refresh (a prvalue std::vector<Movie>{} on the
+        // false branch makes the whole expression a prvalue).
+        static const std::vector<Movie> kEmptyLibrary;
+        const auto& lib = lib_checked ? *lib_checked : kEmptyLibrary;
         // Build radarr_id → tmdb_id map for queue cross-reference below.
         std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
@@ -498,6 +503,16 @@ void BrowseScreen::start_foryou_sample(bool background) {
     // otherwise retry the sample once the library finishes loading —
     // leaving a dead-end "No movies" state until the next tab activation.
     foryou_waiting_for_library_ = false;
+    // In-flight guard: a slow/dead egress can leave a prior sample's seed
+    // workers still running when the user shuffles or re-enters again —
+    // without this, each trigger stacks another full batch of workers onto
+    // tmdb_workers_. The existing generation machinery already makes a
+    // superseded job's results get silently discarded, so this is purely a
+    // worker-stacking cap, not a correctness fix.
+    if (foryou_job_ && foryou_job_->remaining.load(std::memory_order_acquire) > 0) {
+        spdlog::info("[BrowseScreen] For You sample already in flight; ignoring");
+        return;
+    }
     static thread_local std::mt19937 rng{std::random_device{}()};
     std::vector<int> seeds;
     const int want = std::min<int>(8, static_cast<int>(pool.size()));
@@ -770,6 +785,15 @@ bool BrowseScreen::active_chart_filters_active() const {
 }
 
 void BrowseScreen::revalidate_active_chart() {
+    // In-flight guard: an in-flight fetch already owns the pagination
+    // pipeline (fetching_more_, next_page_to_fetch_, page_window_base_) —
+    // stomping it here would race the running worker. The TTL simply
+    // retries on the box's next enter() rather than forcing a second
+    // concurrent fetch.
+    if (fetching_more_) {
+        spdlog::info("[BrowseScreen] TTL revalidate: fetch already in flight; skipping");
+        return;
+    }
     // Spec 1a stale-while-revalidate: bump the generation NOW so in-flight
     // pages from the old (possibly shuffled) window are dropped rather than
     // appended after the swap, reset the window base to 1, but defer every
@@ -782,6 +806,12 @@ void BrowseScreen::revalidate_active_chart() {
     const uint64_t gen = tmdb_current_gen_.load();
     spdlog::info("[BrowseScreen] TTL revalidate: {} (gen={})",
                  label_for_category(category_), gen);
+    // A box retrying a failed initial load has an empty grid — without this,
+    // it would sit on the silent "No movies in this category" empty state
+    // for the entire ~76s TMDB retry ladder instead of showing "Loading...".
+    if (movies_.empty()) {
+        loading_ = true;
+    }
     if (active_chart_filters_active()) {
         window_is_discover_ = true;
         FilterTabKind tab = (category_ == Category::Popular)
@@ -978,17 +1008,21 @@ void BrowseScreen::apply_pending() {
     // fetch is still in flight and owns those flags — leave them alone.
     bool applied_any = false;
     for (auto& pp : drained) {
+        // total_pages cache for the discover shuffle clamp (spec 1b) — keyed
+        // by filter signature, learned from any discover page, even a
+        // superseded one — total_pages is a property of the query (the
+        // filter that produced the response), not the generation, so it's
+        // safe to learn from a page whose gen check below sends it to the
+        // stale-skip continue.
+        if (!pp.discover_sig.empty() && pp.total_pages > 0) {
+            discover_total_pages_[pp.discover_sig] = pp.total_pages;
+        }
         if (pp.gen != tmdb_current_gen_.load()) {
             spdlog::info("[BrowseScreen] page={} gen={} stale at drain (current={}); discarding",
                          pp.page, pp.gen, tmdb_current_gen_.load());
             continue;
         }
         applied_any = true;
-        // total_pages cache for the discover shuffle clamp (spec 1b) — keyed
-        // by filter signature, learned from any discover page that reports it.
-        if (!pp.discover_sig.empty() && pp.total_pages > 0) {
-            discover_total_pages_[pp.discover_sig] = pp.total_pages;
-        }
         // Background revalidate that failed or came back empty: skip the swap
         // entirely — the old grid survives (spec 1a). Freeze pagination for
         // the stale grid: its window state no longer matches its content.

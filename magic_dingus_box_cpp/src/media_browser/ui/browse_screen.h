@@ -15,7 +15,6 @@
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
-#include "media_browser/ui/mb_recs.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
 
@@ -95,7 +94,6 @@ private:
     enum class FilterRow { Genre = 0, Year = 1, SortBy = 2, Count = 3 };
 
     static constexpr int kNumContentCategories = 6;  // Popular..ForYou
-    static constexpr int kNumCategories = 10;
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
     // 45 px breathing room before the bottom bar. 18 posters visible per
