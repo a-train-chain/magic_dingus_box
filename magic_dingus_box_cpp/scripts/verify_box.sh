@@ -27,6 +27,15 @@ BASE="${MAGIC_BASE_DIR:-/opt/magic_dingus_box}"
 DATA="${APP}/data"
 UNIT="magic-dingus-box-cpp.service"
 
+# Running under sudo resolves $HOME to /root, which silently breaks every
+# per-user path below (libretro cores dir, PS1/DC BIOS) and reports a false
+# "NOT SHIPPABLE" on a healthy box — observed live 2026-07-31. The kiosk
+# owns those paths as the login user, so re-derive HOME from SUDO_USER
+# rather than refusing to run (running via sudo is otherwise harmless).
+if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+fi
+
 PASS=0; FAIL=0; WARN=0
 RUN_SERVICES=0
 [[ "${1:-}" == "--with-services" ]] && RUN_SERVICES=1
