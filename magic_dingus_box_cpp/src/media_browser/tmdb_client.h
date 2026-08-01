@@ -17,11 +17,9 @@ namespace media_browser {
 // on MediaRef, never on a bare tmdb id. A bare id is only safe in a
 // container that is single-kind by construction.
 //
-// STILL BEING MIGRATED (Phase 2c-1, Tasks 2-3): browse_screen's
-// library/downloading/loaded id sets and mb_recs' by_id / exclude are
-// still `unordered_set<int>` at this commit. They are safe only because
-// nothing feeds them TV rows yet. Do not route TV data through them until
-// those tasks land.
+// Migrated in Phase 2c-1: browse_screen's library/downloading/loaded sets
+// and mb_recs' by_id / exclude are all MediaRef-keyed, so they can hold
+// both kinds safely. Any NEW container that can see both must be too.
 
 struct TmdbSearchHit {
     int tmdb_id = 0;
