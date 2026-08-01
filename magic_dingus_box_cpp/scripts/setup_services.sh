@@ -633,10 +633,26 @@ RADARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/radarr/config
 PROWLARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/prowlarr/config.xml" 2>/dev/null || echo "")
 SONARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/sonarr/config.xml" 2>/dev/null || echo "")
 
-if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ] || [ -z "${SONARR_KEY}" ]; then
+if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ]; then
     echo "WARNING: Could not extract API keys. Services may still be starting."
     echo "Re-run this script in a minute, or extract them manually from config.xml files."
     exit 1
+fi
+
+# Sonarr is deliberately NOT part of the hard-fail above. A broken/slow
+# Sonarr on a fresh provision used to abort the ENTIRE script here — before
+# Step 7.5 (qBit auth hardening: disables the localhost auth bypass, sets
+# the random WebUI password) and Step 7.6 (mirrors it to MDB_QBIT_PASS) ever
+# ran, leaving qBittorrent on `adminadmin` with the localhost bypass ON. A
+# Sonarr-only fault has no business regressing qBittorrent's security
+# posture. This degrades safely: with SONARR_KEY empty, the 10-S readiness
+# probe below fails closed (SONARR_READY=0), which makes 14b-S/15-S/16-S
+# skip cleanly, and 15-S0/17-S are already ||-guarded so an unreachable
+# Sonarr can't abort them either — later runs simply pick it back up.
+if [ -z "${SONARR_KEY}" ]; then
+    echo "WARN: Could not extract Sonarr API key — Sonarr may still be starting."
+    echo "      Continuing without it; Sonarr-specific steps below will skip and"
+    echo "      self-heal on the next run. Radarr/Prowlarr/qBit setup proceeds."
 fi
 
 # 7. Write keys back to .env
@@ -2213,24 +2229,28 @@ fi
 # the path to exist and be writable by PUID; the mkdir + chown in Step 2
 # guarantees both. Idempotent: skip if already present.
 echo "Configuring Sonarr root folder /data/library/tv..."
-# The curl inside the substitution MUST be ||-guarded: under the script's
-# set -euo pipefail, a bare failing curl in a $(pipeline) aborts the whole
-# run before the tolerant python path ever executes (same convention as
-# PROFILE_JSON at Step 8: `curl ... || echo "[]"`).
-SONARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${SONARR_KEY}" \
-    http://localhost:8989/api/v3/rootfolder 2>/dev/null || echo "[]") \
-    | python3 -c "import sys,json
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — later runs will apply it."
+else
+    # The curl inside the substitution MUST be ||-guarded: under the script's
+    # set -euo pipefail, a bare failing curl in a $(pipeline) aborts the whole
+    # run before the tolerant python path ever executes (same convention as
+    # PROFILE_JSON at Step 8: `curl ... || echo "[]"`).
+    SONARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${SONARR_KEY}" \
+        http://localhost:8989/api/v3/rootfolder 2>/dev/null || echo "[]") \
+        | python3 -c "import sys,json
 try: print(any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)))
 except Exception: print(False)")
-if [[ "${SONARR_RF_PRESENT}" == "True" ]]; then
-    echo "  ✓ Sonarr root folder /data/library/tv already present"
-else
-    if curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
-        -d '{"path":"/data/library/tv"}' \
-        http://localhost:8989/api/v3/rootfolder >/dev/null 2>&1; then
-        echo "  ✓ Sonarr root folder /data/library/tv created"
+    if [[ "${SONARR_RF_PRESENT}" == "True" ]]; then
+        echo "  ✓ Sonarr root folder /data/library/tv already present"
     else
-        echo "  WARN: failed to create Sonarr root folder; verify /data/library/tv is writable"
+        if curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+            -d '{"path":"/data/library/tv"}' \
+            http://localhost:8989/api/v3/rootfolder >/dev/null 2>&1; then
+            echo "  ✓ Sonarr root folder /data/library/tv created"
+        else
+            echo "  WARN: failed to create Sonarr root folder; verify /data/library/tv is writable"
+        fi
     fi
 fi
 
@@ -2691,26 +2711,30 @@ fi
 #
 # Sonarr twin of the Radarr reconcile above. RefreshMonitoredDownloads
 # polls the now-configured download client; DownloadedEpisodesScan walks
-# the sonarr category's save dir and imports anything matching a
-# monitored series. The path mirrors the live qBit wiring chosen at
-# provisioning time (see qbit_categories.json): /data-based on a
-# hardlink-migrated box, /downloads/complete otherwise.
-# Both commands no-op on a clean setup with no orphaned downloads.
+# the fixed /downloads/complete container mount (same path Radarr's
+# reconcile above uses) and imports anything matching a monitored series.
+# The path is a fixed container mount, not something chosen per-box at
+# provisioning time. Both commands no-op on a clean setup with no
+# orphaned downloads.
 echo "Reconciling Sonarr import state (catches completed-but-orphaned episodes)..."
-SONARR_RECONCILE_OK="✓"
-curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
-    -d '{"name":"RefreshMonitoredDownloads"}' \
-    "http://localhost:8989/api/v3/command" >/dev/null \
-    || SONARR_RECONCILE_OK="WARN"
-sleep 5
-curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
-    -d '{"name":"DownloadedEpisodesScan","path":"/downloads/complete","importMode":"Auto"}' \
-    "http://localhost:8989/api/v3/command" >/dev/null \
-    || SONARR_RECONCILE_OK="WARN"
-if [[ "${SONARR_RECONCILE_OK}" == "✓" ]]; then
-    echo "  ✓ Sonarr scan + import triggered (any orphaned downloads reconcile within ~30s)"
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — later runs will apply it."
 else
-    echo "  WARN: failed to trigger Sonarr import scan; verify via web UI"
+    SONARR_RECONCILE_OK="✓"
+    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        -d '{"name":"RefreshMonitoredDownloads"}' \
+        "http://localhost:8989/api/v3/command" >/dev/null \
+        || SONARR_RECONCILE_OK="WARN"
+    sleep 5
+    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        -d '{"name":"DownloadedEpisodesScan","path":"/downloads/complete","importMode":"Auto"}' \
+        "http://localhost:8989/api/v3/command" >/dev/null \
+        || SONARR_RECONCILE_OK="WARN"
+    if [[ "${SONARR_RECONCILE_OK}" == "✓" ]]; then
+        echo "  ✓ Sonarr scan + import triggered (any orphaned downloads reconcile within ~30s)"
+    else
+        echo "  WARN: failed to trigger Sonarr import scan; verify via web UI"
+    fi
 fi
 
 # 18. Run smoke test. Hard-asserts every link in the chain (indexers,

@@ -87,6 +87,7 @@ SEARCH_MIN_RESULTS=10
 # ── Helpers ─────────────────────────────────────────────────────────
 PASS_COUNT=0
 FAIL_COUNT=0
+SKIP_COUNT=0
 FAILURES=()
 
 log()    { [[ "${QUIET}" -eq 1 ]] || echo "$@"; }
@@ -103,6 +104,14 @@ fail() {
     echo "  ✗ $*"
 }
 
+# Deliberately does NOT touch PASS_COUNT/FAIL_COUNT — a skip is neither.
+# Keeping it out of both keeps TOTAL and the "All N checks PASSED" banner
+# below honest: N reflects only checks that actually ran.
+skip() {
+    SKIP_COUNT=$((SKIP_COUNT + 1))
+    log "  ⊘ $* (skipped)"
+}
+
 require_env() {
     if [[ ! -f "${ENV_FILE}" ]]; then
         echo "ERROR: ${ENV_FILE} not found. Has setup_services.sh been run?"
@@ -113,7 +122,18 @@ require_env() {
     : "${RADARR_API_KEY:?RADARR_API_KEY missing from .env}"
     : "${PROWLARR_API_KEY:?PROWLARR_API_KEY missing from .env}"
     : "${QBITTORRENT_ADMIN_PASSWORD:?QBITTORRENT_ADMIN_PASSWORD missing from .env}"
-    : "${SONARR_API_KEY:?SONARR_API_KEY missing from .env}"
+    # SONARR_API_KEY is deliberately NOT a hard `:?` guard like the three
+    # above. Under `set -uo pipefail`, a `:?` on a missing var exits the
+    # WHOLE script immediately — before a single check runs, including
+    # all four Radarr checks below. Release tarballs ship scripts/
+    # wholesale, so any already-provisioned field box that hasn't re-run
+    # setup_services.sh since Sonarr landed (and so has no
+    # SONARR_API_KEY= line in .env) would fail the entire weekly
+    # magic-dingus-smoke-test.timer run with zero Radarr coverage — the
+    # exact opposite of what a smoke test is for. The five check_sonarr_*
+    # checks below each individually WARN-and-skip when this is empty;
+    # Radarr/Prowlarr/qBit coverage keeps running either way.
+    SONARR_API_KEY="${SONARR_API_KEY:-}"
 }
 
 # ── Checks ──────────────────────────────────────────────────────────
@@ -318,6 +338,10 @@ PYEOF
 
 check_sonarr_root_folder() {
     header "Sonarr root folder (/data/library/tv)"
+    if [[ -z "${SONARR_API_KEY}" ]]; then
+        skip "Sonarr root folder — SONARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
     local response
     response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/rootfolder" 2>/dev/null) || {
@@ -333,6 +357,10 @@ check_sonarr_root_folder() {
 
 check_sonarr_indexers() {
     header "Sonarr indexers (TV-capable subset)"
+    if [[ -z "${SONARR_API_KEY}" ]]; then
+        skip "Sonarr indexers — SONARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
     local response
     response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/indexer" 2>/dev/null) || {
@@ -343,10 +371,13 @@ check_sonarr_indexers() {
     result=$(python3 - "${response}" <<'PYEOF'
 import json, re, sys
 # TV-capable indexers Prowlarr's 5000-category app-sync can push into
-# Sonarr. YTS + Knaben are movies-only and never sync here. EZTV is
-# enabled but soft-fails when Byparr/EZTV is flaky, so we require a
-# THRESHOLD (>=2 present) rather than an exact set — this catches a
-# totally-broken sync without flaking on per-indexer quirks.
+# Sonarr. YTS is movies-only and never syncs here. Knaben, unlike YTS,
+# DOES advertise TV categories and shows up in Sonarr's live indexer
+# set, but it's deliberately left out of the required POOL below — like
+# EZTV, its automatic-search sync has been inconsistent (Byparr/
+# Cloudflare churn), so we require a THRESHOLD (>=2 present) rather
+# than an exact set — this catches a totally-broken sync without
+# flaking on per-indexer quirks.
 POOL = {"The Pirate Bay", "TorrentDownload", "LimeTorrents", "EZTV"}
 SUFFIX_RE = re.compile(r"\s*\((?:Prowlarr|Jackett)\)\s*$", re.I)
 data = json.loads(sys.argv[1])
@@ -371,6 +402,10 @@ PYEOF
 
 check_sonarr_download_client() {
     header "Sonarr → qBittorrent download client"
+    if [[ -z "${SONARR_API_KEY}" ]]; then
+        skip "Sonarr download client — SONARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
     local response
     response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/downloadclient" 2>/dev/null) || {
@@ -405,6 +440,10 @@ PYEOF
 
 check_sonarr_quality_profile() {
     header "Sonarr quality profile (Any → Bluray-720p cutoff)"
+    if [[ -z "${SONARR_API_KEY}" ]]; then
+        skip "Sonarr quality profile — SONARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
     local response
     response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/qualityprofile" 2>/dev/null) || {
@@ -458,6 +497,10 @@ PYEOF
 
 check_sonarr_custom_formats() {
     header "Sonarr Custom Formats"
+    if [[ -z "${SONARR_API_KEY}" ]]; then
+        skip "Sonarr Custom Formats — SONARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
     local response
     response=$(curl -fsS -H "X-Api-Key: ${SONARR_API_KEY}" \
         "http://localhost:8989/api/v3/customformat" 2>/dev/null) || {
@@ -640,10 +683,14 @@ check_live_search
 
 # Summary
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
+SKIP_NOTE=""
+if [[ "${SKIP_COUNT}" -gt 0 ]]; then
+    SKIP_NOTE=" (${SKIP_COUNT} skipped — Sonarr not provisioned)"
+fi
 echo ""
 echo "======================================================================"
 if [[ "${FAIL_COUNT}" -eq 0 ]]; then
-    echo "  ✓ All ${TOTAL} smoke-test checks PASSED"
+    echo "  ✓ All ${TOTAL} smoke-test checks PASSED${SKIP_NOTE}"
     echo "======================================================================"
     exit 0
 else
