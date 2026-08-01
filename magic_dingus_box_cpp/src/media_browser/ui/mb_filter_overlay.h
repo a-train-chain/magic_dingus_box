@@ -14,6 +14,7 @@ namespace media_browser::ui {
 enum class FilterTabKind {
     Popular,
     TopRated,
+    ForYou,   // SHUFFLE-only overlay in Phase 1 (spec 1c)
 };
 
 // View-level snapshot of the per-tab filter state. Consumers (BrowseScreen)
@@ -27,6 +28,13 @@ struct FilterState {
     int language = 0;     // matches MbLanguage enum value
     int sort = 0;         // matches MbDiscoverSort enum value
 };
+
+inline bool operator==(const FilterState& a, const FilterState& b) {
+    return a.genre_mask == b.genre_mask && a.decade == b.decade &&
+           a.min_rating == b.min_rating && a.runtime == b.runtime &&
+           a.language == b.language && a.sort == b.sort;
+}
+inline bool operator!=(const FilterState& a, const FilterState& b) { return !(a == b); }
 
 // Returns TMDB genre IDs in bit-position order. Index i corresponds to
 // bit i in FilterState::genre_mask. Used by callers to translate the mask
@@ -77,6 +85,12 @@ public:
     using CommitCallback = std::function<void(const FilterState&, FilterTabKind)>;
     void set_on_commit(CommitCallback cb) { on_commit_ = std::move(cb); }
 
+    // SHUFFLE row callback (spec 1b). The overlay closes itself via the
+    // commit-free close() before firing; the handler persists any staged
+    // edits and performs exactly one shuffle load.
+    using ShuffleCallback = std::function<void(const FilterState&, FilterTabKind)>;
+    void set_on_shuffle(ShuffleCallback cb) { on_shuffle_ = std::move(cb); }
+
     // Render the overlay panel. Caller is responsible for screen geometry.
     void render(::ui::Renderer& r, int screen_w, int screen_h);
 
@@ -93,11 +107,27 @@ private:
 
     FilterTabKind tab_ = FilterTabKind::Popular;
     FilterState working_;       // staging area — edits accumulate here until BTN4 close
-    int focus_row_ = 0;         // 0..kFocusableRowCount-1
+    int focus_row_ = 0;         // 0..row_count()-1
 
     CommitCallback on_commit_;
 
-    static constexpr int kFocusableRowCount = 7;  // 6 filters + Reset
+    // Per-tab row model (spec 1b): the row count and roles vary by tab kind.
+    // Popular/TopRated: rows 0-5 = filter/sort values, 6 = RESET ALL,
+    // 7 = SHUFFLE. ForYou: single SHUFFLE row.
+    enum class RowRole { Value, Reset, Shuffle };
+    bool has_filter_rows() const { return tab_ != FilterTabKind::ForYou; }
+    int  row_count() const { return has_filter_rows() ? 8 : 1; }
+    RowRole role_for_row(int row) const {
+        if (!has_filter_rows()) return RowRole::Shuffle;
+        if (row == 6) return RowRole::Reset;
+        if (row == 7) return RowRole::Shuffle;
+        return RowRole::Value;
+    }
+    FilterState opened_;          // snapshot at open() — commit skipped when unchanged
+    ShuffleCallback on_shuffle_;
+    void render_shuffle_row(::ui::Renderer& r, int panel_x, int x, int y,
+                            bool focused);
+
     static constexpr int kSlideInMs  = 200;
     static constexpr int kSlideOutMs = 150;
     static constexpr int kPanelWidthPx = 380;

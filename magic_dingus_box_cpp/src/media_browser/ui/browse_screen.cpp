@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <system_error>
 #include <unordered_map>
@@ -684,6 +685,39 @@ void BrowseScreen::reload_for_category() {
     load_category(category_);
 }
 
+void BrowseScreen::persist_filter_state(FilterTabKind tab, const FilterState& fs) {
+    // ForYou keeps no persisted filter state in Phase 1 (spec 1c).
+    if (tab == FilterTabKind::ForYou) return;
+    write_filter_state(state_.display_settings, tab, fs);
+    ::app::SettingsPersistence::save_settings(state_);
+}
+
+void BrowseScreen::do_shuffle() {
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    if (category_ == Category::Popular || category_ == Category::TopRated) {
+        if (active_chart_filters_active()) {
+            FilterTabKind tab = (category_ == Category::Popular)
+                                ? FilterTabKind::Popular : FilterTabKind::TopRated;
+            current_filter_ = build_discover_filter(
+                read_filter_state(state_.display_settings, tab), tab);
+            const std::string sig =
+                TmdbClient::build_discover_url("", current_filter_, 1);
+            const auto it = discover_total_pages_.find(sig);
+            const int max_base =
+                discover_max_base(it == discover_total_pages_.end() ? 0 : it->second,
+                                  kMaxLoadedPages);
+            load_shuffle_discover(
+                pick_shuffle_base(page_window_base_, max_base, rng()));
+        } else {
+            const int max_base = (category_ == Category::Popular)
+                                 ? kShuffleMaxBasePopular : kShuffleMaxBaseTopRated;
+            load_shuffle(category_,
+                         pick_shuffle_base(page_window_base_, max_base, rng()));
+        }
+    }
+    // Category::ForYou is wired in the For You task — resample_foryou(false).
+}
+
 void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
                                           int page, bool is_revalidate) {
     auto list = tmdb_.discover(filter, page);
@@ -1018,9 +1052,13 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                 filter_overlay_.open(tk, read_filter_state(state_.display_settings, tk));
                 filter_overlay_.set_on_commit(
                     [this](const FilterState& fs, FilterTabKind tk2) {
-                        write_filter_state(state_.display_settings, tk2, fs);
-                        ::app::SettingsPersistence::save_settings(state_);
+                        this->persist_filter_state(tk2, fs);
                         this->reload_for_category();
+                    });
+                filter_overlay_.set_on_shuffle(
+                    [this](const FilterState& fs, FilterTabKind tk2) {
+                        this->persist_filter_state(tk2, fs);
+                        this->do_shuffle();
                     });
             }
             continue;

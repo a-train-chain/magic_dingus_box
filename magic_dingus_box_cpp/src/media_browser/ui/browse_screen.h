@@ -117,6 +117,12 @@ private:
     // are active; switches to /discover/movie when any filter is set.
     // Called from the FilterOverlay commit callback.
     void reload_for_category();
+    // Shared persist half of the overlay commit (spec 1b): write per-tab
+    // filter state + save settings.json, WITHOUT the reload — the commit
+    // path adds reload_for_category(), the shuffle path adds do_shuffle().
+    void persist_filter_state(FilterTabKind tab, const FilterState& fs);
+    // Spec 1b shuffle dispatch for the active tab.
+    void do_shuffle();
     // Shuffle entry points (spec 1b): mirror load_category's synchronous
     // reset, then spawn the base page of a fresh window.
     void load_shuffle(Category cat, int base_page);
