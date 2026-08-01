@@ -160,7 +160,7 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
         // Try recommendations first — better algorithmic suggestions than
         // /similar. Fall back to get_similar when recommendations is empty
         // (some films have no data on TMDB's recommendations endpoint).
-        auto results = tmdb.get_recommendations(id, /*page=*/1);
+        auto results = tmdb.get_recommendations(id, /*page=*/1).hits;
         if (cancel_requested_.load()) {
             spdlog::debug("[playback_overlay] prefetch cancelled for tmdb_id={}", id);
             return;
@@ -168,7 +168,7 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
         spdlog::info("[playback_overlay] get_recommendations returned {} films for tmdb_id={}",
                      results.size(), id);
         if (results.empty()) {
-            results = tmdb.get_similar(id, /*page=*/1);
+            results = tmdb.get_similar(id, /*page=*/1).hits;
             if (cancel_requested_.load()) {
                 spdlog::debug("[playback_overlay] prefetch cancelled (fallback) for tmdb_id={}", id);
                 return;

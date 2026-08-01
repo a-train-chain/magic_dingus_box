@@ -204,47 +204,47 @@ std::optional<TmdbMovieDetail> TmdbClient::get_movie(int tmdb_id) {
     return parse_movie_detail(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_popular(int page) {
+TmdbList TmdbClient::get_popular(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/popular?api_key=" << api_key_
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_now_playing(int page) {
+TmdbList TmdbClient::get_now_playing(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/now_playing?api_key=" << api_key_
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_top_rated(int page) {
+TmdbList TmdbClient::get_top_rated(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/top_rated?api_key=" << api_key_
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_upcoming(int page) {
+TmdbList TmdbClient::get_upcoming(int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/upcoming?api_key=" << api_key_
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_similar(int tmdb_id, int page) {
+TmdbList TmdbClient::get_similar(int tmdb_id, int page) {
     std::ostringstream url;
     url << kApiBase << "/movie/" << tmdb_id << "/similar"
         << "?api_key=" << url_encode(api_key_)
@@ -252,15 +252,15 @@ std::vector<TmdbSearchHit> TmdbClient::get_similar(int tmdb_id, int page) {
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::get_recommendations(int tmdb_id, int page) {
+TmdbList TmdbClient::get_recommendations(int tmdb_id, int page) {
     // /movie/{id}/recommendations returns an algorithmic mix of similar films
     // and trending content — generally more useful than /similar, which is
     // a pure genre-mechanical match. Falls back to get_similar at the call
-    // site when this returns empty (some films have no recommendations data).
+    // site when this returns empty hits (some films have no recommendations data).
     std::ostringstream url;
     url << kApiBase << "/movie/" << tmdb_id << "/recommendations"
         << "?api_key=" << url_encode(api_key_)
@@ -268,8 +268,8 @@ std::vector<TmdbSearchHit> TmdbClient::get_recommendations(int tmdb_id, int page
         << "&include_adult=false"
         << "&page=" << page;
     auto body = http_get(url.str());
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
 std::string TmdbClient::build_discover_url(const std::string& api_key,
@@ -316,10 +316,10 @@ std::string TmdbClient::build_discover_url(const std::string& api_key,
     return url.str();
 }
 
-std::vector<TmdbSearchHit> TmdbClient::discover(const DiscoverFilter& filter, int page) {
+TmdbList TmdbClient::discover(const DiscoverFilter& filter, int page) {
     auto body = http_get(build_discover_url(api_key_, filter, page));
-    if (body.empty()) return {};
-    return parse_list_response(body);
+    if (body.empty()) return {};  // ok=false — network/HTTP failure
+    return parse_list(body);
 }
 
 std::vector<Genre> TmdbClient::get_genres() {
@@ -394,6 +394,35 @@ std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& js
         hits.push_back(std::move(h));
     }
     return hits;
+}
+
+TmdbList TmdbClient::parse_list(const std::string& json) {
+    TmdbList list;
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(json);
+    if (!Json::parseFromStream(rb, is, &root, &err)) {
+        spdlog::error("[media_browser] TMDB list parse error: {}", err);
+        return list;  // ok=false
+    }
+    const auto& results = root["results"];
+    if (!results.isArray()) return list;  // TMDB error payload — ok=false
+    list.ok = true;
+    list.total_pages = root.get("total_pages", 0).asInt();
+    for (const auto& r : results) {
+        if (r.get("adult", false).asBool()) continue;  // family-safe drop
+        TmdbSearchHit h;
+        h.tmdb_id = r.get("id", 0).asInt();
+        h.title = r.get("title", "").asString();
+        h.original_title = r.get("original_title", "").asString();
+        h.overview = r.get("overview", "").asString();
+        h.poster_path = resolve_poster_url(r.get("poster_path", "").asString());
+        h.year = extract_year(r.get("release_date", "").asString());
+        h.rating = r.get("vote_average", 0.0).asDouble();
+        list.hits.push_back(std::move(h));
+    }
+    return list;
 }
 
 std::vector<Genre> TmdbClient::parse_genres_response(const std::string& json) {

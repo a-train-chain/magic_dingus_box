@@ -527,14 +527,15 @@ void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page) {
     // Captured-by-value: do the slow TMDB call here. If the user
     // switches categories before this returns, current_gen_ will
     // bump and our publish will be silently discarded.
-    std::vector<TmdbSearchHit> result;
+    TmdbList list;
     switch (cat) {
-        case Category::Popular:    result = tmdb_.get_popular(page);     break;
-        case Category::NowPlaying: result = tmdb_.get_now_playing(page); break;
-        case Category::TopRated:   result = tmdb_.get_top_rated(page);   break;
-        case Category::Upcoming:   result = tmdb_.get_upcoming(page);    break;
+        case Category::Popular:    list = tmdb_.get_popular(page);     break;
+        case Category::NowPlaying: list = tmdb_.get_now_playing(page); break;
+        case Category::TopRated:   list = tmdb_.get_top_rated(page);   break;
+        case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
         default: break;
     }
+    std::vector<TmdbSearchHit> result = std::move(list.hits);
 
     // Heuristic for "no more pages": TMDB returns 20/page; the family-
     // safe filter trims a few. < 5 means we've effectively run out.
@@ -601,7 +602,8 @@ void BrowseScreen::reload_for_category() {
 
 void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
                                           int page) {
-    auto result = tmdb_.discover(filter, page);
+    auto list = tmdb_.discover(filter, page);
+    auto result = std::move(list.hits);
     const bool no_more = result.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
         spdlog::info("[BrowseScreen] discover page={} gen={} stale; discarding",

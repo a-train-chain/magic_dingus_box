@@ -20,6 +20,17 @@ struct TmdbSearchHit {
     double rating = 0.0;         // vote_average
 };
 
+// Result of any TMDB "results[]" list endpoint. `ok` distinguishes a fetch/
+// parse failure from a genuinely empty page — the bare-vector endpoints could
+// not, which made stale-while-revalidate inexpressible (spec 1a′). `ok` is
+// true iff the JSON parsed AND carried a results array; TMDB error payloads
+// (valid JSON, no results) are NOT ok.
+struct TmdbList {
+    bool ok = false;
+    int total_pages = 0;   // TMDB total_pages; 0 when absent.
+    std::vector<TmdbSearchHit> hits;
+};
+
 struct TmdbMovieDetail {
     int tmdb_id = 0;
     std::string title;
@@ -74,21 +85,21 @@ public:
     std::optional<TmdbMovieDetail> get_movie(int tmdb_id);
 
     // Category endpoints — TMDB's canonical discovery surfaces.
-    std::vector<TmdbSearchHit> get_popular(int page = 1);
-    std::vector<TmdbSearchHit> get_now_playing(int page = 1);
-    std::vector<TmdbSearchHit> get_top_rated(int page = 1);
-    std::vector<TmdbSearchHit> get_upcoming(int page = 1);
+    TmdbList get_popular(int page = 1);
+    TmdbList get_now_playing(int page = 1);
+    TmdbList get_top_rated(int page = 1);
+    TmdbList get_upcoming(int page = 1);
 
     // Discover (free-form filter).
-    std::vector<TmdbSearchHit> discover(const DiscoverFilter& filter, int page = 1);
+    TmdbList discover(const DiscoverFilter& filter, int page = 1);
 
     // Similar movies (by id) — used by Marquee playback overlay.
-    std::vector<TmdbSearchHit> get_similar(int tmdb_id, int page = 1);
+    TmdbList get_similar(int tmdb_id, int page = 1);
 
     // Recommendations for a movie (by id) — algorithmic mix of similar + trending.
     // Generally gives better suggestions than get_similar; callers should fall
-    // back to get_similar when this returns empty.
-    std::vector<TmdbSearchHit> get_recommendations(int tmdb_id, int page = 1);
+    // back to get_similar when this returns empty hits.
+    TmdbList get_recommendations(int tmdb_id, int page = 1);
 
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
@@ -102,6 +113,11 @@ public:
     // can pass it straight to the artwork cache.
     static std::vector<TmdbSearchHit> parse_list_response(const std::string& json);
     static std::vector<Genre> parse_genres_response(const std::string& json);
+
+    // TmdbList-shaped variant of parse_list_response — same row handling
+    // (family-safe drop, w500 poster prefix) plus ok/total_pages. The old
+    // vector-shaped parser stays for its existing tests and callers.
+    static TmdbList parse_list(const std::string& json);
 
     // URL builders — exposed so unit tests can verify query-string construction
     // without a network round-trip.
