@@ -283,6 +283,21 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # Wipe per-service config dirs. Each service will regenerate
     # fresh state on next start. Setup_services.sh re-creates the
     # full configuration from fixtures.
+    #
+    # `find -mindepth 1 -delete` is fully recursive (-delete implies -depth, so
+    # non-empty subdirectories go too). That is deliberate and load-bearing: it
+    # means this wipe needs no per-file list and already covers the *arr apps'
+    # Backups/ zips, their logs/ trees and logs.db, none of which are named
+    # anywhere in this script. Verified against the live box — 207 entries for
+    # radarr, 573 for prowlarr, 17 for sonarr, Backups and logs included.
+    #
+    # What it does NOT cover is the .img.gz. This runs on the CLONE, at its
+    # first boot; the artifact sits on a laptop or a shared drive from the
+    # moment dd finishes until someone flashes and boots it, and anyone reading
+    # a flashed card before that first boot keeps everything. That is why
+    # prepare_for_cloning.sh Step 2c carries its own SECRET_PATHS list covering
+    # the same Backups/ and logs/ paths: this loop protects the running unit,
+    # Step 2c protects the image. Neither one makes the other redundant.
     wipe_count=0
     for svc in radarr prowlarr qbittorrent gluetun flaresolverr sonarr; do
         if [[ -d "$SERVICES_DIR/config/$svc" ]]; then
