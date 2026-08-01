@@ -11,6 +11,25 @@ namespace media_browser {
 // the entire pre-TV movie path (Browse, Search, For You, playback overlay)
 // is untouched by the TV work — a TV row is only ever produced by the
 // parse_tv_* family, which sets this explicitly.
+//
+// *** TMDB's movie and TV id spaces OVERLAP COMPLETELY. *** tmdb_id 1396 is
+// Breaking Bad (TV) AND an unrelated movie — the two id spaces are
+// independently assigned, so a bare `int tmdb_id` is NOT a unique key across
+// kinds. Any set/map keyed on tmdb_id alone (std::unordered_set<int>,
+// std::unordered_map<int, ...>, etc.) MUST hold entries of a single kind
+// only; mixing Movie and Tv ids in one such container is a correctness bug
+// — it will silently collapse an unrelated movie and show into one entry
+// (dedupe, "owned"/"in library" checks, exclude-lists, ...). The safe form
+// is a `{kind, id}` pair (e.g. a future MediaRef), not a bare id.
+//
+// Currently-safe-because-movie-only int-keyed collections (all four will
+// become hazards the moment a caller starts mixing TV ids into them —
+// nothing in Phase 2b does, since it ships no TV UI, but Phase 2c's
+// Library/Queue work is expected to; audit these first):
+//   - browse_screen.cpp: library_tmdb_ids_.count(m.tmdb_id) (owned/hide
+//     filter, two call sites)
+//   - browse_screen.h:   loaded_tmdb_ids_ (append-page dedupe)
+//   - mb_recs.cpp:       by_id / exclude (recommendation merge/exclude)
 enum class MediaKind { Movie, Tv };
 
 struct TmdbSearchHit {
@@ -24,7 +43,11 @@ struct TmdbSearchHit {
     std::string poster_path;
     int year = 0;                // extracted from release_date/first_air_date
     double rating = 0.0;         // vote_average
-    MediaKind kind = MediaKind::Movie;  // see MediaKind — movie rows never set this
+    // See MediaKind above. parse_list() (and its TV counterpart parse_tv_list)
+    // set this explicitly via fill_list_row for every row; only the two
+    // legacy parsers — parse_search_response and parse_list_response, which
+    // never touch fill_list_row — rely on this default.
+    MediaKind kind = MediaKind::Movie;
 };
 
 // Result of any TMDB "results[]" list endpoint. `ok` distinguishes a fetch/

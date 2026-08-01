@@ -4,6 +4,7 @@
 #include "media_browser/radarr/radarr_parsers.h"  // parse_system_status
 
 #include <curl/curl.h>
+#include <json/json.h>
 #include <spdlog/spdlog.h>
 
 #include <chrono>
@@ -511,6 +512,12 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
                      "{}ms; returning provisional state (caller must re-fetch)",
                      tmdb_id, new_id, cfg_.add_settle_timeout_ms);
     } else {
+        // A settled result is unambiguously ok=true, settled=true — clear
+        // any error an earlier poll iteration's failed GET left behind
+        // (http_get sets it on every transport/HTTP failure), so a caller
+        // checking last_error() after success doesn't see stale text from
+        // a since-recovered blip.
+        set_error({});
         spdlog::info("[sonarr] add_series ok: tmdb={} tvdb={} id={} '{}'",
                      tmdb_id, tvdb_id, new_id,
                      series.get("title", "?").asString());
@@ -609,6 +616,7 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
     // only to report how badly a capped fetch got truncated.
     constexpr int kMaxPages = 20;  // 2000 records at the default page size
     const int page_size = cfg_.queue_page_size > 0 ? cfg_.queue_page_size : 100;
+    set_error({});  // clear any stale error so a prior call's failure can't be misattributed
     std::vector<SonarrQueueItem> out;
     int total = 0;
     int page = 1;
@@ -617,7 +625,18 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
             "/api/v3/queue?page=" + std::to_string(page)
             + "&pageSize=" + std::to_string(page_size)
             + "&includeEpisode=true&includeSeries=false");
-        if (resp.empty()) break;  // transport failure — keep what we have
+        if (resp.empty()) {
+            // Transport failure mid-paging — keep what we have rather than
+            // discard prior pages, but the caller MUST know this result is
+            // truncated: a season pack's sibling episodes can now be split
+            // across "returned" and "lost to this failure", and a naive
+            // caller grouping by download_id would render a partial season
+            // as if it were the whole thing.
+            spdlog::warn("[sonarr] get_queue: transport failure fetching page {} "
+                         "(have {} records so far); queue result may be truncated",
+                         page, out.size());
+            break;
+        }
         auto batch = SonarrParsers::parse_queue(resp);
         const int batch_total = SonarrParsers::parse_queue_total(resp);
         if (batch_total > 0) total = batch_total;

@@ -4,7 +4,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include <json/json.h>
 #include "media_browser/sonarr/sonarr_types.h"
 
 namespace media_browser {

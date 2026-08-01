@@ -34,7 +34,7 @@
 - **Test-first is mandatory.** Nearly every unit here is pure. Each parser and URL builder gets its failing test written and *observed failing* before the implementation exists.
 - **No screens, no UI.** Phase 2b touches no file under `src/media_browser/ui/`, no `mb_chrome`, no overlay. The Movies/TV toggle, series detail screen, season UI, queue grouping UI and search-follows-mode are Phase 2c.
 - **The client must NOT pre-group the queue.** Sonarr's `/api/v3/queue` is per-episode; a season pack is N records sharing one `downloadId`. The client returns the raw per-episode records *including* `download_id`; grouping is Phase 2c's UI job.
-- **Sonarr applies `addOptions` ASYNCHRONOUSLY — this is a correctness requirement, not a note.** `POST /api/v3/series` returns the STORED resource (`SeriesController.AddSeries` → `Created(series.Id)` → `RestController.Created` serializes `GetResourceById(id)`), but at that instant the stored record still has every season `monitored:true` and a populated `addOptions`. `AddSeriesService` persists, publishes `SeriesAddedEvent`, which queues a `RefreshSeriesCommand`; only once `RefreshSeriesService` has pulled the episode list from SkyHook does `EpisodeMonitoredService` apply the `monitor` enum and null out `addOptions`. **An immediate single re-GET is therefore just as wrong as trusting the POST body** — it races the refresh and returns the same all-monitored view. `add_series` must BOUNDED-POLL until the refresh settles, and must report `settled=false` when it times out so the caller re-fetches instead of caching a wrong season list. That poll sleeps, so it is **worker-thread only** — `cfg_.timeout_secs=5` and `WatchdogSec=10` mean it must never run on the render thread.
+- **Sonarr applies `addOptions` ASYNCHRONOUSLY — this is a correctness requirement, not a note.** `POST /api/v3/series` returns the STORED resource (`SeriesController.AddSeries` → `Created(series.Id)` → `RestController.Created` serializes `GetResourceById(id)`), but at that instant the stored record still has every season `monitored:true` — Sonarr has only inserted the row and published `SeriesAddedEvent`, which queues a `RefreshSeriesCommand`. **`addOptions` itself is never observable on read, at any point.** A controller live-probe (2026-08-01: added Breaking Bad, polled `GET /series/{id}` 40×, plus the POST response) found `addOptions` absent from the POST response and from every GET — it is write-only on Sonarr's `SeriesResource`, not "populated, then nulled once the refresh lands" as originally assumed. Only once `RefreshSeriesService` has pulled the episode list from SkyHook does `EpisodeMonitoredService` apply the `monitor` enum — and the same probe showed `statistics.totalEpisodeCount` can populate *before* that enum is applied, so "episodes exist" alone is not a safe settle signal either. The predicate that cannot false-positive during that race is checking the **REQUESTED OUTCOME** directly: episodes exist AND the monitored-season set matches what was asked for — see `add_settled()` / `record_refreshed()` in `sonarr_client.cpp`. **An immediate single re-GET is therefore just as wrong as trusting the POST body** — it races the refresh and returns the same all-monitored view. `add_series` must BOUNDED-POLL until that outcome settles, and must report `settled=false` when it times out — and when it does, `series.seasons` is ALWAYS EMPTY (both unsettled paths clear it) rather than a pending snapshot, so the caller re-fetches instead of caching a wrong season list. **`settled == false` has two different causes 2c must not conflate:** on a just-added series it means "the poll timed out" (TRANSIENT — re-fetch shortly); on an *already-in-library* series (the idempotent add path) it means "Sonarr has never refreshed this record at all" (e.g. an announced/upcoming series with no episodes yet) — which is PERMANENT, and a UI that spins waiting for it to flip will spin forever. That poll sleeps, so it is **worker-thread only** — `cfg_.timeout_secs=5` and `WatchdogSec=10` mean it must never run on the render thread.
 - **`minimumAvailability` does not exist in Sonarr** (Radarr-only). Never send it.
 - **`addOptions.monitor` is derived from the caller's `monitor` flag**, never hardcoded: `monitor ? "firstSeason" : "none"`. Sonarr honours `addOptions.monitor` independently of `series.monitored`, so a "don't monitor" add that still sent `firstSeason` would leave a fully monitored season 1 underneath — and the moment anything flips `series.monitored` true, Sonarr grabs the whole season with no user action naming it.
 - **Any probe whose answer drives a mutation needs a checked shape.** `nullopt`/empty must not conflate "the server said no" with "the request failed" — that conflation is the shipped Radarr bug `get_library_checked` exists to fix, and Sonarr shares Gluetun's netns so transport blips are routine.
@@ -3579,22 +3579,32 @@ and after `find_series_by_tvdb`, add:
     // honours addOptions.monitor independently of series.monitored and would
     // leave a fully monitored season 1 armed underneath.
     //
-    // *** Sonarr applies addOptions ASYNCHRONOUSLY. ***
-    // The POST returns the STORED resource (RestController.Created serializes
-    // GetResourceById), but at that moment AddSeriesService has only inserted
-    // the row and published SeriesAddedEvent, which queues a
-    // RefreshSeriesCommand. Not until RefreshSeriesService has fetched the
-    // episode list from SkyHook does EpisodeMonitoredService apply the monitor
-    // enum and null out addOptions. Until then BOTH the POST response and any
-    // GET show every season monitored:true — so a single immediate re-GET is
-    // no better than trusting the POST body.
+    // *** Sonarr applies addOptions ASYNCHRONOUSLY, AND NEVER SERIALIZES IT
+    // BACK ON READ. *** The POST returns the STORED resource
+    // (RestController.Created serializes GetResourceById), but at that
+    // moment AddSeriesService has only inserted the row and published
+    // SeriesAddedEvent, which queues a RefreshSeriesCommand. Not until
+    // RefreshSeriesService has fetched the episode list from SkyHook does
+    // EpisodeMonitoredService apply the monitor enum. A controller live-probe
+    // (2026-08-01: added Breaking Bad, polled GET /series/{id} 40x) found
+    // addOptions ABSENT from the POST response and every GET — it is
+    // write-only, not "populated then nulled" as originally assumed — and
+    // found statistics.totalEpisodeCount can populate BEFORE the monitor
+    // enum is applied, so neither "addOptions disappeared" nor "episodes
+    // exist" is a safe settle signal on its own. The predicate that cannot
+    // false-positive is checking the REQUESTED OUTCOME directly: episodes
+    // exist AND the monitored-season set matches what was asked for (see
+    // add_settled() / record_refreshed() in sonarr_client.cpp). Until
+    // settled, BOTH the POST response and any GET can show every season
+    // monitored:true — so a single immediate re-GET is no better than
+    // trusting the POST body.
     //
-    // This method therefore BOUNDED-POLLS GET /api/v3/series/{id} until the
-    // refresh has visibly landed (addOptions cleared, or episode statistics
-    // populated), capped by Config::add_settle_timeout_ms. On timeout it
-    // returns ok=true, settled=false with the record it has — the add really
-    // did happen — and the caller MUST re-fetch rather than cache those season
-    // flags.
+    // This method therefore BOUNDED-POLLS GET /api/v3/series/{id} against
+    // that outcome predicate, capped by Config::add_settle_timeout_ms. On
+    // timeout it returns ok=true, settled=false with seasons[] CLEARED
+    // (never the pending/mid-refresh snapshot) — the add really did happen —
+    // and the caller MUST re-fetch rather than treat the empty list as "this
+    // show has 0 seasons".
     //
     // *** WORKER THREAD ONLY. *** This sleeps between polls. cfg_.timeout_secs
     // is 5 and the kiosk unit's WatchdogSec is 10; calling it from the render
@@ -4870,9 +4880,10 @@ Phase 2c owns everything this plan deliberately left out. The seams it will buil
 
 - **Grouping** — `get_queue()` returns per-episode `SonarrQueueItem`s; group by `download_id` for one row per download, and remember that cancelling any member id kills the whole download.
 - **Mode toggle** — `TmdbSearchHit::kind` already distinguishes rows; Library and Queue are supposed to show both kinds with a type badge and ignore the toggle.
+- **TMDB movie/TV id spaces OVERLAP COMPLETELY** — TV id 1396 is Breaking Bad; movie id 1396 is an unrelated film. Any set or map keyed on a bare `tmdb_id` (not a `{kind, id}` pair) MUST hold only one kind, or it will silently collapse an unrelated movie and show into one entry. Nothing breaks in 2b (no UI ships), but the moment 2c extends Library/Queue to show both kinds, the existing movie-only int-keyed collections become live hazards: `browse_screen.cpp`'s owned/hide filter (`library_tmdb_ids_.count(m.tmdb_id)`, two call sites), `browse_screen.h`'s `loaded_tmdb_ids_` (append-page dedupe), and `mb_recs.cpp`'s `by_id` / `exclude` maps. See the doc comment next to `MediaKind` in `tmdb_client.h` for the full rule.
 - **Genre tables** — call `get_tv_genres()` for TV mode and keep the result in a table separate from `get_genres()`. The id spaces overlap on 8 values and diverge on 19; one shared table silently mislabels.
 - **Season UI** — `Series::seasons` carries `monitored`, `episode_count` and `episode_file_count`, which is exactly the none/downloading/complete tri-state. "Download next season" = `set_season_monitored(id, n, true)` then `trigger_season_search(id, n)`.
-- **Adds are asynchronous — respect `AddSeriesResult::settled`.** `add_series` bounded-polls for Sonarr's refresh to apply `addOptions`, but it can time out. When `settled == false`, the returned `series.seasons` still shows the submitted all-monitored view: render a pending state and re-fetch, never cache those flags. And call it **off the render thread** — it sleeps.
+- **Adds are asynchronous — respect `AddSeriesResult::settled`.** `add_series` bounded-polls until Sonarr's async refresh visibly lands the REQUESTED monitoring outcome (see `add_settled()` / `record_refreshed()` in `sonarr_client.cpp` — a live probe found `addOptions` is never observable on read at all, so settle detection cannot use it as a signal). When `settled == false`, `series.seasons` is ALWAYS EMPTY — `sonarr_client.cpp:393` and `:509` both clear it rather than leave a pending/mid-refresh snapshot for a naive caller to render as fact — so re-fetch with `get_series(id)` and never treat the empty list as "this show has 0 seasons". **`settled == false` has two different meanings 2c must distinguish:** (1) on a just-added series, the poll simply timed out — TRANSIENT, re-fetch shortly and it will likely resolve; (2) on an already-in-library series (the idempotent add path), the record has never been refreshed by Sonarr at all — e.g. an announced/upcoming series with no episodes yet — which is PERMANENT; no amount of re-polling flips it on its own. A spinner keyed on `settled` alone would spin forever for case (2); it needs a different treatment (e.g. "no season data yet — try Trigger Search") rather than a retry loop. And call it **off the render thread** — it sleeps.
 - **Disk estimate** — `SeriesSearchHit::runtime_minutes` is per-episode; multiply by the season's `episode_count` and Sonarr's preferred MB/min.
 - **TV search is not built.** There is no `search_tv()` / `build_tv_search_url` in `TmdbClient` — Phase 2b ships the six discovery endpoints the spec's Clients bullet names, and search-follows-mode is 2c's. When 2c adds it: send `include_adult=false`, because `/search/tv` and `/discover/tv` are the **only** two TV endpoints that accept the parameter (popular, top_rated, similar and recommendations do not). Note also that `/search/tv` takes two different year params — `first_air_date_year` matches the series premiere only, while `year` matches the premiere **and** every episode air date, so a show that ran for a decade matches ten different `year` values.
 - **Open product decision, unrated shows.** TV has no certification gate at all in this design, and many niche/foreign series return an empty `content_ratings.results[]` anyway. Phase 2b allows everything; whoever revisits family-safe posture for TV must decide block-by-default vs allow for unrated shows, and accept that TV-MA content surfaces in the grids either way. Recording it here so the tradeoff is visible rather than buried in a code comment.
