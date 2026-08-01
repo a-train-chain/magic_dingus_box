@@ -26,17 +26,22 @@ There is also no personalization (nothing uses the owner's library as a taste si
 
 Phase 1 lands as three separately shippable milestones in order: **1a → 1b → 1c**. 1a and 1b are small; 1c is the bulk of the work.
 
+### 1a′. Prerequisite: list results carry a success signal and `total_pages`
+
+`TmdbClient`'s list calls currently return a bare `std::vector<TmdbSearchHit>` that is empty on **both** HTTP failure and a genuinely empty page — no caller can tell the difference — and `parse_list_response` discards TMDB's `total_pages` (`tmdb_client.cpp:368-397`). Both 1a and 1b need those signals, so the list-call return shape changes once, up front: a small `TmdbList { bool ok; int total_pages; std::vector<TmdbSearchHit> hits; }` result for `get_popular`/`get_top_rated`/`discover` (and the recommendation calls, for 1c's benefit). This is the only `tmdb_client` API change in Phase 1; existing non-list callers are untouched.
+
 ### 1a. Staleness TTL
 
-- BrowseScreen keeps a single in-memory `last_loaded_at` (`std::chrono::steady_clock`) for the active grid, updated whenever a page-1/base-page result lands. On `enter()`, if the grid is older than **6 hours**, refresh it. The TTL applies to Popular, Top Rated, and (once it exists) For You — a For You TTL refresh draws a fresh seed sample. Search, Library, and Queue are out of scope.
-- **Stale-while-revalidate:** the TTL refresh does *not* clear the grid or show the Loading state. It fetches page 1 of the canonical chart in the background (discarding any shuffled base page) and swaps via the existing page-1-replace branch in `apply_pending` (`browse_screen.cpp:640-653`), which also resets the cursor to top-left. On failure the old grid stays and `last_loaded_at` is updated only on success, so the next `enter()` retries. The error state appears only when there is no prior data.
-- Evaluated on `enter()` only, by design: tab switches already refetch unconditionally, and a session parked on one tab inside MB may exceed the TTL until the next entry. No persistence; a reboot naturally refetches.
+- BrowseScreen keeps an in-memory `last_loaded_at` (`std::chrono::steady_clock`) per **chart grid** (the active Popular/Top Rated grid; For You keeps its own — see 1c), updated whenever that grid's base-page result lands. On `enter()`, if the landing grid is older than **6 hours**, refresh it. Search, Library, and Queue are out of scope.
+- **Stale-while-revalidate (chart tabs).** The TTL refresh does *not* clear the grid or show the Loading state. At issue time it bumps `tmdb_current_gen_` and resets the tracked base page to 1 — so in-flight pages from the old (possibly shuffled) window are discarded rather than appended after the swap — but defers all visible resets. It then fetches page 1 of the canonical chart in the background via a revalidate-tagged pending-page. When the result lands **ok and non-empty**, the existing page-1-replace branch in `apply_pending` (`browse_screen.cpp:640-653`) swaps the grid and resets the cursor to top-left, and `last_loaded_at` updates. When the result is `!ok` **or empty** (indistinguishable network failure/empty page — the revalidate path treats both as failure), the swap is skipped: the old grid stays, `last_loaded_at` stays, and the next `enter()` retries. The error state appears only when there is no prior data.
+- **Stale-while-revalidate (For You).** TTL expiry on For You draws a fresh seed sample and reruns the merge *in the background*: the old grid stays visible (no clear, no Loading) and swaps only when the new merge completes with at least one successful seed; on total failure the old grid stays. (Explicit SHUFFLE, by contrast, clears and shows Loading — the user asked for a reload and should see one.)
+- Evaluated on `enter()` only, by design: chart tab switches already refetch unconditionally, and a session parked on one tab inside MB may exceed the TTL until the next entry. No persistence; a reboot naturally refetches.
 
 ### 1b. Shuffle (filter overlay action row)
 
-**Overlay changes.** `FilterOverlay` gains a **SHUFFLE** action row, rendered like RESET ALL (`render_reset_row`, `mb_filter_overlay.cpp:314-330`, invoked at `:456-458`). The overlay's row model is currently hardcoded (`kFocusableRowCount=7`, with row 6 special-cased as RESET — `mb_filter_overlay.h:100`); it becomes a **per-tab row configuration keyed by `FilterTabKind`** so Popular/Top Rated get their 6 filter rows + RESET + SHUFFLE, while For You opens with SHUFFLE only in Phase 1 (Phase 2's Movies/TV mode row will join it — do not hard-code a single-row shape).
+**Overlay changes.** `FilterOverlay` gains a **SHUFFLE** action row, rendered like RESET ALL (`render_reset_row`, `mb_filter_overlay.cpp:314-330`, invoked at `:456-458`). The overlay's row model is currently hardcoded (`kFocusableRowCount=7`, with row 6 special-cased as RESET — `mb_filter_overlay.h:100`, no readers outside the overlay); it becomes a **per-tab row configuration keyed by `FilterTabKind`** so Popular/Top Rated get their 6 filter rows + RESET + SHUFFLE, while For You opens with SHUFFLE only in Phase 1 (Phase 2's Movies/TV mode row will join it — do not hard-code a single-row shape).
 
-**Semantics.** Selecting SHUFFLE first **commits any staged `working_` edits** (persisting per-tab filter state exactly as the normal BTN4-close commit does), then closes the overlay and performs one shuffle load under the just-committed filters — no separate commit reload, no silently discarded edits.
+**Semantics.** `FilterOverlay` gains a second callback (`set_on_shuffle`) beside the existing commit callback. Selecting SHUFFLE closes the overlay via the commit-free `close()` path and fires `on_shuffle`, whose BrowseScreen handler first **persists any staged `working_` edits** and then performs one shuffle load under the resulting filters — the persist logic is extracted from the existing commit lambda (`browse_screen.cpp:873-878`) into a shared helper so the two paths cannot drift, and no separate commit reload runs. Additionally, the plain BTN4-close commit is skipped when `working_` is unchanged since the overlay opened — today it unconditionally commits + reloads (`mb_filter_overlay.cpp:243-262`), which would otherwise silently replace a shuffled grid with the canonical chart the moment the user peeks at the overlay.
 
 **Shuffle load.** A new entry point `load_shuffle(category, base_page)` mirrors `load_category` (`browse_screen.cpp:480-504`): synchronously clear `movies_`/`loaded_tmdb_ids_`, reset cursor and scroll, bump `tmdb_current_gen_`, set the Loading state, then spawn the worker at the random base page. (The reset cannot be left to `apply_pending` — its reset branch only fires for page 1 — and `spawn_page_worker` alone does not bump the generation counter.)
 
@@ -46,16 +51,28 @@ Phase 1 lands as three separately shippable milestones in order: **1a → 1b →
 
 - **Popular:** uniform random base in **1–26** (window never passes page 30; deeper `/movie/popular` pages degrade fast).
 - **Top Rated:** uniform random base in **1–21** (window never passes page 25, ~the all-time top 500).
-- The draw excludes the current base (re-roll on collision) so a shuffle always visibly changes the grid.
-- **Filters active:** shuffle randomizes the `/discover/movie` page instead, preserving the (just-committed) filters. Narrow filter combinations can have few pages, so the list-fetch path is extended to surface TMDB's `total_pages` (a small parser/return addition — `parse_list_response` currently discards it), and the base is drawn from `1 … min(26, max(1, total_pages − kMaxLoadedPages + 1))`. If the fetched page still comes back empty, fall back to page 1.
+- **Filters active:** shuffle randomizes the `/discover/movie` page instead, preserving the (just-committed) filters, drawing from `1 … min(26, max(1, total_pages − kMaxLoadedPages + 1))`. `total_pages` comes from a per-filter-signature cache of the last-seen `TmdbList.total_pages` (populated by any prior discover fetch under those filters); when the just-committed filters have no cached value, clamp optimistically to 26 and rely on the fallback below (accepting one extra ~6 s round-trip in the worst case).
+- **Current-base exclusion (both paths):** the draw excludes the current base (re-roll on collision) whenever the range holds at least two candidates; if it collapses to a single page (possible on the filters path), keep the current base and let the shuffle be a plain refetch.
+- **Empty-page fallback:** if the fetched base page comes back empty, fall back to page 1.
 
-A successful shuffle updates `last_loaded_at`. The overlay is reachable from the phone remote today (BLACK short-press = BTN4), so shuffle needs zero remote-side work.
+A shuffle whose base page lands updates that grid's `last_loaded_at`. The overlay is reachable from the phone remote today (BLACK short-press = BTN4), so shuffle needs zero remote-side work.
 
 ### 1c. For You tab
 
 **Tab strip.** New `Category::ForYou` between Top Rated and Search: `Popular | Top Rated | For You | Search | Library | Queue | Settings`. As a targeted cleanup, the two manually-duplicated `kVisibleTabs` arrays (`browse_screen.cpp:810` input path, `:976` render path, with a "keep in sync" comment) are consolidated into a single shared constant so the new tab is added exactly once.
 
-**Load ordering.** For You depends on the Radarr library id cache (`library_tmdb_ids_`), which is populated **asynchronously** by `refresh_library_async` and is documented as empty on first entry (`browse_screen.h:283-286`). The For You load therefore waits for a completed library refresh: entering the tab shows the Loading state, and seed sampling kicks off from `apply_library_pending()` when the refresh result lands. BrowseScreen additionally records the **outcome** of the most recent library refresh so the two empty-cache cases are distinguishable (see edge cases).
+**Header fit.** The header right-aligns the chip strip with no overflow handling (`mb_chrome.cpp:553-568`), and a 7th chip grows the strip past the "Marquee" title — measured with the real ZenDots metrics, the 7-chip strip overlaps the title by ~58 px on the 1280-wide logical canvas. Mitigation: tighten the strip constants (`kTabHorizPad` 16→10, `kTabGap` 24→16, `mb_chrome.cpp:40-43`), which recovers ~130 px; verify no overlap in the hardware pass.
+
+**Library signal.** For You samples from the Radarr library id cache (`library_tmdb_ids_`), which is populated **asynchronously** by `refresh_library_async` (kicked only from `enter()`, `browse_screen.cpp:287`) and is empty on first entry (`browse_screen.h:283-286`). Two additions make its state legible:
+
+- `RadarrClient::get_library()` gains a success signal (it currently returns an empty vector on both HTTP failure and a genuinely empty library, `radarr_client.cpp:150-154`) — this adds `radarr_client.{h,cpp}` to the Phase 1 surface.
+- BrowseScreen records whether a library refresh has completed at least once and whether the most recent one's library fetch succeeded (complementing the existing `services_ok_`/`library_cached_` flags).
+
+**Entry rule (three-way).** On For You activation:
+
+- **(a) Most recent refresh completed successfully** → sample immediately from the cached ids. For You is **exempt from the unconditional tab-activation refetch**: activating the tab re-renders the cached merged list when one exists; a new sample runs only on first entry, TTL expiry, or SHUFFLE. (For You keeps its own `last_loaded_at`; 1a's chart timestamps don't cover it.)
+- **(b) Refresh in flight** (entering triggers one if none is) → Loading state; sampling kicks off from `apply_library_pending()` when the result lands (gated on `category_ == ForYou`).
+- **(c) Most recent refresh completed as failure** → the existing service-unavailable state. (An in-flight refresh shows Loading, never this state.)
 
 **Algorithm (seed-sampled recommendations):**
 
@@ -65,29 +82,30 @@ A successful shuffle updates `last_loaded_at`. The overlay is reachable from the
 4. **Merge** — implemented as a pure free function `merge_recommendations(vector<vector<TmdbSearchHit>>, exclude_set) -> vector<TmdbSearchHit>` so it is unit-testable without network: de-duplicate by tmdb id; **score = number of distinct seeds that recommended the title**; ties broken by the minimum index the title holds across all seed lists, remaining ties by ascending tmdb id; drop anything in `exclude_set` (the library ids); cap at exactly **100**. Results arrive already family-safe-trimmed by the shared `parse_list_response` parser (`TmdbSearchHit` carries no adult field — there is nothing further to filter here).
 5. Render into the normal poster grid. **For You never issues scroll-driven page loads** — the merged list is the complete data set and scrolling stops at its end.
 
-**Shuffle on For You** = draw a fresh random seed sample and rerun. Different seeds → genuinely different but still personal results. TTL expiry does the same.
+**Timestamp rule.** A completed merge with at least one successful seed updates For You's `last_loaded_at` (a partially-degraded grid is accepted until the next TTL window). If every seed fails: on an explicit load (first entry, SHUFFLE) show the existing error state; on a TTL refresh keep the old grid. Either way the timestamp is left untouched so the next `enter()` retries.
+
+**Shuffle on For You** = draw a fresh random seed sample and rerun with clear + Loading (see 1a for the background TTL variant).
 
 **Edge cases:**
 
-- **Empty cache, last refresh succeeded** (library genuinely empty): centered empty-state message "Add movies to your library to get recommendations" (same pattern as the existing no-API-key message lines). No silent fallback to Popular — the tab should teach what feeds it.
-- **Empty cache, last refresh failed or never completed** (Radarr down / cold start): the existing service-unavailable state, per the graceful-degradation rule.
-- **Tiny library (1–3 titles):** works as-is; fewer seeds, results feel like "similar to X" — acceptable.
-- **Partial fetch failures:** merge whatever seeds returned; only if *all* seeds fail show the existing error state.
+- **Empty cache, refresh succeeded** (library genuinely empty): centered empty-state message "Add movies to your library to get recommendations" (same pattern as the existing no-API-key message lines). No silent fallback to Popular — the tab should teach what feeds it.
+- **Library ≤ 8 titles:** every sample is the full library and the merge is deterministic, so SHUFFLE and TTL re-draws regenerate an identical grid — accepted for Phase 1 (the lever, if it ever bothers, is randomizing the recommendations page per seed). With 1–3 titles the results feel like "similar to X" — also acceptable.
+- **Partial fetch failures:** merge whatever seeds returned; only if *all* seeds fail apply the timestamp rule above.
 
 **Filter overlay on For You:** SHUFFLE only in Phase 1 (recommendations are already taste-scoped; post-filters are future work). `FilterTabKind` (`mb_filter_overlay.h:14-17`) gains a `ForYou` value; no persisted filter state for the tab, so no `settings.json`/`app_state.h` additions in Phase 1.
 
-**Persistence:** none. Seeds resample each boot/TTL-expiry/shuffle by design.
+**Persistence:** none. Seeds resample on first entry, TTL expiry, and shuffle — never on mere tab activation.
 
 ### Phase 1 testing
 
-- Unit: `merge_recommendations` scoring/tie-break/dedup/exclusion/cap; shuffle base-page selection (bounds, current-base exclusion, filters-active clamp); TTL decision logic (extract as a small pure helper).
-- No recommendations fixture exists (`tests/media_browser/fixtures/tmdb/` holds only `popular.json` and `genres.json`): add a `recommendations.json` fixture and a parse test alongside the existing list-parse tests, plus coverage for the new `total_pages` surfacing.
-- Hardware pass: tab strip walk (now 7 chips), For You on the real library, shuffle from both enclosure and phone remote, TTL behavior across an MB exit/re-enter, stale-while-revalidate with the network cable pulled.
+- Unit: `merge_recommendations` scoring/tie-break/dedup/exclusion/cap; shuffle base-page selection (bounds, current-base exclusion incl. the collapsed-range case, filters-active clamp with and without a cached `total_pages`); TTL decision logic and the For You three-way entry rule (extract as small pure helpers); `TmdbList` parsing (`ok`, `total_pages`, hits).
+- No recommendations fixture exists (`tests/media_browser/fixtures/tmdb/` holds only `popular.json` and `genres.json`): add a `recommendations.json` fixture and a parse test alongside the existing list-parse tests.
+- Hardware pass: tab strip walk (now 7 chips — confirm no title overlap after the spacing change), For You on the real library, shuffle from both enclosure and phone remote, overlay peek after a shuffle (grid must survive), TTL behavior across an MB exit/re-enter, stale-while-revalidate with the network cable pulled (old grid must survive).
 
 ### Phase 1 interactions / risks
 
-- The BTN1/BTN3 double-fire dispatcher fix **has already landed in the working tree** (uncommitted `main.cpp` change from the parallel session; the dispatcher now carries a "ONE SEMANTIC PER PHYSICAL INPUT" invariant at `main.cpp:1954-1967`). Phase 1 adds **no dispatcher bindings** and should avoid `main.cpp` edits until that change is committed; expected Phase 1 surface is `browse_screen.{h,cpp}`, `mb_filter_overlay.{h,cpp}`, `tmdb_client.{h,cpp}`, and tests.
-- Memory: no new caches; the grid window stays ~100 titles; artwork continues through the existing LRU `ArtworkCache`. Safe on the 2GB Pi.
+- The BTN1/BTN3 double-fire dispatcher fix **has already landed in the working tree** (uncommitted `main.cpp` change from the parallel session; the dispatcher now carries a "ONE SEMANTIC PER PHYSICAL INPUT" invariant at `main.cpp:1954-1967`). Phase 1 adds **no dispatcher bindings** and should avoid `main.cpp` edits until that change is committed; expected Phase 1 surface is `browse_screen.{h,cpp}`, `mb_filter_overlay.{h,cpp}`, `mb_chrome.{h,cpp}` (strip spacing), `tmdb_client.{h,cpp}` (TmdbList), `radarr_client.{h,cpp}` (get_library success signal), and tests.
+- Memory: no new caches beyond the small per-filter-signature `total_pages` map; the grid window stays ~100 titles; artwork continues through the existing LRU `ArtworkCache`. Safe on the 2GB Pi.
 - TMDB rate limits: worst case per For You load is 8–16 list calls (recommendations + fallbacks) — well under TMDB's ~50 req/s cap.
 
 ---
@@ -114,7 +132,7 @@ Nothing TV-shaped exists today: Radarr's model is one-video-per-title, `TmdbClie
 
 **UI.**
 
-- **Movies/TV toggle** = a mode row in the filter overlay applying to the three content tabs; strip labels re-render per mode ("Popular · TV"). Mode persists in `settings.json`. Each content tab persists **two independent filter sets keyed by mode**; toggling swaps sets without clearing either, and genre ids never cross modes (movie ids from `/genre/movie/list`, TV ids from `/genre/tv/list`). **Search follows the active mode** (`/search/tv` in TV mode); **Library and Queue always show both kinds** with a type badge and ignore the toggle.
+- **Movies/TV toggle** = a mode row in the filter overlay applying to the three content tabs; strip labels re-render per mode ("Popular · TV"). Mode persists in `settings.json`. **Popular and Top Rated each persist two independent filter sets keyed by mode**; toggling swaps sets without clearing either, and genre ids never cross modes (movie ids from `/genre/movie/list`, TV ids from `/genre/tv/list`). **For You persists no filter state in either mode** (its overlay stays mode row + SHUFFLE until post-filters land). **Search follows the active mode** (`/search/tv` in TV mode); **Library and Queue always show both kinds** with a type badge and ignore the toggle.
 - **Series detail screen:** poster/overview plus a season list with per-season state (none / downloading / complete, episode counts from Sonarr). Actions: "Add Season 1" (first add, default), "Download next season", "Whole series…" (confirm modal with disk estimate), Remove.
 - **Queue:** Sonarr's `/api/v3/queue` returns **one record per episode**; a season pack appears as N rows sharing a single `downloadId`. The kiosk groups by `downloadId` — one row per download with series/season label and episode count — so the existing qBit hash overlay maps 1:1 to grouped rows.
 - **For You (TV mode):** same seed-sampled algorithm over the Sonarr library with `get_tv_recommendations`.
