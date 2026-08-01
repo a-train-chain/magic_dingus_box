@@ -223,9 +223,14 @@ fi
 # unlink. Restored by restore_after_cloning.sh.
 #   services/config/radarr/config.xml       Radarr API key
 #   services/config/prowlarr/config.xml     Prowlarr API key
+#   services/config/sonarr/config.xml       Sonarr API key
 #   services/config/radarr/radarr.db        the qBittorrent WebUI username and
 #                                           password, in plaintext, inside
 #                                           DownloadClients.Settings
+#   services/config/sonarr/sonarr.db        same structure as radarr.db — the
+#                                           qBittorrent WebUI username and
+#                                           password again, in plaintext,
+#                                           inside its own DownloadClients.Settings
 #   services/config/prowlarr/prowlarr.db    the Radarr API key again, in the
 #                                           Applications row used for app sync
 #   services/config/qbittorrent/.../qBittorrent.conf
@@ -255,6 +260,10 @@ SECRET_PATHS=(
     "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db"
     "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-wal"
     "/opt/magic_dingus_box/services/config/prowlarr/prowlarr.db-shm"
+    "/opt/magic_dingus_box/services/config/sonarr/config.xml"
+    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db"
+    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db-wal"
+    "/opt/magic_dingus_box/services/config/sonarr/sonarr.db-shm"
     "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
 )
 

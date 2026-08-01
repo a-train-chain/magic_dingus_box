@@ -70,6 +70,52 @@ services:
       # every second saved here shortens the kiosk's cold Movies load).
       start_interval: 3s
 
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:4.0.19.2979-ls320
+    container_name: mdb_sonarr
+    # Behind Gluetun: shares VPN netns beside Radarr. Sonarr's TMDB/TVDB
+    # metadata fetches exit via the VPN like the rest of the stack.
+    # No per-service ports: block — Sonarr's :8989 is exposed via
+    # gluetun's ports: section (see below), same as Radarr/Prowlarr.
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/sonarr:/config
+      # Legacy-compat mount: on a box that has NOT run
+      # migrate_hardlink_layout.sh, qBit still reports /downloads/... save
+      # paths, and Sonarr needs this mount to see completed torrents at
+      # the path qBit names. Imports via this mount COPY, not hardlink
+      # (link(2) across two bind mounts returns EXDEV even on one
+      # filesystem — see the radarr comments above).
+      - ${STORAGE_ROOT}/downloads:/downloads
+      # Parent mount matching Radarr's /data. Sonarr's root folder is
+      # /data/library/tv. Whether an import HARDLINKS or COPIES depends on
+      # which path qBit reports at import time: on a MIGRATED box (qBit
+      # save paths under /data/downloads) source and library share this
+      # one mount and imports hardlink instantly; on an unmigrated box the
+      # import crosses the two mounts above and copies. setup_services.sh
+      # mirrors the live qBit 'radarr' category savePath when creating the
+      # 'sonarr' category, so both worlds behave correctly (see
+      # scripts/data/qbit_categories.json and the plan's Task 4 capture).
+      - ${STORAGE_ROOT}:/data
+    # `always` (not `unless-stopped`) — Sonarr, like Radarr, can exit 0 on
+    # internal config reloads. `unless-stopped` would read that as
+    # "user stopped it" and leave it down indefinitely.
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8989/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 3s
+
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:2.3.5
     container_name: mdb_prowlarr
@@ -205,6 +251,7 @@ services:
       - "127.0.0.1:7878:7878"   # Radarr
       - "127.0.0.1:9696:9696"   # Prowlarr
       - "127.0.0.1:8191:8191"   # Byparr (Cloudflare bypass)
+      - "127.0.0.1:8989:8989"   # Sonarr
     volumes:
       - ./config/gluetun:/gluetun
     restart: unless-stopped

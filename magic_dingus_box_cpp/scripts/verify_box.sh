@@ -283,7 +283,7 @@ if [[ -f "${BASE}/services/.env" ]]; then
     fail "services/.env present but Radarr unreachable — stack down?"
   fi
   UP=$(sudo docker ps -q 2>/dev/null | wc -l | tr -d ' ')
-  (( UP >= 5 )) && pass "${UP} containers up" || fail "only ${UP} containers up (expect 5)"
+  (( UP >= 6 )) && pass "${UP} containers up" || fail "only ${UP} containers up (expect 6)"
 else
   warn "services/.env absent — Media Browser unprovisioned (expected on a fresh box)"
 fi

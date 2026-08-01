@@ -14,7 +14,7 @@
 
 set -uo pipefail
 
-EXPECTED_VPN_CONTAINERS=(mdb_gluetun mdb_qbittorrent mdb_radarr mdb_prowlarr mdb_byparr)
+EXPECTED_VPN_CONTAINERS=(mdb_gluetun mdb_qbittorrent mdb_radarr mdb_sonarr mdb_prowlarr mdb_byparr)
 
 # 1. Tooling checks
 for tool in docker dig curl jq; do

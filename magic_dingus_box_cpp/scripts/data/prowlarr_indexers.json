@@ -155,7 +155,7 @@
         "description": "EZTV is a Public torrent site for TV shows",
         "language": "en-US",
         "encoding": "Unicode (UTF-8)",
-        "enable": false,
+        "enable": true,
         "redirect": false,
         "supportsRss": true,
         "supportsSearch": true,

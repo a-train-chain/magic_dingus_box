@@ -284,7 +284,7 @@ if [[ -d "$SERVICES_DIR" ]]; then
     # fresh state on next start. Setup_services.sh re-creates the
     # full configuration from fixtures.
     wipe_count=0
-    for svc in radarr prowlarr qbittorrent gluetun flaresolverr; do
+    for svc in radarr prowlarr qbittorrent gluetun flaresolverr sonarr; do
         if [[ -d "$SERVICES_DIR/config/$svc" ]]; then
             file_count=$(find "$SERVICES_DIR/config/$svc" -mindepth 1 2>/dev/null | wc -l)
             if [[ $file_count -gt 0 ]]; then

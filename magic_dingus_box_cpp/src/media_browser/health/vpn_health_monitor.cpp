@@ -18,8 +18,8 @@ namespace {
 // The poll loop in run() skips calling this when state.video_active is
 // true, so a paused Radarr never trips the false-alarm path. We can't
 // switch to Gluetun's /v1/publicip/ip endpoint because Gluetun's control
-// server (port 8000) isn't published to the host — only the four app
-// ports (7878, 8080, 8191, 9696) are. Adding the gluetun port mapping
+// server (port 8000) isn't published to the host — only the app
+// ports (7878, 8080, 8191, 9696, 8989) are. Adding the gluetun port mapping
 // would force a full stack restart on the next setup_services.sh run,
 // not worth it for a signal that the video_active guard already fixes.
 bool default_radarr_ping() {
@@ -69,7 +69,7 @@ void VpnHealthMonitor::run() {
         // Skip the poll while the kiosk has intentionally quieted the
         // media stack: movie playback (PlaybackScreen::enter() pauses
         // Radarr) or a game session (GameQuietMode stops Radarr /
-        // Prowlarr / Byparr; is_loading_game stays true for the whole
+        // Sonarr / Prowlarr / Byparr; is_loading_game stays true for the whole
         // blocked RetroArch session). Polling then would time out and
         // the 3-strikes counter would flip the tunnel-unhealthy flag —
         // a false alarm. Skip cleanly: don't increment failures, don't

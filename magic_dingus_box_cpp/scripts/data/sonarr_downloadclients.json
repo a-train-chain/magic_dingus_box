@@ -1,0 +1,68 @@
+[
+  {
+    "enable": true,
+    "protocol": "torrent",
+    "priority": 1,
+    "removeCompletedDownloads": true,
+    "removeFailedDownloads": true,
+    "name": "qBittorrent",
+    "fields": [
+      {
+        "order": 0,
+        "name": "host",
+        "label": "Host",
+        "value": "localhost",
+        "type": "textbox",
+        "advanced": false,
+        "privacy": "normal",
+        "isFloat": false
+      },
+      {
+        "order": 1,
+        "name": "port",
+        "label": "Port",
+        "value": 8080,
+        "type": "textbox",
+        "advanced": false,
+        "privacy": "normal",
+        "isFloat": false
+      },
+      {
+        "order": 4,
+        "name": "username",
+        "label": "Username",
+        "value": "admin",
+        "type": "textbox",
+        "advanced": false,
+        "privacy": "userName",
+        "isFloat": false
+      },
+      {
+        "order": 5,
+        "name": "password",
+        "label": "Password",
+        "value": "********",
+        "type": "password",
+        "advanced": false,
+        "privacy": "password",
+        "isFloat": false
+      },
+      {
+        "order": 6,
+        "name": "tvCategory",
+        "label": "Category",
+        "helpText": "Adding a category specific to Sonarr avoids conflicts with unrelated non-Sonarr downloads. Using a category is optional, but strongly recommended.",
+        "value": "sonarr",
+        "type": "textbox",
+        "advanced": false,
+        "privacy": "normal",
+        "isFloat": false
+      }
+    ],
+    "implementationName": "qBittorrent",
+    "implementation": "QBittorrent",
+    "configContract": "QBittorrentSettings",
+    "infoLink": "https://wiki.servarr.com/sonarr/supported#qbittorrent",
+    "tags": []
+  }
+]

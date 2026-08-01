@@ -170,7 +170,7 @@ echo "Creating storage layout at ${STORAGE_ROOT}..."
 # Radarr writes movies directly to ${STORAGE_ROOT}/library/<Title (Year)>/, no
 # Movies subdirectory. The earlier setup created library/Movies/ which then sat
 # empty forever — drop it.
-sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,backups}
+sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,library/tv,backups}
 # This script runs via sudo, so $(whoami) is root. Use TARGET_USER (resolved
 # from $SUDO_USER above) so the storage tree ends up owned by the magic user
 # whose UID/GID the Docker containers run under (PUID/PGID in .env). Without
@@ -188,6 +188,7 @@ TZ=$(timedatectl show -p Timezone --value 2>/dev/null || echo "UTC")
 STORAGE_ROOT=${STORAGE_ROOT}
 RADARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
 PROWLARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
+SONARR_API_KEY=__WILL_BE_SET_AFTER_FIRST_START__
 QBITTORRENT_ADMIN_PASSWORD=${QBIT_PW}
 EOF
     chmod 600 "${ENV_FILE}"
@@ -630,6 +631,7 @@ sleep 60
 # 6. Extract auto-generated API keys from Radarr/Prowlarr configs
 RADARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/radarr/config.xml" 2>/dev/null || echo "")
 PROWLARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/prowlarr/config.xml" 2>/dev/null || echo "")
+SONARR_KEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "${SERVICES_DIR}/config/sonarr/config.xml" 2>/dev/null || echo "")
 
 if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ]; then
     echo "WARNING: Could not extract API keys. Services may still be starting."
@@ -637,9 +639,46 @@ if [ -z "${RADARR_KEY}" ] || [ -z "${PROWLARR_KEY}" ]; then
     exit 1
 fi
 
+# Sonarr is deliberately NOT part of the hard-fail above. A broken/slow
+# Sonarr on a fresh provision used to abort the ENTIRE script here — before
+# Step 7.5 (qBit auth hardening: disables the localhost auth bypass, sets
+# the random WebUI password) and Step 7.6 (mirrors it to MDB_QBIT_PASS) ever
+# ran, leaving qBittorrent on `adminadmin` with the localhost bypass ON. A
+# Sonarr-only fault has no business regressing qBittorrent's security
+# posture. This degrades safely: with SONARR_KEY empty, the 10-S readiness
+# probe below fails closed (SONARR_READY=0), which makes 14b-S/15-S/16-S
+# skip cleanly, and 15-S0/17-S are already ||-guarded so an unreachable
+# Sonarr can't abort them either — later runs simply pick it back up.
+if [ -z "${SONARR_KEY}" ]; then
+    echo "WARN: Could not extract Sonarr API key — Sonarr may still be starting."
+    echo "      Continuing without it; Sonarr-specific steps below will skip and"
+    echo "      self-heal on the next run. Radarr/Prowlarr/qBit setup proceeds."
+fi
+
 # 7. Write keys back to .env
 sed -i "s|RADARR_API_KEY=.*|RADARR_API_KEY=${RADARR_KEY}|" "${ENV_FILE}"
 sed -i "s|PROWLARR_API_KEY=.*|PROWLARR_API_KEY=${PROWLARR_KEY}|" "${ENV_FILE}"
+
+# Sonarr key: append-if-missing. On boxes provisioned before Sonarr
+# existed, the .env has no SONARR_API_KEY= line, so a plain `sed`
+# replace above would silently no-op and the key would never land.
+#
+# Guarded on a non-empty key: extraction above is now WARN-and-continue
+# (a Sonarr-only fault must not abort the run before qBit hardening), so
+# an empty SONARR_KEY reaches here whenever config.xml is momentarily
+# absent or half-written — Sonarr rewriting it on a settings change is
+# enough. Without this guard that transient would blank a previously
+# GOOD key on a healthy box, and because the smoke test now *skips*
+# rather than fails on a missing key, the degraded state would be quiet.
+# There is nothing to write when the key is empty, so preserving the
+# prior value is never worse.
+if [ -n "${SONARR_KEY}" ]; then
+    if grep -q '^SONARR_API_KEY=' "${ENV_FILE}"; then
+        sed -i "s|^SONARR_API_KEY=.*|SONARR_API_KEY=${SONARR_KEY}|" "${ENV_FILE}"
+    else
+        echo "SONARR_API_KEY=${SONARR_KEY}" >> "${ENV_FILE}"
+    fi
+fi
 
 # 7.5. qBittorrent security hardening: set the WebUI password to the
 # random secret already in .env, and disable the localhost-auth-bypass.
@@ -1091,6 +1130,231 @@ else:
 '
 fi
 
+# 10-S. Codify Sonarr Custom Formats + Any-profile score map.
+#
+# Sonarr twin of the Radarr block above. Same codec/quality policy: the
+# kiosk decodes H.264 720p/1080p; AV1/HEVC-1080p+/HDR/Remux and non-English
+# / scam releases are pushed below the -200 minFormatScore floor. All CF
+# specs are ReleaseTitleSpecification title regexes (identical fixture to
+# Radarr's), so they port verbatim. Two Sonarr-specific choices:
+#   * SCORE_MAP omits the legacy "Trusted small-release groups" (0) entry —
+#     that entry only exists to neutralize pre-2026-07-26 RADARR boxes;
+#     Sonarr is greenfield and never had it.
+#   * ALLOWED_QUALITY_NAMES lists LEAF quality names (HDTV-720p, WEBDL-720p,
+#     …) rather than group names. Sonarr's default profile grouping isn't
+#     assumed; a leaf is allowed when its own name matches, and group rows
+#     reflect their leaves. No profile-language mutation (Sonarr v4 handles
+#     language separately from the quality profile).
+echo "Configuring Sonarr Custom Formats + 'Any' profile score map..."
+SONARR_CF_DATA_FILE="${SCRIPT_DIR}/data/sonarr_custom_formats.json"
+if [[ ! -f "${SONARR_CF_DATA_FILE}" ]]; then
+    echo "  WARN: ${SONARR_CF_DATA_FILE} not found — skipping. Verify Sonarr Custom Formats via web UI."
+else
+    # Sonarr readiness probe. This is the script's FIRST hard-fail Sonarr
+    # API contact (the python below makes ~10 unguarded urllib calls), so
+    # the warm-up wait lives HERE, not later: a still-initializing Sonarr
+    # either answers within this loop or every later Sonarr step was
+    # doomed anyway. (Radarr's equivalent probe sits in Step 14 because
+    # its earlier contacts at Steps 8-9 are ||-guarded.)
+    #
+    # The probe result GATES the python block below — it must not just
+    # delay it. A bare for-loop-then-continue falls through identically
+    # whether Sonarr answered or never came up; if Sonarr is still down
+    # after 60s, the python's first http() call raises an uncaught
+    # urllib error, and under `set -euo pipefail` the `VAR=$(python3 ...)`
+    # assignment aborts the ENTIRE setup_services.sh — killing Prowlarr's
+    # cloudflare tag, FlareSolverr proxy, indexers, Radarr Apps
+    # integration, qBit category, quality definitions, and the final
+    # smoke test, none of which have anything to do with Sonarr. Dooming
+    # *later Sonarr steps* on an unreachable Sonarr is fine and intended;
+    # dooming unrelated steps is not, so we WARN-and-skip instead.
+    SONARR_READY=0
+    for i in {1..30}; do
+        if curl -fsS -o /dev/null -H "X-Api-Key: ${SONARR_KEY}" \
+            http://localhost:8989/api/v3/system/status 2>/dev/null; then
+            SONARR_READY=1
+            break
+        fi
+        sleep 2
+    done
+    if [ "${SONARR_READY}" -ne 1 ]; then
+        echo "  WARN: Sonarr not reachable after 60s — skipping Custom Formats/profile reconciliation (later runs will apply it)."
+    else
+        SONARR_CF_SUMMARY=$(python3 - "${SONARR_CF_DATA_FILE}" "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request, urllib.error
+
+cf_data_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:8989/api/v3"
+
+SCORE_MAP = {
+    "AV1 codec (UNWATCHABLE on Pi 4)": -1000,
+    "x265/HEVC 1080p+":                -250,
+    "HDR / Dolby Vision":              -200,
+    "Remux / Raw-HD":                  -500,
+    "x264 codec (BONUS)":               50,
+    "Quality release groups":           30,
+    "Low-bitrate size-optimized groups": -30,
+    "Malware/scam executable in title": -10000,
+    "Known scam aggregator branding":   -10000,
+    "Non-English title signals":        -10000,
+}
+MIN_FORMAT_SCORE = -200
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def cf_specs_match(live, desired):
+    if live.get("name") != desired.get("name"): return False
+    if live.get("includeCustomFormatWhenRenaming") != desired.get("includeCustomFormatWhenRenaming"): return False
+    ls, ds = live.get("specifications", []), desired.get("specifications", [])
+    if len(ls) != len(ds): return False
+    for a, b in zip(ls, ds):
+        if a.get("name") != b.get("name"): return False
+        if a.get("implementation") != b.get("implementation"): return False
+        if bool(a.get("negate")) != bool(b.get("negate")): return False
+        if bool(a.get("required")) != bool(b.get("required")): return False
+        av = next((f.get("value") for f in a.get("fields", []) if f.get("name") == "value"), None)
+        bv = next((f.get("value") for f in b.get("fields", []) if f.get("name") == "value"), None)
+        if av != bv: return False
+    return True
+
+with open(cf_data_path) as f:
+    desired_cfs = json.load(f)
+
+live_cfs = http("GET", "/customformat")
+live_by_name = {c["name"]: c for c in live_cfs}
+
+created, updated, unchanged = [], [], []
+name_to_id = {}
+
+for desired in desired_cfs:
+    name = desired["name"]
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    if name in live_by_name:
+        live = live_by_name[name]
+        if cf_specs_match(live, payload):
+            unchanged.append(name)
+            name_to_id[name] = live["id"]
+        else:
+            payload["id"] = live["id"]
+            result = http("PUT", "/customformat/%d" % live["id"], payload)
+            updated.append(name)
+            name_to_id[name] = result["id"]
+    else:
+        result = http("POST", "/customformat", payload)
+        created.append(name)
+        name_to_id[name] = result["id"]
+
+profiles = http("GET", "/qualityprofile")
+any_profile = next((p for p in profiles if p["name"] == "Any"), None)
+profile_changed = False
+score_changes = []
+
+if any_profile is None:
+    print("WARN: 'Any' profile missing; cannot apply score map", file=sys.stderr)
+    print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged,
+                      "profile_changed": False, "score_changes": []}))
+    sys.exit(0)
+
+if any_profile.get("minFormatScore") != MIN_FORMAT_SCORE:
+    any_profile["minFormatScore"] = MIN_FORMAT_SCORE
+    profile_changed = True
+    score_changes.append("minFormatScore=%d" % MIN_FORMAT_SCORE)
+for fi in any_profile.get("formatItems", []):
+    fname = fi.get("name")
+    if fname in SCORE_MAP:
+        want = SCORE_MAP[fname]
+        if fi.get("score") != want:
+            fi["score"] = want
+            profile_changed = True
+            score_changes.append("%s=%+d" % (fname, want))
+
+# Leaf-name allowed set: only the eight H.264 720p/1080p tiers.
+ALLOWED_QUALITY_NAMES = {
+    "HDTV-720p", "WEBDL-720p", "WEBRip-720p", "Bluray-720p",
+    "HDTV-1080p", "WEBDL-1080p", "WEBRip-1080p", "Bluray-1080p",
+}
+DESIRED_CUTOFF_QUALITY_NAME = "Bluray-720p"
+
+def find_quality_id(items, target_name):
+    for item in items:
+        if item.get("name") == target_name and item.get("id"):
+            return item["id"]
+        for sub in (item.get("items") or []):
+            q = sub.get("quality") or {}
+            if q.get("name") == target_name:
+                return q.get("id")
+        q = item.get("quality") or {}
+        if q.get("name") == target_name:
+            return q.get("id")
+    return None
+
+desired_cutoff = find_quality_id(any_profile.get("items", []), DESIRED_CUTOFF_QUALITY_NAME)
+if desired_cutoff:
+    if any_profile.get("cutoff") != desired_cutoff:
+        any_profile["cutoff"] = desired_cutoff
+        profile_changed = True
+        score_changes.append("cutoff=%s(id=%d)" % (DESIRED_CUTOFF_QUALITY_NAME, desired_cutoff))
+else:
+    print("WARN: could not resolve quality id for cutoff '%s' (Sonarr may have renamed it); cutoff left unchanged" % DESIRED_CUTOFF_QUALITY_NAME, file=sys.stderr)
+
+def item_name(item):
+    return item.get("name") or (item.get("quality") or {}).get("name")
+
+def enforce_allowed(items, group_allowed=False):
+    changed = False
+    for item in items:
+        nm = item_name(item)
+        named = nm in ALLOWED_QUALITY_NAMES if nm else False
+        want_allowed = named or group_allowed
+        children = item.get("items") or []
+        if children:
+            if enforce_allowed(children, want_allowed):
+                changed = True
+            want_allowed = any(c.get("allowed") for c in children)
+        if item.get("allowed") != want_allowed:
+            item["allowed"] = want_allowed
+            changed = True
+            score_changes.append("%s.allowed=%s" % (nm, want_allowed))
+    return changed
+
+if enforce_allowed(any_profile.get("items", [])):
+    profile_changed = True
+
+if profile_changed:
+    http("PUT", "/qualityprofile/%d" % any_profile["id"], any_profile)
+
+print(json.dumps({
+    "created": created,
+    "updated": updated,
+    "unchanged": unchanged,
+    "profile_changed": profile_changed,
+    "score_changes": score_changes,
+}))
+PYEOF
+)
+        printf '%s' "${SONARR_CF_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+if s["profile_changed"]:
+    print("  ✓ Sonarr Any profile score map updated: " + ", ".join(s["score_changes"]))
+else:
+    print("  ✓ Sonarr Any profile score map already matches desired state")
+'
+    fi
+fi
+
 # 11. Prowlarr: cloudflare tag.
 #
 # A handful of indexers (Demonoid, EZTV, Internet Archive, Magnetz,
@@ -1294,6 +1558,13 @@ import json, sys, urllib.request
 indexers_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
 BASE = "http://localhost:9696/api/v1"
 
+# EZTV is enabled for season-pack coverage but is cloudflare-tagged and
+# routes through Byparr — its Cardigann definition can 404/challenge at
+# apply time. Treat an EZTV apply failure as a warning, not fatal, so a
+# transient Byparr/EZTV outage never bricks a whole setup run. The stable
+# indexers the smoke test asserts on are unaffected.
+NON_FATAL_ENABLED = {"EZTV"}
+
 LABEL_TO_ID = {}
 if cloudflare_tag_id:
     LABEL_TO_ID["cloudflare"] = int(cloudflare_tag_id)
@@ -1376,10 +1647,12 @@ for desired in desired_indexers:
         else:
             http("POST", "/indexer", payload)
             created.append(name)
-    except urllib.error.HTTPError as e:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
         # Re-raise for ENABLED indexers — a live/active indexer failing
-        # is a real problem the operator needs to see fail loudly.
-        if desired.get("enable", False):
+        # is a real problem the operator needs to see fail loudly. EZTV is
+        # the deliberate exception: enabled but allowed to fail soft
+        # (HTTP error OR Byparr-challenge timeout).
+        if desired.get("enable", False) and name not in NON_FATAL_ENABLED:
             sys.stderr.write("FATAL: enabled indexer %r failed: %s\n" % (name, e))
             raise
         skipped.append(name)
@@ -1397,7 +1670,7 @@ def show(label, items):
 show("created  ", s["created"])
 show("updated  ", s["updated"])
 show("unchanged", s["unchanged"])
-show("skipped (disabled, stale upstream definition)", s.get("skipped", []))
+show("skipped (disabled or soft-fail, stale/unreachable upstream)", s.get("skipped", []))
 '
 fi
 
@@ -1436,9 +1709,9 @@ else
         fi
         sleep 2
     done
-    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" <<'PYEOF'
+    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request
-apps_path, prowlarr_key, radarr_key = sys.argv[1], sys.argv[2], sys.argv[3]
+apps_path, prowlarr_key, radarr_key, sonarr_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 BASE = "http://localhost:9696/api/v1"
 
 def http(method, path, body=None):
@@ -1453,14 +1726,17 @@ def fields_to_dict(fields):
     return {f["name"]: f.get("value") for f in (fields or [])}
 
 def inject_api_key(payload):
-    # The fixture has `value: "********"` for the apiKey field; replace
-    # with the live RADARR_KEY in-place. We mutate a deep-copied list
-    # so the source dict stays untouched.
+    # Select the key by target application: the Radarr app gets
+    # RADARR_KEY, the Sonarr app gets SONARR_KEY. Before this fix the
+    # single radarr_key was injected into every app, so a Sonarr app
+    # would have been configured with Radarr's key and silently failed
+    # to sync. Mutate a deep-copied list so the source dict stays clean.
+    key = sonarr_key if payload.get("implementation") == "Sonarr" else radarr_key
     new_fields = []
     for f in payload.get("fields", []):
         if f.get("name") == "apiKey":
             f = dict(f)
-            f["value"] = radarr_key
+            f["value"] = key
         new_fields.append(f)
     payload = dict(payload)
     payload["fields"] = new_fields
@@ -1615,6 +1891,66 @@ show("already at 5      ", s["unchanged"])
 show("skipped (disabled)", s["skipped_disabled"])
 '
 
+# 14b-S. Sonarr: minimum-seeders threshold per indexer.
+#
+# Sonarr twin of the Radarr 14b block above — same rationale (dead-swarm
+# releases from Prowlarr's sync default of 1 hang qBit at metaDL 0%),
+# same idempotency (PUT only when the live value differs from 3), same
+# caveat (a Prowlarr apps re-sync can reset these to 1; a script re-run
+# restores them).
+echo "Configuring Sonarr indexer minimum_seeders threshold..."
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — skipping Sonarr indexer minimum-seeders bump (later runs will apply it)."
+else
+    SONARR_SEEDER_SUMMARY=$(python3 - "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+api_key = sys.argv[1]
+BASE = "http://localhost:8989/api/v3"
+TARGET = 3
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+result = {"updated": [], "unchanged": [], "skipped_disabled": []}
+for ix in http("GET", "/indexer") or []:
+    name = ix.get("name", "?")
+    if not (ix["enableRss"] or ix["enableAutomaticSearch"] or ix["enableInteractiveSearch"]):
+        result["skipped_disabled"].append(name)
+        continue
+    bumped = False
+    for fld in ix.get("fields", []):
+        if fld["name"] == "minimumSeeders":
+            old = fld.get("value")
+            if old != TARGET:
+                fld["value"] = TARGET
+                bumped = True
+            break
+    if bumped:
+        http("PUT", "/indexer/%d?forceSave=true" % ix["id"], ix)
+        result["updated"].append(name)
+    else:
+        result["unchanged"].append(name)
+
+print(json.dumps(result))
+PYEOF
+)
+    echo "${SONARR_SEEDER_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("updated to min=3  ", s["updated"])
+show("already at 3      ", s["unchanged"])
+show("skipped (disabled)", s["skipped_disabled"])
+'
+fi
+
 # 14c. Indexer-sync fallback: directly inject Prowlarr indexers that
 # failed Radarr's add-time test.
 #
@@ -1679,9 +2015,19 @@ radarr_idx = http_get("http://localhost:7878/api/v3/indexer", radarr_key)
 radarr_names = {i["name"] for i in radarr_idx}
 
 # 3) Diff: which Prowlarr-enabled indexers are absent from Radarr?
+# Skip indexers with no Movies capability (e.g. EZTV, TV-only): Prowlarr
+# rightly never syncs them to Radarr, so their absence from Radarr is
+# CORRECT — not a sync failure for this fallback to repair. Injecting
+# one would point Radarr's movie searches at a TV-only indexer and trip
+# the smoke test's exact-set indexer assertion.
+def has_movies_caps(p):
+    cats = (p.get("capabilities") or {}).get("categories") or []
+    return any(c.get("name") == "Movies" for c in cats)
+
 missing = [
     p for p in prowlarr_enabled
     if f"{p['name']} (Prowlarr)" not in radarr_names
+    and has_movies_caps(p)
 ]
 
 if not missing:
@@ -1888,6 +2234,143 @@ show("unchanged", s["unchanged"])
     fi
 fi
 
+# 15-S0. Sonarr root folder /data/library/tv.
+#
+# Greenfield — Sonarr uses the hardlink-capable /data mount from day one
+# (host /mnt/ssd/library/tv, created in Step 2). POST /rootfolder requires
+# the path to exist and be writable by PUID; the mkdir + chown in Step 2
+# guarantees both. Idempotent: skip if already present.
+echo "Configuring Sonarr root folder /data/library/tv..."
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — later runs will apply it."
+else
+    # The curl inside the substitution MUST be ||-guarded: under the script's
+    # set -euo pipefail, a bare failing curl in a $(pipeline) aborts the whole
+    # run before the tolerant python path ever executes (same convention as
+    # PROFILE_JSON at Step 8: `curl ... || echo "[]"`).
+    SONARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${SONARR_KEY}" \
+        http://localhost:8989/api/v3/rootfolder 2>/dev/null || echo "[]") \
+        | python3 -c "import sys,json
+try: print(any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)))
+except Exception: print(False)")
+    if [[ "${SONARR_RF_PRESENT}" == "True" ]]; then
+        echo "  ✓ Sonarr root folder /data/library/tv already present"
+    else
+        if curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+            -d '{"path":"/data/library/tv"}' \
+            http://localhost:8989/api/v3/rootfolder >/dev/null 2>&1; then
+            echo "  ✓ Sonarr root folder /data/library/tv created"
+        else
+            echo "  WARN: failed to create Sonarr root folder; verify /data/library/tv is writable"
+        fi
+    fi
+fi
+
+# 15-S. Sonarr → qBittorrent download client.
+#
+# Sonarr twin of the Radarr download-client block. Same qBittorrent
+# container (reachable via gluetun:8080), category=sonarr so Sonarr's
+# torrents segregate from Radarr's. Password injected from .env at apply
+# time; masked on GET so drift-detection ignores it. Field name is
+# tvCategory (Sonarr) vs Radarr's movieCategory — compared generically.
+echo "Configuring Sonarr → qBittorrent download client..."
+SONARR_DLCLIENTS_FILE="${SCRIPT_DIR}/data/sonarr_downloadclients.json"
+if [[ ! -f "${SONARR_DLCLIENTS_FILE}" ]]; then
+    echo "  WARN: ${SONARR_DLCLIENTS_FILE} not found — skipping."
+else
+    QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+    if [[ -z "${QBIT_PW}" ]]; then
+        echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
+    elif [ "${SONARR_READY:-0}" -ne 1 ]; then
+        echo "  WARN: Sonarr not reachable — skipping Sonarr download-client reconciliation (later runs will apply it)."
+    else
+        SONARR_DLCLIENT_SUMMARY=$(python3 - "${SONARR_DLCLIENTS_FILE}" "${SONARR_KEY}" "${QBIT_PW}" <<'PYEOF'
+import json, sys, urllib.request
+clients_path, api_key, qbit_pw = sys.argv[1], sys.argv[2], sys.argv[3]
+BASE = "http://localhost:8989/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+def fields_to_dict(fields):
+    return {f["name"]: f.get("value") for f in (fields or [])}
+
+def inject_password(payload):
+    new_fields = []
+    for f in payload.get("fields", []):
+        if f.get("name") == "password":
+            f = dict(f)
+            f["value"] = qbit_pw
+        new_fields.append(f)
+    payload = dict(payload)
+    payload["fields"] = new_fields
+    return payload
+
+def shape_payload(desired):
+    payload = {k: v for k, v in desired.items() if k != "id"}
+    return inject_password(payload)
+
+def match(live, desired_payload):
+    keys = ("name", "enable", "protocol", "priority", "implementation",
+            "configContract", "removeCompletedDownloads",
+            "removeFailedDownloads")
+    for k in keys:
+        if live.get(k) != desired_payload.get(k):
+            return False
+    live_fd = fields_to_dict(live.get("fields"))
+    des_fd = fields_to_dict(desired_payload.get("fields"))
+    live_fd.pop("password", None)
+    des_fd.pop("password", None)
+    for k in des_fd:
+        if live_fd.get(k) != des_fd[k]:
+            return False
+    if sorted(live.get("tags", [])) != sorted(desired_payload.get("tags", [])):
+        return False
+    return True
+
+with open(clients_path) as f:
+    desired_clients = json.load(f)
+
+live_clients = http("GET", "/downloadclient") or []
+live_by_name = {c["name"]: c for c in live_clients}
+
+created, updated, unchanged = [], [], []
+for desired in desired_clients:
+    name = desired["name"]
+    payload = shape_payload(desired)
+    if name in live_by_name:
+        live = live_by_name[name]
+        if match(live, payload):
+            unchanged.append(name)
+        else:
+            payload["id"] = live["id"]
+            http("PUT", "/downloadclient/%d" % live["id"], payload)
+            updated.append(name)
+    else:
+        http("POST", "/downloadclient", payload)
+        created.append(name)
+
+print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+PYEOF
+)
+        echo "${SONARR_DLCLIENT_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
+def show(label, items):
+    if items:
+        print("  " + label + ": " + ", ".join(items))
+show("created  ", s["created"])
+show("updated  ", s["updated"])
+show("unchanged", s["unchanged"])
+'
+    fi
+fi
+
 # 16. Radarr quality definitions (custom 720p/1080p size limits).
 #
 # Radarr ships with default size limits per quality (e.g. WEBDL-1080p
@@ -1988,6 +2471,95 @@ import json, sys
 s = json.loads(sys.stdin.read())
 # Quality definitions tend to be many (30+). Print a count summary
 # rather than spelling each one to keep output readable.
+def count(label, items):
+    if items:
+        print("  " + label + ": " + str(len(items)) + " (" + ", ".join(items[:3]) + ("..." if len(items) > 3 else "") + ")")
+count("updated  ", s["updated"])
+count("unchanged", s["unchanged"])
+count("missing  ", s["missing"])
+'
+fi
+
+# 16-S. Sonarr quality definitions (720p/1080p MB-per-minute caps).
+#
+# Sonarr twin of the Radarr block. Its quality-id space differs, so the
+# fixture (sonarr_qualitydefinitions.json) was captured LIVE from this
+# Sonarr and carries Sonarr's own ids. Match by quality.id (stable), PUT
+# on drift. Pi 4B keeps leaner preferred sizes, selected by leaf NAME
+# (Sonarr ids aren't known ahead of time, unlike Radarr's hardcoded map).
+echo "Configuring Sonarr quality definitions..."
+SONARR_QUALITY_FILE="${SCRIPT_DIR}/data/sonarr_qualitydefinitions.json"
+if [[ ! -f "${SONARR_QUALITY_FILE}" ]]; then
+    echo "  WARN: ${SONARR_QUALITY_FILE} not found — skipping."
+elif [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — skipping Sonarr quality-definition reconciliation (later runs will apply it)."
+else
+    SONARR_QD_SUMMARY=$(python3 - "${SONARR_QUALITY_FILE}" "${SONARR_KEY}" <<'PYEOF'
+import json, sys, urllib.request
+qd_path, api_key = sys.argv[1], sys.argv[2]
+BASE = "http://localhost:8989/api/v3"
+
+def http(method, path, body=None):
+    headers = {"X-Api-Key": api_key, "Content-Type": "application/json"}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else None
+
+with open(qd_path) as f:
+    desired_qds = json.load(f)
+
+# Board gate: fixture is the Pi 5 tuning; a Pi 4B keeps leaner preferred
+# sizes. Select by leaf NAME (720p family → 25, 1080p family → 40).
+CAP720  = {"HDTV-720p", "WEBDL-720p", "WEBRip-720p", "Bluray-720p"}
+CAP1080 = {"HDTV-1080p", "WEBDL-1080p", "WEBRip-1080p", "Bluray-1080p"}
+def pi_model():
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            return f.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+if pi_model().startswith("Raspberry Pi 4 "):
+    for d in desired_qds:
+        nm = d["quality"]["name"]
+        if nm in CAP720:
+            d["preferredSize"] = 25
+        elif nm in CAP1080:
+            d["preferredSize"] = 40
+
+live_qds = http("GET", "/qualitydefinition") or []
+live_by_quality_id = {q["quality"]["id"]: q for q in live_qds}
+
+unchanged, updated, missing = [], [], []
+for desired in desired_qds:
+    qid = desired["quality"]["id"]
+    if qid not in live_by_quality_id:
+        missing.append(desired["quality"]["name"])
+        continue
+    live = live_by_quality_id[qid]
+    drift = (
+        live.get("minSize") != desired.get("minSize")
+        or live.get("maxSize") != desired.get("maxSize")
+        or live.get("preferredSize") != desired.get("preferredSize")
+    )
+    if not drift:
+        unchanged.append(desired["quality"]["name"])
+        continue
+    payload = dict(live)
+    payload["minSize"] = desired.get("minSize")
+    payload["maxSize"] = desired.get("maxSize")
+    payload["preferredSize"] = desired.get("preferredSize")
+    http("PUT", "/qualitydefinition/%d" % live["id"], payload)
+    updated.append(desired["quality"]["name"])
+
+print(json.dumps({"updated": updated, "unchanged": unchanged, "missing": missing}))
+PYEOF
+)
+    echo "${SONARR_QD_SUMMARY}" | python3 -c '
+import json, sys
+s = json.loads(sys.stdin.read())
 def count(label, items):
     if items:
         print("  " + label + ": " + str(len(items)) + " (" + ", ".join(items[:3]) + ("..." if len(items) > 3 else "") + ")")
@@ -2147,6 +2719,36 @@ else
     echo "  WARN: failed to trigger Radarr import scan; verify via web UI"
 fi
 
+# 17-S. Sonarr import reconcile — catch completed-but-orphaned episodes.
+#
+# Sonarr twin of the Radarr reconcile above. RefreshMonitoredDownloads
+# polls the now-configured download client; DownloadedEpisodesScan walks
+# the fixed /downloads/complete container mount (same path Radarr's
+# reconcile above uses) and imports anything matching a monitored series.
+# The path is a fixed container mount, not something chosen per-box at
+# provisioning time. Both commands no-op on a clean setup with no
+# orphaned downloads.
+echo "Reconciling Sonarr import state (catches completed-but-orphaned episodes)..."
+if [ "${SONARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Sonarr not reachable — later runs will apply it."
+else
+    SONARR_RECONCILE_OK="✓"
+    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        -d '{"name":"RefreshMonitoredDownloads"}' \
+        "http://localhost:8989/api/v3/command" >/dev/null \
+        || SONARR_RECONCILE_OK="WARN"
+    sleep 5
+    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        -d '{"name":"DownloadedEpisodesScan","path":"/downloads/complete","importMode":"Auto"}' \
+        "http://localhost:8989/api/v3/command" >/dev/null \
+        || SONARR_RECONCILE_OK="WARN"
+    if [[ "${SONARR_RECONCILE_OK}" == "✓" ]]; then
+        echo "  ✓ Sonarr scan + import triggered (any orphaned downloads reconcile within ~30s)"
+    else
+        echo "  WARN: failed to trigger Sonarr import scan; verify via web UI"
+    fi
+fi
+
 # 18. Run smoke test. Hard-asserts every link in the chain (indexers,
 # download client, quality profile, custom formats, qBit auth, kiosk
 # password env var, live indexer search). Non-zero exit means setup
@@ -2186,6 +2788,7 @@ surface). Admin access requires an SSH tunnel from a trusted device:
 
   ssh -L 7878:localhost:7878 \\
       -L 9696:localhost:9696 \\
+      -L 8989:localhost:8989 \\
       -L 8080:localhost:8080 \\
       -L 8191:localhost:8191 \\
       magic@magicpi.local
@@ -2194,6 +2797,9 @@ Then from that device:
 
 Radarr    → http://localhost:7878 (via SSH tunnel only — see operator guide)
             API key: ${RADARR_KEY}
+
+Sonarr    → http://localhost:8989 (via SSH tunnel only — see operator guide)
+            API key: ${SONARR_KEY}
 
 Prowlarr  → http://localhost:9696 (via SSH tunnel only — see operator guide)
             API key: ${PROWLARR_KEY}

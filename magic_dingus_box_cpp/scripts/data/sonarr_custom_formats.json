@@ -1,0 +1,282 @@
+[
+  {
+    "id": 1,
+    "name": "AV1 codec (UNWATCHABLE on Pi 4)",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "AV1",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(av1|aom|opus.av1)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "name": "x265/HEVC 1080p+",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "HEVC marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(x265|hevc|h\\.?265)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 3,
+    "name": "HDR / Dolby Vision",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "HDR marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(hdr|hdr10|dolby.?vision|dv|hlg)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "name": "Remux / Raw-HD",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Remux marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(remux|bdremux|raw.hd)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "name": "x264 codec (BONUS)",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "x264 marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(x264|h\\.?264|avc)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Quality release groups",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Group marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(rarbg|fgt|surge|evo|tgx|successfulcrab|piratess?|aoc)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Low-bitrate size-optimized groups",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Group marker",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(yify|yts\\.?(mx|am|ag)|galaxyrg|ion10|qxr)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "name": "Malware/scam executable in title",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Executable extension",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\.(exe|bat|scr|cmd|com|vbs|lnk|msi|ps1|app|jar|hta)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "name": "Known scam aggregator branding",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Scam site prefix",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive",
+            "value": "\\b(uindex\\.?org|fxnow|123movies|fmovies|gomovies|putlocker)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "name": "Non-English title signals",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Non-Latin script or foreign-dub keyword",
+        "implementation": "ReleaseTitleSpecification",
+        "implementationName": "Release Title",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Regular Expression",
+            "helpText": "Custom Format RegEx is Case Insensitive \u2014 rejects releases with non-Latin script in the title (Cyrillic, CJK, Korean) or explicit foreign-dub keywords. Catches the title-parser-fooled case observed live with '\u0414\u044c\u044f\u0432\u043e\u043b \u043d\u043e\u0441\u0438\u0442 Prada 2 / The Devil Wears Prada 2' \u2014 the English text in the cyrillic-titled torrent fooled Radarr's language parser into tagging it as English, so the quality-profile language gate let it through.",
+            "value": "[\u0400-\u04ff\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|\\b(dublado|doblado|castellano|latino|latam|brazilian[. ]?dub|french[. ]?dub|german[. ]?dub|italian[. ]?dub|russian[. ]?dub|spanish[. ]?dub|chinese[. ]?dub|japanese[. ]?dub|korean[. ]?dub)\\b",
+            "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  }
+]
