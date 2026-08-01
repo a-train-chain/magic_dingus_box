@@ -418,22 +418,11 @@ int main(int /* argc */, char* /* argv */[]) {
     std::vector<Playlist> video_playlists = std::move(ui_split.video);
     std::vector<Playlist> game_playlists = std::move(ui_split.games);
     
-#ifdef MEDIA_BROWSER_ENABLED
-    // Media Browser V2: append a synthetic "Movies" playlist populated from
-    // the Radarr library root (/mnt/ssd/library). Only add it if at
-    // least one movie has been downloaded — an empty "Movies" row would
-    // confuse users on a fresh install before any content lands.
-    {
-        Playlist movies_pl = PlaylistLoader::load_movies_library();
-        if (!movies_pl.items.empty()) {
-            LOG_INFO("Media Browser: loaded {} movies from library",
-                     movies_pl.items.size());
-            video_playlists.push_back(movies_pl);
-        } else {
-            LOG_INFO("Media Browser: no movies found in library (yet)");
-        }
-    }
-#endif
+    // NOTE: downloaded movies do NOT surface here. An earlier Media Browser
+    // pass synthesized a "Movies" playlist from the Radarr library into this
+    // wheel; removed by operator decision — movies play only through
+    // Settings -> Media Browser -> Library, keeping the main menu curated
+    // playlists only (and keeping movie rows out of Master Shuffle's pool).
 
     // Insert "Master Shuffle" playlist at the beginning
     Playlist master_shuffle;

@@ -43,23 +43,6 @@ public:
 
     // Load single playlist from YAML file
     static Playlist load_playlist(const std::string& path);
-
-#ifdef MEDIA_BROWSER_ENABLED
-    // Host path of Radarr's root folder on the Pi. Must agree with
-    // RadarrClient::Config::host_library_prefix and setup_services.sh's
-    // storage layout: movies live directly at library/<Title (Year)>/ —
-    // there is NO Movies/ subdirectory (the old library/Movies/ default
-    // pointed at a dir Radarr never wrote to, so the synthetic playlist
-    // never populated on fielded boxes).
-    static constexpr const char* kMoviesLibraryRoot = "/mnt/ssd/library";
-
-    // Scan a Radarr-style movies library directory (one subdir per movie)
-    // and synthesize a single "Movies" playlist. Safe to call when the
-    // directory does not exist — returns a Playlist with an empty items
-    // vector in that case.
-    static Playlist load_movies_library(
-        const std::string& directory = kMoviesLibraryRoot);
-#endif
 };
 
 } // namespace app

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The synthetic "Movies" playlist no longer appears in the main menu.**
+  Since Media Browser V2 the kiosk scanned the Radarr library at boot
+  and injected an auto-generated "Movies" row into the playlist wheel
+  once anything was downloaded — mixing the whole movie library (and
+  its full-length titles) into a surface meant for curated playlists
+  and Master Shuffle's auto-advance pool. Removed by operator decision:
+  movies play only through Settings → Media Browser → Library.
+
+### Fixed (Content Manager visuals)
+- **The faceplate bezel drew itself twice.** A legacy `body::after`
+  rule (gold ring + cream line via `outline-offset` + screw heads as
+  background SVGs) coexisted with the faceplate shell that draws the
+  same frame from `body.faceplate::before/::after` + real screw
+  elements. The un-overridden legacy properties leaked into the
+  faceplate's cream ring: a third hairline ~19px into the panel and a
+  second, mispositioned set of corner screws — visible on every phone
+  (a desktop-only pass had already suppressed them at ≥1024px). The
+  legacy rule is deleted; one frame, matching the Remote page.
+- **The sub-tab strip no longer draws its own sunken tray.** Videos and
+  Games stacked a second outlined tray (identical chrome to the main
+  tab bar) directly under the navigation; the sub-tab keys now sit
+  straight on the plate so the main tray is the only tray on any tab.
+
 ### Added
 - **Restoring a backup now updates the running kiosk immediately.** The
   web admin's Restore used to write settings.json that the kiosk's next
