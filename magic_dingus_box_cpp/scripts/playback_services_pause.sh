@@ -56,6 +56,10 @@ CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
 # magic-dingus-web uses PrivateTmp, so both processes see the same file.
 PAUSE_MARKER=/tmp/mdb_playback_services_paused
 
+# Compose file location, needed only by the unpause fallback below.
+# Env-overridable for the test harness (scripts/tests/test_gluetun_cascade.py).
+COMPOSE_DIR="${COMPOSE_DIR:-/opt/magic_dingus_box/services}"
+
 # `docker stop -t TIMEOUT` gives the container TIMEOUT seconds for a
 # SIGTERM-clean shutdown before SIGKILL. We pass ALL containers in a
 # single `docker stop` so they're stopped in PARALLEL — sequential stop
@@ -101,11 +105,33 @@ else
     # Try both in parallel; verify each is actually running afterwards.
     docker unpause "${EXISTING[@]}" >/dev/null 2>&1 || true
     docker start  "${EXISTING[@]}" >/dev/null 2>&1 || true
+    failed=()
     for c in "${EXISTING[@]}"; do
         if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
-            echo "[playback-services] WARN: failed to bring $c back up" >&2
+            failed+=("$c")
         fi
     done
+    if [ ${#failed[@]} -gt 0 ]; then
+        # Plain `docker start` joins the netns pinned in HostConfig at
+        # CREATE time: network_mode "service:gluetun" resolves to
+        # Gluetun's CONTAINER ID (verified on hardware), so if Gluetun
+        # was RECREATED while these were paused, start tries to join a
+        # dead container and fails. Only compose re-resolves against the
+        # current Gluetun — `up -d` recreates exactly the stale ones.
+        # (Compose service name = container name minus the mdb_ prefix.)
+        if [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
+            services=()
+            for c in "${failed[@]}"; do services+=("${c#mdb_}"); done
+            echo "[playback-services] plain start failed for ${failed[*]} — compose up -d fallback (Gluetun recreated mid-pause?)"
+            docker compose -f "${COMPOSE_DIR}/docker-compose.yml" \
+                up -d "${services[@]}" >/dev/null 2>&1 || true
+        fi
+        for c in "${failed[@]}"; do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != "true" ]; then
+                echo "[playback-services] WARN: failed to bring $c back up" >&2
+            fi
+        done
+    fi
     # Marker comes up AFTER the start attempts — removed unconditionally:
     # if a container failed to restart, showing its raw exited state is
     # correct (a down container with no playback active IS alarming).

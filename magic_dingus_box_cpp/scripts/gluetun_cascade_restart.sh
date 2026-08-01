@@ -28,10 +28,27 @@
 
 set -euo pipefail
 
-COMPOSE_DIR='/opt/magic_dingus_box/services'
+# All ${VAR:-default} so the test harness (scripts/tests/
+# test_gluetun_cascade.py) can point COMPOSE_DIR at a fixture and zero
+# the sleeps; production (systemd unit, no env) gets the defaults.
+COMPOSE_DIR="${COMPOSE_DIR:-/opt/magic_dingus_box/services}"
 DEPENDENTS=(radarr prowlarr qbittorrent byparr)
-STABILIZE_SLEEP=5            # seconds after Gluetun start before cascading dependents
-UNHEALTHY_CONFIRM_S=300      # seconds to wait before declaring an unhealthy event a real failure
+STABILIZE_SLEEP="${STABILIZE_SLEEP:-5}"      # seconds after Gluetun start before cascading dependents
+UNHEALTHY_CONFIRM_S="${UNHEALTHY_CONFIRM_S:-300}"  # seconds to wait before declaring an unhealthy event a real failure
+
+# Playback pause awareness. playback_services_pause.sh stops the three
+# RAM-heavy dependents during games/movies and maintains this marker for
+# the duration (see that script; admin.py PLAYBACK_PAUSE_MARKER reads the
+# same path). Pre-fix, this watcher's cascade brought them back UP
+# mid-game whenever Gluetun restarted/flapped during play — observed live
+# 2026-07-31 (Super Mario 64 running with the full stack Up), defeating
+# the pause on the 2 GB boxes. While the marker exists, the cascade
+# re-links ONLY qbittorrent (it stays up during playback and needs the
+# re-link for active downloads); the paused three get re-linked when the
+# kiosk's unpause brings them back. The service/container name pairs must
+# stay in sync with CONTAINERS in playback_services_pause.sh.
+PAUSE_MARKER=/tmp/mdb_playback_services_paused
+PAUSED_CONTAINERS=(mdb_radarr mdb_prowlarr mdb_byparr)
 
 if ! [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
     echo "[gluetun-cascade] no compose file at ${COMPOSE_DIR} — exiting (services not provisioned)"
@@ -74,7 +91,22 @@ while IFS= read -r line; do
         start)
             echo "[gluetun-cascade] gluetun started at ${event_time}, sleeping ${STABILIZE_SLEEP}s before cascading..."
             sleep "${STABILIZE_SLEEP}"
-            echo "[gluetun-cascade] cascading dependents: ${DEPENDENTS[*]}"
+            # Marker checked AFTER the stabilize sleep — i.e. at action
+            # time, not event time — so a pause/unpause landing during
+            # the sleep is honored. targets is re-derived per event.
+            targets=("${DEPENDENTS[@]}")
+            if [ -f "${PAUSE_MARKER}" ]; then
+                targets=(qbittorrent)
+                # Enforcement: converge any paused container a prior race
+                # revived back to the kiosk's intent. No-op when they're
+                # already stopped. Same 2 s timeout as the pause script.
+                # Stale-marker risk is bounded: a kiosk crash mid-playback
+                # restarts the kiosk (systemd), whose startup safety runs
+                # unpause and clears the marker within seconds.
+                echo "[gluetun-cascade] playback pause marker present — re-linking qbittorrent only, enforcing stop of ${PAUSED_CONTAINERS[*]}"
+                docker stop -t 2 "${PAUSED_CONTAINERS[@]}" >/dev/null 2>&1 || true
+            fi
+            echo "[gluetun-cascade] cascading dependents: ${targets[*]}"
             # Two recovery paths needed depending on Gluetun's prior state:
             #
             #   - Gluetun was RECREATED (config change → new container):
@@ -97,13 +129,13 @@ while IFS= read -r line; do
             local_compose() {
                 docker compose -f "${COMPOSE_DIR}/docker-compose.yml" "$@"
             }
-            if local_compose restart "${DEPENDENTS[@]}" 2>&1; then
+            if local_compose restart "${targets[@]}" 2>&1; then
                 echo "[gluetun-cascade] dependents restarted"
             else
                 # restart can fail if some are dead — fall through to up -d
                 echo "[gluetun-cascade] (some dependents not running; up -d will create them)"
             fi
-            if local_compose up -d "${DEPENDENTS[@]}"; then
+            if local_compose up -d "${targets[@]}"; then
                 echo "[gluetun-cascade] cascade complete"
             else
                 echo "[gluetun-cascade] cascade up -d failed — will retry on next event"
