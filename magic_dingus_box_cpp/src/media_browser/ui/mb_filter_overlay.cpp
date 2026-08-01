@@ -218,8 +218,13 @@ bool FilterOverlay::on_rotate(int delta) {
 
 // ---------------------------------------------------------------------------
 // on_select (rotary press)
-//   RowSelect + value row (0-5) → enter ValueSelect for that row
-//   RowSelect + RESET ALL (row 6) → reset working_, stay in RowSelect
+//   RowSelect + value row (Popular/TopRated rows 0-5) → enter ValueSelect
+//     for that row.
+//   RowSelect + RESET ALL (Popular/TopRated row 6) → reset working_, stay
+//     in RowSelect, no commit fired.
+//   RowSelect + SHUFFLE (Popular/TopRated row 7; ForYou's only row, 0) →
+//     fire the shuffle callback once with the staged state, then close via
+//     the commit-free close() path.
 //   ValueSelect → save current value (already in working_ via rotate), exit to RowSelect
 // ---------------------------------------------------------------------------
 bool FilterOverlay::on_select() {
@@ -239,6 +244,11 @@ bool FilterOverlay::on_select() {
                 // SHUFFLE — close (commit-free path) and hand staged state to
                 // the handler, which persists it and performs one shuffle load.
                 if (on_shuffle_) on_shuffle_(working_, tab_);
+                // Re-sync the snapshot so a stray input landing during the
+                // SlidingOut animation (on_btn4_close only gates on
+                // is_input_active() now, but keep this belt-and-braces) sees
+                // no diff and cannot re-fire on_commit_ behind the shuffle.
+                opened_ = working_;
                 close();
                 break;
             case RowRole::Value:
@@ -252,10 +262,15 @@ bool FilterOverlay::on_select() {
 // ---------------------------------------------------------------------------
 // on_btn4_close
 //   ValueSelect → exit to RowSelect (first press just saves the current edit)
-//   RowSelect   → fire commit callback ONCE with accumulated working_ state, then close
+//   RowSelect   → fire on_commit_ only when working_ differs from the
+//                 open()-time snapshot (opened_), then close either way.
 // ---------------------------------------------------------------------------
 bool FilterOverlay::on_btn4_close() {
-    if (!is_visible()) return false;
+    // Only accept input while fully Open — matches on_rotate/on_select.
+    // (Previously gated on is_visible(), which stayed true through the
+    // SlidingOut animation and let a stray BTN4 press re-evaluate the
+    // commit check after SHUFFLE had already closed the overlay.)
+    if (!is_input_active()) return false;
 
     if (mode_ == Mode::ValueSelect) {
         // User pressed BTN4 while editing a value — treat as "done editing this row".
@@ -268,7 +283,12 @@ bool FilterOverlay::on_btn4_close() {
     // actually changed since open(). Unconditional commit used to refetch the
     // tab on every overlay peek, which would silently replace a shuffled grid
     // with the canonical chart (spec 1b).
-    if (on_commit_ && working_ != opened_) on_commit_(working_, tab_);
+    if (on_commit_ && working_ != opened_) {
+        on_commit_(working_, tab_);
+        // Re-sync so a residual repeat fire (defensive — is_input_active()
+        // above should already prevent this) is structurally a no-op.
+        opened_ = working_;
+    }
     close();
     return true;
 }

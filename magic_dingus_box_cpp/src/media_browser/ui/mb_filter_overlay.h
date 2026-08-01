@@ -64,30 +64,43 @@ public:
     // Per-frame animation tick. Call from screen's tick() / before render().
     void tick();
 
-    // Input handlers. Return true if the input was consumed.
+    // Input handlers. Return true if the input was consumed. Only accepted
+    // while fully Open (is_input_active()) — on_rotate/on_select/
+    // on_btn4_close all reject input during the SlidingIn/SlidingOut
+    // animation windows.
     //   on_rotate: negative = up/prev, positive = down/next.
-    //     Mode::RowSelect  → moves cursor through filter rows.
+    //     Mode::RowSelect  → moves cursor through the tab's rows
+    //       (row_count()/role_for_row() — Popular/TopRated: 0-5 value rows,
+    //       6 RESET ALL, 7 SHUFFLE; ForYou: single SHUFFLE row).
     //     Mode::ValueSelect → cycles the focused row's value in working_.
     //   on_select: rotary press.
-    //     Mode::RowSelect + value row → enter ValueSelect (no commit fired).
-    //     Mode::RowSelect + RESET ALL → reset working_ to defaults (no commit fired).
+    //     RowRole::Value   → enter ValueSelect (no commit fired).
+    //     RowRole::Reset   → reset working_ to defaults, stay in RowSelect
+    //       (no commit fired).
+    //     RowRole::Shuffle → fire the shuffle callback with the staged
+    //       state, then close via the commit-free close() path (on_commit_
+    //       is never touched).
     //     Mode::ValueSelect → save value to working_, exit back to RowSelect (no commit fired).
     //   on_btn4_close:
     //     Mode::ValueSelect → exit to RowSelect (no commit fired).
-    //     Mode::RowSelect   → fire commit callback ONCE, then close overlay.
+    //     Mode::RowSelect   → fire on_commit_ only when working_ differs
+    //       from the open()-time snapshot, then close overlay either way.
     bool on_rotate(int delta);
     bool on_select();
     bool on_btn4_close();
 
     // Commits go through this callback. The caller's commit handler is
     // responsible for persisting the new state and triggering a refetch.
-    // Fires exactly ONCE per overlay session (on BTN4 close from RowSelect).
+    // Fires at most once per overlay session, only when the staged state
+    // differs from the open()-time snapshot.
     using CommitCallback = std::function<void(const FilterState&, FilterTabKind)>;
     void set_on_commit(CommitCallback cb) { on_commit_ = std::move(cb); }
 
-    // SHUFFLE row callback (spec 1b). The overlay closes itself via the
-    // commit-free close() before firing; the handler persists any staged
-    // edits and performs exactly one shuffle load.
+    // SHUFFLE row callback (spec 1b). Fires synchronously from on_select()
+    // while the overlay is still Open, with the staged working_ state; the
+    // handler persists it and performs exactly one shuffle load. The
+    // overlay then closes itself via the commit-free close() path — on_commit_
+    // is never invoked for this session.
     using ShuffleCallback = std::function<void(const FilterState&, FilterTabKind)>;
     void set_on_shuffle(ShuffleCallback cb) { on_shuffle_ = std::move(cb); }
 
