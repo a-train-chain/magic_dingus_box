@@ -2,6 +2,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <unordered_set>
+
+#include "media_browser/media_ref.h"
 
 // Pure decision helpers for BrowseScreen's TTL / shuffle / For You entry
 // logic (spec: 2026-07-31-marquee-personalization-and-tv-design.md, Phase 1).
@@ -68,6 +71,23 @@ inline ForYouEntry decide_foryou_entry(bool has_cached_list,
     if (!library_fetch_ok) return ForYouEntry::ServiceUnavailable;
     if (library_empty) return ForYouEntry::EmptyLibrary;
     return ForYouEntry::Sample;
+}
+
+// Replace every entry of `kind` in `dst` with the contents of `fresh`,
+// leaving entries of the other kind untouched. The library cache is a
+// single MediaRef set fed by two independent services (Radarr for movies,
+// Sonarr for TV); a refresh where only one answered must not wipe the
+// other's contribution. Runs entirely on the render thread inside one
+// apply_library_pending() call, so the momentary mid-erase state is never
+// observable by another reader.
+inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
+                                 MediaKind kind,
+                                 const std::unordered_set<MediaRef>& fresh) {
+    for (auto it = dst.begin(); it != dst.end();) {
+        if (it->kind == kind) it = dst.erase(it);
+        else ++it;
+    }
+    dst.insert(fresh.begin(), fresh.end());
 }
 
 }  // namespace media_browser::ui

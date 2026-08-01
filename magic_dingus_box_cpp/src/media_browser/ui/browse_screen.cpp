@@ -138,6 +138,8 @@ int current_year_now() {
 
 using FilterTabKind = ::media_browser::ui::FilterTabKind;
 using FilterState   = ::media_browser::ui::FilterState;
+using MediaKind     = ::media_browser::MediaKind;
+using MediaRef      = ::media_browser::MediaRef;
 
 // CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated.
 // Both branch `if (tab == Popular) ... else ...`, so FilterTabKind::ForYou
@@ -347,7 +349,7 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     r.services_ok = radarr_.is_reachable();
     if (r.services_ok) {
         auto lib_checked = radarr_.get_library_checked();
-        r.library_fetch_ok = lib_checked.has_value();
+        r.movie_fetch_ok = lib_checked.has_value();
         // Both ternary operands must be lvalues or this forces a full copy of
         // the library on every refresh (a prvalue std::vector<Movie>{} on the
         // false branch makes the whole expression a prvalue).
@@ -357,7 +359,7 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
         std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
             if (m.tmdb_id > 0) {
-                r.library_ids.insert(m.tmdb_id);
+                r.movie_refs.insert(MediaRef{MediaKind::Movie, m.tmdb_id});
                 radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
             }
         }
@@ -365,7 +367,7 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
         for (const auto& qi : radarr_.get_queue()) {
             auto it = radarr_to_tmdb.find(qi.movie_id);
             if (it != radarr_to_tmdb.end()) {
-                r.downloading_ids.insert(it->second);
+                r.downloading_refs.insert(MediaRef{MediaKind::Movie, it->second});
             }
         }
         // Quality profiles change only when the operator reconfigures Radarr
@@ -395,18 +397,18 @@ void BrowseScreen::apply_library_pending() {
 
     services_ok_ = r.services_ok;
     lib_refresh_done_once_ = true;
-    lib_fetch_ok_ = r.services_ok && r.library_fetch_ok;
+    lib_fetch_ok_ = r.services_ok && r.movie_fetch_ok;
     spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
                  "in_library={}, downloading={}",
-                 services_ok_, r.library_ids.size(), r.downloading_ids.size());
+                 services_ok_, r.movie_refs.size(), r.downloading_refs.size());
     // Only replace the id-sets when Radarr answered. When it didn't, keep the
     // previous visit's cache intact (matches the old code, where the clear +
     // rebuild lived entirely inside the services_ok_ branch). Replacing
     // atomically — never clearing first — means quick_add_focused() always
     // reads a complete set, never a momentarily-empty one.
     if (r.services_ok) {
-        library_tmdb_ids_     = std::move(r.library_ids);
-        downloading_tmdb_ids_ = std::move(r.downloading_ids);
+        replace_refs_of_kind(library_refs_, MediaKind::Movie, r.movie_refs);
+        downloading_refs_ = std::move(r.downloading_refs);
         if (r.quality_fetched) {
             quality_profiles_ = std::move(r.quality_profiles);
             library_cached_   = true;
@@ -415,9 +417,9 @@ void BrowseScreen::apply_library_pending() {
         // cold entry, and a title can join the library mid-session via
         // Detail — sweep both the visible grid and the For You cache so
         // owned titles disappear instead of wearing a badge. The ids stay in
-        // loaded_tmdb_ids_, so later append pages can't re-add them.
+        // loaded_refs_, so later append pages can't re-add them.
         auto owned = [this](const TmdbSearchHit& m) {
-            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+            return library_refs_.count(media_ref_of(m)) > 0;
         };
         const size_t before = movies_.size();
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
@@ -466,7 +468,7 @@ void BrowseScreen::activate_foryou() {
     foryou_waiting_for_library_ = false;
     foryou_failed_ = false;
     switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
-                                lib_fetch_ok_, library_tmdb_ids_.empty())) {
+                                lib_fetch_ok_, library_refs_.empty())) {
         case ForYouEntry::UseCache:
             movies_ = foryou_movies_;
             loading_ = false;
@@ -490,7 +492,9 @@ void BrowseScreen::activate_foryou() {
 
 void BrowseScreen::start_foryou_sample(bool background) {
     // Sample min(8, library size) seeds uniformly without replacement.
-    std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
+    std::vector<int> pool;
+    pool.reserve(library_refs_.size());
+    for (const auto& ref : library_refs_) pool.push_back(ref.id);
     if (pool.empty()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
@@ -581,7 +585,7 @@ void BrowseScreen::apply_foryou_pending() {
         }
         return;
     }
-    foryou_movies_ = merge_recommendations(per_seed, library_tmdb_ids_);
+    foryou_movies_ = merge_recommendations(per_seed, library_refs_);
     foryou_loaded_at_ = std::chrono::steady_clock::now();
     spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
                  foryou_movies_.size(), ok_seeds);
@@ -605,7 +609,7 @@ void BrowseScreen::quick_add_focused() {
     if (hit.tmdb_id <= 0) return;
 
     // Already in library? Short-circuit with a toast.
-    if (library_tmdb_ids_.count(hit.tmdb_id) > 0) {
+    if (library_refs_.count(media_ref_of(hit)) > 0) {
         ::ui::Toast::show("Already in library");
         return;
     }
@@ -646,7 +650,7 @@ void BrowseScreen::quick_add_focused() {
         ::ui::Toast::show("Add failed — see Radarr logs");
         return;
     }
-    library_tmdb_ids_.insert(hit.tmdb_id);
+    library_refs_.insert(media_ref_of(hit));
     std::string msg = "Added: ";
     msg += (hit.title.empty() ? "movie" : hit.title);
     ::ui::Toast::show(msg);
@@ -709,7 +713,7 @@ void BrowseScreen::load_category(Category cat) {
     next_page_to_fetch_ = 1;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     page_window_base_ = 1;
     shuffle_retry_base1_ = false;
     window_is_discover_ = false;
@@ -749,7 +753,7 @@ void BrowseScreen::load_shuffle(Category cat, int base_page) {
     scroll_row_ = 0;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
     window_is_discover_ = false;
@@ -766,7 +770,7 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
     scroll_row_ = 0;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
     window_is_discover_ = true;
@@ -887,7 +891,7 @@ void BrowseScreen::reload_filter_results() {
     next_page_to_fetch_ = 1;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     page_window_base_ = 1;
     shuffle_retry_base1_ = false;
     window_is_discover_ = true;
@@ -1047,18 +1051,18 @@ void BrowseScreen::apply_pending() {
         // hidden from the chart grids entirely — the owner asked for
         // discovery surfaces to show only what they DON'T have. The For You
         // merge applies the same exclusion at merge time; this covers the
-        // page-based tabs. Note the id still enters loaded_tmdb_ids_ so a
+        // page-based tabs. Note the id still enters loaded_refs_ so a
         // later append page can't resurrect it.
         auto owned_by_library = [this](const TmdbSearchHit& m) {
-            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+            return library_refs_.count(media_ref_of(m)) > 0;
         };
         if (pp.page == page_window_base_) {
             // Window-base page — canonical replacement (was hardcoded page 1).
             movies_.clear();
-            loaded_tmdb_ids_.clear();
+            loaded_refs_.clear();
             movies_.reserve(pp.movies.size());
             for (auto& m : pp.movies) {
-                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_refs_.insert(media_ref_of(m)).second) {
                     ++dups;
                 } else if (owned_by_library(m)) {
                     ++owned;
@@ -1090,7 +1094,7 @@ void BrowseScreen::apply_pending() {
         } else {
             movies_.reserve(movies_.size() + pp.movies.size());
             for (auto& m : pp.movies) {
-                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_refs_.insert(media_ref_of(m)).second) {
                     ++dups;
                 } else if (owned_by_library(m)) {
                     ++owned;
@@ -1493,7 +1497,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             return;
         }
         if (!loading_ && movies_.empty() && lib_refresh_done_once_ &&
-            library_tmdb_ids_.empty()) {
+            library_refs_.empty()) {
             draw_centered_msg("Add movies to your library to get recommendations",
                               th.dim);
             draw_baseline_footer();
@@ -1566,8 +1570,9 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // artwork is later available, mb_draw_poster_or_tint can
             // overlay on top; for now the styled card IS the visual.
             const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
-            const bool in_library = library_tmdb_ids_.count(movie.tmdb_id) > 0;
-            const bool is_downloading = downloading_tmdb_ids_.count(movie.tmdb_id) > 0;
+            const MediaRef ref = media_ref_of(movie);
+            const bool in_library = library_refs_.count(ref) > 0;
+            const bool is_downloading = downloading_refs_.count(ref) > 0;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 movie.title, movie.year,

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "media_browser/media_ref.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
@@ -279,7 +280,7 @@ private:
     // page boundaries when its list shifts mid-fetch) don't get duplicate
     // tiles in the grid. Different cuts of the same movie have distinct
     // tmdb_ids, so this is exact-duplicate suppression only.
-    std::unordered_set<int> loaded_tmdb_ids_;
+    std::unordered_set<MediaRef> loaded_refs_;
 
     // First page of the active pagination window. 1 for normal loads; the
     // random base after a shuffle. maybe_load_more_pages() loads
@@ -332,12 +333,12 @@ private:
     // Cached tmdb_ids already in the Radarr library, so quick-add doesn't
     // refetch the full library on every press. Populated on enter() and
     // refreshed after a successful add.
-    std::unordered_set<int> library_tmdb_ids_;
+    std::unordered_set<MediaRef> library_refs_;
     // tmdb_ids of movies currently in the Radarr download queue. Populated
     // alongside library_tmdb_ids_ on enter() by calling get_queue() and
     // cross-referencing with the library's radarr_id → tmdb_id mapping.
     // Drives the DOWNLOADING badge on poster cards.
-    std::unordered_set<int> downloading_tmdb_ids_;
+    std::unordered_set<MediaRef> downloading_refs_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
 
@@ -387,11 +388,14 @@ private:
     // during the blocking fetch, just non-blocking now.
     struct PendingLibrary {
         bool                        services_ok = false;
-        std::unordered_set<int>     library_ids;
-        std::unordered_set<int>     downloading_ids;
+        // Named movie_refs (not library_refs) from the start: Task 8 adds a
+        // tv_refs sibling, and renaming this field twice would churn the same
+        // call sites for no benefit.
+        std::unordered_set<MediaRef> movie_refs;
+        std::unordered_set<MediaRef> downloading_refs;
         std::vector<QualityProfile> quality_profiles;
         bool                        quality_fetched = false;
-        bool                        library_fetch_ok = false;
+        bool                        movie_fetch_ok = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
     void run_library_refresh(bool fetch_quality);  // worker body (off render)

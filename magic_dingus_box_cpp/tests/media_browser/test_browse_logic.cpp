@@ -1,8 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
+#include <unordered_set>
+
+#include "media_browser/media_ref.h"
 #include "media_browser/ui/browse_logic.h"
 
 using namespace media_browser::ui;
 using clock_tp = std::chrono::steady_clock::time_point;
+using media_browser::MediaKind;
+using media_browser::MediaRef;
+using media_browser::ui::replace_refs_of_kind;
 
 TEST_CASE("tmdb_grid_stale: default timestamp is stale; 6h TTL", "[browse_logic]") {
     const clock_tp t0{std::chrono::hours(1000)};
@@ -59,4 +65,43 @@ TEST_CASE("decide_foryou_entry three-way rule", "[browse_logic]") {
     CHECK(decide_foryou_entry(false, true, true, true) == ForYouEntry::EmptyLibrary);
     // Refresh done, fetch ok, library populated → sample.
     CHECK(decide_foryou_entry(false, true, true, false) == ForYouEntry::Sample);
+}
+
+// --- replace_refs_of_kind (Phase 2c-1) -------------------------------------
+// The library cache holds BOTH kinds in one set. A refresh where only one
+// service answered must replace that service's kind and leave the other
+// alone — otherwise a Sonarr blip would silently disable the movie
+// in-library hide, and vice versa.
+
+TEST_CASE("replace_refs_of_kind: replaces only the named kind", "[browse_logic]") {
+    std::unordered_set<MediaRef> dst = {
+        MediaRef{MediaKind::Movie, 1}, MediaRef{MediaKind::Movie, 2},
+        MediaRef{MediaKind::Tv, 1396},
+    };
+    const std::unordered_set<MediaRef> fresh = {MediaRef{MediaKind::Movie, 3}};
+    replace_refs_of_kind(dst, MediaKind::Movie, fresh);
+    REQUIRE(dst.size() == 2);
+    CHECK(dst.count(MediaRef{MediaKind::Movie, 3}) == 1);
+    CHECK(dst.count(MediaRef{MediaKind::Movie, 1}) == 0);
+    CHECK(dst.count(MediaRef{MediaKind::Tv, 1396}) == 1);
+}
+
+TEST_CASE("replace_refs_of_kind: an empty fresh set clears only that kind",
+          "[browse_logic]") {
+    std::unordered_set<MediaRef> dst = {
+        MediaRef{MediaKind::Movie, 1}, MediaRef{MediaKind::Tv, 1396},
+    };
+    replace_refs_of_kind(dst, MediaKind::Tv, {});
+    REQUIRE(dst.size() == 1);
+    CHECK(dst.count(MediaRef{MediaKind::Movie, 1}) == 1);
+}
+
+TEST_CASE("replace_refs_of_kind: adding TV leaves movies intact",
+          "[browse_logic]") {
+    std::unordered_set<MediaRef> dst = {MediaRef{MediaKind::Movie, 1396}};
+    const std::unordered_set<MediaRef> fresh = {MediaRef{MediaKind::Tv, 1396}};
+    replace_refs_of_kind(dst, MediaKind::Tv, fresh);
+    REQUIRE(dst.size() == 2);
+    CHECK(dst.count(MediaRef{MediaKind::Movie, 1396}) == 1);
+    CHECK(dst.count(MediaRef{MediaKind::Tv, 1396}) == 1);
 }
