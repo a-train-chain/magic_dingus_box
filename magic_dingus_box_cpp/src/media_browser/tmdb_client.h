@@ -59,6 +59,50 @@ struct TmdbMovieDetail {
     std::vector<std::string> directors;  // Names from credits.crew where job=="Director".
 };
 
+// One row of /tv/{id}'s seasons[]. Includes season 0 ("Specials") when TMDB
+// returns it — the caller decides whether to show it. Sonarr's
+// addOptions.monitor="firstSeason" leaves specials unmonitored, so the UI
+// needs to know the season exists to render its state honestly.
+struct TmdbTvSeason {
+    int season_number = 0;
+    std::string name;          // "Season 1" / "Specials"
+    std::string overview;
+    std::string air_date;      // ISO yyyy-mm-dd; frequently empty
+    int episode_count = 0;
+    std::string poster_path;   // full w500 URL; empty when TMDB has none
+};
+
+// /tv/{id}?append_to_response=credits. Mirrors TmdbMovieDetail's conventions
+// (full w500 image URLs, display-name genre strings, cast capped at 6) so the
+// series detail screen can reuse the movie detail layout.
+//
+// Deliberately carries NO runtime field: the disk estimate uses Sonarr's
+// series.runtime, and TMDB's episode_run_time is an array that is frequently
+// empty on modern entries.
+struct TmdbTvDetail {
+    int tmdb_id = 0;
+    std::string title;           // TMDB "name"
+    std::string original_title;  // TMDB "original_name"
+    std::string overview;
+    std::string tagline;
+    std::string poster_path;     // full w500 URL
+    std::string backdrop_path;   // full w500 URL
+    int year = 0;                // from first_air_date
+    double rating = 0.0;         // vote_average
+    int vote_count = 0;
+    std::string first_air_date;  // ISO yyyy-mm-dd
+    std::string last_air_date;   // ISO yyyy-mm-dd; empty while airing
+    std::string original_language;
+    std::string status;          // "Ended" / "Returning Series" / "Canceled" / ...
+    bool in_production = false;
+    int number_of_seasons = 0;
+    int number_of_episodes = 0;
+    std::vector<std::string> genres;    // display names, in TMDB order
+    std::vector<std::string> cast_top;  // up to 6 from credits.cast
+    std::vector<std::string> creators;  // created_by[].name — TV's "directors"
+    std::vector<TmdbTvSeason> seasons;  // TMDB order; includes season 0
+};
+
 // Inline filter used for /discover/movie queries.
 struct DiscoverFilter {
     std::vector<int> genre_ids;                    // multi-select with OR semantics (URL-emitted as with_genres=28|12 → films matching any genre)
@@ -143,6 +187,13 @@ public:
     // decision is no TV certification gate at all.
     TmdbList discover_tv(const TvDiscoverFilter& filter, int page = 1);
 
+    // Series detail (by id), with seasons[] and credits in one round-trip.
+    std::optional<TmdbTvDetail> get_tv_detail(int tmdb_id);
+
+    // TV genre list. A SEPARATE call from get_genres() on purpose — the id
+    // spaces differ (see TvDiscoverFilter). Cache client-side; changes rarely.
+    std::vector<Genre> get_tv_genres();
+
     // Genre list (for the Filter UI — cache client-side; changes rarely).
     std::vector<Genre> get_genres();
 
@@ -169,6 +220,8 @@ public:
     // comes back tagged kind == MediaKind::Tv.
     static TmdbList parse_tv_list(const std::string& json);
 
+    static std::optional<TmdbTvDetail> parse_tv_detail(const std::string& json);
+
     // URL builders — exposed so unit tests can verify query-string construction
     // without a network round-trip.
     static std::string build_discover_url(const std::string& api_key,
@@ -185,6 +238,9 @@ public:
     static std::string build_tv_discover_url(const std::string& api_key,
                                              const TvDiscoverFilter& filter,
                                              int page);
+
+    static std::string build_tv_detail_url(const std::string& api_key, int tmdb_id);
+    static std::string build_tv_genres_url(const std::string& api_key);
 
     // Testing / diagnostics. Copy under the error mutex — screens read
     // this on the render thread while their workers run client calls

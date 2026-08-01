@@ -197,3 +197,154 @@ TEST_CASE("build_tv_discover_url omits unset filters", "[tmdb][tv][url]") {
     CHECK(url.find("with_original_language") == std::string::npos);
     CHECK(url.find("sort_by=popularity.desc") != std::string::npos);
 }
+
+// --- TV detail -----------------------------------------------------------
+
+TEST_CASE("parse_tv_detail extracts the series record", "[tmdb][tv][detail]") {
+    const std::string json = load_fixture("tv_detail.json");
+    REQUIRE_FALSE(json.empty());
+    auto d = mb::TmdbClient::parse_tv_detail(json);
+    REQUIRE(d.has_value());
+
+    CHECK(d->tmdb_id == 1396);
+    CHECK(d->title == "Breaking Bad");            // from "name"
+    CHECK(d->original_title == "Breaking Bad");   // from "original_name"
+    CHECK(d->tagline == "Change the equation.");
+    CHECK(d->first_air_date == "2008-01-20");
+    CHECK(d->last_air_date == "2013-09-29");
+    CHECK(d->year == 2008);
+    CHECK(d->rating == Catch::Approx(8.906));
+    CHECK(d->vote_count == 13500);
+    CHECK(d->original_language == "en");
+    CHECK(d->status == "Ended");
+    CHECK_FALSE(d->in_production);
+    CHECK(d->number_of_seasons == 5);
+    CHECK(d->number_of_episodes == 62);
+    CHECK(d->poster_path ==
+          "https://image.tmdb.org/t/p/w500/ggFHVNu6YYI5L9pCfOacjizRGt.jpg");
+    CHECK(d->backdrop_path ==
+          "https://image.tmdb.org/t/p/w500/tsRy63Mu5cu8etL1X7ZLyf7UP1M.jpg");
+
+    REQUIRE(d->genres.size() == 2);
+    CHECK(d->genres[0] == "Drama");
+    CHECK(d->genres[1] == "Crime");
+
+    // Cast capped at 6 like the movie detail parser.
+    REQUIRE(d->cast_top.size() == 6);
+    CHECK(d->cast_top[0] == "Bryan Cranston");
+    CHECK(d->cast_top[5] == "RJ Mitte");
+
+    // TV's analog of "directors" is created_by.
+    REQUIRE(d->creators.size() == 1);
+    CHECK(d->creators[0] == "Vince Gilligan");
+}
+
+TEST_CASE("parse_tv_detail keeps Specials (season 0) in seasons[]",
+          "[tmdb][tv][detail]") {
+    // Sonarr's addOptions.monitor=firstSeason leaves specials UNmonitored, so
+    // the UI needs to know season 0 exists to render it correctly. The parser
+    // preserves TMDB's order and does not filter it out.
+    auto d = mb::TmdbClient::parse_tv_detail(load_fixture("tv_detail.json"));
+    REQUIRE(d.has_value());
+    REQUIRE(d->seasons.size() == 3);
+    CHECK(d->seasons[0].season_number == 0);
+    CHECK(d->seasons[0].name == "Specials");
+    CHECK(d->seasons[0].episode_count == 5);
+    CHECK(d->seasons[1].season_number == 1);
+    CHECK(d->seasons[1].episode_count == 7);
+    CHECK(d->seasons[1].air_date == "2008-01-20");
+    CHECK(d->seasons[1].poster_path ==
+          "https://image.tmdb.org/t/p/w500/1BP4xYv9ZG4ZVHkL7ocOziBbSYH.jpg");
+    CHECK(d->seasons[2].season_number == 2);
+    CHECK(d->seasons[2].poster_path.empty());  // null poster_path
+}
+
+TEST_CASE("parse_tv_detail drops adult entries", "[tmdb][tv][detail]") {
+    // /tv/{id} DOES document `adult`. Same defence-in-depth as
+    // parse_movie_detail: a caller with a raw id must not land on a porn entry.
+    const std::string json =
+        R"({"id": 5, "name": "XXX", "first_air_date": "2020-01-01", "adult": true})";
+    CHECK_FALSE(mb::TmdbClient::parse_tv_detail(json).has_value());
+}
+
+TEST_CASE("parse_tv_detail handles a minimal payload and bad JSON",
+          "[tmdb][tv][detail]") {
+    auto d = mb::TmdbClient::parse_tv_detail(
+        R"({"id": 1, "name": "Minimal", "first_air_date": "2020-01-01"})");
+    REQUIRE(d.has_value());
+    CHECK(d->tagline.empty());
+    CHECK(d->genres.empty());
+    CHECK(d->cast_top.empty());
+    CHECK(d->creators.empty());
+    CHECK(d->seasons.empty());
+    CHECK(d->number_of_seasons == 0);
+
+    CHECK_FALSE(mb::TmdbClient::parse_tv_detail("not json {{{").has_value());
+    // No "id" member → not a series payload.
+    CHECK_FALSE(mb::TmdbClient::parse_tv_detail(R"({"success": false})").has_value());
+}
+
+// --- TV detail / genre URL builders --------------------------------------
+
+TEST_CASE("build_tv_genres_url hits /genre/tv/list, never /genre/movie/list",
+          "[tmdb][tv][url]") {
+    // The entire reason get_tv_genres() exists as a separate call. A
+    // one-character typo here ships a movie genre table into TV mode, where
+    // ids 28/878 do not exist and 10759/10765 are missing — silently, because
+    // both URLs return a well-formed {genres:[...]} the parser accepts.
+    const std::string url = mb::TmdbClient::build_tv_genres_url("KEY");
+    CHECK(url.find("/genre/tv/list") != std::string::npos);
+    CHECK(url.find("/genre/movie/list") == std::string::npos);
+    CHECK(url.find("api_key=KEY") != std::string::npos);
+}
+
+TEST_CASE("build_tv_detail_url appends credits and not content_ratings",
+          "[tmdb][tv][url]") {
+    const std::string url = mb::TmdbClient::build_tv_detail_url("KEY", 1396);
+    CHECK(url.find("/tv/1396") != std::string::npos);
+    CHECK(url.find("append_to_response=credits") != std::string::npos);
+    CHECK(url.find("api_key=KEY") != std::string::npos);
+    CHECK(url.find("language=en-US") != std::string::npos);
+    // No certification gate is applied for TV (spec decision), so paying for
+    // content_ratings would buy nothing.
+    CHECK(url.find("content_ratings") == std::string::npos);
+}
+
+// --- TV genres -----------------------------------------------------------
+
+TEST_CASE("TV genre list is a different id space from movies",
+          "[tmdb][tv][genres]") {
+    const std::string json = load_fixture("tv_genres.json");
+    REQUIRE_FALSE(json.empty());
+    // The genre payload shape is identical for movies and TV, so the existing
+    // parser is reused; what must NOT be shared is the resulting table.
+    auto genres = mb::TmdbClient::parse_genres_response(json);
+    REQUIRE(genres.size() == 16);
+
+    auto has_id = [&genres](int id) {
+        for (const auto& g : genres) if (g.id == id) return true;
+        return false;
+    };
+    auto name_of = [&genres](int id) -> std::string {
+        for (const auto& g : genres) if (g.id == id) return g.name;
+        return {};
+    };
+
+    // TV-only ids.
+    CHECK(has_id(10759));
+    CHECK(name_of(10759) == "Action & Adventure");
+    CHECK(has_id(10765));
+    CHECK(name_of(10765) == "Sci-Fi & Fantasy");
+    CHECK(has_id(10768));  // War & Politics
+
+    // Movie-only ids must be ABSENT — a shared table keyed by movie ids would
+    // silently mislabel or drop TV rows.
+    CHECK_FALSE(has_id(28));    // Action (movie)
+    CHECK_FALSE(has_id(878));   // Science Fiction (movie)
+    CHECK_FALSE(has_id(10749)); // Romance (movie)
+    CHECK_FALSE(has_id(10770)); // TV Movie (movie)
+
+    // Overlapping ids keep their names.
+    CHECK(name_of(18) == "Drama");
+    CHECK(name_of(16) == "Animation");
+}
