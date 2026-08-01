@@ -1128,14 +1128,31 @@ else
     # either answers within this loop or every later Sonarr step was
     # doomed anyway. (Radarr's equivalent probe sits in Step 14 because
     # its earlier contacts at Steps 8-9 are ||-guarded.)
+    #
+    # The probe result GATES the python block below — it must not just
+    # delay it. A bare for-loop-then-continue falls through identically
+    # whether Sonarr answered or never came up; if Sonarr is still down
+    # after 60s, the python's first http() call raises an uncaught
+    # urllib error, and under `set -euo pipefail` the `VAR=$(python3 ...)`
+    # assignment aborts the ENTIRE setup_services.sh — killing Prowlarr's
+    # cloudflare tag, FlareSolverr proxy, indexers, Radarr Apps
+    # integration, qBit category, quality definitions, and the final
+    # smoke test, none of which have anything to do with Sonarr. Dooming
+    # *later Sonarr steps* on an unreachable Sonarr is fine and intended;
+    # dooming unrelated steps is not, so we WARN-and-skip instead.
+    SONARR_READY=0
     for i in {1..30}; do
         if curl -fsS -o /dev/null -H "X-Api-Key: ${SONARR_KEY}" \
-            http://localhost:8989/api/v3/system/status; then
+            http://localhost:8989/api/v3/system/status 2>/dev/null; then
+            SONARR_READY=1
             break
         fi
         sleep 2
     done
-    SONARR_CF_SUMMARY=$(python3 - "${SONARR_CF_DATA_FILE}" "${SONARR_KEY}" <<'PYEOF'
+    if [ "${SONARR_READY}" -ne 1 ]; then
+        echo "  WARN: Sonarr not reachable after 60s — skipping Custom Formats/profile reconciliation (later runs will apply it)."
+    else
+        SONARR_CF_SUMMARY=$(python3 - "${SONARR_CF_DATA_FILE}" "${SONARR_KEY}" <<'PYEOF'
 import json, sys, urllib.request, urllib.error
 
 cf_data_path, api_key = sys.argv[1], sys.argv[2]
@@ -1250,10 +1267,13 @@ def find_quality_id(items, target_name):
     return None
 
 desired_cutoff = find_quality_id(any_profile.get("items", []), DESIRED_CUTOFF_QUALITY_NAME)
-if desired_cutoff and any_profile.get("cutoff") != desired_cutoff:
-    any_profile["cutoff"] = desired_cutoff
-    profile_changed = True
-    score_changes.append("cutoff=%s(id=%d)" % (DESIRED_CUTOFF_QUALITY_NAME, desired_cutoff))
+if desired_cutoff:
+    if any_profile.get("cutoff") != desired_cutoff:
+        any_profile["cutoff"] = desired_cutoff
+        profile_changed = True
+        score_changes.append("cutoff=%s(id=%d)" % (DESIRED_CUTOFF_QUALITY_NAME, desired_cutoff))
+else:
+    print("WARN: could not resolve quality id for cutoff '%s' (Sonarr may have renamed it); cutoff left unchanged" % DESIRED_CUTOFF_QUALITY_NAME, file=sys.stderr)
 
 def item_name(item):
     return item.get("name") or (item.get("quality") or {}).get("name")
@@ -1290,7 +1310,7 @@ print(json.dumps({
 }))
 PYEOF
 )
-    printf '%s' "${SONARR_CF_SUMMARY}" | python3 -c '
+        printf '%s' "${SONARR_CF_SUMMARY}" | python3 -c '
 import json, sys
 s = json.loads(sys.stdin.read())
 def show(label, items):
@@ -1304,6 +1324,7 @@ if s["profile_changed"]:
 else:
     print("  ✓ Sonarr Any profile score map already matches desired state")
 '
+    fi
 fi
 
 # 11. Prowlarr: cloudflare tag.
