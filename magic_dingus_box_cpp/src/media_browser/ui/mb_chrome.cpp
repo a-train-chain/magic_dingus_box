@@ -582,4 +582,28 @@ int draw_screen_header(::ui::Renderer& r,
     return header_top + header_h;
 }
 
+const std::vector<std::string>& marquee_tab_labels() {
+    // Display order, left to right. Must stay in sync with BrowseScreen's
+    // kVisibleTabs (which maps these to Category values for input
+    // dispatch) — that array is the navigation source of truth, this is
+    // the rendering one, and they describe the same strip.
+    static const std::vector<std::string> kLabels = {
+        "Popular", "Top Rated", "For You", "Search", "Library", "Queue", "Settings",
+    };
+    return kLabels;
+}
+
+std::vector<TabSpec> marquee_tabs(const std::string& active_label) {
+    const auto& labels = marquee_tab_labels();
+    std::vector<TabSpec> tabs;
+    tabs.reserve(labels.size());
+    for (const auto& label : labels) {
+        TabSpec t;
+        t.label = label;
+        t.state = (label == active_label) ? TabState::Active : TabState::Inactive;
+        tabs.push_back(std::move(t));
+    }
+    return tabs;
+}
+
 }  // namespace media_browser::ui::chrome

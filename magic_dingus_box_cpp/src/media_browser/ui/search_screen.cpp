@@ -558,16 +558,10 @@ void SearchScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     int body_top_y = 0;
     {
         namespace chrome = ::media_browser::ui::chrome;
-        // v1.6.x strip: Now Playing dropped, Settings added on the right.
-        // Search sits at index 3; Settings at 4 is the new rightmost tab.
-        const std::vector<chrome::TabSpec> tabs = {
-            {"Popular",   chrome::TabState::Inactive},
-            {"Top Rated", chrome::TabState::Inactive},
-            {"Search",    chrome::TabState::Active},
-            {"Library",   chrome::TabState::Inactive},
-            {"Queue",     chrome::TabState::Inactive},
-            {"Settings",  chrome::TabState::Inactive},
-        };
+        // Shared strip (chrome::marquee_tabs) — this screen used to carry
+        // its own six-label copy, which silently lost the "For You" chip
+        // when that tab was added to Browse.
+        const std::vector<chrome::TabSpec> tabs = chrome::marquee_tabs("Search");
         body_top_y = chrome::draw_screen_header(
             r, screen_w, "Search", tabs, /*focused_tab=*/-1);
     }
