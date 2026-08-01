@@ -170,7 +170,7 @@ echo "Creating storage layout at ${STORAGE_ROOT}..."
 # Radarr writes movies directly to ${STORAGE_ROOT}/library/<Title (Year)>/, no
 # Movies subdirectory. The earlier setup created library/Movies/ which then sat
 # empty forever — drop it.
-sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,backups}
+sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,library/tv,backups}
 # This script runs via sudo, so $(whoami) is root. Use TARGET_USER (resolved
 # from $SUDO_USER above) so the storage tree ends up owned by the magic user
 # whose UID/GID the Docker containers run under (PUID/PGID in .env). Without
