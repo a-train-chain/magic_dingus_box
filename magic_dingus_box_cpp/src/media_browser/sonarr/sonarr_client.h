@@ -23,6 +23,31 @@ struct [[nodiscard]] AddSeriesResult {
     Series series;
 };
 
+// Settle predicate for add_series' post-POST poll loop, exposed so its exact
+// shape can be table-tested directly against hand-built Series/Season
+// values rather than only indirectly through fixture-driven HTTP stubs
+// (fixture+stub coverage is exactly why the specials-monitored false
+// positive this predicate now guards against had no test until it was
+// found in review). NOT part of the client's public operational API —
+// callers should use add_series(), not this directly; it is only meaningful
+// for a record add_series itself just created, never for an existing
+// library record (see add_series()'s doc comment for why, and
+// record_refreshed() below for the predicate that IS meaningful there).
+bool add_settled(const Series& s, bool monitor);
+
+// Settle predicate for add_series' idempotent (already-in-library) path.
+// "Does this record match the outcome I just requested?" (add_settled) is
+// meaningless for a record Sonarr never applied addOptions to — its
+// monitored-season shape can be the user's own permanent choice (every
+// season monitored), an earlier set_season_monitored() call mid-way through
+// a season pass, or coincidentally the shape a fresh add would produce, and
+// add_settled would read the first two as unsettled FOREVER, since the
+// shape never changes on its own. The only question that means anything for
+// an EXISTING record is whether Sonarr has ever actually refreshed it at
+// all — i.e. whether episodes are known (any season shows
+// episode_count > 0), independent of what is or is not monitored.
+bool record_refreshed(const Series& s);
+
 // HTTP client for Sonarr v4 (which still serves its API under /api/v3 — there
 // is no /api/v4 namespace). Mirrors RadarrClient: every public method is
 // virtual so SonarrMockClient can replace them wholesale, and the four http_*
@@ -125,12 +150,24 @@ public:
     // that cannot false-positive during that race window is checking what we
     // actually asked for: settled once episodes are known to exist AND the
     // monitored-season set matches the request (exactly one non-special
-    // season for "firstSeason" — never hardcoded to season number 1, since a
-    // show's first aired season is not always numbered 1; none at all for
-    // "none"). A series SkyHook has no episodes for yet (announced/upcoming)
-    // can never satisfy that condition and will burn the full timeout budget
-    // every time it is added — accepted and safe, since the result is a
-    // correctly-labeled settled=false rather than a wrong answer.
+    // season monitored AND specials NOT monitored, for "firstSeason" — never
+    // hardcoded to season number 1, since a show's first aired season is not
+    // always numbered 1; none at all, specials included, for "none"). The
+    // specials clause matters on its own: a show with exactly ONE regular
+    // season plus specials has a mid-refresh all-monitored state of
+    // {specials monitored, S1 monitored} where the non-special count is
+    // already 1, so a predicate that checked only that count would settle
+    // one poll early and report specials monitored when firstSeason will
+    // unmonitor them (live-verified in Phase 2a: firstSeason left "S2-5 AND
+    // specials" unmonitored; caught in review before shipping).
+    //
+    // Two shapes accepted as safe-by-design rather than specially handled:
+    // a series SkyHook has no episodes for yet (announced/upcoming) can
+    // never satisfy the episode-presence clause, and a series whose ONLY
+    // season is season 0 (specials-only — rare but real) can never satisfy
+    // monitored_non_special == 1. Both burn the full timeout budget on
+    // every add — accepted and safe, since the result is a correctly
+    // labeled settled=false rather than a wrong answer, not a hang.
     //
     // BOUNDED-POLLS GET /api/v3/series/{id} against that predicate, capped by
     // Config::add_settle_timeout_ms. On timeout it returns ok=true,
@@ -149,9 +186,10 @@ public:
     //
     // Idempotent: when the tvdbId is already in the library the existing
     // record is returned instead of POSTing (which would 400 on
-    // seriesExistsValidator) — settled is computed by the SAME predicate
-    // against that record, not assumed true. ok=false on any failure; see
-    // last_error().
+    // seriesExistsValidator) — settled is computed by record_refreshed(),
+    // NOT add_settled() (see record_refreshed()'s doc comment for why an
+    // existing record needs a different question), and never assumed true.
+    // ok=false on any failure; see last_error().
     [[nodiscard]] virtual AddSeriesResult add_series(
         int tmdb_id,
         int quality_profile_id,

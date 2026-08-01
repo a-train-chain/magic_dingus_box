@@ -290,6 +290,11 @@ public:
     std::vector<std::string> gets;
     std::string post_path, post_body;
     bool already_added = false;
+    // The existing record's user has monitored EVERY season (their own
+    // choice) rather than being left in the firstSeason shape. Sonarr never
+    // (re)applies addOptions to an existing series, so this is a completely
+    // legitimate, permanent state — not a mid-refresh snapshot.
+    bool already_added_all_monitored = false;
     // Pins the sequence on the DANGEROUS middle stage forever: episodes
     // present, but every season still monitored:true. This is the state a
     // bare "episodes exist" check would misread as settled.
@@ -304,6 +309,9 @@ public:
         }
         if (path.rfind("/api/v3/series?tvdbId=81189", 0) == 0) {
             if (probe_fails) return "";  // transport failure, NOT "absent"
+            if (already_added_all_monitored) {
+                return read_fixture("series_list_all_monitored.json");
+            }
             return already_added ? read_fixture("series_list.json") : "[]";
         }
         if (path.rfind("/api/v3/rootfolder", 0) == 0) {
@@ -416,13 +424,78 @@ TEST_CASE("add_series is idempotent when the series is already in the library",
     s.already_added = true;
     auto added = s.add_series(1396, 1, true);
     REQUIRE(added.ok);
-    // settled is NOT hardcoded true for this path — the same outcome
-    // predicate that governs the poll loop is applied to the probed record.
-    // series_list.json already has episodes and exactly one non-special
-    // season monitored, so it reads settled here too.
+    // settled is NOT hardcoded true for this path — record_refreshed() is
+    // applied to the probed record (see the ALL-monitored test below for
+    // why it must be record_refreshed and NOT add_settled). series_list.json
+    // already has episodes, so it reads refreshed/settled here too.
     CHECK(added.settled);
     CHECK(added.series.sonarr_id == 7);
     CHECK(s.post_path.empty());  // nothing was POSTed
+}
+
+TEST_CASE("add_series treats an existing ALL-monitored record as settled "
+          "via record_refreshed, not stuck unsettled forever",
+          "[sonarr][add]") {
+    // CRITICAL bug found in review: the idempotent path must NOT ask
+    // "does this record match what I just requested" (add_settled) —
+    // that question is meaningless for a record Sonarr never applied
+    // addOptions to. A real existing record's monitored-season shape can be
+    // anything: the user's own choice to monitor every season (this
+    // fixture), an earlier set_season_monitored(id, 2, true) call mid-way
+    // through a season pass (S1+S2 monitored), or coincidentally the
+    // firstSeason shape (only reason the OTHER idempotent test above
+    // passed). add_settled reads the first two as "unsettled" FOREVER,
+    // because the record's shape never changes on its own — the caller
+    // would be told settled=false, seasons CLEARED, "re-fetch me", and
+    // every re-fetch would return the exact same permanent wrong answer.
+    // Season-at-a-time means EVERY show passes through the S1+S2 state at
+    // its second season, so this is not a rare edge case — it is the
+    // primary workflow. The only question that means anything for an
+    // EXISTING record is whether Sonarr has ever actually refreshed it
+    // (record_refreshed(): episodes populated), independent of the
+    // monitored shape.
+    AddSonarr s;
+    s.already_added = true;
+    s.already_added_all_monitored = true;
+    auto added = s.add_series(1396, 1, true);
+    REQUIRE(added.ok);
+    CHECK(added.settled);
+    REQUIRE_FALSE(added.series.seasons.empty());  // NOT cleared — this is real data
+    CHECK(added.series.seasons.size() == 6);
+    CHECK(added.series.seasons[0].monitored);      // the record's REAL shape is
+    CHECK(added.series.seasons[1].monitored);      // reported as-is, never
+    CHECK(added.series.seasons[2].monitored);      // second-guessed against
+    CHECK(added.series.seasons[3].monitored);      // what THIS call requested
+    CHECK(added.series.seasons[4].monitored);
+    CHECK(added.series.seasons[5].monitored);
+    CHECK(s.post_path.empty());  // idempotent: no POST
+}
+
+TEST_CASE("add_settled rejects a one-regular-season-plus-specials "
+          "mid-refresh state (specials must not be monitored too)",
+          "[sonarr][add]") {
+    // IMPORTANT bug found in review: a show with exactly ONE regular season
+    // plus specials has a mid-refresh all-monitored state of {S0 monitored,
+    // S1 monitored} — monitored_non_special == 1 there too, so a predicate
+    // that checks only the non-special count settles one poll early and
+    // reports specials monitored when firstSeason will unmonitor them
+    // (live-verified in Phase 2a: firstSeason left "S2-5 AND specials"
+    // unmonitored). Exercised directly against add_settled — exposed in the
+    // header specifically so shapes like this can be table-tested without a
+    // fixture + HTTP stub for each one.
+    mb::Series mid_refresh;
+    mid_refresh.sonarr_id = 42;
+    mid_refresh.seasons = {
+        {0, /*monitored=*/true, /*episode_count=*/3, 0, 0},   // Specials — still armed
+        {1, /*monitored=*/true, /*episode_count=*/10, 0, 0},  // the only regular season
+    };
+    CHECK_FALSE(mb::add_settled(mid_refresh, /*monitor=*/true));
+
+    // The actually-settled shape for the same show: specials unmonitored,
+    // the one regular season monitored.
+    mb::Series settled = mid_refresh;
+    settled.seasons[0].monitored = false;
+    CHECK(mb::add_settled(settled, /*monitor=*/true));
 }
 
 TEST_CASE("add_series ABORTS when the existence probe cannot reach Sonarr",

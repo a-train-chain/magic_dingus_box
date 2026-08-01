@@ -260,7 +260,6 @@ std::optional<std::vector<Series>> SonarrClient::find_series_by_tvdb(int tvdb_id
     return SonarrParsers::parse_series_list(resp);
 }
 
-namespace {
 // True once the async refresh has visibly applied the REQUESTED monitoring
 // outcome — episodes are known to exist AND the monitored set among seasons
 // matches what was asked for. This is deliberately NOT "addOptions is gone"
@@ -272,30 +271,51 @@ namespace {
 // two separate steps, so a bare episode-presence check settles mid-refresh
 // and reports the wrong season list). Checking the outcome we actually asked
 // for is the only definition that cannot false-positive during that race.
+//
+// ONLY meaningful for a record add_series itself just POSTed — see the
+// header doc comment for why an EXISTING library record must be checked
+// with record_refreshed() instead.
 bool add_settled(const Series& s, bool monitor) {
     bool has_episodes = false;
-    bool any_monitored = false;
+    bool special_monitored = false;
     int monitored_non_special = 0;
     for (const auto& season : s.seasons) {
         if (season.episode_count > 0) has_episodes = true;
         if (season.monitored) {
-            any_monitored = true;
-            if (season.season_number != 0) ++monitored_non_special;
+            if (season.season_number == 0) special_monitored = true;
+            else ++monitored_non_special;
         }
     }
     if (!has_episodes) return false;
     if (monitor) {
         // "firstSeason" settles once EXACTLY ONE non-special season is
-        // monitored. "at least one" would also match the still-unsettled
-        // all-monitored state; the count is never compared against a
+        // monitored AND specials are NOT. The count alone is not enough: a
+        // show with exactly one regular season plus specials has a
+        // mid-refresh all-monitored state of {specials monitored, S1
+        // monitored} where monitored_non_special is already 1, so without
+        // the specials check this settles one poll early and reports
+        // specials monitored when firstSeason will unmonitor them
+        // (live-verified in Phase 2a: firstSeason left "S2-5 AND specials"
+        // unmonitored). The non-special count is never compared against a
         // hardcoded season NUMBER because a show's first aired season is
         // not always numbered 1.
-        return monitored_non_special == 1;
+        return monitored_non_special == 1 && !special_monitored;
     }
     // "none" settles once nothing at all is monitored, specials included.
-    return !any_monitored;
+    return !special_monitored && monitored_non_special == 0;
 }
-}  // namespace
+
+// True once Sonarr has ever actually refreshed an EXISTING library record —
+// i.e. episodes are known (any season shows episode_count > 0) — regardless
+// of what is or is not monitored. See the header doc comment for why this,
+// and NOT add_settled(), is the only question that means anything for a
+// record add_series did not just create.
+bool record_refreshed(const Series& s) {
+    for (const auto& season : s.seasons) {
+        if (season.episode_count > 0) return true;
+    }
+    return false;
+}
 
 AddSeriesResult SonarrClient::add_series(int tmdb_id,
                                          int quality_profile_id,
@@ -357,13 +377,19 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
         if (!probe->empty()) {
             result.ok = true;
             result.series = probe->front();
-            // NOT hardcoded true: apply the same outcome predicate the poll
-            // loop uses. An existing library record is settled in the
-            // overwhelming common case, but treating "already in the
-            // library" as an automatic settled=true would be wrong for a
-            // record that itself is mid-refresh (e.g. two rapid add
-            // requests racing the same show).
-            result.settled = add_settled(result.series, monitor);
+            // record_refreshed(), NOT add_settled(): "does this match what I
+            // just requested" is meaningless for a record Sonarr never
+            // applied addOptions to. A real existing record's shape can be
+            // the user's own permanent choice (every season monitored) or a
+            // season-at-a-time state left by an earlier
+            // set_season_monitored() call — add_settled would read either as
+            // "unsettled" FOREVER, since the record's shape never changes on
+            // its own, which is a guaranteed permanent wrong answer on the
+            // app's primary workflow (every show passes through a partial-
+            // monitored state at its second season). The only question that
+            // means anything here is whether Sonarr has ever refreshed this
+            // record at all.
+            result.settled = record_refreshed(result.series);
             if (!result.settled) result.series.seasons.clear();
             spdlog::info("[sonarr] add_series: tvdb:{} already in library "
                          "(id={}, settled={}); returning existing record",
