@@ -158,6 +158,7 @@ set(APP_SOURCES
     src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
+    src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
 )
@@ -452,6 +453,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
+        tests/media_browser/test_mb_filter_persistence.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
@@ -470,6 +472,11 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
+        # Renderer-free, jsoncpp-only mapping of the four per-mode filter sets
+        # to/from settings.json. Lives in APP_SOURCES for the kiosk; listed
+        # here so the legacy-key migration is unit-tested (BUILD_KIOSK=OFF
+        # does not compile APP_SOURCES).
+        src/app/mb_filter_persistence.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
 
