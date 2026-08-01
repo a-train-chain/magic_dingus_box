@@ -63,6 +63,36 @@ static std::string resolve_poster_url(const std::string& path) {
     // TMDB consistently returns leading-slash paths; concatenating is safe.
     return std::string(kImageBase) + path;
 }
+
+// Year from an ISO "YYYY-MM-DD". 0 when absent or unparseable. Moved out of
+// TmdbClient's private section so fill_list_row (below) can use it — it had
+// no callers outside this translation unit.
+static int extract_year(const std::string& date) {
+    if (date.size() < 4) return 0;
+    try { return std::stoi(date.substr(0, 4)); }
+    catch (...) { return 0; }
+}
+
+// One row of any TMDB "results[]" payload. Movie and TV rows are the same
+// shape except for three key names, so the parsers differ only in what they
+// pass here. Returns false when the row must be dropped (family-safe gate):
+// `adult` is read as optional-default-false because /tv/popular and
+// /tv/top_rated omit the field entirely, and include_adult does not exist on
+// those endpoints — the parser is the only gate there.
+static bool fill_list_row(const Json::Value& r, TmdbSearchHit& h,
+                          const char* title_key, const char* original_key,
+                          const char* date_key, MediaKind kind) {
+    if (r.get("adult", false).asBool()) return false;
+    h.tmdb_id        = r.get("id", 0).asInt();
+    h.title          = r.get(title_key, "").asString();
+    h.original_title = r.get(original_key, "").asString();
+    h.overview       = r.get("overview", "").asString();
+    h.poster_path    = resolve_poster_url(r.get("poster_path", "").asString());
+    h.year           = extract_year(r.get(date_key, "").asString());
+    h.rating         = r.get("vote_average", 0.0).asDouble();
+    h.kind           = kind;
+    return true;
+}
 }  // namespace
 
 TmdbClient::TmdbClient(std::string api_key)
@@ -72,12 +102,6 @@ TmdbClient::TmdbClient(std::string api_key)
 
 TmdbClient::~TmdbClient() {
     curl_global_cleanup();
-}
-
-int TmdbClient::extract_year(const std::string& date) {
-    if (date.size() < 4) return 0;
-    try { return std::stoi(date.substr(0, 4)); }
-    catch (...) { return 0; }
 }
 
 std::string TmdbClient::http_get(const std::string& url) {
@@ -411,15 +435,36 @@ TmdbList TmdbClient::parse_list(const std::string& json) {
     list.ok = true;
     list.total_pages = root.get("total_pages", 0).asInt();
     for (const auto& r : results) {
-        if (r.get("adult", false).asBool()) continue;  // family-safe drop
         TmdbSearchHit h;
-        h.tmdb_id = r.get("id", 0).asInt();
-        h.title = r.get("title", "").asString();
-        h.original_title = r.get("original_title", "").asString();
-        h.overview = r.get("overview", "").asString();
-        h.poster_path = resolve_poster_url(r.get("poster_path", "").asString());
-        h.year = extract_year(r.get("release_date", "").asString());
-        h.rating = r.get("vote_average", 0.0).asDouble();
+        if (!fill_list_row(r, h, "title", "original_title", "release_date",
+                           MediaKind::Movie)) {
+            continue;  // family-safe drop
+        }
+        list.hits.push_back(std::move(h));
+    }
+    return list;
+}
+
+TmdbList TmdbClient::parse_tv_list(const std::string& json) {
+    TmdbList list;
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string err;
+    std::istringstream is(json);
+    if (!Json::parseFromStream(rb, is, &root, &err)) {
+        spdlog::error("[media_browser] TMDB TV list parse error: {}", err);
+        return list;  // ok=false
+    }
+    const auto& results = root["results"];
+    if (!results.isArray()) return list;  // TMDB error payload — ok=false
+    list.ok = true;
+    list.total_pages = root.get("total_pages", 0).asInt();
+    for (const auto& r : results) {
+        TmdbSearchHit h;
+        if (!fill_list_row(r, h, "name", "original_name", "first_air_date",
+                           MediaKind::Tv)) {
+            continue;  // family-safe drop
+        }
         list.hits.push_back(std::move(h));
     }
     return list;

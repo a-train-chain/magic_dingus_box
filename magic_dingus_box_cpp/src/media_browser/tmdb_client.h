@@ -7,6 +7,12 @@
 
 namespace media_browser {
 
+// Which TMDB namespace a row came from. Defaults to Movie on every hit so
+// the entire pre-TV movie path (Browse, Search, For You, playback overlay)
+// is untouched by the TV work — a TV row is only ever produced by the
+// parse_tv_* family, which sets this explicitly.
+enum class MediaKind { Movie, Tv };
+
 struct TmdbSearchHit {
     int tmdb_id = 0;
     std::string title;
@@ -18,6 +24,7 @@ struct TmdbSearchHit {
     std::string poster_path;
     int year = 0;                // extracted from release_date/first_air_date
     double rating = 0.0;         // vote_average
+    MediaKind kind = MediaKind::Movie;  // see MediaKind — movie rows never set this
 };
 
 // Result of any TMDB "results[]" list endpoint. `ok` distinguishes a fetch/
@@ -119,6 +126,14 @@ public:
     // vector-shaped parser stays for its existing tests and callers.
     static TmdbList parse_list(const std::string& json);
 
+    // TV-shaped variant of parse_list. TMDB's TV rows name their fields
+    // differently (name / original_name / first_air_date instead of
+    // title / original_title / release_date) and OMIT `adult` entirely on
+    // /tv/popular and /tv/top_rated — so `adult` is read as
+    // optional-default-false and only true rows are dropped. Every hit
+    // comes back tagged kind == MediaKind::Tv.
+    static TmdbList parse_tv_list(const std::string& json);
+
     // URL builders — exposed so unit tests can verify query-string construction
     // without a network round-trip.
     static std::string build_discover_url(const std::string& api_key,
@@ -144,7 +159,6 @@ public:
 
 private:
     std::string http_get(const std::string& url);
-    static int extract_year(const std::string& date_yyyy_mm_dd);
 
     void set_error(std::string msg) {
         std::lock_guard<std::mutex> lk(err_mtx_);
