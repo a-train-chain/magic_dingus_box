@@ -445,15 +445,20 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
             return Screen::MovieSettings;
         }
 
-        if (e.action == platform::InputAction::ROTATE_VERTICAL && e.delta != 0) {
-            if (queue_.empty()) continue;
-            int n = static_cast<int>(queue_.size());
-            cursor_ = std::clamp(cursor_ + e.delta, 0, n - 1);
-            // Navigation clears any pending cancel so the user can't
-            // accidentally confirm on the wrong row.
-            if (cancel_pending_) {
-                cancel_pending_ = false;
-                cancel_pending_queue_id_ = 0;
+        // ROTATE (rotary CW/CCW + D-pad left/right) and ROTATE_VERTICAL
+        // (D-pad up/down) both walk the rows — the rotary encoder is the
+        // only cursor input on a controller-free enclosure.
+        const auto step = step_cursor(e.action, e.delta, cursor_,
+                                      static_cast<int>(queue_.size()));
+        if (step.is_nav) {
+            if (!queue_.empty()) {
+                cursor_ = step.cursor;
+                // Navigation clears any pending cancel so the user can't
+                // accidentally confirm on the wrong row.
+                if (cancel_pending_) {
+                    cancel_pending_ = false;
+                    cancel_pending_queue_id_ = 0;
+                }
             }
             continue;
         }

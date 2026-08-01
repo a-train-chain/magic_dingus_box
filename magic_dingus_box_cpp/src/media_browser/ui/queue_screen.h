@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -37,7 +38,10 @@ namespace media_browser::ui {
 //   - update() re-fetches every kRefreshIntervalMs (~2 seconds).
 //
 // Interaction:
-//   - ROTATE_VERTICAL (dpad up/down): move cursor through rows.
+//   - ROTATE (rotary CW/CCW + D-pad left/right) and ROTATE_VERTICAL
+//     (D-pad up/down): move cursor through rows. Both walk the same
+//     list — the rotary encoder is the only cursor input on a
+//     controller-free enclosure, so ROTATE must never be vertical-only.
 //   - SELECT / ROTARY_CLICK: two-stage cancel of the focused row.
 //     The button label flips to "Confirm Cancel" for kCancelPendingMs,
 //     and a second SELECT within that window calls cancel_queue_item().
@@ -72,6 +76,30 @@ public:
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void update() override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
+
+    // Pure cursor-navigation decision for the queue list, header-inline
+    // so the unit tests can exercise it without linking this screen's
+    // Renderer-dependent .cpp (same pattern as ReleasePickerScreen's
+    // static helpers). handle_input() delegates to this — it is the
+    // single source of truth for which actions walk the rows.
+    struct CursorStep {
+        bool is_nav = false;  // event was a cursor-walk action with delta != 0
+        int  cursor = 0;      // resulting cursor position
+    };
+    static CursorStep step_cursor(platform::InputAction action, int delta,
+                                  int cursor, int count) {
+        CursorStep r;
+        r.cursor = cursor;
+        if (action != platform::InputAction::ROTATE &&
+            action != platform::InputAction::ROTATE_VERTICAL) {
+            return r;
+        }
+        if (delta == 0) return r;
+        r.is_nav = true;
+        if (count <= 0) return r;  // consume, but nothing to move through
+        r.cursor = std::clamp(cursor + delta, 0, count - 1);
+        return r;
+    }
 
 private:
     // Refresh cadence. With the new async path the UI never blocks on

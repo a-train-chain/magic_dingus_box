@@ -1951,40 +1951,20 @@ int main(int /* argc */, char* /* argv */[]) {
                 state.ui_visible_when_playing = false;
             };
 
-            // Controller-free navigation on the kiosk enclosure:
-            // synthesize vertical nav from BTN1 (yellow/PREV) and BTN3
-            // (green/NEXT) so users can reach every UI element with only
-            // the 4 hardware buttons + rotary encoder (no USB controller
-            // needed). A plugged-in controller still works — its DPad
-            // already produces ROTATE_VERTICAL natively.
-            //
-            //   BTN1 press -> ROTATE_VERTICAL delta=-1  (up)
-            //   BTN3 press -> ROTATE_VERTICAL delta=+1  (down)
-            //
-            // The original PREV/NEXT events also remain in the queue; no
-            // screen currently consumes them, but if one ever does the
-            // synth is additive, not destructive.
-            {
-                std::vector<platform::InputEvent> synth_events;
-                synth_events.reserve(input_events.size());
-                for (const auto& e : input_events) {
-                    if (!e.pressed) continue;
-                    if (e.action == platform::InputAction::PREV) {
-                        platform::InputEvent s{};
-                        s.action = platform::InputAction::ROTATE_VERTICAL;
-                        s.delta = -1;
-                        s.pressed = true;
-                        synth_events.push_back(s);
-                    } else if (e.action == platform::InputAction::NEXT) {
-                        platform::InputEvent s{};
-                        s.action = platform::InputAction::ROTATE_VERTICAL;
-                        s.delta = +1;
-                        s.pressed = true;
-                        synth_events.push_back(s);
-                    }
-                }
-                for (auto& s : synth_events) input_events.push_back(std::move(s));
-            }
+            // ONE SEMANTIC PER PHYSICAL INPUT. BTN1/BTN3 arrive here as
+            // PREV/NEXT and every MB surface consumes them: the five tab
+            // screens use them for Marquee tab navigation, the exit and
+            // stall modals for focus, Playback for seeking. Do NOT
+            // synthesize ROTATE_VERTICAL (or anything else) from them in
+            // this dispatcher — a duplicate event in the same frame makes
+            // one press fire two actions (tab-switch + row-move on
+            // Browse; focus-set + focus-toggle in the modals). Vertical
+            // nav comes only from inputs that are natively vertical:
+            // D-pad hat/buttons, analog stick Y, keyboard arrows, and
+            // the phone remote's UP/DOWN (ABS_HAT0Y) — all mapped in
+            // InputManager. The rotary encoder's ROTATE walks every
+            // cursor-bearing MB screen, so controller-free enclosures
+            // stay fully navigable.
 
             // BTN4 (SETTINGS_MENU) long-press detection. Short press
             // (< 500ms) forwards a synthetic `pressed` event to the active
