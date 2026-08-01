@@ -22,7 +22,7 @@
     <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 
-    <link rel="stylesheet" href="/static/style.css?v=105">
+    <link rel="stylesheet" href="/static/style.css?v=106">
 </head>
 
 <body class="faceplate">
@@ -224,16 +224,29 @@
                             </div>
                             <div class="upload-content" id="libraryUploadContent" style="display: none;">
                                 <div class="resolution-row">
-                                    <label>Format:</label>
+                                    <label>Quality:</label>
                                     <!-- Values must match TRANSCODE_RESOLUTIONS in admin.py;
                                          crt_hd is the master default (4:3, 1:1 in the kiosk's
                                          4:3 viewport at 720p output). -->
                                     <select id="targetResolution" class="resolution-select-compact">
-                                        <option value="crt_hd" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT HD 960×720 (default)</option>
-                                        <option value="crt_fhd"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT FHD 1440×1080</option>
-                                        <option value="modern"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Widescreen 1280×720</option>
-                                        <option value="crt"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> CRT Legacy 640×480</option>
+                                        <option value="crt_hd" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> HD 720 (960×720, recommended)</option>
+                                        <option value="crt"><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Classic 480 (640×480, smaller files)</option>
                                     </select>
+                                </div>
+                                <div class="resolution-row">
+                                    <label>Framing:</label>
+                                    <!-- Values must match TRANSCODE_FIT_MODES in admin.py. -->
+                                    <select id="framingMode" class="resolution-select-compact">
+                                        <option value="crop" selected><svg class="ic" aria-hidden="true"><use href="#ic-crt"/></svg> Fill screen — crop edges (TV look)</option>
+                                        <option value="fit"><svg class="ic" aria-hidden="true"><use href="#ic-monitor"/></svg> Show everything — add borders</option>
+                                    </select>
+                                </div>
+                                <div style="margin: 0.25rem 0 0.5rem; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.35;">
+                                    <strong>Fill screen</strong> zooms in to fill the whole 4:3 picture — widescreen
+                                    and phone videos get their edges trimmed off.
+                                    <strong>Show everything</strong> keeps the full video and adds black borders
+                                    instead (sides for vertical phone videos, top/bottom for widescreen) — nothing
+                                    is cut off. Neither option ever upscales your video.
                                 </div>
                                 <div class="normalize-row" style="margin-bottom: 0.5rem;">
                                     <label

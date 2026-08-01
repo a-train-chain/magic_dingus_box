@@ -7972,69 +7972,19 @@ html::before {
         radial-gradient(120% 55% at 50% 108%, rgba(0, 0, 0, .5),       transparent 60%);
 }
 
-/* --- body::after — ADD immediately after body::before --- */
-/* ── The bezel: gold pinstripe + cream inner rule + four corner screws ──
-   Geometry lifted verbatim from remote.css:162-199 because it is already
-   proven against the iPhone display mask on this exact hardware class.
-
-   WHY FIXED, NOT AROUND .container: remote.css draws this on .screen, which
-   is min-height:100lvh — a bounded box. The Content Manager's document is
-   unbounded (#romsList renders hundreds of rows), so an absolute ring on
-   .container would be thousands of px tall and the bottom screws would land
-   far below the fold. Anchored to the viewport, the frame behaves like a real
-   bezel: content scrolls behind it and it never leaves.
-
-   WHY radius 46 AT inset 9: containment for a rounded rect inside the
-   display's rounded rect is  r + 3.4142*i >= R  (remote.css:136-160).
-   46 + 30.7 = 76.7, clearing every model up to the 16 Pro's 62pt. This app
-   is installable (index.html:19 apple-mobile-web-app-capable) and uses
-   viewport-fit=cover (index.html:9), so it genuinely runs edge-to-edge.
-
-   WHY outline FOR THE CREAM RULE: remote.css:168-172 uses a second absolute
-   element at inset 14 / radius 41. `outline-offset: -5px` draws exactly that
-   — 5px inside the 9px ring = 14px, and browsers keep outline radii
-   concentric, giving 46 - 5 = 41. One element, two rings, no extra markup.
-
-   WHY z-index 10001: above .loading-overlay (style.css:3426, z 10000), the
-   sticky mobile action bar and .install-toast (both z 2000), and .modal
-   (z 1000). The machine's frame is the frontmost thing on the panel, and with
-   pointer-events:none it can never block a control. */
-body::after {
-    content: "";
-    position: fixed;
-    inset: 9px;
-    z-index: 10001;
-    pointer-events: none;
-    border: 1.5px solid var(--accent);
-    border-radius: 46px;
-    box-shadow: 0 0 10px rgba(245, 191, 66, .13), inset 0 0 22px rgba(0, 0, 0, .5);
-    outline: 1px solid rgba(242, 228, 217, .28);
-    outline-offset: -5px;
-
-    /* Four corner screws, remote.css:174-199 rebuilt as one inline SVG.
-       background-origin: border-box makes 19px here resolve to 28px from the
-       viewport — the remote's exact inset, which remote.css:187-196 proves
-       clears the cream rule by 4.1px inside the 46px corner arc.
-       The 28deg slot rotation is what keeps four screws from reading as four
-       dots. fill-opacity/stroke-opacity rather than rgba(): rgba() in an SVG
-       presentation attribute is outside SVG 1.1. */
-    background-origin: border-box;
-    background-repeat: no-repeat;
-    background-size: 12px 12px;
-    background-position: 19px 19px, right 19px top 19px, 19px bottom 19px, right 19px bottom 19px;
-    background-image:
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E"),
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cdefs%3E%3CradialGradient id='s' cx='38%25' cy='32%25' r='75%25'%3E%3Cstop offset='0' stop-color='%23554E47'/%3E%3Cstop offset='.7' stop-color='%231A1714'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='5.7' cy='6.3' r='5.5' fill='%23000' fill-opacity='.55'/%3E%3Ccircle cx='5.5' cy='5.5' r='5.5' fill='url(%23s)'/%3E%3Cpath d='M3 5.5h5' stroke='%23000' stroke-opacity='.75' stroke-width='1.5' transform='rotate(28 5.5 5.5)'/%3E%3C/svg%3E");
-}
-
-/* A 46px radius on a 2560px-wide window reads as a rounded television, not a
-   rack panel. Above phone widths the frame squares up; the screws are then
-   far inside the straight-edge zone so their clearance only improves. */
-@media (min-width: 701px) {
-    body::after { border-radius: 10px; }
-}
+/* --- body::after — REMOVED (2026-07-31) ---
+   A legacy copy of the bezel lived here: gold ring + cream rule via
+   `outline-offset: -5px` + screw heads as background SVGs. The faceplate
+   shell (body.faceplate::before/::after + real .screw elements, ~line 8640)
+   draws the same frame, and because body::after and body.faceplate::after
+   are the SAME pseudo-element, the two rules merged per-property: the
+   faceplate's cream ring at inset 14 inherited this rule's un-overridden
+   `outline` (a THIRD hairline ~19px in — visible on every phone as a
+   duplicated gray outline) and its screw backgrounds (a second, offset set
+   of screw heads). The desktop audit at the ≥1024px block neutralised both
+   leaks with `outline: 0; background-image: none` — but only ≥1024px, so
+   phones kept the artefacts. The remote page (remote.css:162-199) draws the
+   frame once and was the reference look. One frame, one implementation. */
 
 /* --- @media (prefers-color-scheme: dark) — style.css:1290-1295 — MANDATORY, the texture does not survive without this --- */
 /* DELETE style.css:1290-1295 entirely:
@@ -9485,37 +9435,22 @@ body.faceplate .bottom-nav {
 
 @media (min-width: 1024px) {
 
-  /* --- The frame reads as a giant phone, and draws itself twice -----------
+  /* --- The frame reads as a giant phone on a desktop ----------------------
    *
-   * Three separate defects, all in the bezel, all found by the desktop audit.
+   * RADIUS. body.faceplate::before/::after carry 46px/41px corners — a phone
+   * bezel, sized for the iPhone display mask. At 1440x900 the console looks
+   * like an enormous handset rather than a piece of equipment, so the frame
+   * squares up here. 10 and 5 keep the two rings concentric: the outer sits
+   * at inset 9, the inner at 14, so the inner radius is the outer minus that
+   * 5px difference.
    *
-   * 1. RADIUS. body.faceplate::before/::after carry 46px/41px corners. That is
-   *    a phone bezel, and at 1440x900 the console looks like an enormous
-   *    handset rather than a piece of equipment. An earlier author already
-   *    reached for 10px in a `@media (min-width: 701px)` rule targeting
-   *    `body::after` — but body.faceplate::after (0,2,1) outranks body::after
-   *    (0,0,1), so that rule never applied and the intent was lost. Restating
-   *    it at faceplate specificity finally lands it. 10 and 5 keep the two
-   *    rings concentric: the outer sits at inset 9, the inner at 14, so the
-   *    inner radius is the outer minus that 5px difference.
-   *
-   * 2. DOUBLE SCREWS. The screw heads are painted twice, ~5px apart — once by
-   *    the real .screw elements and once by a background-image on ::after. The
-   *    background positions were computed when that pseudo-element sat at a
-   *    different inset; moving it to 14px broke the arithmetic. The real
-   *    elements are the ones the slot rotation and z-order were tuned for, so
-   *    the painted copies go.
-   *
-   * 3. A THIRD HAIRLINE. The frame is meant to be two rings. A surviving
-   *    `outline` on ::after adds a duplicate cream ring just inside the inner
-   *    one, which is why the border looks thick and slightly muddled rather
-   *    than crisp. */
+   * (This block once also zeroed a leaked `outline` and screw-head
+   * backgrounds from a legacy second bezel on body::after — the leak phones
+   * kept rendering as a third hairline and doubled screws. That rule is now
+   * deleted at its source, ~line 7975, so the frame is two rings everywhere
+   * without per-breakpoint cleanup.) */
   body.faceplate::before { border-radius: 10px; }
-  body.faceplate::after  {
-    border-radius: 5px;
-    background-image: none;
-    outline: 0;
-  }
+  body.faceplate::after  { border-radius: 5px; }
   /* The opaque matte must follow the inner ring exactly, or the corners show a
    * sliver of page content outside the frame. */
   html::after { border-radius: 5px; }
