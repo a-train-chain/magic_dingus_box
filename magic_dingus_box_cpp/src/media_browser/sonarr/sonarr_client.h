@@ -11,11 +11,16 @@ namespace media_browser {
 
 // Outcome of add_series. `settled` is the part callers must not ignore: see
 // SonarrClient::add_series for why a "successful" add can still hand back a
-// season list that does not reflect the requested monitoring.
-struct AddSeriesResult {
+// season list that does not reflect the requested monitoring. [[nodiscard]]
+// because silently dropping this return value is exactly how a caller ends
+// up trusting an unsettled `series` it never looked at.
+struct [[nodiscard]] AddSeriesResult {
     bool ok = false;       // the series is in Sonarr and `series` identifies it
-    bool settled = false;  // Sonarr's async refresh finished; seasons[] are authoritative
-    Series series;         // when !settled, every season may still read monitored:true
+    bool settled = false;  // the outcome we asked for was observed; seasons[] is authoritative
+    // When !settled, seasons[] is left EMPTY rather than holding a
+    // pending/mid-refresh snapshot that looks plausible but is not — an
+    // empty list is an obvious "re-fetch me", a stale one is not.
+    Series series;
 };
 
 // HTTP client for Sonarr v4 (which still serves its API under /api/v3 — there
@@ -103,28 +108,55 @@ public:
     // the row and published SeriesAddedEvent, which queues a
     // RefreshSeriesCommand. Not until RefreshSeriesService has fetched the
     // episode list from SkyHook does EpisodeMonitoredService apply the monitor
-    // enum and null out addOptions. Until then BOTH the POST response and any
-    // GET show every season monitored:true — so a single immediate re-GET is
-    // no better than trusting the POST body.
+    // enum. Until then the POST response and early GETs show every season
+    // monitored:true — so a single immediate re-GET is no better than
+    // trusting the POST body.
     //
-    // This method therefore BOUNDED-POLLS GET /api/v3/series/{id} until the
-    // refresh has visibly landed (addOptions cleared, or episode statistics
-    // populated), capped by Config::add_settle_timeout_ms. On timeout it
-    // returns ok=true, settled=false with the record it has — the add really
-    // did happen — and the caller MUST re-fetch rather than cache those season
-    // flags.
+    // *** The settle signal is the OUTCOME, not an incidental marker. ***
+    // A live probe (2026-08-01: added Breaking Bad, polled GET /series/{id}
+    // 40x at 0.7s) found addOptions ABSENT from the POST response and every
+    // GET — Sonarr's SeriesResource never serializes it back, so "addOptions
+    // disappeared" is not an observable signal at all. Worse, the same probe
+    // showed statistics.totalEpisodeCount > 0 well before the monitor enum
+    // was applied: Sonarr writes episodes and applies monitoring in SEPARATE
+    // steps, so "episodes exist" alone is also not sufficient — trusting it
+    // would settle mid-refresh and report the whole series monitored, which
+    // is the exact failure this method exists to prevent. The only signal
+    // that cannot false-positive during that race window is checking what we
+    // actually asked for: settled once episodes are known to exist AND the
+    // monitored-season set matches the request (exactly one non-special
+    // season for "firstSeason" — never hardcoded to season number 1, since a
+    // show's first aired season is not always numbered 1; none at all for
+    // "none"). A series SkyHook has no episodes for yet (announced/upcoming)
+    // can never satisfy that condition and will burn the full timeout budget
+    // every time it is added — accepted and safe, since the result is a
+    // correctly-labeled settled=false rather than a wrong answer.
     //
-    // *** WORKER THREAD ONLY. *** This sleeps between polls. cfg_.timeout_secs
-    // is 5 and the kiosk unit's WatchdogSec is 10; calling it from the render
-    // thread risks a watchdog kill.
+    // BOUNDED-POLLS GET /api/v3/series/{id} against that predicate, capped by
+    // Config::add_settle_timeout_ms. On timeout it returns ok=true,
+    // settled=false with seasons[] cleared — the add really did happen, but
+    // the caller MUST re-fetch rather than trust a pending/mid-refresh
+    // season list.
     //
-    // Idempotent: when the tvdbId is already in the library the existing record
-    // is returned (settled) instead of POSTing, which would 400 on
-    // seriesExistsValidator. ok=false on any failure; see last_error().
-    virtual AddSeriesResult add_series(int tmdb_id,
-                                       int quality_profile_id,
-                                       bool monitor = true,
-                                       const std::string& title_fallback = "");
+    // *** WORKER THREAD ONLY. *** This sleeps between polls. Worst case is
+    // NOT just add_settle_timeout_ms: a slow final GET can still be in
+    // flight when the deadline is crossed, so the true ceiling is roughly
+    // add_settle_timeout_ms + add_settle_poll_ms + cfg_.timeout_secs
+    // (~13.5s with the defaults: 8s + 0.5s + 5s). cfg_.timeout_secs is 5 and
+    // the kiosk unit's WatchdogSec is 10; calling this from the render
+    // thread risks a watchdog kill well before the settle budget is even
+    // exhausted.
+    //
+    // Idempotent: when the tvdbId is already in the library the existing
+    // record is returned instead of POSTing (which would 400 on
+    // seriesExistsValidator) — settled is computed by the SAME predicate
+    // against that record, not assumed true. ok=false on any failure; see
+    // last_error().
+    [[nodiscard]] virtual AddSeriesResult add_series(
+        int tmdb_id,
+        int quality_profile_id,
+        bool monitor = true,
+        const std::string& title_fallback = "");
 
     // Flips one season's monitored flag. Sonarr's PUT replaces the whole
     // resource, so this GETs the current record, edits one season, and PUTs

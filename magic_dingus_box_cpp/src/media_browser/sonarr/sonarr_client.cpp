@@ -260,6 +260,43 @@ std::optional<std::vector<Series>> SonarrClient::find_series_by_tvdb(int tvdb_id
     return SonarrParsers::parse_series_list(resp);
 }
 
+namespace {
+// True once the async refresh has visibly applied the REQUESTED monitoring
+// outcome — episodes are known to exist AND the monitored set among seasons
+// matches what was asked for. This is deliberately NOT "addOptions is gone"
+// (a live probe on 2026-08-01 found Sonarr's SeriesResource never
+// serializes addOptions back on GET, in POST responses or any of 40 polled
+// reads — that signal is unobservable against real Sonarr) and NOT "episodes
+// exist" alone (the same probe showed statistics can populate before the
+// monitor enum is applied — Sonarr writes episodes and applies monitoring in
+// two separate steps, so a bare episode-presence check settles mid-refresh
+// and reports the wrong season list). Checking the outcome we actually asked
+// for is the only definition that cannot false-positive during that race.
+bool add_settled(const Series& s, bool monitor) {
+    bool has_episodes = false;
+    bool any_monitored = false;
+    int monitored_non_special = 0;
+    for (const auto& season : s.seasons) {
+        if (season.episode_count > 0) has_episodes = true;
+        if (season.monitored) {
+            any_monitored = true;
+            if (season.season_number != 0) ++monitored_non_special;
+        }
+    }
+    if (!has_episodes) return false;
+    if (monitor) {
+        // "firstSeason" settles once EXACTLY ONE non-special season is
+        // monitored. "at least one" would also match the still-unsettled
+        // all-monitored state; the count is never compared against a
+        // hardcoded season NUMBER because a show's first aired season is
+        // not always numbered 1.
+        return monitored_non_special == 1;
+    }
+    // "none" settles once nothing at all is monitored, specials included.
+    return !any_monitored;
+}
+}  // namespace
+
 AddSeriesResult SonarrClient::add_series(int tmdb_id,
                                          int quality_profile_id,
                                          bool monitor,
@@ -319,11 +356,18 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
         }
         if (!probe->empty()) {
             result.ok = true;
-            result.settled = true;  // an existing library record is settled
             result.series = probe->front();
+            // NOT hardcoded true: apply the same outcome predicate the poll
+            // loop uses. An existing library record is settled in the
+            // overwhelming common case, but treating "already in the
+            // library" as an automatic settled=true would be wrong for a
+            // record that itself is mid-refresh (e.g. two rapid add
+            // requests racing the same show).
+            result.settled = add_settled(result.series, monitor);
+            if (!result.settled) result.series.seasons.clear();
             spdlog::info("[sonarr] add_series: tvdb:{} already in library "
-                         "(id={}); returning existing record",
-                         tvdb_id, result.series.sonarr_id);
+                         "(id={}, settled={}); returning existing record",
+                         tvdb_id, result.series.sonarr_id, result.settled);
             return result;
         }
     }
@@ -367,8 +411,9 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
 
     // The POST response IS the stored resource (RestController.Created
     // serializes GetResourceById) — but the row was inserted microseconds ago
-    // and addOptions has not been applied yet, so its seasons[] still reads
-    // exactly what we submitted: all monitored. Take the id and nothing else.
+    // and the monitor enum has not been applied yet, so its seasons[] still
+    // reads exactly what we submitted: all monitored. Take the id and
+    // nothing else.
     int new_id = 0;
     {
         Json::CharReaderBuilder rb;
@@ -394,41 +439,27 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
 
     // *** Bounded settle poll ***
     // AddSeriesService published SeriesAddedEvent, which queued a
-    // RefreshSeriesCommand. Only after that refresh pulls the episode list from
-    // SkyHook does EpisodeMonitoredService apply addOptions.monitor and null
-    // addOptions out. Poll until we can SEE that happen:
-    //   - addOptions was populated and is now gone  → the refresh ran, or
-    //   - statistics.totalEpisodeCount > 0          → episodes exist, which is
-    //     exactly the precondition EpisodeMonitoredService needs.
-    // The first clause needs the transition (not merely "absent"), because a
-    // Sonarr build that omits addOptions from the GET resource entirely would
-    // otherwise look settled on the very first poll. The second clause is the
-    // fallback for that case.
+    // RefreshSeriesCommand. Poll until add_settled() can confirm the outcome
+    // we asked for actually landed — see add_settled()'s doc comment for why
+    // that predicate, and not addOptions or bare episode presence, is the
+    // only one that cannot false-positive mid-refresh.
+    //
+    // A series SkyHook has no episodes for yet (announced/upcoming) can
+    // never satisfy add_settled() and will burn the FULL timeout budget on
+    // every add. That is accepted and safe: the result is a correctly
+    // labeled settled=false (caller re-fetches later), never a wrong answer.
     //
     // THIS SLEEPS — worker thread only.
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(cfg_.add_settle_timeout_ms);
     const std::string series_path = "/api/v3/series/" + std::to_string(new_id);
-    bool saw_add_options = false;
     for (;;) {
         const std::string cur = http_get(series_path);
         if (!cur.empty()) {
-            Json::Value obj;
-            Json::CharReaderBuilder rb;
-            std::string err;
-            std::istringstream is(cur);
-            if (Json::parseFromStream(rb, is, &obj, &err) && obj.isObject()) {
-                const bool has_add_options =
-                    obj.isMember("addOptions") && obj["addOptions"].isObject();
-                const bool has_episodes =
-                    obj["statistics"].get("totalEpisodeCount", 0).asInt() > 0;
-                if (has_add_options) saw_add_options = true;
-
-                if (auto parsed = SonarrParsers::parse_series(cur)) {
-                    result.ok = true;
-                    result.series = *parsed;   // keep the freshest read we have
-                }
-                if ((saw_add_options && !has_add_options) || has_episodes) {
+            if (auto parsed = SonarrParsers::parse_series(cur)) {
+                result.ok = true;
+                result.series = *parsed;   // keep the freshest read we have
+                if (add_settled(result.series, monitor)) {
                     result.settled = true;
                     break;
                 }
@@ -445,8 +476,11 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
         return result;
     }
     if (!result.settled) {
-        // Not an error — the add succeeded. But the season flags in
-        // `result.series` are the submitted view, not the applied one.
+        // Not an error — the add succeeded. But the season flags we last
+        // read are a pending or mid-refresh snapshot, not the applied
+        // outcome — clear them rather than leave something plausible-but-
+        // wrong for a naive caller to render.
+        result.series.seasons.clear();
         spdlog::warn("[sonarr] add_series: tmdb={} id={} did not settle within "
                      "{}ms; returning provisional state (caller must re-fetch)",
                      tmdb_id, new_id, cfg_.add_settle_timeout_ms);
@@ -503,6 +537,10 @@ bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
 }
 
 bool SonarrClient::trigger_season_search(int sonarr_id, int season_number) {
+    // Without clearing first, a success here would leave a PRIOR call's
+    // error text sitting in last_error() for the UI to surface as if it
+    // were current.
+    set_error({});
     std::ostringstream body;
     body << R"({"name":"SeasonSearch","seriesId":)" << sonarr_id
          << R"(,"seasonNumber":)" << season_number << R"(})";
@@ -510,6 +548,7 @@ bool SonarrClient::trigger_season_search(int sonarr_id, int season_number) {
 }
 
 bool SonarrClient::trigger_series_search(int sonarr_id) {
+    set_error({});
     std::ostringstream body;
     body << R"({"name":"SeriesSearch","seriesId":)" << sonarr_id << R"(})";
     return !http_post("/api/v3/command", body.str()).empty();

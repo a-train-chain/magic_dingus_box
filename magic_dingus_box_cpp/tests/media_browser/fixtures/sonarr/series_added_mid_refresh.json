@@ -20,17 +20,17 @@
   ],
   "seasons": [
     {"seasonNumber": 0, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}},
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 5, "sizeOnDisk": 0}},
     {"seasonNumber": 1, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}},
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 7, "sizeOnDisk": 0}},
     {"seasonNumber": 2, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}},
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
     {"seasonNumber": 3, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}},
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
     {"seasonNumber": 4, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}},
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
     {"seasonNumber": 5, "monitored": true,
-     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}}
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 16, "sizeOnDisk": 0}}
   ],
-  "statistics": {"seasonCount": 0, "episodeFileCount": 0, "totalEpisodeCount": 0, "sizeOnDisk": 0}
+  "statistics": {"seasonCount": 5, "episodeFileCount": 0, "totalEpisodeCount": 62, "sizeOnDisk": 0}
 }

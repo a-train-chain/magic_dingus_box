@@ -257,22 +257,31 @@ TEST_CASE("SonarrMockClient serves a coherent seeded library", "[sonarr][mock]")
 // --- add_series ----------------------------------------------------------
 
 namespace {
-// Reproduces the live box's ACTUAL behaviour. Sonarr's POST returns the
-// STORED resource (RestController.Created serializes GetResourceById), but
-// addOptions is applied ASYNCHRONOUSLY — AddSeriesService persists, publishes
-// SeriesAddedEvent, which queues a RefreshSeriesCommand; only once
-// RefreshSeriesService has pulled episodes from SkyHook does
-// EpisodeMonitoredService apply the monitor enum and null addOptions out.
-//
-// So both the POST response AND any immediate GET show every season
-// monitored:true. This stub models exactly that: the POST and the first GET
-// return the pending fixture, later GETs return the settled one.
+// Models the live box's ACTUAL sequence, live-probed on 2026-08-01 by
+// adding Breaking Bad and polling GET /series/{id} 40 times at 0.7s:
+//   - `addOptions` was ABSENT from the POST response AND from all 40 GETs —
+//     Sonarr's SeriesResource never serializes AddOptions on read, in any
+//     build tested. A predicate keyed on "addOptions disappeared" is
+//     therefore dead code against real Sonarr; do not resurrect it.
+//   - Sonarr writes episodes and applies addOptions.monitor in SEPARATE
+//     steps. There is a real, observable window where
+//     statistics.totalEpisodeCount > 0 (RefreshSeriesService has pulled the
+//     episode list from SkyHook) but every season still reads
+//     monitored:true (EpisodeMonitoredService has not yet run). A predicate
+//     keyed on episode presence ALONE reads that window as settled and
+//     hands back "the whole series is monitored" — the exact failure this
+//     task exists to prevent.
+// This stub reproduces all three stages: episodes absent, the intermediate
+// "episodes present, still all-monitored" stage (unsettled by definition),
+// and the terminal "episodes present, only the requested season monitored"
+// stage (settled).
 class AddSonarr : public mb::SonarrClient {
 public:
     static Config fast_settle() {
         Config c;
-        // Tight budget: the settle path needs only two polls, and the
-        // never-settles path must not spin for long.
+        // Tight budget: the settle path needs only three polls (absent →
+        // mid-refresh → landed), and the never-settles path must not spin
+        // for long.
         c.add_settle_timeout_ms = 50;
         c.add_settle_poll_ms = 0;   // never actually sleep in the suite
         return c;
@@ -281,7 +290,10 @@ public:
     std::vector<std::string> gets;
     std::string post_path, post_body;
     bool already_added = false;
-    bool never_settles = false;   // simulate a refresh that never completes
+    // Pins the sequence on the DANGEROUS middle stage forever: episodes
+    // present, but every season still monitored:true. This is the state a
+    // bare "episodes exist" check would misread as settled.
+    bool never_settles = false;
     bool probe_fails = false;     // simulate a Gluetun blip on the tvdbId probe
     int series_gets = 0;
 
@@ -298,11 +310,10 @@ public:
             return read_fixture("root_folders.json");
         }
         if (path.rfind("/api/v3/series/7", 0) == 0) {
-            // First read races the refresh; later reads see it landed.
             ++series_gets;
-            if (never_settles || series_gets == 1) {
-                return read_fixture("series_added_pending.json");
-            }
+            if (never_settles) return read_fixture("series_added_mid_refresh.json");
+            if (series_gets == 1) return read_fixture("series_added_pending.json");
+            if (series_gets == 2) return read_fixture("series_added_mid_refresh.json");
             return read_fixture("series_added.json");
         }
         return "";
@@ -311,7 +322,8 @@ public:
         post_path = path;
         post_body = body;
         // The stored resource as it exists the instant after the insert:
-        // id assigned, addOptions still populated, seasons untouched.
+        // id assigned, seasons untouched. No addOptions — see the class doc
+        // comment above; real Sonarr never serializes it back.
         return read_fixture("series_added_pending.json");
     }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
@@ -321,11 +333,13 @@ public:
 
 TEST_CASE("add_series polls until Sonarr's async refresh settles",
           "[sonarr][add]") {
-    // THE load-bearing test of this phase. A single read — of the POST body OR
-    // of an immediate GET — returns every season monitored:true, because the
-    // monitor enum has not been applied yet. A client that trusted it would
-    // tell the UI the whole series is monitored, and "download next season"
-    // would target the wrong season forever.
+    // THE load-bearing test of this phase. The stub walks all three stages a
+    // real add goes through: episodes absent, episodes present but every
+    // season still monitored:true (the dangerous race window — see AddSonarr's
+    // doc comment), and finally episodes present with only the requested
+    // season monitored. A client that settled on either of the first two
+    // would tell the UI the whole series is monitored, and "download next
+    // season" would target the wrong season forever.
     AddSonarr s;
     auto added = s.add_series(1396, /*quality_profile_id=*/1, /*monitor=*/true);
     REQUIRE(added.ok);
@@ -339,22 +353,31 @@ TEST_CASE("add_series polls until Sonarr's async refresh settles",
     CHECK_FALSE(added.series.seasons[4].monitored);
     CHECK_FALSE(added.series.seasons[5].monitored);
 
-    // Proof it POLLED rather than reading once: the first GET returned the
-    // pending state and was correctly rejected.
-    CHECK(s.series_gets >= 2);
+    // Proof it POLLED THROUGH BOTH false-settle traps rather than stopping
+    // early: stage 1 (no episodes) and stage 2 (episodes present, all still
+    // monitored) were both correctly rejected before stage 3 landed.
+    CHECK(s.series_gets >= 3);
 }
 
-TEST_CASE("add_series returns a PROVISIONAL result when the refresh never lands",
+TEST_CASE("add_series stays UNSETTLED when episodes exist but every season is "
+          "still monitored, and times out cleanly (the mid-refresh race)",
           "[sonarr][add]") {
-    // Bounded, not unbounded: a wedged SkyHook fetch must not hang the worker.
-    // The caller still gets the series (the add DID happen) but settled=false
-    // tells Phase 2c to re-fetch instead of caching an all-monitored season list.
+    // Bounded, not unbounded: a wedged refresh must not hang the worker. This
+    // pins the sequence on the exact race window the live probe found —
+    // statistics.totalEpisodeCount > 0 with every season still
+    // monitored:true — forever. A predicate keyed on episode presence alone
+    // (the pre-fix implementation) would read this as settled and hand back
+    // "the whole series is monitored". The caller still gets the series (the
+    // add DID happen) but settled=false tells Phase 2c to re-fetch instead of
+    // caching a plausible-but-wrong season list — and seasons[] is cleared
+    // rather than left holding that wrong list.
     AddSonarr s;
     s.never_settles = true;
     auto added = s.add_series(1396, 1, true);
-    CHECK(added.ok);                 // the add succeeded
-    CHECK_FALSE(added.settled);      // ...but the season flags are not trustworthy
+    CHECK(added.ok);                       // the add succeeded
+    CHECK_FALSE(added.settled);            // ...but the outcome never matched the request
     CHECK(added.series.sonarr_id == 7);
+    CHECK(added.series.seasons.empty());   // unsettled → no plausible-but-wrong list
 }
 
 TEST_CASE("add_series POSTs a valid Sonarr payload", "[sonarr][add]") {
@@ -393,7 +416,11 @@ TEST_CASE("add_series is idempotent when the series is already in the library",
     s.already_added = true;
     auto added = s.add_series(1396, 1, true);
     REQUIRE(added.ok);
-    CHECK(added.settled);  // an existing library record is settled by definition
+    // settled is NOT hardcoded true for this path — the same outcome
+    // predicate that governs the poll loop is applied to the probed record.
+    // series_list.json already has episodes and exactly one non-special
+    // season monitored, so it reads settled here too.
+    CHECK(added.settled);
     CHECK(added.series.sonarr_id == 7);
     CHECK(s.post_path.empty());  // nothing was POSTed
 }
