@@ -2678,6 +2678,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # files are untouched and cannot regain detail they never had.
     DEFAULT_TRANSCODE = 'crt_hd'
 
+    # Framing policy for transcoded masters.
+    #   'crop' — scale to FILL the 4:3 frame and trim the overflow (the
+    #            original CRT look; a widescreen or vertical source loses
+    #            its edges). Historical behavior, so it stays the default
+    #            for API callers that don't send the field.
+    #   'fit'  — scale the WHOLE frame inside the 4:3 canvas and pad the
+    #            rest with black bars (nothing trimmed — vertical phone
+    #            clips get side borders, widescreen gets top/bottom bars).
+    # Both modes respect the no-upscale guard in run_transcode_job.
+    TRANSCODE_FIT_MODES = ('crop', 'fit')
+    DEFAULT_FIT_MODE = 'crop'
+
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
 
@@ -2688,6 +2700,45 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # in run_transcode_job() and report 'queued' to the UI.
     _TRANSCODE_SEMAPHORE = threading.Semaphore(
         int(os.getenv("MAGIC_MAX_TRANSCODES", "2")))
+
+    def _detect_pi_model() -> str:
+        """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
+
+        Python-side mirror of the C++ kiosk's PlatformProfile detection
+        (dual-board contract: board differences resolve at RUNTIME, never
+        at deploy time — one golden image serves both boards)."""
+        try:
+            model = Path('/proc/device-tree/model').read_text(errors='ignore')
+        except OSError:
+            return 'unknown'
+        if 'Raspberry Pi 5' in model:
+            return 'pi5'
+        if 'Raspberry Pi 4' in model:
+            return 'pi4'
+        return 'unknown'
+
+    # x264 encoder tier, resolved per-board at runtime.
+    #
+    # Pi 5: CRF 23 matches the Retro Ripper's visual-quality target
+    # (its export pipeline encodes CRF 23), so a master transcoded on the
+    # box looks the same as one exported from the desktop tool. veryfast
+    # rather than the ripper's desktop 'medium' preset: CRF targets
+    # constant quality, so a slower preset mostly buys smaller files, and
+    # two semaphore-slots of 'medium' plus the kiosk's own software video
+    # decode (~1 core at 1080p) could saturate the 4 cores and stutter
+    # playback mid-upload. veryfast keeps that headroom.
+    #
+    # Pi 4 (and unknown boards, per the "performance envelope is the
+    # Pi 4B's" rule): ultrafast/28 — one libx264 encode already saturates
+    # a Pi 4B sharing 1.5 GB RAM with the kiosk. Env-overridable for
+    # experiments without a release.
+    _PI_MODEL = _detect_pi_model()
+    if _PI_MODEL == 'pi5':
+        _tier_preset, _tier_crf = 'veryfast', '23'
+    else:
+        _tier_preset, _tier_crf = 'ultrafast', '28'
+    _X264_PRESET = os.getenv('MAGIC_X264_PRESET', _tier_preset)
+    _X264_CRF = os.getenv('MAGIC_X264_CRF', _tier_crf)
 
     # TTL for completed/errored jobs in any of the three job dicts. Without
     # eviction, a long-running kiosk that sees repeated upload/update/MB
@@ -2718,11 +2769,70 @@ def create_app(data_dir: Path, config=None) -> Flask:
         for jid in stale:
             jobs_dict.pop(jid, None)
 
-    def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False):
+    def _probe_source_dimensions(file_path: Path):
+        """Return (width, height) of the first video stream, or None.
+
+        Best-effort: any probe failure returns None and the caller falls
+        back to the preset dimensions unchanged (pre-guard behavior)."""
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height', '-of', 'csv=p=0',
+                str(file_path)
+            ], capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                return None
+            parts = result.stdout.strip().split(',')
+            w, h = int(parts[0]), int(parts[1])
+            return (w, h) if w > 0 and h > 0 else None
+        except Exception:
+            return None
+
+    def run_transcode_job(job_id: str, input_path: Path, output_path: Path, resolution: str, normalize_audio: bool = False, fit_mode: str = DEFAULT_FIT_MODE):
         """Background thread function to run FFmpeg transcoding."""
         job = transcode_jobs[job_id]
         res = TRANSCODE_RESOLUTIONS.get(resolution, TRANSCODE_RESOLUTIONS[DEFAULT_TRANSCODE])
         width, height = res['width'], res['height']
+
+        # Never upscale. A preset is a MAXIMUM master size, not a canvas to
+        # inflate into: encoding a 640x480 source at 960x720 adds zero detail,
+        # doubles the file, and bakes in a lossy re-encode of an upscale.
+        # Dimensions floor to even for libx264.
+        src_dims = _probe_source_dimensions(input_path)
+
+        if fit_mode == 'fit':
+            # Whole frame INSIDE the 4:3 canvas, black bars fill the rest.
+            # The canvas stays at the chosen preset size (a consistent 4:3
+            # master); the CONTENT is scaled by min(fit, 1.0) — never
+            # enlarged. A source smaller than the canvas sits centered at
+            # its native size.
+            if src_dims:
+                src_w, src_h = src_dims
+                content_scale = min(width / src_w, height / src_h, 1.0)
+                content_w = max(2, int(src_w * content_scale) & ~1)
+                content_h = max(2, int(src_h * content_scale) & ~1)
+                vf = (f'scale={content_w}:{content_h},'
+                      f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2')
+            else:
+                # Probe failed — let ffmpeg compute the fit. May upscale a
+                # tiny source up to the canvas; acceptable fallback for a
+                # file we couldn't inspect.
+                vf = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+                      f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2')
+        else:
+            # 'crop': scale to FILL the 4:3 frame, center-crop the overflow
+            # (no bars, no distortion). Never upscale: shrink the target box
+            # to fit inside the source while preserving the preset's aspect
+            # policy, so the crop semantics still apply to sources whose
+            # aspect differs.
+            if src_dims:
+                src_w, src_h = src_dims
+                if src_w < width or src_h < height:
+                    shrink = min(src_w / width, src_h / height)
+                    width = max(2, int(width * shrink) & ~1)
+                    height = max(2, int(height * shrink) & ~1)
+            vf = (f'scale={width}:{height}:force_original_aspect_ratio=increase,'
+                  f'crop={width}:{height}')
 
         # Bound concurrent encodes. Each transcode is a full libx264 encode;
         # on a Pi 4 sharing RAM/CPU with the kiosk (and possibly the Media
@@ -2746,11 +2856,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # Crashed leftovers are swept at startup alongside upload_temp.
         staging_path = output_path.with_name(output_path.name + ".part")
 
-        # Build FFmpeg command with center crop (no black bars, no distortion)
+        # Build FFmpeg command with the framing filter resolved above
+        # (crop = fill the frame, fit = whole frame + black bars).
         ffmpeg_cmd = [
             'ffmpeg', '-y',
             '-i', str(input_path),
-            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
+            '-vf', vf,
         ]
         
         # Audio normalization via FFmpeg's loudnorm filter (EBU R128).
@@ -2771,10 +2882,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
         
         ffmpeg_cmd.extend([
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '28',
+            # Per-board tier (see _X264_PRESET/_X264_CRF above): Pi 5 gets
+            # the Retro Ripper's CRF 23 quality target, Pi 4 keeps
+            # ultrafast/28.
+            '-preset', _X264_PRESET,
+            '-crf', _X264_CRF,
             '-c:a', 'aac',
-            '-b:a', '128k',
+            # 192k matches the Retro Ripper's AAC bitrate (was 128k here —
+            # the one audio setting that diverged between the pipelines).
+            '-b:a', '192k',
             '-ar', '48000',
             '-movflags', '+faststart',
             '-progress', 'pipe:1',
@@ -2913,6 +3029,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         f = request.files["file"]
         resolution = request.form.get("resolution", DEFAULT_TRANSCODE)
+        fit_mode = request.form.get("fit_mode", DEFAULT_FIT_MODE)
         # `normalize_audio` arrives as the string "true"/"false" (FormData
         # POST). Coerce to bool. Default ON because phone-uploaded clips
         # almost always have inconsistent levels — we'd rather opt-out
@@ -2922,6 +3039,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         if resolution not in TRANSCODE_RESOLUTIONS:
             return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
+        if fit_mode not in TRANSCODE_FIT_MODES:
+            return error_response("VALIDATION_ERROR", f"Invalid fit_mode: {fit_mode}")
 
         # Create unique job ID
         job_id = str(uuid.uuid4())
@@ -2964,7 +3083,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         # request handler dropped the form field on the floor.
         thread = threading.Thread(
             target=run_transcode_job,
-            args=(job_id, temp_input, output_path, resolution, normalize_audio)
+            args=(job_id, temp_input, output_path, resolution, normalize_audio,
+                  fit_mode)
         )
         thread.daemon = True
         thread.start()
@@ -3023,8 +3143,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
             format_name = data.get('format', {}).get('format_name', '')
             is_mp4 = 'mp4' in format_name or 'mov' in format_name
 
-            # Check if video is already compatible
-            is_correct_resolution = (width == target_w and height == target_h)
+            # Check if video is already compatible.
+            #
+            # "Compatible" is NOT an exact dimension match: presets are
+            # MAXIMUM master sizes (see TRANSCODE_RESOLUTIONS), so a
+            # smaller-or-equal source with the same aspect ratio has nothing
+            # to gain from re-encoding — transcoding would only add
+            # generation loss. This keeps legacy 640x480 masters re-uploaded
+            # under the 960x720 default as byte-identical direct copies.
+            # A source with a DIFFERENT aspect still transcodes so the
+            # preset's center-crop policy applies (capped at source size by
+            # run_transcode_job's no-upscale guard).
+            fits_target = (0 < width <= target_w and 0 < height <= target_h)
+            same_aspect = (height > 0 and
+                           abs(width / height - target_w / target_h) < 0.02)
+            is_correct_resolution = fits_target and same_aspect
             is_h264 = codec in ('h264', 'libx264')
 
             if is_correct_resolution and is_h264 and is_mp4:
@@ -3037,8 +3170,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 }
             else:
                 reasons = []
-                if not is_correct_resolution:
-                    reasons.append(f'Resolution {width}x{height} != {target_w}x{target_h}')
+                if not fits_target:
+                    reasons.append(f'Resolution {width}x{height} exceeds {target_w}x{target_h}')
+                elif not same_aspect:
+                    reasons.append(f'Aspect of {width}x{height} differs from {target_w}x{target_h}')
                 if not is_h264:
                     reasons.append(f'Codec {codec} is not H.264')
                 if not is_mp4:
@@ -3064,6 +3199,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         f = request.files["file"]
         resolution = request.form.get("resolution", DEFAULT_TRANSCODE)
+        fit_mode = request.form.get("fit_mode", DEFAULT_FIT_MODE)
         # See upload_and_transcode for normalize_audio default rationale.
         # Default ON here too so a phone upload of an already-720p clip
         # still gets its audio levels fixed even when the video itself
@@ -3073,6 +3209,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         if resolution not in TRANSCODE_RESOLUTIONS:
             return error_response("VALIDATION_ERROR", f"Invalid resolution: {resolution}")
+        if fit_mode not in TRANSCODE_FIT_MODES:
+            return error_response("VALIDATION_ERROR", f"Invalid fit_mode: {fit_mode}")
 
         # Sanitize filename
         try:
@@ -3157,7 +3295,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             # loudnorm filter never fires regardless of UI checkbox.
             thread = threading.Thread(
                 target=run_transcode_job,
-                args=(job_id, temp_input, output_path, resolution, normalize_audio)
+                args=(job_id, temp_input, output_path, resolution,
+                      normalize_audio, fit_mode)
             )
             thread.daemon = True
             thread.start()

@@ -423,6 +423,7 @@ const UPLOAD_CONFIG = {
     TRANSCODE: {
         ENABLED: true,                    // Enable Pi-side transcoding
         DEFAULT_RESOLUTION: 'crt_hd',     // Default master: 4:3 @ 720p height (see TRANSCODE_RESOLUTIONS in admin.py)
+        DEFAULT_FIT_MODE: 'crop',         // 'crop' = fill 4:3 (historical); 'fit' = whole frame + borders (see TRANSCODE_FIT_MODES)
     }
 };
 
@@ -1706,6 +1707,7 @@ async function handleDirectUpload(input) {
 
     const files = Array.from(input.files);
     const targetResolution = document.getElementById('targetResolution')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_RESOLUTION;
+    const framingMode = document.getElementById('framingMode')?.value || UPLOAD_CONFIG.TRANSCODE.DEFAULT_FIT_MODE;
     const normalizeAudio = document.getElementById('normalizeAudio')?.checked || false;
 
     // Auto-expand the upload section if it's collapsed
@@ -1756,6 +1758,7 @@ async function handleDirectUpload(input) {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('resolution', targetResolution);
+            formData.append('fit_mode', framingMode);
             formData.append('normalize_audio', normalizeAudio ? 'true' : 'false');
 
             const uploadResponse = await new Promise((resolve, reject) => {
