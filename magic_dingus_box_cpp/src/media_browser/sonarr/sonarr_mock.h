@@ -1,0 +1,37 @@
+#pragma once
+
+#include "media_browser/sonarr/sonarr_client.h"
+
+namespace media_browser {
+
+// In-memory Sonarr for dev machines with no API key and for tests. Seeded
+// with one series in the exact post-firstSeason-add state (S1 monitored,
+// specials and later seasons not) so mock-mode UI exercises the real state
+// machine rather than an idealized one.
+//
+// Unlike RadarrMockClient — which leaves get_history/grab_release falling
+// through to the real HTTP path against an empty config — this mock overrides
+// EVERY public virtual. A dev machine must never emit a live request.
+class SonarrMockClient : public SonarrClient {
+public:
+    SonarrMockClient();
+
+    bool is_reachable() override;
+    std::optional<SystemStatus> get_status() override;
+    std::vector<SeriesSearchHit> lookup_by_tmdb(
+        int tmdb_id, const std::string& title_fallback) override;
+    std::vector<SeriesSearchHit> lookup(const std::string& query) override;
+    std::optional<std::vector<Series>> get_library_checked() override;
+    std::vector<Series> get_library() override;
+    std::optional<Series> get_series(int sonarr_id) override;
+    std::optional<std::vector<Series>> find_series_by_tvdb(int tvdb_id) override;
+    std::vector<QualityProfile> get_quality_profiles() override;
+    std::vector<RootFolder> get_root_folders() override;
+
+protected:
+    std::vector<Series> library_;
+    std::vector<QualityProfile> profiles_;
+    int next_id_ = 1;
+};
+
+}  // namespace media_browser
