@@ -1,44 +1,72 @@
 #!/usr/bin/env python3
-"""Auto-blocklist Radarr queue items stuck in 'warning' state with known-bad signatures.
+"""Auto-blocklist Radarr/Sonarr queue items that will never finish on their own.
 
-Radarr distinguishes between:
-  - FAILED downloads (qBit reports error / torrent stalled past threshold):
-    if autoRedownloadFailed=true, Radarr searches for a replacement.
-  - WARNING downloads (completed in qBit but Radarr can't import the file):
-    Radarr sits on these forever, waiting for the operator to decide.
+Two failure classes are handled, for BOTH *arrs:
 
-The warning state is the scam-completion outcome we saw on 2026-05-26:
-trash indexers post torrents whose name reads as a legitimate movie
-release (correct title, year, "1080p", quality tag) but whose actual
-content is a .txt redirector or a .exe malware payload. The release
-passes our quality-profile filters AND our Custom Format scam-rejection
-filters (which only see the release TITLE), the torrent completes, the
-import fails with "unsupported extension" — and the queue item sits in
-warning forever, blocking the operator from getting the real movie.
+1. STUCK WARNINGS (the original 2026-05-26 scam-completion case): trash
+   indexers post torrents whose name reads as a legitimate release
+   (correct title, year, "1080p", quality tag) but whose actual content
+   is a .txt redirector or a .exe malware payload. The release passes
+   the quality-profile filters AND the Custom Format scam-rejection
+   filters (which only see the release TITLE), the torrent completes,
+   the import fails with "unsupported extension" — and the queue item
+   sits in warning forever, blocking the operator from getting the real
+   content.
 
-This watchdog scans Radarr's queue periodically. For each record with
-trackedDownloadStatus=warning whose statusMessages contain one of the
-known-bad signatures below, it:
+2. DEAD-SWARM STALLS (the 2026-08-02 Game of Thrones case): an indexer
+   with fabricated seeder counts (TorrentDownload advertised 24 seeders
+   on a swarm qBittorrent measured at 0) wins a grab; the torrent sits
+   in stalledDL forever. Neither *arr ever recovers on its own — qBit
+   stall states surface as a WARNING, never a FAILURE, so Failed
+   Download Handling can't fire (Sonarr#7382, closed not-planned) —
+   and worse, the stalled item actively rejects every live replacement
+   with "Release in queue already meets cutoff". Reap policy,
+   deliberately conservative for a family appliance:
+     - errorMessage says "stalled with no connections"
+     - AND essentially zero progress (<= 2% downloaded; a mid-download
+       stall might still recover peers, and re-grabbing throws bytes
+       away — leave those for the operator)
+     - AND the grab is older than STALL_GRACE_MIN (a fresh torrent
+       legitimately spends its first moments at 0 seeds while DHT
+       spins up; the healthy GoT replacement showed stalledDL for its
+       first ~10 seconds)
+   NEVER reaped: paused downloads. The kiosk pauses ALL torrents during
+   movie playback (the playback contention guard) and resumes them
+   after; paused torrents surface a different message, but guard on the
+   word anyway.
+
+For each condemned record this watchdog:
   1. Removes the queue item with blocklist=true (so the same release
-     never gets grabbed again by this Radarr install)
-  2. Asks qBit to delete the underlying torrent + data
-  3. Triggers a fresh MoviesSearch for the movie so Radarr finds a
-     real alternative (autoRedownloadFailed=true already handles this
-     for FAILED items, but warnings need an explicit trigger)
+     never gets grabbed again) + removeFromClient=true (qBit deletes
+     the torrent) + skipRedownload=true (we fire our own search below,
+     deterministically, instead of relying on *arr-internal redownload
+     behavior that only covers some states)
+  2. Triggers a fresh search — MoviesSearch per movie for Radarr,
+     SeasonSearch per (series, season) for Sonarr — so a real
+     alternative is grabbed. autoRedownloadFailed=true already handles
+     FAILED items; warnings and stalls need this explicit kick.
 
-Idempotent + best-effort: if no stuck warnings match the signatures,
-exits cleanly without changing anything. Designed to run via a 15-min
-systemd timer.
+Sonarr caveat: a season pack is N queue rows (one per episode) sharing
+one downloadId, and deleting any one row cancels the whole download
+(siblings then 404 by design) — so condemned rows are grouped by
+downloadId and exactly one row per download is deleted.
+
+Idempotent + best-effort: if nothing matches, exits cleanly without
+changing anything. A missing API key skips that *arr's pass (boxes
+provisioned before Sonarr existed have no SONARR_API_KEY). Designed to
+run via a 15-min systemd timer.
 """
 import json
 import re
 import sys
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ENV_FILE = Path("/opt/magic_dingus_box/services/.env")
 RADARR_BASE = "http://localhost:7878/api/v3"
+SONARR_BASE = "http://localhost:8989/api/v3"
 
 # Message signatures that mean "this download is junk, blocklist it."
 # Conservative — only patterns where we're confident a re-grab is wanted.
@@ -55,6 +83,12 @@ BAD_SIGNATURES = [
 ]
 BAD_RE = re.compile("|".join(BAD_SIGNATURES), re.IGNORECASE)
 
+# Dead-swarm stall reaping (failure class 2 above).
+STALL_RE = re.compile(r"stalled with no connections", re.IGNORECASE)
+PAUSE_RE = re.compile(r"paused", re.IGNORECASE)
+STALL_GRACE_MIN = 45
+STALL_MAX_PROGRESS = 0.02
+
 
 def env_var(name):
     if not ENV_FILE.exists():
@@ -66,27 +100,21 @@ def env_var(name):
     return None
 
 
-def radarr(method, path, body=None):
+def api(base, key, method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
-        RADARR_BASE + path, data=data, method=method,
-        headers={"X-Api-Key": API_KEY, "Content-Type": "application/json"})
+        base + path, data=data, method=method,
+        headers={"X-Api-Key": key, "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as r:
         raw = r.read()
         return json.loads(raw) if raw else None
 
 
-API_KEY = env_var("RADARR_API_KEY")
-if not API_KEY:
-    print("[auto-blocklist] RADARR_API_KEY missing from .env; nothing to do", file=sys.stderr)
-    sys.exit(0)
-
-
 def message_matches_bad_signature(messages_block) -> bool:
-    """Walk Radarr's statusMessages structure looking for our signatures.
+    """Walk the *arr statusMessages structure looking for our signatures.
 
     statusMessages is a list of dicts each with 'title' + 'messages':
-      [{ "title": "outer summary", "messages": ["inner line 1", "inner line 2"] }, ...]
+      [{ "title": "outer summary", "messages": ["inner line 1", ...] }, ...]
     """
     if not messages_block:
         return False
@@ -99,9 +127,48 @@ def message_matches_bad_signature(messages_block) -> bool:
     return False
 
 
-def main() -> int:
+def is_reapable_stall(rec, now) -> bool:
+    """Failure class 2: dead-swarm stall old enough and empty enough to reap."""
+    msg = rec.get("errorMessage") or ""
+    if PAUSE_RE.search(msg):
+        return False
+    if not STALL_RE.search(msg):
+        return False
+    size = rec.get("size") or 0
+    sizeleft = rec.get("sizeleft") or 0
+    # size 0 = metadata never even fetched; that counts as zero progress.
+    if size > 0 and (size - sizeleft) / size > STALL_MAX_PROGRESS:
+        return False
+    added = rec.get("added")
+    if not added:
+        return False
     try:
-        q = radarr("GET", "/queue?includeUnknownMovieItems=true&pageSize=200")
+        added_dt = datetime.fromisoformat(added.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return (now - added_dt) > timedelta(minutes=STALL_GRACE_MIN)
+
+
+def condemn(rec, now):
+    """Return a reason string if this record should be reaped, else None."""
+    if (rec.get("trackedDownloadStatus") == "warning"
+            and message_matches_bad_signature(rec.get("statusMessages"))):
+        return "bad-signature"
+    if is_reapable_stall(rec, now):
+        return "dead-swarm stall"
+    return None
+
+
+def radarr_pass(now) -> None:
+    key = env_var("RADARR_API_KEY")
+    if not key:
+        print("[auto-blocklist] RADARR_API_KEY missing from .env; skipping radarr",
+              file=sys.stderr)
+        return
+
+    try:
+        q = api(RADARR_BASE, key, "GET",
+                "/queue?includeUnknownMovieItems=true&pageSize=200")
     except OSError as e:
         # OSError, not just urllib.error.URLError. urlopen only wraps failures
         # it hits while ESTABLISHING the connection; a reset part-way through
@@ -118,34 +185,32 @@ def main() -> int:
         # three times in one session. URLError is an OSError subclass, so this
         # still covers everything the narrower clause did.
         print(f"[auto-blocklist] Radarr unreachable: {e}", file=sys.stderr)
-        return 0
+        return
 
     records = q.get("records", []) if q else []
     suspects = []
     for r in records:
-        if r.get("trackedDownloadStatus") != "warning":
-            continue
-        if not message_matches_bad_signature(r.get("statusMessages")):
-            continue
-        suspects.append(r)
+        reason = condemn(r, now)
+        if reason:
+            suspects.append((r, reason))
 
     if not suspects:
-        print(f"[auto-blocklist] {len(records)} queue items, 0 match bad-signature — nothing to do")
-        return 0
+        print(f"[auto-blocklist] radarr: {len(records)} queue items, "
+              "0 condemned — nothing to do")
+        return
 
-    print(f"[auto-blocklist] found {len(suspects)} stuck-warning item(s) to blocklist:")
+    print(f"[auto-blocklist] radarr: {len(suspects)} item(s) to blocklist:")
     affected_movie_ids = set()
-    for r in suspects:
+    for r, reason in suspects:
         rid = r["id"]
         title = (r.get("title") or "?")[:70]
         movie_id = r.get("movieId")
-        print(f"  - id={rid}  movie_id={movie_id}  title={title!r}")
-        # Best-effort delete with blocklist + removeFromClient
+        print(f"  - id={rid}  movie_id={movie_id}  [{reason}]  title={title!r}")
         try:
-            urllib.request.urlopen(urllib.request.Request(
-                f"{RADARR_BASE}/queue/{rid}?removeFromClient=true&blocklist=true",
-                headers={"X-Api-Key": API_KEY}, method="DELETE"))
-            print(f"    ✓ blocklisted + removed from qBit")
+            api(RADARR_BASE, key, "DELETE",
+                f"/queue/{rid}?removeFromClient=true&blocklist=true"
+                "&skipRedownload=true")
+            print("    ✓ blocklisted + removed from qBit")
             if movie_id:
                 affected_movie_ids.add(movie_id)
         except urllib.error.HTTPError as e:
@@ -153,16 +218,87 @@ def main() -> int:
                   file=sys.stderr)
 
     # Re-trigger search for each affected movie. autoRedownloadFailed
-    # handles FAILED items automatically; for blocklisted-warning items
-    # we need an explicit kick.
+    # handles FAILED items automatically; for blocklisted warning/stall
+    # items we need an explicit kick.
     for mid in affected_movie_ids:
         print(f"[auto-blocklist] re-searching movie {mid}...")
         try:
-            radarr("POST", "/command", {"name": "MoviesSearch", "movieIds": [mid]})
-            print(f"  ✓ search triggered")
+            api(RADARR_BASE, key, "POST", "/command",
+                {"name": "MoviesSearch", "movieIds": [mid]})
+            print("  ✓ search triggered")
         except Exception as e:
             print(f"  ✗ search failed: {e}", file=sys.stderr)
 
+
+def sonarr_pass(now) -> None:
+    key = env_var("SONARR_API_KEY")
+    if not key:
+        print("[auto-blocklist] SONARR_API_KEY missing from .env; skipping sonarr")
+        return
+
+    try:
+        q = api(SONARR_BASE, key, "GET",
+                "/queue?includeUnknownSeriesItems=true&pageSize=200")
+    except OSError as e:
+        # Same netns story as Radarr above — Sonarr rides gluetun too.
+        print(f"[auto-blocklist] Sonarr unreachable: {e}", file=sys.stderr)
+        return
+
+    records = q.get("records", []) if q else []
+    suspects = []
+    for r in records:
+        reason = condemn(r, now)
+        if reason:
+            suspects.append((r, reason))
+
+    if not suspects:
+        print(f"[auto-blocklist] sonarr: {len(records)} queue items, "
+              "0 condemned — nothing to do")
+        return
+
+    # A season pack is one row PER EPISODE sharing a downloadId; deleting
+    # any one row cancels the whole download (siblings then 404 by
+    # design). Group and delete exactly once per download.
+    by_download = {}
+    for r, reason in suspects:
+        by_download.setdefault(r.get("downloadId") or f"row-{r['id']}",
+                               (r, reason))
+
+    print(f"[auto-blocklist] sonarr: {len(suspects)} row(s) across "
+          f"{len(by_download)} download(s) to blocklist:")
+    affected_seasons = set()
+    for dl_id, (r, reason) in by_download.items():
+        rid = r["id"]
+        title = (r.get("title") or "?")[:70]
+        print(f"  - id={rid}  download={str(dl_id)[:12]}  [{reason}]  "
+              f"title={title!r}")
+        try:
+            api(SONARR_BASE, key, "DELETE",
+                f"/queue/{rid}?removeFromClient=true&blocklist=true"
+                "&skipRedownload=true")
+            print("    ✓ blocklisted + removed from qBit")
+            if r.get("seriesId") and r.get("seasonNumber") is not None:
+                affected_seasons.add((r["seriesId"], r["seasonNumber"]))
+        except urllib.error.HTTPError as e:
+            print(f"    ✗ delete failed: HTTP {e.code} {e.read().decode()[:120]}",
+                  file=sys.stderr)
+
+    for series_id, season in sorted(affected_seasons):
+        print(f"[auto-blocklist] re-searching series {series_id} "
+              f"season {season}...")
+        try:
+            api(SONARR_BASE, key, "POST", "/command",
+                {"name": "SeasonSearch", "seriesId": series_id,
+                 "seasonNumber": season})
+            print("  ✓ search triggered")
+        except Exception as e:
+            print(f"  ✗ search failed: {e}", file=sys.stderr)
+
+
+def main() -> int:
+    now = datetime.now(timezone.utc)
+    radarr_pass(now)
+    sonarr_pass(now)
     return 0
 
 
