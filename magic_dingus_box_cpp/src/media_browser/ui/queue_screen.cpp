@@ -724,6 +724,12 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Anchored to chrome::kSafeInset_px so the left/right edges line up
     // with the tab strip + title above (NOT kPaddingX, which is the
     // body-row inset for the queue rows below).
+    // Warning lines drawn under the count/refresh sub-line this frame.
+    // body_top consumes this so the row list starts BELOW the stack —
+    // with two lines up (Radarr + Sonarr offline during a netns flap),
+    // line 2 landed ~8px inside the first row's poster. Zero lines =
+    // zero shift: the everyday layout is byte-identical.
+    int warn_lines = 0;
     {
         std::ostringstream cs;
         // TV groups count as downloads alongside the movie rows — one
@@ -813,6 +819,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
                            th.highlight2, 0.95f);
             warn_y += static_cast<float>(sub_size) + 4.0f;
+            ++warn_lines;
         }
 
         // Sonarr-offline: only while TV rows are actually on screen — with
@@ -825,6 +832,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
                            th.accent, 0.95f);
             warn_y += static_cast<float>(sub_size) + 4.0f;
+            ++warn_lines;
         }
 
         // qBit-overlay-failed sub-line. Gives the user a clear "the bars
@@ -839,6 +847,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 "the last cached snapshot from Radarr/Sonarr";
             r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
                            th.accent, 0.95f);
+            ++warn_lines;
         }
     }
 
@@ -869,7 +878,11 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const float body_top    = static_cast<float>(header_bottom)
                             + static_cast<float>(::media_browser::ui::chrome::kPad2)
                             + static_cast<float>(th.font_small_size)
-                            + 16.0f;
+                            + 16.0f
+                            // Each warning line advances the stack by
+                            // sub-size + 4; the list clears exactly that.
+                            + static_cast<float>(warn_lines)
+                            * (static_cast<float>(th.font_small_size) + 4.0f);
     const float body_bottom = footer_band_top;
     const float body_h      = body_bottom - body_top;
 
