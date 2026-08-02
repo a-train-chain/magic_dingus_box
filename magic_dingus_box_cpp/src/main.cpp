@@ -34,6 +34,7 @@
 #include "media_browser/ui/browse_screen.h"
 #include "media_browser/ui/search_screen.h"
 #include "media_browser/ui/detail_screen.h"
+#include "media_browser/ui/series_detail_screen.h"
 #include "media_browser/ui/queue_screen.h"
 #include "media_browser/ui/library_screen.h"
 #include "media_browser/ui/mb_settings_screen.h"
@@ -887,6 +888,9 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get(),
                                                   qbit_owned.get());
+    media_browser::ui::SeriesDetailScreen mb_series_detail(
+        sonarr, *tmdb, qbit_owned.get(),
+        /*sonarr_configured=*/!sonarr_key.empty());
     media_browser::ui::QueueScreen      mb_queue(radarr,
                                                   qbit_owned.get());
     media_browser::ui::LibraryScreen    mb_library(radarr, state);
@@ -2261,6 +2265,15 @@ int main(int /* argc */, char* /* argv */[]) {
                         mb_detail.set_origin(current_mb_screen);
                     }
                 }
+                if (next == media_browser::ui::Screen::SeriesDetail) {
+                    // Only Browse can produce this transition, and it only
+                    // produces it for a TV hit — the kind lives in the
+                    // transition itself, not in a BrowseScreen accessor.
+                    if (current_mb_screen == media_browser::ui::Screen::Browse) {
+                        mb_series_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
+                        mb_series_detail.set_origin(current_mb_screen);
+                    }
+                }
                 // Detail -> Playback: copy resolved host path + title from
                 // Detail to Playback so it knows what to load on enter().
                 // Also pass the rich TMDB metadata so the PlaybackOverlay
@@ -2299,9 +2312,7 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::Search:        active_mb_screen = &mb_search;      break;
                     case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
                     case media_browser::ui::Screen::SeriesDetail:
-                        // Instance + forwarding land with the Browse routing
-                        // (2c-2 Task 4); unreachable until then.
-                        active_mb_screen = &mb_browse;
+                        active_mb_screen = &mb_series_detail;
                         break;
                     case media_browser::ui::Screen::ReleasePicker: active_mb_screen = &mb_release_picker; break;
                     case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;

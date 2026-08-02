@@ -1562,18 +1562,14 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
             if (!movies_.empty() && grid_cursor_ >= 0 &&
                 grid_cursor_ < static_cast<int>(movies_.size())) {
                 const auto& hit = movies_[grid_cursor_];
-                // 2c-1 ships discovery only. DetailScreen is Movie/Radarr-typed
-                // end to end (Mode keyed on one has_file bool and one file
-                // path; every mutating action is RadarrClient-shaped), so
-                // handing it a TV id would show a movie's detail page for
-                // whatever film shares that number. The series detail screen
-                // is a later milestone — say so rather than misroute.
-                if (hit.kind == MediaKind::Tv) {
-                    ::ui::Toast::show("TV details coming soon");
-                    continue;
-                }
+                // Movie and TV TMDB id spaces OVERLAP COMPLETELY (1396 is
+                // Breaking Bad AND an unrelated film), so the id alone must
+                // never choose the destination. The KIND picks it, and the
+                // choice is carried in the returned Screen value — the
+                // dispatcher needs no second accessor to re-derive it.
                 selected_tmdb_id_ = hit.tmdb_id;
-                return Screen::Detail;
+                return hit.kind == MediaKind::Tv ? Screen::SeriesDetail
+                                                 : Screen::Detail;
             }
         }
     }
@@ -1873,11 +1869,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         {chrome::HintIcon::Btn4Black,
          filter_available ? "Filters" : (shuffle_only ? "Mode/Shuffle" : "\xE2\x80\x94")},
         {chrome::HintIcon::RotaryNav,   "Browse"},
-        // In TV mode a rotary press only toasts "TV details coming soon"
-        // (Task 8) — promising "Detail" for it reads as broken rather than
-        // as scoped, especially since a TV poster is otherwise visually
-        // identical to a movie one.
-        {chrome::HintIcon::RotaryPress, tv_mode() ? "Coming soon" : "Detail"},
+        {chrome::HintIcon::RotaryPress, "Detail"},
     });
 
     // ALWAYS LAST, ALWAYS REACHED. See the state-resolution comment above.
