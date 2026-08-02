@@ -47,6 +47,7 @@
 #include "media_browser/artwork/artwork_cache.h"
 #endif
 #include "app/app_state.h"
+#include "app/game_launch_recovery.h"
 #include "app/game_quiet_mode.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
@@ -1038,7 +1039,10 @@ int main(int /* argc */, char* /* argv */[]) {
     std::thread game_session_gpio_thread;
     controller.set_game_session_hooks(
         [&](const app::PlaylistItem& item) {
-            state.is_loading_game = true;
+            // Raises is_loading_game, resets loading_alpha to opaque, and
+            // cancels any in-flight post-game fade — a stale alpha of 0 from
+            // the previous exit would make this launch's plate invisible.
+            app::prepare_loading_state_for_launch(state);
 #ifdef MEDIA_BROWSER_ENABLED
             // Quiet the media stack for the whole session (async — never
             // delays launch) and drop poster textures while the GL
@@ -1079,11 +1083,11 @@ int main(int /* argc */, char* /* argv */[]) {
             if (game_session_gpio_thread.joinable()) {
                 game_session_gpio_thread.join();
             }
-            // Reset loading state. loading_is_exit must clear too or the
-            // NEXT launch would open on the return wording and the green
-            // frame.
+            // Reset loading state. loading_alpha is deliberately NOT reset
+            // here — it is 0.0 (dissolved) and stays 0.0 until the next
+            // launch's prepare_loading_state_for_launch, so nothing can
+            // flash the plate between now and the menu fade-in.
             state.is_loading_game = false;
-            state.loading_is_exit.store(false);
             state.loading_progress.store(0.0f);
             state.loading_phase.clear();
 #ifdef MEDIA_BROWSER_ENABLED

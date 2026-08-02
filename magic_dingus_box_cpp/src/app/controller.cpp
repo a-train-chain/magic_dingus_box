@@ -780,14 +780,14 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         
         // Game has exited. Restore system.
         //
-        // Flip the launch plate to its RETURN wording immediately — before the
-        // display comes back — so that whatever gets scanned out during the
-        // handover already says the right thing. The kiosk's own framebuffer
-        // still holds the last frame it drew (a full bar reading "STARTING"),
-        // and re-acquiring DRM master puts that straight back on screen.
-        state.loading_is_exit.store(true);
-        state.loading_progress.store(0.0f);
-        state.loading_phase = "CLOSING GAME";
+        // Deliberately do NOT touch loading_progress / loading_phase here.
+        // The kiosk's own framebuffer still holds the last frame it drew — a
+        // full gold bar reading "STARTING" — and re-acquiring DRM master puts
+        // that exact frame straight back on screen. The dissolve below fades
+        // out THAT frame, so the state it renders from must stay identical to
+        // the state it was drawn from: the first dissolve frame is then
+        // pixel-identical to what is already on the panel, and the stale
+        // frame reads as frame 1 of a deliberate fade instead of a hang.
 
         // CRITICAL: Ensure RetroArch is truly dead before we try to take back control
         // This prevents "zombie" processes from holding onto DRM/Input resources
@@ -852,20 +852,45 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             }
             state.display_mode_restored.store(mode_restored);
 
-            // First frame we are allowed to draw since handing the display
-            // over. Paint the return plate NOW so the stale launch frame the
-            // scanout just picked up is replaced, rather than sitting there
-            // until the main loop rebuilds the menu.
+            // First frames we may draw since the handover. MUST stay after
+            // set_mode() — painting before it blocks on a page-flip event
+            // that never arrives (measured: launches 4.3s -> 15.8s).
             //
-            // This MUST come after set_mode(). Painting before it was tried
-            // and reverted: RetroArch leaves the display on its own mode,
-            // which does not match the kiosk's EGL surface, and present_frame
-            // then blocks waiting on a page-flip event that never arrives.
-            // Measured cost of getting this wrong: launches went 4.3s -> up to
-            // 15.8s and returns 3.4s -> 5.7s.
-            state.loading_progress.store(0.45f);
-            state.loading_phase = "RESTORING DISPLAY";
-            if (progress_callback) progress_callback();
+            // Dissolve the launch plate to black. Hold at alpha 1.0 first:
+            // the set_mode above makes many TVs blank for 300ms+ while HDMI
+            // re-locks, and without the hold the ramp can finish entirely
+            // behind that blank — the panel would re-light already on black
+            // and the dissolve would read as a hard cut. Held, the panel
+            // re-lights on the stable gold plate (continuity with what was
+            // on screen before the resync) and THEN it fades. The held/ramp
+            // frames are pixel-identical to the stale frame the scanout
+            // picked up when RetroArch died, so the transition starts from
+            // exactly what is on the panel. progress_callback ends in
+            // present_frame(), which blocks on the page flip, so the loop is
+            // naturally paced at the refresh rate.
+            //
+            // Guarded on progress_callback: only the Settings game-browser
+            // route passes one; the other four routes render no launch plate
+            // at all, and for them the return is the post-game fade alone.
+            if (progress_callback) {
+                constexpr std::chrono::milliseconds kReturnDissolveHold{120};
+                constexpr std::chrono::milliseconds kReturnDissolveRamp{250};
+                const auto dissolve_t0 = std::chrono::steady_clock::now();
+                for (;;) {
+                    const auto elapsed =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - dissolve_t0);
+                    if (elapsed >= kReturnDissolveHold + kReturnDissolveRamp) break;
+                    // Negative pre-ramp elapsed clamps to 1.0 — the hold
+                    // falls out of the ramp function.
+                    state.loading_alpha.store(app::return_dissolve_alpha(
+                        static_cast<float>((elapsed - kReturnDissolveHold).count()),
+                        static_cast<float>(kReturnDissolveRamp.count())));
+                    progress_callback();
+                }
+                state.loading_alpha.store(0.0f);
+                progress_callback();  // hold solid black for the restore work
+            }
         }
 
         // Re-initialize input devices after RetroArch exits with retry logic
@@ -888,12 +913,6 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
             
-            if (input_initialized) {
-                state.loading_progress.store(0.8f);
-                state.loading_phase = "RESTORING CONTROLS";
-                if (progress_callback) progress_callback();
-            }
-
             if (!input_initialized) {
                 std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
                 // Last-resort attempt: sleep longer and try once more

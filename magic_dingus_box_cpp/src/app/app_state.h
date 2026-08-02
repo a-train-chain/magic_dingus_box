@@ -390,14 +390,6 @@ public:
     std::string loading_title;                   // game being launched
     std::string loading_system;                  // e.g. "N64", "Dreamcast"
     std::string loading_phase;                   // short status line
-    // The same plate serves the RETURN from a game, which needs its own
-    // wording — and needs to replace the launch frame promptly. On the way
-    // back the kiosk re-acquires DRM master and the scanout picks up its OWN
-    // previous framebuffer, which still holds the last thing it drew: the
-    // launch plate with a full bar reading "STARTING". Left alone that stale
-    // frame reappears for a second while the menu is rebuilt, which looks like
-    // the box is launching the game a second time.
-    std::atomic<bool> loading_is_exit{false};
     // Note: playback_started is now playback_started_ (atomic) - use playback_started_.load()/store()
 
     // Global alpha for the launch plate, 1.0 = fully drawn.
