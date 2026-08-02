@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <string>
 
 namespace media_browser::ui {
@@ -439,9 +438,7 @@ void draw_poster_card(::ui::Renderer& r, int x, int y, int w, int h,
         constexpr int kYearFontPx = 12;
         constexpr int kYearPadX   = 6;
         constexpr int kYearPadY   = 3;
-        char yr_buf[8];
-        std::snprintf(yr_buf, sizeof(yr_buf), "%d", year);
-        const std::string yr = yr_buf;
+        const std::string yr = std::to_string(year);
         const int text_w = r.mb_text_width(yr, kYearFontPx);
         const int box_w = text_w + 2 * kYearPadX;
         const int box_h = kYearFontPx + 2 * kYearPadY;
