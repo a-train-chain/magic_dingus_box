@@ -399,7 +399,39 @@ public:
     // the box is launching the game a second time.
     std::atomic<bool> loading_is_exit{false};
     // Note: playback_started is now playback_started_ (atomic) - use playback_started_.load()/store()
-    
+
+    // Global alpha for the launch plate, 1.0 = fully drawn.
+    //
+    // The plate is dissolved to 0 on the way back from a game. The frame the
+    // dissolve STARTS from is pixel-identical to the one already frozen on
+    // the panel (the kiosk's own stale framebuffer, which the scanout picks
+    // back up when RetroArch dies) — so the stale frame stops reading as a
+    // hang and becomes frame 1 of a deliberate fade. Reset to 1.0 by
+    // prepare_loading_state_for_launch at the NEXT launch, or that launch
+    // opens invisible.
+    std::atomic<float> loading_alpha{1.0f};
+
+    // Set true by the game-exit path after it successfully restores the
+    // kiosk's display mode; consumed (exchange(false)) by the main loop's
+    // reset_display handler so it can SKIP its own set_mode. Without this,
+    // every game exit did two mode changes and the TV resynced twice.
+    // An explicit flag, not a get_current_mode() comparison: that getter
+    // returns a cached mode which RetroArch's own mode changes never update,
+    // so a comparison would wrongly skip the restore exactly when the exit
+    // path's set_mode had failed.
+    std::atomic<bool> display_mode_restored{false};
+
+    // Post-game menu fade-up. 0 = idle. -1 = fade REQUESTED, set by
+    // prepare_kiosk_state_after_game (which runs only on the post-handover
+    // exit path — NOT the game-session exit hook, which also fires on
+    // validation early-returns where the display was never released and a
+    // fade would black-flash the still-visible menu). >0 = steady_clock
+    // time_since_epoch in ms of the first frame the render loop actually
+    // drew: the loop stamps the sentinel on first sight, so the fade covers
+    // 250ms of RENDERED frames even when frame_ctx/EGL/GStreamer re-init
+    // eats a chunk of wall-clock before the first frame.
+    std::atomic<int64_t> post_game_fade_start_ms{0};
+
     // Display settings for CRT effects and display mode
     struct DisplaySettings {
         DisplayMode mode = DisplayMode::CRT_NATIVE;
