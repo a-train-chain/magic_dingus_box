@@ -21,6 +21,8 @@ public:
     std::vector<SeriesSearchHit> lookup_by_tmdb(
         int tmdb_id, const std::string& title_fallback = "") override;
     std::vector<SeriesSearchHit> lookup(const std::string& query) override;
+    // Always returns nullopt — see the .cpp for why the checked shape must
+    // report "unreachable" even though this mock has a seeded library.
     std::optional<std::vector<Series>> get_library_checked() override;
     std::vector<Series> get_library() override;
     std::optional<Series> get_series(int sonarr_id) override;

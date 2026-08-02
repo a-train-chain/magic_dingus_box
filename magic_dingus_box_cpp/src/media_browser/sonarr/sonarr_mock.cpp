@@ -93,7 +93,31 @@ std::vector<SeriesSearchHit> SonarrMockClient::lookup(const std::string& query) 
 }
 
 std::optional<std::vector<Series>> SonarrMockClient::get_library_checked() {
-    return library_;
+    // Deliberately NOT `return library_;` (contrast get_library() just
+    // below). get_library_checked()'s entire contract is reachability — an
+    // engaged optional means "the service answered", nullopt means "it did
+    // not" (see SonarrClient::get_library_checked's doc comment in
+    // sonarr_client.h). This mock exists precisely BECAUSE no live Sonarr is
+    // there: main.cpp falls back to it whenever the Sonarr API key resolves
+    // to empty, and on a box provisioned before the Sonarr stack landed that
+    // means "never configured," not "configured and reachable." Answering
+    // with an engaged optional here would tell BrowseScreen a real Sonarr
+    // responded — fabricating a one-series TV library (Breaking Bad) that
+    // then poisons the in-library hide (Breaking Bad vanishes from every TV
+    // grid as "owned") and seeds For You's TV recommendations from it, all
+    // silently, on a box whose owner has no TV library at all. nullopt is
+    // the one honest answer to the one question this method exists to
+    // answer.
+    //
+    // RadarrMockClient does NOT get this treatment: a Radarr-less box never
+    // reaches this situation, because Media Browser feature-gate Layer 3
+    // (Radarr /ping) hides MB entirely when Radarr is unreachable. There is
+    // no equivalent Sonarr health gate — adding one is out of scope here —
+    // which is exactly what makes the Sonarr mock reachable in the field.
+    //
+    // get_library() below is unaffected and keeps returning the seeded
+    // library, so dev/test callers that want the mock's data still get it.
+    return std::nullopt;
 }
 
 std::vector<Series> SonarrMockClient::get_library() { return library_; }

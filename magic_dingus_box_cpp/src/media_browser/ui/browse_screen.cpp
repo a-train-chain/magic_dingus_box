@@ -223,8 +223,16 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
             tv_ok.store(true);
         }
     });
-    // Join before publish, and on any early exit: an unjoined std::thread
-    // destructor calls std::terminate.
+    // RAII join, defensive rather than load-bearing: run_library_refresh has
+    // no early return today, so the plain sonarr_worker.join() before publish
+    // (below) already covers the only path this function takes. This guard's
+    // job is to keep that guarantee true if a future edit adds one, without
+    // anyone having to remember to join on every new exit. It does NOT make
+    // an exception thrown out of the Radarr block below safe: the guard's
+    // destructor runs during unwinding and joins sonarr_worker cleanly, but
+    // the exception then keeps propagating and escapes run_library_refresh
+    // itself — the entry function of a std::thread — which calls
+    // std::terminate() regardless of whether the join already happened.
     struct SonarrJoin {
         std::thread& t;
         ~SonarrJoin() { if (t.joinable()) t.join(); }
@@ -334,6 +342,19 @@ void BrowseScreen::apply_library_pending() {
         // instead of wearing a badge. The predicate is kind-aware, so a movie
         // is never hidden because a show shares its id. The refs stay in
         // loaded_refs_, so later append pages can't resurrect them.
+        //
+        // Intentional deviation from the shipped movie-only behavior: this
+        // sweep used to be gated on `if (r.services_ok)` (Radarr answered).
+        // Gating on `refs_changed` instead means it now ALSO runs when Radarr
+        // is down but Sonarr answered — against the retained previous-visit
+        // movie ref set (movie library_refs_ entries are untouched when
+        // r.services_ok is false; see the MOVIE GATE comment above). This is
+        // safe, not just tolerated: apply_pending() already drops in-library
+        // hits at page-append time using this exact predicate
+        // (library_refs_.count(media_ref_of(m)) > 0), so by the time this
+        // sweep runs on a Radarr-down visit, movies_/foryou_ already contain
+        // nothing it would remove — an extra no-op pass, not a behavior
+        // change. Movie mode still behaves identically end to end.
         auto owned = [this](const TmdbSearchHit& m) {
             return library_refs_.count(media_ref_of(m)) > 0;
         };

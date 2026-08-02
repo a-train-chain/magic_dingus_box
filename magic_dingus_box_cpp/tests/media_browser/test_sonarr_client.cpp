@@ -233,25 +233,45 @@ TEST_CASE("profiles and root folders use the Servarr paths", "[sonarr][config]")
 TEST_CASE("SonarrMockClient serves a coherent seeded library", "[sonarr][mock]") {
     mb::SonarrMockClient m;
     CHECK(m.is_reachable());
-    auto lib = m.get_library_checked();
-    REQUIRE(lib.has_value());
-    REQUIRE(lib->size() == 1);
-    CHECK((*lib)[0].sonarr_id == 1);
-    CHECK((*lib)[0].tmdb_id == 1396);
+    // Seeded-data assertions go through the unchecked shape now — see the
+    // dedicated get_library_checked test below for the reachability contract.
+    auto lib = m.get_library();
+    REQUIRE(lib.size() == 1);
+    CHECK(lib[0].sonarr_id == 1);
+    CHECK(lib[0].tmdb_id == 1396);
     // Season 1 monitored, the rest not — the same shape a real firstSeason
     // add produces, so a mock-mode screen renders the real state machine.
-    REQUIRE((*lib)[0].seasons.size() >= 2);
-    CHECK_FALSE((*lib)[0].seasons[0].monitored);  // Specials
-    CHECK((*lib)[0].seasons[1].monitored);        // Season 1
+    REQUIRE(lib[0].seasons.size() >= 2);
+    CHECK_FALSE(lib[0].seasons[0].monitored);  // Specials
+    CHECK(lib[0].seasons[1].monitored);        // Season 1
 
     auto one = m.get_series(1);
     REQUIRE(one.has_value());
-    CHECK(one->title == (*lib)[0].title);
+    CHECK(one->title == lib[0].title);
 
     auto profiles = m.get_quality_profiles();
     REQUIRE(profiles.size() == 1);
     CHECK(profiles[0].name == "Any");
     CHECK(m.get_root_folders().front().path == "/data/library/tv");
+}
+
+TEST_CASE("SonarrMockClient's get_library_checked reports unreachable, "
+          "matching a real box with no Sonarr configured", "[sonarr][mock]") {
+    // Review fix: the mock exists precisely BECAUSE no live Sonarr is
+    // present, so get_library_checked() — whose whole contract is
+    // reachability — must answer "unreachable" like the absent service it
+    // stands in for, not hand back an engaged optional wrapping the seed.
+    // Pre-fix this made SonarrMockClient the only mock whose checked library
+    // call lied about reachability, which on a box with no Sonarr API key
+    // configured (main.cpp's fallback path) silently fabricated a one-series
+    // TV library, hid Breaking Bad from every TV grid as "owned," and seeded
+    // For You's TV recommendations from it. See sonarr_mock.cpp for the full
+    // rationale, including why RadarrMockClient does not need the same fix.
+    mb::SonarrMockClient m;
+    CHECK_FALSE(m.get_library_checked().has_value());
+    // The unchecked shape is untouched — dev/test callers that want the
+    // mock's data still get it.
+    CHECK(m.get_library().size() == 1);
 }
 
 // --- add_series ----------------------------------------------------------
