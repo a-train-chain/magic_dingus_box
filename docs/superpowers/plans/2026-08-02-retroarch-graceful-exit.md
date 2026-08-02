@@ -62,11 +62,11 @@ TEST_CASE("return_dissolve_alpha ramps 1 to 0, clamped and monotone",
     REQUIRE(app::return_dissolve_alpha(125.0f, 250.0f) == Catch::Approx(0.5f));
     REQUIRE(app::return_dissolve_alpha(250.0f, 250.0f) == 0.0f);
     REQUIRE(app::return_dissolve_alpha(500.0f, 250.0f) == 0.0f);  // past the end
-    REQUIRE(app::return_dissolve_alpha(-50.0f, 250.0f) == 1.0f);  // before the start
+    REQUIRE(app::return_dissolve_alpha(-50.0f, 250.0f) == 1.0f);  // hold period: pre-ramp elapsed is negative
     REQUIRE(app::return_dissolve_alpha(10.0f, 0.0f) == 0.0f);     // degenerate duration
 
     float prev = 1.0f;
-    for (float t = 0.0f; t <= 500.0f; t += 10.0f) {
+    for (float t = -120.0f; t <= 500.0f; t += 10.0f) {  // start inside the hold
         const float a = app::return_dissolve_alpha(t, 250.0f);
         REQUIRE(a <= prev);
         REQUIRE(a >= 0.0f);
@@ -75,17 +75,24 @@ TEST_CASE("return_dissolve_alpha ramps 1 to 0, clamped and monotone",
     }
 }
 
-TEST_CASE("prepare_kiosk_state_after_game leaves display_mode_restored alone",
+TEST_CASE("prepare_kiosk_state_after_game requests the fade and leaves "
+          "display_mode_restored alone",
           "[retroarch][recovery]") {
-    // The exit path sets this flag BEFORE prepare_kiosk_state_after_game runs;
-    // the main loop's reset_display handler consumes it AFTER. If this helper
-    // ever cleared it, the main loop would re-set_mode and the TV would
-    // resync twice again.
     app::AppState state{};
     state.display_mode_restored.store(true);
+    state.post_game_fade_start_ms.store(0);
 
     app::prepare_kiosk_state_after_game(state);
 
+    // -1 = "fade requested"; main.cpp's render loop stamps the real start
+    // time on the first frame it actually draws, so the fade covers 250ms of
+    // RENDERED frames no matter how long the reset_display work takes.
+    REQUIRE(state.post_game_fade_start_ms.load() == -1);
+
+    // The exit path sets display_mode_restored BEFORE this helper runs; the
+    // main loop's reset_display handler consumes it AFTER. If this helper
+    // ever cleared it, the main loop would re-set_mode and the TV would
+    // resync twice again.
     REQUIRE(state.display_mode_restored.load());
 }
 ```
@@ -124,9 +131,15 @@ In `src/app/app_state.h`, directly **below** the `loading_is_exit` declaration (
     // path's set_mode had failed.
     std::atomic<bool> display_mode_restored{false};
 
-    // steady_clock time_since_epoch in ms when the post-game menu fade-up
-    // began; 0 = no fade active. Set by the game-session exit hook, rendered
-    // and eventually cleared by main.cpp's render loop.
+    // Post-game menu fade-up. 0 = idle. -1 = fade REQUESTED, set by
+    // prepare_kiosk_state_after_game (which runs only on the post-handover
+    // exit path — NOT the game-session exit hook, which also fires on
+    // validation early-returns where the display was never released and a
+    // fade would black-flash the still-visible menu). >0 = steady_clock
+    // time_since_epoch in ms of the first frame the render loop actually
+    // drew: the loop stamps the sentinel on first sight, so the fade covers
+    // 250ms of RENDERED frames even when frame_ctx/EGL/GStreamer re-init
+    // eats a chunk of wall-clock before the first frame.
     std::atomic<int64_t> post_game_fade_start_ms{0};
 ```
 
@@ -146,13 +159,28 @@ void prepare_loading_state_for_launch(AppState& state);
 float return_dissolve_alpha(float elapsed_ms, float duration_ms);
 ```
 
-`src/app/game_launch_recovery.cpp` — append inside `namespace app`:
+`src/app/game_launch_recovery.cpp` — append inside `namespace app`, and add one
+line to the existing function:
 
 ```cpp
+void prepare_kiosk_state_after_game(AppState& state) {
+    state.reset_display = true;
+    state.current_item_index = -1;
+    state.current_playlist_index = -1;
+    state.video_active = false;
+    state.is_loading_game = false;
+    // Request the menu fade-up. -1 is the "requested" sentinel; main.cpp's
+    // render loop stamps the real start time on the first frame it draws.
+    // Requested HERE and not in the game-session exit hook: this helper runs
+    // only after a genuine display handover, while the hook also fires on
+    // validation early-returns where the menu never left the screen.
+    state.post_game_fade_start_ms.store(-1);
+}
+
 void prepare_loading_state_for_launch(AppState& state) {
     state.is_loading_game = true;
     state.loading_alpha.store(1.0f);
-    state.post_game_fade_start_ms.store(0);
+    state.post_game_fade_start_ms.store(0);   // cancel any in-flight fade
 }
 
 float return_dissolve_alpha(float elapsed_ms, float duration_ms) {
@@ -163,6 +191,9 @@ float return_dissolve_alpha(float elapsed_ms, float duration_ms) {
     return a;
 }
 ```
+
+(`prepare_kiosk_state_after_game` shown in full — the first five lines are the
+existing body, unchanged.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -267,14 +298,23 @@ with:
             }
             if (!mode_restored) {
                 // Legacy floor, preserved for the never-configured case and
-                // for a failed restore.
+                // for a failed restore. Gives the dissolve SOMETHING to draw
+                // on; deliberately does NOT set the flag below.
                 std::cout << "Falling back to 640x480..." << std::endl;
-                mode_restored = display_->set_mode(640, 480);
+                display_->set_mode(640, 480);
             }
             state.display_mode_restored.store(mode_restored);
 ```
 
-Note: `mode_restored` intentionally goes true on the 640x480 fallback too — the flag means "a set_mode already happened, don't do another", not "the preferred mode is up". If the boot-mode set failed (cable/EDID trouble), the main loop's repeat attempt would fail for the same reason, so skipping it loses nothing; a box left at 640x480 is caught by `verify_box.sh`'s display-mode-vs-persisted-setting check. When even the fallback fails the flag stays false and the main loop's handler makes its own attempt, same as today.
+Note: the flag goes true **only when the preferred kiosk mode came up** — not on
+the 640x480 fallback. If the fallback set it, the main loop would skip its own
+`set_mode` and strand the UI at 640x480 with a GBM/EGL surface still sized for
+the boot mode — the exact surface/mode mismatch `controller.cpp:837` documents
+as a present-blocks-forever hang, made permanent. Leaving it false makes the
+broken-EDID edge case degenerate to today's behaviour (the main loop retries the
+real mode; one extra resync in an already-broken situation) instead of to
+something worse. When even the fallback fails, likewise: flag false, main loop
+attempts, same as today.
 
 - [ ] **Step 4: Feed the setter from `main.cpp` (two sites)**
 
@@ -414,22 +454,36 @@ with:
             // set_mode() — painting before it blocks on a page-flip event
             // that never arrives (measured: launches 4.3s -> 15.8s).
             //
-            // Dissolve the launch plate to black. Frame 1 is drawn at alpha
-            // 1.0 — pixel-identical to the stale frame the scanout already
-            // picked up — so the transition starts from what is on the panel.
-            // progress_callback ends in present_frame(), which blocks on the
-            // page flip, so the loop is naturally paced at the refresh rate.
+            // Dissolve the launch plate to black. Hold at alpha 1.0 first:
+            // the set_mode above makes many TVs blank for 300ms+ while HDMI
+            // re-locks, and without the hold the ramp can finish entirely
+            // behind that blank — the panel would re-light already on black
+            // and the dissolve would read as a hard cut. Held, the panel
+            // re-lights on the stable gold plate (continuity with what was
+            // on screen before the resync) and THEN it fades. The held/ramp
+            // frames are pixel-identical to the stale frame the scanout
+            // picked up when RetroArch died, so the transition starts from
+            // exactly what is on the panel. progress_callback ends in
+            // present_frame(), which blocks on the page flip, so the loop is
+            // naturally paced at the refresh rate.
+            //
+            // Guarded on progress_callback: only the Settings game-browser
+            // route passes one; the other four routes render no launch plate
+            // at all, and for them the return is the post-game fade alone.
             if (progress_callback) {
-                constexpr std::chrono::milliseconds kReturnDissolve{250};
+                constexpr std::chrono::milliseconds kReturnDissolveHold{120};
+                constexpr std::chrono::milliseconds kReturnDissolveRamp{250};
                 const auto dissolve_t0 = std::chrono::steady_clock::now();
                 for (;;) {
                     const auto elapsed =
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - dissolve_t0);
-                    if (elapsed >= kReturnDissolve) break;
+                    if (elapsed >= kReturnDissolveHold + kReturnDissolveRamp) break;
+                    // Negative pre-ramp elapsed clamps to 1.0 — the hold
+                    // falls out of the ramp function.
                     state.loading_alpha.store(app::return_dissolve_alpha(
-                        static_cast<float>(elapsed.count()),
-                        static_cast<float>(kReturnDissolve.count())));
+                        static_cast<float>((elapsed - kReturnDissolveHold).count()),
+                        static_cast<float>(kReturnDissolveRamp.count())));
                     progress_callback();
                 }
                 state.loading_alpha.store(0.0f);
@@ -650,22 +704,12 @@ void Renderer::render_post_game_fade(float alpha) {
 }
 ```
 
-- [ ] **Step 3: Start the fade clock in the exit hook**
+- [ ] **Step 3: Render the fade in the main loop**
 
-In `main.cpp`'s game-session exit hook, directly after the loading-state reset from Task 3 Step 4, add:
-
-```cpp
-            // Start the menu fade-up from black. The dissolve left the panel
-            // solid black; the render loop draws a black quad over the UI at
-            // decreasing alpha (under the bezel — the bezel stays solid
-            // through the whole round trip) until the fade window elapses.
-            state.post_game_fade_start_ms.store(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
-```
-
-- [ ] **Step 4: Render the fade in the main loop**
+(The fade is *requested* by `prepare_kiosk_state_after_game` — already done in
+Task 1 — not by the exit hook. The hook also fires on validation early-returns
+where the display was never released; a fade there would black-flash the
+still-visible menu.)
 
 In `main.cpp`, immediately **after** the `end_scene_fbo_and_composite` block:
 
@@ -686,14 +730,24 @@ and **before** the bezel block (anchor: `// Render bezel overlay LAST in Modern 
         // entangled with video-active and UI-visibility semantics and early-
         // returns on is_transitioning, which prepare_kiosk_state_after_game
         // only incidentally avoids.
+        //
+        // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
+        // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
+        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // re-init) between the two can eat 200ms+, and a wall-clock start
+        // would leave the fade mostly over before the first frame rendered.
         {
-            const int64_t fade_start = state.post_game_fade_start_ms.load();
+            int64_t fade_start = state.post_game_fade_start_ms.load();
             if (fade_start != 0) {
                 constexpr int64_t kPostGameFadeMs = 250;
                 const int64_t now_ms =
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now().time_since_epoch())
                         .count();
+                if (fade_start < 0) {
+                    state.post_game_fade_start_ms.store(now_ms);
+                    fade_start = now_ms;
+                }
                 const int64_t elapsed = now_ms - fade_start;
                 if (elapsed >= kPostGameFadeMs) {
                     state.post_game_fade_start_ms.store(0);
@@ -707,7 +761,7 @@ and **before** the bezel block (anchor: `// Render bezel overlay LAST in Modern 
         }
 ```
 
-- [ ] **Step 5: Run the Mac suite**
+- [ ] **Step 4: Run the Mac suite**
 
 ```bash
 cd "magic_dingus_box_cpp" && cmake --build build-test --target test_retroarch_unit -j8 && ./build-test/test_retroarch_unit
@@ -715,7 +769,7 @@ cd "magic_dingus_box_cpp" && cmake --build build-test --target test_retroarch_un
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add magic_dingus_box_cpp/src/ui/renderer.h magic_dingus_box_cpp/src/ui/renderer.cpp magic_dingus_box_cpp/src/main.cpp
@@ -774,11 +828,11 @@ ssh magic@magicpi.local "sudo systemctl restart magic-dingus-box-cpp.service"
 One launch-and-exit per core family: **PS1** (`pcsx_rearmed` — the Vulkan case `disable_crtc=false` exists for), **N64** (`mupen64plus_next`), **Dreamcast** (`flycast` — 4KB-page kernel, drives its own internal resolution). For each, from Settings → Video Games: launch, play ~30s, exit via Z+Start → Quit. Confirm:
 
 - [ ] Launch side unchanged: gold plate, phase-stepped bar, `STARTING` at full bar.
-- [ ] On exit: stale gold plate holds (expected, ~1s), then **one** TV resync, then the gold plate visibly dissolves to black — **no green at any point**.
-- [ ] Black holds while controls restore; menu then fades up rather than popping.
+- [ ] On exit: stale gold plate holds (expected, ~1s), then **one** TV resync, then the gold plate is briefly steady again (the 120ms hold riding out HDMI re-lock) and **visibly** dissolves to black — **no green at any point**, and the dissolve must be seen, not swallowed by the TV's blank.
+- [ ] Black holds while controls restore; menu then fades up rather than popping — the fade must be a visible ~250ms ramp (the sentinel guarantees it starts at the first rendered frame; a pop here means the sentinel stamp regressed).
 - [ ] Bezel never flickers through the whole round trip.
 - [ ] Controller works in the menu afterwards (input re-init unharmed).
-- [ ] Exit wall-clock not worse than baseline (~3.4s from game quit to menu).
+- [ ] Exit wall-clock within ~0.4s of baseline (~3.4s from game quit to menu; the hold+ramp add 370ms by design).
 
 Log assertions:
 
@@ -816,3 +870,12 @@ Then use superpowers:finishing-a-development-branch (Pi 4B spot-check before any
 - **Spec coverage:** Component 1 → Task 2; Component 2 → Tasks 1+3; Component 3 → Tasks 1+4; off-Pi tests → Task 1; hardware matrix (3 cores × 2 display modes, runtime toggle) → Task 5; settle-sleep named constant → Task 2 Step 2; `loading_is_exit` deletion → Task 3.
 - **Deviation from spec, deliberate:** the spec's illustrative `fade()` colour-helper is replaced by the existing `alpha_multiplier` trailing parameters on `draw_quad`/`draw_text` — same effect, no new helper (DRY).
 - **Type consistency:** `loading_alpha`/`display_mode_restored`/`post_game_fade_start_ms` names identical across Tasks 1–4; `return_dissolve_alpha(float, float)` and `prepare_loading_state_for_launch(AppState&)` match between Task 1 definitions and Task 3 call sites; `set_kiosk_display_mode(uint32_t, uint32_t)` matches between Task 2 header and both main.cpp call sites.
+- **Hardened in the 2026-08-02 design review** (spec updated to match): fade is
+  requested by `prepare_kiosk_state_after_game` via a `-1` sentinel stamped at
+  the first rendered frame (fixes a black-flash on validation-failed launches
+  AND the fade being eaten by reset_display wall-clock); the 640x480 fallback no
+  longer sets `display_mode_restored` (a stranded-at-640x480 permanent
+  surface/mode mismatch otherwise); the dissolve holds 120ms at full alpha
+  before ramping (TV HDMI re-lock would otherwise swallow the ramp); the
+  dissolve loop is guarded on `progress_callback` (only the Settings route
+  passes one — verified `controller.cpp:1003,1089,1176` all pass nullptr).

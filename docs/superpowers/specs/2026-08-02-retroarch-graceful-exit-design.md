@@ -137,10 +137,19 @@ if (kiosk_mode_w_ > 0 && kiosk_mode_h_ > 0) {
     restored = display_->set_mode(kiosk_mode_w_, kiosk_mode_h_);
 }
 if (!restored) {
-    restored = display_->set_mode(640, 480);   // preserve the old floor
+    display_->set_mode(640, 480);   // preserve the old floor for the dissolve
 }
 state.display_mode_restored.store(restored);
 ```
+
+The flag is set **only when the preferred kiosk mode came up** — deliberately not
+on the 640x480 fallback. If the fallback set the flag, the main loop would skip
+its own `set_mode` and strand the UI at 640x480 with a GBM/EGL surface still
+sized for the boot mode — exactly the surface/mode mismatch documented at
+`controller.cpp:837` as a present-blocks-forever hang, made permanent. Leaving
+the flag false makes the broken-EDID edge case degenerate to today's behaviour
+(the main loop retries the real mode, one extra resync) instead of to something
+worse.
 
 The `reset_display` handler at `main.cpp:1631` consumes the flag:
 
@@ -199,30 +208,47 @@ Every `draw_quad` colour goes through `fade()`; every `draw_text` call passes `a
 as its trailing alpha argument (the parameter already exists — see the QR label
 draws around `renderer.cpp:1415`). No geometry or layout changes.
 
-The exit path, immediately after Component 1's `set_mode` succeeds, runs the
-dissolve through the **existing** `progress_callback`:
+The exit path, immediately after Component 1's `set_mode`, runs the dissolve
+through the **existing** `progress_callback`:
 
 ```cpp
-// First paint since the handover. Start at alpha 1.0 — identical to what is
-// already on the panel — then fade to black over kReturnDissolve.
-constexpr auto kReturnDissolve = std::chrono::milliseconds(250);
+// First paint since the handover. Hold at alpha 1.0 — identical to what is
+// already on the panel — for kReturnDissolveHold, then ramp to black over
+// kReturnDissolveRamp.
+constexpr auto kReturnDissolveHold = std::chrono::milliseconds(120);
+constexpr auto kReturnDissolveRamp = std::chrono::milliseconds(250);
 const auto t0 = std::chrono::steady_clock::now();
 for (;;) {
-    const auto elapsed = std::chrono::steady_clock::now() - t0;
-    if (elapsed >= kReturnDissolve) break;
-    const float t = std::chrono::duration<float>(elapsed) /
-                    std::chrono::duration<float>(kReturnDissolve);
-    state.loading_alpha.store(1.0f - t);
-    if (progress_callback) progress_callback();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+    if (elapsed >= kReturnDissolveHold + kReturnDissolveRamp) break;
+    state.loading_alpha.store(app::return_dissolve_alpha(
+        static_cast<float>((elapsed - kReturnDissolveHold).count()),
+        static_cast<float>(kReturnDissolveRamp.count())));
+    progress_callback();   // whole loop guarded on progress_callback != null
 }
 state.loading_alpha.store(0.0f);
-if (progress_callback) progress_callback();   // solid black
+progress_callback();   // solid black
 ```
 
-`progress_callback` (defined at `main.cpp:2538` and installed for every route)
-already does `glClearColor(0,0,0,1)` + `glClear` before rendering the overlay, so
-alpha 0 yields pure black. It also renders the bezel **after** the overlay at full
-alpha, so the bezel stays solid through the whole dissolve.
+**The hold matters.** The dissolve starts right after a modeset, and a modeset
+blanks many TVs for 300–1500ms while HDMI re-locks. Without the hold, a 250ms
+ramp can complete entirely behind that blank and the operator never sees it —
+panel re-lights already on black, which reads as a hard cut. Holding at full
+alpha means the panel re-lights on the stable gold plate (visual continuity with
+what was on screen before the resync) and *then* it fades. `return_dissolve_alpha`
+clamps negative elapsed to 1.0, so the hold falls out of the ramp function.
+
+**The whole loop is guarded on `progress_callback != nullptr`.** Only the
+Settings game-browser route passes a callback (`main.cpp:2574`); the other four
+routes pass `nullptr` (`controller.cpp:1003,1089,1176`) and today render no
+launch plate at all — for them the dissolve is skipped and the return experience
+is Component 3's fade alone, which is still strictly better than today.
+
+`progress_callback` already does `glClearColor(0,0,0,1)` + `glClear` before
+rendering the overlay, so alpha 0 yields pure black. It also renders the bezel
+**after** the overlay at full alpha, so the bezel stays solid through the whole
+dissolve.
 
 The dissolve is drawn through the same code path that renders today's green plate,
 at the same point in the sequence — so it carries the same risk profile, not a new
@@ -244,12 +270,34 @@ the exit hook would leave it at 0 after any path that bypasses the exit hook.
 Add to `AppState`:
 
 ```cpp
-// steady_clock time_since_epoch in ms, 0 = not fading.
+// Post-game menu fade-up. 0 = idle. -1 = fade REQUESTED (set by
+// prepare_kiosk_state_after_game). >0 = steady_clock time_since_epoch in ms
+// of the first frame the render loop actually drew, stamped by main.cpp.
 std::atomic<int64_t> post_game_fade_start_ms{0};
 ```
 
-Set in the game-session exit hook at `main.cpp:1080`, where `is_loading_game` is
-already cleared.
+Requested (set to `-1`) inside `prepare_kiosk_state_after_game` — **not** in the
+game-session exit hook, for two reasons, both bugs in the naive placement:
+
+1. **The exit hook fires on every exit path**, including validation
+   early-returns (missing ROM, empty path) via the RAII guard at
+   `controller.cpp:572-575`. On those paths the display was never released and
+   the menu is still on screen — starting a fade there would black-flash the UI
+   right as the error toast appears. `prepare_kiosk_state_after_game` runs only
+   on the post-handover path (`controller.cpp:901`), after a genuine
+   release/re-acquire.
+2. **A wall-clock start is eaten by the restore work.** Between the hook firing
+   and the first rendered frame, the `reset_display` branch runs
+   `frame_ctx.reset()`, `egl.make_current()`, `gst_renderer.reset_gl()`, and
+   possibly a GStreamer re-init. If that eats 200ms of a 250ms wall-clock
+   window, the menu pops in again — the exact symptom being fixed. The `-1`
+   sentinel is stamped with the real clock by the render loop **on the first
+   frame it actually draws**, so the fade always covers 250ms of rendered
+   frames no matter how long the restore took.
+
+A bonus of the placement: `prepare_kiosk_state_after_game` is compiled into the
+Mac test suite, so "every real game exit requests the fade" is a unit-testable
+assertion.
 
 Add to `Renderer`:
 
@@ -262,7 +310,11 @@ void render_post_game_fade(float alpha);
 ```
 
 Called in `main.cpp` **after** `end_scene_fbo_and_composite` (`main.cpp:3600`) and
-**before** the bezel block, at alpha `1 - progress` over 250ms.
+**before** the bezel block, at alpha `1 - progress` over 250ms. That block also
+owns the sentinel: on observing `-1` it stamps the current time and renders at
+alpha 1.0; on observing a stamp it computes progress; past the window it stores
+`0`. `prepare_loading_state_for_launch` stores `0` too, so a new launch cancels
+any in-flight fade.
 
 Drawing it under the bezel is deliberate: the bezel is at full alpha during the
 dissolve and at full alpha during the fade-in, so it is one continuous element
@@ -282,9 +334,10 @@ cannot be broken by future changes to video fading.
 | RetroArch quits | stale gold plate |
 | +0–1000ms | `pkill` + settle sleep — still gold *(unchanged; see Follow-on)* |
 | +1000ms | `set_mode` to the real boot mode — **the only** resync |
-| +1000–1250ms | gold plate dissolves to black |
-| +1250–2300ms | black while input / audio / player restore |
-| +2300–2550ms | menu fades up from black, bezel solid throughout |
+| +1000–1120ms | gold plate held steady (covers the TV's HDMI re-lock) |
+| +1120–1370ms | gold plate dissolves to black |
+| +1370–2400ms | black while input / audio / player restore |
+| then | menu fades up from black over 250ms of rendered frames, bezel solid throughout |
 
 No green flash, no OSD churn, no frame that claims a game is launching.
 
@@ -294,19 +347,19 @@ No green flash, no OSD churn, no frame that claims a game is launching.
 
 Extend `tests/retroarch/test_game_launch_recovery.cpp`:
 
-- `display_mode_restored` round-trips and `exchange(false)` consumes it exactly
-  once — a second read must not skip a genuinely needed `set_mode`.
-- `prepare_kiosk_state_after_game` leaves the existing five fields unchanged
-  (regression guard on the current test's assertions).
-
-New `tests/ui/test_return_dissolve.cpp`:
-
-- The alpha ramp is monotonically decreasing and clamped to [0, 1] for elapsed
-  times from 0 through 2× the dissolve duration.
-- `loading_alpha` is 1.0 after the entry hook's reset regardless of its prior
-  value — the same class of bug the deleted `loading_is_exit` reset comment at
-  `main.cpp:1082` warns about, where a stale flag makes the *next* launch open
-  with the wrong visual.
+- `prepare_kiosk_state_after_game` **requests the fade** (`post_game_fade_start_ms`
+  becomes `-1`) and **does not touch `display_mode_restored`** — the exit path
+  sets that flag before this helper runs and the main loop consumes it after,
+  so a "helpful" clear here would silently resurrect the double-resync.
+- `prepare_kiosk_state_after_game` keeps its existing five assertions
+  (regression guard on the current test).
+- `prepare_loading_state_for_launch` resets `loading_alpha` to 1.0 and cancels
+  an in-flight fade regardless of prior values — the same class of bug the
+  deleted `loading_is_exit` reset comment at `main.cpp:1082` warns about, where
+  a stale flag makes the *next* launch open with the wrong visual.
+- `return_dissolve_alpha` is monotonically decreasing and clamped to [0, 1] for
+  elapsed from below 0 (the hold period) through 2× the ramp duration, and
+  treats a degenerate duration as already-finished.
 
 ### On hardware (Pi 5)
 
@@ -330,9 +383,22 @@ running it after a game exit is a cheap confirmation that Component 1 landed.
 
 ## Follow-on (not in this spec)
 
-Replace the fixed `sleep(1000)` settle with a bounded poll: `pkill`, wait until no
-`retroarch` process remains, then retry `acquire_master()` every 25ms with a
-~150ms floor and a 2500ms ceiling so the worst case can never be slower than
-today. That would cut roughly 700–800ms of stale gold and is the single largest
-remaining improvement to the return. Held back deliberately so this spec's
-rendering changes can be verified on hardware in isolation first.
+Both held back deliberately so this spec's rendering changes can be verified on
+hardware in isolation first; both are timing/DRM-empirical and would confound
+that verification.
+
+1. **Bounded settle poll.** Replace the fixed `sleep(1000)` with: `pkill`, wait
+   until no `retroarch` process remains, then retry `acquire_master()` every
+   25ms with a ~150ms floor and a 2500ms ceiling so the worst case can never be
+   slower than today. Cuts roughly 700–800ms of stale gold — the single largest
+   remaining improvement to the return.
+2. **Zero-resync return.** The scanout is already on the kiosk's own framebuffer
+   when RetroArch dies — that is *why* the stale gold plate shows. If RetroArch
+   left the connector on the same mode the kiosk uses (common when the core ran
+   at the panel's native mode), a modeset may be entirely unnecessary: skip
+   `set_mode` when a live query (`drmModeGetCrtc`, not the cached
+   `current_mode_`) says the programmed mode already matches, and just resume
+   page-flipping. That would remove the last remaining TV resync. Risky
+   precisely where `controller.cpp:837` was burned before — a wrong skip
+   reintroduces the present-blocks-forever hang — so it needs its own
+   hardware pass with the hang case measured, per core.
