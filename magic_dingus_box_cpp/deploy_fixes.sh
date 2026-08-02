@@ -23,7 +23,16 @@ gcc -o drm_drop_master drm_drop_master.c -ldrm
 # Build and deploy
 echo "4. Building updated application..."
 cd build
-make -j4
+# Same RAM budget as deploy_cpp.sh and update.sh: ~600 MB per cc1plus, and
+# this runs on a box that is already hosting the kiosk and the container
+# stack. -j4 on a 1.5 GB Pi 4B or a 2 GB Pi 5 goes into swap and risks the
+# OOM killer taking the live kiosk instead of the compiler.
+MEM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+if [ "${MEM_KB}" -ge 4194304 ]; then
+    make -j4
+else
+    make -j2
+fi
 
 # Copy to service location
 echo "5. Deploying binary..."
