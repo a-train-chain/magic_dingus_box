@@ -1362,11 +1362,21 @@ Screen SeriesDetailScreen::handle_input(
             // action buttons left-to-right. season_focus_ == -1 means the
             // ring is on the button row (focus_), preserving every pre-Task-6
             // behavior when no season rows exist.
-            const int n_rows = static_cast<int>(rows_.size());
+            // per_page 0 = the canvas draws NO season rows (CRT_NATIVE's
+            // 640x480 clamps list_avail to zero in render()). Walking the
+            // ring into an undrawn row is the invisible-affordance bug class
+            // the episode-side SELECT already guards, so the chain holds
+            // zero season rows there — action buttons only; PlayNextUp
+            // stays the CRT play path.
+            const int n_rows = season_per_page_ > 0
+                ? static_cast<int>(rows_.size()) : 0;
             const int n_btns = static_cast<int>(buttons_.size());
             const int total = n_rows + n_btns;
             if (total == 0) continue;
-            int pos = season_focus_ >= 0 ? season_focus_ : n_rows + focus_;
+            // A season ring at/past n_rows (stale after the CRT clamp or a
+            // shrink) restarts from the visible button row instead.
+            int pos = (season_focus_ >= 0 && season_focus_ < n_rows)
+                ? season_focus_ : n_rows + focus_;
             // Clamp, do not wrap — DetailScreen's exact idiom, so the ends
             // of the chain feel like ends rather than teleporting focus.
             pos = std::clamp(pos + e.delta, 0, total - 1);
@@ -1419,6 +1429,15 @@ Screen SeriesDetailScreen::handle_input(
             // on nothing. A silent no-op reads as a dead button; say it.
             if (season_focus_ >= 0 &&
                 season_focus_ < static_cast<int>(rows_.size())) {
+                // Mirror of the episode-side per_page guard: on the
+                // CRT_NATIVE canvas no season rows are drawn, so a season
+                // ring here is invisible and SELECT would open a drill-down
+                // the user never saw targeted (the invisible-affordance bug
+                // class). Return the ring to the visible action row.
+                if (season_per_page_ <= 0) {
+                    season_focus_ = -1;
+                    continue;
+                }
                 if (mut_in_flight_.load()) {
                     ::ui::Toast::show(
                         "Still finishing the last action\xE2\x80\xA6");
