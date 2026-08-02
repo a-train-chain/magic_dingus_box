@@ -604,7 +604,7 @@ bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
     return code > 0 && code < 400;
 }
 
-std::vector<SonarrQueueItem> SonarrClient::get_queue() {
+std::optional<std::vector<SonarrQueueItem>> SonarrClient::get_queue_checked() {
     // Sonarr's queue is per EPISODE, so a season pack contributes one record
     // per episode and the queue genuinely outgrows a single page — page
     // through it rather than silently truncating (a missing row is
@@ -622,6 +622,22 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
     // page that happens to land exactly on the running total would trip an
     // early exit one page before the real end. total is still tracked, but
     // only to report how badly a capped fetch got truncated.
+    //
+    // *** A failure on ANY page — the first or a later one — is nullopt. ***
+    // An earlier version of this pager treated a mid-paging transport
+    // failure as a truncated success: keep whatever pages had already
+    // arrived, warn, and return them. That is exactly wrong for a checked
+    // caller. As this file's own warning used to put it: "a season pack's
+    // sibling episodes can now be split across 'returned' and 'lost to this
+    // failure', and a naive caller grouping by download_id would render a
+    // partial season as if it were the whole thing" — QueueScreen's
+    // group_tv_queue() (queue_groups.h) is precisely that naive-grouping
+    // consumer, and a Sonarr outage must not let it draw a truncated pack as
+    // a complete one. Partial data is not an answer to "is Sonarr
+    // reachable", so the first page and every later page share one rule:
+    // empty response -> nullopt, full stop. (The page-CAP branch below is a
+    // different case — every page answered, we just stopped asking — and
+    // still returns the accumulated, engaged result.)
     constexpr int kMaxPages = 20;  // 2000 records at the default page size
     const int page_size = cfg_.queue_page_size > 0 ? cfg_.queue_page_size : 100;
     set_error({});  // clear any stale error so a prior call's failure can't be misattributed
@@ -634,16 +650,11 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
             + "&pageSize=" + std::to_string(page_size)
             + "&includeEpisode=true&includeSeries=false");
         if (resp.empty()) {
-            // Transport failure mid-paging — keep what we have rather than
-            // discard prior pages, but the caller MUST know this result is
-            // truncated: a season pack's sibling episodes can now be split
-            // across "returned" and "lost to this failure", and a naive
-            // caller grouping by download_id would render a partial season
-            // as if it were the whole thing.
-            spdlog::warn("[sonarr] get_queue: transport failure fetching page {} "
-                         "(have {} records so far); queue result may be truncated",
+            spdlog::warn("[sonarr] get_queue_checked: transport failure fetching "
+                         "page {} (had {} records from earlier pages); reporting "
+                         "unreachable rather than a truncated queue",
                          page, out.size());
-            break;
+            return std::nullopt;
         }
         auto batch = SonarrParsers::parse_queue(resp);
         const int batch_total = SonarrParsers::parse_queue_total(resp);
@@ -654,11 +665,15 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
         if (!full_page) break;  // short page: this was genuinely the last one
     }
     if (page > kMaxPages) {
-        spdlog::warn("[sonarr] get_queue hit the {}-page cap with {} records "
-                     "(totalRecords={}); the queue view is truncated",
+        spdlog::warn("[sonarr] get_queue_checked hit the {}-page cap with {} "
+                     "records (totalRecords={}); the queue view is truncated",
                      kMaxPages, out.size(), total);
     }
     return out;
+}
+
+std::vector<SonarrQueueItem> SonarrClient::get_queue() {
+    return get_queue_checked().value_or(std::vector<SonarrQueueItem>{});
 }
 
 bool SonarrClient::cancel_queue_item(int queue_id) {

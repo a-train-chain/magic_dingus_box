@@ -216,6 +216,14 @@ std::vector<QualityDefinition> SonarrMockClient::get_quality_definitions() {
     };
 }
 
+std::optional<std::vector<SonarrQueueItem>> SonarrMockClient::get_queue_checked() {
+    // Engaged, always — the mock has no transport to fail, and (like
+    // get_series_download_hashes_checked) there is no field-observed
+    // reachability lie to defend against here. Same fixture-consistent data
+    // as the raw variant below, so both stay coherent.
+    return queue_;
+}
+
 std::vector<SonarrQueueItem> SonarrMockClient::get_queue() { return queue_; }
 
 bool SonarrMockClient::cancel_queue_item(int queue_id) {

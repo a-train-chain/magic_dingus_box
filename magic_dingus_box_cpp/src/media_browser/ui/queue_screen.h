@@ -65,12 +65,29 @@ namespace media_browser::ui {
 //   - Cancelling a TV row issues exactly ONE
 //     SonarrClient::cancel_queue_item() — that DELETE removes the
 //     whole download and every sibling row 404s by design.
+//   - The worker reads SonarrClient::get_queue_checked(), never the bare
+//     get_queue() — nullopt (Sonarr didn't answer this cycle) and
+//     "genuinely empty" must render differently. A Sonarr outage RATCHETS
+//     tv_: the previously-shown groups are retained rather than replaced
+//     with an empty list, so a routine Gluetun netns re-link cannot make
+//     a live season pack read as "no active downloads." tv_unreachable_
+//     tracks the current cycle's reachability (not ratcheted) and drives
+//     the "Sonarr offline" warning line below.
 //
 // Error / empty states:
-//   - Queue empty and RadarrClient::last_error() non-empty  ->
-//     "Radarr service offline" with the error detail below.
-//   - Queue empty and no error                              ->
-//     "Queue is empty — no active downloads".
+//   - Radarr side: queue_ empty and RadarrClient::last_error() non-empty
+//     -> "Radarr service offline" (centered, when nothing else is on
+//     screen) or a small "Radarr offline — <detail>" warning line
+//     stacked under the count/refresh sub-line (when TV rows keep the
+//     combined list non-empty — this is keyed on the Radarr side alone,
+//     independent of tv_).
+//   - Sonarr side: tv_unreachable_ true and tv_ non-empty -> a small
+//     "Sonarr offline — TV downloads may be out of date" warning line,
+//     same stack. tv_unreachable_ true and tv_ EMPTY (nothing retained
+//     to show) -> the centered empty-state swaps its "Add a movie…"
+//     hint for the same warning rather than implying everything's fine.
+//   - Nothing empty, nothing erroring -> "Queue is empty — no active
+//     downloads".
 //
 // Deferred:
 //   - "Retry all failed": not directly mappable to the controller input
@@ -207,6 +224,15 @@ private:
     // applied refresh — used by render() to decide whether to surface a
     // "live data unavailable" indicator.
     bool qbit_overlay_failed_ = false;
+    // True when sonarr_ is wired but the most recent refresh's
+    // get_queue_checked() came back nullopt (transport/HTTP failure —
+    // e.g. a Gluetun netns re-link mid-poll). NOT ratcheted like tv_:
+    // this reflects THIS cycle's reachability, so it clears the instant
+    // Sonarr answers again even if tv_ itself is still catching up.
+    // render() reads it to decide whether to show the "Sonarr offline"
+    // warning line (and to swap the empty-state copy when tv_ has
+    // nothing retained to show alongside it).
+    bool tv_unreachable_ = false;
 
     // --- Async refresh state ----------------------------------------
     // Pending result from the background worker. Worker writes under
@@ -217,16 +243,32 @@ private:
     struct PendingResult {
         std::vector<QueueItem> queue;
         std::vector<TvQueueRow> tv;
+        // True when `tv` above is a genuine answer this cycle — either
+        // sonarr_ is null (no TV configured; empty IS the answer) or
+        // get_queue_checked() came back engaged (possibly empty, meaning
+        // Sonarr genuinely has nothing queued). False means sonarr_ is
+        // wired but did not answer this cycle: apply_pending() must NOT
+        // overwrite the screen's tv_ with this (empty) `tv` — a Gluetun
+        // netns re-link that outlives one 1.5s poll must not make a live
+        // season pack vanish from the screen. See queue_groups.h for why
+        // a partial/absent answer must never be rendered as "nothing is
+        // downloading."
+        bool                   tv_data_valid = false;
+        // True when sonarr_ is wired and get_queue_checked() returned
+        // nullopt this cycle. Always false when sonarr_ is null (TV
+        // simply isn't configured, which is not an outage).
+        bool                   tv_unreachable = false;
         std::vector<Movie>     awaiting;
         ActiveSearches         active_searches;
         std::string            error;
         // True when the qBit live-data overlay step couldn't fetch the
         // torrent list (qBit unreachable behind a netns flap, auth
-        // desync, etc.). Radarr's queue snapshot is still returned and
-        // shown, but its progress / dlspeed / peers fields are the
-        // last values Radarr cached internally — typically 30-60 s
-        // stale, sometimes much older. Surfaces in the UI as a yellow
-        // sub-line so the user knows the bars aren't reflecting reality.
+        // desync, etc.). Radarr's / Sonarr's queue snapshots are still
+        // returned and shown, but their progress / dlspeed / peers
+        // fields are the last values the arr cached internally —
+        // typically 30-60 s stale, sometimes much older. Surfaces in
+        // the UI as a yellow sub-line so the user knows the bars aren't
+        // reflecting reality.
         bool                   qbit_overlay_failed = false;
     };
     std::mutex                 result_mtx_;

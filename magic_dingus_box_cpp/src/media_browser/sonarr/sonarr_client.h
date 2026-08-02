@@ -211,7 +211,14 @@ public:
     // user is deleting a download, not blacklisting the show.
     virtual bool remove_series(int sonarr_id, bool delete_files = false);
 
-    // Queue / downloads.
+    // Queue / downloads. get_queue_checked() is the primary shape: nullopt on
+    // HTTP failure vs a possibly-empty vector on success — same relationship
+    // as get_library_checked() / get_series_download_hashes_checked(). The
+    // bare get_queue() wrapper below exists for callers that genuinely do not
+    // care — do NOT use it to decide "no downloads are active", which is
+    // exactly the bug the Queue screen's TV section had to be fixed for: a
+    // routine Gluetun netns re-link can make a live season pack's fetch fail,
+    // and {} is indistinguishable from a genuinely empty queue.
     //
     // Sonarr's queue is per EPISODE: a season pack yields N records sharing a
     // single downloadId. These are returned RAW AND UNGROUPED on purpose —
@@ -220,7 +227,16 @@ public:
     // takes the whole download with it).
     //
     // Pages internally (Config::queue_page_size per request) until the queue is
-    // exhausted — per-episode records make >100 genuinely reachable.
+    // exhausted — per-episode records make >100 genuinely reachable. A
+    // transport/HTTP failure on ANY page — the first or a later one — is
+    // nullopt: see get_queue_checked's .cpp comment for why a mid-paging
+    // failure cannot be treated as a truncated success the way an earlier
+    // version of this pager did.
+    virtual std::optional<std::vector<SonarrQueueItem>> get_queue_checked();
+
+    // Bare wrapper — nullopt collapses to {}, same relationship as
+    // get_library() has to get_library_checked(). Do NOT use this to decide
+    // whether a Sonarr outage occurred; see get_queue_checked().
     virtual std::vector<SonarrQueueItem> get_queue();
 
     // Removes the download from the client. NOTE: this acts on the WHOLE

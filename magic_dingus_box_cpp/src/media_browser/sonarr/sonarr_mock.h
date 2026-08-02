@@ -41,6 +41,13 @@ public:
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
     std::vector<QualityDefinition> get_quality_definitions() override;
+    // Engaged copy of get_queue()'s value — same relationship as
+    // get_series_download_hashes_checked's mock override just below (this
+    // mock has no reachability lie to defend against, unlike
+    // get_library_checked). Contract completeness only: main.cpp gates the
+    // pointer QueueScreen holds on sonarr_key.empty(), so a SonarrMockClient
+    // is never actually reachable from that screen.
+    std::optional<std::vector<SonarrQueueItem>> get_queue_checked() override;
     std::vector<SonarrQueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
     // Engaged, not nullopt: unlike get_library_checked, this mock has no

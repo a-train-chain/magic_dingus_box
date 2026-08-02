@@ -787,6 +787,99 @@ TEST_CASE("get_queue returns empty on transport failure", "[sonarr][queue]") {
     CHECK(d.get_queue().empty());
 }
 
+TEST_CASE("get_queue_checked distinguishes unreachable from genuinely empty",
+          "[sonarr][queue]") {
+    // The whole reason this shape exists: QueueScreen's TV worker branches
+    // on nullopt (Sonarr didn't answer -> keep showing the last-known
+    // groups + a "Sonarr offline" warning) vs an engaged empty vector
+    // (Sonarr answered "nothing queued" -> clear the groups for real). {}
+    // must never stand in for "the request failed", the same contract as
+    // get_library_checked / get_series_download_hashes_checked.
+    SECTION("first-page transport failure -> nullopt") {
+        class Dead : public mb::SonarrClient {
+        public:
+            Dead() : SonarrClient(Config{}) {}
+            std::string http_get(const std::string&) override { return ""; }
+            std::string http_post(const std::string&, const std::string&) override { return ""; }
+            std::string http_put(const std::string&, const std::string&) override { return ""; }
+            long http_delete(const std::string&) override { return 200; }
+        };
+        Dead d;
+        CHECK_FALSE(d.get_queue_checked().has_value());
+        // The raw wrapper still collapses nullopt to {}, same as get_queue().
+        CHECK(d.get_queue().empty());
+    }
+    SECTION("genuinely empty queue -> engaged optional, empty vector") {
+        class EmptyQueueSonarr : public mb::SonarrClient {
+        public:
+            EmptyQueueSonarr() : SonarrClient(Config{}) {}
+            std::string http_get(const std::string& path) override {
+                if (path.rfind("/api/v3/queue", 0) == 0) {
+                    return R"({"page":1,"pageSize":100,"totalRecords":0,"records":[]})";
+                }
+                return "";
+            }
+            std::string http_post(const std::string&, const std::string&) override { return ""; }
+            std::string http_put(const std::string&, const std::string&) override { return ""; }
+            long http_delete(const std::string&) override { return 200; }
+        };
+        EmptyQueueSonarr s;
+        auto checked = s.get_queue_checked();
+        REQUIRE(checked.has_value());
+        CHECK(checked->empty());
+    }
+    SECTION("populated queue agrees with the raw wrapper") {
+        QueueSonarr s;
+        auto checked = s.get_queue_checked();
+        REQUIRE(checked.has_value());
+        auto raw = s.get_queue();
+        REQUIRE(checked->size() == raw.size());
+        REQUIRE(checked->size() == 3);
+        CHECK((*checked)[0].id == raw[0].id);
+        CHECK((*checked)[0].download_id == raw[0].download_id);
+        CHECK((*checked)[2].episode.episode_number == raw[2].episode.episode_number);
+    }
+}
+
+TEST_CASE("get_queue_checked treats a mid-paging failure as nullopt, "
+          "never a truncated success", "[sonarr][queue]") {
+    // Contrast with the historical get_queue() behaviour (still exercised by
+    // the "pages until the queue is exhausted" test above): a failure on
+    // page 2 used to keep page 1's rows and warn. For the checked variant
+    // that is the exact hazard queue_groups.h documents — a season pack's
+    // sibling rows split across "returned" and "lost" would render as if
+    // the whole pack were present. Page 1 succeeding is not enough; ANY
+    // page failing must nullopt the whole call.
+    class PagedThenDead : public mb::SonarrClient {
+    public:
+        static Config small_pages() {
+            Config c;
+            c.queue_page_size = 3;
+            return c;
+        }
+        PagedThenDead() : SonarrClient(small_pages()) {}
+        std::vector<std::string> gets;
+        std::string http_get(const std::string& path) override {
+            gets.push_back(path);
+            if (path.find("page=1") != std::string::npos) {
+                return read_fixture("queue.json");   // 3 records == a full page
+            }
+            // page=2 (and any later page) fails — Gluetun re-link mid-poll.
+            return "";
+        }
+        std::string http_post(const std::string&, const std::string&) override { return ""; }
+        std::string http_put(const std::string&, const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
+    };
+    PagedThenDead s;
+    auto checked = s.get_queue_checked();
+    REQUIRE(s.gets.size() == 2);
+    CHECK_FALSE(checked.has_value());
+    // The raw wrapper collapses this to {} too — never a truncated 3-row
+    // result silently passed off as the whole queue.
+    CHECK(s.get_queue().empty());
+}
+
 TEST_CASE("cancel_queue_item removes the whole download from the client",
           "[sonarr][queue]") {
     // Live-proven: DELETE /api/v3/queue/{id}?removeFromClient=true kills the

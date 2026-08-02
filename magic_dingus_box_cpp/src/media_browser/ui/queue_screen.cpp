@@ -255,21 +255,44 @@ void QueueScreen::run_refresh() {
     // the Radarr calls above follow. Sonarr's queue is per EPISODE, so a
     // season pack arrives as N rows sharing one downloadId; group_tv_queue
     // collapses them to one row per download BEFORE anything renders.
+    //
+    // get_queue_checked(), NOT get_queue() — the checked shape is the whole
+    // point of this fix. Sonarr rides Gluetun's netns exactly like Radarr
+    // does, so a routine re-link can fail this call mid-refresh; {} and
+    // "Sonarr is unreachable" must not collapse to the same on-screen state,
+    // or a live season pack reads as "no downloads" every time the tunnel
+    // blips (see sonarr_client.h's doc comment on get_queue_checked).
     if (sonarr_) {
-        const auto tv_rows = sonarr_->get_queue();
-        // Sonarr's per-row ETA, keyed by the row id the group kept. Used
-        // only when the qBit overlay can't supply a live one.
-        std::unordered_map<int, int> eta_by_row_id;
-        eta_by_row_id.reserve(tv_rows.size());
-        for (const auto& q : tv_rows) eta_by_row_id.emplace(q.id, q.eta_seconds);
+        auto tv_checked = sonarr_->get_queue_checked();
+        if (!tv_checked) {
+            // Sonarr did not answer this cycle. Leave r.tv empty and
+            // r.tv_data_valid false — apply_pending() reads tv_data_valid
+            // and RATCHETS: it retains whatever tv_ already held instead
+            // of overwriting it with this empty result. r.tv_unreachable
+            // drives the "Sonarr offline" warning line independent of
+            // whether anything was retained to show alongside it.
+            r.tv_unreachable = true;
+        } else {
+            r.tv_data_valid = true;
+            const auto& tv_rows = *tv_checked;
+            // Sonarr's per-row ETA, keyed by the row id the group kept.
+            // Used only when the qBit overlay can't supply a live one.
+            std::unordered_map<int, int> eta_by_row_id;
+            eta_by_row_id.reserve(tv_rows.size());
+            for (const auto& q : tv_rows) eta_by_row_id.emplace(q.id, q.eta_seconds);
 
-        for (auto& g : group_tv_queue(tv_rows)) {
-            TvQueueRow row;
-            auto eta_it = eta_by_row_id.find(g.first_queue_id);
-            row.eta_seconds = (eta_it == eta_by_row_id.end()) ? 0 : eta_it->second;
-            row.group = std::move(g);
-            r.tv.push_back(std::move(row));
+            for (auto& g : group_tv_queue(tv_rows)) {
+                TvQueueRow row;
+                auto eta_it = eta_by_row_id.find(g.first_queue_id);
+                row.eta_seconds = (eta_it == eta_by_row_id.end()) ? 0 : eta_it->second;
+                row.group = std::move(g);
+                r.tv.push_back(std::move(row));
+            }
         }
+    } else {
+        // No Sonarr configured at all — an empty tv[] IS the correct,
+        // genuine answer, not a ratchet-worthy non-answer.
+        r.tv_data_valid = true;
     }
 
     // Library snapshot — used for two things:
@@ -460,8 +483,11 @@ void QueueScreen::run_refresh() {
 
     // Radarr's error banner is still keyed on Radarr's OWN queue being
     // empty — a TV download in flight says nothing about whether Radarr
-    // is reachable, and the banner only ever renders when BOTH sections
-    // are empty anyway.
+    // is reachable. render() shows this both as the centered
+    // "Radarr service offline" state (when both sections are empty) and
+    // as a small stacked warning line when TV rows keep the combined
+    // list non-empty (review Fix 2 — this signal used to be suppressed
+    // whenever a TV pack was in flight).
     r.error = r.queue.empty() ? radarr_.last_error() : std::string{};
 
     // Publish under the mutex; result_ready_ is the atomic flag the
@@ -486,7 +512,15 @@ void QueueScreen::apply_pending() {
     result_ready_.store(false);
 
     queue_ = std::move(r.queue);
-    tv_ = std::move(r.tv);
+    // RATCHET: only overwrite tv_ when this cycle's data is a genuine
+    // answer (Sonarr engaged, or sonarr_ is null). A nullopt cycle leaves
+    // tv_ exactly as it was — see PendingResult::tv_data_valid and
+    // run_refresh()'s doc comment for why an unanswered poll must not be
+    // allowed to erase a live season pack from the screen.
+    if (r.tv_data_valid) {
+        tv_ = std::move(r.tv);
+    }
+    tv_unreachable_ = r.tv_unreachable;
     awaiting_ = std::move(r.awaiting);
     active_searches_ = std::move(r.active_searches);
     last_error_ = std::move(r.error);
@@ -757,17 +791,52 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         float ind_x = sub_x_right - static_cast<float>(ind_w);
         r.mb_draw_text(ind_text, ind_x, sub_y, sub_size, ind_color, ind_alpha);
 
-        // qBit-overlay-failed sub-line. Render() drew the count on the
-        // left and the freshness indicator on the right; this third
-        // line drops below those when live data is missing. Gives the
-        // user a clear "the bars below are stale" signal — without it
-        // a netns flap or qBit auth desync makes downloads look
-        // frozen with no explanation. See PendingResult comment.
+        // Warning lines, stacked below the count/refresh line — same
+        // dim-cream-idiom-but-accent-colored sub-line pattern, one on top
+        // of the other when more than one applies. Order is
+        // most-fundamental-first: Radarr offline (the movie backend is
+        // unreachable) before Sonarr offline (the TV backend is
+        // unreachable) before the qBit live-data warning (a live overlay
+        // gap on top of two backends that ARE reachable).
+        float warn_y = sub_y + static_cast<float>(sub_size) + 4.0f;
+
+        // Radarr-offline: keyed on the RADAR side alone (queue_ empty +
+        // last_error_ set), independent of tv_ — restores the signal a TV
+        // pack used to suppress when the combined row list stopped being
+        // empty (review Fix 2). Skipped here when the centered "Radarr
+        // service offline" state below is ALSO about to render (both
+        // queue_ and tv_ empty) so the message doesn't appear twice.
+        if (!last_error_.empty() && !(queue_.empty() && tv_.empty())) {
+            std::string warn_text = "Radarr offline \xE2\x80\x94 " + last_error_;
+            warn_text = truncate_to_width(r, warn_text, sub_size,
+                                          w - 2.0f * kPaddingX);
+            r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
+                           th.highlight2, 0.95f);
+            warn_y += static_cast<float>(sub_size) + 4.0f;
+        }
+
+        // Sonarr-offline: only while TV rows are actually on screen — with
+        // none retained, the centered empty-state / awaiting-only view
+        // carries the same message instead (see below and the "Add a
+        // movie" hint swap further down).
+        if (tv_unreachable_ && !tv_.empty()) {
+            const std::string warn_text =
+                "Sonarr offline \xE2\x80\x94 TV downloads may be out of date";
+            r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
+                           th.accent, 0.95f);
+            warn_y += static_cast<float>(sub_size) + 4.0f;
+        }
+
+        // qBit-overlay-failed sub-line. Gives the user a clear "the bars
+        // below are stale" signal — without it a netns flap or qBit auth
+        // desync makes downloads look frozen with no explanation. Neutral
+        // "Radarr/Sonarr" wording (review Fix 3): the old text hardcoded
+        // "Radarr's cached snapshot", which was simply wrong on any
+        // refresh where the stale bars belonged to a TV row instead.
         if (qbit_overlay_failed_ && !(queue_.empty() && tv_.empty())) {
             const std::string warn_text =
                 "Live data unavailable \xE2\x80\x94 progress shown is "
-                "Radarr's cached snapshot";
-            float warn_y = sub_y + static_cast<float>(sub_size) + 4.0f;
+                "the last cached snapshot from Radarr/Sonarr";
             r.mb_draw_text(warn_text, sub_x_left, warn_y, sub_size,
                            th.accent, 0.95f);
         }
@@ -883,14 +952,32 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                      + static_cast<float>(r.mb_text_baseline(sz));
             r.mb_draw_text(msg, mx, my, sz, th.dim, 0.9f);
 
+            // The instruction line normally invites the user to start a
+            // download. When Sonarr didn't answer this cycle AND there is
+            // no retained TV row to show alongside it (both queue_ and
+            // tv_ are empty here, by construction of `rows`), "no active
+            // downloads, add a movie" would be a false reassurance — we
+            // genuinely do not know whether a season pack is running.
+            // Swap in the same warning line the stacked sub-line uses
+            // instead of the add-a-movie copy (review Fix 1c).
             int sz2 = th.font_medium_size;
-            std::string hint_msg =
-                "Add a movie from Browse or Search to start a download.";
+            std::string hint_msg;
+            ::ui::Color hint_color = th.dim;
+            float hint_alpha = 0.8f;
+            if (tv_unreachable_) {
+                hint_msg = "Sonarr offline \xE2\x80\x94 TV downloads may be "
+                           "out of date";
+                hint_color = th.accent;
+                hint_alpha = 0.95f;
+            } else {
+                hint_msg =
+                    "Add a movie from Browse or Search to start a download.";
+            }
             int hw = r.mb_text_width(hint_msg, sz2);
             float hx = (w - static_cast<float>(hw)) / 2.0f;
             float hy = my + static_cast<float>(sz) * 0.9f
                      + static_cast<float>(r.mb_text_baseline(sz2));
-            r.mb_draw_text(hint_msg, hx, hy, sz2, th.dim, 0.8f);
+            r.mb_draw_text(hint_msg, hx, hy, sz2, hint_color, hint_alpha);
         }
     } else if (!rows.empty()) {
         // --- Queue rows --------------------------------------------------
