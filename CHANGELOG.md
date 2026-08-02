@@ -7,17 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Graceful return from RetroArch.** Exiting any game no longer replays the
-  gold "NOW LOADING" frame, black-screens the TV twice, or flashes a green
-  progress plate. The exit path now restores the kiosk's real boot mode
-  directly (the old code forced 640x480 and the main loop immediately set it
-  back — two HDMI resyncs per exit), holds the frozen launch plate briefly so
-  the TV's HDMI re-lock doesn't swallow the transition, dissolves it to black
-  over 250ms, does the input/audio restore work under black, and fades the
-  menu up from black. The bezel stays solid through the whole round trip.
-  Launch-side visuals are unchanged.
-
 ### Added (Media Browser)
 - **"For You" tab** — personalized recommendations seeded from the Radarr
   library: up to 8 random library titles fan out to TMDB's recommendations
@@ -44,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its full-length titles) into a surface meant for curated playlists
   and Master Shuffle's auto-advance pool. Removed by operator decision:
   movies play only through Settings → Media Browser → Library.
+
+### Fixed
+- **Graceful return from RetroArch.** Exiting any game no longer replays the
+  gold "NOW LOADING" frame, black-screens the TV twice, or flashes a green
+  progress plate. The exit path now restores the kiosk's real boot mode
+  directly (the old code forced 640x480 and the main loop immediately set it
+  back — two HDMI resyncs per exit), holds the frozen launch plate briefly so
+  the TV's HDMI re-lock doesn't swallow the transition, dissolves it to black
+  over 250ms, does the input/audio restore work under black, and fades the
+  menu up from black. The bezel stays solid through the whole round trip.
+  Launch-side visuals are unchanged.
 
 ### Fixed (Content Manager visuals)
 - **The faceplate bezel drew itself twice.** A legacy `body::after`

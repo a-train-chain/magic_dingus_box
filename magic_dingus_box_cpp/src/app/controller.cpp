@@ -872,7 +872,10 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             // Guarded on progress_callback: only the Settings game-browser
             // route passes one; the other four routes render no launch plate
             // at all, and for them the return is the post-game fade alone.
-            if (progress_callback) {
+            // Skipped when DRM master was never re-acquired: present_frame
+            // cannot vblank-pace the loop then, and the box is already in a
+            // degraded state where a transition is the least of its problems.
+            if (acquired && progress_callback) {
                 constexpr std::chrono::milliseconds kReturnDissolveHold{120};
                 constexpr std::chrono::milliseconds kReturnDissolveRamp{250};
                 const auto dissolve_t0 = std::chrono::steady_clock::now();

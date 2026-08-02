@@ -2238,11 +2238,11 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     const float inner_x = panel_x + panel_w * 0.06f;
     const float inner_w = panel_w * 0.88f;
 
-    // --- Eyebrow: which direction are we going? ---------------------------
-    // The same plate serves both the launch and the return. Keeping the
-    // geometry identical makes the round trip feel like one continuous piece
-    // of furniture rather than two unrelated screens; only the wording and the
-    // bar colour change, so the eye tracks it instead of being interrupted.
+    // --- Eyebrow ----------------------------------------------------------
+    // The plate's wording and colour are fixed: it is drawn only for the
+    // launch. On the way back the exit path dissolves this exact frame to
+    // black (loading_alpha) rather than replacing it with a return variant,
+    // so the frozen handover frame and the transition are one and the same.
     const int label_size = theme_->font_small_size;
     const std::string label = "NOW LOADING";
     draw_text(label, inner_x, panel_y + panel_h * 0.20f, label_size,
