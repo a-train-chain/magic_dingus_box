@@ -96,9 +96,12 @@ fi
 
 if [[ $INCLUDE_MEDIA_BROWSER -eq 1 ]]; then
     echo "Installing Media Browser dependencies..."
+    # sqlite3 is the CLI binary — libsqlite3-dev ships only headers/libs,
+    # and the watch-state acceptance checks shell out to `sqlite3` on the box.
     sudo apt install -y \
       libtorrent-rasterbar-dev \
       libsqlite3-dev \
+      sqlite3 \
       libcurl4-openssl-dev \
       libpugixml-dev
 fi

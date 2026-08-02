@@ -348,10 +348,14 @@ check_sonarr_root_folder() {
         fail "Sonarr /api/v3/rootfolder unreachable"
         return
     }
-    if echo "${response}" | python3 -c "import sys,json; sys.exit(0 if any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)) else 1)" 2>/dev/null; then
-        pass "Sonarr root folder /data/library/tv present"
+    # Presence alone is not health: Sonarr keeps the root-folder RECORD even
+    # when the directory vanished from disk (the twice-observed empty-dir
+    # sweep, 2026-08-02) — it just flips accessible=false and every import
+    # fails. Assert the record exists AND every root folder is accessible.
+    if echo "${response}" | python3 -c "import sys,json; rf=json.load(sys.stdin); sys.exit(0 if any(r.get('path')=='/data/library/tv' for r in rf) and all(r.get('accessible') is True for r in rf) else 1)" 2>/dev/null; then
+        pass "Sonarr root folder /data/library/tv present and accessible"
     else
-        fail "Sonarr root folder /data/library/tv missing"
+        fail "Sonarr root folder missing or inaccessible — run storage_attach or check /mnt/ssd/library/tv"
     fi
 }
 

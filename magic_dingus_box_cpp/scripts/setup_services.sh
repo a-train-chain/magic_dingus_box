@@ -171,6 +171,12 @@ echo "Creating storage layout at ${STORAGE_ROOT}..."
 # Movies subdirectory. The earlier setup created library/Movies/ which then sat
 # empty forever — drop it.
 sudo mkdir -p "${STORAGE_ROOT}"/{downloads/incomplete,downloads/complete,library,library/tv,backups}
+# Sonarr's root folder must exist before any import fires. It has been
+# destroyed twice by an unidentified empty-dir sweep (2026-08-02); the
+# keep-file makes it permanently non-empty so sweeps cannot match it.
+# storage_attach.sh re-ensures both the dir and the keep-file on every
+# mount activation; ownership lands via the chown -R below.
+[ -f "${STORAGE_ROOT}/library/tv/.mdb-keep" ] || sudo touch "${STORAGE_ROOT}/library/tv/.mdb-keep"
 # This script runs via sudo, so $(whoami) is root. Use TARGET_USER (resolved
 # from $SUDO_USER above) so the storage tree ends up owned by the magic user
 # whose UID/GID the Docker containers run under (PUID/PGID in .env). Without
