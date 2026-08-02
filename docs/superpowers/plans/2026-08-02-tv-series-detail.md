@@ -1300,12 +1300,15 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // 720p+ affordance.
         const int per_page = std::max(0, list_avail / kRowH);
         const int total_rows = static_cast<int>(rows_.size());
-        season_page_count_ =
-            std::max(1, (total_rows + per_page - 1) / per_page);
+        // per_page can be 0 on the 640x480 canvas (the clamp above) —
+        // dividing by it is UB, and the indicator would land back in the
+        // poster region. Zero rows means one page and no paging affordance.
+        season_page_count_ = per_page > 0
+            ? std::max(1, (total_rows + per_page - 1) / per_page) : 1;
         if (season_page_ >= season_page_count_)
             season_page_ = season_page_count_ - 1;
         if (season_page_ < 0) season_page_ = 0;
-        overflow = total_rows > per_page;
+        overflow = per_page > 0 && total_rows > per_page;
         const int first = season_page_ * per_page;
         const int last = std::min(total_rows, first + per_page);
 
@@ -2148,8 +2151,9 @@ Add `#include <filesystem>` to `series_detail_screen.cpp`'s includes. Replace th
                             std::lock_guard<std::mutex> lk(mut_mtx_);
                             mut_series_ = res.series;
                             mut_settled_ = false;
-                            mut_toast_ = title + ": added \xE2\x80\x94 syncing; "
-                                         "press Whole series again in a moment";
+                            mut_toast_ = title + ": added \xE2\x80\x94 syncing seasons; "
+                                         "the whole-series option returns when "
+                                         "Sonarr finishes";
                             return;
                         }
                         // Settled: S1 is already monitored and the add-time
