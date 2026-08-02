@@ -8,18 +8,26 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "media_browser/media_ref.h"
 #include "media_browser/radarr/radarr_types.h"
+#include "media_browser/sonarr/sonarr_types.h"
+#include "media_browser/ui/library_view.h"
 #include "media_browser/ui/mb_screen.h"
 
-namespace media_browser { class RadarrClient; }
+namespace media_browser {
+class RadarrClient;
+class SonarrClient;
+}
+namespace media_browser::library { class WatchStore; }
 
 namespace media_browser::ui {
 
 // Task 22: the Library screen — replaces the Task 17 stub.
-//
-// Lists every movie that's been added to Radarr (monitored or otherwise)
-// with a corner-dot state indicator so the user can see at a glance what's
-// downloaded, what's missing, and what could be upgraded.
+// Phase 3 Task 7: mixed movie+TV. One grid holds every Radarr movie plus
+// every Sonarr series that has files (or an active download — the inclusion
+// rule lives in library_view.h's build_library_entries), keyed by MediaRef
+// throughout because the TMDB movie/TV id spaces overlap completely. The
+// Unwatched filter is real now, fed by WatchStore at apply_pending() time.
 //
 // Layout:
 //   - Top bar (~56px): "Library" title + "(N movies)" count on the left,
@@ -47,15 +55,23 @@ namespace media_browser::ui {
 //   - UP from grid row 0 jumps focus to the filter strip.
 //   - DOWN from strip jumps focus back to grid row 0.
 //   - UP / DOWN (ROTATE_VERTICAL) inside the grid walks rows.
-//   - SELECT / ROTARY_CLICK on a grid cell stores that movie's tmdb_id and
-//     transitions to Screen::Detail (same handoff as BrowseScreen:
-//     dispatcher reads selected_tmdb_id() and forwards to DetailScreen).
+//   - SELECT / ROTARY_CLICK on a grid cell stores that entry's MediaRef and
+//     transitions to Screen::Detail (movies) or Screen::SeriesDetail (TV) —
+//     the KIND rides in the returned Screen value, mirroring BrowseScreen;
+//     the dispatcher reads selected_ref() for the id.
 //   - BTN2 (PLAY_PAUSE): returns to Screen::Browse. BTN4 (SETTINGS_MENU)
 //     short-press: opens the Library slide-in overlay (Task 5 of v1.6.x);
 //     long-press still exits MB → MainMenu.
 class LibraryScreen : public MbScreen {
 public:
-    LibraryScreen(RadarrClient& radarr, ::app::AppState& state);
+    // `sonarr` is nullable, QueueScreen-precedent: a box with no Sonarr API
+    // key holds a SonarrMockClient whose fixture library would render
+    // phantom TV tiles on every keyless unit — main.cpp passes nullptr in
+    // that case and this screen stays movie-only. `watch_store` is nullable
+    // for the same defensive reason (a failed open degrades to ok()==false
+    // anyway); null or degraded simply means nothing reads as watched.
+    LibraryScreen(RadarrClient& radarr, SonarrClient* sonarr,
+                  library::WatchStore* watch_store, ::app::AppState& state);
     ~LibraryScreen();  // joins the async refresh worker
 
     void enter() override;
@@ -63,10 +79,11 @@ public:
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
-    // tmdb_id of the poster most recently selected by the user. Consumed
-    // by the dispatcher in main.cpp to forward to DetailScreen on
-    // transition (mirrors BrowseScreen / SearchScreen).
-    int selected_tmdb_id() const { return selected_tmdb_id_; }
+    // MediaRef of the poster most recently selected by the user. Consumed
+    // by the dispatcher in main.cpp on transition: Detail takes ref.id when
+    // kind == Movie, SeriesDetail takes it when kind == Tv (the kind also
+    // rides in the Screen value handle_input returned, Browse-style).
+    MediaRef selected_ref() const { return selected_ref_; }
 
 private:
     enum class Filter {
@@ -112,6 +129,14 @@ private:
     static bool is_1080p_quality(const std::string& q);
 
     RadarrClient& radarr_;
+    // Nullable — see the constructor comment. When null, run_refresh()
+    // skips the Sonarr fetches entirely and sonarr_ok stays true (an empty
+    // TV library is the genuine answer, not an outage).
+    SonarrClient* sonarr_ = nullptr;
+    // Nullable / possibly-degraded. MAIN-THREAD-ONLY by the store's own
+    // contract: read exclusively in apply_pending() on the render thread,
+    // never in run_refresh()'s worker.
+    library::WatchStore* watch_store_ = nullptr;
     ::app::AppState& state_;
 
     Filter filter_ = Filter::All;
@@ -120,35 +145,51 @@ private:
     int grid_cursor_ = 0;     // Flat index into view_ when Focus::PosterGrid.
     int scroll_row_ = 0;      // Topmost visible row index.
 
-    std::vector<Movie> library_;          // Full library, as returned by Radarr.
-    std::vector<const Movie*> view_;      // Filter-applied, possibly-sorted view.
+    std::vector<Movie> library_;          // Movie library, as returned by Radarr.
+    std::vector<Series> tv_library_;      // TV library, as returned by Sonarr.
+    // Mixed entries built over library_/tv_library_ (borrow their storage),
+    // and the filter-applied, possibly-sorted view of pointers into
+    // entries_. All four containers are swapped/rebuilt together on the
+    // render thread in apply_pending() — see rebuild_view()'s aliasing note.
+    std::vector<LibraryEntry> entries_;
+    std::vector<const LibraryEntry*> view_;
     bool loaded_ = false;
+    // False when Sonarr was configured but did not answer the last
+    // library fetch (checked-variant nullopt). TV entries are simply
+    // absent that cycle; render() surfaces the queue_screen-precedent
+    // "Sonarr offline" warning line so the gap is explained rather than
+    // silently reading as "your shows vanished".
+    bool sonarr_ok_ = true;
     // Latch so the "could not format the 30-day cutoff" warning logs once
     // rather than on every rebuild_view() — which runs ~every 2s while this
     // screen is open. See rebuild_view().
     bool warned_recent_cutoff_ = false;
 
-    // tmdb_ids of movies currently in the Radarr download queue. Populated
-    // in reload() alongside the library fetch. Drives the DOWNLOADING badge
-    // on poster cards (takes precedence over the always-true in_library flag).
-    std::unordered_set<int> downloading_tmdb_ids_;
+    // Refs currently downloading: movies in the Radarr queue plus series
+    // with rows in the Sonarr queue. MediaRef-keyed (never bare tmdb ints)
+    // because the movie/TV id spaces overlap completely. Drives the
+    // DOWNLOADING badge on poster cards (takes precedence over the
+    // always-true in_library flag) and feeds build_library_entries'
+    // TV inclusion rule.
+    std::unordered_set<MediaRef> downloading_refs_;
 
-    // tmdb_ids of movies whose queue item is sitting in
+    // Movie refs whose queue item is sitting in
     // trackedDownloadState=importBlocked — i.e. the torrent finished but
     // Radarr couldn't import a video file (typical bait release: trailer-
     // only torrents). Surfaces as a 'BAD RELEASE' badge instead of the
-    // misleading 'DOWNLOADING' chip.
-    std::unordered_set<int> stuck_tmdb_ids_;
+    // misleading 'DOWNLOADING' chip. (Movie-kind refs only today — the TV
+    // queue mapping folds everything into downloading_refs_.)
+    std::unordered_set<MediaRef> stuck_refs_;
 
-    // tmdb_ids whose download finished and Radarr is copying the file into
-    // the library (tracked_download_state importing/importPending). Shows
-    // an IMPORTING badge (in-progress success color), distinct from the
-    // red DOWNLOADING/BAD RELEASE chips. Transient — usually visible for
-    // only a refresh cycle or two before the file lands and the badge
+    // Movie refs whose download finished and Radarr is copying the file
+    // into the library (tracked_download_state importing/importPending).
+    // Shows an IMPORTING badge (in-progress success color), distinct from
+    // the red DOWNLOADING/BAD RELEASE chips. Transient — usually visible
+    // for only a refresh cycle or two before the file lands and the badge
     // clears to plain IN LIBRARY.
-    std::unordered_set<int> importing_tmdb_ids_;
+    std::unordered_set<MediaRef> importing_refs_;
 
-    int selected_tmdb_id_ = 0;
+    MediaRef selected_ref_{};
 
     // --- Async refresh state (mirrors QueueScreen) ----------------------
     // run_refresh() builds a PendingResult on a worker thread; apply_pending()
@@ -156,10 +197,12 @@ private:
     // needs the mutex — library_/view_/the id-sets are read by render() and
     // written by apply_pending(), both on the render thread.
     struct PendingResult {
-        std::vector<Movie>      library;
-        std::unordered_set<int> downloading;
-        std::unordered_set<int> stuck;
-        std::unordered_set<int> importing;
+        std::vector<Movie>  library;
+        std::vector<Series> tv_library;   // empty when sonarr_ null or down
+        std::unordered_set<MediaRef> downloading;  // movie + tv refs
+        std::unordered_set<MediaRef> stuck;
+        std::unordered_set<MediaRef> importing;
+        bool sonarr_ok = false;
     };
     std::mutex            pending_mtx_;
     PendingResult         pending_;

@@ -956,7 +956,17 @@ int main(int /* argc */, char* /* argv */[]) {
                                                   qbit_owned.get(),
                                                   sonarr_key.empty()
                                                       ? nullptr : &sonarr);
-    media_browser::ui::LibraryScreen    mb_library(radarr, state);
+    // Library mixes Radarr movies with Sonarr TV (Phase 3 Task 7). The
+    // Sonarr pointer is null-gated on sonarr_key.empty() exactly like
+    // QueueScreen above — with no key, `sonarr` is a SonarrMockClient whose
+    // fixture library would render phantom TV tiles on every box that never
+    // set Sonarr up. WatchStore feeds the real Unwatched filter; the screen
+    // reads it only on the render thread (apply_pending), per its
+    // main-thread-only contract.
+    media_browser::ui::LibraryScreen    mb_library(radarr,
+                                                    sonarr_key.empty()
+                                                        ? nullptr : &sonarr,
+                                                    &watch_store, state);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      radarr,
                                                      qbit_owned.get());
@@ -2322,7 +2332,15 @@ int main(int /* argc */, char* /* argv */[]) {
                     } else if (current_mb_screen == media_browser::ui::Screen::Search) {
                         mb_detail.set_tmdb_id(mb_search.selected_tmdb_id());
                     } else if (current_mb_screen == media_browser::ui::Screen::Library) {
-                        mb_detail.set_tmdb_id(mb_library.selected_tmdb_id());
+                        // Library is mixed-kind now; only movies reach
+                        // Detail (TV returns Screen::SeriesDetail, handled
+                        // below). Guard the kind anyway — the ids collide
+                        // across kinds, so feeding a TV id to the movie
+                        // Detail screen would show an unrelated film.
+                        const auto ref = mb_library.selected_ref();
+                        if (ref.kind == media_browser::MediaKind::Movie) {
+                            mb_detail.set_tmdb_id(ref.id);
+                        }
                     }
                     // Remember where we came from so BTN4 on Detail
                     // returns the user to the screen that opened it
@@ -2342,11 +2360,16 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
                 }
                 if (next == media_browser::ui::Screen::SeriesDetail) {
-                    // Only Browse can produce this transition, and it only
-                    // produces it for a TV hit — the kind lives in the
-                    // transition itself, not in a BrowseScreen accessor.
-                    if (current_mb_screen == media_browser::ui::Screen::Browse) {
-                        mb_series_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
+                    // Browse and Library both produce this transition, and
+                    // only for a TV hit — the kind lives in the transition
+                    // itself. The tmdb id comes from the respective
+                    // screen's selected accessor.
+                    if (current_mb_screen == media_browser::ui::Screen::Browse ||
+                        current_mb_screen == media_browser::ui::Screen::Library) {
+                        mb_series_detail.set_tmdb_id(
+                            current_mb_screen == media_browser::ui::Screen::Browse
+                                ? mb_browse.selected_tmdb_id()
+                                : mb_library.selected_ref().id);
                         mb_series_detail.set_origin(current_mb_screen);
                     }
                     // Playback -> SeriesDetail: drain the one-shot "Start
