@@ -167,9 +167,9 @@ private:
     // prefetched page 2 + a scroll-driven page 3 etc.). Results are
     // tagged with their page number so apply_pending() can replace on
     // page 1 / append on page > 1.
-    // `mode` is captured by VALUE at spawn time: a MODE toggle mid-flight
-    // bumps the generation, but pinning the mode keeps the worker's endpoint
-    // choice consistent with the filter it was handed.
+    // `mode_for_page` is captured by VALUE at spawn time: a MODE toggle
+    // mid-flight bumps the generation, but pinning the mode keeps the worker's
+    // endpoint choice consistent with the filter it was handed.
     void run_load_page(uint64_t gen, Category cat, MbMode mode_for_page, int page,
                        bool is_revalidate = false);
     void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,

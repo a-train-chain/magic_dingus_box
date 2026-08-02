@@ -370,6 +370,17 @@ void BrowseScreen::start_foryou_sample(bool background) {
         if (ref.kind == MediaKind::Movie) pool.push_back(ref.id);
     }
     if (pool.empty()) { loading_ = false; return; }
+    // TV has no seeds of its own yet (Sonarr wiring + get_tv_recommendations
+    // land in 2c-1 task 8), and the pool above is movie-only by construction.
+    // Without this bail, TV mode samples MOVIE recommendations and publishes
+    // them into foryou_[Tv] with a fresh 6h TTL: the user gets a grid of films
+    // under a "Marquee TV" header, with no error and no log line, and the
+    // cache serves it back for six hours. Reachable in two presses —
+    // do_shuffle() and apply_library_pending()'s deferred hook both call this
+    // without a mode check. Placed alongside the pool.empty() bail, and for
+    // the same reason: it must precede the foryou_waiting_for_library_ clear
+    // below.
+    if (tv_mode()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
     // this function without going through activate_foryou()'s own clear —
