@@ -1595,7 +1595,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // seeds_empty is true when NO ref of `kind` exists, i.e. !any_of.
     si.seeds_empty            = !std::any_of(
         library_refs_.begin(), library_refs_.end(),
-        [kind](const MediaRef& r) { return r.kind == kind; });
+        [kind](const MediaRef& ref) { return ref.kind == kind; });
     si.foryou_failed          = foryou_failed_;
     si.has_api_key            = tmdb_.has_api_key();
     const BrowseGridState grid_state = decide_browse_grid_state(si);
@@ -1640,14 +1640,20 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // For You gets this line too (no `!shuffle_only` gate): its IN LIBRARY
     // badges are drawn from the same lib_ok-gated library_refs_ as the chart
     // tabs, so a cached grid with the library down needs the same staleness
-    // signal. This can co-occur with the blocking LibraryUnavailable message
-    // above when For You's grid is ALSO empty (both fire off the same
-    // lib_refresh_done_once_ / lib_ok pair) — that's not new, chart tabs
-    // already show this line alongside a blocking Loading/EmptyCategory
-    // message, and here both lines would agree with each other rather than
-    // conflict, so no extra guard is added.
+    // signal.
+    //
+    // Suppressed under LibraryUnavailable, though. That state's condition is a
+    // strict SUBSET of this one (both key off lib_refresh_done_once_ && !lib_ok;
+    // it just adds is_foryou && grid_empty), so without the guard the two would
+    // co-occur 100% of the time — never one without the other. Unlike the chart
+    // tabs, where this line pairs with a Loading/EmptyCategory message about a
+    // DIFFERENT subject, here it would name the same service twice for the same
+    // fact. Worse, it would be inapplicable: it warns that in-library hiding may
+    // be stale, and LibraryUnavailable means there are no posters on screen to
+    // carry a badge.
     const char* service_warning = nullptr;
-    if (lib_refresh_done_once_ && !lib_ok) {
+    if (lib_refresh_done_once_ && !lib_ok &&
+        grid_state != BrowseGridState::LibraryUnavailable) {
         service_warning = tv_mode()
             ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
             : "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
