@@ -1,0 +1,17 @@
+[
+  {"id": 900, "seriesId": 7, "episodeId": 5001, "eventType": "grabbed",
+   "sourceTitle": "Breaking.Bad.S02.1080p.WEB-DL.x264-GROUPA",
+   "date": "2026-08-01T10:00:00Z",
+   "downloadId": "A1B2C3D4E5F60718293A4B5C6D7E8F9012345678"},
+  {"id": 901, "seriesId": 7, "episodeId": 5002, "eventType": "grabbed",
+   "sourceTitle": "Breaking.Bad.S02.1080p.WEB-DL.x264-GROUPA",
+   "date": "2026-08-01T10:00:01Z",
+   "downloadId": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"},
+  {"id": 902, "seriesId": 7, "episodeId": 4001, "eventType": "downloadFolderImported",
+   "sourceTitle": "Breaking.Bad.S01.1080p.WEB-DL.x264-GROUPB",
+   "date": "2026-07-30T08:00:00Z",
+   "downloadId": "FFEEDDCCBBAA99887766554433221100AABBCCDD"},
+  {"id": 903, "seriesId": 7, "episodeId": 4002, "eventType": "episodeFileDeleted",
+   "sourceTitle": "old file", "date": "2026-07-29T08:00:00Z",
+   "downloadId": ""}
+]

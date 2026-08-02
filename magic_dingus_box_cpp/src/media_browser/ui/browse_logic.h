@@ -2,6 +2,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <unordered_set>
+#include <vector>
+
+#include "media_browser/media_ref.h"
 
 // Pure decision helpers for BrowseScreen's TTL / shuffle / For You entry
 // logic (spec: 2026-07-31-marquee-personalization-and-tv-design.md, Phase 1).
@@ -68,6 +72,159 @@ inline ForYouEntry decide_foryou_entry(bool has_cached_list,
     if (!library_fetch_ok) return ForYouEntry::ServiceUnavailable;
     if (library_empty) return ForYouEntry::EmptyLibrary;
     return ForYouEntry::Sample;
+}
+
+// Replace every entry of `kind` in `dst` with the contents of `fresh`,
+// leaving entries of the other kind untouched. The library cache is a
+// single MediaRef set fed by two independent services (Radarr for movies,
+// Sonarr for TV); a refresh where only one answered must not wipe the
+// other's contribution. Runs entirely on the render thread inside one
+// apply_library_pending() call, so the momentary mid-erase state is never
+// observable by another reader.
+// Unsupported: passing the same set as both `dst` and `fresh` (i.e.
+// replace_refs_of_kind(s, k, s)) — `fresh` would be erased-from-under-you
+// as `dst` is mutated, since it's the same underlying set. No caller does
+// this today; noted because this helper is about to become the TV task's
+// API surface.
+inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
+                                 MediaKind kind,
+                                 const std::unordered_set<MediaRef>& fresh) {
+    for (auto it = dst.begin(); it != dst.end();) {
+        if (it->kind == kind) it = dst.erase(it);
+        else ++it;
+    }
+    dst.insert(fresh.begin(), fresh.end());
+}
+
+// The Marquee header title, carrying the Movies/TV mode indicator.
+//
+// The mode marker is NOT in the tab strip: with the shipped ZenDots metrics
+// the 7-chip strip is 915 px wide and starts at x=305 on the 1280-wide
+// logical canvas, and draw_screen_header right-aligns it with no overflow
+// guard — suffixing the three content-tab labels with " · TV" grows the
+// strip to 1080 px and runs it 63 px into the title. The title has 102 px of
+// slack, and "Marquee TV" consumes 57 of it, leaving +45.
+//
+// Re-measure with the repo-root tools/measure_strip_fit.cpp (i.e.
+// ../tools/measure_strip_fit.cpp from magic_dingus_box_cpp/ — ONE LEVEL
+// ABOVE this magic_dingus_box_cpp/ tree, not magic_dingus_box_cpp/tools/,
+// which does not exist) before changing either string; the unit test below
+// pins the literal, not the fit.
+inline const char* marquee_title_for_mode(bool tv_mode) {
+    return tv_mode ? "Marquee TV" : "Marquee";
+}
+
+// The bare tmdb ids of one kind, for For You's seed sample. The library cache
+// mixes kinds, and TMDB's recommendation endpoints are kind-specific
+// (/movie/{id}/recommendations vs /tv/{id}/recommendations) — seeding a TV
+// sample with a movie id would return a plausible-looking, entirely wrong
+// grid, since the ids collide rather than 404.
+inline std::vector<int> seed_pool(const std::unordered_set<MediaRef>& refs,
+                                  MediaKind kind) {
+    std::vector<int> out;
+    out.reserve(refs.size());
+    for (const auto& ref : refs) {
+        if (ref.kind == kind) out.push_back(ref.id);
+    }
+    return out;
+}
+
+// What Browse's content area should show. Resolved from flags alone so the
+// decision is testable without a Renderer — and, more importantly, so render()
+// has exactly ONE place that can conclude "nothing to draw". It used to make
+// this call across five early `return`s, and the filter overlay is drawn after
+// all of them: any return that skipped it left an OPEN modal invisible while
+// handle_input kept feeding it the user's rotary presses.
+enum class BrowseGridState {
+    Grid,                   // draw posters
+    Loading,
+    LibraryUnavailable,     // For You only — its seed source is down
+    RecommendationsFailed,  // For You only — every seed failed
+    EmptyLibrary,           // For You only — nothing to seed from
+    NoApiKey,
+    EmptyCategory,
+};
+
+struct BrowseStateInputs {
+    bool is_foryou = false;
+    bool grid_empty = true;
+    bool loading = false;
+    bool lib_refresh_done_once = false;
+    bool lib_fetch_ok = false;      // for the ACTIVE mode
+    bool seeds_empty = true;        // for the ACTIVE mode
+    bool foryou_failed = false;
+    bool has_api_key = true;
+};
+
+// Ordering is the shipped ordering, preserved exactly:
+//   - For You's library/failure/empty checks come first, and only the first
+//     and third are guarded on an empty grid (cache-first: a loaded grid
+//     survives a transient library outage);
+//   - a non-empty grid then always wins;
+//   - then Loading, then the no-key message, then the generic empty state.
+inline BrowseGridState decide_browse_grid_state(const BrowseStateInputs& in) {
+    if (in.is_foryou) {
+        if (in.grid_empty && in.lib_refresh_done_once && !in.lib_fetch_ok) {
+            return BrowseGridState::LibraryUnavailable;
+        }
+        if (in.foryou_failed) return BrowseGridState::RecommendationsFailed;
+        if (!in.loading && in.grid_empty && in.lib_refresh_done_once &&
+            in.seeds_empty) {
+            return BrowseGridState::EmptyLibrary;
+        }
+    }
+    if (!in.grid_empty) return BrowseGridState::Grid;
+    if (in.loading) return BrowseGridState::Loading;
+    if (!in.has_api_key) return BrowseGridState::NoApiKey;
+    return BrowseGridState::EmptyCategory;
+}
+
+// The mode-aware on-screen message for each grid state — pulled out of
+// render()'s switch so it can be pinned by a Mac unit test. Three states
+// name a service or content kind and flip on `tv_mode`; the rest are fixed.
+// Returns nullptr for Grid, which draws posters instead of a message.
+// Text only: the per-state COLOR (dim vs. highlight2) stays in render()'s
+// switch, since ::ui::Color would drag Renderer/theme types into this
+// header and break the Mac test target's Renderer-free build.
+//
+// `sonarr_configured` distinguishes "this box has never had Sonarr set up"
+// from "Sonarr was configured but isn't answering right now" — both collapse
+// to lib_fetch_ok_[Tv]==false, but they are not the same fact. main.cpp falls
+// back to SonarrMockClient whenever SONARR_API_KEY resolves empty (any box
+// provisioned before the Sonarr stack existed, or never paired with it), and
+// the mock's get_library_checked() always returns nullopt (63f9046) — so
+// lib_fetch_ok_[Tv] is permanently false there, not intermittently. Telling
+// that owner "Sonarr service offline" accuses a service they never had of
+// having gone down. Only the TV branch of LibraryUnavailable reads this
+// flag: Movies mode never reaches it, because Radarr is never mocked in a
+// way that reaches this path (Media Browser's feature gate hides MB
+// entirely when Radarr is unreachable), so `sonarr_configured` is unused
+// when `tv_mode` is false.
+inline const char* browse_grid_state_message(BrowseGridState state, bool tv_mode,
+                                              bool sonarr_configured) {
+    switch (state) {
+        case BrowseGridState::Grid:
+            return nullptr;
+        case BrowseGridState::Loading:
+            return "Loading...";
+        case BrowseGridState::LibraryUnavailable:
+            if (!tv_mode) return "Radarr service offline";
+            return sonarr_configured ? "Sonarr service offline"
+                                      : "TV library not set up on this box";
+        case BrowseGridState::RecommendationsFailed:
+            return "Couldn't load recommendations \xE2\x80\x94 try again later";
+        case BrowseGridState::EmptyLibrary:
+            return tv_mode
+                ? "Add TV shows to your library to get recommendations"
+                : "Add movies to your library to get recommendations";
+        case BrowseGridState::NoApiKey:
+            return "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
+                   "Media Browser tab";
+        case BrowseGridState::EmptyCategory:
+            return tv_mode ? "No shows in this category"
+                           : "No movies in this category";
+    }
+    return nullptr;  // unreachable; silences -Wreturn-type on some compilers
 }
 
 }  // namespace media_browser::ui

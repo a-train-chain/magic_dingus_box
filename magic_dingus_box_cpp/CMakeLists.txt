@@ -158,6 +158,7 @@ set(APP_SOURCES
     src/app/controller_text_input.cpp
     src/app/sample_mode.cpp
     src/app/settings_persistence.cpp
+    src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
     src/app/playback_stall_watchdog.cpp
 )
@@ -223,6 +224,9 @@ if(BUILD_KIOSK)
     set(KIOSK_MEDIA_BROWSER_SOURCES "")
     if(ENABLE_MEDIA_BROWSER)
         list(APPEND KIOSK_MEDIA_BROWSER_SOURCES
+            src/media_browser/sonarr/sonarr_parsers.cpp
+            src/media_browser/sonarr/sonarr_client.cpp
+            src/media_browser/sonarr/sonarr_mock.cpp
             src/media_browser/radarr/radarr_parsers.cpp
             src/media_browser/radarr/radarr_client.cpp
             src/media_browser/radarr/radarr_mock.cpp
@@ -247,6 +251,7 @@ if(BUILD_KIOSK)
             # kiosk binary needs its own copy here or the link fails on an
             # undefined merge_recommendations.
             src/media_browser/ui/mb_recs.cpp
+            src/media_browser/ui/mb_filter_state.cpp
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
@@ -402,6 +407,9 @@ if(ENABLE_MEDIA_BROWSER)
 
     # --- Media browser library sources (expanded in later tasks) ---
     set(MEDIA_BROWSER_SOURCES
+        src/media_browser/sonarr/sonarr_parsers.cpp
+        src/media_browser/sonarr/sonarr_client.cpp
+        src/media_browser/sonarr/sonarr_mock.cpp
         src/media_browser/library/library_db.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
@@ -425,6 +433,12 @@ if(ENABLE_MEDIA_BROWSER)
         # That coverage gap is what let the "recently added" cutoff bug ship.
         src/media_browser/ui/library_view.cpp
         src/media_browser/ui/mb_recs.cpp
+        # Renderer-free filter logic (per-mode filter storage, the two genre
+        # catalogs, the mode-toggle transaction, both discover-filter
+        # builders). Same dual-list arrangement as mb_recs/library_view above:
+        # also listed in KIOSK_MEDIA_BROWSER_SOURCES because browse_screen and
+        # the filter overlay call into it.
+        src/media_browser/ui/mb_filter_state.cpp
     )
 
     # NOTE: the Media Browser screen .cpp files (browse/search/detail/playback/
@@ -444,11 +458,18 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
         tests/media_browser/test_tmdb_client.cpp
+        tests/media_browser/test_tmdb_tv.cpp
+        tests/media_browser/test_media_ref.cpp
+        tests/media_browser/test_mb_filter_persistence.cpp
+        tests/media_browser/test_mb_filter_state.cpp
+        tests/media_browser/test_filter_rows.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
         tests/media_browser/test_radarr_parsers.cpp
         tests/media_browser/test_radarr_client.cpp
+        tests/media_browser/test_sonarr_parsers.cpp
+        tests/media_browser/test_sonarr_client.cpp
         tests/media_browser/test_artwork_cache.cpp
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
@@ -460,6 +481,11 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
+        # Renderer-free, jsoncpp-only mapping of the four per-mode filter sets
+        # to/from settings.json. Lives in APP_SOURCES for the kiosk; listed
+        # here so the legacy-key migration is unit-tested (BUILD_KIOSK=OFF
+        # does not compile APP_SOURCES).
+        src/app/mb_filter_persistence.cpp
         ${MEDIA_BROWSER_SOURCES}
     )
 

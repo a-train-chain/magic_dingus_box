@@ -11,15 +11,18 @@
 #include <vector>
 
 #include "app/app_state.h"
+#include "media_browser/media_ref.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/browse_logic.h"
 #include "media_browser/ui/mb_filter_overlay.h"
+#include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/worker_pool.h"
 
 namespace media_browser {
 class RadarrClient;
+class SonarrClient;
 class TmdbClient;
 }
 
@@ -58,7 +61,18 @@ namespace media_browser::ui {
 //   add-movie, queue. Clean separation.
 class BrowseScreen : public MbScreen {
 public:
-    BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb, ::app::AppState& state);
+    // `sonarr_configured` is set once at the main.cpp construction site: true
+    // when a real SonarrClient was built (a Sonarr API key was found), false
+    // when main.cpp fell back to SonarrMockClient (no key — e.g. a box
+    // provisioned before the Sonarr stack existed). It distinguishes "this
+    // box has never had Sonarr set up" from "Sonarr was configured but isn't
+    // answering right now" for the TV-mode copy in browse_grid_state_message
+    // and the non-blocking service-warning line — both collapse to
+    // lib_fetch_ok_[Tv]==false, but only one of them is honestly described as
+    // an outage. See sonarr_mock.cpp's get_library_checked() doc comment for
+    // why the mock always reports unreachable.
+    BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr, TmdbClient& tmdb,
+                 ::app::AppState& state, bool sonarr_configured);
     ~BrowseScreen();
 
     void enter() override;
@@ -136,7 +150,16 @@ private:
     // Shared persist half of the overlay commit (spec 1b): write per-tab
     // filter state + save settings.json, WITHOUT the reload — the commit
     // path adds reload_for_category(), the shuffle path adds do_shuffle().
-    void persist_filter_state(FilterTabKind tab, const FilterState& fs);
+    void persist_filter_state(MbMode mode_for_write, FilterTabKind tab, const FilterState& fs);
+    // The persisted Movies/TV mode. Single source of truth — BrowseScreen
+    // keeps no shadow copy, so a mode written by the overlay's toggle handler
+    // is visible to every reader on the next line.
+    MbMode mode() const { return state_.display_settings.mb_mode; }
+    bool tv_mode() const { return mode() == MbMode::Tv; }
+    // Applied immediately when the overlay's MODE row toggles: re-kick the
+    // library refresh (so the in-library hide has the new kind's set) and
+    // reload the active content tab under the new mode.
+    void apply_mode_change();
     // Spec 1b shuffle dispatch for the active tab.
     void do_shuffle();
     // Shuffle entry points (spec 1b): mirror load_category's synchronous
@@ -156,9 +179,15 @@ private:
     // prefetched page 2 + a scroll-driven page 3 etc.). Results are
     // tagged with their page number so apply_pending() can replace on
     // page 1 / append on page > 1.
-    void run_load_page(uint64_t gen, Category cat, int page, bool is_revalidate = false);
+    // `mode_for_page` is captured by VALUE at spawn time: a MODE toggle
+    // mid-flight bumps the generation, but pinning the mode keeps the worker's
+    // endpoint choice consistent with the filter it was handed.
+    void run_load_page(uint64_t gen, Category cat, MbMode mode_for_page, int page,
+                       bool is_revalidate = false);
     void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,
                                 bool is_revalidate = false);
+    void run_reload_tv_filter_page(uint64_t gen, TvDiscoverFilter filter, int page,
+                                   bool is_revalidate = false);
     // Spawn a fresh worker for the given category + page under the
     // current generation. Sets fetching_more_ before returning.
     void spawn_page_worker(Category cat, int page);
@@ -184,8 +213,13 @@ private:
     static const char* label_for_category(Category cat);
 
     RadarrClient& radarr_;
+    SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     ::app::AppState& state_;
+    // See the constructor's doc comment. Read only by render() (via
+    // browse_grid_state_message and the service-warning line) and never
+    // written after construction.
+    bool sonarr_configured_;
 
     FilterOverlay filter_overlay_;
 
@@ -201,8 +235,9 @@ private:
     bool loaded_ = false;
     // True while load_category() is in-flight. Drives the "Loading..." state.
     bool loading_ = false;
-    // Snapshot of radarr_.is_reachable() at enter() time. Drives the
-    // "Radarr service offline" banner.
+    // Snapshot of radarr_.is_reachable() at refresh time. DIAGNOSTIC ONLY
+    // since Phase 2c-1 — render() branches on lib_fetch_ok_[mode()] instead,
+    // because a Radarr outage must not blank the TMDB-sourced TV grids.
     bool services_ok_ = true;
 
     int selected_tmdb_id_ = 0;
@@ -279,7 +314,7 @@ private:
     // page boundaries when its list shifts mid-fetch) don't get duplicate
     // tiles in the grid. Different cuts of the same movie have distinct
     // tmdb_ids, so this is exact-duplicate suppression only.
-    std::unordered_set<int> loaded_tmdb_ids_;
+    std::unordered_set<MediaRef> loaded_refs_;
 
     // First page of the active pagination window. 1 for normal loads; the
     // random base after a shuffle. maybe_load_more_pages() loads
@@ -307,6 +342,10 @@ private:
 
     // --- Phase B: filter state -------------------------------------
     DiscoverFilter current_filter_;
+    // TV's discover filter is a SEPARATE type from DiscoverFilter on purpose
+    // (different date params, different genre id space) — never one shared
+    // struct.
+    TvDiscoverFilter current_tv_filter_;
     std::vector<Genre> genres_;
     bool genres_loaded_ = false;
     // Async genre fetch. "Only ~200ms" was the happy path — the TMDB
@@ -332,20 +371,27 @@ private:
     // Cached tmdb_ids already in the Radarr library, so quick-add doesn't
     // refetch the full library on every press. Populated on enter() and
     // refreshed after a successful add.
-    std::unordered_set<int> library_tmdb_ids_;
+    std::unordered_set<MediaRef> library_refs_;
     // tmdb_ids of movies currently in the Radarr download queue. Populated
-    // alongside library_tmdb_ids_ on enter() by calling get_queue() and
+    // alongside library_refs_ on enter() by calling get_queue() and
     // cross-referencing with the library's radarr_id → tmdb_id mapping.
     // Drives the DOWNLOADING badge on poster cards.
-    std::unordered_set<int> downloading_tmdb_ids_;
+    std::unordered_set<MediaRef> downloading_refs_;
     std::vector<QualityProfile> quality_profiles_;
     bool library_cached_ = false;
 
     // --- For You state (spec 1c) -----------------------------------
     // Cached merged list — activation re-renders this without refetching;
     // a new sample runs only on first entry, TTL expiry, or SHUFFLE.
-    std::vector<TmdbSearchHit> foryou_movies_;
-    std::chrono::steady_clock::time_point foryou_loaded_at_{};
+    struct ForYouCache {
+        std::vector<TmdbSearchHit> hits;
+        std::chrono::steady_clock::time_point loaded_at{};
+    };
+    // Per mode. Keeping both means a MODE toggle does not throw away a merged
+    // grid that cost 8 concurrent TMDB round-trips (~12 s worst case) to
+    // build, and each mode gets its own honest 6 h TTL.
+    ForYouCache foryou_[2];
+    ForYouCache& foryou() { return foryou_[static_cast<int>(mode())]; }
     // One in-flight sample job. Workers capture the shared_ptr; a stale job
     // (gen mismatch) is simply never consumed. remaining==0 → ready to merge.
     struct SeedResult {
@@ -355,6 +401,7 @@ private:
     struct ForYouJob {
         uint64_t gen = 0;
         bool background = false;            // TTL refresh — keep old grid on total failure
+        MbMode mode = MbMode::Movies;   // which cache this job's result belongs to
         std::atomic<int> remaining{0};
         std::mutex mtx;
         std::vector<SeedResult> results;
@@ -364,7 +411,8 @@ private:
     bool foryou_failed_ = false;               // all seeds failed on an explicit load
     // Library-refresh outcome flags (spec 1c): set by apply_library_pending.
     bool lib_refresh_done_once_ = false;
-    bool lib_fetch_ok_ = false;
+    // Indexed by mode: Radarr answers for Movies, Sonarr for Tv.
+    bool lib_fetch_ok_[2] = {false, false};
     void activate_foryou();
     void start_foryou_sample(bool background);
     void apply_foryou_pending();
@@ -377,7 +425,7 @@ private:
     // marquee. Those calls now run on lib_refresh_worker_; apply_library_pending()
     // drains the result on the render thread on the next update() tick.
     //
-    // Correctness note for quick_add_focused(): it reads library_tmdb_ids_ and
+    // Correctness note for quick_add_focused(): it reads library_refs_ and
     // quality_profiles_. During the async window those sets keep the PREVIOUS
     // visit's data (they're only replaced atomically in apply_library_pending(),
     // never cleared first), so quick-add always sees complete — if up to one
@@ -387,11 +435,18 @@ private:
     // during the blocking fetch, just non-blocking now.
     struct PendingLibrary {
         bool                        services_ok = false;
-        std::unordered_set<int>     library_ids;
-        std::unordered_set<int>     downloading_ids;
+        // Named movie_refs (not library_refs) from the start: Task 8 adds a
+        // tv_refs sibling, and renaming this field twice would churn the same
+        // call sites for no benefit.
+        std::unordered_set<MediaRef> movie_refs;
+        // Kept per kind so a refresh where only one service answered replaces
+        // just that service's contribution (see replace_refs_of_kind).
+        std::unordered_set<MediaRef> tv_refs;
+        std::unordered_set<MediaRef> downloading_refs;
         std::vector<QualityProfile> quality_profiles;
         bool                        quality_fetched = false;
-        bool                        library_fetch_ok = false;
+        bool                        movie_fetch_ok = false;
+        bool                        tv_fetch_ok    = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
     void run_library_refresh(bool fetch_quality);  // worker body (off render)

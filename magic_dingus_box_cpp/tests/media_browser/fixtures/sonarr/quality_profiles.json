@@ -1,0 +1,4 @@
+[
+  {"id": 1, "name": "Any", "upgradeAllowed": true, "cutoff": 1,
+   "minFormatScore": -200, "cutoffFormatScore": 0}
+]

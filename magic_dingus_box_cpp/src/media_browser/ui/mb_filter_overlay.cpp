@@ -1,6 +1,7 @@
 #include "media_browser/ui/mb_filter_overlay.h"
 
 #include "media_browser/ui/mb_chrome.h"
+#include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 
@@ -59,38 +60,17 @@ constexpr int kRowFontPx             = 16;
 constexpr float kMarkerHalfH = 6.0f;
 constexpr float kMarkerW     = 7.2f;
 
-// Genre catalog — index in this list maps to bit position in genre_mask.
-struct GenreEntry { int tmdb_id; const char* display; };
-constexpr GenreEntry kGenres[] = {
-    {28,    "Action"},    {12,    "Adventure"}, {16,    "Animation"}, {35,    "Comedy"},
-    {80,    "Crime"},     {99,    "Doc"},        {18,    "Drama"},     {10751, "Family"},
-    {14,    "Fantasy"},   {36,    "History"},    {27,    "Horror"},    {10402, "Music"},
-    {9648,  "Mystery"},   {10749, "Romance"},    {878,   "Sci-Fi"},    {10770, "TV Movie"},
-    {53,    "Thriller"},  {10752, "War"},
-};
-constexpr int kNumGenres = static_cast<int>(sizeof(kGenres) / sizeof(kGenres[0]));
-
 const char* kDecadeLabels[]   = {"Any", "2020s", "2010s", "2000s", "1990s", "1980s", "1970s", "Classic"};
 const char* kRatingLabels[]   = {"Any", "6.0+", "7.0+", "8.0+"};
-const char* kRuntimeLabels[]  = {"Any", "<90m", "90-120m", "2-3hr", "3hr+"};
 const char* kLanguageLabels[] = {"Any", "English", "Japanese", "French", "Spanish",
                                   "Korean", "Italian", "German", "Hindi", "Mandarin"};
 const char* kSortLabels[]     = {"Popularity", "Top Rated", "Most Voted", "Recent Release"};
 
 constexpr int kNumDecades   = static_cast<int>(sizeof(kDecadeLabels)   / sizeof(kDecadeLabels[0]));
 constexpr int kNumRatings   = static_cast<int>(sizeof(kRatingLabels)   / sizeof(kRatingLabels[0]));
-constexpr int kNumRuntimes  = static_cast<int>(sizeof(kRuntimeLabels)  / sizeof(kRuntimeLabels[0]));
+constexpr int kNumRuntimeBands = 5;   // Any + four bands, in both modes
 constexpr int kNumLanguages = static_cast<int>(sizeof(kLanguageLabels) / sizeof(kLanguageLabels[0]));
 constexpr int kNumSorts     = static_cast<int>(sizeof(kSortLabels)     / sizeof(kSortLabels[0]));
-
-// Returns the display string for the current genre_mask in single-select mode.
-// "All" if mask is 0, else the genre name corresponding to the lowest set bit.
-const char* genre_display_name(uint32_t mask) {
-    if (mask == 0) return "All";
-    const int bit = __builtin_ctz(mask);
-    if (bit < kNumGenres) return kGenres[bit].display;
-    return "?";
-}
 
 // Wrapping modular arithmetic for signed indices.
 inline int wrap(int val, int count) {
@@ -99,26 +79,24 @@ inline int wrap(int val, int count) {
 
 }  // namespace
 
-const std::vector<int>& filter_overlay_genre_ids() {
-    static const std::vector<int> ids = []() {
-        std::vector<int> v;
-        v.reserve(kNumGenres);
-        for (int i = 0; i < kNumGenres; ++i) v.push_back(kGenres[i].tmdb_id);
-        return v;
-    }();
-    return ids;
-}
-
 FilterOverlay::FilterOverlay() = default;
 
-void FilterOverlay::open(FilterTabKind tab, const FilterState& current) {
+void FilterOverlay::open(FilterTabKind tab, MbMode mode, const FilterState& current) {
     if (state_ == State::Open || state_ == State::SlidingIn) return;
-    tab_      = tab;
-    working_  = current;
-    opened_   = current;
-    focus_row_ = 0;
-    mode_     = Mode::RowSelect;   // always start in row-navigation mode
-    state_    = State::SlidingIn;
+    tab_        = tab;
+    media_mode_ = mode;
+    working_    = current;
+    opened_     = current;
+    // Park the cursor OFF the MODE row. "BTN4 then rotary press" is muscle
+    // memory — on For You it is the DOCUMENTED shuffle gesture, advertised by
+    // this panel's own hint row — and MODE is an immediate-action row with a
+    // full reload behind it and no confirm. Landing on row 1 keeps the chart
+    // tabs on GENRE (exactly as before) and For You on SHUFFLE (the gesture
+    // is preserved bit for bit).
+    focus_row_  = (filter_row_count(tab) > 1 &&
+                   filter_row_role(tab, 0) == FilterRowRole::Mode) ? 1 : 0;
+    mode_       = Mode::RowSelect;   // always start in row-navigation mode
+    state_      = State::SlidingIn;
     anim_started_at_ = std::chrono::steady_clock::now();
 }
 
@@ -165,9 +143,14 @@ int FilterOverlay::compute_panel_left_x() const {
 // ---------------------------------------------------------------------------
 void FilterOverlay::cycle_focused_value(int direction) {
     const int dir = (direction >= 0) ? 1 : -1;
-    switch (focus_row_) {
+    // Row number -> value index, so the panel can grow rows (MODE at the top)
+    // without renumbering this switch.
+    switch (filter_value_index(tab_, focus_row_)) {
         case 0: {
-            // Genre: cycle "All" → Action → Adventure → … → War → "All"
+            // Genre: cycle "All" -> first genre -> ... -> last -> "All",
+            // over the ACTIVE MODE's catalog (movie and TV genre id spaces
+            // differ in both contents and length).
+            const int n_genres = filter_genre_count(media_mode_);
             const uint32_t mask = working_.genre_mask;
             if (dir > 0) {
                 if (mask == 0) {
@@ -175,11 +158,11 @@ void FilterOverlay::cycle_focused_value(int direction) {
                 } else {
                     const int bit = __builtin_ctz(mask);
                     const int nb  = bit + 1;
-                    working_.genre_mask = (nb >= kNumGenres) ? 0u : (1u << nb);
+                    working_.genre_mask = (nb >= n_genres) ? 0u : (1u << nb);
                 }
             } else {
                 if (mask == 0) {
-                    working_.genre_mask = (1u << (kNumGenres - 1));
+                    working_.genre_mask = (1u << (n_genres - 1));
                 } else {
                     const int bit = __builtin_ctz(mask);
                     working_.genre_mask = (bit == 0) ? 0u : (1u << (bit - 1));
@@ -189,7 +172,7 @@ void FilterOverlay::cycle_focused_value(int direction) {
         }
         case 1: working_.decade     = wrap(working_.decade     + dir, kNumDecades);   break;
         case 2: working_.min_rating = wrap(working_.min_rating + dir, kNumRatings);   break;
-        case 3: working_.runtime    = wrap(working_.runtime    + dir, kNumRuntimes);  break;
+        case 3: working_.runtime    = wrap(working_.runtime    + dir, kNumRuntimeBands); break;
         case 4: working_.language   = wrap(working_.language   + dir, kNumLanguages); break;
         case 5: working_.sort       = wrap(working_.sort       + dir, kNumSorts);     break;
         default: break;
@@ -218,11 +201,14 @@ bool FilterOverlay::on_rotate(int delta) {
 
 // ---------------------------------------------------------------------------
 // on_select (rotary press)
-//   RowSelect + value row (Popular/TopRated rows 0-5) → enter ValueSelect
+//   RowSelect + MODE (row 0 on every tab) → toggle Movies/TV via
+//     on_mode_toggle_ and re-stage the incoming mode's filters, stay in
+//     RowSelect, overlay stays Open, no commit fired.
+//   RowSelect + value row (Popular/TopRated rows 1-6) → enter ValueSelect
 //     for that row.
-//   RowSelect + RESET ALL (Popular/TopRated row 6) → reset working_, stay
+//   RowSelect + RESET ALL (Popular/TopRated row 7) → reset working_, stay
 //     in RowSelect, no commit fired.
-//   RowSelect + SHUFFLE (Popular/TopRated row 7; ForYou's only row, 0) →
+//   RowSelect + SHUFFLE (Popular/TopRated row 8; ForYou row 1) →
 //     fire the shuffle callback once with the staged state, then close via
 //     the commit-free close() path.
 //   ValueSelect → save current value (already in working_ via rotate), exit to RowSelect
@@ -236,11 +222,26 @@ bool FilterOverlay::on_select() {
     } else {
         // RowSelect
         switch (role_for_row(focus_row_)) {
-            case RowRole::Reset:
+            case FilterRowRole::Mode: {
+                // Toggle and apply immediately; the overlay stays OPEN so the
+                // user sees the panel's genre names and values swap.
+                const MbMode next = (media_mode_ == MbMode::Movies)
+                                        ? MbMode::Tv : MbMode::Movies;
+                if (on_mode_toggle_) {
+                    // The handler persists `working_` into the OUTGOING mode's
+                    // slot and hands back the incoming mode's stored state.
+                    const FilterState restaged = on_mode_toggle_(next, tab_, working_);
+                    working_ = restaged;
+                    opened_  = restaged;   // post-swap edits are the only diff
+                }
+                media_mode_ = next;
+                break;
+            }
+            case FilterRowRole::Reset:
                 // RESET ALL — clear staging area, stay in RowSelect, no commit.
                 working_ = FilterState{};
                 break;
-            case RowRole::Shuffle:
+            case FilterRowRole::Shuffle:
                 // SHUFFLE — close (commit-free path) and hand staged state to
                 // the handler, which persists it and performs one shuffle load.
                 if (on_shuffle_) on_shuffle_(working_, tab_);
@@ -251,7 +252,7 @@ bool FilterOverlay::on_select() {
                 opened_ = working_;
                 close();
                 break;
-            case RowRole::Value:
+            case FilterRowRole::Value:
                 mode_ = Mode::ValueSelect;
                 break;
         }
@@ -375,6 +376,28 @@ void FilterOverlay::render_shuffle_row(::ui::Renderer& r, int panel_x, int x, in
                    kSectionHeadingFontPx, th.fg);
 }
 
+void FilterOverlay::render_mode_row(::ui::Renderer& r, int panel_x, int x, int y,
+                                     bool focused) {
+    const auto& th = r.mb_theme();
+    if (focused) draw_cursor_marker(r, panel_x, y, th.accent);
+    const float fy = static_cast<float>(y + kOverlayRowHeight - 10);
+    // ACTION-row idiom (label + small-font hint), matching RESET ALL and
+    // SHUFFLE — deliberately NOT the value-row idiom of GENRE/DECADE/etc.
+    // One press acts (mode flips, grid reloads) rather than opening an
+    // editor, so the row must not look like an editable value. The current
+    // mode rides in the label so the row still answers "what am I browsing?"
+    // at a glance.
+    const std::string label =
+        std::string("MODE: ") + mode_row_value_label(media_mode_);
+    r.mb_draw_text(label, static_cast<float>(x + 18), fy,
+                   kRowFontPx, focused ? th.accent : th.dim);
+    const char* hint = "press to switch";
+    const int right_x = x + kOverlayPanelW - 2 * kOverlayPanelInnerPadX;
+    const int tw = r.mb_text_width(hint, kSectionHeadingFontPx);
+    r.mb_draw_text(hint, static_cast<float>(right_x - tw), fy,
+                   kSectionHeadingFontPx, th.fg);
+}
+
 // ---------------------------------------------------------------------------
 // render — panel chrome + content mirrors LibraryScreen overlay exactly.
 // ---------------------------------------------------------------------------
@@ -406,7 +429,6 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
     // Right-edge x for divider lines — mirrors Library's panel_x + W - padX.
     const int content_right = panel_x + kOverlayPanelW - kOverlayPanelInnerPadX;
 
-    // ForYou variant (spec 1c): title + single SHUFFLE row, nothing else.
     if (!has_filter_rows()) {
         const int title_baseline2 = kOverlayPanelTopY + kOverlayPanelInnerPadY +
                                     kPanelTitleFontPx - 2;
@@ -414,12 +436,14 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
                              static_cast<float>(content_x),
                              static_cast<float>(title_baseline2),
                              kPanelTitleFontPx, th.accent);
-        const int row_y = title_baseline2 + 20 + kOverlaySectionGap;
-        render_shuffle_row(r, panel_x, content_x, row_y, focus_row_ == 0);
+        const int mode_row_y = title_baseline2 + 20 + kOverlaySectionGap;
+        render_mode_row(r, panel_x, content_x, mode_row_y, focus_row_ == 0);
+        render_shuffle_row(r, panel_x, content_x, mode_row_y + kOverlayRowHeight,
+                           focus_row_ == 1);
         const int hint_y2 = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
         chrome::draw_hint_row(r, content_x, hint_y2, {
             {chrome::HintIcon::Btn4Black,   "Close"},
-            {chrome::HintIcon::RotaryPress, "Shuffle"},
+            {chrome::HintIcon::RotaryPress, "Select"},
         });
         return;
     }
@@ -432,8 +456,12 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
                          static_cast<float>(title_baseline),
                          kPanelTitleFontPx, th.accent);
 
+    // MODE row sits directly under the title, above the first divider.
+    const int mode_row_y = title_baseline + 8;
+    render_mode_row(r, panel_x, content_x, mode_row_y, (focus_row_ == 0));
+
     // 1 px dim divider beneath title — mirrors Library's divider1.
-    const int divider1_y = title_baseline + 20;
+    const int divider1_y = mode_row_y + kOverlayRowHeight + 6;
     r.mb_draw_line(static_cast<float>(content_x),
                    static_cast<float>(divider1_y),
                    static_cast<float>(content_right),
@@ -447,7 +475,7 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
                          static_cast<float>(filter_heading_y),
                          kSectionHeadingFontPx, th.accent);
 
-    // Filter rows: GENRE, DECADE, MIN RATING, RUNTIME, LANGUAGE (rows 0-4).
+    // Filter rows: GENRE, DECADE, MIN RATING, RUNTIME, LANGUAGE (rows 1-5).
     struct FilterRowDef {
         int         row_idx;
         const char* label;
@@ -455,13 +483,14 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
         int         count;
         int         selected;
     };
-    const char* genre_val = genre_display_name(working_.genre_mask);
+    const char* genre_val = filter_genre_display(media_mode_, working_.genre_mask);
+    const char* const* runtime_labels = filter_runtime_labels(media_mode_);
     const FilterRowDef filter_rows[] = {
-        {0, "GENRE",      nullptr,         0,           0               },  // handled separately
-        {1, "DECADE",     kDecadeLabels,   kNumDecades,  working_.decade },
-        {2, "MIN RATING", kRatingLabels,   kNumRatings,  working_.min_rating},
-        {3, "RUNTIME",    kRuntimeLabels,  kNumRuntimes, working_.runtime},
-        {4, "LANGUAGE",   kLanguageLabels, kNumLanguages,working_.language},
+        {1, "GENRE",      nullptr,         0,                0                  },  // value handled separately
+        {2, "DECADE",     kDecadeLabels,   kNumDecades,      working_.decade    },
+        {3, "MIN RATING", kRatingLabels,   kNumRatings,      working_.min_rating},
+        {4, "RUNTIME",    runtime_labels,  kNumRuntimeBands, working_.runtime   },
+        {5, "LANGUAGE",   kLanguageLabels, kNumLanguages,    working_.language  },
     };
 
     const int filter_rows_y0 = filter_heading_y + kOverlaySectionHeaderH;
@@ -498,10 +527,10 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
                          static_cast<float>(sort_heading_y),
                          kSectionHeadingFontPx, th.accent);
 
-    // Sort row (row 5): single row for sort-order selection.
+    // Sort row (row 6): single row for sort-order selection.
     const int sort_row_y0 = sort_heading_y + kOverlaySectionHeaderH;
     {
-        const bool focused = (focus_row_ == 5);
+        const bool focused = (focus_row_ == 6);
         const bool editing = focused && (mode_ == Mode::ValueSelect);
         const char* val = (working_.sort >= 0 && working_.sort < kNumSorts)
                               ? kSortLabels[working_.sort] : "?";
@@ -517,13 +546,13 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
                    static_cast<float>(divider3_y),
                    1.0f, th.dim, 0.5f);
 
-    // ---- RESET ALL row (row 6) ----
+    // ---- RESET ALL row (row 7) ----
     const int reset_row_y = divider3_y + kOverlaySectionGap / 2;
-    render_reset_row(r, panel_x, content_x, reset_row_y, (focus_row_ == 6));
+    render_reset_row(r, panel_x, content_x, reset_row_y, (focus_row_ == 7));
 
-    // ---- SHUFFLE row (row 7) ----
+    // ---- SHUFFLE row (row 8) ----
     const int shuffle_row_y = reset_row_y + kOverlayRowHeight;
-    render_shuffle_row(r, panel_x, content_x, shuffle_row_y, (focus_row_ == 7));
+    render_shuffle_row(r, panel_x, content_x, shuffle_row_y, (focus_row_ == 8));
 
     // ---- Footer hint inside the panel — mirrors Library overlay ----
     const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;

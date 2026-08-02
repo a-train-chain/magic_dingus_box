@@ -1,0 +1,52 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "backdrop_path": "/84XPpjGvxNyExjSuLQe0SzioErt.jpg",
+      "first_air_date": "2008-01-20",
+      "genre_ids": [18, 80],
+      "id": 1396,
+      "name": "Breaking Bad",
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "Breaking Bad",
+      "overview": "Walter White, a New Mexico chemistry teacher, is diagnosed with cancer.",
+      "popularity": 289.1,
+      "poster_path": "/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+      "vote_average": 8.9,
+      "vote_count": 13000
+    },
+    {
+      "backdrop_path": null,
+      "first_air_date": "2011-04-17",
+      "genre_ids": [10765, 18, 10759],
+      "id": 1399,
+      "name": "Game of Thrones",
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "Game of Thrones",
+      "overview": "Seven noble families fight for control of the mythical land of Westeros.",
+      "popularity": 201.4,
+      "poster_path": null,
+      "vote_average": 8.456,
+      "vote_count": 22000
+    },
+    {
+      "adult": true,
+      "first_air_date": "2015-01-01",
+      "genre_ids": [],
+      "id": 999999,
+      "name": "Should Be Dropped",
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "Should Be Dropped",
+      "overview": "adult content",
+      "popularity": 1.0,
+      "poster_path": "/drop.jpg",
+      "vote_average": 1.0,
+      "vote_count": 3
+    }
+  ],
+  "total_pages": 500,
+  "total_results": 10000
+}

@@ -1,0 +1,36 @@
+{
+  "title": "Breaking Bad",
+  "status": "ended",
+  "overview": "Walter White, a New Mexico chemistry teacher, is diagnosed with cancer.",
+  "year": 2008,
+  "runtime": 47,
+  "tvdbId": 81189,
+  "tmdbId": 1396,
+  "imdbId": "tt0903747",
+  "path": "/data/library/tv/Breaking Bad",
+  "rootFolderPath": "/data/library/tv",
+  "qualityProfileId": 1,
+  "seasonFolder": true,
+  "monitored": true,
+  "added": "2026-08-01T09:00:00Z",
+  "id": 7,
+  "images": [
+    {"coverType": "poster", "remoteUrl": "https://image.tmdb.org/t/p/original/ggFHVNu6YYI5L9pCfOacjizRGt.jpg"},
+    {"coverType": "fanart", "remoteUrl": "https://artworks.thetvdb.com/banners/fanart/original/81189-3.jpg"}
+  ],
+  "seasons": [
+    {"seasonNumber": 0, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 5, "sizeOnDisk": 0}},
+    {"seasonNumber": 1, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 7, "sizeOnDisk": 0}},
+    {"seasonNumber": 2, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
+    {"seasonNumber": 3, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
+    {"seasonNumber": 4, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 13, "sizeOnDisk": 0}},
+    {"seasonNumber": 5, "monitored": true,
+     "statistics": {"episodeFileCount": 0, "totalEpisodeCount": 16, "sizeOnDisk": 0}}
+  ],
+  "statistics": {"seasonCount": 5, "episodeFileCount": 0, "totalEpisodeCount": 62, "sizeOnDisk": 0}
+}

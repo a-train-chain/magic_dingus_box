@@ -582,28 +582,11 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     r.mb_fill_background();
 
-    // --- 5-tab Marquee header (same strip BrowseScreen renders, Library active here) ---
-    // Labels are hardcoded so LibraryScreen doesn't need to peek at
-    // BrowseScreen's private Category enum. They must stay in sync with
-    // kVisibleTabs[] in browse_screen.cpp.
-    // v1.6.x: Now Playing dropped (overlapped Popular), Settings added on
-    // the right end of the strip — so Library shifts from position 3 → 2.
-    static constexpr const char* kTabLabels[] = {
-        "Popular", "Top Rated", "Search", "Library", "Queue", "Settings",
-    };
-    constexpr int kNumVisibleTabs = 6;
-    constexpr int kLibraryStripPos = 3;
-
-    std::vector<chrome::TabSpec> tabs;
-    tabs.reserve(kNumVisibleTabs);
-    for (int i = 0; i < kNumVisibleTabs; ++i) {
-        chrome::TabSpec t;
-        t.label = kTabLabels[i];
-        t.state = (i == kLibraryStripPos)
-                      ? chrome::TabState::Active
-                      : chrome::TabState::Inactive;
-        tabs.push_back(t);
-    }
+    // --- Marquee header (the shared strip, Library active here) ---
+    // Built from chrome::marquee_tabs() rather than a local copy: this
+    // screen used to carry its own six-label array, which silently lost
+    // the "For You" chip when that tab was added to Browse.
+    const std::vector<chrome::TabSpec> tabs = chrome::marquee_tabs("Library");
     const int content_top = chrome::draw_screen_header(
         r, screen_w, "Library", tabs, /*focused_tab=*/-1);
 
