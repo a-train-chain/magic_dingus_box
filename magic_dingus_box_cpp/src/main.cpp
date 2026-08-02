@@ -414,29 +414,46 @@ int main(int /* argc */, char* /* argv */[]) {
     // the main menu INTACT (any video item made it a "video playlist")
     // and its games were meanwhile invisible to the Settings browser
     // (which required ALL items to be games).
-    auto ui_split = PlaylistLoader::split_for_ui(all_playlists);
-    std::vector<Playlist> video_playlists = std::move(ui_split.video);
-    std::vector<Playlist> game_playlists = std::move(ui_split.games);
-    
+    // Split for the two UI surfaces, then prepend the virtual Master
+    // Shuffle row. Factored into a lambda because the runtime reload
+    // (playlists_reload_request, in the main loop below) has to reproduce
+    // this sequence EXACTLY — a second hand-written copy is precisely how
+    // the boot menu and the reloaded menu would drift apart.
+    auto split_for_ui_with_master_shuffle =
+        [](const std::vector<Playlist>& loaded) {
+            auto split = PlaylistLoader::split_for_ui(loaded);
+            // Insert "Master Shuffle" playlist at the beginning
+            Playlist master_shuffle;
+            master_shuffle.title = "Master Shuffle";
+            master_shuffle.path = ""; // Virtual path
+            master_shuffle.items.push_back({}); // Dummy item to make it selectable
+            split.video.insert(split.video.begin(), master_shuffle);
+            return split;
+        };
+
+    auto ui_split = split_for_ui_with_master_shuffle(all_playlists);
+
     // NOTE: downloaded movies do NOT surface here. An earlier Media Browser
     // pass synthesized a "Movies" playlist from the Radarr library into this
     // wheel; removed by operator decision — movies play only through
     // Settings -> Media Browser -> Library, keeping the main menu curated
     // playlists only (and keeping movie rows out of Master Shuffle's pool).
 
-    // Insert "Master Shuffle" playlist at the beginning
-    Playlist master_shuffle;
-    master_shuffle.title = "Master Shuffle";
-    master_shuffle.path = ""; // Virtual path
-    master_shuffle.items.push_back({}); // Dummy item to make it selectable
-    video_playlists.insert(video_playlists.begin(), master_shuffle);
-    
     // Main UI shows only video playlists (matching Python: playlists = video_playlists)
     AppState state;
-    state.playlists = video_playlists;
-    state.game_playlists = game_playlists;  // Store for menu access
-    
-    std::cout << "Video playlists: " << video_playlists.size() << std::endl;
+    state.playlists = std::move(ui_split.video);
+    state.game_playlists = std::move(ui_split.games);
+
+    // THE game list — a reference to the AppState member, deliberately not
+    // a copy. This used to be a local `game_playlists` vector that the
+    // Settings game browser navigated and launched ROMs from, while the
+    // renderer drew state.game_playlists. Two vectors agreed only because
+    // nothing ever rewrote one of them; a runtime playlist reload does
+    // rewrite it, and the stale copy would have launched a different ROM
+    // than the one highlighted on screen.
+    std::vector<Playlist>& game_playlists = state.game_playlists;
+
+    std::cout << "Video playlists: " << state.playlists.size() << std::endl;
     std::cout << "Game playlists: " << game_playlists.size() << std::endl;
     
     // Load saved settings (CRT effects, loop, shuffle, etc.)
@@ -2930,8 +2947,15 @@ int main(int /* argc */, char* /* argv */[]) {
                     if (!state.is_switching_playlist && state.video_active && state.current_playlist_index >= 0) {
                         if (state.master_shuffle_active) {
                             // In Master Shuffle, NEXT triggers another random video
-                            // Save current position to shuffle history for "Previous" support
-                            if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                            // Save current position to shuffle history for "Previous" support.
+                            // Index 0 is the VIRTUAL Master Shuffle row (one dummy
+                            // item, no file), never a real source playlist — the
+                            // reload path parks current_playlist_index there when a
+                            // source playlist is deleted mid-playback. Recording it
+                            // would make a later PREV try to load the dummy item,
+                            // which fails after the caller has already cleared
+                            // playback_started_ and stalls auto-advance.
+                            if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
                                 state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
                             }
                             controller.play_random_global_video(state, playlist_directory);
@@ -3183,8 +3207,10 @@ int main(int /* argc */, char* /* argv */[]) {
                     state.last_advanced_duration = adv_duration;
                     // Note: load_next_item handles errors internally (skips broken files)
                     if (state.master_shuffle_active) {
-                        // Save current position to shuffle history before auto-advancing
-                        if (state.current_playlist_index >= 0 && state.current_item_index >= 0) {
+                        // Save current position to shuffle history before auto-advancing.
+                        // > 0, not >= 0: index 0 is the virtual Master Shuffle row —
+                        // see the matching note on the NEXT handler above.
+                        if (state.current_playlist_index > 0 && state.current_item_index >= 0) {
                             state.push_shuffle_history(state.current_playlist_index, state.current_item_index);
                         }
                         controller.play_random_global_video(state, playlist_directory);
@@ -3767,6 +3793,308 @@ int main(int /* argc */, char* /* argv */[]) {
                         ui::Toast::show("Settings restored");
                     }
                     LOG_INFO("Settings reloaded from disk (web-admin restore poke)");
+                }
+            }
+        }
+
+        // Web-admin playlist reload poke. The Content Manager writes this
+        // marker once an imported/edited playlist is on disk; without it a
+        // new playlist only reached the TV on a power cycle. Same protocol
+        // as the settings poke above — poll ~1 Hz, delete the marker, then
+        // reload — and deliberately the same shape: a kiosk binary that
+        // predates the marker just ignores the file, which is what makes
+        // the web-side change safe to ship first.
+        {
+            static int playlists_reload_check = 0;
+            if (++playlists_reload_check >= 60) {
+                playlists_reload_check = 0;
+                const std::string playlists_marker =
+                    config::get_data_path() + "/playlists_reload_request";
+                if (fs::exists(playlists_marker)) {
+                    if (state.is_switching_playlist || state.is_loading_game) {
+                        // Hold the request: leave the marker in place and
+                        // retry in a second. A playlist switch has ALREADY
+                        // written current_playlist_index for a load that
+                        // hasn't happened yet, so swapping the vector out
+                        // from under it would send that load to a different
+                        // playlist. Both windows are bounded (the switch
+                        // flag self-clears after 2s; a game launch blocks
+                        // this loop entirely while RetroArch owns the box).
+                        LOG_DEBUG("playlists_reload_request held — playlist switch / game launch in flight");
+                    } else {
+                        std::error_code rm_ec;
+                        fs::remove(playlists_marker, rm_ec);
+
+                        // Reuse the directory BOOT resolved, never a fresh
+                        // search-path walk: every item path this session
+                        // resolves goes through playlist_directory, so
+                        // loading playlists from some other directory would
+                        // list files the player then cannot find. The only
+                        // exception is a box where boot found no playlist
+                        // directory at all — which is exactly the box an
+                        // import is trying to populate — so resolve once
+                        // there and keep both uses in step.
+                        if (playlist_directory.empty()) {
+                            for (const auto& search_path : config::get_playlist_search_paths()) {
+                                if (fs::exists(search_path)) {
+                                    playlist_directory = search_path;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (playlist_directory.empty()) {
+                            LOG_WARN("Playlist reload requested but no playlist directory exists");
+                            ui::Toast::show("Playlist reload failed - no playlist folder");
+                        } else {
+                            // ── Identity snapshot, taken BEFORE the swap ──
+                            // Everything the kiosk is holding — what is
+                            // playing, where the menu cursor sits, which
+                            // game list is open — is an INDEX into the
+                            // vectors about to be replaced, and importing
+                            // one playlist renumbers every playlist after
+                            // it. So re-find things by identity, not index.
+                            auto playlist_id = [](const Playlist& p) {
+                                // path is the playlist's file on disk and is
+                                // unique; only the virtual Master Shuffle
+                                // row has none.
+                                return p.path.empty() ? ("title:" + p.title)
+                                                      : ("path:" + p.path);
+                            };
+                            auto find_playlist = [&](const std::vector<Playlist>& v,
+                                                     const std::string& id) {
+                                for (size_t i = 0; i < v.size(); ++i) {
+                                    if (playlist_id(v[i]) == id) {
+                                        return static_cast<int>(i);
+                                    }
+                                }
+                                return -1;
+                            };
+
+                            std::string playing_id;
+                            std::string playing_item_path;
+                            std::string playing_item_title;
+                            if (state.current_playlist_index >= 0 &&
+                                state.current_playlist_index <
+                                    static_cast<int>(state.playlists.size())) {
+                                const auto& old_pl =
+                                    state.playlists[state.current_playlist_index];
+                                playing_id = playlist_id(old_pl);
+                                if (state.current_item_index >= 0 &&
+                                    state.current_item_index <
+                                        static_cast<int>(old_pl.items.size())) {
+                                    playing_item_path =
+                                        old_pl.items[state.current_item_index].path;
+                                    playing_item_title =
+                                        old_pl.items[state.current_item_index].title;
+                                }
+                            }
+                            std::string selected_id;
+                            if (state.selected_index >= 0 &&
+                                state.selected_index <
+                                    static_cast<int>(state.playlists.size())) {
+                                selected_id = playlist_id(state.playlists[state.selected_index]);
+                            }
+                            std::string open_game_id;
+                            if (settings_menu.is_game_browser_active() &&
+                                settings_menu.is_viewing_games_in_playlist()) {
+                                const int open_idx =
+                                    settings_menu.get_current_game_playlist_index();
+                                if (open_idx >= 0 &&
+                                    open_idx < static_cast<int>(game_playlists.size())) {
+                                    open_game_id = playlist_id(game_playlists[open_idx]);
+                                }
+                            }
+
+                            // ── The boot sequence, re-run ────────────────
+                            // load -> platform filter -> UI split -> Master
+                            // Shuffle row, through the same lambda boot uses.
+                            auto reloaded = split_for_ui_with_master_shuffle(
+                                PlaylistLoader::filter_for_platform(
+                                    PlaylistLoader::load_playlists(playlist_directory),
+                                    state.platform_profile));
+                            state.playlists = std::move(reloaded.video);
+                            // game_playlists is a REFERENCE to this member:
+                            // the Settings browser's ROM launch and the
+                            // renderer read the same vector, so they cannot
+                            // disagree about which ROM row 3 is.
+                            state.game_playlists = std::move(reloaded.games);
+
+                            // Both shuffle queues and the master-shuffle
+                            // history are (playlist, item) coordinates into
+                            // the vectors just replaced. Keeping them would
+                            // play files nobody picked; they regenerate
+                            // lazily on the next advance.
+                            state.shuffle_queue.clear();
+                            state.shuffle_queue_position = 0;
+                            state.shuffle_queue_playlist_id = -1;
+                            state.master_shuffle_queue.clear();
+                            state.master_shuffle_queue_position = 0;
+                            state.shuffle_history.clear();
+
+                            // ── Playback is never interrupted, only re-anchored ──
+                            // Explicit decision: whatever is on screen keeps
+                            // playing to its natural end. Only the
+                            // coordinates describing what comes NEXT are
+                            // repaired.
+                            if (!playing_id.empty()) {
+                                const int new_pl = find_playlist(state.playlists, playing_id);
+                                if (new_pl >= 0) {
+                                    state.current_playlist_index = new_pl;
+                                    const auto& pl = state.playlists[new_pl];
+                                    int new_item = -1;
+                                    for (size_t i = 0; i < pl.items.size(); ++i) {
+                                        if (pl.items[i].path == playing_item_path &&
+                                            pl.items[i].title == playing_item_title) {
+                                            new_item = static_cast<int>(i);
+                                            break;
+                                        }
+                                    }
+                                    if (new_item >= 0) {
+                                        state.current_item_index = new_item;
+                                    } else if (!pl.items.empty()) {
+                                        // The playing item was edited out.
+                                        // Keep advancing inside the playlist
+                                        // the operator chose; just clamp.
+                                        if (state.current_item_index < 0) {
+                                            state.current_item_index = 0;
+                                        }
+                                        if (state.current_item_index >=
+                                            static_cast<int>(pl.items.size())) {
+                                            state.current_item_index =
+                                                static_cast<int>(pl.items.size()) - 1;
+                                        }
+                                    } else {
+                                        state.current_item_index = -1;
+                                    }
+                                } else if (state.master_shuffle_active &&
+                                           state.playlists.size() > 1) {
+                                    // Master Shuffle's SOURCE playlist is
+                                    // gone but the pool is not empty. Park on
+                                    // row 0 — the virtual Master Shuffle
+                                    // entry, always present — so auto-advance
+                                    // and NEXT still fire; both call
+                                    // play_random_global_video(), which
+                                    // re-picks from the new pool and
+                                    // overwrites these coordinates. Row 0 is
+                                    // also the correct "now playing"
+                                    // highlight while Master Shuffle runs.
+                                    state.current_playlist_index = 0;
+                                    state.current_item_index = 0;
+                                } else {
+                                    // Either the playlist that owned this
+                                    // video is gone, or Master Shuffle has no
+                                    // pool left (size() <= 1 means only the
+                                    // virtual row survived).
+                                    //
+                                    // Both must STOP, not merely unset the
+                                    // index. Leaving video_active true parks
+                                    // the TV on the last decoded frame with
+                                    // no UI, recoverable only by an operator
+                                    // guessing to press SELECT. And an empty
+                                    // Master Shuffle pool is worse: EOS calls
+                                    // play_random_global_video() every frame,
+                                    // which early-returns without clearing
+                                    // playback_started_, so it re-fires at
+                                    // frame rate and floods stderr until the
+                                    // box is power-cycled.
+                                    state.master_shuffle_active = false;
+                                    controller.stop();
+                                    state.video_active = false;
+                                    state.update_playback_state(0.0, 0.0);
+                                    state.ui_visible_when_playing = true;
+                                    state.current_playlist_index = -1;
+                                    state.current_item_index = -1;
+                                    state.fade_start_time =
+                                        std::chrono::steady_clock::now();
+                                }
+
+                                // The auto-advance guard is an item index
+                                // into the OLD playlist too. If a remap
+                                // happens to land current_item_index on that
+                                // stale value, can_advance stays false and
+                                // the video ends with nothing following it.
+                                // Clearing it is what the loop does anyway
+                                // one frame into the next item.
+                                state.last_advanced_item_index = -1;
+                                state.last_advanced_duration = 0.0;
+                            }
+
+                            // ── Main-menu cursor follows its playlist ────
+                            int new_sel = selected_id.empty()
+                                              ? -1
+                                              : find_playlist(state.playlists, selected_id);
+                            if (new_sel < 0) new_sel = state.selected_index;
+                            if (new_sel >= static_cast<int>(state.playlists.size())) {
+                                new_sel = static_cast<int>(state.playlists.size()) - 1;
+                            }
+                            if (new_sel < 0) new_sel = 0;
+                            state.selected_index = new_sel;
+                            {
+                                const int max_visible = std::max(1, state.playlist_max_visible);
+                                int max_scroll =
+                                    static_cast<int>(state.playlists.size()) - max_visible;
+                                if (max_scroll < 0) max_scroll = 0;
+                                if (state.selected_index < state.playlist_scroll_offset) {
+                                    state.playlist_scroll_offset = state.selected_index;
+                                }
+                                if (state.selected_index >=
+                                    state.playlist_scroll_offset + max_visible) {
+                                    state.playlist_scroll_offset =
+                                        state.selected_index - max_visible + 1;
+                                }
+                                if (state.playlist_scroll_offset > max_scroll) {
+                                    state.playlist_scroll_offset = max_scroll;
+                                }
+                                if (state.playlist_scroll_offset < 0) {
+                                    state.playlist_scroll_offset = 0;
+                                }
+                            }
+
+                            // ── Settings game browser ────────────────────
+                            if (settings_menu.is_game_browser_active()) {
+                                if (settings_menu.is_viewing_games_in_playlist()) {
+                                    const int gi =
+                                        open_game_id.empty()
+                                            ? -1
+                                            : find_playlist(game_playlists, open_game_id);
+                                    if (gi < 0) {
+                                        // The open game playlist is gone.
+                                        // Back out to the list: at item
+                                        // level the only exit ("Back") is
+                                        // bounds-checked against that
+                                        // playlist, so a dead index would
+                                        // trap the operator on a screen with
+                                        // no way out but a power cycle.
+                                        settings_menu.exit_game_list();
+                                    } else if (gi != settings_menu.get_current_game_playlist_index()) {
+                                        settings_menu.enter_game_list(gi);
+                                    }
+                                }
+                                // navigate(0, ...) re-clamps both game
+                                // cursors against the new sizes without
+                                // moving them.
+                                int games_in_current = 0;
+                                if (settings_menu.is_viewing_games_in_playlist()) {
+                                    const int gi =
+                                        settings_menu.get_current_game_playlist_index();
+                                    if (gi >= 0 &&
+                                        gi < static_cast<int>(game_playlists.size())) {
+                                        games_in_current =
+                                            static_cast<int>(game_playlists[gi].items.size());
+                                    }
+                                }
+                                settings_menu.navigate(
+                                    0, static_cast<int>(game_playlists.size()),
+                                    games_in_current);
+                            }
+
+                            LOG_INFO("Playlists reloaded from disk: {} video, {} game "
+                                     "(web-admin import poke)",
+                                     state.playlists.size(), game_playlists.size());
+                            ui::Toast::show("Playlists updated");
+                        }
+                    }
                 }
             }
         }
