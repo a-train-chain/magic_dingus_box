@@ -469,6 +469,11 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             const int id = tmdb_id_;
             const std::string title =
                 detail_.has_value() ? detail_->title : std::string("This series");
+            // Immediate press feedback (operator-reported): the row dims,
+            // but the outcome toast can be ~13.5 s away (add_series' settle
+            // ceiling) and a dim alone reads as "nothing happened". Same
+            // precedent as whole-series press-1's "checking free space".
+            ::ui::Toast::show(title + ": addingâ¦");
             spawn_mutation([this, id, title]() {
                 // Quality profile BY NAME ("Any" is this box's profile; the
                 // id is not portable) — DetailScreen::pick_quality_profile_id's
@@ -597,6 +602,9 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             const int season = *next;
             const std::string title =
                 detail_.has_value() ? detail_->title : std::string("This series");
+            // Same immediate-feedback rule as AddSeason1.
+            ::ui::Toast::show(title + ": starting Season " +
+                              std::to_string(season) + "â¦");
             spawn_mutation([this, sid, season, title]() {
                 if (!sonarr_.set_season_monitored(sid, season, true)) {
                     const std::string err = sonarr_.last_error();
