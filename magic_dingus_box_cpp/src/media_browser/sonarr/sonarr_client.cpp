@@ -681,6 +681,12 @@ std::vector<RootFolder> SonarrClient::get_root_folders() {
     return SonarrParsers::parse_root_folders(resp);
 }
 
+std::vector<QualityDefinition> SonarrClient::get_quality_definitions() {
+    auto resp = http_get("/api/v3/qualitydefinition");
+    if (resp.empty()) return {};
+    return SonarrParsers::parse_quality_definitions(resp);
+}
+
 std::string SonarrClient::resolve_host_path(const std::string& container_path) const {
     if (container_path.empty()) return container_path;
     if (container_path.rfind(cfg_.container_library_prefix, 0) == 0) {

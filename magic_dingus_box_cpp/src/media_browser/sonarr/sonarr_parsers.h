@@ -31,6 +31,11 @@ public:
     // exactly one implementation of each.
     static std::vector<QualityProfile> parse_quality_profiles(const std::string& json);
     static std::vector<RootFolder> parse_root_folders(const std::string& json);
+    // GET /api/v3/qualitydefinition rows. Tolerant: non-array bodies and rows
+    // missing the quality object yield/skip empty — the consumer treats an
+    // empty vector as "use the fallback rate", never as an error state.
+    static std::vector<QualityDefinition> parse_quality_definitions(
+        const std::string& json);
 };
 
 }  // namespace media_browser

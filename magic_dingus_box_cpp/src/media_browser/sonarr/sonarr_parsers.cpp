@@ -230,4 +230,26 @@ std::vector<RootFolder> SonarrParsers::parse_root_folders(const std::string& jso
     return RadarrParsers::parse_root_folders(json);
 }
 
+std::vector<QualityDefinition> SonarrParsers::parse_quality_definitions(
+        const std::string& json) {
+    std::vector<QualityDefinition> out;
+    Json::Value root;
+    if (!parse_json(json, root)) return out;
+    if (!root.isArray()) return out;
+    for (const auto& row : root) {
+        if (!row.isObject() || !row["quality"].isObject()) continue;
+        QualityDefinition d;
+        d.quality_id = row["quality"].get("id", 0).asInt();
+        d.title      = row["quality"].get("name", "").asString();
+        // preferredSize/maxSize are null upstream for "unlimited", and
+        // asDouble() on a null throws in jsoncpp — gate on isNumeric().
+        if (row["preferredSize"].isNumeric())
+            d.preferred_mb_per_min = row["preferredSize"].asDouble();
+        if (row["maxSize"].isNumeric())
+            d.max_mb_per_min = row["maxSize"].asDouble();
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
 }  // namespace media_browser

@@ -198,3 +198,34 @@ TEST_CASE("parse_quality_profiles and parse_root_folders reuse the Radarr shapes
     CHECK(roots[0].path == "/data/library/tv");
     CHECK(roots[0].free_space_bytes == 187904819200LL);
 }
+
+TEST_CASE("parse_quality_definitions: fixture-shaped rows, null preferred tolerated",
+          "[sonarr][parsers]") {
+    // Shape per GET /api/v3/qualitydefinition (Sonarr 4): sizes are
+    // MB/min doubles; preferredSize may be null ("unlimited").
+    const std::string body = R"([
+        {"quality": {"id": 4, "name": "HDTV-720p"},
+         "minSize": 17.1, "maxSize": 60.0, "preferredSize": 40.0},
+        {"quality": {"id": 9, "name": "HDTV-1080p"},
+         "minSize": 33.3, "maxSize": 100.0, "preferredSize": 70.0},
+        {"quality": {"id": 3, "name": "Bluray-1080p"},
+         "minSize": 50.4, "maxSize": 100.0, "preferredSize": null}
+    ])";
+    auto defs = mb::SonarrParsers::parse_quality_definitions(body);
+    REQUIRE(defs.size() == 3);
+    CHECK(defs[0].quality_id == 4);
+    CHECK(defs[0].title == "HDTV-720p");
+    CHECK(defs[0].preferred_mb_per_min == 40.0);
+    CHECK(defs[0].max_mb_per_min == 60.0);
+    CHECK(defs[1].preferred_mb_per_min == 70.0);
+    CHECK(defs[2].preferred_mb_per_min == 0.0);  // null → 0, skipped downstream
+}
+
+TEST_CASE("parse_quality_definitions: non-array and garbage bodies parse to empty",
+          "[sonarr][parsers]") {
+    CHECK(mb::SonarrParsers::parse_quality_definitions("").empty());
+    CHECK(mb::SonarrParsers::parse_quality_definitions("not json").empty());
+    CHECK(mb::SonarrParsers::parse_quality_definitions(R"({"error":"x"})").empty());
+    // Rows missing the quality object are skipped, not fatal.
+    CHECK(mb::SonarrParsers::parse_quality_definitions(R"([{"minSize": 1.0}])").empty());
+}

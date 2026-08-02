@@ -40,6 +40,7 @@ public:
     bool remove_series(int sonarr_id, bool delete_files = false) override;
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
+    std::vector<QualityDefinition> get_quality_definitions() override;
     std::vector<SonarrQueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
     std::vector<std::string> get_series_download_hashes(int sonarr_id) override;

@@ -238,6 +238,9 @@ public:
     // site ("Any" on this box, id 1 — the id is not portable).
     virtual std::vector<QualityProfile> get_quality_profiles();
     virtual std::vector<RootFolder> get_root_folders();
+    // Quality definitions — the MB/min table behind the TV disk estimate.
+    // Empty on any failure; pick_preferred_mb_per_min falls back to 70.
+    virtual std::vector<QualityDefinition> get_quality_definitions();
 
     // Container path -> host path. Unrecognized paths pass through unchanged
     // with a warn-level log.

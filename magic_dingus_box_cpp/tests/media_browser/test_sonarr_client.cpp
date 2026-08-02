@@ -8,6 +8,7 @@
 #include <json/json.h>
 #include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/sonarr/sonarr_mock.h"
+#include "media_browser/ui/series_detail_logic.h"
 
 namespace fs = std::filesystem;
 namespace mb = media_browser;
@@ -819,4 +820,12 @@ TEST_CASE("SonarrMockClient seeds a coherent season pack", "[sonarr][mock]") {
     REQUIRE(m.cancel_queue_item(q[0].id));
     // Cancelling one row removes the whole download, matching live behaviour.
     CHECK(m.get_queue().empty());
+}
+
+TEST_CASE("SonarrMockClient serves fixture-shaped quality definitions",
+          "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    auto defs = m.get_quality_definitions();
+    REQUIRE(defs.size() == 2);
+    CHECK(media_browser::ui::pick_preferred_mb_per_min(defs) == 70.0);
 }

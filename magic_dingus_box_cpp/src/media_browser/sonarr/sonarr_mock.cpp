@@ -206,6 +206,16 @@ std::vector<RootFolder> SonarrMockClient::get_root_folders() {
     return {rf};
 }
 
+std::vector<QualityDefinition> SonarrMockClient::get_quality_definitions() {
+    // Fixture-shaped (scripts/data/sonarr_qualitydefinitions.json): enough
+    // for the estimate math to be realistic in dev. Unlike the library,
+    // this is CONFIG data — serving it fabricates nothing about the box.
+    return {
+        {4, "HDTV-720p", 40.0, 60.0},
+        {9, "HDTV-1080p", 70.0, 100.0},
+    };
+}
+
 std::vector<SonarrQueueItem> SonarrMockClient::get_queue() { return queue_; }
 
 bool SonarrMockClient::cancel_queue_item(int queue_id) {
