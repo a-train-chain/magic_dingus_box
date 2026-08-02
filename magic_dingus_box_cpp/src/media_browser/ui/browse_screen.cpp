@@ -398,8 +398,17 @@ void BrowseScreen::apply_library_pending() {
         // sweep runs on a Radarr-down visit, movies_/foryou_ already contain
         // nothing it would remove — an extra no-op pass, not a behavior
         // change. Movie mode still behaves identically end to end.
+        // MOVIES ONLY (product change, 2026-08-02): TV titles the owner
+        // has are BADGED in the grids, not hidden. Movies hide because the
+        // Library tab is their way back; TV has no Library listing until
+        // 2c-3, so hiding an added show stranded it — unreachable from
+        // every kiosk surface (charts hid it, For You excludes it, Library
+        // and Queue are movie-only, and there is no TV search). The chart
+        // poster, wearing its IN LIBRARY badge, IS the way back to the
+        // series detail page. Revisit when 2c-3 lands the TV Library.
         auto owned = [this](const TmdbSearchHit& m) {
-            return library_refs_.count(media_ref_of(m)) > 0;
+            return m.kind == MediaKind::Movie &&
+                   library_refs_.count(media_ref_of(m)) > 0;
         };
         const size_t before = movies_.size();
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
@@ -1197,14 +1206,21 @@ void BrowseScreen::apply_pending() {
             continue;
         }
         size_t added = 0, dups = 0, owned = 0;
-        // Titles already in (or being fetched into) the owner's library are
-        // hidden from the chart grids entirely — the owner asked for
-        // discovery surfaces to show only what they DON'T have. The For You
-        // merge applies the same exclusion at merge time; this covers the
-        // page-based tabs. Note the id still enters loaded_refs_ so a
-        // later append page can't resurrect it.
+        // MOVIE titles already in (or being fetched into) the owner's
+        // library are hidden from the chart grids — the owner asked for
+        // discovery surfaces to show only what they DON'T have, and the
+        // Library tab is the way back to a hidden movie. TV titles the
+        // owner has are NOT hidden: they render with the IN LIBRARY badge,
+        // because until 2c-3 lands the TV Library listing the badged chart
+        // poster is the ONLY route back to a series' detail page (add next
+        // season / remove / download badges). The For You merge still
+        // excludes the library for BOTH kinds at merge time — a
+        // recommendation row shouldn't recommend what you have; the badge
+        // belongs on the charts. Hidden ids still enter loaded_refs_ so a
+        // later append page can't resurrect a hidden movie.
         auto owned_by_library = [this](const TmdbSearchHit& m) {
-            return library_refs_.count(media_ref_of(m)) > 0;
+            return m.kind == MediaKind::Movie &&
+                   library_refs_.count(media_ref_of(m)) > 0;
         };
         if (pp.page == page_window_base_) {
             // Window-base page — canonical replacement (was hardcoded page 1).
