@@ -24,7 +24,7 @@ if [ ! -f "$APP_PATH" ]; then
     echo "Please build the app first:"
     echo "  cd $PROJECT_ROOT"
     echo "  mkdir -p build && cd build"
-    echo "  cmake .. && make -j4"
+    echo "  cmake .. && make -j2   # -j4 OOMs a 1.5 GB Pi 4B, swaps a 2 GB Pi 5"
     exit 1
 fi
 echo "✓ Found app at: $APP_PATH"

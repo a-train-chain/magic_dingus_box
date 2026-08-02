@@ -36,7 +36,7 @@ if [ ! -f "$APP_PATH" ]; then
     echo "Please build the app first:"
     echo "  cd /opt/magic_dingus_box/magic_dingus_box_cpp"
     echo "  mkdir -p build && cd build"
-    echo "  cmake .. && make -j4"
+    echo "  cmake .. && make -j2   # -j4 OOMs a 1.5 GB Pi 4B, swaps a 2 GB Pi 5"
     exit 1
 fi
 echo "  ✓ C++ app found"

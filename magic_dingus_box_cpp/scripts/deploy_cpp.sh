@@ -802,7 +802,7 @@ fi
 if [ "$BUILD" = false ]; then
     echo "Next steps:"
     echo "  1. SSH to Pi: ssh ${PI_HOST}"
-    echo "  2. Build: cd ${PI_DIR}/magic_dingus_box_cpp && mkdir -p build && cd build && cmake .. && make -j4"
+    echo "  2. Build: cd ${PI_DIR}/magic_dingus_box_cpp && mkdir -p build && cd build && cmake .. && make -j2"
     echo "  3. Test: sudo ./magic_dingus_box_cpp"
 fi
 if [ "$TEST" = false ] && [ "$BUILD" = true ] && [ "$INSTALL_CORES" = false ]; then
