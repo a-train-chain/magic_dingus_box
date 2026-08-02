@@ -1495,6 +1495,9 @@ int main(int /* argc */, char* /* argv */[]) {
     mode = display.get_current_mode();
     std::cout << "Final Display Mode: " << mode.width << "x" << mode.height << " @ " << (mode.refresh/1000.0) << "Hz" << std::endl;
     gst_renderer.set_screen_size(mode.width, mode.height);
+    // Remember the real kiosk mode so the game-exit path can restore it
+    // directly (one mode change, not a 640x480 round-trip).
+    controller.set_kiosk_display_mode(mode.width, mode.height);
 
     // Tell the UI renderer what the *actual* HDMI framebuffer size is.
     // This is distinct from the call to resize_screen() below — that
@@ -1637,7 +1640,11 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             // Force mode restoration (RetroArch might have changed resolution)
-            if (!display.set_mode(mode.width, mode.height)) {
+            // — unless the game-exit path already did it, in which case a
+            // second set_mode here would make the TV resync twice.
+            if (state.display_mode_restored.exchange(false)) {
+                std::cout << "Display mode already restored by game-exit path; skipping set_mode" << std::endl;
+            } else if (!display.set_mode(mode.width, mode.height)) {
                 std::cerr << "Warning: Failed to restore display mode: " << mode.width << "x" << mode.height << std::endl;
             } else {
                 std::cout << "Restored display mode: " << mode.width << "x" << mode.height << std::endl;
@@ -1760,6 +1767,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Update mode info and notify renderers
                 mode = display.get_current_mode();
                 std::cout << "Switched to: " << mode.name << " (" << mode.width << "x" << mode.height << ")" << std::endl;
+                // Keep the game-exit restore target in sync with the new mode.
+                controller.set_kiosk_display_mode(mode.width, mode.height);
 
                 gst_renderer.set_screen_size(mode.width, mode.height);
                 // Keep the enhanced-CRT composite path's framebuffer

@@ -803,9 +803,13 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             if (pid > 0) { int s; waitpid(pid, &s, 0); }
         }
         
-        // Add delay here to ensure RetroArch has fully released DRM master and kernel resources
+        // Fixed settle before re-acquiring DRM master, so RetroArch has fully
+        // released DRM and kernel resources. Load-bearing and hardware-tuned;
+        // see the follow-on in the 2026-08-02 graceful-exit spec before
+        // replacing this with a bounded poll.
+        constexpr std::chrono::milliseconds kRetroArchSettleDelay{1000};
         std::cout << "Waiting for system to settle..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        std::this_thread::sleep_for(kRetroArchSettleDelay);
 
         // Re-acquire DRM master with retry logic
         if (display_) {
@@ -825,9 +829,28 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
                 std::cerr << "CRITICAL: Failed to acquire DRM master after retries! Attempting to proceed anyway..." << std::endl;
             }
             
-            // Force restore video mode to ensure UI is visible
-            std::cout << "Restoring display mode to 640x480..." << std::endl;
-            display_->set_mode(640, 480);
+            // Restore the mode the kiosk actually booted with — NOT 640x480.
+            // No unit boots at 640x480 (target_drm_mode gives 1280x720 /
+            // 1920x1080; 640x480 is only the boot cascade's last resort), so
+            // hardcoding it made every game exit do TWO mode changes: down to
+            // 640x480 here, then back up in main.cpp's reset_display handler
+            // — two black-screen TV resyncs per exit. On success the
+            // display_mode_restored flag tells that handler to skip its own
+            // set_mode, making this the ONLY mode change on the way back.
+            bool mode_restored = false;
+            if (kiosk_mode_w_ > 0 && kiosk_mode_h_ > 0) {
+                std::cout << "Restoring kiosk display mode "
+                          << kiosk_mode_w_ << "x" << kiosk_mode_h_ << "..." << std::endl;
+                mode_restored = display_->set_mode(kiosk_mode_w_, kiosk_mode_h_);
+            }
+            if (!mode_restored) {
+                // Legacy floor, preserved for the never-configured case and
+                // for a failed restore. Gives the dissolve SOMETHING to draw
+                // on; deliberately does NOT set the flag below.
+                std::cout << "Falling back to 640x480..." << std::endl;
+                display_->set_mode(640, 480);
+            }
+            state.display_mode_restored.store(mode_restored);
 
             // First frame we are allowed to draw since handing the display
             // over. Paint the return plate NOW so the stale launch frame the
