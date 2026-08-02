@@ -376,6 +376,14 @@ void SeriesDetailScreen::drain_mutation() {
                      "(gen {}) — page now tmdb:{} (gen {})",
                      mut_tmdb_id_, mut_fetch_gen_, tmdb_id_,
                      fetch_gen_.load());
+        // A dropped `removed` is the ONE outcome that outlives the page it
+        // was started from: the Sonarr record is gone for good. Without this
+        // flag, re-entering that same tmdb_id hits set_tmdb_id's same-id
+        // no-op and enter()'s short-circuit, and the page repaints its cached
+        // pre-remove snapshot — a "Remove" button aimed at a record Sonarr no
+        // longer knows about. DetailScreen's drain_remove_result sets exactly
+        // this for exactly this reason.
+        if (removed) needs_refresh_ = true;
         rebuild_buttons();
         return;
     }
@@ -395,6 +403,11 @@ void SeriesDetailScreen::drain_mutation() {
     }
     if (removed) {
         series_.reset();
+        // Empty today; Task 8's queue poll makes it load-bearing — a stale
+        // downloading set would paint Downloading badges on the rows of a
+        // series that no longer exists during the frame before navigate_back_
+        // is consumed.
+        downloading_seasons_.clear();
         in_library_ = false;
         series_settled_ = true;
         rebuild_rows();
@@ -806,55 +819,95 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             break;
         case Action::ConfirmRemove: {
             remove_pending_ = false;
-            if (!series_.has_value() || series_->sonarr_id <= 0) break;
+            if (!series_.has_value() || series_->sonarr_id <= 0) {
+                // Without this the label stayed on "Confirm Remove" with
+                // nothing behind it: every further press silently fell out of
+                // the switch, which reads as a dead button. Repaint the row
+                // (remove_pending_ is already cleared, so it reverts to
+                // "Remove") and say why, in the whole-series sibling's copy.
+                rebuild_buttons();
+                ::ui::Toast::show("series id unknown \xE2\x80\x94 try again "
+                                  "once syncing finishes");
+                break;
+            }
             const int sid = series_->sonarr_id;
             const std::string title =
                 detail_.has_value() ? detail_->title : std::string("This series");
             spawn_mutation([this, sid, title]() {
                 // Sonarr-shaped mirror of DetailScreen::run_remove:
                 //  1. Cancel in-flight downloads — ONCE PER DOWNLOAD, not
-                //     once per queue row.
+                //     once per queue row (cancel_ids_for_series does that
+                //     dedupe; it is pure and Mac-tested).
                 //  2. Purge every torrent the series' history knows about
                 //     (catches finished+seeding ones step 1 misses).
                 //  3. remove_series(delete_files=true).
                 //  4. Back to origin (drained on the render thread).
-                //
-                // Step 1's dedupe is load-bearing. Sonarr's queue is per
-                // EPISODE and cancel_queue_item acts on the WHOLE download,
-                // so a season pack's sibling rows 404 BY DOCUMENTED DESIGN
-                // (sonarr_client.h). Counting those 404s as failures aborted
-                // the remove at the guard below — after the torrent was
-                // already gone — leaving the series record and its files
-                // behind with a "NOT removed" toast that was itself a lie.
-                std::vector<int> cancel_ids;
-                std::unordered_set<std::string> seen_downloads;
-                for (const auto& q : sonarr_.get_queue()) {
-                    if (q.series_id != sid) continue;
-                    if (q.download_id.empty()) {
-                        cancel_ids.push_back(q.id);  // nothing to dedupe on
+                const std::vector<int> cancel_ids =
+                    cancel_ids_for_series(sonarr_.get_queue(), sid);
+                int cancel_failed = 0;
+                int cancel_ok = 0;
+                std::string cancel_err;
+                for (int qid : cancel_ids) {
+                    if (sonarr_.cancel_queue_item(qid)) {
+                        ++cancel_ok;
                         continue;
                     }
-                    if (seen_downloads.insert(q.download_id).second)
-                        cancel_ids.push_back(q.id);
-                }
-                int cancel_failed = 0;
-                for (int qid : cancel_ids) {
-                    if (!sonarr_.cancel_queue_item(qid)) ++cancel_failed;
+                    ++cancel_failed;
+                    // Captured AT the failing iteration. last_error() is
+                    // cleared on entry to every client call, so a LATER
+                    // success wipes the diagnosis and the abort toast below
+                    // degrades to "NOT removed" with no reason attached.
+                    if (cancel_err.empty()) cancel_err = sonarr_.last_error();
                 }
                 if (cancel_failed > 0) {
                     // A genuinely failed cancel still aborts before anything
                     // is deleted — the house rule that keeps a half-removed
-                    // series from orphaning a torrent.
-                    const std::string err = sonarr_.last_error();
+                    // series from orphaning a torrent. But cancels use
+                    // removeFromClient=true, so any that SUCCEEDED before the
+                    // failure have already taken their downloads with them:
+                    // saying "couldn't cancel" flat would imply nothing
+                    // happened, and the user would not know data is gone.
                     std::lock_guard<std::mutex> lk(mut_mtx_);
-                    mut_toast_ = title + ": couldn't cancel " +
-                                 std::to_string(cancel_failed) +
-                                 " download(s) \xE2\x80\x94 NOT removed" +
-                                 (err.empty() ? std::string() : " (" + err + ")");
+                    mut_toast_ =
+                        (cancel_ok > 0
+                             ? title + ": cancelled " + std::to_string(cancel_ok) +
+                                   " download(s), then failed \xE2\x80\x94 series "
+                                   "NOT removed; retry is safe"
+                             : title + ": couldn't cancel " +
+                                   std::to_string(cancel_failed) +
+                                   " download(s) \xE2\x80\x94 NOT removed") +
+                        (cancel_err.empty() ? std::string()
+                                            : " (" + cancel_err + ")");
                     return;
                 }
                 if (qbit_ != nullptr) {
-                    for (const auto& h : sonarr_.get_series_download_hashes(sid)) {
+                    // The history walk runs BEFORE the decision to proceed,
+                    // because a FAILED walk is indistinguishable from "no
+                    // history" by its return value alone: both are {}. Removing
+                    // on a failed walk is the exact production failure
+                    // DetailScreen documents — every seeding torrent orphaned
+                    // forever, under a toast that said "removed".
+                    // get_series_download_hashes clears last_error() on entry
+                    // (sonarr_client.cpp), which is what makes empty + clean
+                    // mean "genuinely nothing to purge" and empty + error mean
+                    // "we never reached Sonarr".
+                    //
+                    // Aborting here is retry-safe: the cancel stage above is
+                    // idempotent — an already-cancelled download leaves no
+                    // queue row, so its ids simply dedupe to nothing next time.
+                    //
+                    // Still gated on qbit_ as before: a box with no qBittorrent
+                    // client cannot purge anything at all, so it keeps the old
+                    // semantics and accepts the orphan risk BY CONSTRUCTION.
+                    const std::vector<std::string> hashes =
+                        sonarr_.get_series_download_hashes(sid);
+                    if (hashes.empty() && !sonarr_.last_error().empty()) {
+                        std::lock_guard<std::mutex> lk(mut_mtx_);
+                        mut_toast_ = title + ": couldn't check for seeding "
+                                     "torrents \xE2\x80\x94 series NOT removed";
+                        return;
+                    }
+                    for (const auto& h : hashes) {
                         if (!qbit_->delete_torrent(h, /*delete_files=*/true)) {
                             spdlog::warn("[SeriesDetail] qbit delete failed for {}",
                                          h);

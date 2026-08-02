@@ -173,6 +173,40 @@ inline DiskVerdict whole_series_verdict(int64_t estimate_bytes,
     return DiskVerdict::Allow;
 }
 
+// ---------- Remove ----------
+
+// Queue rows -> the exact ids to cancel for one series, deduped by
+// download_id (a season pack's siblings 404 by design after the first
+// cancel). Rows with an empty download_id fall back to q.title as the
+// dedupe key (documented identical across a pack's rows) rather than
+// fanning out per-row.
+//
+// The dedupe is what makes the remove flow's abort guard trustworthy.
+// Sonarr's queue is per EPISODE while cancel_queue_item acts on the WHOLE
+// download, so cancelling row 1 of a 13-episode pack makes rows 2-13 404 BY
+// DESIGN (sonarr_client.h). Counting those 404s as failures aborted the
+// remove AFTER the torrent was already gone, leaving the series record and
+// its files behind under a "NOT removed" toast that was itself a lie.
+//
+// A row with NEITHER a download_id nor a title has no key at all, so it is
+// taken as-is — the committed loop's behaviour for an unkeyed row. Collapsing
+// several of those onto one empty key would silently skip real cancels.
+inline std::vector<int> cancel_ids_for_series(
+        const std::vector<SonarrQueueItem>& queue, int sonarr_series_id) {
+    std::vector<int> ids;
+    std::unordered_set<std::string> seen;
+    for (const auto& q : queue) {
+        if (q.series_id != sonarr_series_id) continue;
+        const std::string& key = q.download_id.empty() ? q.title : q.download_id;
+        if (key.empty()) {
+            ids.push_back(q.id);  // nothing to dedupe on
+            continue;
+        }
+        if (seen.insert(key).second) ids.push_back(q.id);
+    }
+    return ids;
+}
+
 // ---------- Screen state ----------
 
 enum class SeriesDetailState {

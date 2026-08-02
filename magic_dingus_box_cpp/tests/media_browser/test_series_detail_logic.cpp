@@ -133,6 +133,96 @@ TEST_CASE("whole_series_verdict: block at free minus 20 GiB floor; only a FAILED
     CHECK(whole_series_verdict(1, int64_t{0}) == DiskVerdict::Block);
 }
 
+// ---------- Remove: cancel-id selection ----------
+//
+// The decision that decides how many cancels the orphan-proof remove issues.
+// It lived inline in the kiosk-only screen TU, where its most important
+// property — a 13-row season pack yields ONE cancel, not 13 — could not be
+// asserted at all. Over-cancelling is not cosmetic: sibling rows 404 by
+// design after the first cancel, and counting those 404s as failures aborted
+// the remove AFTER the torrent was gone.
+
+namespace {
+SonarrQueueItem q_row(int id, int series_id, std::string download_id,
+                      std::string title = {}) {
+    SonarrQueueItem q;
+    q.id = id;
+    q.series_id = series_id;
+    q.download_id = std::move(download_id);
+    q.title = std::move(title);
+    return q;
+}
+}  // namespace
+
+TEST_CASE("cancel ids: a 13-row season pack yields exactly ONE cancel",
+          "[series_detail]") {
+    std::vector<SonarrQueueItem> queue;
+    for (int i = 0; i < 13; ++i) {
+        queue.push_back(q_row(100 + i, 7, "ABCDEF", "Breaking.Bad.S02.1080p"));
+    }
+    const auto ids = cancel_ids_for_series(queue, 7);
+    REQUIRE(ids.size() == 1);
+    CHECK(ids[0] == 100);  // the FIRST row of the pack, in queue order
+}
+
+TEST_CASE("cancel ids: an empty download_id dedupes on the release title",
+          "[series_detail]") {
+    // Mixed rows: a populated-id pack, plus rows whose download_id never made
+    // it into the queue payload but which share one release title (the field
+    // is documented identical across a pack's rows). Fanning those out
+    // per-row would fire N cancels at ONE download and count N-1 by-design
+    // 404s as failures.
+    std::vector<SonarrQueueItem> queue = {
+        q_row(1, 7, "HASH1", "Show.S01.1080p"),
+        q_row(2, 7, "HASH1", "Show.S01.1080p"),
+        q_row(3, 7, "", "Show.S03.720p"),
+        q_row(4, 7, "", "Show.S03.720p"),
+        q_row(5, 7, "", "Show.S03.720p"),
+    };
+    const auto ids = cancel_ids_for_series(queue, 7);
+    REQUIRE(ids.size() == 2);
+    CHECK(ids[0] == 1);
+    CHECK(ids[1] == 3);
+}
+
+TEST_CASE("cancel ids: rows for OTHER series are excluded", "[series_detail]") {
+    // The queue is global. Cancelling another series' download while removing
+    // this one is destructive and silent — the user asked to delete one show.
+    std::vector<SonarrQueueItem> queue = {
+        q_row(1, 7, "MINE", "Mine.S01"),
+        q_row(2, 9, "THEIRS", "Theirs.S01"),
+        q_row(3, 9, "", "Theirs.S02"),
+        q_row(4, 7, "MINE", "Mine.S01"),
+    };
+    const auto ids = cancel_ids_for_series(queue, 7);
+    REQUIRE(ids.size() == 1);
+    CHECK(ids[0] == 1);
+    CHECK(cancel_ids_for_series(queue, 9).size() == 2);
+    CHECK(cancel_ids_for_series(queue, 404).empty());
+    CHECK(cancel_ids_for_series({}, 7).empty());
+}
+
+TEST_CASE("cancel ids: empty download_ids with DISTINCT titles stay separate",
+          "[series_detail]") {
+    // The title fallback must not over-collapse: these are three genuinely
+    // different downloads, and skipping two of them would leave live torrents
+    // running for a series the user just deleted.
+    std::vector<SonarrQueueItem> queue = {
+        q_row(1, 7, "", "Show.S01E01.720p"),
+        q_row(2, 7, "", "Show.S01E02.720p"),
+        q_row(3, 7, "", "Show.S01E03.720p"),
+    };
+    const auto ids = cancel_ids_for_series(queue, 7);
+    REQUIRE(ids.size() == 3);
+    CHECK(ids[0] == 1);
+    CHECK(ids[2] == 3);
+    // Degenerate: no download_id AND no title is unkeyed, so each row is
+    // taken as-is rather than collapsing onto one empty key.
+    std::vector<SonarrQueueItem> unkeyed = {q_row(8, 7, "", ""),
+                                            q_row(9, 7, "", "")};
+    CHECK(cancel_ids_for_series(unkeyed, 7).size() == 2);
+}
+
 TEST_CASE("series detail state resolver: precedence and copy", "[series_detail]") {
     SeriesDetailInputs in;
     in.tmdb_done = false;
