@@ -14,12 +14,16 @@
 
 #include "media_browser/sonarr/sonarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/series_detail_logic.h"
 
 namespace media_browser {
 class SonarrClient;
 class QbittorrentClient;
+}
+namespace media_browser::library {
+class WatchStore;
 }
 
 namespace media_browser::ui {
@@ -35,9 +39,53 @@ namespace media_browser::ui {
 // paint.
 class SeriesDetailScreen : public MbScreen {
 public:
+    // watch is nullable (null-safe: no resume points, no ✓/▶ glyphs, no
+    // PlayNextUp label context). WatchStore is main/render-thread-only by
+    // construction — every read below happens in enter()/apply_pending(),
+    // both render-thread; workers never touch it.
     SeriesDetailScreen(SonarrClient& sonarr, TmdbClient& tmdb,
-                       QbittorrentClient* qbit, bool sonarr_configured);
+                       QbittorrentClient* qbit, bool sonarr_configured,
+                       library::WatchStore* watch = nullptr);
     ~SeriesDetailScreen();
+
+    // Everything the dispatcher hands PlaybackScreen on a SeriesDetail->
+    // Playback transition. Field-for-field the TV mirror of DetailScreen::
+    // PlayTarget (meta half mirrors PlaybackOverlayMovieMeta), plus the
+    // episode context Task 5's end-of-episode overlay decides from:
+    // episodes + index-aligned host_paths (empty string = no file), season
+    // rows, the per-series watch map snapshot, and the bare series title.
+    struct SeriesPlayTarget {
+        std::string host_path;      // resolved host path of the chosen episode
+        std::string display_title;  // "<series> — S<em>E<n> · <ep title>"
+        double resume_position = 0.0;
+        int year = 0;
+        int runtime_min = 0;
+        std::string synopsis;
+        std::string poster_url;
+        std::string genres;         // up to 3, " · "-joined (Detail precedent)
+        WatchIdentity identity;     // MediaRef{Tv, tmdb_id} + season/episode
+        std::vector<EpisodeInfo> episodes;
+        std::vector<std::string> host_paths;  // index-aligned with episodes
+        std::vector<SeasonRow> rows;
+        watch_map watch;
+        std::string series_title;
+    };
+    // Builds the target for the episode chosen by the LAST accepted play
+    // gesture (episode-row SELECT or PlayNextUp) — both validate has_file +
+    // std::filesystem::exists BEFORE arming the transition, so the
+    // dispatcher can hand host_path straight to set_movie. Render-thread
+    // only (reads episode_watch_, calls the pure resolve_host_path).
+    SeriesPlayTarget get_play_target();
+
+    // One-shot "Start Season N" intent from Playback's season-end card.
+    // Set by the dispatcher on the Playback->SeriesDetail transition
+    // (PRE-leave); consumed in enter(), which re-derives the target via
+    // next_unmonitored_season and runs the EXISTING NextSeason dispatch
+    // only when they still agree — drift means the world changed while
+    // playing, and the safe answer is a "Season already started" toast.
+    void set_pending_intent_next_season(int season) {
+        pending_intent_next_season_ = season;
+    }
 
     // Same contract as DetailScreen::set_tmdb_id: no-op on the same id
     // (preserves loaded state on back-and-forth), refetch on a new one.
@@ -80,6 +128,13 @@ private:
         // Seasons with live queue activity (Task 8's poll).
         std::unordered_set<int> downloading;
         bool has_downloading = false;
+        // Episode half (Task 6). episodes_done marks that THIS drain carries
+        // an episode publish; episodes_ok is the checked-variant verdict
+        // (false = nullopt = Sonarr never answered; true + empty vector =
+        // genuinely no episodes).
+        bool episodes_done = false;
+        bool episodes_ok = false;
+        std::vector<EpisodeInfo> episodes;
     };
 
     void fetch();                       // spawns both workers under gen
@@ -87,6 +142,19 @@ private:
                         std::shared_ptr<std::atomic<bool>> done);
     void run_sonarr_fetch(uint64_t gen, int tmdb_id,
                           std::shared_ptr<std::atomic<bool>> done);
+    // Episode lane (Task 6). maybe_fetch_episodes runs on the RENDER thread
+    // inside apply_pending() — after a load/poll publish lands series_ — and
+    // spawns run_episodes_fetch when the per-season file-count total moved
+    // (or on the first sight of a sonarr_id for this load). The worker
+    // captures gen = fetch_gen_.load() at spawn WITHOUT bumping — fetch()
+    // remains the ONLY bumper; a bump here would invalidate any in-flight
+    // tmdb/sonarr worker for the SAME series and wedge the page in Loading —
+    // and gen-checks under pending_mtx_ before publishing, exactly like
+    // run_sonarr_fetch. episodes_inflight_ (the poll_inflight_ idiom) guards
+    // double-spawns; the worker clears it on every exit path.
+    void maybe_fetch_episodes();
+    void run_episodes_fetch(uint64_t gen, int sonarr_id,
+                            std::shared_ptr<std::atomic<bool>> done);
     void reap_finished_workers();
     void apply_pending();               // render-thread drain
     void rebuild_rows();                // rows_ = merge_season_rows(...)
@@ -165,9 +233,61 @@ private:
     DiskVerdict mut_verdict_ = DiskVerdict::Block;   // guarded
     int64_t mut_estimate_ = 0;                       // guarded
 
+    // ---- episode picker (Task 6) ----
+    // Which half of the page owns navigation. Seasons is the classic page
+    // (season rows + action row); Episodes replaces the season-list band
+    // with one season's episode rows. BTN4 in Episodes returns to Seasons,
+    // never to origin_.
+    enum class DetailRegion { Seasons, Episodes };
+
+    // Validates + arms a playback transition for episodes_[index]: fileless
+    // -> "Not downloaded yet" toast; resolved-path-missing-on-disk -> "File
+    // missing on disk" toast (the do_play precedent); otherwise records
+    // pending_play_index_ and sets navigate_playback_, which handle_input
+    // consumes into Screen::Playback the same frame.
+    void start_playback_for(int index);
+    // Indices into episodes_ for one season, in fetch order.
+    std::vector<int> season_episode_indices(int season) const;
+    // The episode band's paint: loading / outage / empty / paged rows.
+    void render_episode_region(::ui::Renderer& r, int screen_w, int body_x,
+                               int list_top, int list_bottom,
+                               bool& ep_overflow);
+
+    DetailRegion region_ = DetailRegion::Seasons;
+    std::vector<EpisodeInfo> episodes_;   // full series, fetch order
+    watch_map episode_watch_;             // joined from watch_ on the render thread
+    bool episodes_done_ = false;          // an episode publish has landed
+    bool episodes_ok_ = false;            // last publish's checked verdict
+    std::atomic<bool> episodes_inflight_{false};
+    // Per-season episode_file_count total at the last accepted spawn; -1 =
+    // never fetched for this load (reset by fetch(), and by a failed publish
+    // so the next poll drain retries the fetch instead of wedging on the
+    // outage line forever).
+    int last_episode_file_total_ = -1;
+    int episodes_season_ = 0;             // which season the region shows
+    int episode_focus_ = 0;               // index into the season's filtered list
+    int episode_page_ = 0;
+    int episode_page_count_ = 1;
+    int episode_per_page_ = 0;            // last render's geometry; 0 pre-render
+    // Season-row focus: -1 = the ring is on the action row (focus_ /
+    // buttons_ as ever); >= 0 = the ring is on rows_[season_focus_]. Rotary
+    // moves through one chain: season rows top-to-bottom, then the buttons.
+    int season_focus_ = -1;
+    int season_per_page_ = 0;             // last render's geometry; 0 pre-render
+    // Chosen-episode index for get_play_target(), set only by
+    // start_playback_for after its guards pass.
+    int pending_play_index_ = -1;
+    // Drain-set by start_playback_for, consumed by handle_input in the same
+    // frame (the navigate_back_ idiom). Cleared in fetch().
+    bool navigate_playback_ = false;
+    // See set_pending_intent_next_season(); consumed in enter(), cleared by
+    // fetch() (a full reload = a new world; the intent belonged to the old).
+    std::optional<int> pending_intent_next_season_;
+
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     QbittorrentClient* qbit_;           // Task 7 (remove); may be null
+    library::WatchStore* watch_;        // nullable; render-thread reads only
     const bool sonarr_configured_;
 
     int tmdb_id_ = 0;

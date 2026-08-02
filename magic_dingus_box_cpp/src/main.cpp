@@ -945,7 +945,7 @@ int main(int /* argc */, char* /* argv */[]) {
                                                   &watch_store);
     media_browser::ui::SeriesDetailScreen mb_series_detail(
         sonarr, *tmdb, qbit_owned.get(),
-        /*sonarr_configured=*/!sonarr_key.empty());
+        /*sonarr_configured=*/!sonarr_key.empty(), &watch_store);
     // Queue shows Sonarr's TV downloads alongside Radarr's movies. Gated
     // on sonarr_key.empty() for the same reason BrowseScreen and
     // SeriesDetailScreen are: without a key `sonarr` is a
@@ -2349,6 +2349,20 @@ int main(int /* argc */, char* /* argv */[]) {
                         mb_series_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
                         mb_series_detail.set_origin(current_mb_screen);
                     }
+                    // Playback -> SeriesDetail: drain the one-shot "Start
+                    // Season N" intent from the season-end card, PRE-leave.
+                    // Task 5's enter() clears an unconsumed intent, and this
+                    // is the only consumer — taking it here (before the
+                    // leave()/enter() pair below) is what makes the card's
+                    // primary actually start the season. SeriesDetail's tmdb
+                    // identity and origin are untouched: playback never
+                    // changes them, and pointing origin at Playback would
+                    // loop BTN4 straight back into the player.
+                    if (current_mb_screen == media_browser::ui::Screen::Playback) {
+                        if (auto s = mb_playback.take_pending_next_season()) {
+                            mb_series_detail.set_pending_intent_next_season(*s);
+                        }
+                    }
                 }
                 // Detail -> Playback: copy resolved host path + title from
                 // Detail to Playback so it knows what to load on enter().
@@ -2376,6 +2390,38 @@ int main(int /* argc */, char* /* argv */[]) {
                     mb_playback.set_start_position(pt.resume_position);
                     mb_playback.set_watch_identity(pt.watch_identity);
                     mb_playback.set_origin(media_browser::ui::Screen::Detail);
+                }
+                // SeriesDetail -> Playback (Task 6): the TV mirror of the
+                // Detail handoff above, plus the episode context that arms
+                // Task 5's end-of-episode overlay (countdown / season-end
+                // card). SeriesDetail validated has_file + on-disk existence
+                // before returning Screen::Playback, so host_path is
+                // playable here.
+                if (next == media_browser::ui::Screen::Playback &&
+                    current_mb_screen == media_browser::ui::Screen::SeriesDetail) {
+                    auto pt = mb_series_detail.get_play_target();
+                    mb_playback.set_movie(pt.host_path, pt.display_title);
+                    media_browser::ui::PlaybackOverlayMovieMeta meta;
+                    // tmdb_id stays 0 ON PURPOSE: the overlay's similar-films
+                    // prefetch hits TMDB's MOVIE endpoints, and the movie/TV
+                    // id spaces overlap completely — a TV id here would fetch
+                    // an unrelated movie's "similar" rail. 0 = overlay
+                    // renders the meta header without similar films.
+                    meta.title       = pt.display_title;
+                    meta.year        = pt.year;
+                    meta.runtime_min = pt.runtime_min;
+                    meta.synopsis    = pt.synopsis;
+                    meta.genres      = pt.genres;
+                    meta.poster_url  = pt.poster_url;
+                    mb_playback.set_movie_meta(std::move(meta));
+                    mb_playback.set_start_position(pt.resume_position);
+                    mb_playback.set_watch_identity(pt.identity);
+                    mb_playback.set_origin(
+                        media_browser::ui::Screen::SeriesDetail);
+                    mb_playback.set_episode_context(
+                        std::move(pt.episodes), std::move(pt.host_paths),
+                        std::move(pt.rows), std::move(pt.watch),
+                        std::move(pt.series_title));
                 }
                 // Artwork I/O contention guard: pause the artwork worker
                 // when entering Playback so it doesn't compete with
