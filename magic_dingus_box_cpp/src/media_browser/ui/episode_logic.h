@@ -65,11 +65,13 @@ struct WatchKey {
 
 // Injective: season occupies the high 32 bits, episode the low 32, so no
 // two (season, episode) pairs can collide before std::hash mixes them.
+// Both fields pass through unsigned: left-shifting a negative signed value
+// is UB in C++17, so a (never-expected) negative season must not reach <<.
 struct WatchKeyHash {
     size_t operator()(const WatchKey& k) const noexcept {
-        return std::hash<long long>{}(
-            (static_cast<long long>(k.season) << 32) |
-            static_cast<long long>(static_cast<unsigned>(k.episode)));
+        return std::hash<unsigned long long>{}(
+            (static_cast<unsigned long long>(static_cast<unsigned>(k.season)) << 32) |
+            static_cast<unsigned long long>(static_cast<unsigned>(k.episode)));
     }
 };
 

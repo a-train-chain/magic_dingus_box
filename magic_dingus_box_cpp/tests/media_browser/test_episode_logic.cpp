@@ -123,6 +123,18 @@ TEST_CASE("next_up with current==nullptr skips watched episodes", "[episode_logi
         watch[WatchKey{1, 3}] = watched_row();
         CHECK(next_up(eps, watch, static_cast<const FakeEp*>(nullptr)) == nullptr);
     }
+    SECTION("season 0 listed first is skipped: fresh watch-next starts at S1") {
+        // Specials sort before season 1 (season asc), so a special with a
+        // file is the FIRST has_file entry the loop sees — this is the only
+        // section that fails if `if (e.season_number == 0) continue;` is
+        // deleted (every other episode list puts season 0 after the pick).
+        std::vector<FakeEp> specials_first = {ep(0, 1, true), ep(1, 1, true)};
+        const FakeEp* n =
+            next_up(specials_first, watch_map{}, static_cast<const FakeEp*>(nullptr));
+        REQUIRE(n != nullptr);
+        CHECK(n->season_number == 1);
+        CHECK(n->episode_number == 1);
+    }
 }
 
 TEST_CASE("season_end_card decision matrix", "[episode_logic]") {
