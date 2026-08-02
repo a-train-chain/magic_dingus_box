@@ -89,7 +89,10 @@ On the Pi (or cross-compile target):
 cd magic_dingus_box_cpp
 mkdir -p build && cd build
 cmake ..
-make -j4
+make -j2          # on a Pi: each cc1plus peaks near 600 MB, so -j4 pushes a
+                  # 1.5 GB Pi 4B into the OOM killer and a 2 GB Pi 5 into swap
+                  # while the kiosk and containers are still running.
+                  # Cross-compiling on a dev machine: use -j$(nproc).
 ```
 
 The kiosk binary lands at `build/magic_dingus_box_cpp`. Test binaries (`test_media_browser`, `test_media_browser_unit`) are built only when `-DENABLE_MEDIA_BROWSER=ON` is set.

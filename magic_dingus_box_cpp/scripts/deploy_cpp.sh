@@ -480,7 +480,7 @@ echo ""
 # Step 3: Build (if requested)
 if [ "$BUILD" = true ]; then
     echo "Step 3: Building on Pi..."
-    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" MEDIA_BROWSER="${MEDIA_BROWSER}" FORCE_CLEAN="${FORCE_CLEAN}" bash <<'BUILDEOF'
+    ssh "${PI_HOST}" PI_DIR="${PI_DIR}" MEDIA_BROWSER="${MEDIA_BROWSER}" FORCE_CLEAN="${FORCE_CLEAN}" MAKE_JOBS="${MAKE_JOBS:-}" bash <<'BUILDEOF'
 set -e
 cd "${PI_DIR}/magic_dingus_box_cpp"
 
@@ -587,14 +587,34 @@ if ! cmake .. ${CMAKE_FLAGS}; then
 fi
 
 echo "  Compiling..."
-# Match update.sh's parallelism rule: -j4 OOMs the 1.5 GB Pi 4B — the OOM
-# killer takes a cc1plus mid-build and the failure presents as a random
-# compiler crash (update.sh:143 learned this and dropped to -j2). The Pi 5
-# keeps -j4. grep -a: the device-tree model file ends in a NUL byte.
-BUILD_JOBS=4
-if grep -qa "Raspberry Pi 4" /proc/device-tree/model 2>/dev/null; then
+# Parallelism is bounded by RAM, not by board model. -j4 OOMs the 1.5 GB
+# Pi 4B — the OOM killer takes a cc1plus mid-build and it presents as a
+# random compiler crash (update.sh:146 learned this and dropped to -j2).
+#
+# Keying that off the model was almost right and quietly wrong: the 2 GB
+# Pi 5 fell into the "roomy" branch, but it runs the kiosk and six Docker
+# containers alongside the build, and a -j4 deploy measured 688 MB into
+# swap with ~30 MB free (2026-08-02). It survived on swap, but that is SD
+# card thrash and one unlucky allocation away from the OOM killer taking
+# the live kiosk. Memory is the axis that actually predicts this, and it
+# covers every variant — 1.5 GB Pi 4B, 2 GB Pi 5, and an 8 GB Pi 5 that
+# genuinely can afford -j4 — without a table of board names to maintain.
+#
+# Each cc1plus peaked at ~430 MB on this tree, so budget ~600 MB/job and
+# leave 512 MB for the running kiosk and containers.
+MEM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+if [ "${MAKE_JOBS:-}" ]; then
+    BUILD_JOBS="${MAKE_JOBS}"
+    echo "  (MAKE_JOBS override — building with -j${BUILD_JOBS})"
+elif [ "${MEM_KB}" -ge 4194304 ]; then      # >= 4 GB
+    BUILD_JOBS=4
+elif [ "${MEM_KB}" -gt 0 ]; then
     BUILD_JOBS=2
-    echo "  (Pi 4B detected — building with -j2 to stay inside 1.5 GB RAM)"
+    echo "  (${MEM_KB} kB RAM — building with -j2 to stay out of swap)"
+else
+    # /proc/meminfo unreadable: assume the tightest supported board.
+    BUILD_JOBS=2
+    echo "  (could not read MemTotal — defaulting to -j2)"
 fi
 if ! make -j${BUILD_JOBS}; then
     echo "  ✗ Build failed!"
@@ -782,7 +802,7 @@ fi
 if [ "$BUILD" = false ]; then
     echo "Next steps:"
     echo "  1. SSH to Pi: ssh ${PI_HOST}"
-    echo "  2. Build: cd ${PI_DIR}/magic_dingus_box_cpp && mkdir -p build && cd build && cmake .. && make -j4"
+    echo "  2. Build: cd ${PI_DIR}/magic_dingus_box_cpp && mkdir -p build && cd build && cmake .. && make -j2"
     echo "  3. Test: sudo ./magic_dingus_box_cpp"
 fi
 if [ "$TEST" = false ] && [ "$BUILD" = true ] && [ "$INSTALL_CORES" = false ]; then

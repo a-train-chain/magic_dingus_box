@@ -67,8 +67,13 @@ boards" and `OTA_UPDATE_GUARANTEES.md`.
 cd magic_dingus_box_cpp
 mkdir -p build && cd build
 cmake ..
-make -j4
+make -j2          # on a Pi: each cc1plus peaks near 600 MB, so -j4 pushes a
+                  # 1.5 GB Pi 4B into the OOM killer and a 2 GB Pi 5 into swap
+                  # while the kiosk and containers are still running.
+                  # Cross-compiling on a dev machine: use -j$(nproc).
 ```
+`deploy_cpp.sh` and `deploy_fixes.sh` pick this automatically from `MemTotal`
+(>= 4 GB gets `-j4`); `MAKE_JOBS` overrides.
 
 ### Deployment (from dev machine to Pi)
 ```bash

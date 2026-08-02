@@ -43,6 +43,7 @@ from typing import Any, Optional
 
 import yaml
 from flask import Flask, jsonify, redirect, render_template_string, request, send_file, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 try:
     from remote import auth as remote_auth
@@ -129,6 +130,30 @@ def get_disk_info(path: str = "/") -> dict:
         }
     except Exception:
         return {}
+
+
+# One gibibyte, spelled out once so every size the API reports uses the same
+# unit the disk figures in /admin/health/detailed already use.
+BYTES_PER_GB = 1024 ** 3
+
+
+def get_free_bytes(path) -> Optional[int]:
+    """Free bytes available to an unprivileged writer at `path`.
+
+    get_disk_info() rounds to two decimal places of a gibibyte, which is fine
+    for a dashboard and useless for a precondition — 0.00 GB free and 5 MB free
+    round to the same number. Preconditions need the raw count.
+
+    Returns None when the filesystem cannot be interrogated at all (statvfs is
+    Linux/macOS only, and the path may not exist yet). Callers MUST treat None
+    as "unknown", not as "full": refusing every upload on a machine where the
+    check itself is unavailable would be worse than the ENOSPC it prevents.
+    """
+    try:
+        stat = os.statvfs(str(path))
+        return stat.f_bavail * stat.f_frsize
+    except Exception:
+        return None
 
 
 def get_cpu_usage() -> Optional[float]:
@@ -370,6 +395,76 @@ def _canonical_playlist_name(safe_name: str) -> str:
     if safe_name.lower().endswith(".yml"):
         return safe_name[: -len(".yml")] + ".yaml"
     return safe_name
+
+
+# Filename used when a title cannot produce one. Shared by every title->file
+# derivation so two callers cannot disagree about what "no usable title" means.
+UNTITLED_PLAYLIST_FILENAME = "imported_playlist.yaml"
+
+
+def _playlist_filename_for_title(
+        title: str, fallback: str = UNTITLED_PLAYLIST_FILENAME) -> str:
+    """Derive the on-box .yaml filename for a playlist title.
+
+    The character class here is deliberately narrow — `[^\\w\\s-]` keeps word
+    characters, whitespace and dashes and drops everything else — which means a
+    title made ENTIRELY of non-word characters reduces to the empty string. A
+    title that is nothing but emoji therefore used to produce the literal file
+    '.yaml', written with a 200 OK, and that file is a ghost twice over:
+
+      * the kiosk never loads it. playlist_loader.cpp keeps a file only when
+        `entry.path().extension() == ".yaml"`, and the extension of a name that
+        is nothing but a suffix is empty — std::filesystem treats a leading dot
+        as the start of a hidden file's stem, not an extension.
+      * it cannot be removed through the web admin either. The Content Manager
+        lists playlists with Path.glob("*.y*ml"), which does NOT hide dotfiles,
+        so the row appears; but every GET/POST/DELETE for it runs the name
+        through _sanitize_filename, where os.path.splitext('.yaml')[1] == ''
+        fails the allowed-extensions check and raises. The row is visible,
+        broken, and permanently un-actionable.
+
+    Hence the ordering below, which matters: fall back to a real name FIRST,
+    then sanitize. Sanitizing first would turn today's silent success into a
+    confusing 400 on a title the user is perfectly entitled to use.
+
+    Note this only bites titles with zero word characters. A leading emoji is
+    fine and always was: "<emoji> MDB" -> "MDB.yaml".
+
+    `fallback` is what an unusable title degrades to. Callers that have a better
+    answer than a generic name — the single-YAML import has the uploaded
+    filename — pass it here rather than reimplementing the slug.
+
+    Raises ValueError (from _sanitize_filename) only if `fallback` itself is not
+    a legal .yaml/.yml basename; a slug derived from a title never can be, since
+    the character class excludes every path separator.
+    """
+    slug = re.sub(r'[^\w\s-]', '', title or '').strip()
+    slug = re.sub(r'[-\s]+', '_', slug)
+    return _canonical_playlist_name(
+        _sanitize_filename(f"{slug}.yaml" if slug else fallback,
+                           allowed_extensions=['.yaml', '.yml']))
+
+
+def _playlist_summary(path: Path) -> dict:
+    """Best-effort {title, item_count} for a playlist already on disk.
+
+    Used to describe the INCUMBENT file in a filename-collision response, so
+    the operator is asked about two named playlists rather than about a
+    filename they never typed. A file that will not parse still has to be
+    describable — a collision is exactly when the incumbent might be junk — so
+    every failure degrades to the stem rather than raising.
+    """
+    try:
+        data = yaml.safe_load(path.read_text())
+    except Exception:
+        return {"title": path.stem, "item_count": 0}
+    if not isinstance(data, dict):
+        return {"title": path.stem, "item_count": 0}
+    items = data.get("items")
+    return {
+        "title": str(data.get("title") or path.stem),
+        "item_count": len(items) if isinstance(items, list) else 0,
+    }
 
 
 class _ExtractTooLarge(Exception):
@@ -743,9 +838,20 @@ def _sanitize_filename(name: str, allowed_extensions: Optional[list[str]] = None
     # Validate extension if required
     if allowed_extensions:
         ext = os.path.splitext(basename)[1].lower()
+        # A basename that IS the extension ('.yaml') is a legacy ghost: an
+        # emoji-only title used to slug to '' and write that literal file.
+        # splitext puts the whole thing in the STEM, so ext is '' and the
+        # check below rejects it — which is why those rows were listed by
+        # Path.glob (pathlib does not hide dotfiles) yet could never be
+        # fetched or deleted through the API. Creation is prevented upstream
+        # now by _playlist_filename_for_title, so accepting it here only ever
+        # lets an operator clean one up. No separator is involved, so this
+        # widens nothing for path traversal.
+        if not ext and basename.lower() in allowed_extensions:
+            return basename
         if ext not in allowed_extensions:
             raise ValueError(f"Filename must have one of these extensions: {', '.join(allowed_extensions)}")
-    
+
     return basename
 
 
@@ -1493,6 +1599,109 @@ def create_app(data_dir: Path, config=None) -> Flask:
     roms_dir = data_dir / "roms"
     device_info_file = data_dir / "device_info.json"
 
+    # ===== KIOSK RELOAD POKES =====
+    #
+    # The kiosk loads playlists exactly ONCE, at boot: main.cpp has a single
+    # PlaylistLoader::load_playlists() call site in the whole C++ tree, with no
+    # inotify watch, no poll and no SIGHUP handler. So every web write path
+    # here returned a green toast while the TV kept showing the old content
+    # until someone pulled the power — success in the browser, nothing on the
+    # screen, and no way for the operator to tell the difference.
+    #
+    # The fix is the mechanism the settings restore path already proved: drop a
+    # marker file the kiosk polls for (~1 Hz), which it deletes and then acts
+    # on. Two properties make it the right shape here:
+    #
+    #   * it is one small write, so it cannot meaningfully fail or block, and
+    #   * a kiosk binary that has never heard of a marker simply leaves the
+    #     file alone. Shipping the web half FIRST is therefore safe, and is the
+    #     order this must ship in — the marker is inert until the kiosk learns
+    #     to read it, and no box regresses in the meantime.
+    RELOAD_MARKERS = {
+        "settings": "settings_reload_request",
+        "playlists": "playlists_reload_request",
+    }
+
+    def _poke_kiosk_reload(kind: str) -> None:
+        """Ask the running kiosk to re-read `kind` from disk.
+
+        MUST NOT raise. Every caller has already completed the write the user
+        asked for; turning a successful save into a 500 because a zero-byte
+        marker could not be written would be strictly worse than the stale-UI
+        bug this exists to fix. Failures are logged and swallowed — the
+        operator's content is on disk either way, and a reboot still picks it
+        up, which is exactly the old behaviour.
+        """
+        try:
+            marker = RELOAD_MARKERS[kind]
+            _atomic_write_text(data_dir / marker, str(time.time()))
+        except Exception as e:
+            print(f"Failed to poke kiosk for {kind} reload: {e}", file=sys.stderr)
+
+    # ===== STORAGE PRECONDITIONS =====
+    #
+    # TMPDIR is redirected onto the SD card above (the tmpfs /tmp is far too
+    # small for an 8 GB upload), so an import stages the whole ZIP there and
+    # then extracts it into data/media — peak footprint roughly twice the ZIP.
+    # Nothing checked whether that fit, and ENOSPC surfaced as a raw 500.
+    #
+    # A full card is worse than a failed import: the running kiosk writes
+    # settings.json, RetroArch save files and paired-remote state to the same
+    # volume, so an upload that fills it takes the appliance's own persistence
+    # down with it. Hence the reserve below — we refuse an upload before the
+    # last slice of the card is gone, not after.
+    STORAGE_HEADROOM_BYTES = 512 * 1024 * 1024
+
+    # A staged ZIP and its extracted contents coexist on disk at the peak, and
+    # video barely compresses, so budget for two copies. Same for the transcode
+    # endpoints, which hold the uploaded original while ffmpeg writes the .part.
+    IMPORT_PEAK_MULTIPLIER = 2
+
+    def _storage_precondition(needed_bytes: int):
+        """Return a 507 response tuple if `needed_bytes` will not fit, else None.
+
+        Call this BEFORE touching request.files or request.form. Werkzeug parses
+        the multipart body lazily, on first access to either — and parsing spools
+        the upload to disk. Checking after that point has already consumed the
+        space we are trying to protect, which is the whole point of answering
+        early.
+        """
+        free = get_free_bytes(data_dir)
+        if free is None or needed_bytes <= 0:
+            # Unknown free space (no statvfs) or unknown request size (chunked
+            # transfer sends no Content-Length). Refusing on "unknown" would
+            # break dev machines and legitimate clients; let it through and let
+            # the extraction caps do their job.
+            return None
+        if free - STORAGE_HEADROOM_BYTES >= needed_bytes:
+            return None
+        return error_response(
+            "INSUFFICIENT_STORAGE",
+            "Not enough free space on this box for that upload.",
+            status=507,
+            details={
+                "needed_gb": round(needed_bytes / BYTES_PER_GB, 2),
+                "free_gb": round(free / BYTES_PER_GB, 2),
+            },
+        )
+
+    @app.errorhandler(413)
+    def _payload_too_large(e):  # type: ignore[no-redef]
+        """Return the standard error envelope when MAX_CONTENT_LENGTH trips.
+
+        Werkzeug's own 413 body is HTML, so the Content Manager's fetch wrapper
+        found no JSON, fell back to response.statusText, and showed the operator
+        a bare "REQUEST ENTITY TOO LARGE" with no mention of a size limit or
+        what it is.
+        """
+        max_mb = int((app.config.get("MAX_CONTENT_LENGTH") or 0) // (1024 * 1024))
+        return error_response(
+            "PAYLOAD_TOO_LARGE",
+            f"Upload is larger than this box accepts ({max_mb} MB maximum).",
+            status=413,
+            details={"max_upload_mb": max_mb},
+        )
+
     # Sweep crashed transcode staging files. run_transcode_job encodes
     # into media_dir/<name>.mp4.part and os.replace()s onto the final
     # name only on success; a restart or power cut mid-encode leaves the
@@ -1802,6 +2011,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         except Exception as e:
                             errors.append(f"Failed to restore {playlist_name}: {e}")
 
+                # The restore path already poked for settings 20 lines below
+                # but never for playlists, so a restored backup put the
+                # playlists on disk and left the TV showing the old set.
+                if restored["playlists"]:
+                    _poke_kiosk_reload("playlists")
+
                 # Restore settings
                 if "config/settings.json" in names:
                     try:
@@ -1820,9 +2035,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # settings.json into memory. Without the poke, the
                         # kiosk's next operator-action save would clobber
                         # the restore with its stale in-memory settings.
-                        _atomic_write_text(
-                            data_dir / "settings_reload_request",
-                            str(time.time()))
+                        _poke_kiosk_reload("settings")
                     except Exception as e:
                         errors.append(f"Failed to restore settings: {e}")
 
@@ -1967,6 +2180,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     status=409)
 
             _atomic_write_text(p, yaml_content)
+            _poke_kiosk_reload("playlists")
             print(f"Successfully saved playlist: {safe_name} ({len(yaml_content)} bytes)", file=sys.stderr)
             return success_response(data={"filename": safe_name}, message="Playlist saved")
         except ValueError as e:
@@ -2082,6 +2296,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         # Delete the playlist file
         p.unlink()
+        _poke_kiosk_reload("playlists")
 
         if videos_deleted > 0:
             return success_response(
@@ -2140,23 +2355,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     "Playlist must have an 'items' list"
                 )
             
-            # Determine output filename
-            # Prefer 'title' from YAML, fall back to uploaded filename
-            title = data.get('title', '').strip()
-            if title:
-                # Sanitize title for use as filename
-                safe_title = re.sub(r'[^\w\s-]', '', title).strip()
-                safe_title = re.sub(r'[-\s]+', '_', safe_title)
-                output_name = f"{safe_title}.yaml"
-            else:
-                output_name = original_filename
-            
+            # Determine output filename.
+            # Prefer 'title' from YAML, fall back to the uploaded filename —
+            # which now also covers a title that slugs to nothing (emoji-only).
+            # That case used to reach _sanitize_filename as the bare string
+            # '.yaml' and come back as an extension error, which is a baffling
+            # thing to tell someone who supplied a perfectly good title.
+            title = (data.get('title') or '').strip()
             try:
-                safe_name = _canonical_playlist_name(
-                    _sanitize_filename(output_name, allowed_extensions=['.yaml', '.yml']))
+                safe_name = _playlist_filename_for_title(
+                    title, fallback=original_filename)
             except ValueError as e:
                 return error_response("VALIDATION_ERROR", str(e))
-            
+
             # Check if already exists
             output_path = playlists_dir / safe_name
             overwrite = request.args.get('overwrite', 'false').lower() == 'true'
@@ -2173,7 +2384,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
             
             # Save
             _atomic_write_text(output_path, formatted_yaml)
-            
+            _poke_kiosk_reload("playlists")
+
             item_count = len(data.get('items', []))
             print(f"Imported playlist: {safe_name} ({item_count} items)", file=sys.stderr)
             
@@ -2187,11 +2399,79 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 message=f"Playlist imported successfully with {item_count} items"
             )
             
+        except HTTPException:
+            # Werkzeug raises RequestEntityTooLarge (a 413 HTTPException)
+            # when MAX_CONTENT_LENGTH is exceeded. Swallowing it here would
+            # turn it into a 500 with a raw message and bypass the
+            # errorhandler(413) that returns the standard JSON envelope.
+            raise
         except Exception as e:
             print(f"Error importing playlist: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
             return error_response("INTERNAL_ERROR", str(e), status=500)
+
+    @app.post("/admin/playlists/import-package/precheck")
+    @require_csrf
+    def import_package_precheck():  # type: ignore[no-redef]
+        """Answer the two questions an import raises, BEFORE the bytes move.
+
+        A package is gigabytes over Wi-Fi. Discovering at the end of that
+        upload that the filename was already taken, or that the card was never
+        going to hold it, wastes the whole transfer and — in the storage case —
+        does damage on the way, because the staged ZIP is on the card by then.
+
+        Deliberately takes JSON only and refuses a file body: an endpoint that
+        accepted the upload in order to tell you not to send the upload would
+        answer the question too late to be worth asking.
+        """
+        if request.files:
+            return error_response(
+                "VALIDATION_ERROR",
+                "Precheck takes JSON only; do not attach the package")
+
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return error_response("VALIDATION_ERROR", "JSON body required")
+
+        title = str(body.get("title") or "").strip()
+        try:
+            size_bytes = int(body.get("size_bytes") or 0)
+        except (TypeError, ValueError):
+            return error_response("VALIDATION_ERROR", "size_bytes must be an integer")
+        if size_bytes < 0:
+            return error_response("VALIDATION_ERROR", "size_bytes must not be negative")
+
+        try:
+            filename = _playlist_filename_for_title(title)
+        except ValueError as e:
+            return error_response("VALIDATION_ERROR", str(e))
+
+        existing = playlists_dir / filename
+        exists = existing.is_file()
+        summary = _playlist_summary(existing) if exists else None
+
+        # Same arithmetic the import itself will apply, so a green precheck and
+        # a 507 from the real POST cannot disagree.
+        needed = size_bytes * IMPORT_PEAK_MULTIPLIER
+        free = get_free_bytes(data_dir)
+        if free is None or needed <= 0:
+            # Unknown, not full — see _storage_precondition. Report optimistic
+            # so the client does not block an upload we would have accepted.
+            enough_space = True
+        else:
+            enough_space = (free - STORAGE_HEADROOM_BYTES) >= needed
+
+        return success_response(data={
+            "exists": exists,
+            "existing_filename": filename if exists else None,
+            "existing_title": summary["title"] if exists else None,
+            "existing_item_count": summary["item_count"] if exists else None,
+            "free_gb": round((free or 0) / BYTES_PER_GB, 2),
+            "enough_space": enough_space,
+            "max_upload_mb": int(
+                (app.config.get("MAX_CONTENT_LENGTH") or 0) // (1024 * 1024)),
+        })
 
     @app.post("/admin/playlists/import-package")
     @require_csrf
@@ -2207,6 +2487,16 @@ def create_app(data_dir: Path, config=None) -> Flask:
         Query params:
             overwrite: If 'true', overwrite existing playlist/videos with same names
         """
+        # Free-space precondition, deliberately ahead of the extension check.
+        # Reading request.files makes werkzeug spool the whole multipart body
+        # onto the SD card, so any validation placed above this line has
+        # already spent the space we are trying to protect. Budget two copies:
+        # the staged ZIP and the extracted media coexist at the peak.
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
+        if _no_space:
+            return _no_space
+
         try:
             if 'file' not in request.files:
                 return error_response("VALIDATION_ERROR", "No file provided")
@@ -2281,22 +2571,51 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     if 'items' not in playlist_data or not isinstance(playlist_data.get('items'), list):
                         return error_response("VALIDATION_ERROR", "Playlist must have an 'items' list")
 
-                    # Determine output filename for playlist BEFORE extracting videos
-                    title = playlist_data.get('title', '').strip()
-                    if title:
-                        safe_title = re.sub(r'[^\w\s-]', '', title).strip()
-                        safe_title = re.sub(r'[-\s]+', '_', safe_title)
-                        output_name = f"{safe_title}.yaml"
-                    else:
-                        output_name = "imported_playlist.yaml"
+                    # Determine output filename for playlist BEFORE extracting
+                    # videos. This slugged the title inline and skipped
+                    # _sanitize_filename entirely — unlike the single-YAML
+                    # import path — so a title with no word characters wrote
+                    # the literal file '.yaml' and reported success. See
+                    # _playlist_filename_for_title for why that file is both
+                    # invisible to the kiosk and impossible to delete again.
+                    title = (playlist_data.get('title') or '').strip()
+                    try:
+                        output_name = _playlist_filename_for_title(title)
+                    except ValueError as e:
+                        return error_response("VALIDATION_ERROR", str(e))
 
-                    # Check if playlist exists BEFORE extracting any files
+                    # Check if playlist exists BEFORE extracting any files.
+                    #
+                    # The slug is lossy in a way the operator cannot see: it
+                    # drops every non-word character, so 'Rock & Roll',
+                    # 'Rock, Roll' and 'Rock Roll' all land on Rock_Roll.yaml.
+                    # The old message named only the FILENAME, which is not
+                    # something the operator ever typed — so "Rock_Roll.yaml
+                    # already exists" gave them no way to tell an accidental
+                    # re-import of the same playlist from a genuine collision
+                    # with a different one they would be destroying. Report
+                    # both titles and let the UI ask a question worth
+                    # answering.
                     playlist_path = playlists_dir / output_name
                     if playlist_path.exists() and not overwrite:
+                        incumbent = _playlist_summary(playlist_path)
+                        incoming_title = title or output_name
+                        if incumbent["title"] == incoming_title:
+                            detail = (f"Playlist '{incumbent['title']}' is already on "
+                                      "this box. Set overwrite=true to replace it.")
+                        else:
+                            detail = (f"'{incoming_title}' and '{incumbent['title']}' "
+                                      f"both save as {output_name}. Importing would "
+                                      f"replace '{incumbent['title']}'.")
                         return error_response(
                             "ALREADY_EXISTS",
-                            f"Playlist '{output_name}' already exists. Set overwrite=true to replace.",
-                            status=409
+                            detail,
+                            status=409,
+                            details={
+                                "existing_title": incumbent["title"],
+                                "existing_filename": output_name,
+                                "incoming_title": incoming_title,
+                            },
                         )
 
                     # Find media files in the ZIP
@@ -2528,10 +2847,25 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Format and save playlist
                 formatted_yaml = format_playlist_yaml(playlist_data)
                 _atomic_write_text(playlist_path, formatted_yaml)
+                _poke_kiosk_reload("playlists")
 
                 item_count = len(playlist_data.get('items', []))
                 print(f"Imported package: {output_name} ({item_count} items, "
-                      f"{videos_imported} videos, {roms_imported} ROMs)", file=sys.stderr)
+                      f"{videos_imported} videos, {roms_imported} ROMs, "
+                      f"{videos_skipped} videos + {roms_skipped} ROMs skipped)",
+                      file=sys.stderr)
+
+                # A skip is not a failure but it is not a success either: the
+                # file was already on the box, so the operator's newer copy was
+                # silently discarded. Both counters were computed and only one
+                # was reported, and the UI dropped that one too — so an import
+                # of a package whose every file already existed rendered
+                # identically to one that landed in full. Keep both keys
+                # present unconditionally so the client can render zero.
+                skipped_note = ""
+                if videos_skipped or roms_skipped:
+                    skipped_note = (f" ({videos_skipped} videos, {roms_skipped} "
+                                    "ROMs already on the box were kept)")
 
                 return success_response(
                     data={
@@ -2541,9 +2875,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         "videos_imported": videos_imported,
                         "roms_imported": roms_imported,
                         "videos_skipped": videos_skipped,
+                        "roms_skipped": roms_skipped,
                     },
                     message=(f"Package imported: {item_count} playlist items, "
-                             f"{videos_imported} videos, {roms_imported} ROMs")
+                             f"{videos_imported} videos, {roms_imported} ROMs"
+                             f"{skipped_note}")
                 )
 
             except zipfile.BadZipFile:
@@ -2553,6 +2889,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if temp_path and os.path.exists(temp_path):
                     os.unlink(temp_path)
 
+        except HTTPException:
+            # Werkzeug raises RequestEntityTooLarge (a 413 HTTPException)
+            # when MAX_CONTENT_LENGTH is exceeded. Swallowing it here would
+            # turn it into a 500 with a raw message and bypass the
+            # errorhandler(413) that returns the standard JSON envelope.
+            raise
         except Exception as e:
             print(f"Error importing package: {e}", file=sys.stderr)
             import traceback
@@ -2600,6 +2942,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_media():  # type: ignore[no-redef]
         """Upload video file."""
+        # Ahead of request.files for the reason given in _storage_precondition:
+        # touching it spools the body to the card. One copy here — the staged
+        # temp file is renamed into place, never duplicated.
+        _no_space = _storage_precondition(request.content_length or 0)
+        if _no_space:
+            return _no_space
+
         if "file" not in request.files:
             return error_response("VALIDATION_ERROR", "File field required")
         f = request.files["file"]
@@ -3024,6 +3373,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_and_transcode():  # type: ignore[no-redef]
         """Upload video file and transcode it on the Pi."""
+        # Two copies: the uploaded original sits in upload_temp for the whole
+        # job while ffmpeg writes the .mp4.part next to the media library.
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
+        if _no_space:
+            return _no_space
+
         if "file" not in request.files:
             return error_response("VALIDATION_ERROR", "File field required")
 
@@ -3194,6 +3550,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def smart_upload():  # type: ignore[no-redef]
         """Smart upload: probe video and decide whether to transcode or direct upload."""
+        # Probe first, so worst case is the same two copies as
+        # upload_and_transcode; the direct-move branch only needs one.
+        _no_space = _storage_precondition(
+            (request.content_length or 0) * IMPORT_PEAK_MULTIPLIER)
+        if _no_space:
+            return _no_space
+
         if "file" not in request.files:
             return error_response("VALIDATION_ERROR", "File field required")
 
@@ -3351,6 +3714,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
     @require_csrf
     def upload_rom(system):  # type: ignore[no-redef]
         """Upload ROM for specific system."""
+        _no_space = _storage_precondition(request.content_length or 0)
+        if _no_space:
+            return _no_space
+
         if "file" not in request.files:
             return error_response("VALIDATION_ERROR", "File field required")
         f = request.files["file"]
