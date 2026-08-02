@@ -1293,7 +1293,12 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                                 chrome::kPad3;
         const int list_avail =
             list_bottom - kButtonRowH - kIndicatorRowH - list_top;
-        const int per_page = std::max(1, list_avail / kRowH);
+        // CRT_NATIVE (640x480 logical) leaves no room below the poster —
+        // list_avail goes NEGATIVE there, and a forced one-row minimum drew
+        // into the reserved button band. Clamp to zero rows: the totals
+        // line, action row, and footer still render; per-season detail is a
+        // 720p+ affordance.
+        const int per_page = std::max(0, list_avail / kRowH);
         const int total_rows = static_cast<int>(rows_.size());
         season_page_count_ =
             std::max(1, (total_rows + per_page - 1) / per_page);
@@ -1703,6 +1708,12 @@ std::string SeriesDetailScreen::whole_series_label() const {
 void SeriesDetailScreen::spawn_mutation(std::function<void()> body) {
     if (mut_in_flight_.load()) return;               // one at a time
     if (mut_worker_.joinable()) mut_worker_.join();  // reap the finished one
+    // A poll already in flight is stale by definition once a mutation
+    // starts: if it published between this mutation's drain and the next
+    // apply_pending, its PRE-mutation snapshot would overwrite the
+    // mutation's result — for remove, permanently (the page would show a
+    // removed series as in-library and never recover). One bump closes it.
+    poll_gen_.fetch_add(1);
     mut_tmdb_id_ = tmdb_id_;
     mut_in_flight_.store(true);
     mut_done_.store(false);
@@ -2002,7 +2013,11 @@ In `render()`, **inside the `else` block** — this is the only scope where `bod
         // Action row. Its height was already reserved out of the season
         // list's budget above (kButtonRowH), so it can never overlap a row.
         if (!buttons_.empty()) {
-            const bool busy = mut_in_flight_.load();
+            // SERIES-SCOPED: another series' still-finishing mutation must
+            // not gray THIS page's row. SELECT stays globally gated (one
+            // worker), so a press in that window is ignored briefly (≤14 s
+            // worst case) — never misapplied.
+            const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
             int bx = body_x;
             const int brow_y = list_bottom - kButtonRowH;
             for (size_t i = 0; i < buttons_.size(); ++i) {
@@ -2099,26 +2114,50 @@ Add `#include <filesystem>` to `series_detail_screen.cpp`'s includes. Replace th
                                 : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
                             return;
                         }
-                        // *** monitor=false, i.e. addOptions.monitor="none". ***
-                        // The client documents "none" as the only correct
-                        // value for an add whose monitoring the CALLER
-                        // manages, and this flow manages all of it below.
-                        // Sonarr applies addOptions ASYNCHRONOUSLY, after
-                        // RefreshSeriesService has fetched the episode list:
-                        // with "firstSeason" that application lands AFTER our
-                        // set_season_monitored PUTs and UNMONITORS S2..N
-                        // behind us — the user gets "whole-series search
-                        // started" and season 1. "none" gives up
-                        // searchForMissingEpisodes too, which the explicit
-                        // trigger_series_search below replaces.
+                        // *** monitor=true is REQUIRED here. *** add_series
+                        // writes the SERIES-LEVEL monitored flag from this
+                        // same parameter (series["monitored"] = monitor) and
+                        // no client method exists to flip it afterwards.
+                        // "none" would leave the series permanently
+                        // unmonitored, and Sonarr's
+                        // MonitoredEpisodeSpecification rejects every release
+                        // for an unmonitored series: seasons monitored,
+                        // search runs, NOTHING ever downloads — invisibly.
+                        //
+                        // The firstSeason-vs-our-PUTs race this used to fear
+                        // is provably over when settled==true: add_settled
+                        // (monitor=true) requires the applied monitoring
+                        // state to have been OBSERVED. The race exists only
+                        // on the timeout path — which is why the season PUTs
+                        // below are gated on res.settled.
                         auto res = sonarr_.add_series(id, qp_id,
-                                                      /*monitor=*/false, title);
+                                                      /*monitor=*/true, title);
                         if (!res.ok) {
                             const std::string err = sonarr_.last_error();
                             std::lock_guard<std::mutex> lk(mut_mtx_);
                             mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
                             return;
                         }
+                        if (!res.settled) {
+                            // firstSeason has NOT been applied yet; seasons
+                            // PUT now would be unmonitored behind us when it
+                            // lands. Stop honestly: the row shows [Remove]
+                            // only until the poll settles, then "Whole
+                            // series…" reappears and the retry takes the
+                            // in-library path — idempotent by design.
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_series_ = res.series;
+                            mut_settled_ = false;
+                            mut_toast_ = title + ": added \xE2\x80\x94 syncing; "
+                                         "press Whole series again in a moment";
+                            return;
+                        }
+                        // Settled: S1 is already monitored and the add-time
+                        // search already covers it (searchForMissingEpisodes
+                        // rode in with monitor=true); S1's entry in
+                        // to_monitor is a harmless idempotent PUT, and the
+                        // series search below may re-query S1 — redundant,
+                        // not harmful.
                         series_id = res.series.sonarr_id;
                         added = res.series;
                     }
@@ -2549,7 +2588,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 12. **Stop Sonarr, THEN mutate.** From a loaded in-library page, `docker stop mdb_sonarr`, then press "Whole series…" and confirm. The toast must be honest — `<title>: couldn't monitor seasons — is Sonarr running?` — and must NOT claim anything was monitored or promise RSS pickup. `docker start mdb_sonarr`.
 13. **Remove, orphan-proof.** On a test series with an active download: Remove → Confirm Remove within 2 s → toast, return to Browse. Verify: Sonarr no longer lists the series, qBit no longer lists its torrent, `/mnt/ssd/library/tv/<series>` gone. **Then open another series and remove it too** — the second remove must work (proves `navigate_back_` is cleared, not latched).
 14. **Remove with a SEASON PACK in flight.** Specifically: a series whose queue shows MANY episode rows sharing one download (a season pack). Remove → Confirm Remove. It must succeed — not abort with "couldn't cancel N download(s)". Verify the torrent is gone from qBit and the series from Sonarr.
-15. **Leave mid-add.** Start an add on show A, immediately BTN4 out and open a DIFFERENT show B. Expect: A's title-prefixed outcome toast appears over B's page; B's page shows B's own state (never A's seasons, never A's buttons); B's action row is live, not stuck dimmed; going back to A shows A correctly added.
+15. **Leave mid-add.** Start an add on show A, immediately BTN4 out and open a DIFFERENT show B. Expect: A's title-prefixed outcome toast appears over B's page; B's page shows B's own state (never A's seasons, never A's buttons); B's action row is undimmed; SELECT may be ignored for up to ~14 s while A's operation finishes, then everything is live \xE2\x80\x94 never permanently stuck; going back to A shows A correctly added.
 16. **Downloading badge.** While something is downloading: the season row reads `downloading`; when the import completes the row flips to `complete` within ~9 s without leaving the screen.
 17. **Unconfigured box.** Blank `SONARR_API_KEY` in `services/.env`, restart kiosk: SeriesDetail shows the full read-only page with the line `TV library not set up on this box` and NO action row. Restore the key.
 18. **Sonarr stopped at load.** `docker stop mdb_sonarr` → open a TV poster: read-only page with `Sonarr service offline`, no action row, no crash, BTN4 works. `docker start mdb_sonarr`.
