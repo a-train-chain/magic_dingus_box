@@ -1,6 +1,7 @@
 #include "media_browser/ui/series_detail_screen.h"
 
 #include <algorithm>
+#include <system_error>
 
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/sonarr/sonarr_client.h"
@@ -100,6 +101,9 @@ void SeriesDetailScreen::fetch() {
     series_settled_ = true;
     season_page_ = 0;
     season_page_count_ = 1;
+    // Task 8's poll gate must not inherit series A's timestamp — it would
+    // delay series B's first poll by a full interval.
+    last_poll_at_ = {};
     const int id = tmdb_id_;
     if (id <= 0) {
         tmdb_done_ = true;  // resolver -> TmdbError; nothing to fetch
@@ -138,8 +142,11 @@ void SeriesDetailScreen::run_tmdb_fetch(uint64_t gen, int tmdb_id,
                                         std::shared_ptr<std::atomic<bool>> done) {
     DoneFlag df{done};
     auto detail = tmdb_.get_tv_detail(tmdb_id);
-    if (gen != fetch_gen_.load()) return;  // preempted — discard
     std::lock_guard<std::mutex> lk(pending_mtx_);
+    // Recheck under the lock — a worker that passed a pre-lock check could
+    // be descheduled across fetch()'s bump-and-clear and publish stale data
+    // into the new series' pending_.
+    if (gen != fetch_gen_.load()) return;  // preempted — discard
     pending_.tmdb_done = true;
     pending_.tmdb_ok = detail.has_value();
     pending_.detail = std::move(detail);
@@ -168,8 +175,11 @@ void SeriesDetailScreen::run_sonarr_fetch(uint64_t gen, int tmdb_id,
     // affordance renders. Empty on failure -> pick_preferred falls back.
     std::vector<QualityDefinition> defs;
     if (lib.has_value()) defs = sonarr_.get_quality_definitions();
-    if (gen != fetch_gen_.load()) return;  // preempted — discard
     std::lock_guard<std::mutex> lk(pending_mtx_);
+    // Recheck under the lock — a worker that passed a pre-lock check could
+    // be descheduled across fetch()'s bump-and-clear and publish stale data
+    // into the new series' pending_.
+    if (gen != fetch_gen_.load()) return;  // preempted — discard
     pending_.sonarr_done = true;
     pending_.sonarr_ok = lib.has_value();
     pending_.in_library = match.has_value();
@@ -187,7 +197,13 @@ void SeriesDetailScreen::apply_pending() {
     PendingLoad p;
     {
         std::lock_guard<std::mutex> lk(pending_mtx_);
-        p = pending_;
+        // Move-and-reset, not copy: each half publishes once. tmdb_done_ /
+        // detail_ / sonarr_done_ / series_ etc. are accumulated on `this`
+        // (not re-derived from pending_ each frame), so a half applied on
+        // an earlier drain is never lost when the other half's later
+        // publish resets pending_ to fresh defaults.
+        p = std::move(pending_);
+        pending_ = PendingLoad{};
         pending_ready_.store(false, std::memory_order_release);
     }
     if (p.tmdb_done) {
