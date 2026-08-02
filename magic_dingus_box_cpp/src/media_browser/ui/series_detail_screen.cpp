@@ -800,8 +800,79 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             break;
         }
         case Action::Remove:
-        case Action::ConfirmRemove:
-            break;  // Task 7
+            remove_pending_ = true;
+            remove_pending_at_ = std::chrono::steady_clock::now();
+            rebuild_buttons();
+            break;
+        case Action::ConfirmRemove: {
+            remove_pending_ = false;
+            if (!series_.has_value() || series_->sonarr_id <= 0) break;
+            const int sid = series_->sonarr_id;
+            const std::string title =
+                detail_.has_value() ? detail_->title : std::string("This series");
+            spawn_mutation([this, sid, title]() {
+                // Sonarr-shaped mirror of DetailScreen::run_remove:
+                //  1. Cancel in-flight downloads — ONCE PER DOWNLOAD, not
+                //     once per queue row.
+                //  2. Purge every torrent the series' history knows about
+                //     (catches finished+seeding ones step 1 misses).
+                //  3. remove_series(delete_files=true).
+                //  4. Back to origin (drained on the render thread).
+                //
+                // Step 1's dedupe is load-bearing. Sonarr's queue is per
+                // EPISODE and cancel_queue_item acts on the WHOLE download,
+                // so a season pack's sibling rows 404 BY DOCUMENTED DESIGN
+                // (sonarr_client.h). Counting those 404s as failures aborted
+                // the remove at the guard below — after the torrent was
+                // already gone — leaving the series record and its files
+                // behind with a "NOT removed" toast that was itself a lie.
+                std::vector<int> cancel_ids;
+                std::unordered_set<std::string> seen_downloads;
+                for (const auto& q : sonarr_.get_queue()) {
+                    if (q.series_id != sid) continue;
+                    if (q.download_id.empty()) {
+                        cancel_ids.push_back(q.id);  // nothing to dedupe on
+                        continue;
+                    }
+                    if (seen_downloads.insert(q.download_id).second)
+                        cancel_ids.push_back(q.id);
+                }
+                int cancel_failed = 0;
+                for (int qid : cancel_ids) {
+                    if (!sonarr_.cancel_queue_item(qid)) ++cancel_failed;
+                }
+                if (cancel_failed > 0) {
+                    // A genuinely failed cancel still aborts before anything
+                    // is deleted — the house rule that keeps a half-removed
+                    // series from orphaning a torrent.
+                    const std::string err = sonarr_.last_error();
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_toast_ = title + ": couldn't cancel " +
+                                 std::to_string(cancel_failed) +
+                                 " download(s) \xE2\x80\x94 NOT removed" +
+                                 (err.empty() ? std::string() : " (" + err + ")");
+                    return;
+                }
+                if (qbit_ != nullptr) {
+                    for (const auto& h : sonarr_.get_series_download_hashes(sid)) {
+                        if (!qbit_->delete_torrent(h, /*delete_files=*/true)) {
+                            spdlog::warn("[SeriesDetail] qbit delete failed for {}",
+                                         h);
+                        }
+                    }
+                }
+                if (!sonarr_.remove_series(sid, /*delete_files=*/true)) {
+                    const std::string err = sonarr_.last_error();
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_toast_ = title + ": remove failed \xE2\x80\x94 " + err;
+                    return;
+                }
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_removed_ = true;
+                mut_toast_ = title + ": removed from the TV library";
+            });
+            break;
+        }
     }
 }
 
