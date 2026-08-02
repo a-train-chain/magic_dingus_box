@@ -109,6 +109,19 @@ private:
     void spawn_mutation(std::function<void()> body);
     void drain_mutation();
 
+    // ~9s quiet re-poll while InLibrary: fresh per-season statistics +
+    // queue-derived downloading set. Single reused worker; never flashes
+    // Loading (writes land via pending_/apply_pending like the fetch).
+    // BOTH priors are passed BY VALUE — reading in_library_ / sonarr_ok_
+    // from the worker thread was an unsynchronized read of render-thread
+    // state. poll_gen_ and last_poll_at_ already live in the Task-3 block.
+    void maybe_repoll_series();
+    void run_series_poll(uint64_t gen, int sonarr_id, bool prev_sonarr_ok,
+                         bool prev_in_library);
+    std::atomic<bool> poll_inflight_{false};
+    static constexpr int kSeriesPollMs = 9000;
+    std::thread poll_worker_;
+
     std::vector<ActionButton> buttons_;
     int focus_ = 0;
 

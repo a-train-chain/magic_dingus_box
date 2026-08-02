@@ -232,6 +232,24 @@ public:
     // Feeds the orphan-proof remove: the queue only knows in-progress
     // downloads, so finished-and-seeding torrents would otherwise survive a
     // series deletion.
+    //
+    // CHECKED shape on purpose, like get_library_checked / find_series_by_tvdb:
+    // nullopt means the service did not answer (transport/HTTP failure), an
+    // engaged-but-empty vector means Sonarr answered and this series
+    // genuinely has no download history. The orphan-proof remove worker
+    // branches on exactly that distinction — engaged proceeds, nullopt
+    // aborts before anything is deleted — and it must read the answer from
+    // THIS single return rather than a follow-up last_error() call: Task 8
+    // adds a ~9 s background re-poll that shares this client and its one
+    // last_error_ member, so a decision split across two calls could
+    // observe an error the POLL thread set (or cleared) in between, not
+    // this call's own outcome.
+    virtual std::optional<std::vector<std::string>>
+    get_series_download_hashes_checked(int sonarr_id);
+
+    // Bare wrapper — nullopt collapses to {}, same relationship as
+    // get_library() has to get_library_checked(). Do NOT use this to decide
+    // whether a failure occurred; see get_series_download_hashes_checked.
     virtual std::vector<std::string> get_series_download_hashes(int sonarr_id);
 
     // Profiles / storage. Resolve the quality profile BY NAME at the call

@@ -52,14 +52,25 @@ SeriesDetailScreen::SeriesDetailScreen(SonarrClient& sonarr, TmdbClient& tmdb,
       sonarr_configured_(sonarr_configured) {}
 
 SeriesDetailScreen::~SeriesDetailScreen() {
-    // Invalidate every in-flight publish BEFORE joining. Task 8 states this
-    // destructor's final form; until then there is no poll worker to join.
+    // Invalidate every in-flight publish BEFORE joining anything: a worker
+    // that finishes between the bump and its join sees a stale generation
+    // and drops its result instead of writing into a half-destroyed object.
+    // BOTH generations must move — fetch_gen_ gates the two load workers,
+    // poll_gen_ gates the re-poll, and they publish into the SAME pending_.
     fetch_gen_.fetch_add(1);
     poll_gen_.fetch_add(1);
     if (mut_worker_.joinable()) mut_worker_.join();
+    if (poll_worker_.joinable()) poll_worker_.join();
     for (auto& w : workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
+    // Worst-case shutdown latency is the mutation worker's: a whole-series
+    // add is add_series (~13.5 s ceiling: add_settle_timeout_ms +
+    // add_settle_poll_ms + timeout_secs) plus N season PUTs, a search and a
+    // GET, each bounded by cfg_.timeout_secs (5 s). This screen is destroyed
+    // only at kiosk shutdown, where nothing is watchdogged. Detaching
+    // instead would be strictly worse — a detached worker writes into freed
+    // members.
 }
 
 void SeriesDetailScreen::set_tmdb_id(int tmdb_id) {
@@ -819,20 +830,21 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             break;
         case Action::ConfirmRemove: {
             remove_pending_ = false;
+            const std::string title =
+                detail_.has_value() ? detail_->title : std::string("This series");
             if (!series_.has_value() || series_->sonarr_id <= 0) {
                 // Without this the label stayed on "Confirm Remove" with
                 // nothing behind it: every further press silently fell out of
                 // the switch, which reads as a dead button. Repaint the row
                 // (remove_pending_ is already cleared, so it reverts to
-                // "Remove") and say why, in the whole-series sibling's copy.
+                // "Remove") and say why, title-prefixed like every sibling
+                // toast on this screen.
                 rebuild_buttons();
-                ::ui::Toast::show("series id unknown \xE2\x80\x94 try again "
-                                  "once syncing finishes");
+                ::ui::Toast::show(title + ": series id unknown \xE2\x80\x94 "
+                                  "try again once syncing finishes");
                 break;
             }
             const int sid = series_->sonarr_id;
-            const std::string title =
-                detail_.has_value() ? detail_->title : std::string("This series");
             spawn_mutation([this, sid, title]() {
                 // Sonarr-shaped mirror of DetailScreen::run_remove:
                 //  1. Cancel in-flight downloads — ONCE PER DOWNLOAD, not
@@ -883,14 +895,20 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                 if (qbit_ != nullptr) {
                     // The history walk runs BEFORE the decision to proceed,
                     // because a FAILED walk is indistinguishable from "no
-                    // history" by its return value alone: both are {}. Removing
-                    // on a failed walk is the exact production failure
+                    // history" by an unchecked return alone. Removing on a
+                    // failed walk is the exact production failure
                     // DetailScreen documents — every seeding torrent orphaned
                     // forever, under a toast that said "removed".
-                    // get_series_download_hashes clears last_error() on entry
-                    // (sonarr_client.cpp), which is what makes empty + clean
-                    // mean "genuinely nothing to purge" and empty + error mean
-                    // "we never reached Sonarr".
+                    //
+                    // CHECKED variant, deliberately not the raw one + a
+                    // follow-up last_error() read: Task 8 adds a ~9 s
+                    // background re-poll on its own thread that shares this
+                    // SonarrClient (and its one last_error_ member). A
+                    // decision split across two calls — get the hashes, THEN
+                    // separately ask last_error() — could read whatever the
+                    // poll thread set or cleared in the gap, not this call's
+                    // own outcome. nullopt IS the whole answer here; nothing
+                    // else needs to be read to make the call.
                     //
                     // Aborting here is retry-safe: the cancel stage above is
                     // idempotent — an already-cancelled download leaves no
@@ -899,15 +917,30 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // Still gated on qbit_ as before: a box with no qBittorrent
                     // client cannot purge anything at all, so it keeps the old
                     // semantics and accepts the orphan risk BY CONSTRUCTION.
-                    const std::vector<std::string> hashes =
-                        sonarr_.get_series_download_hashes(sid);
-                    if (hashes.empty() && !sonarr_.last_error().empty()) {
+                    const std::optional<std::vector<std::string>> hashes =
+                        sonarr_.get_series_download_hashes_checked(sid);
+                    if (!hashes.has_value()) {
                         std::lock_guard<std::mutex> lk(mut_mtx_);
-                        mut_toast_ = title + ": couldn't check for seeding "
-                                     "torrents \xE2\x80\x94 series NOT removed";
+                        // Cancel-stage context: any downloads cancelled
+                        // before this abort ARE gone (removeFromClient=true
+                        // in the cancel loop above), so a flat "couldn't
+                        // check, NOT removed" would understate what already
+                        // happened — same honesty rule as the cancel-failure
+                        // toast just above.
+                        mut_toast_ =
+                            (cancel_ok > 0
+                                 ? title + ": cancelled " +
+                                       std::to_string(cancel_ok) +
+                                       " download(s), then couldn't check "
+                                       "for seeding torrents \xE2\x80\x94 "
+                                       "series NOT removed"
+                                 : title + ": couldn't check for seeding "
+                                           "torrents \xE2\x80\x94 series NOT "
+                                           "removed") +
+                            " \xE2\x80\x94 Sonarr didn't answer";
                         return;
                     }
-                    for (const auto& h : hashes) {
+                    for (const auto& h : *hashes) {
                         if (!qbit_->delete_torrent(h, /*delete_files=*/true)) {
                             spdlog::warn("[SeriesDetail] qbit delete failed for {}",
                                          h);
@@ -998,10 +1031,68 @@ Screen SeriesDetailScreen::handle_input(
     return Screen::SeriesDetail;
 }
 
+void SeriesDetailScreen::maybe_repoll_series() {
+    if (!in_library_ || !sonarr_ok_) return;
+    if (!series_.has_value() || series_->sonarr_id <= 0) return;
+    if (mut_in_flight_.load() || poll_inflight_.load()) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_poll_at_).count() < kSeriesPollMs) {
+        return;
+    }
+    last_poll_at_ = now;
+    if (poll_worker_.joinable()) poll_worker_.join();
+    poll_inflight_.store(true);
+    const uint64_t gen = poll_gen_.fetch_add(1) + 1;
+    try {
+        poll_worker_ = std::thread(&SeriesDetailScreen::run_series_poll, this,
+                                   gen, series_->sonarr_id, sonarr_ok_,
+                                   in_library_);
+    } catch (const std::system_error& e) {
+        spdlog::warn("[SeriesDetail] poll spawn failed: {}", e.what());
+        poll_inflight_.store(false);
+    }
+}
+
+void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
+                                         bool prev_sonarr_ok,
+                                         bool prev_in_library) {
+    auto fresh = sonarr_.get_series(sonarr_id);
+    std::unordered_set<int> downloading;
+    for (const auto& q : sonarr_.get_queue()) {
+        if (q.series_id == sonarr_id) downloading.insert(q.season_number);
+    }
+    if (gen == poll_gen_.load()) {
+        std::lock_guard<std::mutex> lk(pending_mtx_);
+        pending_.sonarr_done = true;
+        // A poll is ADVISORY: a transient blip must not flip the page to
+        // SonarrUnreachable under the user. Success proves reachability;
+        // failure leaves the original fetch's verdict standing. Both priors
+        // arrive by value so nothing here reads render-thread state.
+        pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
+        if (fresh.has_value()) {
+            pending_.in_library = true;
+            // The settle signal for an existing record: has Sonarr ever
+            // actually refreshed it? This is what un-hides the add controls
+            // ~9 s after an unsettled add, with no user action.
+            pending_.settled = record_refreshed(*fresh);
+            pending_.has_settled = true;
+            pending_.series = std::move(fresh);
+        } else {
+            pending_.in_library = prev_in_library;
+        }
+        pending_.downloading = std::move(downloading);
+        pending_.has_downloading = true;
+        pending_ready_.store(true, std::memory_order_release);
+    }
+    poll_inflight_.store(false, std::memory_order_release);
+}
+
 void SeriesDetailScreen::update() {
     drain_mutation();
     expire_confirms();
     apply_pending();
+    maybe_repoll_series();
 }
 
 void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {

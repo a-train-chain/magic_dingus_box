@@ -660,23 +660,30 @@ bool SonarrClient::cancel_queue_item(int queue_id) {
     return last_error().empty();
 }
 
-std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id) {
+std::optional<std::vector<std::string>>
+SonarrClient::get_series_download_hashes_checked(int sonarr_id) {
     // Entry clear, same shape as cancel_queue_item / get_quality_profiles.
-    // It is load-bearing HERE, not merely tidy: an empty return means either
-    // "this series has no download history" or "the history walk failed", and
-    // the orphan-proof remove BRANCHES on exactly that distinction — empty +
-    // clean last_error() proceeds, empty + an error aborts before anything is
-    // deleted. Without the clear, a PRIOR call's stale error would be read as
-    // this walk's failure (a spurious abort), and worse, a fresh failure
-    // after a prior success would look clean and orphan every seeding
-    // torrent behind a toast that said "removed".
+    // Load-bearing here, not merely tidy: http_get returns "" both on a
+    // transport failure (curl error, HTTP >= 400 — set_error was called)
+    // and would return "" on nothing else, since /api/v3/history/series
+    // answers a real 200 with at least "[]". Without the clear, a PRIOR
+    // call's stale error state would linger uninspected; callers of THIS
+    // method never read last_error() at all — the nullopt/engaged split
+    // below is the whole answer, by design (see the header's doc comment
+    // for why: Task 8's background re-poll shares this client's one
+    // last_error_ member with the orphan-proof remove worker).
     set_error({});
     // /api/v3/history/series is UNPAGINATED (a bare array) — no pageSize
     // parameter, unlike Radarr's /api/v3/history.
     auto resp = http_get("/api/v3/history/series?seriesId="
                          + std::to_string(sonarr_id));
-    if (resp.empty()) return {};
+    if (resp.empty()) return std::nullopt;  // transport/HTTP failure — NOT "no history"
     return SonarrParsers::parse_history_download_ids(resp);
+}
+
+std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id) {
+    return get_series_download_hashes_checked(sonarr_id)
+        .value_or(std::vector<std::string>{});
 }
 
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {

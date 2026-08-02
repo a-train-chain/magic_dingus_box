@@ -233,8 +233,12 @@ bool SonarrMockClient::cancel_queue_item(int queue_id) {
     return true;
 }
 
-std::vector<std::string>
-SonarrMockClient::get_series_download_hashes(int sonarr_id) {
+std::optional<std::vector<std::string>>
+SonarrMockClient::get_series_download_hashes_checked(int sonarr_id) {
+    // Engaged, always: the mock has no transport to fail, and (unlike
+    // get_library_checked) there is no field-observed bug this method needs
+    // to defend against by claiming unreachable. Same fixture-consistent
+    // computation as the raw variant below, so both stay coherent.
     std::vector<std::string> out;
     for (const auto& q : queue_) {
         if (q.series_id != sonarr_id || q.download_id.empty()) continue;
@@ -243,6 +247,12 @@ SonarrMockClient::get_series_download_hashes(int sonarr_id) {
         }
     }
     return out;
+}
+
+std::vector<std::string>
+SonarrMockClient::get_series_download_hashes(int sonarr_id) {
+    return get_series_download_hashes_checked(sonarr_id)
+        .value_or(std::vector<std::string>{});
 }
 
 }  // namespace media_browser

@@ -43,6 +43,11 @@ public:
     std::vector<QualityDefinition> get_quality_definitions() override;
     std::vector<SonarrQueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
+    // Engaged, not nullopt: unlike get_library_checked, this mock has no
+    // specific reason to answer "unreachable" here, and it delegates to the
+    // same fixture-consistent computation as the raw variant just below.
+    std::optional<std::vector<std::string>>
+    get_series_download_hashes_checked(int sonarr_id) override;
     std::vector<std::string> get_series_download_hashes(int sonarr_id) override;
 
 protected:

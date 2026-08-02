@@ -800,6 +800,39 @@ TEST_CASE("get_series_download_hashes walks the series history",
     CHECK(hashes[1] == "ffeeddccbbaa99887766554433221100aabbccdd");
 }
 
+TEST_CASE("get_series_download_hashes_checked distinguishes empty from failed",
+          "[sonarr][history]") {
+    // Task 8's orphan-proof remove worker reads THIS return alone to decide
+    // whether to abort — never a follow-up last_error() call, because Task
+    // 8's background re-poll runs on its own thread and shares this
+    // client's one last_error_ member. nullopt must mean "Sonarr did not
+    // answer"; an engaged vector, even empty, must mean it genuinely did
+    // (same contract as get_library_checked, pinned the same way).
+    SECTION("HTTP failure -> nullopt") {
+        StubSonarr s;  // no replies configured -> http_get returns ""
+        CHECK_FALSE(s.get_series_download_hashes_checked(7).has_value());
+        // The raw wrapper collapses nullopt to {}, same as get_library().
+        CHECK(s.get_series_download_hashes(7).empty());
+    }
+    SECTION("genuinely no history -> engaged optional, empty vector") {
+        StubSonarr s;
+        s.get_replies = {{"/api/v3/history/series?seriesId=7", "[]"}};
+        auto hashes = s.get_series_download_hashes_checked(7);
+        REQUIRE(hashes.has_value());
+        CHECK(hashes->empty());
+    }
+    SECTION("populated history") {
+        StubSonarr s;
+        s.get_replies = {{"/api/v3/history/series?seriesId=7",
+                          read_fixture("history_series.json")}};
+        auto hashes = s.get_series_download_hashes_checked(7);
+        REQUIRE(hashes.has_value());
+        REQUIRE(hashes->size() == 2);
+        CHECK((*hashes)[0] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
+        CHECK((*hashes)[1] == "ffeeddccbbaa99887766554433221100aabbccdd");
+    }
+}
+
 // --- mock ----------------------------------------------------------------
 
 TEST_CASE("SonarrMockClient seeds a coherent season pack", "[sonarr][mock]") {
@@ -820,6 +853,20 @@ TEST_CASE("SonarrMockClient seeds a coherent season pack", "[sonarr][mock]") {
     REQUIRE(m.cancel_queue_item(q[0].id));
     // Cancelling one row removes the whole download, matching live behaviour.
     CHECK(m.get_queue().empty());
+}
+
+TEST_CASE("SonarrMockClient's get_series_download_hashes_checked stays "
+          "coherent with the raw variant", "[sonarr][mock]") {
+    // Unlike get_library_checked (deliberately always nullopt — see the
+    // dedicated test below for why), this mock has no field-observed
+    // reachability lie to defend against here, so the checked override is
+    // engaged and must agree exactly with the raw wrapper it backs.
+    mb::SonarrMockClient m;
+    auto checked = m.get_series_download_hashes_checked(1);
+    REQUIRE(checked.has_value());
+    REQUIRE(checked->size() == 1);
+    CHECK((*checked)[0] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678");
+    CHECK(*checked == m.get_series_download_hashes(1));
 }
 
 TEST_CASE("SonarrMockClient serves fixture-shaped quality definitions",
