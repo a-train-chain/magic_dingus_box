@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -89,6 +90,62 @@ private:
     void reap_finished_workers();
     void apply_pending();               // render-thread drain
     void rebuild_rows();                // rows_ = merge_season_rows(...)
+
+    // ---- action row (Tasks 5-7) ----
+    enum class Action { AddSeason1, NextSeason, WholeSeries, Remove, ConfirmRemove };
+    struct ActionButton {
+        Action action;
+        std::string label;
+    };
+    void rebuild_buttons();
+    void dispatch_action(Action a);
+    void expire_confirms();
+    std::string whole_series_label() const;
+
+    // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
+    // add_series alone can take ~13.5 s — never on the render thread).
+    // spawn_mutation joins the previous worker, wraps the body so mut_done_
+    // flips on EVERY exit path including a throw, and catches
+    // std::system_error from the thread ctor (a raw throw there is
+    // std::terminate).
+    void spawn_mutation(std::function<void()> body);
+    void drain_mutation();
+
+    std::vector<ActionButton> buttons_;
+    int focus_ = 0;
+
+    // Confirm state — render-thread ONLY. No worker ever writes these: the
+    // press-1 worker publishes a verdict and drain_mutation arms the button,
+    // so the countdown starts when the LABEL appears, and there is no
+    // unsynchronized cross-thread write to a member render() reads.
+    bool whole_armed_ = false;
+    std::chrono::steady_clock::time_point whole_armed_at_{};
+    int64_t whole_estimate_bytes_ = 0;
+    static constexpr int kWholeConfirmMs = 4000;
+    bool remove_pending_ = false;
+    std::chrono::steady_clock::time_point remove_pending_at_{};
+    static constexpr int kRemovePendingMs = 2000;
+    // Drain-set, consumed by handle_input's relay at the top (DetailScreen's
+    // drain_remove_result idiom). CLEARED when consumed and in fetch() —
+    // a latched flag would return origin_ on every frame forever.
+    bool navigate_back_ = false;
+
+    std::thread mut_worker_;
+    std::atomic<bool> mut_in_flight_{false};
+    std::atomic<bool> mut_done_{false};
+    // Which series this mutation was started for. Render-thread only
+    // (written in spawn_mutation, read in drain_mutation): the user can back
+    // out mid-add and open a different show, and an outcome must never
+    // rewrite THAT page's state.
+    int mut_tmdb_id_ = 0;
+    std::mutex mut_mtx_;
+    std::string mut_toast_;                          // guarded by mut_mtx_
+    std::optional<Series> mut_series_;               // guarded
+    bool mut_settled_ = true;                        // guarded
+    bool mut_removed_ = false;                       // guarded
+    bool mut_have_verdict_ = false;                  // guarded
+    DiskVerdict mut_verdict_ = DiskVerdict::Block;   // guarded
+    int64_t mut_estimate_ = 0;                       // guarded
 
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;

@@ -11,6 +11,7 @@
 #include "spdlog/spdlog.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
+#include "ui/toast.h"
 
 namespace media_browser::ui {
 
@@ -48,6 +49,7 @@ SeriesDetailScreen::~SeriesDetailScreen() {
     // destructor's final form; until then there is no poll worker to join.
     fetch_gen_.fetch_add(1);
     poll_gen_.fetch_add(1);
+    if (mut_worker_.joinable()) mut_worker_.join();
     for (auto& w : workers_) {
         if (w.thread.joinable()) w.thread.join();
     }
@@ -101,8 +103,15 @@ void SeriesDetailScreen::fetch() {
     series_settled_ = true;
     season_page_ = 0;
     season_page_count_ = 1;
-    // Task 8's poll gate must not inherit series A's timestamp — it would
-    // delay series B's first poll by a full interval.
+    // With buttons_ cleared, a SELECT during Loading is a STRUCTURAL no-op —
+    // there is nothing to dispatch. Before this, the previous series' stale
+    // (and invisible) buttons still accepted SELECT and fired a silent add
+    // with an empty title fallback.
+    buttons_.clear();
+    focus_ = 0;
+    whole_armed_ = false;
+    remove_pending_ = false;
+    navigate_back_ = false;
     last_poll_at_ = {};
     const int id = tmdb_id_;
     if (id <= 0) {
@@ -222,6 +231,7 @@ void SeriesDetailScreen::apply_pending() {
     }
     if (p.has_downloading) downloading_seasons_ = std::move(p.downloading);
     rebuild_rows();
+    rebuild_buttons();
 }
 
 void SeriesDetailScreen::rebuild_rows() {
@@ -234,16 +244,345 @@ void SeriesDetailScreen::rebuild_rows() {
                               downloading_seasons_);
 }
 
+void SeriesDetailScreen::rebuild_buttons() {
+    // Focus is preserved by ACTION IDENTITY, never by index. A rebuild can
+    // insert, drop or relabel rows (an add turns "Add Season 1" into
+    // "Download Season 2" + "Remove"), and forcing focus_ = 0 meant the
+    // whole-series confirm was never the focused button — pressing SELECT
+    // inside the 4 s window fired "Add Season 1" instead. Deterministically.
+    std::optional<Action> keep;
+    if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
+        keep = buttons_[static_cast<size_t>(focus_)].action;
+    // Remove and ConfirmRemove are ONE button in two states: arming the
+    // confirm must not move focus off it.
+    const auto canonical = [](Action a) {
+        return a == Action::ConfirmRemove ? Action::Remove : a;
+    };
+
+    buttons_.clear();
+    const SeriesDetailInputs in{tmdb_done_, tmdb_ok_, sonarr_configured_,
+                                sonarr_done_, sonarr_ok_, in_library_};
+    const SeriesDetailState st = decide_series_detail_state(in);
+    if (st == SeriesDetailState::NotInLibrary) {
+        buttons_.push_back({Action::AddSeason1, "Add Season 1"});
+        buttons_.push_back({Action::WholeSeries, whole_series_label()});
+    } else if (st == SeriesDetailState::InLibrary) {
+        // While the record is unsettled EVERY season reads unmonitored, so
+        // next_unmonitored_season would answer "1" one second after we added
+        // season 1 and the primary button would read "Download Season 1".
+        // Offer Remove only until the poll settles it; the meta line says
+        // "syncing…" so the missing controls read as pending, not broken.
+        if (series_settled_) {
+            const auto next = next_unmonitored_season(rows_);
+            if (next.has_value()) {
+                buttons_.push_back({Action::NextSeason,
+                                    "Download Season " + std::to_string(*next)});
+                buttons_.push_back({Action::WholeSeries, whole_series_label()});
+            }
+        }
+        buttons_.push_back(remove_pending_
+                               ? ActionButton{Action::ConfirmRemove, "Confirm Remove"}
+                               : ActionButton{Action::Remove, "Remove"});
+    }
+    // NOTE: there is deliberately NO "Working…" swap while a mutation is in
+    // flight. Replacing the row wholesale destroyed focus identity and was
+    // the root of the wrong-mutation bug; render() dims the real row instead,
+    // and SELECT is already gated on !mut_in_flight_.
+
+    // No-match fallback biases AWAY from destructive actions: after an
+    // unsettled add the row is [Remove] alone for ~9 s, and a satisfied
+    // user tapping again should not find the delete button pre-focused
+    // unless it is genuinely the only thing on offer.
+    focus_ = 0;
+    for (size_t i = 0; i < buttons_.size(); ++i) {
+        if (canonical(buttons_[i].action) != Action::Remove) {
+            focus_ = static_cast<int>(i);
+            break;
+        }
+    }
+    if (keep.has_value()) {
+        for (size_t i = 0; i < buttons_.size(); ++i) {
+            if (canonical(buttons_[i].action) == canonical(*keep)) {
+                focus_ = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (focus_ >= static_cast<int>(buttons_.size())) focus_ = 0;
+}
+
+std::string SeriesDetailScreen::whole_series_label() const {
+    if (!whole_armed_) return "Whole series\xE2\x80\xA6";
+    // Binary GB (GiB) on purpose — it is the same unit the free-space
+    // readings arrive in, so the two numbers in the Block toast compare
+    // like with like. "(est)" is the honesty: pre-add the per-episode
+    // runtime is estimate_remaining_bytes' 45-minute ASSUMPTION, because
+    // Sonarr has no record to read runtime_minutes from yet.
+    return "Confirm ~" +
+           std::to_string(whole_estimate_bytes_ / (1024LL * 1024 * 1024)) +
+           " GB (est)";
+}
+
+void SeriesDetailScreen::spawn_mutation(std::function<void()> body) {
+    if (mut_in_flight_.load()) return;               // one at a time
+    if (mut_worker_.joinable()) mut_worker_.join();  // reap the finished one
+    // A poll already in flight is stale by definition once a mutation
+    // starts: if it published between this mutation's drain and the next
+    // apply_pending, its PRE-mutation snapshot would overwrite the
+    // mutation's result — for remove, permanently (the page would show a
+    // removed series as in-library and never recover). One bump closes it.
+    poll_gen_.fetch_add(1);
+    mut_tmdb_id_ = tmdb_id_;
+    mut_in_flight_.store(true);
+    mut_done_.store(false);
+    const std::string title =
+        detail_.has_value() ? detail_->title : std::string("This series");
+    try {
+        mut_worker_ = std::thread([this, body = std::move(body), title]() {
+            // Flips mut_done_ on EVERY exit path, exception included. Without
+            // it a throw out of body() leaves mut_in_flight_ stuck true and
+            // the action row inert for the rest of the session — and an
+            // uncaught throw out of the thread is std::terminate.
+            struct DoneGuard {
+                std::atomic<bool>& flag;
+                ~DoneGuard() { flag.store(true, std::memory_order_release); }
+            } guard{mut_done_};
+            try {
+                body();
+            } catch (const std::exception& e) {
+                spdlog::warn("[SeriesDetail] mutation threw: {}", e.what());
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_toast_ = title +
+                             ": something went wrong \xE2\x80\x94 try again";
+            }
+        });
+    } catch (const std::system_error& e) {
+        spdlog::warn("[SeriesDetail] mutation spawn failed: {}", e.what());
+        mut_in_flight_.store(false);
+        ::ui::Toast::show("Couldn't start the operation \xE2\x80\x94 try again");
+        return;
+    }
+    rebuild_buttons();  // row persists; render() dims it while in flight
+}
+
+void SeriesDetailScreen::drain_mutation() {
+    if (!mut_done_.load(std::memory_order_acquire)) return;
+    // ALWAYS clear the in-flight state, whatever the outcome and whichever
+    // series is on screen now. A drain that bailed early on an identity
+    // mismatch used to leave mut_in_flight_ latched forever.
+    mut_done_.store(false);
+    mut_in_flight_.store(false);
+
+    std::string toast;
+    std::optional<Series> fresh;
+    bool fresh_settled = true;
+    bool removed = false;
+    bool have_verdict = false;
+    DiskVerdict verdict = DiskVerdict::Block;
+    int64_t estimate = 0;
+    {
+        std::lock_guard<std::mutex> lk(mut_mtx_);
+        toast = std::move(mut_toast_);
+        mut_toast_.clear();
+        fresh = std::move(mut_series_);
+        mut_series_.reset();
+        fresh_settled = mut_settled_;
+        mut_settled_ = true;
+        removed = mut_removed_;
+        mut_removed_ = false;
+        have_verdict = mut_have_verdict_;
+        mut_have_verdict_ = false;
+        verdict = mut_verdict_;
+        estimate = mut_estimate_;
+        mut_estimate_ = 0;
+    }
+
+    // The toast shows REGARDLESS of which page we are on: every worker
+    // composes it title-prefixed ("Breaking Bad: Season 1 search started"),
+    // so an outcome that lands after the user moved on is still meaningful
+    // instead of silently lost.
+    if (!toast.empty()) ::ui::Toast::show(toast);
+
+    // Everything that MUTATES THIS PAGE is gated on identity.
+    if (mut_tmdb_id_ != tmdb_id_) {
+        rebuild_buttons();
+        return;
+    }
+    if (have_verdict && verdict != DiskVerdict::Block) {
+        // Armed HERE, on the render thread — the 4 s window starts when the
+        // label appears, not when a worker finished computing free space.
+        whole_estimate_bytes_ = estimate;
+        whole_armed_ = true;
+        whole_armed_at_ = std::chrono::steady_clock::now();
+    }
+    if (fresh.has_value()) {
+        series_ = std::move(fresh);
+        series_settled_ = fresh_settled;
+        in_library_ = true;
+        sonarr_done_ = sonarr_ok_ = true;
+        rebuild_rows();
+    }
+    if (removed) {
+        series_.reset();
+        in_library_ = false;
+        series_settled_ = true;
+        rebuild_rows();
+        navigate_back_ = true;
+    }
+    last_poll_at_ = {};  // Task 8: refresh badges next frame, not in 9 s
+    rebuild_buttons();
+    // Deliberately NO focus_on(WholeSeries) here: the identity-preserving
+    // rebuild already keeps focus on the button the user pressed, and if
+    // they rotated away during the free-space fetch, yanking focus back
+    // would be the one place it moves without being asked. The armed label
+    // + Warn color are the signal.
+}
+
+void SeriesDetailScreen::expire_confirms() {
+    const auto now = std::chrono::steady_clock::now();
+    bool changed = false;
+    if (whole_armed_ &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - whole_armed_at_).count() > kWholeConfirmMs) {
+        whole_armed_ = false;
+        changed = true;
+    }
+    if (remove_pending_ &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - remove_pending_at_).count() > kRemovePendingMs) {
+        remove_pending_ = false;
+        changed = true;
+    }
+    if (changed) rebuild_buttons();
+}
+
+void SeriesDetailScreen::dispatch_action(Action a) {
+    // Pressing anything OTHER than the armed control disarms it first.
+    if (a != Action::WholeSeries) whole_armed_ = false;
+    if (a != Action::Remove && a != Action::ConfirmRemove) remove_pending_ = false;
+    switch (a) {
+        case Action::AddSeason1: {
+            const int id = tmdb_id_;
+            const std::string title =
+                detail_.has_value() ? detail_->title : std::string("This series");
+            spawn_mutation([this, id, title]() {
+                // Quality profile BY NAME ("Any" is this box's profile; the
+                // id is not portable) — DetailScreen::pick_quality_profile_id's
+                // policy minus its movie-only fallbacks.
+                const auto profiles = sonarr_.get_quality_profiles();
+                int qp_id = 0;
+                for (const auto& qp : profiles) {
+                    if (qp_id == 0) qp_id = qp.id;
+                    if (qp.name == "Any") { qp_id = qp.id; break; }
+                }
+                if (qp_id == 0) {
+                    // Distinguish "Sonarr answered, no profiles" from "we
+                    // never reached Sonarr" — last_error() is set on every
+                    // transport failure, so an empty vector alone is
+                    // ambiguous and blaming the config would be wrong.
+                    const std::string err = sonarr_.last_error();
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_toast_ = err.empty()
+                        ? title + ": Sonarr has no quality profile \xE2\x80\x94 not added"
+                        : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
+                    return;
+                }
+                // monitor=true => addOptions.monitor="firstSeason" +
+                // searchForMissingEpisodes=true: exactly the spec's
+                // season-at-a-time default, applied by Sonarr itself.
+                auto res = sonarr_.add_series(id, qp_id, /*monitor=*/true, title);
+                const std::string err = res.ok ? std::string() : sonarr_.last_error();
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                if (!res.ok) {
+                    mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
+                    return;
+                }
+                mut_series_ = res.series;
+                mut_settled_ = res.settled;
+                // settled==false: seasons[] is EMPTY by contract. The page
+                // keeps rendering TMDB rows and hides the add controls until
+                // the Task-8 poll settles the record.
+                mut_toast_ = res.settled
+                    ? title + ": Season 1 search started"
+                    : title + ": added \xE2\x80\x94 syncing seasons\xE2\x80\xA6";
+            });
+            break;
+        }
+        case Action::NextSeason: {
+            if (!series_.has_value() || series_->sonarr_id <= 0) break;
+            const auto next = next_unmonitored_season(rows_);
+            if (!next.has_value()) break;
+            const int sid = series_->sonarr_id;
+            const int season = *next;
+            const std::string title =
+                detail_.has_value() ? detail_->title : std::string("This series");
+            spawn_mutation([this, sid, season, title]() {
+                if (!sonarr_.set_season_monitored(sid, season, true)) {
+                    const std::string err = sonarr_.last_error();
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_toast_ = title + ": couldn't monitor season " +
+                                 std::to_string(season) + " \xE2\x80\x94 " + err;
+                    return;
+                }
+                const bool searched = sonarr_.trigger_season_search(sid, season);
+                auto fresh = sonarr_.get_series(sid);
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_toast_ = searched
+                    ? title + ": Season " + std::to_string(season) +
+                          " search started"
+                    : title + ": Season " + std::to_string(season) +
+                          " monitored, but the search didn't start "
+                          "\xE2\x80\x94 Sonarr will pick it up on RSS";
+                if (fresh.has_value()) {
+                    mut_settled_ = record_refreshed(*fresh);
+                    mut_series_ = std::move(fresh);
+                }
+            });
+            break;
+        }
+        case Action::WholeSeries:
+        case Action::Remove:
+        case Action::ConfirmRemove:
+            break;  // Tasks 6 and 7
+    }
+}
+
 Screen SeriesDetailScreen::handle_input(
         const std::vector<platform::InputEvent>& events) {
+    // Async completion relay, FIRST — DetailScreen's drain_remove_result
+    // shape. Consuming (and clearing) the flag here is what keeps one remove
+    // from bricking the screen: a latched flag would return origin_ forever.
+    if (navigate_back_) {
+        navigate_back_ = false;
+        return origin_;
+    }
     for (const auto& e : events) {
-        // BTN4 (SETTINGS_MENU, black) — back to whoever opened us. Gated on
-        // e.pressed, exactly like DetailScreen's.
+        // BTN4 (SETTINGS_MENU, black) — back to whoever opened us.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             return origin_;
         }
-        // BTN1 / BTN3 page the season list. Task 5 replaces this whole
-        // function with its final form (rotary + SELECT + the back relay).
+        // Rotary twist. platform::InputEvent has no `value` field — the
+        // direction/magnitude is `delta`, and rotary events carry
+        // pressed=false, so delta is the ONLY correct gate.
+        if ((e.action == platform::InputAction::ROTATE ||
+             e.action == platform::InputAction::ROTATE_VERTICAL) &&
+            e.delta != 0) {
+            if (buttons_.empty()) continue;
+            const int n = static_cast<int>(buttons_.size());
+            // Clamp, do not wrap — DetailScreen's exact idiom, so the ends
+            // of the row feel like ends rather than teleporting focus.
+            focus_ = std::clamp(focus_ + e.delta, 0, n - 1);
+            // Any navigation cancels BOTH pending confirms, so the user can
+            // never press-move-press their way into a mutation they were not
+            // looking at.
+            if (whole_armed_ || remove_pending_) {
+                whole_armed_ = false;
+                remove_pending_ = false;
+                rebuild_buttons();
+            }
+            continue;
+        }
+        // BTN1 / BTN3 page the season list when it overflows.
         if (e.action == platform::InputAction::PREV && e.pressed) {
             if (season_page_ > 0) --season_page_;
             continue;
@@ -252,11 +591,24 @@ Screen SeriesDetailScreen::handle_input(
             if (season_page_ + 1 < season_page_count_) ++season_page_;
             continue;
         }
+        if (e.action == platform::InputAction::SELECT && e.pressed) {
+            if (!buttons_.empty() && !mut_in_flight_.load() &&
+                focus_ >= 0 && focus_ < static_cast<int>(buttons_.size())) {
+                dispatch_action(buttons_[static_cast<size_t>(focus_)].action);
+            }
+            continue;
+        }
+        // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal in
+        // main.cpp. It never reaches here; no per-screen handler needed.
     }
     return Screen::SeriesDetail;
 }
 
-void SeriesDetailScreen::update() { apply_pending(); }
+void SeriesDetailScreen::update() {
+    drain_mutation();
+    expire_confirms();
+    apply_pending();
+}
 
 void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const auto& th = r.mb_theme();
@@ -422,8 +774,35 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                            static_cast<float>(list_bottom - kButtonRowH - 8),
                            kBodyFontPx, th.dim);
         }
-        // Task 5 draws the action row here, inside this scope (body_x and
-        // list_bottom are in scope only here).
+        // Action row. Its height was already reserved out of the season
+        // list's budget above (kButtonRowH), so it can never overlap a row.
+        if (!buttons_.empty()) {
+            // SERIES-SCOPED: another series' still-finishing mutation must
+            // not gray THIS page's row. SELECT stays globally gated (one
+            // worker), so a press in that window is ignored briefly (≤14 s
+            // worst case) — never misapplied.
+            const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
+            int bx = body_x;
+            const int brow_y = list_bottom - kButtonRowH;
+            for (size_t i = 0; i < buttons_.size(); ++i) {
+                chrome::ButtonKind kind = chrome::ButtonKind::Ok;
+                if (buttons_[i].action == Action::Remove ||
+                    buttons_[i].action == Action::ConfirmRemove ||
+                    (buttons_[i].action == Action::WholeSeries && whole_armed_)) {
+                    kind = chrome::ButtonKind::Warn;
+                } else if (buttons_[i].action == Action::WholeSeries) {
+                    kind = chrome::ButtonKind::Action;
+                }
+                // While a mutation runs the row stays put with its labels
+                // unchanged and simply loses its focus ring — it reads as
+                // "busy" without destroying focus identity. SELECT is
+                // already gated on !mut_in_flight_ in handle_input.
+                const auto rect = chrome::draw_button(
+                    r, bx, brow_y, buttons_[i].label, kind,
+                    /*focused=*/!busy && static_cast<int>(i) == focus_);
+                bx = rect.x + rect.w + chrome::kPad3;
+            }
+        }
     }
 
     // ALWAYS LAST on every path. The Toast is NOT drawn here: main.cpp owns
@@ -435,8 +814,10 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         {chrome::HintIcon::Btn3Green,
          overflow ? "Seasons \xE2\x86\x92" : "\xE2\x80\x94"},
         {chrome::HintIcon::Btn4Black, "Back"},
-        {chrome::HintIcon::RotaryNav, "\xE2\x80\x94"},
-        {chrome::HintIcon::RotaryPress, "\xE2\x80\x94"},
+        {chrome::HintIcon::RotaryNav,
+         buttons_.empty() ? "\xE2\x80\x94" : "Choose"},
+        {chrome::HintIcon::RotaryPress,
+         buttons_.empty() ? "\xE2\x80\x94" : "Select"},
     });
 }
 
