@@ -255,6 +255,7 @@ if(BUILD_KIOSK)
             src/media_browser/ui/browse_screen.cpp
             src/media_browser/ui/search_screen.cpp
             src/media_browser/ui/detail_screen.cpp
+            src/media_browser/ui/series_detail_screen.cpp
             src/media_browser/ui/playback_screen.cpp
             src/media_browser/ui/queue_screen.cpp
             src/media_browser/ui/release_picker_screen.cpp

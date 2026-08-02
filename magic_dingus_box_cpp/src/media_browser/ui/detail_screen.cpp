@@ -91,54 +91,6 @@ constexpr float kButtonMarkerW   = 30.0f;
 // render time and lets truncate_wrapped add "..." when content actually
 // overflows.
 
-// Greedy word-wrap by pixel width. Breaks words that individually exceed
-// the width at whatever partial point fits.
-std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
-                                   int font_size, float max_w) {
-    std::vector<std::string> lines;
-    if (text.empty()) return lines;
-
-    std::istringstream iss(text);
-    std::string word;
-    std::string current;
-
-    auto width_of = [&](const std::string& s) {
-        return static_cast<float>(r.mb_text_width(s, font_size));
-    };
-
-    while (iss >> word) {
-        std::string candidate = current.empty() ? word : current + " " + word;
-        if (width_of(candidate) <= max_w) {
-            current = candidate;
-            continue;
-        }
-        // Candidate is too wide. Flush current (if any) and start new line.
-        if (!current.empty()) {
-            lines.push_back(current);
-            current.clear();
-        }
-        // If the word by itself fits on a line, start the line with it.
-        if (width_of(word) <= max_w) {
-            current = word;
-            continue;
-        }
-        // Word is wider than max_w — hard-split by characters.
-        std::string fragment;
-        for (char c : word) {
-            std::string next = fragment + c;
-            if (width_of(next) > max_w) {
-                lines.push_back(fragment);
-                fragment = std::string(1, c);
-            } else {
-                fragment = next;
-            }
-        }
-        current = fragment;
-    }
-    if (!current.empty()) lines.push_back(current);
-    return lines;
-}
-
 // Format runtime as "2h 15m", "95m" (under an hour), "2h" (no minutes), or
 // "N/A" when zero/missing.
 std::string format_runtime(int minutes) {
@@ -1663,7 +1615,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int body_baseline = r.mb_text_baseline(body_font_size);
         float line_h = static_cast<float>(body_font_size) * 1.4f;
 
-        auto lines = wrap_text(r, body, body_font_size, col_w);
+        auto lines = chrome::wrap_text(r, body, body_font_size, col_w);
         truncate_wrapped(r, lines, body_font_size, col_w, max_lines);
         if (lines.empty()) return 0;
 

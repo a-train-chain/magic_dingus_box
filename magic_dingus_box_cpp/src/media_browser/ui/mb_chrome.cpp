@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <string>
 
 namespace media_browser::ui {
@@ -42,6 +43,52 @@ constexpr int kTabVertPad        = kPad2;       // Inside-tab vertical padding
 constexpr int kTabGap            = 16;          // was kPad4 (24) — 7-chip strip fit
 constexpr int kTitleFontPx       = 32;          // ZenDots screen title
 }  // namespace
+
+std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
+                                   int font_size, float max_w) {
+    std::vector<std::string> lines;
+    if (text.empty()) return lines;
+
+    std::istringstream iss(text);
+    std::string word;
+    std::string current;
+
+    auto width_of = [&](const std::string& s) {
+        return static_cast<float>(r.mb_text_width(s, font_size));
+    };
+
+    while (iss >> word) {
+        std::string candidate = current.empty() ? word : current + " " + word;
+        if (width_of(candidate) <= max_w) {
+            current = candidate;
+            continue;
+        }
+        // Candidate is too wide. Flush current (if any) and start new line.
+        if (!current.empty()) {
+            lines.push_back(current);
+            current.clear();
+        }
+        // If the word by itself fits on a line, start the line with it.
+        if (width_of(word) <= max_w) {
+            current = word;
+            continue;
+        }
+        // Word is wider than max_w — hard-split by characters.
+        std::string fragment;
+        for (char c : word) {
+            std::string next = fragment + c;
+            if (width_of(next) > max_w) {
+                lines.push_back(fragment);
+                fragment = std::string(1, c);
+            } else {
+                fragment = next;
+            }
+        }
+        current = fragment;
+    }
+    if (!current.empty()) lines.push_back(current);
+    return lines;
+}
 
 // =====================================================================
 // Focus ring

@@ -2298,6 +2298,11 @@ int main(int /* argc */, char* /* argv */[]) {
                     case media_browser::ui::Screen::Browse:        active_mb_screen = &mb_browse;      break;
                     case media_browser::ui::Screen::Search:        active_mb_screen = &mb_search;      break;
                     case media_browser::ui::Screen::Detail:        active_mb_screen = &mb_detail;      break;
+                    case media_browser::ui::Screen::SeriesDetail:
+                        // Instance + forwarding land with the Browse routing
+                        // (2c-2 Task 4); unreachable until then.
+                        active_mb_screen = &mb_browse;
+                        break;
                     case media_browser::ui::Screen::ReleasePicker: active_mb_screen = &mb_release_picker; break;
                     case media_browser::ui::Screen::Queue:         active_mb_screen = &mb_queue;       break;
                     case media_browser::ui::Screen::Library:       active_mb_screen = &mb_library;     break;

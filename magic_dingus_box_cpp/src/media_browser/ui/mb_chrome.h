@@ -46,6 +46,24 @@ std::string truncate_to_width(::ui::Renderer& r, const std::string& text,
 
 namespace media_browser::ui::chrome {
 
+// Greedy word-wrap by pixel width, one line per vector entry. Words that
+// individually exceed max_w are hard-split by character at whatever point
+// fits — no hyphenation, no shaping.
+//
+// Promoted here out of detail_screen.cpp's anonymous namespace when the
+// series detail screen became its second caller, for the same reason
+// truncate_to_width was promoted (see the comment above that declaration):
+// internal linkage means every extra caller silently gets its own copy, and
+// copies drift. It lives in mb_chrome rather than mb_ui_utils because it
+// names ::ui::Renderer, which drags in GLES and cannot appear in a macOS
+// test target.
+//
+// PlaybackOverlay's `wrap_text_overlay` is deliberately NOT folded in: it is
+// a different function with different behavior, and re-pointing it is a
+// behavior change with no caller asking for one.
+std::vector<std::string> wrap_text(::ui::Renderer& r, const std::string& text,
+                                   int font_size, float max_w);
+
 // ---------- Layout constants ----------
 
 // Wood-frame thickness baked into the marquee_frame.png asset.

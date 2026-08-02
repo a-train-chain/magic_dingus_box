@@ -23,6 +23,8 @@ enum class Screen {
     Browse,
     Search,
     Detail,
+    SeriesDetail,    // TV series detail (Phase 2c-2). Radarr-free mirror
+                     // of Detail; reached only from Browse in TV mode.
     ReleasePicker,   // Manual release-grab override of Radarr's auto-pick (v1.7.0).
     Queue,
     Library,
