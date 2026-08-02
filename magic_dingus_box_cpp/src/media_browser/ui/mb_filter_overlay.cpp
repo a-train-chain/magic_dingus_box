@@ -441,8 +441,10 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
         render_shuffle_row(r, panel_x, content_x, mode_row_y + kOverlayRowHeight,
                            focus_row_ == 1);
         const int hint_y2 = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
+        // Same BTN4 semantics as the full panel below: a staged MODE
+        // toggle commits on close, so "Close" alone undersells it.
         chrome::draw_hint_row(r, content_x, hint_y2, {
-            {chrome::HintIcon::Btn4Black,   "Close"},
+            {chrome::HintIcon::Btn4Black,   "Apply/Close"},
             {chrome::HintIcon::RotaryPress, "Select"},
         });
         return;
@@ -556,10 +558,13 @@ void FilterOverlay::render(::ui::Renderer& r, int /*screen_w*/, int /*screen_h*/
 
     // ---- Footer hint inside the panel — mirrors Library overlay ----
     const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
+    // BTN2 is owned globally by the exit modal in main.cpp and never
+    // reaches this overlay — label it for what it actually does. BTN4 is
+    // the button that applies the staged filters AND closes the panel.
     chrome::draw_hint_row(r, content_x, hint_y, {
-        {chrome::HintIcon::Btn2Red,     "Close"},
+        {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn4Black,
-         (mode_ == Mode::ValueSelect) ? "Done" : "Apply"},
+         (mode_ == Mode::ValueSelect) ? "Done" : "Apply/Close"},
         {chrome::HintIcon::RotaryNav,   "Rows"},
         {chrome::HintIcon::RotaryPress,
          (mode_ == Mode::ValueSelect) ? "Save" : "Edit"},

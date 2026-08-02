@@ -1033,7 +1033,9 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         const int hint_y = kOverlayPanelBottomY - kOverlayPanelInnerPadY;
         chrome::draw_hint_row(r, content_x, hint_y, {
             {chrome::HintIcon::Btn1Yellow,  "\xE2\x80\x94"},
-            {chrome::HintIcon::Btn2Red,     "Close"},
+            // BTN2 never reaches this overlay (owned by main.cpp's exit
+            // modal — see the input-handler comment above); label the truth.
+            {chrome::HintIcon::Btn2Red,     "Exit"},
             {chrome::HintIcon::Btn3Green,   "\xE2\x80\x94"},
             {chrome::HintIcon::Btn4Black,   "Close"},
             {chrome::HintIcon::RotaryNav,   "Rows"},
