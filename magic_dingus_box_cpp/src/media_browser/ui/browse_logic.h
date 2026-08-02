@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <unordered_set>
+#include <vector>
 
 #include "media_browser/media_ref.h"
 
@@ -108,6 +109,21 @@ inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
 // the unit test below pins the literal, not the fit.
 inline const char* marquee_title_for_mode(bool tv_mode) {
     return tv_mode ? "Marquee TV" : "Marquee";
+}
+
+// The bare tmdb ids of one kind, for For You's seed sample. The library cache
+// mixes kinds, and TMDB's recommendation endpoints are kind-specific
+// (/movie/{id}/recommendations vs /tv/{id}/recommendations) — seeding a TV
+// sample with a movie id would return a plausible-looking, entirely wrong
+// grid, since the ids collide rather than 404.
+inline std::vector<int> seed_pool(const std::unordered_set<MediaRef>& refs,
+                                  MediaKind kind) {
+    std::vector<int> out;
+    out.reserve(refs.size());
+    for (const auto& ref : refs) {
+        if (ref.kind == kind) out.push_back(ref.id);
+    }
+    return out;
 }
 
 }  // namespace media_browser::ui

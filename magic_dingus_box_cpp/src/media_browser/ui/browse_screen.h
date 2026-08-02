@@ -22,6 +22,7 @@
 
 namespace media_browser {
 class RadarrClient;
+class SonarrClient;
 class TmdbClient;
 }
 
@@ -60,7 +61,8 @@ namespace media_browser::ui {
 //   add-movie, queue. Clean separation.
 class BrowseScreen : public MbScreen {
 public:
-    BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb, ::app::AppState& state);
+    BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr, TmdbClient& tmdb,
+                 ::app::AppState& state);
     ~BrowseScreen();
 
     void enter() override;
@@ -201,6 +203,7 @@ private:
     static const char* label_for_category(Category cat);
 
     RadarrClient& radarr_;
+    SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     ::app::AppState& state_;
 
@@ -393,8 +396,7 @@ private:
     bool foryou_failed_ = false;               // all seeds failed on an explicit load
     // Library-refresh outcome flags (spec 1c): set by apply_library_pending.
     bool lib_refresh_done_once_ = false;
-    // Indexed by mode: Radarr answers for Movies, Sonarr for Tv (Task 8).
-    // Until then only the Movies slot is ever set true.
+    // Indexed by mode: Radarr answers for Movies, Sonarr for Tv.
     bool lib_fetch_ok_[2] = {false, false};
     void activate_foryou();
     void start_foryou_sample(bool background);
@@ -422,10 +424,14 @@ private:
         // tv_refs sibling, and renaming this field twice would churn the same
         // call sites for no benefit.
         std::unordered_set<MediaRef> movie_refs;
+        // Kept per kind so a refresh where only one service answered replaces
+        // just that service's contribution (see replace_refs_of_kind).
+        std::unordered_set<MediaRef> tv_refs;
         std::unordered_set<MediaRef> downloading_refs;
         std::vector<QualityProfile> quality_profiles;
         bool                        quality_fetched = false;
         bool                        movie_fetch_ok = false;
+        bool                        tv_fetch_ok    = false;
     };
     void refresh_library_async();              // non-blocking; spawns worker
     void run_library_refresh(bool fetch_quality);  // worker body (off render)

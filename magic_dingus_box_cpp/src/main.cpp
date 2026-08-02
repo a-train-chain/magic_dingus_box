@@ -756,10 +756,8 @@ int main(int /* argc */, char* /* argv */[]) {
                   << std::endl;
     }
     media_browser::SonarrClient& sonarr = *sonarr_owned;
-    // Phase 2b wires construction only. No screen consumes `sonarr` yet — the
-    // Movies/TV toggle, series detail and grouped queue land in Phase 2c. The
-    // cast keeps -Wunused-variable quiet without leaving a dangling TODO.
-    (void)sonarr;
+    // Consumed by BrowseScreen (Phase 2c-1): the TV library feeds the
+    // in-library hide and the For You seed sample in TV mode.
 
     // TMDB client — Phase A: Discover endpoints for Browse categories.
     // Radarr still handles library/add/queue; TMDB only drives discovery.
@@ -879,7 +877,7 @@ int main(int /* argc */, char* /* argv */[]) {
         }});
 
     // Six screens — dispatcher owns one instance of each.
-    media_browser::ui::BrowseScreen     mb_browse(radarr, *tmdb, state);
+    media_browser::ui::BrowseScreen     mb_browse(radarr, sonarr, *tmdb, state);
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get(),

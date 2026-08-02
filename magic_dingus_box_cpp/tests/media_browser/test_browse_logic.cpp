@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "media_browser/media_ref.h"
 #include "media_browser/ui/browse_logic.h"
@@ -113,4 +115,28 @@ TEST_CASE("marquee title carries the mode indicator", "[browse_logic]") {
     // Measured clearance at 1280 logical px: +45 px (see the plan).
     CHECK(std::string(media_browser::ui::marquee_title_for_mode(false)) == "Marquee");
     CHECK(std::string(media_browser::ui::marquee_title_for_mode(true)) == "Marquee TV");
+}
+
+TEST_CASE("seed_pool: returns only the requested kind's ids", "[browse_logic]") {
+    const std::unordered_set<MediaRef> refs = {
+        MediaRef{MediaKind::Movie, 603}, MediaRef{MediaKind::Movie, 1396},
+        MediaRef{MediaKind::Tv, 1396},   MediaRef{MediaKind::Tv, 1399},
+    };
+    auto movies = media_browser::ui::seed_pool(refs, MediaKind::Movie);
+    std::sort(movies.begin(), movies.end());
+    REQUIRE(movies.size() == 2);
+    CHECK(movies[0] == 603);
+    CHECK(movies[1] == 1396);
+
+    auto shows = media_browser::ui::seed_pool(refs, MediaKind::Tv);
+    std::sort(shows.begin(), shows.end());
+    REQUIRE(shows.size() == 2);
+    CHECK(shows[0] == 1396);
+    CHECK(shows[1] == 1399);
+}
+
+TEST_CASE("seed_pool: empty when the kind is absent", "[browse_logic]") {
+    const std::unordered_set<MediaRef> movies_only = {MediaRef{MediaKind::Movie, 1}};
+    CHECK(media_browser::ui::seed_pool(movies_only, MediaKind::Tv).empty());
+    CHECK(media_browser::ui::seed_pool({}, MediaKind::Movie).empty());
 }

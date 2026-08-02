@@ -17,6 +17,7 @@
 
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_recs.h"
@@ -144,9 +145,9 @@ using MediaRef      = ::media_browser::MediaRef;
 
 }  // namespace
 
-BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb,
-                           ::app::AppState& state)
-    : radarr_(radarr), tmdb_(tmdb), state_(state) {}
+BrowseScreen::BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr,
+                           TmdbClient& tmdb, ::app::AppState& state)
+    : radarr_(radarr), sonarr_(sonarr), tmdb_(tmdb), state_(state) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
@@ -194,6 +195,40 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     // Worker thread: all blocking Radarr I/O happens here. Touches NO live
     // member except lib_pending_/lib_result_ready_/lib_refresh_in_flight_.
     PendingLibrary r;
+    // Sonarr's TV library runs CONCURRENTLY with the Radarr block below, and
+    // on EVERY refresh regardless of the active mode — a MODE toggle must not
+    // wait on a round-trip before the in-library hide is correct. Concurrency
+    // is not an optimisation here: SonarrClient::get_library_checked() is a
+    // single http_get with NO retry ladder against Config::timeout_secs = 5,
+    // and refresh_library_async() runs on every Browse entry INCLUDING every
+    // re-entry from Detail/Playback. Inline-serial would therefore add up to
+    // 5 s to every entry for movie-only owners who never open TV mode,
+    // delaying the retro-hide sweep, the DOWNLOADING badges and the
+    // lib_refresh_done_once_ gate For You blocks on. Worst case is now
+    // max(radarr, sonarr), not their sum.
+    //
+    // No queue cross-reference for TV — nothing is addable in 2c-1, so no TV
+    // poster can be downloading. The checked shape already separates "Sonarr
+    // said the library is empty" from "the request failed", which is the only
+    // signal this needs, so it does not ride on Radarr's services_ok.
+    std::unordered_set<MediaRef> tv_refs;
+    std::atomic<bool> tv_ok{false};
+    std::thread sonarr_worker([this, &tv_refs, &tv_ok]() {
+        if (auto tv_lib = sonarr_.get_library_checked()) {
+            for (const auto& srs : *tv_lib) {
+                if (srs.tmdb_id > 0) {
+                    tv_refs.insert(MediaRef{MediaKind::Tv, srs.tmdb_id});
+                }
+            }
+            tv_ok.store(true);
+        }
+    });
+    // Join before publish, and on any early exit: an unjoined std::thread
+    // destructor calls std::terminate.
+    struct SonarrJoin {
+        std::thread& t;
+        ~SonarrJoin() { if (t.joinable()) t.join(); }
+    } sonarr_join{sonarr_worker};
     // Health-check Radarr so render() can surface a banner when the service
     // isn't answering. Radarr is still required for add-to-library / queue
     // actions even though Discovery is TMDB-powered.
@@ -229,6 +264,11 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
             r.quality_fetched = true;
         }
     }
+    // tv_refs is written only by the worker and read only after this join, so
+    // the plain (non-atomic) container needs no further synchronisation.
+    sonarr_worker.join();
+    r.tv_refs = std::move(tv_refs);
+    r.tv_fetch_ok = tv_ok.load();
     {
         std::lock_guard<std::mutex> lk(lib_pending_mtx_);
         lib_pending_ = std::move(r);
@@ -250,15 +290,23 @@ void BrowseScreen::apply_library_pending() {
     lib_refresh_done_once_ = true;
     lib_fetch_ok_[static_cast<int>(MbMode::Movies)] =
         r.services_ok && r.movie_fetch_ok;
+    lib_fetch_ok_[static_cast<int>(MbMode::Tv)] = r.tv_fetch_ok;
     spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
-                 "in_library={}, downloading={}",
-                 services_ok_, r.movie_refs.size(), r.downloading_refs.size());
-    // Only replace the id-sets when Radarr answered. When it didn't, keep the
-    // previous visit's cache intact (matches the old code, where the clear +
-    // rebuild lived entirely inside the services_ok_ branch). Both this
-    // update and quick_add_focused()'s reads happen only on the render
-    // thread (single-threaded access, see browse_logic.h), so there is no
-    // window where a reader can observe library_refs_ mid-rebuild.
+                 "movies={} (ok={}), shows={} (ok={}), downloading={}",
+                 services_ok_, r.movie_refs.size(), r.movie_fetch_ok,
+                 r.tv_refs.size(), r.tv_fetch_ok, r.downloading_refs.size());
+    // Replace per kind, never wholesale: when only one service answered, the
+    // other's contribution must survive or its mode's in-library hide
+    // silently stops working. Replacing (rather than clearing then filling)
+    // means quick_add_focused() never reads a momentarily-empty set.
+    bool refs_changed = false;
+    // MOVIE GATE IS `r.services_ok` ALONE — unchanged from the shipped code.
+    // Adding `&& r.movie_fetch_ok` here would RETAIN the previous sets when a
+    // reachable Radarr's library GET fails, instead of replacing them with
+    // empties. That is probably better behavior, but it is a change to a
+    // shipped movie path, and this task is the TV task. Movie mode must
+    // behave identically; if the retain-on-failure fix is wanted it gets its
+    // own change and its own hardware check.
     if (r.services_ok) {
         replace_refs_of_kind(library_refs_, MediaKind::Movie, r.movie_refs);
         // Deliberate asymmetry for now: downloading_refs_ is still a full
@@ -269,24 +317,33 @@ void BrowseScreen::apply_library_pending() {
         // replace_refs_of_kind(downloading_refs_, MediaKind::Movie,
         // r.downloading_refs) when that lands.
         downloading_refs_ = std::move(r.downloading_refs);
-        if (r.quality_fetched) {
-            quality_profiles_ = std::move(r.quality_profiles);
-            library_cached_   = true;
-        }
+        refs_changed = true;
+    }
+    if (r.tv_fetch_ok) {
+        replace_refs_of_kind(library_refs_, MediaKind::Tv, r.tv_refs);
+        refs_changed = true;
+    }
+    if (r.services_ok && r.quality_fetched) {
+        quality_profiles_ = std::move(r.quality_profiles);
+        library_cached_   = true;
+    }
+    if (refs_changed) {
         // Retro-hide: pages can land before the (async) library refresh on a
-        // cold entry, and a title can join the library mid-session via
-        // Detail — sweep both the visible grid and the For You cache so
-        // owned titles disappear instead of wearing a badge. The ids stay in
-        // loaded_refs_, so later append pages can't re-add them.
+        // cold entry, and a title can join the library mid-session — sweep the
+        // visible grid and BOTH For You caches so owned titles disappear
+        // instead of wearing a badge. The predicate is kind-aware, so a movie
+        // is never hidden because a show shares its id. The refs stay in
+        // loaded_refs_, so later append pages can't resurrect them.
         auto owned = [this](const TmdbSearchHit& m) {
             return library_refs_.count(media_ref_of(m)) > 0;
         };
         const size_t before = movies_.size();
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
                       movies_.end());
-        foryou().hits.erase(std::remove_if(foryou().hits.begin(),
-                                           foryou().hits.end(), owned),
-                            foryou().hits.end());
+        for (auto& cache : foryou_) {
+            cache.hits.erase(std::remove_if(cache.hits.begin(), cache.hits.end(), owned),
+                             cache.hits.end());
+        }
         if (movies_.size() != before) {
             if (grid_cursor_ >= static_cast<int>(movies_.size())) {
                 grid_cursor_ = movies_.empty()
@@ -327,18 +384,32 @@ void BrowseScreen::activate_foryou() {
     // WaitForLibrary case below re-sets it when it actually applies.
     foryou_waiting_for_library_ = false;
     foryou_failed_ = false;
-    // Movie-scoped decision: library_refs_.empty() is checked kind-blind.
-    // Once TV lands, a TV-only library reads as non-empty here and routes
-    // to Sample with an all-TV pool (see start_foryou_sample's kind
-    // filter) — the TV task must revisit this EmptyLibrary check too.
+    // Kind-aware decision: the EmptyLibrary check looks at the active mode's
+    // seed pool, not the whole (mixed-kind) library_refs_ — a movie-only
+    // library must not read as "non-empty" while browsing TV, and vice versa.
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
     switch (decide_foryou_entry(!foryou().hits.empty(), lib_refresh_done_once_,
                                 lib_fetch_ok_[static_cast<int>(mode())],
-                                library_refs_.empty())) {
+                                seed_pool(library_refs_, kind).empty())) {
         case ForYouEntry::UseCache:
             movies_ = foryou().hits;
             loading_ = false;
             more_available_ = false;   // no scroll-driven pages on For You
             fetching_more_ = false;
+            // Stale-while-revalidate on ACTIVATION, not just on enter().
+            // decide_foryou_entry short-circuits on the cache with no age
+            // check, and the TTL was only ever evaluated in enter() — so a
+            // MODE toggle (which reaches here via reload_for_category ->
+            // load_category(ForYou) -> activate_foryou) would show a
+            // days-old grid verbatim. The per-mode split makes that far
+            // likelier, since the inactive mode's cache ages the whole time
+            // the user browses the other one. Same SWR contract as enter():
+            // show the cache, revalidate behind it, never clear, never
+            // Loading.
+            if (tmdb_grid_stale(foryou().loaded_at,
+                                std::chrono::steady_clock::now())) {
+                start_foryou_sample(/*background=*/true);
+            }
             break;
         case ForYouEntry::WaitForLibrary:
             loading_ = true;
@@ -356,31 +427,17 @@ void BrowseScreen::activate_foryou() {
 }
 
 void BrowseScreen::start_foryou_sample(bool background) {
-    // Sample min(8, library size) seeds uniformly without replacement.
-    // Movie-only: TMDB's movie and TV id spaces OVERLAP (e.g. id 1396 is
-    // both Breaking Bad and an unrelated film), and get_recommendations
-    // hits the movie-only /movie/{id}/recommendations endpoint. A TV ref
-    // fed through here would silently return valid recommendations for
-    // the wrong, unrelated movie — no error, no log line. Nothing
-    // produces Tv refs into library_refs_ yet, so this filter is a no-op
-    // today; keep it so a later TV task extends it deliberately.
-    std::vector<int> pool;
-    pool.reserve(library_refs_.size());
-    for (const auto& ref : library_refs_) {
-        if (ref.kind == MediaKind::Movie) pool.push_back(ref.id);
-    }
+    // Sample min(8, library size) seeds uniformly without replacement, from
+    // the ACTIVE mode's kind only. TMDB's movie and TV id spaces OVERLAP
+    // (e.g. id 1396 is both Breaking Bad and an unrelated film) and the
+    // recommendation endpoints are kind-specific
+    // (/movie/{id}/recommendations vs /tv/{id}/recommendations) — a TV ref
+    // fed through the movie endpoint would silently return valid
+    // recommendations for the wrong, unrelated movie, no error, no log line.
+    // seed_pool() (browse_logic.h) is the single place that filters by kind.
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
+    std::vector<int> pool = seed_pool(library_refs_, kind);
     if (pool.empty()) { loading_ = false; return; }
-    // TV has no seeds of its own yet (Sonarr wiring + get_tv_recommendations
-    // land in 2c-1 task 8), and the pool above is movie-only by construction.
-    // Without this bail, TV mode samples MOVIE recommendations and publishes
-    // them into foryou_[Tv] with a fresh 6h TTL: the user gets a grid of films
-    // under a "Marquee TV" header, with no error and no log line, and the
-    // cache serves it back for six hours. Reachable in two presses —
-    // do_shuffle() and apply_library_pending()'s deferred hook both call this
-    // without a mode check. Placed alongside the pool.empty() bail, and for
-    // the same reason: it must precede the foryou_waiting_for_library_ clear
-    // below.
-    if (tv_mode()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
     // this function without going through activate_foryou()'s own clear —
@@ -399,8 +456,23 @@ void BrowseScreen::start_foryou_sample(bool background) {
     // superseded job's results get silently discarded, so this is purely a
     // worker-stacking cap, not a correctness fix.
     if (foryou_job_ && foryou_job_->remaining.load(std::memory_order_acquire) > 0) {
-        spdlog::info("[BrowseScreen] For You sample already in flight; ignoring");
-        return;
+        if (foryou_job_->mode == mode()) {
+            // Same mode: a repeat trigger would only stack another batch of
+            // workers onto a slow egress. Ignore, as before.
+            spdlog::info("[BrowseScreen] For You sample already in flight; ignoring");
+            return;
+        }
+        // DIFFERENT mode: the toggle already bumped the generation, so that
+        // job's results are guaranteed to be discarded at drain time. Bailing
+        // out here would be a dead end — this early return happens BEFORE
+        // `loading_ = true`, and load_category has already cleared movies_, so
+        // For You would sit on a blank "no shows" state for the ~12 s the old
+        // sample takes to finish and then repaint nothing, until the user
+        // tabbed away and back. Drop the stale job and start the replacement.
+        spdlog::info("[BrowseScreen] For You: dropping in-flight {} sample for a {} one",
+                     foryou_job_->mode == MbMode::Tv ? "tv" : "movies",
+                     tv_mode() ? "tv" : "movies");
+        foryou_job_.reset();   // its workers run on; the gen check discards them
     }
     static thread_local std::mt19937 rng{std::random_device{}()};
     std::vector<int> seeds;
@@ -426,12 +498,19 @@ void BrowseScreen::start_foryou_sample(bool background) {
     spdlog::info("[BrowseScreen] For You sample: {} seeds (gen={}, background={})",
                  seeds.size(), job->gen, background);
     for (int seed : seeds) {
-        tmdb_workers_.spawn([this, job, seed]() {
-            // Recommendations with documented get_similar fallback — the same
-            // contract the playback overlay uses (spec 1c step 2).
-            auto list = tmdb_.get_recommendations(seed, /*page=*/1);
+        tmdb_workers_.spawn([this, job, seed, kind]() {
+            // Recommendations with the documented similar-fallback — the same
+            // contract the playback overlay uses (spec 1c step 2). The
+            // endpoint pair is kind-specific: a movie id and a show id can be
+            // the same number, so calling the wrong family returns a plausible
+            // grid of the wrong medium rather than an error.
+            auto list = (kind == MediaKind::Tv)
+                            ? tmdb_.get_tv_recommendations(seed, /*page=*/1)
+                            : tmdb_.get_recommendations(seed, /*page=*/1);
             if (list.hits.empty()) {
-                auto fb = tmdb_.get_similar(seed, /*page=*/1);
+                auto fb = (kind == MediaKind::Tv)
+                              ? tmdb_.get_tv_similar(seed, /*page=*/1)
+                              : tmdb_.get_similar(seed, /*page=*/1);
                 if (fb.ok || !list.ok) list = std::move(fb);
             }
             {
@@ -471,11 +550,16 @@ void BrowseScreen::apply_foryou_pending() {
         }
         return;
     }
+    // The job knows which mode it was started under — a MODE toggle mid-flight
+    // must not file TV results into the movie cache. (The generation check
+    // above already discards a preempted job; this covers the case where the
+    // toggle's own reload left this job's generation current.)
     ForYouCache& target = foryou_[static_cast<int>(job->mode)];
     target.hits = merge_recommendations(per_seed, library_refs_);
     target.loaded_at = std::chrono::steady_clock::now();
-    spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
-                 target.hits.size(), ok_seeds);
+    spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s), mode={}",
+                 target.hits.size(), ok_seeds,
+                 job->mode == MbMode::Tv ? "tv" : "movies");
     if (category_ == Category::ForYou && job->mode == mode()) {
         movies_ = target.hits;
         grid_cursor_ = 0;
@@ -867,10 +951,10 @@ void BrowseScreen::persist_filter_state(MbMode mode_for_write, FilterTabKind tab
 }
 
 void BrowseScreen::apply_mode_change() {
-    // The library cache holds both kinds (Sonarr-backed TV entries land in
-    // Task 8), but the OTHER kind's set may be stale or never fetched —
-    // re-kick so the in-library hide is right for what is about to be
-    // drawn. CAS-guarded: a no-op when one is in flight.
+    // The library cache holds both kinds (Radarr for movies, Sonarr for TV),
+    // but the OTHER kind's set may be stale or never fetched — re-kick so the
+    // in-library hide is right for what is about to be drawn. CAS-guarded: a
+    // no-op when one is in flight.
     refresh_library_async();
     // reload_for_category(), NOT load_category(). load_category is the
     // FILTER-BLIND entry point: it sets window_is_discover_ = false and routes
@@ -1394,7 +1478,18 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (!movies_.empty() && grid_cursor_ >= 0 &&
                 grid_cursor_ < static_cast<int>(movies_.size())) {
-                selected_tmdb_id_ = movies_[grid_cursor_].tmdb_id;
+                const auto& hit = movies_[grid_cursor_];
+                // 2c-1 ships discovery only. DetailScreen is Movie/Radarr-typed
+                // end to end (Mode keyed on one has_file bool and one file
+                // path; every mutating action is RadarrClient-shaped), so
+                // handing it a TV id would show a movie's detail page for
+                // whatever film shares that number. The series detail screen
+                // is a later milestone — say so rather than misroute.
+                if (hit.kind == MediaKind::Tv) {
+                    ::ui::Toast::show("TV details coming soon");
+                    continue;
+                }
+                selected_tmdb_id_ = hit.tmdb_id;
                 return Screen::Detail;
             }
         }
