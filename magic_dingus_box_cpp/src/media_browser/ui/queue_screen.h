@@ -12,8 +12,10 @@ namespace media_browser { class QbittorrentClient; }
 
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/queue_groups.h"
 
 namespace media_browser { class RadarrClient; }
+namespace media_browser { class SonarrClient; }
 
 namespace media_browser::ui {
 
@@ -50,6 +52,20 @@ namespace media_browser::ui {
 //     is a no-op in v1.6.x; long-press exits MB → MainMenu via the input
 //     dispatcher.
 //
+// TV downloads (Sonarr):
+//   - Optional. When a SonarrClient is wired, the same refresh worker
+//     also fetches Sonarr's queue and collapses it with
+//     group_tv_queue() — Sonarr's /queue is per EPISODE, so a season
+//     pack is N rows sharing one downloadId and must render as ONE
+//     row. The groups are appended AFTER the movie rows in the same
+//     scrolling list, so one cursor walks both.
+//   - Live progress comes from the SAME qBit overlay the movie rows
+//     use: Sonarr's downloadId IS the torrent hash, lowercased to
+//     match qBit's normalization exactly as Radarr's is.
+//   - Cancelling a TV row issues exactly ONE
+//     SonarrClient::cancel_queue_item() — that DELETE removes the
+//     whole download and every sibling row 404s by design.
+//
 // Error / empty states:
 //   - Queue empty and RadarrClient::last_error() non-empty  ->
 //     "Radarr service offline" with the error detail below.
@@ -68,8 +84,15 @@ public:
     // onto Radarr's queue items by matching downloadId → qBit hash,
     // eliminating the "frozen percent" gap caused by Radarr's 30-60s
     // internal poll cadence against qBit.
+    //
+    // sonarr is optional too — nullptr keeps the screen movie-only,
+    // which is exactly the behaviour every call site had before TV
+    // downloads existed. main.cpp passes it only when Sonarr is
+    // genuinely configured, so an unprovisioned box never shows the
+    // SonarrMockClient's fixture pack as a real download.
     explicit QueueScreen(RadarrClient& radarr,
-                         QbittorrentClient* qbit = nullptr);
+                         QbittorrentClient* qbit = nullptr,
+                         SonarrClient* sonarr = nullptr);
     ~QueueScreen();
 
     void enter() override;
@@ -86,6 +109,9 @@ public:
         bool is_nav = false;  // event was a cursor-walk action with delta != 0
         int  cursor = 0;      // resulting cursor position
     };
+    //
+    // `count` is the COMBINED row count (movie queue rows + TV download
+    // groups) — the two sections are one list to the cursor.
     static CursorStep step_cursor(platform::InputAction action, int delta,
                                   int cursor, int count) {
         CursorStep r;
@@ -102,6 +128,19 @@ public:
     }
 
 private:
+    // One TV download as the screen renders it: the pure group plus the
+    // live telemetry the qBit overlay supplies. The telemetry lives here
+    // rather than on TvQueueGroup so queue_groups.h stays a pure,
+    // Renderer-free, network-free grouping helper.
+    struct TvQueueRow {
+        TvQueueGroup group;      // size/sizeleft/status updated by the overlay
+        double progress = 0.0;
+        int download_rate_bps = 0;
+        int peers = 0;
+        int seeds = 0;
+        int eta_seconds = 0;
+    };
+
     // Refresh cadence. With the new async path the UI never blocks on
     // a refresh, so we can poll faster — 1.5s gives the user a
     // continuously-updating MB-downloaded counter without overloading
@@ -125,13 +164,25 @@ private:
     // from update() each frame; cheap when no result is ready.
     void apply_pending();
 
-    // Cancel the focused row on the Radarr side, then refresh().
+    // Cancel the focused row (Radarr for a movie row, Sonarr for a TV
+    // row), then refresh().
     void do_cancel_focused();
+
+    // Total selectable rows: movie queue rows first, TV groups after.
+    // A cursor >= queue_.size() addresses tv_[cursor - queue_.size()].
+    int row_count() const {
+        return static_cast<int>(queue_.size() + tv_.size());
+    }
 
     RadarrClient&      radarr_;
     QbittorrentClient* qbit_ = nullptr;
+    SonarrClient*      sonarr_ = nullptr;
 
     std::vector<QueueItem> queue_;
+
+    // TV downloads, one entry per Sonarr download (NOT per episode).
+    // Always empty when sonarr_ is null.
+    std::vector<TvQueueRow> tv_;
 
     // Movies in library that are monitored but have no file yet AND aren't
     // already in the active download queue. Populated by refresh() from
@@ -165,6 +216,7 @@ private:
     // changed.
     struct PendingResult {
         std::vector<QueueItem> queue;
+        std::vector<TvQueueRow> tv;
         std::vector<Movie>     awaiting;
         ActiveSearches         active_searches;
         std::string            error;
@@ -191,8 +243,13 @@ private:
     std::vector<Movie> lib_cache_;
     std::chrono::steady_clock::time_point lib_cache_at_{};
 
-    // Cancel-confirmation state.
+    // Cancel-confirmation state. The id alone is NOT a unique row key
+    // across both sections — Radarr and Sonarr both hand out small
+    // sequential queue ids, so movie row 5 and TV row 5 can coexist.
+    // cancel_pending_is_tv_ disambiguates; without it, arming a movie
+    // row would also paint the colliding TV row's bar red.
     bool cancel_pending_ = false;
+    bool cancel_pending_is_tv_ = false;
     int cancel_pending_queue_id_ = 0;
     std::chrono::steady_clock::time_point cancel_pending_at_{};
 };

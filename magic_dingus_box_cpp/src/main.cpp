@@ -908,8 +908,16 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::SeriesDetailScreen mb_series_detail(
         sonarr, *tmdb, qbit_owned.get(),
         /*sonarr_configured=*/!sonarr_key.empty());
+    // Queue shows Sonarr's TV downloads alongside Radarr's movies. Gated
+    // on sonarr_key.empty() for the same reason BrowseScreen and
+    // SeriesDetailScreen are: without a key `sonarr` is a
+    // SonarrMockClient, whose fixture queue is a 3-row season pack —
+    // passing it here would render a fake download on every box that
+    // never set Sonarr up. nullptr keeps the screen movie-only.
     media_browser::ui::QueueScreen      mb_queue(radarr,
-                                                  qbit_owned.get());
+                                                  qbit_owned.get(),
+                                                  sonarr_key.empty()
+                                                      ? nullptr : &sonarr);
     media_browser::ui::LibraryScreen    mb_library(radarr, state);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      radarr,

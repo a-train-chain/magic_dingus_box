@@ -13,6 +13,7 @@
 
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
@@ -135,10 +136,78 @@ std::string titlecase_state(const std::string& s) {
     return th.accent;
 }
 
+// One drawable queue row, projected from either a Radarr movie queue item
+// or a grouped Sonarr TV download. The row painter in render() reads ONLY
+// this, so both sections go through one code path and cannot drift apart
+// visually. Field names deliberately mirror QueueItem's.
+struct RowView {
+    int id = 0;              // cancel key WITHIN its section (see is_tv)
+    bool is_tv = false;
+    std::string poster_url;  // always empty for TV — Sonarr's /queue carries
+                             // no images, so the row draws the same
+                             // deterministic-tint placeholder a poster-less
+                             // movie row does.
+    std::string title;
+    std::string state;
+    double  progress = 0.0;
+    int64_t size_bytes = 0;
+    int64_t sizeleft_bytes = 0;
+    int download_rate_bps = 0;
+    int peers = 0;
+    int seeds = 0;
+    int eta_seconds = 0;
+};
+
+// Translate qBit's state vocabulary to the Radarr-style single-word names
+// the renderer expects. An unmapped qBit state keeps `current` — the arr's
+// own status is a better answer than a guess. Shared by the movie and TV
+// overlays so both sections read identically for the same torrent.
+std::string arr_state_from_qbit(const std::string& qb,
+                                const std::string& current) {
+    if (qb == "downloading") return "downloading";
+    if (qb == "stalledDL")   return "stalled";
+    if (qb == "metaDL" || qb == "queuedDL" || qb == "checkingDL"
+        || qb == "allocating") {
+        return "queued";
+    }
+    if (qb == "uploading" || qb == "pausedUP" || qb == "stalledUP"
+        || qb == "queuedUP" || qb == "checkingUP" || qb == "forcedUP") {
+        return "completed";
+    }
+    if (qb == "error" || qb == "missingFiles") return "failed";
+    if (qb == "pausedDL") return "paused";
+    return current;
+}
+
+// Lowercase a Radarr/Sonarr downloadId for lookup in qBit's torrent map.
+// BOTH arrs emit the hash in whatever casing the tracker gave them
+// (uppercase hex in practice) while qBit normalizes to lowercase, so the
+// TV rows reuse this exact normalization — the hash IS the same torrent.
+std::string lc_hash(const std::string& s) {
+    std::string out = s;
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return out;
+}
+
+// One line of TV row identity: "Series.S01.1080p — Season 1 (10 eps)", or
+// "… — 10 eps" when the pack spans seasons (season_number == -1).
+std::string tv_row_title(const TvQueueGroup& g) {
+    std::string base = g.series_title.empty() ? std::string("Untitled")
+                                              : g.series_title;
+    std::ostringstream ss;
+    ss << base << " \xE2\x80\x94 ";
+    if (g.season_number >= 0) ss << "Season " << g.season_number << " (";
+    ss << g.episode_count << " ep" << (g.episode_count == 1 ? "" : "s");
+    if (g.season_number >= 0) ss << ")";
+    return ss.str();
+}
+
 }  // namespace
 
-QueueScreen::QueueScreen(RadarrClient& radarr, QbittorrentClient* qbit)
-    : radarr_(radarr), qbit_(qbit) {}
+QueueScreen::QueueScreen(RadarrClient& radarr, QbittorrentClient* qbit,
+                         SonarrClient* sonarr)
+    : radarr_(radarr), qbit_(qbit), sonarr_(sonarr) {}
 
 QueueScreen::~QueueScreen() {
     // Wait for any in-flight worker before destruction so we don't
@@ -150,6 +219,7 @@ void QueueScreen::enter() {
     cursor_ = 0;
     scroll_row_ = 0;
     cancel_pending_ = false;
+    cancel_pending_is_tv_ = false;
     cancel_pending_queue_id_ = 0;
     // Async — no UI block on entry. The screen renders immediately
     // (showing whatever stale state we had from last visit, or a
@@ -180,6 +250,27 @@ void QueueScreen::refresh_async() {
 void QueueScreen::run_refresh() {
     PendingResult r;
     r.queue = radarr_.get_queue();
+
+    // TV downloads. Worker thread only (WatchdogSec budget) — same rule
+    // the Radarr calls above follow. Sonarr's queue is per EPISODE, so a
+    // season pack arrives as N rows sharing one downloadId; group_tv_queue
+    // collapses them to one row per download BEFORE anything renders.
+    if (sonarr_) {
+        const auto tv_rows = sonarr_->get_queue();
+        // Sonarr's per-row ETA, keyed by the row id the group kept. Used
+        // only when the qBit overlay can't supply a live one.
+        std::unordered_map<int, int> eta_by_row_id;
+        eta_by_row_id.reserve(tv_rows.size());
+        for (const auto& q : tv_rows) eta_by_row_id.emplace(q.id, q.eta_seconds);
+
+        for (auto& g : group_tv_queue(tv_rows)) {
+            TvQueueRow row;
+            auto eta_it = eta_by_row_id.find(g.first_queue_id);
+            row.eta_seconds = (eta_it == eta_by_row_id.end()) ? 0 : eta_it->second;
+            row.group = std::move(g);
+            r.tv.push_back(std::move(row));
+        }
+    }
 
     // Library snapshot — used for two things:
     //   1. The "awaiting release" list (monitored, no file, not in queue).
@@ -268,7 +359,7 @@ void QueueScreen::run_refresh() {
         // Either way, the queue rows below this branch will retain
         // whatever stale progress Radarr returned — flag it so render()
         // can surface a warning instead of silently misleading the user.
-        if (qbit_map.empty() && !r.queue.empty()) {
+        if (qbit_map.empty() && !(r.queue.empty() && r.tv.empty())) {
             r.qbit_overlay_failed = true;
         }
         if (!qbit_map.empty()) {
@@ -276,9 +367,7 @@ void QueueScreen::run_refresh() {
                 if (q.download_id.empty()) continue;
                 // Radarr emits uppercase hash; qBit normalizes to
                 // lowercase. Convert to match.
-                std::string key = q.download_id;
-                std::transform(key.begin(), key.end(), key.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
+                std::string key = lc_hash(q.download_id);
                 auto it = qbit_map.find(key);
                 if (it == qbit_map.end()) continue;
                 const auto& qt = it->second;
@@ -292,23 +381,41 @@ void QueueScreen::run_refresh() {
                 q.eta_seconds        = qt.eta_seconds;
                 // Translate qBit's state names to the Radarr-style
                 // single-word vocabulary the renderer expects.
-                if (qt.state == "downloading" || qt.state == "stalledDL"
-                    || qt.state == "metaDL" || qt.state == "queuedDL"
-                    || qt.state == "checkingDL" || qt.state == "allocating") {
-                    q.state = qt.state == "downloading" ? "downloading"
-                            : qt.state == "stalledDL"   ? "stalled"
-                            : "queued";
-                } else if (qt.state == "uploading" || qt.state == "pausedUP"
-                           || qt.state == "stalledUP" || qt.state == "queuedUP"
-                           || qt.state == "checkingUP" || qt.state == "forcedUP") {
-                    q.state = "completed";
-                } else if (qt.state == "error" || qt.state == "missingFiles") {
-                    q.state = "failed";
-                } else if (qt.state == "pausedDL") {
-                    q.state = "paused";
-                }
+                q.state = arr_state_from_qbit(qt.state, q.state);
+            }
+
+            // Same overlay, same map, same key normalization for TV:
+            // Sonarr's downloadId IS the torrent hash, so a season pack's
+            // group resolves to exactly the torrent qBit is moving. This
+            // is what gives a 10-episode pack ONE live progress bar
+            // instead of ten stale ones.
+            for (auto& t : r.tv) {
+                if (t.group.download_id.empty()) continue;
+                auto it = qbit_map.find(lc_hash(t.group.download_id));
+                if (it == qbit_map.end()) continue;
+                const auto& qt = it->second;
+                t.progress                = qt.progress;
+                t.download_rate_bps       = qt.dlspeed;
+                t.peers                   = qt.num_leechs;
+                t.seeds                   = qt.num_seeds;
+                t.eta_seconds             = qt.eta_seconds;
+                t.group.size_bytes        = qt.size;
+                t.group.sizeleft_bytes    = qt.size - qt.downloaded;
+                t.group.status = arr_state_from_qbit(qt.state, t.group.status);
             }
         }
+    }
+
+    // Progress for any TV row the overlay didn't reach (qbit_ null,
+    // unreachable, or the hash not in the map). Derived from the group's
+    // MAXed size/sizeleft, which is the whole pack's — exactly what the
+    // per-episode rows each reported. Mirrors SonarrParsers::parse_queue.
+    for (auto& t : r.tv) {
+        if (t.progress > 0.0) continue;
+        if (t.group.size_bytes <= 0) continue;
+        const int64_t left = std::max<int64_t>(0, t.group.sizeleft_bytes);
+        t.progress = static_cast<double>(t.group.size_bytes - left)
+                   / static_cast<double>(t.group.size_bytes);
     }
 
     // Path-independent import-state normalization. A download that has
@@ -336,6 +443,25 @@ void QueueScreen::run_refresh() {
         }
     }
 
+    // Same reclassification for TV rows — a season pack that finished in
+    // qBit but is still being imported reads "completed" (green, i.e.
+    // "done") right up until the row vanishes, which is exactly the
+    // confusion the movie path above was fixed for.
+    for (auto& t : r.tv) {
+        if (t.group.status != "completed") continue;
+        if (t.group.tracked_download_state == "importing" ||
+            t.group.tracked_download_state == "importPending") {
+            t.group.status = "importing";
+        } else if (t.group.tracked_download_state == "importBlocked" ||
+                   t.group.tracked_download_state == "importFailed") {
+            t.group.status = "warning";
+        }
+    }
+
+    // Radarr's error banner is still keyed on Radarr's OWN queue being
+    // empty — a TV download in flight says nothing about whether Radarr
+    // is reachable, and the banner only ever renders when BOTH sections
+    // are empty anyway.
     r.error = r.queue.empty() ? radarr_.last_error() : std::string{};
 
     // Publish under the mutex; result_ready_ is the atomic flag the
@@ -360,6 +486,7 @@ void QueueScreen::apply_pending() {
     result_ready_.store(false);
 
     queue_ = std::move(r.queue);
+    tv_ = std::move(r.tv);
     awaiting_ = std::move(r.awaiting);
     active_searches_ = std::move(r.active_searches);
     last_error_ = std::move(r.error);
@@ -367,19 +494,37 @@ void QueueScreen::apply_pending() {
     last_refresh_at_ = std::chrono::steady_clock::now();
     refreshing_ = false;
 
-    // Clamp cursor to valid range now that we have new data.
-    int n = static_cast<int>(queue_.size());
+    // Clamp cursor to valid range now that we have new data. Spans both
+    // sections — the movie rows and the TV groups are one list.
+    int n = row_count();
     if (cursor_ >= n) cursor_ = std::max(0, n - 1);
     if (cursor_ < 0) cursor_ = 0;
 
     // Clear a pending cancel if the row it was attached to vanished.
+    // Searched in the section it was armed in: the two id spaces are
+    // independent (Radarr's queue ids and Sonarr's both start small), so
+    // matching across sections could keep a cancel armed on a row the
+    // user never touched.
     if (cancel_pending_) {
         bool still_present = false;
-        for (const auto& q : queue_) {
-            if (q.id == cancel_pending_queue_id_) { still_present = true; break; }
+        if (cancel_pending_is_tv_) {
+            for (const auto& t : tv_) {
+                if (t.group.first_queue_id == cancel_pending_queue_id_) {
+                    still_present = true;
+                    break;
+                }
+            }
+        } else {
+            for (const auto& q : queue_) {
+                if (q.id == cancel_pending_queue_id_) {
+                    still_present = true;
+                    break;
+                }
+            }
         }
         if (!still_present) {
             cancel_pending_ = false;
+            cancel_pending_is_tv_ = false;
             cancel_pending_queue_id_ = 0;
         }
     }
@@ -398,6 +543,7 @@ void QueueScreen::update() {
                               now - cancel_pending_at_).count();
         if (elapsed_ms >= kCancelPendingMs) {
             cancel_pending_ = false;
+            cancel_pending_is_tv_ = false;
             cancel_pending_queue_id_ = 0;
         }
     }
@@ -413,11 +559,19 @@ void QueueScreen::update() {
 }
 
 void QueueScreen::do_cancel_focused() {
-    if (queue_.empty()) return;
-    if (cursor_ < 0 || cursor_ >= static_cast<int>(queue_.size())) return;
-    int queue_id = queue_[cursor_].id;
-    radarr_.cancel_queue_item(queue_id);
+    if (cursor_ < 0 || cursor_ >= row_count()) return;
+    const int movie_rows = static_cast<int>(queue_.size());
+    if (cursor_ < movie_rows) {
+        radarr_.cancel_queue_item(queue_[cursor_].id);
+    } else if (sonarr_) {
+        // EXACTLY ONE call. Sonarr's DELETE acts on the whole download, so
+        // this removes every episode row of the pack; iterating the pack's
+        // sibling ids would only collect 404s (sonarr_client.h).
+        sonarr_->cancel_queue_item(
+            tv_[static_cast<size_t>(cursor_ - movie_rows)].group.first_queue_id);
+    }
     cancel_pending_ = false;
+    cancel_pending_is_tv_ = false;
     cancel_pending_queue_id_ = 0;
     // Force an immediate refresh so the row disappears without the user
     // waiting on the 2s poll. Async — UI thread doesn't block.
@@ -448,15 +602,15 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
         // ROTATE (rotary CW/CCW + D-pad left/right) and ROTATE_VERTICAL
         // (D-pad up/down) both walk the rows — the rotary encoder is the
         // only cursor input on a controller-free enclosure.
-        const auto step = step_cursor(e.action, e.delta, cursor_,
-                                      static_cast<int>(queue_.size()));
+        const auto step = step_cursor(e.action, e.delta, cursor_, row_count());
         if (step.is_nav) {
-            if (!queue_.empty()) {
+            if (row_count() > 0) {
                 cursor_ = step.cursor;
                 // Navigation clears any pending cancel so the user can't
                 // accidentally confirm on the wrong row.
                 if (cancel_pending_) {
                     cancel_pending_ = false;
+                    cancel_pending_is_tv_ = false;
                     cancel_pending_queue_id_ = 0;
                 }
             }
@@ -467,15 +621,22 @@ Screen QueueScreen::handle_input(const std::vector<platform::InputEvent>& events
         // in main.cpp. It never reaches here; no per-screen handler needed.
 
         if (e.action == platform::InputAction::SELECT && e.pressed) {
-            if (queue_.empty()) continue;
-            if (cursor_ < 0 || cursor_ >= static_cast<int>(queue_.size())) continue;
-            int focused_id = queue_[cursor_].id;
-            if (cancel_pending_ && cancel_pending_queue_id_ == focused_id) {
+            if (cursor_ < 0 || cursor_ >= row_count()) continue;
+            const int movie_rows = static_cast<int>(queue_.size());
+            const bool focused_is_tv = cursor_ >= movie_rows;
+            const int focused_id =
+                focused_is_tv
+                    ? tv_[static_cast<size_t>(cursor_ - movie_rows)]
+                          .group.first_queue_id
+                    : queue_[cursor_].id;
+            if (cancel_pending_ && cancel_pending_is_tv_ == focused_is_tv
+                && cancel_pending_queue_id_ == focused_id) {
                 // Stage 2: confirm.
                 do_cancel_focused();
             } else {
                 // Stage 1: arm.
                 cancel_pending_ = true;
+                cancel_pending_is_tv_ = focused_is_tv;
                 cancel_pending_queue_id_ = focused_id;
                 cancel_pending_at_ = std::chrono::steady_clock::now();
             }
@@ -531,11 +692,14 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // body-row inset for the queue rows below).
     {
         std::ostringstream cs;
-        int total = static_cast<int>(queue_.size() + awaiting_.size());
+        // TV groups count as downloads alongside the movie rows — one
+        // entry per DOWNLOAD, so a 10-episode pack adds 1, not 10.
+        const int downloading = static_cast<int>(queue_.size() + tv_.size());
+        const int total = downloading + static_cast<int>(awaiting_.size());
         if (total == 1) {
             cs << "1 monitored";
         } else {
-            cs << total << " monitored \xE2\x80\x94 " << queue_.size()
+            cs << total << " monitored \xE2\x80\x94 " << downloading
                << " downloading, " << awaiting_.size() << " awaiting";
         }
         std::string count_text = cs.str();
@@ -599,7 +763,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // user a clear "the bars below are stale" signal — without it
         // a netns flap or qBit auth desync makes downloads look
         // frozen with no explanation. See PendingResult comment.
-        if (qbit_overlay_failed_ && !queue_.empty()) {
+        if (qbit_overlay_failed_ && !(queue_.empty() && tv_.empty())) {
             const std::string warn_text =
                 "Live data unavailable \xE2\x80\x94 progress shown is "
                 "Radarr's cached snapshot";
@@ -646,7 +810,45 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // claims the whole body region.
     float post_queue_y = body_top;
 
-    if (queue_.empty() && awaiting_.empty()) {
+    // --- The combined row list ---------------------------------------
+    // Movie rows first (unchanged order and content), TV downloads after.
+    // One vector means one cursor, one scroll window, and one painter for
+    // both sections. Empty tail when sonarr_ is null, which is exactly the
+    // movie-only screen this was before.
+    std::vector<RowView> rows;
+    rows.reserve(queue_.size() + tv_.size());
+    for (const auto& q : queue_) {
+        RowView v;
+        v.id                = q.id;
+        v.poster_url        = q.poster_url;
+        v.title             = q.title;
+        v.state             = q.state;
+        v.progress          = q.progress;
+        v.size_bytes        = q.size_bytes;
+        v.sizeleft_bytes    = q.sizeleft_bytes;
+        v.download_rate_bps = q.download_rate_bps;
+        v.peers             = q.peers;
+        v.seeds             = q.seeds;
+        v.eta_seconds       = q.eta_seconds;
+        rows.push_back(std::move(v));
+    }
+    for (const auto& t : tv_) {
+        RowView v;
+        v.id                = t.group.first_queue_id;
+        v.is_tv             = true;
+        v.title             = tv_row_title(t.group);
+        v.state             = t.group.status;
+        v.progress          = t.progress;
+        v.size_bytes        = t.group.size_bytes;
+        v.sizeleft_bytes    = t.group.sizeleft_bytes;
+        v.download_rate_bps = t.download_rate_bps;
+        v.peers             = t.peers;
+        v.seeds             = t.seeds;
+        v.eta_seconds       = t.eta_seconds;
+        rows.push_back(std::move(v));
+    }
+
+    if (rows.empty() && awaiting_.empty()) {
         if (!last_error_.empty()) {
             // Radarr offline — primary message in red (highlight2),
             // matching the destructive/warning idiom from Detail's
@@ -690,7 +892,7 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                      + static_cast<float>(r.mb_text_baseline(sz2));
             r.mb_draw_text(hint_msg, hx, hy, sz2, th.dim, 0.8f);
         }
-    } else if (!queue_.empty()) {
+    } else if (!rows.empty()) {
         // --- Queue rows --------------------------------------------------
         // Vertical scrolling list. We clamp scroll_row_ here (in render —
         // not handle_input — because this is where we know how many rows
@@ -703,16 +905,20 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (cursor_ >= scroll_row_ + visible_rows) {
             scroll_row_ = cursor_ - visible_rows + 1;
         }
-        int n = static_cast<int>(queue_.size());
+        int n = static_cast<int>(rows.size());
         int end_row = std::min(n, scroll_row_ + visible_rows);
 
         const float row_x = kPaddingX;
         const float row_w = w - 2.0f * kPaddingX;
 
         for (int i = scroll_row_; i < end_row; ++i) {
-            const auto& q = queue_[i];
+            const auto& q = rows[static_cast<size_t>(i)];
             const bool focused      = (i == cursor_);
+            // Section-qualified: Radarr and Sonarr queue ids are separate
+            // sequences, so the id alone can match a row in the other
+            // section that the user never armed.
             const bool cancel_armed = cancel_pending_
+                                   && cancel_pending_is_tv_ == q.is_tv
                                    && cancel_pending_queue_id_ == q.id;
             float ry = list_top + (i - scroll_row_) * (kRowHeight + kRowGap);
 
@@ -824,6 +1030,11 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             int sub_size = th.font_small_size;
             int sub_baseline = r.mb_text_baseline(sub_size);
             std::ostringstream ss;
+            // TV marker. Leads the sub-line in the same dim small-font
+            // bullet-separated idiom the rest of the line already uses —
+            // no new chrome primitive, and it survives truncation because
+            // it comes first.
+            if (q.is_tv) ss << "TV  \xE2\x80\xA2  ";
             // "importing" gets an explicit ellipsis label — titlecase_state
             // only capitalizes and can't add the "…". Everything else uses
             // the generic capitalizer.
