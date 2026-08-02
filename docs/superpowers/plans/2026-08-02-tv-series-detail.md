@@ -3066,8 +3066,13 @@ The seven `StubSonarr`-family overrides in
 `long http_delete(...) { return 200; }` (200 preserves the old "no error ⇒
 success" reading); the two that record `delete_path` keep recording it, and
 the `remove_series` / `cancel_queue_item` cases still assert the same paths.
-`RadarrClient::http_delete` is deliberately left on the old shape — Radarr's
-client has no concurrent background poll sharing its `last_error_`.
+`RadarrClient::http_delete` is deliberately left on the old shape — NOT
+because no concurrent poll exists (DetailScreen::run_library_poll DOES
+overlap run_remove), but because Radarr's poll path never entry-clears
+`last_error_` (`get_movie`/`get_queue` carry no `set_error({})`), so only
+the safe false-FAILURE direction is reachable there; the destructive
+false-SUCCESS cannot occur. Recorded as a pre-existing issue, out of this
+plan's scope.
 
 - [ ] **Step 3: The confirm swap + the remove worker**
 
