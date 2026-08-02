@@ -466,6 +466,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_filter_rows.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_series_detail_logic.cpp
+        tests/media_browser/test_episode_logic.cpp
         tests/media_browser/test_queue_groups.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp
