@@ -11,4 +11,4 @@ StandardError=journal
 # cleanly and let the next timer firing retry. Never block boot or
 # crash from this watchdog.
 Restart=no
-TimeoutSec=60
+TimeoutSec=300

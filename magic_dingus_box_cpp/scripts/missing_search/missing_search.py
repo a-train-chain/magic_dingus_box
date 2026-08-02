@@ -59,13 +59,17 @@ def load_env(path=ENV_PATH):
     return keys
 
 
-def wait_for_ping(base, timeout_s=120, poll_s=5):
+def wait_for_ping(base, timeout_s=300, poll_s=5):
     """Poll a service's /ping until it answers, or give up after timeout_s.
 
     The timer's Persistent=true boot catch-up fires within a minute of
     boot, while the docker stack is still starting — without this wait
-    the run dies on connection-reset and the missing backlog is not
-    retried for another 4 hours.
+    the run dies on connection-reset. Generous timeout because a failed
+    run is NOT retried until the next 4-hour tick: Persistent=true only
+    replays triggers missed while the machine was off, it never re-runs
+    a unit that ran and failed. 300s covers even an fsck-slow SD boot;
+    nothing else contends for this unit (no TimeoutSec is set — oneshot
+    defaults to no timeout).
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
