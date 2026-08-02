@@ -91,4 +91,15 @@ struct SonarrQueueItem {
     Episode episode;         // populated when the request set includeEpisode=true
 };
 
+// One row of GET /api/v3/qualitydefinition — the source of the TV disk
+// estimate's MB/min multiplier. Sizes are megabytes-per-minute doubles in
+// Sonarr's API (minSize/maxSize/preferredSize); preferred may be null
+// upstream ("unlimited"), which parses to 0 and is skipped by consumers.
+struct QualityDefinition {
+    int quality_id = 0;             // quality.id
+    std::string title;              // quality.name, e.g. "HDTV-1080p"
+    double preferred_mb_per_min = 0.0;
+    double max_mb_per_min = 0.0;
+};
+
 }  // namespace media_browser
