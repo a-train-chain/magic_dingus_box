@@ -1512,7 +1512,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `SonarrClient::get_quality_profiles()`, `add_series(tmdb_id, quality_profile_id, monitor, title_fallback)`, `set_season_monitored`, `trigger_season_search`, `get_series`, `last_error()`; `record_refreshed`; Task 1's `next_unmonitored_season`.
-- Produces (Tasks 6-7 extend these): `enum class Action`, `struct ActionButton`, `rebuild_buttons()`, `focus_on()`, `dispatch_action()`, `whole_series_label()`, `spawn_mutation()`, `drain_mutation()`, `expire_confirms()`, and the members below.
+- Produces (Tasks 6-7 extend these): `enum class Action`, `struct ActionButton`, `rebuild_buttons()`, `dispatch_action()`, `whole_series_label()`, `spawn_mutation()`, `drain_mutation()`, `expire_confirms()`, and the members below.
 
 **Verified API note.** `add_series(id, qp, /*monitor=*/true, title)` sends `addOptions.monitor = "firstSeason"` and `searchForMissingEpisodes = true` (sonarr_client.cpp, the `addOptions` block). `monitor=false` sends `"none"` with no search. The spec's wording is "Add Season 1"; `"firstSeason"` monitors the first AIRED season, which is not always numbered 1. Keep the spec's label — it is what the user means — but do not assume the flipped season is literally S1 anywhere in the logic.
 
@@ -1530,7 +1530,6 @@ In `series_detail_screen.h`, in the private section directly after `void rebuild
         std::string label;
     };
     void rebuild_buttons();
-    void focus_on(Action a);
     void dispatch_action(Action a);
     void expire_confirms();
     std::string whole_series_label() const;
@@ -1667,7 +1666,17 @@ void SeriesDetailScreen::rebuild_buttons() {
     // the root of the wrong-mutation bug; render() dims the real row instead,
     // and SELECT is already gated on !mut_in_flight_.
 
+    // No-match fallback biases AWAY from destructive actions: after an
+    // unsettled add the row is [Remove] alone for ~9 s, and a satisfied
+    // user tapping again should not find the delete button pre-focused
+    // unless it is genuinely the only thing on offer.
     focus_ = 0;
+    for (size_t i = 0; i < buttons_.size(); ++i) {
+        if (canonical(buttons_[i].action) != Action::Remove) {
+            focus_ = static_cast<int>(i);
+            break;
+        }
+    }
     if (keep.has_value()) {
         for (size_t i = 0; i < buttons_.size(); ++i) {
             if (canonical(buttons_[i].action) == canonical(*keep)) {
@@ -1677,15 +1686,6 @@ void SeriesDetailScreen::rebuild_buttons() {
         }
     }
     if (focus_ >= static_cast<int>(buttons_.size())) focus_ = 0;
-}
-
-void SeriesDetailScreen::focus_on(Action a) {
-    for (size_t i = 0; i < buttons_.size(); ++i) {
-        if (buttons_[i].action == a) {
-            focus_ = static_cast<int>(i);
-            return;
-        }
-    }
 }
 
 std::string SeriesDetailScreen::whole_series_label() const {
@@ -1802,7 +1802,11 @@ void SeriesDetailScreen::drain_mutation() {
     }
     last_poll_at_ = {};  // Task 8: refresh badges next frame, not in 9 s
     rebuild_buttons();
-    if (whole_armed_) focus_on(Action::WholeSeries);
+    // Deliberately NO focus_on(WholeSeries) here: the identity-preserving
+    // rebuild already keeps focus on the button the user pressed, and if
+    // they rotated away during the free-space fetch, yanking focus back
+    // would be the one place it moves without being asked. The armed label
+    // + Warn color are the signal.
 }
 
 void SeriesDetailScreen::expire_confirms() {
@@ -2186,15 +2190,31 @@ Add `#include <filesystem>` to `series_detail_screen.cpp`'s includes. Replace th
                 estimate_remaining_bytes(rows_, runtime, mb_per_min_);
             const std::string title =
                 detail_.has_value() ? detail_->title : std::string("This series");
+            // Immediate feedback: the free-space fetch can take the full 5 s
+            // HTTP timeout, and the Allow path's only signal is the armed
+            // label appearing — a user who glances away would otherwise read
+            // press-1 as "the button did nothing".
+            ::ui::Toast::show(title + ": checking free space\xE2\x80\xA6");
             spawn_mutation([this, estimate, title]() {
-                // Free space: Sonarr's TV root folder first (the value the
-                // import actually depends on), std::filesystem as fallback.
-                // A READING of zero is NOT skipped — that is the full-disk
-                // case, and whole_series_verdict Blocks on it. Only a total
-                // failure to read (nullopt) warns instead of blocking.
+                // Free space, two sources with DIFFERENT zero semantics:
+                //
+                //  - Sonarr's root folder: freeSpace is parsed with a 0
+                //    default, so an ABSENT/null field (Sonarr can't stat the
+                //    folder — the stale-container-bind state that
+                //    magic-dingus-storage-attach.service exists for) is
+                //    indistinguishable from a genuinely full disk. A 0 here
+                //    is therefore AMBIGUOUS and must fall through, or a
+                //    healthy box with 400 GB free gets a false "0 GB free"
+                //    Block with a wrong diagnosis.
+                //  - std::filesystem::space on the host path: failure is a
+                //    distinct error code, so a returned 0 is a REAL full
+                //    disk and whole_series_verdict correctly Blocks on it.
+                //
+                // Do not "simplify" the two guards into one.
                 std::optional<int64_t> free_bytes;
                 for (const auto& rf : sonarr_.get_root_folders()) {
-                    if (rf.path.find("/tv") != std::string::npos) {
+                    if (rf.path.find("/tv") != std::string::npos &&
+                        rf.free_space_bytes > 0) {
                         free_bytes = rf.free_space_bytes;
                         break;
                     }
