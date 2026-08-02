@@ -1207,7 +1207,7 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Header: EMPTY tab strip, exactly like DetailScreen (detail_screen.cpp
     // passes /*tabs=*/{}). This screen is a drill-down, not a strip member,
     // and the 7-chip strip drawn under an arbitrary series title overlaps it.
-    // The title is measured with the TITLE font's own measurer — the 3-arg
+    // The title is measured with the TITLE font's own measurer — the
     // Renderer overload of truncate_to_width measures the body font, which
     // would under-cut a Zen Dots title.
     const std::string raw_title =
