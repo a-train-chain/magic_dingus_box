@@ -1239,8 +1239,17 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // per_page*kRowH, so the "+N more" overlap of the button row that
         // the previous revision had is structurally impossible.
         const int list_top = y + poster_h + chrome::kPad3;
-        const int list_bottom = screen_h - chrome::kFooterHeight_px -
-                                chrome::kPad3;
+        // list_bottom derives from where the footer hints ACTUALLY draw,
+        // not from kFooterHeight_px. draw_footer_hints anchors its text
+        // baseline at screen_h - kFrameInset_px - kPad3 (the wood frame's
+        // inner edge — 664 at 720p), 26 px HIGHER than the notional
+        // 30 px bottom band, and its icon row extends ~20 px above that
+        // baseline. Budgeting against the band model put the action
+        // buttons THROUGH the hint row on real hardware (caught by
+        // kmsgrab, invisible to every arithmetic review that assumed the
+        // band). 28 = hint-row height above baseline (~20) + an 8 px gap.
+        const int list_bottom = screen_h - chrome::kFrameInset_px -
+                                chrome::kPad3 - 28;
         const int list_avail =
             list_bottom - kButtonRowH - kIndicatorRowH - list_top;
         // CRT_NATIVE (640x480 logical) leaves no room below the poster —
