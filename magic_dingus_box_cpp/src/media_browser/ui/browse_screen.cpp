@@ -1588,56 +1588,66 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     si.loading                = loading_;
     si.lib_refresh_done_once  = lib_refresh_done_once_;
     si.lib_fetch_ok           = lib_ok;
-    si.seeds_empty            = seed_pool(library_refs_, kind).empty();
+    // Allocation-free equivalent of seed_pool(library_refs_, kind).empty():
+    // seed_pool reserves + fills a std::vector<int> over BOTH kinds to
+    // answer a boolean, which is a per-frame malloc/free on the Pi 4B's
+    // tight 1.5 GB envelope. any_of walks library_refs_ without allocating;
+    // seeds_empty is true when NO ref of `kind` exists, i.e. !any_of.
+    si.seeds_empty            = !std::any_of(
+        library_refs_.begin(), library_refs_.end(),
+        [kind](const MediaRef& r) { return r.kind == kind; });
     si.foryou_failed          = foryou_failed_;
     si.has_api_key            = tmdb_.has_api_key();
     const BrowseGridState grid_state = decide_browse_grid_state(si);
 
-    const char* state_msg = nullptr;
+    // Message text itself is decided by the pure, Mac-testable
+    // browse_grid_state_message() (browse_logic.h) — this switch only
+    // assigns the COLOR per state, since ::ui::Color/Theme can't live in
+    // that Renderer-free header.
+    const char* state_msg = browse_grid_state_message(grid_state, tv_mode());
     ::ui::Color state_color = th.dim;
     switch (grid_state) {
         case BrowseGridState::Grid:
             break;
         case BrowseGridState::Loading:
-            state_msg = "Loading...";
             break;
         case BrowseGridState::LibraryUnavailable:
             // Blocking, because For You genuinely REQUIRES its library — the
             // seed sample has no other source. The chart tabs are TMDB-sourced
             // and get the non-blocking line below instead.
-            state_msg = tv_mode() ? "Sonarr service offline"
-                                  : "Radarr service offline";
             state_color = th.highlight2;
             break;
         case BrowseGridState::RecommendationsFailed:
-            state_msg = "Couldn't load recommendations \xE2\x80\x94 try again later";
             state_color = th.highlight2;
             break;
         case BrowseGridState::EmptyLibrary:
-            state_msg = tv_mode()
-                ? "Add TV shows to your library to get recommendations"
-                : "Add movies to your library to get recommendations";
             break;
         case BrowseGridState::NoApiKey:
-            state_msg = "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
-                        "Media Browser tab";
             state_color = th.highlight2;
             break;
         case BrowseGridState::EmptyCategory:
-            state_msg = tv_mode() ? "No shows in this category"
-                                  : "No movies in this category";
             break;
     }
 
-    // Non-blocking service line for the chart tabs. Popular and Top Rated need
-    // only TMDB; a dead Radarr (or Sonarr) degrades the in-library hide but
-    // must not blank a perfectly good grid — which is exactly what the old
-    // screen-wide `if (!services_ok_)` return did, on Radarr's ping alone,
-    // even in TV mode where nothing on the path touches Radarr. This also
-    // gives the Sonarr-down case a voice: previously the TV hide just stopped
-    // working with no message anywhere on screen.
+    // Non-blocking service line. Popular and Top Rated need only TMDB; a dead
+    // Radarr (or Sonarr) degrades the in-library hide but must not blank a
+    // perfectly good grid — which is exactly what the old screen-wide
+    // `if (!services_ok_)` return did, on Radarr's ping alone, even in TV
+    // mode where nothing on the path touches Radarr. This also gives the
+    // Sonarr-down case a voice: previously the TV hide just stopped working
+    // with no message anywhere on screen.
+    //
+    // For You gets this line too (no `!shuffle_only` gate): its IN LIBRARY
+    // badges are drawn from the same lib_ok-gated library_refs_ as the chart
+    // tabs, so a cached grid with the library down needs the same staleness
+    // signal. This can co-occur with the blocking LibraryUnavailable message
+    // above when For You's grid is ALSO empty (both fire off the same
+    // lib_refresh_done_once_ / lib_ok pair) — that's not new, chart tabs
+    // already show this line alongside a blocking Loading/EmptyCategory
+    // message, and here both lines would agree with each other rather than
+    // conflict, so no extra guard is added.
     const char* service_warning = nullptr;
-    if (!shuffle_only && lib_refresh_done_once_ && !lib_ok) {
+    if (lib_refresh_done_once_ && !lib_ok) {
         service_warning = tv_mode()
             ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
             : "Radarr offline \xE2\x80\x94 in-library hiding may be stale";

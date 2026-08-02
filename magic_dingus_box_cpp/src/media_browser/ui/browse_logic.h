@@ -176,4 +176,35 @@ inline BrowseGridState decide_browse_grid_state(const BrowseStateInputs& in) {
     return BrowseGridState::EmptyCategory;
 }
 
+// The mode-aware on-screen message for each grid state — pulled out of
+// render()'s switch so it can be pinned by a Mac unit test. Three states
+// name a service or content kind and flip on `tv_mode`; the rest are fixed.
+// Returns nullptr for Grid, which draws posters instead of a message.
+// Text only: the per-state COLOR (dim vs. highlight2) stays in render()'s
+// switch, since ::ui::Color would drag Renderer/theme types into this
+// header and break the Mac test target's Renderer-free build.
+inline const char* browse_grid_state_message(BrowseGridState state, bool tv_mode) {
+    switch (state) {
+        case BrowseGridState::Grid:
+            return nullptr;
+        case BrowseGridState::Loading:
+            return "Loading...";
+        case BrowseGridState::LibraryUnavailable:
+            return tv_mode ? "Sonarr service offline" : "Radarr service offline";
+        case BrowseGridState::RecommendationsFailed:
+            return "Couldn't load recommendations \xE2\x80\x94 try again later";
+        case BrowseGridState::EmptyLibrary:
+            return tv_mode
+                ? "Add TV shows to your library to get recommendations"
+                : "Add movies to your library to get recommendations";
+        case BrowseGridState::NoApiKey:
+            return "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
+                   "Media Browser tab";
+        case BrowseGridState::EmptyCategory:
+            return tv_mode ? "No shows in this category"
+                           : "No movies in this category";
+    }
+    return nullptr;  // unreachable; silences -Wreturn-type on some compilers
+}
+
 }  // namespace media_browser::ui

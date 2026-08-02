@@ -202,6 +202,19 @@ TEST_CASE("grid state: For You failure and empty-library precedence",
     // foryou_failed_ is reported even with content on screen — matches the
     // shipped ordering, where that branch has no grid_empty guard.
     CHECK(decide_browse_grid_state(in) == BrowseGridState::RecommendationsFailed);
+
+    // The only case that pins LibraryUnavailable vs. RecommendationsFailed
+    // precedence: grid_empty && !lib_fetch_ok && foryou_failed all true at
+    // once. Every other assertion in this file disqualifies one branch or
+    // the other before both checks can fire, so swapping the two checks in
+    // decide_browse_grid_state's is_foryou block still passed all of them.
+    // The resolver checks LibraryUnavailable first, so it wins here.
+    in.grid_empty = true;
+    in.lib_fetch_ok = false;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::LibraryUnavailable);
+    in.grid_empty = false;
+    in.lib_fetch_ok = true;
+
     in.foryou_failed = false;
     in.grid_empty = true;
     in.seeds_empty = true;
@@ -223,4 +236,62 @@ TEST_CASE("grid state: chart-tab loading / no-key / empty precedence",
     CHECK(decide_browse_grid_state(in) == BrowseGridState::NoApiKey);
     in.has_api_key = true;
     CHECK(decide_browse_grid_state(in) == BrowseGridState::EmptyCategory);
+}
+
+// --- browse_grid_state_message ---------------------------------------------
+// The switch in render() that used to own this text was verified by eye
+// only; a future edit swapping "Sonarr"/"Radarr" (or TV/movie wording) in
+// one arm would ship silently. Pin both tv_mode values for every state that
+// names a service or a content kind.
+
+TEST_CASE("browse_grid_state_message: mode-aware states name the right "
+          "service/content kind",
+          "[browse_logic]") {
+    using media_browser::ui::browse_grid_state_message;
+    using media_browser::ui::BrowseGridState;
+
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/false)) ==
+          "Radarr service offline");
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/true)) ==
+          "Sonarr service offline");
+
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::EmptyLibrary, /*tv_mode=*/false)) ==
+          "Add movies to your library to get recommendations");
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::EmptyLibrary, /*tv_mode=*/true)) ==
+          "Add TV shows to your library to get recommendations");
+
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::EmptyCategory, /*tv_mode=*/false)) ==
+          "No movies in this category");
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::EmptyCategory, /*tv_mode=*/true)) ==
+          "No shows in this category");
+}
+
+TEST_CASE("browse_grid_state_message: mode-invariant states and Grid",
+          "[browse_logic]") {
+    using media_browser::ui::browse_grid_state_message;
+    using media_browser::ui::BrowseGridState;
+
+    // Grid draws posters, not a message.
+    CHECK(browse_grid_state_message(BrowseGridState::Grid, false) == nullptr);
+    CHECK(browse_grid_state_message(BrowseGridState::Grid, true) == nullptr);
+
+    // These three don't mention a service or content kind — same string in
+    // both modes.
+    for (bool tv : {false, true}) {
+        CHECK(std::string(browse_grid_state_message(
+                  BrowseGridState::Loading, tv)) == "Loading...");
+        CHECK(std::string(browse_grid_state_message(
+                  BrowseGridState::RecommendationsFailed, tv)) ==
+              "Couldn't load recommendations \xE2\x80\x94 try again later");
+        CHECK(std::string(browse_grid_state_message(
+                  BrowseGridState::NoApiKey, tv)) ==
+              "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
+              "Media Browser tab");
+    }
 }
