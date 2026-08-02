@@ -3613,6 +3613,44 @@ int main(int /* argc */, char* /* argv */[]) {
             ui_renderer.end_scene_fbo_and_composite(state);
         }
 
+        // Post-game fade-up: black quad over the freshly rebuilt menu,
+        // decreasing alpha over kPostGameFadeMs. Drawn UNDER the bezel so
+        // the bezel stays solid across the dissolve AND this fade — one
+        // continuous element bridging the whole game round trip. A separate
+        // mechanism from is_fading/ui_overlay_alpha on purpose: that path is
+        // entangled with video-active and UI-visibility semantics and early-
+        // returns on is_transitioning, which prepare_kiosk_state_after_game
+        // only incidentally avoids.
+        //
+        // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
+        // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
+        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // re-init) between the two can eat 200ms+, and a wall-clock start
+        // would leave the fade mostly over before the first frame rendered.
+        {
+            int64_t fade_start = state.post_game_fade_start_ms.load();
+            if (fade_start != 0) {
+                constexpr int64_t kPostGameFadeMs = 250;
+                const int64_t now_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                if (fade_start < 0) {
+                    state.post_game_fade_start_ms.store(now_ms);
+                    fade_start = now_ms;
+                }
+                const int64_t elapsed = now_ms - fade_start;
+                if (elapsed >= kPostGameFadeMs) {
+                    state.post_game_fade_start_ms.store(0);
+                } else {
+                    glViewport(0, 0, mode.width, mode.height);
+                    ui_renderer.render_post_game_fade(
+                        1.0f - static_cast<float>(elapsed) /
+                                   static_cast<float>(kPostGameFadeMs));
+                }
+            }
+        }
+
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
         //

@@ -875,6 +875,37 @@ void Renderer::render_bezel() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void Renderer::render_post_game_fade(float alpha) {
+    if (alpha <= 0.0f) return;
+    if (alpha > 1.0f) alpha = 1.0f;
+
+    // Same fullscreen idiom as render_bezel: bind the UI shader and use the
+    // ORIGINAL screen dimensions, not the content-viewport ones.
+    glUseProgram(shader_program_);
+    const float w = static_cast<float>(original_width_);
+    const float h = static_cast<float>(original_height_);
+    glUniform2f(u_screen_size_loc_, w, h);
+
+    float vertices[] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        w,    0.0f, 1.0f, 0.0f,
+        0.0f, h,    0.0f, 1.0f,
+        w,    h,    1.0f, 1.0f,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+
+    glUniform4f(u_color_loc_, 0.0f, 0.0f, 0.0f, alpha);
+    glUniform1i(u_use_texture_loc_, 0);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glBindVertexArray(vao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+}
+
 // =====================================================================
 // Marquee "TV cabinet" frame
 // =====================================================================
