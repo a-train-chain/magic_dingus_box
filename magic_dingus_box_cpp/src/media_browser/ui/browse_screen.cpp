@@ -1539,11 +1539,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     r.mb_fill_background();
 
-    // Shared kVisibleTabs class member — same strip handle_input() uses,
-    // single source of truth (was duplicated here with a "keep in sync"
-    // comment prior to the For You tab).
-
-    // --- Header: "Marquee" title (left) + tab strip (right) ---
+    // --- Header: mode-aware title (left) + tab strip (right) ---
     std::vector<chrome::TabSpec> tabs;
     tabs.reserve(kNumVisibleTabs);
     for (int i = 0; i < kNumVisibleTabs; ++i) {
@@ -1559,218 +1555,242 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const int content_top = chrome::draw_screen_header(
         r, screen_w, marquee_title_for_mode(tv_mode()), tabs, /*focused_tab=*/-1);
 
-    // Library/Search tabs are transition-only — handle_input() returns
-    // Screen::Library/Search on tab activation, so render() should never
-    // see them. Belt-and-suspenders early return.
     if (category_ == Category::Library || category_ == Category::Search) {
+        // Transition-only tabs — handle_input returns Screen::Library/Search
+        // on activation, so render() should never see them. The overlay is
+        // drawn even on this belt-and-suspenders path: it is a modal that
+        // keeps consuming input while Open, and a return that skips its draw
+        // leaves an invisible panel eating the user's presses.
+        filter_overlay_.render(r, screen_w, screen_h);
         return;
     }
 
-    // --- Loading / empty / error states ---
-    auto draw_centered_msg = [&](const std::string& msg, const ::ui::Color& c) {
+    const bool filter_available = (category_ == Category::Popular ||
+                                   category_ == Category::TopRated);
+    const bool shuffle_only = (category_ == Category::ForYou);
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
+    const bool lib_ok = lib_fetch_ok_[static_cast<int>(mode())];
+
+    // ---- State resolution -------------------------------------------------
+    // Every "nothing to draw" condition becomes a message here rather than an
+    // early return. THIS FUNCTION HAS EXACTLY ONE EXIT BELOW, and it always
+    // draws the footer and then the filter overlay. That is structural, not
+    // stylistic: the overlay is a modal that swallows ROTATE/SELECT/PREV/NEXT
+    // for as long as it is Open, so a return that skips its draw leaves an
+    // invisible panel consuming input. Pressing MODE clears movies_ and sets
+    // loading_, which used to take the "Loading..." early return and make the
+    // panel disappear for the entire 6-12 s reload; a For You activation that
+    // lands on EmptyLibrary made it disappear permanently. Do not reintroduce
+    // an early return here — add a BrowseGridState instead.
+    BrowseStateInputs si;
+    si.is_foryou              = (category_ == Category::ForYou);
+    si.grid_empty             = movies_.empty();
+    si.loading                = loading_;
+    si.lib_refresh_done_once  = lib_refresh_done_once_;
+    si.lib_fetch_ok           = lib_ok;
+    si.seeds_empty            = seed_pool(library_refs_, kind).empty();
+    si.foryou_failed          = foryou_failed_;
+    si.has_api_key            = tmdb_.has_api_key();
+    const BrowseGridState grid_state = decide_browse_grid_state(si);
+
+    const char* state_msg = nullptr;
+    ::ui::Color state_color = th.dim;
+    switch (grid_state) {
+        case BrowseGridState::Grid:
+            break;
+        case BrowseGridState::Loading:
+            state_msg = "Loading...";
+            break;
+        case BrowseGridState::LibraryUnavailable:
+            // Blocking, because For You genuinely REQUIRES its library — the
+            // seed sample has no other source. The chart tabs are TMDB-sourced
+            // and get the non-blocking line below instead.
+            state_msg = tv_mode() ? "Sonarr service offline"
+                                  : "Radarr service offline";
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::RecommendationsFailed:
+            state_msg = "Couldn't load recommendations \xE2\x80\x94 try again later";
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::EmptyLibrary:
+            state_msg = tv_mode()
+                ? "Add TV shows to your library to get recommendations"
+                : "Add movies to your library to get recommendations";
+            break;
+        case BrowseGridState::NoApiKey:
+            state_msg = "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
+                        "Media Browser tab";
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::EmptyCategory:
+            state_msg = tv_mode() ? "No shows in this category"
+                                  : "No movies in this category";
+            break;
+    }
+
+    // Non-blocking service line for the chart tabs. Popular and Top Rated need
+    // only TMDB; a dead Radarr (or Sonarr) degrades the in-library hide but
+    // must not blank a perfectly good grid — which is exactly what the old
+    // screen-wide `if (!services_ok_)` return did, on Radarr's ping alone,
+    // even in TV mode where nothing on the path touches Radarr. This also
+    // gives the Sonarr-down case a voice: previously the TV hide just stopped
+    // working with no message anywhere on screen.
+    const char* service_warning = nullptr;
+    if (!shuffle_only && lib_refresh_done_once_ && !lib_ok) {
+        service_warning = tv_mode()
+            ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
+            : "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
+    }
+    constexpr int kWarnFontPx = 14;
+    constexpr int kWarnLineH  = 20;
+    if (service_warning) {
+        r.mb_draw_text(service_warning,
+                       static_cast<float>(chrome::kSafeInset_px),
+                       static_cast<float>(content_top + kWarnFontPx),
+                       kWarnFontPx, th.highlight2);
+    }
+
+    if (state_msg) {
+        const std::string msg(state_msg);
         const int tw = r.mb_text_width(msg, 18);
         r.mb_draw_text(msg,
                        static_cast<float>((screen_w - tw) / 2),
                        static_cast<float>(screen_h / 2),
-                       18, c);
-    };
-    const bool filter_available = (category_ == Category::Popular ||
-                                   category_ == Category::TopRated);
-    const bool shuffle_only = (category_ == Category::ForYou);
-    auto draw_baseline_footer = [&]() {
-        chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Exit"},
-            {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,
-             filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
-            {chrome::HintIcon::RotaryNav,   "Browse"},
-            {chrome::HintIcon::RotaryPress, "Detail"},
-        });
-    };
+                       18, state_color);
+    } else {
+        // --- 9-column poster grid ---
+        // Meta area below each poster fits 2 lines so long titles can wrap.
+        // Year was previously appended to the meta line; it now lives inside
+        // the poster card (bottom-right, on a semi-transparent dark pill via
+        // chrome::draw_poster_card), so the meta line shows only the title.
+        constexpr int kCellGap       = 8;
+        constexpr int kRowGap        = 22;   // bumped from 16 to give the
+                                             // 2-line meta area breathing
+                                             // room before the next row
+        constexpr int kVisibleRows   = 2;
+        constexpr int kMetaFontPx    = 14;   // 14 px legibility floor under CRT
+        constexpr int kMetaLineGap   = 2;
+        constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
+        constexpr int kMetaGap       = 4;    // poster-bottom → meta-top
+        const int content_w = screen_w - 2 * chrome::kSafeInset_px;
+        const int cell_w = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
+        const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f); // 2:3 aspect
+        const int cell_h = poster_h + kMetaGap + kMetaTotalH;
+        const int grid_top = content_top + chrome::kPad3 +
+                             (service_warning ? kWarnLineH : 0);
+        const int grid_left = chrome::kSafeInset_px;
 
-    if (!services_ok_) {
-        draw_centered_msg("Radarr service offline", th.highlight2);
-        draw_baseline_footer();
-        return;
-    }
-    if (category_ == Category::ForYou) {
-        // movies_.empty() guard (spec 1c review fix, Important): without it
-        // a transient get_library failure (Radarr reachable — services_ok_
-        // true — but the GET itself 500s/times out) replaces a fully-loaded
-        // For You grid with the offline message even though render needs
-        // nothing further from Radarr once the grid is cached. Matches
-        // decide_foryou_entry's cache-first priority (UseCache wins over
-        // ServiceUnavailable).
-        if (movies_.empty() && lib_refresh_done_once_ &&
-            !lib_fetch_ok_[static_cast<int>(mode())]) {
-            draw_centered_msg("Radarr service offline", th.highlight2);
-            draw_baseline_footer();
-            return;
-        }
-        if (foryou_failed_) {
-            draw_centered_msg("Couldn't load recommendations \xE2\x80\x94 try again later",
-                              th.highlight2);
-            draw_baseline_footer();
-            return;
-        }
-        // Movie-scoped decision (see activate_foryou's matching note): a
-        // TV-only library will read as non-empty here once TV lands, and
-        // this "Add movies..." messaging will need to be revisited too.
-        if (!loading_ && movies_.empty() && lib_refresh_done_once_ &&
-            library_refs_.empty()) {
-            draw_centered_msg("Add movies to your library to get recommendations",
-                              th.dim);
-            draw_baseline_footer();
-            return;
-        }
-    }
-    if (loading_ && movies_.empty()) {
-        draw_centered_msg("Loading...", th.dim);
-        draw_baseline_footer();
-        return;
-    }
-    if (!loading_ && movies_.empty()) {
-        // Distinguish "unconfigured" from "genuinely empty". Without a
-        // TMDB key every category comes back empty, so the generic
-        // message made a box that just needs a key look broken. Same
-        // condition main.cpp warns about at startup — this is the
-        // on-screen half of it.
-        if (!tmdb_.has_api_key()) {
-            draw_centered_msg(
-                "No TMDB key — add one in the Content Manager, "
-                "Media Browser tab", th.highlight2);
-        } else {
-            draw_centered_msg("No movies in this category", th.dim);
-        }
-        draw_baseline_footer();
-        return;
-    }
+        // Page-based: scroll_row_ is already set to the page-first-row in
+        // handle_input(). No smoothing here — just derive the window.
+        const int total_rows =
+            (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
+        const int last_visible_row =
+            std::min(scroll_row_ + kVisibleRows, total_rows);
 
-    // --- 9-column poster grid ---
-    // Meta area below each poster fits 2 lines so long titles can wrap.
-    // Year was previously appended to the meta line; it now lives inside
-    // the poster card (bottom-right, on a semi-transparent dark pill via
-    // chrome::draw_poster_card), so the meta line shows only the title.
-    constexpr int kCellGap       = 8;
-    constexpr int kRowGap        = 22;   // bumped from 16 to give the
-                                         // 2-line meta area breathing
-                                         // room before the next row
-    constexpr int kVisibleRows   = 2;
-    constexpr int kMetaFontPx    = 14;   // 14 px legibility floor under CRT
-    constexpr int kMetaLineGap   = 2;
-    constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
-    constexpr int kMetaGap       = 4;    // poster-bottom → meta-top
-    const int content_w = screen_w - 2 * chrome::kSafeInset_px;
-    const int cell_w = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
-    const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f); // 2:3 aspect
-    const int cell_h = poster_h + kMetaGap + kMetaTotalH;
-    const int grid_top = content_top + chrome::kPad3;
-    const int grid_left = chrome::kSafeInset_px;
+        for (int row = scroll_row_; row < last_visible_row; ++row) {
+            for (int col = 0; col < kGridCols; ++col) {
+                const int idx = row * kGridCols + col;
+                if (idx >= static_cast<int>(movies_.size())) break;
+                const auto& movie = movies_[idx];
 
-    // Page-based: scroll_row_ is already set to the page-first-row in
-    // handle_input(). No smoothing here — just derive the window.
-    const int total_rows =
-        (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
-    const int last_visible_row =
-        std::min(scroll_row_ + kVisibleRows, total_rows);
+                const int x = grid_left + col * (cell_w + kCellGap);
+                const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-    for (int row = scroll_row_; row < last_visible_row; ++row) {
-        for (int col = 0; col < kGridCols; ++col) {
-            const int idx = row * kGridCols + col;
-            if (idx >= static_cast<int>(movies_.size())) break;
-            const auto& movie = movies_[idx];
+                // Poster CARD: draws the colored tint plus title overlay, year,
+                // top/bottom accent dashes, and IN LIBRARY badge — all the
+                // Marquee design elements that make the slot read as a
+                // designed object even before TMDB artwork loads. When real
+                // artwork is later available, mb_draw_poster_or_tint can
+                // overlay on top; for now the styled card IS the visual.
+                const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
+                const MediaRef ref = media_ref_of(movie);
+                const bool in_library = library_refs_.count(ref) > 0;
+                const bool is_downloading = downloading_refs_.count(ref) > 0;
+                chrome::draw_poster_card(
+                    r, x, y, cell_w, poster_h,
+                    movie.title, movie.year,
+                    tint, in_library,
+                    /*download_pct=*/is_downloading ? 0 : -1,
+                    // TmdbSearchHit names the URL field `poster_path` even
+                    // though it's already a fully-resolved CDN URL (see
+                    // tmdb_client.cpp resolve_poster_url). The artwork
+                    // cache treats it as opaque, so the field-name mismatch
+                    // is harmless here.
+                    /*poster_url=*/movie.poster_path);
 
-            const int x = grid_left + col * (cell_w + kCellGap);
-            const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
-
-            // Poster CARD: draws the colored tint plus title overlay, year,
-            // top/bottom accent dashes, and IN LIBRARY badge — all the
-            // Marquee design elements that make the slot read as a
-            // designed object even before TMDB artwork loads. When real
-            // artwork is later available, mb_draw_poster_or_tint can
-            // overlay on top; for now the styled card IS the visual.
-            const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
-            const MediaRef ref = media_ref_of(movie);
-            const bool in_library = library_refs_.count(ref) > 0;
-            const bool is_downloading = downloading_refs_.count(ref) > 0;
-            chrome::draw_poster_card(
-                r, x, y, cell_w, poster_h,
-                movie.title, movie.year,
-                tint, in_library,
-                /*download_pct=*/is_downloading ? 0 : -1,
-                // TmdbSearchHit names the URL field `poster_path` even
-                // though it's already a fully-resolved CDN URL (see
-                // tmdb_client.cpp resolve_poster_url). The artwork
-                // cache treats it as opaque, so the field-name mismatch
-                // is harmless here.
-                /*poster_url=*/movie.poster_path);
-
-            // Meta line below poster: title only, wrapped to 2 lines
-            // when needed. Year now lives inside the poster card. If
-            // the title fits on one line, line 2 stays empty so the
-            // tile reads compact; if not, the longest leading word
-            // chunk that fits goes on line 1 and the remainder on
-            // line 2 (truncate-with-ellipsis if line 2 also overflows).
-            const std::string& title = movie.title;
-            const float max_w_f = static_cast<float>(cell_w);
-            std::string line1, line2;
-            if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
-                line1 = title;
-            } else {
-                // Walk forward through whitespace, keep the longest
-                // prefix that still fits in one line. Fallback: bisect
-                // by character if the title has no spaces.
-                size_t split = std::string::npos;
-                size_t pos = 0;
-                while (true) {
-                    size_t next = title.find(' ', pos + 1);
-                    if (next == std::string::npos) break;
-                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
-                            > max_w_f) break;
-                    split = next;
-                    pos = next;
-                }
-                if (split == std::string::npos) {
-                    line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                // Meta line below poster: title only, wrapped to 2 lines
+                // when needed. Year now lives inside the poster card. If
+                // the title fits on one line, line 2 stays empty so the
+                // tile reads compact; if not, the longest leading word
+                // chunk that fits goes on line 1 and the remainder on
+                // line 2 (truncate-with-ellipsis if line 2 also overflows).
+                const std::string& title = movie.title;
+                const float max_w_f = static_cast<float>(cell_w);
+                std::string line1, line2;
+                if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                    line1 = title;
                 } else {
-                    line1 = title.substr(0, split);
-                    std::string remainder = title.substr(split + 1);
-                    line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                    // Walk forward through whitespace, keep the longest
+                    // prefix that still fits in one line. Fallback: bisect
+                    // by character if the title has no spaces.
+                    size_t split = std::string::npos;
+                    size_t pos = 0;
+                    while (true) {
+                        size_t next = title.find(' ', pos + 1);
+                        if (next == std::string::npos) break;
+                        if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
+                                > max_w_f) break;
+                        split = next;
+                        pos = next;
+                    }
+                    if (split == std::string::npos) {
+                        line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                    } else {
+                        line1 = title.substr(0, split);
+                        std::string remainder = title.substr(split + 1);
+                        line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                    }
+                }
+                const int meta_top = y + poster_h + kMetaGap;
+                r.mb_draw_text(line1,
+                               static_cast<float>(x),
+                               static_cast<float>(meta_top + kMetaFontPx),
+                               kMetaFontPx, th.dim);
+                if (!line2.empty()) {
+                    r.mb_draw_text(line2,
+                                   static_cast<float>(x),
+                                   static_cast<float>(meta_top + kMetaFontPx
+                                                      + kMetaLineGap + kMetaFontPx),
+                                   kMetaFontPx, th.dim);
+                }
+
+                // Focus ring on the cursor cell. 2 px gold, 2 px outside.
+                if (idx == grid_cursor_) {
+                    chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
                 }
             }
-            const int meta_top = y + poster_h + kMetaGap;
-            r.mb_draw_text(line1,
-                           static_cast<float>(x),
-                           static_cast<float>(meta_top + kMetaFontPx),
-                           kMetaFontPx, th.dim);
-            if (!line2.empty()) {
-                r.mb_draw_text(line2,
-                               static_cast<float>(x),
-                               static_cast<float>(meta_top + kMetaFontPx
-                                                  + kMetaLineGap + kMetaFontPx),
-                               kMetaFontPx, th.dim);
-            }
-
-            // Focus ring on the cursor cell. 2 px gold, 2 px outside.
-            if (idx == grid_cursor_) {
-                chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
-            }
         }
+
     }
 
-    // --- Footer hints ---
+    // --- Footer hints (ONE call — the old draw_baseline_footer lambda and
+    // its duplicate hint list are gone with the early returns) ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
         {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
         {chrome::HintIcon::Btn4Black,
-         filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
+         filter_available ? "Filters" : (shuffle_only ? "Mode/Shuffle" : "\xE2\x80\x94")},
         {chrome::HintIcon::RotaryNav,   "Browse"},
-        {chrome::HintIcon::RotaryPress, "Detail"},
+        // In TV mode a rotary press only toasts "TV details coming soon"
+        // (Task 8) — promising "Detail" for it reads as broken rather than
+        // as scoped, especially since a TV poster is otherwise visually
+        // identical to a movie one.
+        {chrome::HintIcon::RotaryPress, tv_mode() ? "Coming soon" : "Detail"},
     });
 
-    // Render filter overlay on top of everything else (draws above the grid).
+    // ALWAYS LAST, ALWAYS REACHED. See the state-resolution comment above.
     filter_overlay_.render(r, screen_w, screen_h);
 }
 

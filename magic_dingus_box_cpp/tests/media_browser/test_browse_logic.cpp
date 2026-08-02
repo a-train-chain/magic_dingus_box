@@ -140,3 +140,87 @@ TEST_CASE("seed_pool: empty when the kind is absent", "[browse_logic]") {
     CHECK(media_browser::ui::seed_pool(movies_only, MediaKind::Tv).empty());
     CHECK(media_browser::ui::seed_pool({}, MediaKind::Movie).empty());
 }
+
+// --- decide_browse_grid_state ---------------------------------------------
+// render() used to make this decision inline across five early returns, each
+// of which had to remember to draw the modal filter overlay on its way out.
+// One of them didn't, which is how pressing MODE made the panel vanish for
+// the whole reload. The decision is pure; the drawing is not.
+
+namespace {
+media_browser::ui::BrowseStateInputs chart_inputs() {
+    media_browser::ui::BrowseStateInputs in;
+    in.is_foryou = false;
+    in.grid_empty = false;
+    in.loading = false;
+    in.lib_refresh_done_once = true;
+    in.lib_fetch_ok = true;
+    in.seeds_empty = false;
+    in.foryou_failed = false;
+    in.has_api_key = true;
+    return in;
+}
+}  // namespace
+
+TEST_CASE("grid state: a populated grid wins over every service condition",
+          "[browse_logic]") {
+    using media_browser::ui::BrowseGridState;
+    using media_browser::ui::decide_browse_grid_state;
+    auto in = chart_inputs();
+    in.lib_fetch_ok = false;           // library service down
+    in.loading = true;                 // and a refresh in flight
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::Grid);
+    in.is_foryou = true;               // same for For You, cache-first
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::Grid);
+}
+
+TEST_CASE("grid state: For You blocks on its library only when empty",
+          "[browse_logic]") {
+    using media_browser::ui::BrowseGridState;
+    using media_browser::ui::decide_browse_grid_state;
+    auto in = chart_inputs();
+    in.is_foryou = true;
+    in.grid_empty = true;
+    in.lib_fetch_ok = false;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::LibraryUnavailable);
+    // A chart tab in the same state is NOT blocked — it is TMDB-sourced.
+    in.is_foryou = false;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::EmptyCategory);
+    // ...and before the first refresh lands, nothing is claimed either way.
+    in.is_foryou = true;
+    in.lib_refresh_done_once = false;
+    CHECK(decide_browse_grid_state(in) != BrowseGridState::LibraryUnavailable);
+}
+
+TEST_CASE("grid state: For You failure and empty-library precedence",
+          "[browse_logic]") {
+    using media_browser::ui::BrowseGridState;
+    using media_browser::ui::decide_browse_grid_state;
+    auto in = chart_inputs();
+    in.is_foryou = true;
+    in.foryou_failed = true;
+    // foryou_failed_ is reported even with content on screen — matches the
+    // shipped ordering, where that branch has no grid_empty guard.
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::RecommendationsFailed);
+    in.foryou_failed = false;
+    in.grid_empty = true;
+    in.seeds_empty = true;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::EmptyLibrary);
+    in.loading = true;   // a sample in flight is Loading, not EmptyLibrary
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::Loading);
+}
+
+TEST_CASE("grid state: chart-tab loading / no-key / empty precedence",
+          "[browse_logic]") {
+    using media_browser::ui::BrowseGridState;
+    using media_browser::ui::decide_browse_grid_state;
+    auto in = chart_inputs();
+    in.grid_empty = true;
+    in.loading = true;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::Loading);
+    in.loading = false;
+    in.has_api_key = false;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::NoApiKey);
+    in.has_api_key = true;
+    CHECK(decide_browse_grid_state(in) == BrowseGridState::EmptyCategory);
+}

@@ -221,8 +221,9 @@ private:
     bool loaded_ = false;
     // True while load_category() is in-flight. Drives the "Loading..." state.
     bool loading_ = false;
-    // Snapshot of radarr_.is_reachable() at enter() time. Drives the
-    // "Radarr service offline" banner.
+    // Snapshot of radarr_.is_reachable() at refresh time. DIAGNOSTIC ONLY
+    // since Phase 2c-1 — render() branches on lib_fetch_ok_[mode()] instead,
+    // because a Radarr outage must not blank the TMDB-sourced TV grids.
     bool services_ok_ = true;
 
     int selected_tmdb_id_ = 0;

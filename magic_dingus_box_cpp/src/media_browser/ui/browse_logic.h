@@ -126,4 +126,54 @@ inline std::vector<int> seed_pool(const std::unordered_set<MediaRef>& refs,
     return out;
 }
 
+// What Browse's content area should show. Resolved from flags alone so the
+// decision is testable without a Renderer — and, more importantly, so render()
+// has exactly ONE place that can conclude "nothing to draw". It used to make
+// this call across five early `return`s, and the filter overlay is drawn after
+// all of them: any return that skipped it left an OPEN modal invisible while
+// handle_input kept feeding it the user's rotary presses.
+enum class BrowseGridState {
+    Grid,                   // draw posters
+    Loading,
+    LibraryUnavailable,     // For You only — its seed source is down
+    RecommendationsFailed,  // For You only — every seed failed
+    EmptyLibrary,           // For You only — nothing to seed from
+    NoApiKey,
+    EmptyCategory,
+};
+
+struct BrowseStateInputs {
+    bool is_foryou = false;
+    bool grid_empty = true;
+    bool loading = false;
+    bool lib_refresh_done_once = false;
+    bool lib_fetch_ok = false;      // for the ACTIVE mode
+    bool seeds_empty = true;        // for the ACTIVE mode
+    bool foryou_failed = false;
+    bool has_api_key = true;
+};
+
+// Ordering is the shipped ordering, preserved exactly:
+//   - For You's library/failure/empty checks come first, and only the first
+//     and third are guarded on an empty grid (cache-first: a loaded grid
+//     survives a transient library outage);
+//   - a non-empty grid then always wins;
+//   - then Loading, then the no-key message, then the generic empty state.
+inline BrowseGridState decide_browse_grid_state(const BrowseStateInputs& in) {
+    if (in.is_foryou) {
+        if (in.grid_empty && in.lib_refresh_done_once && !in.lib_fetch_ok) {
+            return BrowseGridState::LibraryUnavailable;
+        }
+        if (in.foryou_failed) return BrowseGridState::RecommendationsFailed;
+        if (!in.loading && in.grid_empty && in.lib_refresh_done_once &&
+            in.seeds_empty) {
+            return BrowseGridState::EmptyLibrary;
+        }
+    }
+    if (!in.grid_empty) return BrowseGridState::Grid;
+    if (in.loading) return BrowseGridState::Loading;
+    if (!in.has_api_key) return BrowseGridState::NoApiKey;
+    return BrowseGridState::EmptyCategory;
+}
+
 }  // namespace media_browser::ui
