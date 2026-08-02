@@ -36,6 +36,12 @@ constexpr int kHeaderTitlePx = 32;
 // vertical padding + 2 px border, so 52) and the paging indicator line.
 constexpr int kButtonRowH = 52;
 constexpr int kIndicatorRowH = 24;
+// chrome::draw_button's OWN geometry (mb_chrome.cpp's kBtnFontPx /
+// kBtnPadX), mirrored here so the action row can predict a button's width
+// BEFORE drawing it and stop at the safe inset. draw_button reports its rect
+// only after it has already painted, which is too late to decline.
+constexpr int kButtonFontPx = 18;
+constexpr int kButtonPadX_px = 18;
 }  // namespace
 
 SeriesDetailScreen::SeriesDetailScreen(SonarrClient& sonarr, TmdbClient& tmdb,
@@ -112,6 +118,8 @@ void SeriesDetailScreen::fetch() {
     whole_armed_ = false;
     remove_pending_ = false;
     navigate_back_ = false;
+    // Task 8's poll gate must not inherit series A's timestamp — it would
+    // delay series B's first poll by a full interval.
     last_poll_at_ = {};
     const int id = tmdb_id_;
     if (id <= 0) {
@@ -245,82 +253,26 @@ void SeriesDetailScreen::rebuild_rows() {
 }
 
 void SeriesDetailScreen::rebuild_buttons() {
-    // Focus is preserved by ACTION IDENTITY, never by index. A rebuild can
-    // insert, drop or relabel rows (an add turns "Add Season 1" into
-    // "Download Season 2" + "Remove"), and forcing focus_ = 0 meant the
-    // whole-series confirm was never the focused button — pressing SELECT
-    // inside the 4 s window fired "Add Season 1" instead. Deterministically.
-    std::optional<Action> keep;
+    // Thin caller: every decision (which buttons, their labels, and where
+    // focus lands) is decide_action_row's, in series_detail_logic.h, under
+    // Mac table tests. This function only marshals render-thread state into
+    // ActionRowInputs and copies the answer back — the focus algebra it used
+    // to inline was the exact thing that once fired the wrong mutation.
+    ActionRowInputs in;
+    in.state = decide_series_detail_state(
+        SeriesDetailInputs{tmdb_done_, tmdb_ok_, sonarr_configured_,
+                           sonarr_done_, sonarr_ok_, in_library_});
+    in.series_settled = series_settled_;
+    in.next_unmonitored = next_unmonitored_season(rows_);
+    in.remove_pending = remove_pending_;
+    in.whole_armed = whole_armed_;
+    in.whole_estimate_bytes = whole_estimate_bytes_;
     if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
-        keep = buttons_[static_cast<size_t>(focus_)].action;
-    // Remove and ConfirmRemove are ONE button in two states: arming the
-    // confirm must not move focus off it.
-    const auto canonical = [](Action a) {
-        return a == Action::ConfirmRemove ? Action::Remove : a;
-    };
+        in.prev_focus_action = buttons_[static_cast<size_t>(focus_)].action;
 
-    buttons_.clear();
-    const SeriesDetailInputs in{tmdb_done_, tmdb_ok_, sonarr_configured_,
-                                sonarr_done_, sonarr_ok_, in_library_};
-    const SeriesDetailState st = decide_series_detail_state(in);
-    if (st == SeriesDetailState::NotInLibrary) {
-        buttons_.push_back({Action::AddSeason1, "Add Season 1"});
-        buttons_.push_back({Action::WholeSeries, whole_series_label()});
-    } else if (st == SeriesDetailState::InLibrary) {
-        // While the record is unsettled EVERY season reads unmonitored, so
-        // next_unmonitored_season would answer "1" one second after we added
-        // season 1 and the primary button would read "Download Season 1".
-        // Offer Remove only until the poll settles it; the meta line says
-        // "syncing…" so the missing controls read as pending, not broken.
-        if (series_settled_) {
-            const auto next = next_unmonitored_season(rows_);
-            if (next.has_value()) {
-                buttons_.push_back({Action::NextSeason,
-                                    "Download Season " + std::to_string(*next)});
-                buttons_.push_back({Action::WholeSeries, whole_series_label()});
-            }
-        }
-        buttons_.push_back(remove_pending_
-                               ? ActionButton{Action::ConfirmRemove, "Confirm Remove"}
-                               : ActionButton{Action::Remove, "Remove"});
-    }
-    // NOTE: there is deliberately NO "Working…" swap while a mutation is in
-    // flight. Replacing the row wholesale destroyed focus identity and was
-    // the root of the wrong-mutation bug; render() dims the real row instead,
-    // and SELECT is already gated on !mut_in_flight_.
-
-    // No-match fallback biases AWAY from destructive actions: after an
-    // unsettled add the row is [Remove] alone for ~9 s, and a satisfied
-    // user tapping again should not find the delete button pre-focused
-    // unless it is genuinely the only thing on offer.
-    focus_ = 0;
-    for (size_t i = 0; i < buttons_.size(); ++i) {
-        if (canonical(buttons_[i].action) != Action::Remove) {
-            focus_ = static_cast<int>(i);
-            break;
-        }
-    }
-    if (keep.has_value()) {
-        for (size_t i = 0; i < buttons_.size(); ++i) {
-            if (canonical(buttons_[i].action) == canonical(*keep)) {
-                focus_ = static_cast<int>(i);
-                break;
-            }
-        }
-    }
-    if (focus_ >= static_cast<int>(buttons_.size())) focus_ = 0;
-}
-
-std::string SeriesDetailScreen::whole_series_label() const {
-    if (!whole_armed_) return "Whole series\xE2\x80\xA6";
-    // Binary GB (GiB) on purpose — it is the same unit the free-space
-    // readings arrive in, so the two numbers in the Block toast compare
-    // like with like. "(est)" is the honesty: pre-add the per-episode
-    // runtime is estimate_remaining_bytes' 45-minute ASSUMPTION, because
-    // Sonarr has no record to read runtime_minutes from yet.
-    return "Confirm ~" +
-           std::to_string(whole_estimate_bytes_ / (1024LL * 1024 * 1024)) +
-           " GB (est)";
+    ActionRow row = decide_action_row(in);
+    buttons_ = std::move(row.buttons);
+    focus_ = row.focus;
 }
 
 void SeriesDetailScreen::spawn_mutation(std::function<void()> body) {
@@ -333,6 +285,13 @@ void SeriesDetailScreen::spawn_mutation(std::function<void()> body) {
     // removed series as in-library and never recover). One bump closes it.
     poll_gen_.fetch_add(1);
     mut_tmdb_id_ = tmdb_id_;
+    // Stamp the LOAD as well as the id. The id alone cannot see A→B→A: back
+    // on series A, a refetch has already republished A's PRE-mutation
+    // library snapshot, and an id-only gate lets the drain apply the
+    // mutation's result on top of — or be overwritten by — that stale load.
+    // The observed symptom was "Add Season 1" on a series that had just been
+    // added, sticky until the user visited a different series.
+    mut_fetch_gen_ = fetch_gen_.load();
     mut_in_flight_.store(true);
     mut_done_.store(false);
     const std::string title =
@@ -403,8 +362,19 @@ void SeriesDetailScreen::drain_mutation() {
     // instead of silently lost.
     if (!toast.empty()) ::ui::Toast::show(toast);
 
-    // Everything that MUTATES THIS PAGE is gated on identity.
-    if (mut_tmdb_id_ != tmdb_id_) {
+    // Everything that MUTATES THIS PAGE is gated on identity: the SAME
+    // series AND the same load of it (A→B→A refetches A, so the id matches
+    // again while the page state underneath is a fresh pre-mutation
+    // snapshot).
+    if (mut_tmdb_id_ != tmdb_id_ || mut_fetch_gen_ != fetch_gen_.load()) {
+        // The toast above already told the user what happened; the page
+        // state deliberately does not move. Leave a trace so a "my add
+        // didn't stick" report has something to read: the alternative is a
+        // silently dropped application with no record anywhere.
+        spdlog::info("[SeriesDetail] dropping mutation result for tmdb:{} "
+                     "(gen {}) — page now tmdb:{} (gen {})",
+                     mut_tmdb_id_, mut_fetch_gen_, tmdb_id_,
+                     fetch_gen_.load());
         rebuild_buttons();
         return;
     }
@@ -491,20 +461,96 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                 // searchForMissingEpisodes=true: exactly the spec's
                 // season-at-a-time default, applied by Sonarr itself.
                 auto res = sonarr_.add_series(id, qp_id, /*monitor=*/true, title);
-                const std::string err = res.ok ? std::string() : sonarr_.last_error();
-                std::lock_guard<std::mutex> lk(mut_mtx_);
                 if (!res.ok) {
+                    const std::string err = sonarr_.last_error();
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
                     mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
                     return;
                 }
-                mut_series_ = res.series;
-                mut_settled_ = res.settled;
-                // settled==false: seasons[] is EMPTY by contract. The page
-                // keeps rendering TMDB rows and hides the add controls until
-                // the Task-8 poll settles the record.
-                mut_toast_ = res.settled
-                    ? title + ": Season 1 search started"
-                    : title + ": added \xE2\x80\x94 syncing seasons\xE2\x80\xA6";
+                if (!res.settled) {
+                    // settled==false: seasons[] is EMPTY by contract. The
+                    // page keeps rendering TMDB rows and hides the add
+                    // controls until the Task-8 poll settles the record.
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_series_ = res.series;
+                    mut_settled_ = false;
+                    mut_toast_ =
+                        title + ": added \xE2\x80\x94 syncing seasons\xE2\x80\xA6";
+                    return;
+                }
+                // ---- settled: did the add actually DO anything? ----
+                // add_series returns ok=true from its find-existing branch
+                // without applying addOptions, monitoring anything or
+                // searching. That branch dedupes by tvdbId while this screen
+                // detects in-library by tmdbId, so a library record with
+                // tmdb_id == 0 still offers "Add Season 1" — and the press
+                // would toast "Season 1 search started" having done nothing
+                // at all. Read the outcome off the returned record instead
+                // of trusting ok=true.
+                //
+                // The season we check is the LOWEST NON-SPECIAL season
+                // NUMBER, never the literal 1: addOptions.monitor =
+                // "firstSeason" monitors the first AIRED season, which is
+                // not always numbered 1 (and season 0 is specials).
+                const int sid = res.series.sonarr_id;
+                int first_season = 0;
+                bool first_monitored = false;
+                int first_files = 0;
+                for (const auto& s : res.series.seasons) {
+                    if (s.season_number <= 0) continue;
+                    if (first_season != 0 && s.season_number >= first_season)
+                        continue;
+                    first_season = s.season_number;
+                    first_monitored = s.monitored;
+                    first_files = s.episode_file_count;
+                }
+                std::string toast;
+                std::optional<Series> fresh;
+                if (first_season == 0 || sid <= 0) {
+                    // A settled record with no ordinary season, or with no
+                    // id to act on: nothing to verify, so claim nothing.
+                    toast = title + ": added to your TV library";
+                } else if (!first_monitored) {
+                    // The idempotent branch (or any drift): the add did NOT
+                    // apply monitoring, so do it explicitly and report THOSE
+                    // outcomes — same shape as the NextSeason flow.
+                    if (!sonarr_.set_season_monitored(sid, first_season, true)) {
+                        const std::string err = sonarr_.last_error();
+                        std::lock_guard<std::mutex> lk(mut_mtx_);
+                        mut_toast_ = title + ": couldn't monitor season " +
+                                     std::to_string(first_season) +
+                                     " \xE2\x80\x94 " + err;
+                        return;
+                    }
+                    const bool searched =
+                        sonarr_.trigger_season_search(sid, first_season);
+                    fresh = sonarr_.get_series(sid);
+                    toast = searched
+                        ? title + ": Season " + std::to_string(first_season) +
+                              " search started"
+                        : title + ": Season " + std::to_string(first_season) +
+                              " monitored, but the search didn't start "
+                              "\xE2\x80\x94 Sonarr will pick it up on RSS";
+                } else if (first_files > 0) {
+                    // Monitored AND already has files: the box already had
+                    // this series and nothing was started, so say that
+                    // rather than promising a search.
+                    toast = title + ": already in your TV library";
+                } else {
+                    // Monitored with nothing on disk yet — the add path
+                    // genuinely acted (or a prior add did) and
+                    // searchForMissingEpisodes rode in with monitor=true.
+                    toast = title + ": Season 1 search started";
+                }
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                if (fresh.has_value()) {
+                    mut_settled_ = record_refreshed(*fresh);
+                    mut_series_ = std::move(fresh);
+                } else {
+                    mut_series_ = res.series;
+                    mut_settled_ = true;
+                }
+                mut_toast_ = std::move(toast);
             });
             break;
         }
@@ -567,7 +613,12 @@ Screen SeriesDetailScreen::handle_input(
         if ((e.action == platform::InputAction::ROTATE ||
              e.action == platform::InputAction::ROTATE_VERTICAL) &&
             e.delta != 0) {
-            if (buttons_.empty()) continue;
+            // Focus is FROZEN while THIS series' mutation runs: render()
+            // hides the focus ring for exactly that window, so any movement
+            // would be invisible, and the post-drain rebuild would then land
+            // focus on a button the user never saw themselves select.
+            const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
+            if (buttons_.empty() || busy) continue;
             const int n = static_cast<int>(buttons_.size());
             // Clamp, do not wrap — DetailScreen's exact idiom, so the ends
             // of the row feel like ends rather than teleporting focus.
@@ -592,10 +643,17 @@ Screen SeriesDetailScreen::handle_input(
             continue;
         }
         if (e.action == platform::InputAction::SELECT && e.pressed) {
-            if (!buttons_.empty() && !mut_in_flight_.load() &&
-                focus_ >= 0 && focus_ < static_cast<int>(buttons_.size())) {
-                dispatch_action(buttons_[static_cast<size_t>(focus_)].action);
+            if (buttons_.empty()) continue;
+            // The gate is GLOBAL (one mutation worker) but the dim is
+            // series-scoped, so series B's row looks perfectly live while
+            // series A's mutation finishes — up to ~14 s of presses landing
+            // on nothing. A silent no-op reads as a dead button; say it.
+            if (mut_in_flight_.load()) {
+                ::ui::Toast::show("Still finishing the last action\xE2\x80\xA6");
+                continue;
             }
+            if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
+                dispatch_action(buttons_[static_cast<size_t>(focus_)].action);
             continue;
         }
         // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal in
@@ -784,7 +842,23 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
             int bx = body_x;
             const int brow_y = list_bottom - kButtonRowH;
+            const int row_right = screen_w - chrome::kSafeInset_px;
+            int drawn = 0;
             for (size_t i = 0; i < buttons_.size(); ++i) {
+                // Defensive clamp: stop before a button would cross the safe
+                // inset rather than running it under the cabinet art. The
+                // motivating canvas is 640x480 (CRT_NATIVE), where three
+                // buttons plus a long "Confirm ~N GB (est)" label are not
+                // guaranteed to fit; Task 9's acceptance eyeballs the row on
+                // the real box. Width is predicted with draw_button's own
+                // geometry (kBtnFontPx 18 + kBtnPadX 18 a side, mb_chrome.cpp)
+                // — worst case a drift there clamps one button early, which
+                // is still strictly better than drawing it where nobody can
+                // see it.
+                const int bw = r.mb_text_width(buttons_[i].label,
+                                               kButtonFontPx) +
+                               2 * kButtonPadX_px;
+                if (drawn > 0 && bx + bw > row_right) break;
                 chrome::ButtonKind kind = chrome::ButtonKind::Ok;
                 if (buttons_[i].action == Action::Remove ||
                     buttons_[i].action == Action::ConfirmRemove ||
@@ -801,7 +875,13 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     r, bx, brow_y, buttons_[i].label, kind,
                     /*focused=*/!busy && static_cast<int>(i) == focus_);
                 bx = rect.x + rect.w + chrome::kPad3;
+                ++drawn;
             }
+            // A focused button that was never drawn is an invisible
+            // affordance: SELECT would fire something the user cannot see.
+            // Clamp onto the last button that actually made it onto the
+            // screen (render() already clamps season_page_ the same way).
+            if (focus_ >= drawn) focus_ = drawn > 0 ? drawn - 1 : 0;
         }
     }
 

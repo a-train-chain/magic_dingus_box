@@ -159,3 +159,161 @@ TEST_CASE("series detail state resolver: precedence and copy", "[series_detail]"
     CHECK(series_detail_state_message(SeriesDetailState::NotInLibrary) == nullptr);
     CHECK(series_detail_state_message(SeriesDetailState::InLibrary) == nullptr);
 }
+
+// ---------- Action row ----------
+//
+// decide_action_row is the function whose focus algebra was a plan-time
+// Critical (the whole-series confirm was never the focused button, so SELECT
+// inside the 4 s window fired "Add Season 1"). It lived untested inside the
+// kiosk-only screen TU until the Task-5 review; these cases pin the four
+// rules it encodes — WHICH buttons, their LABELS, keep-focus-by-identity,
+// and the bias away from Remove.
+
+namespace {
+ActionRowInputs row_inputs(SeriesDetailState st) {
+    ActionRowInputs in;
+    in.state = st;
+    return in;
+}
+}  // namespace
+
+TEST_CASE("action row: not-in-library offers the add pair, focused on add",
+          "[series_detail]") {
+    auto in = row_inputs(SeriesDetailState::NotInLibrary);
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 2);
+    CHECK(row.buttons[0].action == Action::AddSeason1);
+    CHECK(row.buttons[0].label == "Add Season 1");
+    CHECK(row.buttons[1].action == Action::WholeSeries);
+    CHECK(row.buttons[1].label == "Whole series\xE2\x80\xA6");
+    CHECK(row.focus == 0);
+}
+
+TEST_CASE("action row: an UNSETTLED in-library record is [Remove] only",
+          "[series_detail]") {
+    // The window where Sonarr holds the record but has never refreshed it:
+    // every season reads unmonitored, so next_unmonitored answers the first
+    // season we JUST added. Offering "Download Season 1" one second after
+    // adding season 1 is the bug this rule exists for.
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = false;
+    in.next_unmonitored = 1;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 1);
+    CHECK(row.buttons[0].action == Action::Remove);
+    CHECK(row.focus == 0);
+}
+
+TEST_CASE("action row: a settled in-library record offers next season + whole + remove",
+          "[series_detail]") {
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = true;
+    in.next_unmonitored = 2;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 3);
+    CHECK(row.buttons[0].action == Action::NextSeason);
+    CHECK(row.buttons[0].label == "Download Season 2");
+    CHECK(row.buttons[1].action == Action::WholeSeries);
+    CHECK(row.buttons[2].action == Action::Remove);
+    CHECK(row.focus == 0);  // never the destructive one
+
+    // Everything monitored: the add controls hide, Remove stays.
+    in.next_unmonitored = std::nullopt;
+    const auto only_remove = decide_action_row(in);
+    REQUIRE(only_remove.buttons.size() == 1);
+    CHECK(only_remove.buttons[0].action == Action::Remove);
+}
+
+TEST_CASE("action row: arming a confirm keeps focus on the SAME canonical button",
+          "[series_detail]") {
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = true;
+    in.next_unmonitored = 2;  // row is [NextSeason, WholeSeries, Remove]
+
+    // Remove -> ConfirmRemove: one button in two states, focus must not move.
+    in.prev_focus_action = Action::Remove;
+    in.remove_pending = true;
+    const auto armed = decide_action_row(in);
+    REQUIRE(armed.buttons.size() == 3);
+    CHECK(armed.buttons[2].action == Action::ConfirmRemove);
+    CHECK(armed.buttons[2].label == "Confirm Remove");
+    CHECK(armed.focus == 2);
+
+    // ...and back again when the confirm expires.
+    in.prev_focus_action = Action::ConfirmRemove;
+    in.remove_pending = false;
+    const auto disarmed = decide_action_row(in);
+    CHECK(disarmed.buttons[2].action == Action::Remove);
+    CHECK(disarmed.focus == 2);
+
+    // The whole-series arm is a relabel of the button the user pressed; the
+    // 4 s confirm is unreachable if focus slides off it.
+    in.prev_focus_action = Action::WholeSeries;
+    in.whole_armed = true;
+    in.whole_estimate_bytes = 12LL * 1024 * 1024 * 1024;
+    const auto whole = decide_action_row(in);
+    CHECK(whole.buttons[1].action == Action::WholeSeries);
+    CHECK(whole.focus == 1);
+}
+
+TEST_CASE("action row: focus biases AWAY from Remove when the kept action is gone",
+          "[series_detail]") {
+    // The user pressed Add on a not-in-library page; the add landed and the
+    // row became the in-library set. AddSeason1 no longer exists.
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = true;
+    in.next_unmonitored = 2;
+    in.prev_focus_action = Action::AddSeason1;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 3);
+    CHECK(row.focus == 0);
+    CHECK(row.buttons[row.focus].action != Action::Remove);
+}
+
+TEST_CASE("action row: [Remove]-only falls back onto Remove itself",
+          "[series_detail]") {
+    // The bias has to yield when the destructive button is genuinely the
+    // only thing on offer — otherwise focus points at nothing.
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = false;
+    in.next_unmonitored = 1;
+    in.prev_focus_action = Action::AddSeason1;  // no match in the new row
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 1);
+    CHECK(row.buttons[0].action == Action::Remove);
+    CHECK(row.focus == 0);
+}
+
+TEST_CASE("action row: the non-actionable states have an EMPTY row",
+          "[series_detail]") {
+    // Loading / TmdbError / NotConfigured / SonarrUnreachable: no buttons at
+    // all, so a SELECT is a structural no-op rather than a silent add.
+    for (auto st : {SeriesDetailState::Loading, SeriesDetailState::TmdbError,
+                    SeriesDetailState::NotConfigured,
+                    SeriesDetailState::SonarrUnreachable}) {
+        auto in = row_inputs(st);
+        in.next_unmonitored = 1;
+        in.prev_focus_action = Action::Remove;
+        const auto row = decide_action_row(in);
+        CHECK(row.buttons.empty());
+        CHECK(row.focus == 0);
+    }
+}
+
+TEST_CASE("action row: the armed whole-series label carries the GiB estimate",
+          "[series_detail]") {
+    CHECK(whole_series_label(false, 0) == "Whole series\xE2\x80\xA6");
+    // Binary GB, and "(est)" because pre-add the runtime is an assumption.
+    CHECK(whole_series_label(true, 42LL * 1024 * 1024 * 1024) ==
+          "Confirm ~42 GB (est)");
+    // Truncation, not rounding: 41.9 GiB must never read as "42 GB".
+    CHECK(whole_series_label(true, 42LL * 1024 * 1024 * 1024 - 1) ==
+          "Confirm ~41 GB (est)");
+    // The label the row actually carries when armed.
+    auto in = row_inputs(SeriesDetailState::NotInLibrary);
+    in.whole_armed = true;
+    in.whole_estimate_bytes = 7LL * 1024 * 1024 * 1024;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 2);
+    CHECK(row.buttons[1].label == "Confirm ~7 GB (est)");
+}

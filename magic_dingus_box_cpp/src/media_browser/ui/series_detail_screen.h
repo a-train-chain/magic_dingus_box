@@ -92,15 +92,13 @@ private:
     void rebuild_rows();                // rows_ = merge_season_rows(...)
 
     // ---- action row (Tasks 5-7) ----
-    enum class Action { AddSeason1, NextSeason, WholeSeries, Remove, ConfirmRemove };
-    struct ActionButton {
-        Action action;
-        std::string label;
-    };
-    void rebuild_buttons();
+    // `Action` / `ActionButton` / `whole_series_label` and the row's whole
+    // decision (decide_action_row) live in series_detail_logic.h: that
+    // algebra is pure, it was the source of a wrong-button bug, and Mac
+    // table tests cannot include this Renderer-bound header.
+    void rebuild_buttons();             // thin caller of decide_action_row
     void dispatch_action(Action a);
     void expire_confirms();
-    std::string whole_series_label() const;
 
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).
@@ -138,6 +136,13 @@ private:
     // out mid-add and open a different show, and an outcome must never
     // rewrite THAT page's state.
     int mut_tmdb_id_ = 0;
+    // Which LOAD this mutation was started against. Same thread discipline
+    // as mut_tmdb_id_, and it closes the A→B→A hole that the id alone
+    // cannot see: leaving series A, opening B, then coming BACK to A passes
+    // an id-only gate, and the refetch's pre-mutation library snapshot then
+    // clobbers the drain's result (the page shows "Add Season 1" for a
+    // series that is now in the library, sticky until you leave again).
+    uint64_t mut_fetch_gen_ = 0;
     std::mutex mut_mtx_;
     std::string mut_toast_;                          // guarded by mut_mtx_
     std::optional<Series> mut_series_;               // guarded

@@ -670,6 +670,12 @@ std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id)
 }
 
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {
+    // Without clearing first, an empty result here is ambiguous to callers
+    // that read last_error() to tell "Sonarr answered, no profiles" from "we
+    // never reached Sonarr" — a PRIOR call's error would be surfaced as if
+    // it were this one's. Same entry clear as add_series /
+    // set_season_monitored / trigger_season_search.
+    set_error({});
     auto resp = http_get("/api/v3/qualityprofile");
     if (resp.empty()) return {};
     return SonarrParsers::parse_quality_profiles(resp);

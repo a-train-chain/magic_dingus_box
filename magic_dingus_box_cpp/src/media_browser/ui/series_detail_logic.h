@@ -224,4 +224,124 @@ inline const char* series_detail_state_message(SeriesDetailState s) {
     return nullptr;  // unreachable; keeps -Wreturn-type quiet without a default:
 }
 
+// ---------- Action row ----------
+
+// The action row's vocabulary. It lives HERE rather than nested inside
+// SeriesDetailScreen because the decision that BUILDS the row is pure (see
+// decide_action_row below) and its table tests are Mac-side: the enum has to
+// be reachable from a TU that cannot include a Renderer-bound header. Tasks
+// 6-7's dispatch cases name these same enumerators.
+enum class Action { AddSeason1, NextSeason, WholeSeries, Remove, ConfirmRemove };
+
+struct ActionButton {
+    Action action;
+    std::string label;
+};
+
+// Remove and ConfirmRemove are ONE button in two states: every focus
+// comparison canonicalizes, so arming the confirm cannot move focus off it.
+inline Action canonical_action(Action a) {
+    return a == Action::ConfirmRemove ? Action::Remove : a;
+}
+
+// The whole-series button's label, armed and unarmed.
+//
+// Binary GB (GiB) on purpose — it is the same unit the free-space readings
+// arrive in, so the two numbers in the Block toast compare like with like.
+// "(est)" is the honesty: pre-add the per-episode runtime is
+// estimate_remaining_bytes' 45-minute ASSUMPTION, because Sonarr has no
+// record to read runtime_minutes from yet.
+inline std::string whole_series_label(bool armed, int64_t estimate_bytes) {
+    if (!armed) return "Whole series\xE2\x80\xA6";
+    return "Confirm ~" +
+           std::to_string(estimate_bytes / (1024LL * 1024 * 1024)) +
+           " GB (est)";
+}
+
+// Everything the action row is decided from. All of it is render-thread
+// state on the screen; none of it is Renderer-shaped, which is the point.
+struct ActionRowInputs {
+    SeriesDetailState state = SeriesDetailState::Loading;
+    // False for the window where Sonarr holds the record but has never
+    // refreshed it — EVERY season reads unmonitored there, so the add
+    // controls must not be offered.
+    bool series_settled = true;
+    // next_unmonitored_season(rows) — nullopt when everything is monitored.
+    std::optional<int> next_unmonitored;
+    bool remove_pending = false;
+    bool whole_armed = false;
+    int64_t whole_estimate_bytes = 0;
+    // The action under the focus ring BEFORE this rebuild, if any. Focus is
+    // preserved by ACTION IDENTITY, never by index.
+    std::optional<Action> prev_focus_action;
+};
+
+struct ActionRow {
+    std::vector<ActionButton> buttons;
+    int focus = 0;
+};
+
+// The whole of the action row's algebra: which buttons exist, what they are
+// labelled, and where focus lands.
+//
+// Focus is preserved by ACTION IDENTITY, never by index. A rebuild can
+// insert, drop or relabel rows (an add turns "Add Season 1" into "Download
+// Season 2" + "Remove"), and forcing focus to 0 meant the whole-series
+// confirm was never the focused button — pressing SELECT inside the 4 s
+// window fired "Add Season 1" instead. Deterministically.
+//
+// The no-match fallback biases AWAY from destructive actions: after an
+// unsettled add the row is [Remove] alone for ~9 s, and a satisfied user
+// tapping again should not find the delete button pre-focused unless it is
+// genuinely the only thing on offer.
+inline ActionRow decide_action_row(const ActionRowInputs& in) {
+    ActionRow out;
+    if (in.state == SeriesDetailState::NotInLibrary) {
+        out.buttons.push_back({Action::AddSeason1, "Add Season 1"});
+        out.buttons.push_back(
+            {Action::WholeSeries,
+             whole_series_label(in.whole_armed, in.whole_estimate_bytes)});
+    } else if (in.state == SeriesDetailState::InLibrary) {
+        // While the record is unsettled EVERY season reads unmonitored, so
+        // next_unmonitored would answer "1" one second after we added
+        // season 1 and the primary button would read "Download Season 1".
+        // Offer Remove only until the poll settles it; the meta line says
+        // "syncing…" so the missing controls read as pending, not broken.
+        if (in.series_settled && in.next_unmonitored.has_value()) {
+            out.buttons.push_back(
+                {Action::NextSeason,
+                 "Download Season " + std::to_string(*in.next_unmonitored)});
+            out.buttons.push_back(
+                {Action::WholeSeries,
+                 whole_series_label(in.whole_armed, in.whole_estimate_bytes)});
+        }
+        out.buttons.push_back(
+            in.remove_pending
+                ? ActionButton{Action::ConfirmRemove, "Confirm Remove"}
+                : ActionButton{Action::Remove, "Remove"});
+    }
+    // NOTE: there is deliberately NO "Working…" swap while a mutation is in
+    // flight. Replacing the row wholesale destroyed focus identity and was
+    // the root of the wrong-mutation bug; the screen dims the real row
+    // instead, and SELECT is already gated on the in-flight flag.
+    out.focus = 0;
+    for (size_t i = 0; i < out.buttons.size(); ++i) {
+        if (canonical_action(out.buttons[i].action) != Action::Remove) {
+            out.focus = static_cast<int>(i);
+            break;
+        }
+    }
+    if (in.prev_focus_action.has_value()) {
+        for (size_t i = 0; i < out.buttons.size(); ++i) {
+            if (canonical_action(out.buttons[i].action) ==
+                canonical_action(*in.prev_focus_action)) {
+                out.focus = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (out.focus >= static_cast<int>(out.buttons.size())) out.focus = 0;
+    return out;
+}
+
 }  // namespace media_browser::ui
