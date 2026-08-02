@@ -824,7 +824,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // default is the best guess available.
                     const std::string host_path =
                         tv_root.empty() ? std::string("/mnt/ssd/library/tv")
-                                        : sonarr_.resolve_host_path(tv_root);
+                                        : sonarr_.resolve_host_path(SonarrClient::normalize_prefix(tv_root));
                     std::error_code ec;
                     auto info = std::filesystem::space(host_path, ec);
                     if (!ec) free_bytes = static_cast<int64_t>(info.available);

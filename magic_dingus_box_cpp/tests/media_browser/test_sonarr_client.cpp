@@ -49,6 +49,19 @@ TEST_CASE("resolve_host_path: default config maps Sonarr's /data/library/tv",
           "/mnt/ssd/library/tv/Breaking Bad/S01E01.mkv");
 }
 
+TEST_CASE("resolve_host_path: a bare root-folder path needs normalize_prefix",
+          "[sonarr][paths]") {
+    // Sonarr's GET /rootfolder returns "/data/library/tv" WITHOUT a trailing
+    // slash; the configured container prefix carries one. The raw path
+    // therefore passes through UNMAPPED (pinning the contract that makes
+    // normalization at the call site REQUIRED — the whole-series preflight's
+    // host probe depends on it), while the normalized form maps.
+    mb::SonarrClient c{mb::SonarrClient::Config{}};  // all defaults
+    CHECK(c.resolve_host_path("/data/library/tv") == "/data/library/tv");
+    CHECK(c.resolve_host_path(mb::SonarrClient::normalize_prefix("/data/library/tv"))
+          == "/mnt/ssd/library/tv/");
+}
+
 TEST_CASE("resolve_host_path: rejects a /tv2 false prefix", "[sonarr][paths]") {
     mb::SonarrClient c{mb::SonarrClient::Config{}};
     CHECK(c.resolve_host_path("/data/library/tv2/foo.mkv") ==
