@@ -54,6 +54,11 @@ void PlaybackScreen::enter() {
     exit_pending_ = false;
     deferred_toast_.clear();
     qbit_was_paused_by_us_ = false;
+    // EOS latch pair resets TOGETHER here (and only here until Task 5's
+    // in-place reload) so each playback session gets exactly one
+    // consume-once report from take_eos_watched().
+    eos_latched_ = false;
+    eos_reported_ = false;
     // Tracks state.video_active across update() ticks for end-of-stream
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
@@ -117,9 +122,13 @@ void PlaybackScreen::enter() {
     // strategy in path_resolver. The path is already host-absolute (passed
     // through RadarrClient::resolve_host_path by DetailScreen), so the
     // resolver's absolute-path branch returns it unchanged.
+    //
+    // start_position_ is the one-shot resume offset the dispatcher set via
+    // set_start_position() (0.0 = play from the beginning); leave() clears
+    // it so it can never leak into an unrelated later session.
     auto load_result = controller_.load_file_with_resolution(
-        movie_path_, /*playlist_dir=*/"", /*start=*/0.0, /*end=*/0.0,
-        /*loop=*/false);
+        movie_path_, /*playlist_dir=*/"", /*start=*/start_position_,
+        /*end=*/0.0, /*loop=*/false);
 
     // Result<> exposes operator bool — false on failure. .error() carries
     // the message.
@@ -137,6 +146,14 @@ void PlaybackScreen::enter() {
     // the same pipeline back-to-back, which trips the state machine and
     // logs spurious "state change to PLAYING failed" errors. One play() per
     // load is the contract.
+
+    // Pinned resume toast. format_position_hms is the pure Task 1 helper —
+    // Task 6's episode glyph uses the same formatter, so the two surfaces
+    // cannot drift. Copy is pinned; do not reword.
+    if (start_position_ > 0.0) {
+        ::ui::Toast::show("Resuming from " + format_position_hms(start_position_)
+                          + " \xE2\x80\x94 seek back to restart");
+    }
 
     // Title marquee for 3 seconds on entry.
     title_marquee_until_ = std::chrono::steady_clock::now()
@@ -202,6 +219,17 @@ void PlaybackScreen::leave() {
         qbit_was_paused_by_us_ = false;
     }
 
+    // One-shot watch-state carriers die with the session. start_position_
+    // must not leak into a later playback that never called
+    // set_start_position(); watch_identity_ must not attribute a later,
+    // unrelated file's checkpoints to this title. main.cpp's
+    // flush_watch_state runs BEFORE leave() at every exit site, so by the
+    // time these clear, the final position write has already happened —
+    // and any (buggy) post-leave flush reads a disengaged identity and
+    // becomes a safe no-op instead of an upsert of zeros.
+    start_position_ = 0.0;
+    watch_identity_.reset();
+
     // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
     // froze in enter(). Deliberately left UNCONDITIONAL even though
     // enter() is now platform-gated: the helper is idempotent (a no-op
@@ -221,13 +249,13 @@ Screen PlaybackScreen::handle_input(
     // honor it. This fires every frame even with empty events because the
     // dispatcher always calls handle_input.
     if (exit_pending_) {
-        return Screen::Detail;
+        return origin_;
     }
 
     for (const auto& e : events) {
         // BTN4 short-press:
         //   - When overlay is open → close the overlay (stay in Playback).
-        //   - When overlay is closed → return to Detail (existing behavior).
+        //   - When overlay is closed → return to origin_ (Detail by default).
         // The dispatcher's long-press handler (held >500ms) intercepts before
         // we see it, so reaching here means it's a short press. We don't call
         // controller_.stop() because leave() will (idempotently).
@@ -237,7 +265,7 @@ Screen PlaybackScreen::handle_input(
                 overlay_.close();
                 return Screen::Playback;
             }
-            return Screen::Detail;
+            return origin_;
         }
 
         // Rotary press (SELECT):
@@ -439,6 +467,11 @@ void PlaybackScreen::update() {
     if (was_video_active_ && !video_active_now && !exit_pending_
         && eos_suppress_frames_ <= 0) {
         exit_pending_ = true;
+        // Latch for the consume-once take_eos_watched() accessor —
+        // main.cpp polls it each frame and marks the identity watched
+        // exactly once. (Task 5 rewrites this edge for TV: exit_pending_
+        // gets suppressed in favor of the countdown; the latch stays.)
+        eos_latched_ = true;
         spdlog::info("[playback] natural end-of-stream detected");
     }
     was_video_active_ = video_active_now;

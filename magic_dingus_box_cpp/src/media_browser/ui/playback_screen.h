@@ -2,10 +2,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/playback_overlay.h"
 
@@ -34,8 +36,8 @@ namespace media_browser::ui {
 //   enter()                          <- load + play, arm title marquee,
 //                                       kick off similar-films prefetch.
 //   handle_input(events) -> Screen   <- maps inputs to Controller methods,
-//                                       returns Screen::Detail on BTN4 or
-//                                       on natural end-of-stream.
+//                                       returns origin_ (default Detail) on
+//                                       BTN4 or on natural end-of-stream.
 //   update()                         <- edge-detects end-of-stream,
 //                                       decays title marquee.
 //   render(r, w, h)                  <- draws HUD + playback overlay (when open).
@@ -76,6 +78,38 @@ public:
     // tmdb_id defaults to 0 and the overlay renders without similar films.
     void set_movie_meta(PlaybackOverlayMovieMeta meta);
 
+    // Where BTN4 short-press / natural end-of-stream returns to. Set by the
+    // dispatcher on EVERY handoff into Playback (Detail today, SeriesDetail
+    // in Task 5). Defaults to Screen::Detail — belt-and-braces for any path
+    // that forgets to call it (preserves the pre-Task-4 behavior).
+    void set_origin(Screen s) { origin_ = s; }
+
+    // One-shot resume offset in seconds. enter() forwards it as the start
+    // parameter of Controller::load_file_with_resolution; leave() clears it
+    // so a later playback that skips this setter starts from 0.
+    void set_start_position(double s) { start_position_ = s; }
+
+    // Which piece of media this playback session's watch state is attributed
+    // to. Disengaged = untracked playback (no checkpoints, no watched
+    // marking). Cleared in leave() so a stale identity can never attribute a
+    // later, unrelated file's positions to the wrong title.
+    void set_watch_identity(std::optional<WatchIdentity> id) {
+        watch_identity_ = std::move(id);
+    }
+    std::optional<WatchIdentity> watch_identity() const { return watch_identity_; }
+
+    // Consume-once EOS accessor: returns the engaged watch identity exactly
+    // once per EOS latch (eos_reported_ flips on first call; both flags
+    // reset together in enter() / any future in-place reload). main.cpp
+    // polls this every frame and calls WatchStore::mark_watched only on an
+    // engaged return — so EOS costs exactly ONE SQLite write, never a
+    // per-frame write while a countdown or season-end card idles on screen.
+    std::optional<WatchIdentity> take_eos_watched() {
+        if (!eos_latched_ || eos_reported_) return std::nullopt;
+        eos_reported_ = true;
+        return watch_identity_;  // may be disengaged -> caller skips
+    }
+
     void enter() override;
     void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -97,6 +131,18 @@ private:
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path
+
+    // See set_origin() / set_start_position() / set_watch_identity().
+    Screen origin_ = Screen::Detail;
+    double start_position_ = 0.0;                  // one-shot; cleared in leave()
+    std::optional<WatchIdentity> watch_identity_;  // cleared in leave()
+
+    // EOS latch pair. eos_latched_ is set by update()'s video_active
+    // true→false edge (the same edge that arms exit_pending_);
+    // eos_reported_ flips on the first take_eos_watched() so the caller
+    // sees the latch exactly once. Both reset together in enter().
+    bool eos_latched_ = false;
+    bool eos_reported_ = false;
 
     bool was_video_active_ = false;
     bool exit_pending_ = false;
