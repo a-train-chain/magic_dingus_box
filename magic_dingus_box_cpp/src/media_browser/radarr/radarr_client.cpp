@@ -93,9 +93,9 @@ std::string RadarrClient::http_post(const std::string& path, const std::string& 
     return resp;
 }
 
-std::string RadarrClient::http_delete(const std::string& path) {
+long RadarrClient::http_delete(const std::string& path) {
     CURL* curl = curl_easy_init();
-    if (!curl) { set_error("curl init failed"); return {}; }
+    if (!curl) { set_error("curl init failed"); return 0; }
     std::string url = cfg_.base_url + path;
     std::string resp;
     struct curl_slist* headers = nullptr;
@@ -111,13 +111,15 @@ std::string RadarrClient::http_delete(const std::string& path) {
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
+    // 0 = transport failure (no status line); any real code is returned
+    // as-is, including >=400, so the caller's verdict never depends on a
+    // cross-thread read of last_error_.
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
         set_error(os.str());
-        return {};
     }
-    return resp;
+    return http_code;
 }
 
 bool RadarrClient::is_reachable() {
@@ -262,8 +264,11 @@ bool RadarrClient::remove_movie(int radarr_id, bool delete_files) {
     std::string path = "/api/v3/movie/" + std::to_string(radarr_id)
                      + "?deleteFiles=" + (delete_files ? "true" : "false");
     set_error({});
-    http_delete(path);
-    return last_error().empty();
+    const long code = http_delete(path);
+    // In-band verdict: this call's own status line, nothing shared. The
+    // old last_error().empty() read could be false-failed by a concurrent
+    // library-poll error landing in the window after a successful DELETE.
+    return code > 0 && code < 400;
 }
 
 bool RadarrClient::trigger_search(int radarr_id) {
@@ -287,9 +292,9 @@ ActiveSearches RadarrClient::get_active_searches() {
 
 bool RadarrClient::cancel_queue_item(int queue_id) {
     set_error({});
-    http_delete("/api/v3/queue/" + std::to_string(queue_id)
-                + "?removeFromClient=true&blocklist=false");
-    return last_error().empty();
+    const long code = http_delete("/api/v3/queue/" + std::to_string(queue_id)
+                                  + "?removeFromClient=true&blocklist=false");
+    return code > 0 && code < 400;
 }
 
 bool RadarrClient::grab_release(const Json::Value& release) {

@@ -91,7 +91,7 @@ public:
     }
     // Stubs to satisfy other virtuals if needed:
     std::string http_get(const std::string&) override { return ""; }
-    std::string http_delete(const std::string&) override { return ""; }
+    long http_delete(const std::string&) override { return 200; }
 };
 }
 
@@ -129,7 +129,7 @@ TEST_CASE("RadarrClient::get_releases_for_movie parses release array",
         }
         std::string http_get(const std::string&) override { return ""; }
         std::string http_post(const std::string&, const std::string&) override { return ""; }
-        std::string http_delete(const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
     };
     StubRadarr r;
     auto releases = r.get_releases_for_movie(99);
@@ -155,7 +155,7 @@ TEST_CASE("RadarrClient::get_history parses history records",
             ]})";
         }
         std::string http_post(const std::string&, const std::string&) override { return ""; }
-        std::string http_delete(const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
     };
     StubRadarr r;
     auto events = r.get_history(99);

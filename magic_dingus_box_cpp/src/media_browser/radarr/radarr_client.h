@@ -131,7 +131,15 @@ protected:
     // Virtual for mocking (see radarr_mock.h)
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path, const std::string& body);
-    virtual std::string http_delete(const std::string& path);
+    // Returns the HTTP status code; 0 is the ONE reserved "no answer" value
+    // (transport failure — no status line). Callers branch on the code
+    // IN-BAND (code > 0 && code < 400) instead of reading last_error()
+    // afterwards: that read is a cross-thread split on the shared error
+    // string once any background poll runs Radarr HTTP concurrently
+    // (DetailScreen's library poll does). last_error side effects are
+    // unchanged — the message is still set for diagnostics. Ported from
+    // SonarrClient's identical fix.
+    virtual long http_delete(const std::string& path);
 
     // Long-timeout GET for endpoints that do synchronous work upstream
     // (notably /api/v3/release?movieId=X, which kicks off an interactive
