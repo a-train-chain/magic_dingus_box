@@ -285,8 +285,8 @@ void BrowseScreen::apply_library_pending() {
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
                       movies_.end());
         foryou().hits.erase(std::remove_if(foryou().hits.begin(),
-                                            foryou().hits.end(), owned),
-                             foryou().hits.end());
+                                           foryou().hits.end(), owned),
+                            foryou().hits.end());
         if (movies_.size() != before) {
             if (grid_cursor_ >= static_cast<int>(movies_.size())) {
                 grid_cursor_ = movies_.empty()
@@ -409,6 +409,7 @@ void BrowseScreen::start_foryou_sample(bool background) {
     auto job = std::make_shared<ForYouJob>();
     job->gen = tmdb_current_gen_.load();
     job->background = background;
+    job->mode = mode();
     job->remaining.store(static_cast<int>(seeds.size()));
     foryou_job_ = job;
     spdlog::info("[BrowseScreen] For You sample: {} seeds (gen={}, background={})",
@@ -459,12 +460,13 @@ void BrowseScreen::apply_foryou_pending() {
         }
         return;
     }
-    foryou().hits = merge_recommendations(per_seed, library_refs_);
-    foryou().loaded_at = std::chrono::steady_clock::now();
+    ForYouCache& target = foryou_[static_cast<int>(job->mode)];
+    target.hits = merge_recommendations(per_seed, library_refs_);
+    target.loaded_at = std::chrono::steady_clock::now();
     spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
-                 foryou().hits.size(), ok_seeds);
-    if (category_ == Category::ForYou) {
-        movies_ = foryou().hits;
+                 target.hits.size(), ok_seeds);
+    if (category_ == Category::ForYou && job->mode == mode()) {
+        movies_ = target.hits;
         grid_cursor_ = 0;
         scroll_row_ = 0;
         loading_ = false;
@@ -740,9 +742,9 @@ void BrowseScreen::spawn_page_worker(Category cat, int page) {
     }
 }
 
-void BrowseScreen::run_load_page(uint64_t gen, Category cat, MbMode mode, int page, bool is_revalidate) {
+void BrowseScreen::run_load_page(uint64_t gen, Category cat, MbMode mode_for_page, int page, bool is_revalidate) {
     TmdbList list;
-    if (mode == MbMode::Tv) {
+    if (mode_for_page == MbMode::Tv) {
         // Only the two chart tabs exist in TV mode. NowPlaying/Upcoming have
         // no TV analogue and are not in the visible strip anyway.
         switch (cat) {
@@ -854,9 +856,10 @@ void BrowseScreen::persist_filter_state(MbMode mode_for_write, FilterTabKind tab
 }
 
 void BrowseScreen::apply_mode_change() {
-    // The library cache holds both kinds, but the OTHER kind's set may be
-    // stale or never fetched — re-kick so the in-library hide is right for
-    // what is about to be drawn. CAS-guarded: a no-op when one is in flight.
+    // The library cache holds both kinds (Sonarr-backed TV entries land in
+    // Task 8), but the OTHER kind's set may be stale or never fetched —
+    // re-kick so the in-library hide is right for what is about to be
+    // drawn. CAS-guarded: a no-op when one is in flight.
     refresh_library_async();
     // reload_for_category(), NOT load_category(). load_category is the
     // FILTER-BLIND entry point: it sets window_is_discover_ = false and routes

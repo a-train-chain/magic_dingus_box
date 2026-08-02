@@ -138,7 +138,7 @@ private:
     // Shared persist half of the overlay commit (spec 1b): write per-tab
     // filter state + save settings.json, WITHOUT the reload — the commit
     // path adds reload_for_category(), the shuffle path adds do_shuffle().
-    void persist_filter_state(MbMode mode, FilterTabKind tab, const FilterState& fs);
+    void persist_filter_state(MbMode mode_for_write, FilterTabKind tab, const FilterState& fs);
     // The persisted Movies/TV mode. Single source of truth — BrowseScreen
     // keeps no shadow copy, so a mode written by the overlay's toggle handler
     // is visible to every reader on the next line.
@@ -170,7 +170,7 @@ private:
     // `mode` is captured by VALUE at spawn time: a MODE toggle mid-flight
     // bumps the generation, but pinning the mode keeps the worker's endpoint
     // choice consistent with the filter it was handed.
-    void run_load_page(uint64_t gen, Category cat, MbMode mode, int page,
+    void run_load_page(uint64_t gen, Category cat, MbMode mode_for_page, int page,
                        bool is_revalidate = false);
     void run_reload_filter_page(uint64_t gen, DiscoverFilter filter, int page,
                                 bool is_revalidate = false);

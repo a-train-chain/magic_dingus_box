@@ -51,6 +51,10 @@ static int text_w(const std::string& t, int size) {
     return width;
 }
 int main(int argc, char** argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <path-to-ttf>\n", argv[0]);
+        return 1;
+    }
     std::ifstream f(argv[1], std::ios::binary);
     std::vector<unsigned char> data((std::istreambuf_iterator<char>(f)),
                                     std::istreambuf_iterator<char>());
