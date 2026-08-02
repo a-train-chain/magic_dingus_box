@@ -308,6 +308,11 @@ struct ActionRowInputs {
     // The action under the focus ring BEFORE this rebuild, if any. Focus is
     // preserved by ACTION IDENTITY, never by index.
     std::optional<Action> prev_focus_action;
+    // True when the PREVIOUS row was Remove/ConfirmRemove and nothing else —
+    // i.e. prev_focus_action was not a choice the user made, it was the only
+    // place the layout could put the ring. A focus the layout FORCED is not a
+    // user choice, so it must not be preserved across the next rebuild.
+    bool prev_row_remove_only = false;
 };
 
 struct ActionRow {
@@ -365,7 +370,16 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
             break;
         }
     }
-    if (in.prev_focus_action.has_value()) {
+    // A focus the LAYOUT forced is not a user choice. When the previous row
+    // was [Remove] alone — the ~9 s unsettled-add window — the ring sat on
+    // Remove because it was the only button, not because anyone chose it.
+    // Preserving that identity when the poll settles and re-expands the row to
+    // [NextSeason, WholeSeries, Remove] leaves the delete button focused at the
+    // exact moment a waiting user taps SELECT: that arms ConfirmRemove, and a
+    // second tap inside 2 s deletes the series WITH ITS FILES. Skipping the
+    // identity loop hands the decision to the bias-away-from-Remove fallback
+    // above, which is the correct answer for a forced focus.
+    if (in.prev_focus_action.has_value() && !in.prev_row_remove_only) {
         for (size_t i = 0; i < out.buttons.size(); ++i) {
             if (canonical_action(out.buttons[i].action) ==
                 canonical_action(*in.prev_focus_action)) {

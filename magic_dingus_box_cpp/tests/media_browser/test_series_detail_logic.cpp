@@ -374,6 +374,57 @@ TEST_CASE("action row: [Remove]-only falls back onto Remove itself",
     CHECK(row.focus == 0);
 }
 
+TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the row re-expands",
+          "[series_detail]") {
+    // The three-step sequence that put the ring on the delete button:
+    //
+    //   1. NotInLibrary, focus on "Add Season 1" — the user presses it.
+    //   2. The unsettled drain collapses the row to [Remove]. Focus is FORCED
+    //      there: it is the only button, not a choice.
+    //   3. ~9 s later the poll settles and the row re-expands to
+    //      [NextSeason, WholeSeries, Remove]. Preserving the identity from
+    //      step 2 leaves Remove focused right as the waiting user taps SELECT
+    //      — which arms ConfirmRemove, and a second tap within 2 s deletes the
+    //      series WITH ITS FILES.
+    //
+    // Step 3 must land on NextSeason (index 0) instead.
+
+    // --- step 1 ---
+    auto s1 = row_inputs(SeriesDetailState::NotInLibrary);
+    const auto add_row = decide_action_row(s1);
+    REQUIRE(add_row.buttons.size() == 2);
+    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason1);
+
+    // --- step 2: the unsettled drain ---
+    auto s2 = row_inputs(SeriesDetailState::InLibrary);
+    s2.series_settled = false;
+    s2.next_unmonitored = 1;
+    s2.prev_focus_action = add_row.buttons[add_row.focus].action;
+    s2.prev_row_remove_only = false;  // the previous row was the add pair
+    const auto forced = decide_action_row(s2);
+    REQUIRE(forced.buttons.size() == 1);
+    REQUIRE(forced.buttons[0].action == Action::Remove);
+    REQUIRE(forced.focus == 0);  // forced, not chosen
+
+    // --- step 3: the poll settles and the row re-expands ---
+    auto s3 = row_inputs(SeriesDetailState::InLibrary);
+    s3.series_settled = true;
+    s3.next_unmonitored = 2;
+    s3.prev_focus_action = forced.buttons[forced.focus].action;  // Remove
+    s3.prev_row_remove_only = true;  // ...and it was the ONLY button
+    const auto settled = decide_action_row(s3);
+    REQUIRE(settled.buttons.size() == 3);
+    CHECK(settled.focus == 0);
+    CHECK(settled.buttons[settled.focus].action == Action::NextSeason);
+
+    // The counterfactual: without the flag the identity loop preserves Remove
+    // and the ring lands on the delete button. This is the bug, pinned.
+    s3.prev_row_remove_only = false;
+    const auto unguarded = decide_action_row(s3);
+    CHECK(unguarded.focus == 2);
+    CHECK(unguarded.buttons[unguarded.focus].action == Action::Remove);
+}
+
 TEST_CASE("action row: the non-actionable states have an EMPTY row",
           "[series_detail]") {
     // Loading / TmdbError / NotConfigured / SonarrUnreachable: no buttons at

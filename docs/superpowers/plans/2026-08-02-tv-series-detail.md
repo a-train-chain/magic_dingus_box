@@ -86,7 +86,7 @@
 **Interfaces:**
 - Consumes: `TmdbTvSeason` (tmdb_client.h:84), `Series`/`Season` (sonarr_types.h), `QualityDefinition` (added to `sonarr_types.h` by THIS task — see the Step 3 note).
 - Produces (Tasks 3–8 rely on these exact names): `SeasonState`, `SeasonRow`, `decide_season_state(int,int,bool)`, `merge_season_rows(const std::vector<TmdbTvSeason>&, const Series*, const std::unordered_set<int>&)`, `next_unmonitored_season(const std::vector<SeasonRow>&)`, `estimate_remaining_bytes(const std::vector<SeasonRow>&, int, double)`, `pick_preferred_mb_per_min(const std::vector<QualityDefinition>&)`, `DiskVerdict`, `whole_series_verdict(int64_t, std::optional<int64_t>)`, `kDiskFloorBytes`, `SeriesDetailState`, `SeriesDetailInputs`, `decide_series_detail_state(...)`, `series_detail_state_message(SeriesDetailState)`.
-- **Task 5 APPENDS to both files created here** — the action row's pure algebra (`Action`, `ActionButton`, `canonical_action`, `whole_series_label`, `ActionRowInputs`, `ActionRow`, `decide_action_row`) plus its 8 table cases. See Task 5 Step 0; nothing in THIS task depends on them, so Task 1 stands alone as written below.
+- **Task 5 APPENDS to both files created here** — the action row's pure algebra (`Action`, `ActionButton`, `canonical_action`, `whole_series_label`, `ActionRowInputs`, `ActionRow`, `decide_action_row`) plus its 9 table cases. See Task 5 Step 0; nothing in THIS task depends on them, so Task 1 stands alone as written below.
 
 - [ ] **Step 1: Write the failing test file**
 
@@ -1606,6 +1606,11 @@ struct ActionRowInputs {
     // The action under the focus ring BEFORE this rebuild, if any. Focus is
     // preserved by ACTION IDENTITY, never by index.
     std::optional<Action> prev_focus_action;
+    // True when the PREVIOUS row was Remove/ConfirmRemove and nothing else —
+    // i.e. prev_focus_action was not a choice the user made, it was the only
+    // place the layout could put the ring. A focus the layout FORCED is not a
+    // user choice, so it must not be preserved across the next rebuild.
+    bool prev_row_remove_only = false;
 };
 
 struct ActionRow {
@@ -1663,7 +1668,16 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
             break;
         }
     }
-    if (in.prev_focus_action.has_value()) {
+    // A focus the LAYOUT forced is not a user choice. When the previous row
+    // was [Remove] alone — the ~9 s unsettled-add window — the ring sat on
+    // Remove because it was the only button, not because anyone chose it.
+    // Preserving that identity when the poll settles and re-expands the row to
+    // [NextSeason, WholeSeries, Remove] leaves the delete button focused at the
+    // exact moment a waiting user taps SELECT: that arms ConfirmRemove, and a
+    // second tap inside 2 s deletes the series WITH ITS FILES. Skipping the
+    // identity loop hands the decision to the bias-away-from-Remove fallback
+    // above, which is the correct answer for a forced focus.
+    if (in.prev_focus_action.has_value() && !in.prev_row_remove_only) {
         for (size_t i = 0; i < out.buttons.size(); ++i) {
             if (canonical_action(out.buttons[i].action) ==
                 canonical_action(*in.prev_focus_action)) {
@@ -1677,7 +1691,7 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
 }
 ```
 
-Append to `tests/media_browser/test_series_detail_logic.cpp` — **+8 TEST_CASE blocks** (settled add row, unsettled ⇒ [Remove] only, the settled in-library triple, arm/disarm keeping focus on the same canonical button, bias-away-from-Remove on a keep miss, the [Remove]-only fallback, the empty row in every non-actionable state, and the armed label carrying the estimate):
+Append to `tests/media_browser/test_series_detail_logic.cpp` — **+9 TEST_CASE blocks** (settled add row, unsettled ⇒ [Remove] only, the settled in-library triple, arm/disarm keeping focus on the same canonical button, bias-away-from-Remove on a keep miss, the [Remove]-only fallback, the chained add → unsettled-collapse → settle-and-re-expand sequence asserting focus lands on NextSeason and NOT on Remove, the empty row in every non-actionable state, and the armed label carrying the estimate):
 
 ```cpp
 // ---------- Action row ----------
@@ -1802,6 +1816,57 @@ TEST_CASE("action row: [Remove]-only falls back onto Remove itself",
     REQUIRE(row.buttons.size() == 1);
     CHECK(row.buttons[0].action == Action::Remove);
     CHECK(row.focus == 0);
+}
+
+TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the row re-expands",
+          "[series_detail]") {
+    // The three-step sequence that put the ring on the delete button:
+    //
+    //   1. NotInLibrary, focus on "Add Season 1" — the user presses it.
+    //   2. The unsettled drain collapses the row to [Remove]. Focus is FORCED
+    //      there: it is the only button, not a choice.
+    //   3. ~9 s later the poll settles and the row re-expands to
+    //      [NextSeason, WholeSeries, Remove]. Preserving the identity from
+    //      step 2 leaves Remove focused right as the waiting user taps SELECT
+    //      — which arms ConfirmRemove, and a second tap within 2 s deletes the
+    //      series WITH ITS FILES.
+    //
+    // Step 3 must land on NextSeason (index 0) instead.
+
+    // --- step 1 ---
+    auto s1 = row_inputs(SeriesDetailState::NotInLibrary);
+    const auto add_row = decide_action_row(s1);
+    REQUIRE(add_row.buttons.size() == 2);
+    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason1);
+
+    // --- step 2: the unsettled drain ---
+    auto s2 = row_inputs(SeriesDetailState::InLibrary);
+    s2.series_settled = false;
+    s2.next_unmonitored = 1;
+    s2.prev_focus_action = add_row.buttons[add_row.focus].action;
+    s2.prev_row_remove_only = false;  // the previous row was the add pair
+    const auto forced = decide_action_row(s2);
+    REQUIRE(forced.buttons.size() == 1);
+    REQUIRE(forced.buttons[0].action == Action::Remove);
+    REQUIRE(forced.focus == 0);  // forced, not chosen
+
+    // --- step 3: the poll settles and the row re-expands ---
+    auto s3 = row_inputs(SeriesDetailState::InLibrary);
+    s3.series_settled = true;
+    s3.next_unmonitored = 2;
+    s3.prev_focus_action = forced.buttons[forced.focus].action;  // Remove
+    s3.prev_row_remove_only = true;  // ...and it was the ONLY button
+    const auto settled = decide_action_row(s3);
+    REQUIRE(settled.buttons.size() == 3);
+    CHECK(settled.focus == 0);
+    CHECK(settled.buttons[settled.focus].action == Action::NextSeason);
+
+    // The counterfactual: without the flag the identity loop preserves Remove
+    // and the ring lands on the delete button. This is the bug, pinned.
+    s3.prev_row_remove_only = false;
+    const auto unguarded = decide_action_row(s3);
+    CHECK(unguarded.focus == 2);
+    CHECK(unguarded.buttons[unguarded.focus].action == Action::Remove);
 }
 
 TEST_CASE("action row: the non-actionable states have an EMPTY row",
@@ -1987,6 +2052,15 @@ void SeriesDetailScreen::rebuild_buttons() {
     in.whole_estimate_bytes = whole_estimate_bytes_;
     if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
         in.prev_focus_action = buttons_[static_cast<size_t>(focus_)].action;
+    // Was the ring's current position FORCED by the layout rather than chosen?
+    // It was iff the row we are replacing held nothing but Remove/ConfirmRemove
+    // (canonicalized — they are one button in two states). decide_action_row
+    // drops the identity preservation in that case; see its comment.
+    in.prev_row_remove_only =
+        !buttons_.empty() &&
+        std::all_of(buttons_.begin(), buttons_.end(), [](const ActionButton& b) {
+            return canonical_action(b.action) == Action::Remove;
+        });
 
     ActionRow row = decide_action_row(in);
     buttons_ = std::move(row.buttons);
@@ -2258,7 +2332,8 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // Monitored with nothing on disk yet — the add path
                     // genuinely acted (or a prior add did) and
                     // searchForMissingEpisodes rode in with monitor=true.
-                    toast = title + ": Season 1 search started";
+                    toast = title + ": Season " + std::to_string(first_season) +
+                            " search started";
                 }
                 std::lock_guard<std::mutex> lk(mut_mtx_);
                 if (fresh.has_value()) {
@@ -2479,7 +2554,7 @@ And update the footer hints' last two entries so the rotary pair dims when there
 
 - [ ] **Step 8: Mac suite + Pi compile**
 
-Mac loop: **+8 cases** from Step 0's TEST_CASE blocks (the screen itself is kiosk-only and contributes none), still green. Pi incremental build in `mdb-2c2`: links clean, no new warnings.
+Mac loop: **+9 cases** from Step 0's TEST_CASE blocks (the screen itself is kiosk-only and contributes none), still green. Pi incremental build in `mdb-2c2`: links clean, no new warnings.
 
 - [ ] **Step 9: Commit**
 
@@ -2502,7 +2577,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Modify: `src/media_browser/ui/series_detail_screen.cpp` (dispatch case only — the members, the label helper, the arming and the expiry all landed in Task 5)
 
 **Interfaces:**
-- Consumes: Task 1's `estimate_remaining_bytes`, `whole_series_verdict`, `DiskVerdict`; `SonarrClient::get_root_folders()` (`RootFolder::free_space_bytes`, radarr_types.h:104), `get_quality_profiles`, `add_series`, `set_season_monitored`, `trigger_series_search`, `get_series`, `last_error`; `std::filesystem::space` fallback on `/mnt/ssd/library/tv`.
+- Consumes: Task 1's `estimate_remaining_bytes`, `whole_series_verdict`, `DiskVerdict`; `SonarrClient::get_root_folders()` (`RootFolder::free_space_bytes`, radarr_types.h:104), `get_quality_profiles`, `add_series`, `set_season_monitored`, `trigger_series_search`, `get_series`, `last_error`, `resolve_host_path` (pure string mapping, no HTTP); `std::filesystem::space` fallback on the matched `/tv` root folder's HOST path — `/mnt/ssd/library/tv` literal only when `get_root_folders()` named no `/tv` folder at all.
 
 **Why armed-button, not a modal:** the codebase's confirm idiom is a button-label swap with expiry (DetailScreen's Remove → "Confirm Remove", 2 s; QueueScreen's cancel, 2 s). The spec asks for "a confirm modal with disk estimate"; the estimate goes IN the armed label, which satisfies the requirement inside the established idiom — no screen in the codebase owns a modal, and 2c-1 documented why input-swallowing overlays are dangerous to bolt on. 4 s (not 2) because the user is reading a number.
 
@@ -2680,18 +2755,43 @@ Add `#include <filesystem>` to `series_detail_screen.cpp`'s includes. Replace th
                 //    distinct error code, so a returned 0 is a REAL full
                 //    disk and whole_series_verdict correctly Blocks on it.
                 //
+                // The host path is the MATCHED root folder's container path put
+                // through resolve_host_path, not a literal: main.cpp resolves
+                // this client's prefixes in three tiers (explicit TV var →
+                // parent movie var + "tv" → compiled default), so a box whose
+                // STORAGE_ROOT moved would otherwise stat a path that does not
+                // exist, set `ec` forever, and pin the second source to
+                // WarnOnly — turning the blocking preflight into no preflight
+                // at all, exactly where the ambiguous Sonarr zero above needs
+                // the backup. resolve_host_path is a PURE, non-virtual string
+                // mapping over cfg_.container_library_prefix /
+                // cfg_.host_library_prefix (read sonarr_client.h's declaration
+                // and sonarr_client.cpp's body to confirm) — no HTTP, no
+                // virtual dispatch, safe to call from this worker.
+                //
                 // Do not "simplify" the two guards into one.
                 std::optional<int64_t> free_bytes;
+                std::string tv_root;  // container path of the matched /tv folder
                 for (const auto& rf : sonarr_.get_root_folders()) {
-                    if (rf.path.find("/tv") != std::string::npos &&
-                        rf.free_space_bytes > 0) {
+                    if (rf.path.find("/tv") == std::string::npos) continue;
+                    // Captured even when the reading is 0/ambiguous — that IS
+                    // the case the host-path probe exists to answer.
+                    if (tv_root.empty()) tv_root = rf.path;
+                    if (rf.free_space_bytes > 0) {
                         free_bytes = rf.free_space_bytes;
                         break;
                     }
                 }
                 if (!free_bytes.has_value()) {
+                    // Literal fallback ONLY when Sonarr named no /tv folder at
+                    // all (it never answered, or the box is misconfigured):
+                    // there is no container path to resolve, so the compiled
+                    // default is the best guess available.
+                    const std::string host_path =
+                        tv_root.empty() ? std::string("/mnt/ssd/library/tv")
+                                        : sonarr_.resolve_host_path(tv_root);
                     std::error_code ec;
-                    auto info = std::filesystem::space("/mnt/ssd/library/tv", ec);
+                    auto info = std::filesystem::space(host_path, ec);
                     if (!ec) free_bytes = static_cast<int64_t>(info.available);
                 }
                 const DiskVerdict v = whole_series_verdict(estimate, free_bytes);
@@ -3422,6 +3522,13 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 > below lands the fix (a checked variant, contract-identical to
 > `get_library_checked`) before the poll that creates the race is even wired
 > up, plus two smaller copy fixes the same review found.
+>
+> **Ruling override, deliberate (final whole-branch review).** A review finding
+> asked for the nullopt-abort toast to append `last_error()` as its diagnosis;
+> it is REJECTED and the diagnosis stays the static `"Sonarr didn't answer"`.
+> Reading `last_error()` there would reintroduce exactly the split read the
+> checked variant exists to remove — the poll thread shares this client's one
+> `last_error_` member and can set or clear it in the gap.
 
 **Files:**
 - Modify: `src/media_browser/ui/series_detail_screen.h` / `.cpp`
@@ -3781,7 +3888,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 7. **Next season.** Press "Download Season 2" → S2 monitored + search started (verify in Sonarr UI). Button relabels to "Download Season 3".
 8. **Whole series — allow path.** On a small show with plenty of disk: "Whole series…" → button arms to `Confirm ~N GB (est)` (sanity-check N ≈ episodes × 45 min × 70 MB/min) → confirm within 4 s → all seasons monitored + series search (Sonarr UI). Letting the arm EXPIRE (wait 5 s) reverts the label harmlessly.
 9. **Arm, then confirm WITHOUT rotating.** Press "Whole series…", wait ~1 s, press SELECT again with no rotary movement in between. The confirm must FIRE (this is the focus-preservation case: focus must still be on the armed button, not reset to the first one). Then repeat but ROTATE once before the second press — the label must revert and nothing must be monitored.
-10. **Whole series — first add monitors EVERY season.** On a show not in Sonarr, whole-series it. After the toast, wait ~30 s and reload the series in Sonarr's UI: seasons 2..N must still be monitored. (This is the `addOptions.monitor="none"` case — with "firstSeason" Sonarr's async apply lands after our PUTs and silently unmonitors everything past season 1.)
+10. **Whole series — first add monitors EVERY season AND the series itself.** On a show not in Sonarr, whole-series it. After the toast, wait ~30 s and reload the series in Sonarr's UI. Two assertions, both required: (a) seasons 2..N are still monitored — the season PUTs gate on `res.settled`, so Sonarr's async `"firstSeason"` apply is provably finished and cannot land after them and silently unmonitor everything past season 1; (b) the SERIES-LEVEL monitored toggle reads ON. The shipped design passes `monitor=true` to `add_series` precisely for (b): `add_series` writes the series-level flag from that same parameter and no client method can flip it afterwards, so the retracted `monitor="none"` design would have left an unmonitored series whose every release `MonitoredEpisodeSpecification` rejects — seasons monitored, search runs, nothing ever downloads, with no error anywhere. That is the I-can't-unmonitor-you regression this step exists to catch.
 11. **Whole series — BLOCK path.** Temporarily fill the SSD or pick something enormous (e.g. a 30-season show): pressing "Whole series…" toasts `<title>: not enough space — needs ~X GB (est), Y GB free (20 GB floor)` and does NOT arm. Nothing was monitored (Sonarr UI unchanged).
 12. **Stop Sonarr, THEN mutate.** From a loaded in-library page, `docker stop mdb_sonarr`, then press "Whole series…" and confirm. The toast must be honest — `<title>: couldn't monitor seasons — is Sonarr running?` — and must NOT claim anything was monitored or promise RSS pickup. `docker start mdb_sonarr`.
 13. **Remove, orphan-proof.** On a test series with an active download: Remove → Confirm Remove within 2 s → toast, return to Browse. Verify: Sonarr no longer lists the series, qBit no longer lists its torrent, `/mnt/ssd/library/tv/<series>` gone. **Then open another series and remove it too** — the second remove must work (proves `navigate_back_` is cleared, not latched).
@@ -3817,5 +3924,6 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 13. **House style.** Task 2's parser is a `static` member of `class SonarrParsers` (not a free function), tests call it as `mb::SonarrParsers::parse_quality_definitions`, and the client body mirrors `get_root_folders` exactly — `http_get` takes a PATH and prepends the base URL itself, so the old `cfg_.base_url + ...` would have 404'd SILENTLY into the 70 fallback.
 14. **Deletions.** `BrowseScreen::selected_kind()` is gone (the kind rides the returned `Screen`), as are the dead `mut_ok_`, the dead `was_armed`, and the write-only `visible_season_rows_` (replaced by `season_page_count_`, which the paging math genuinely consumes).
 15. **Mock honesty, restated correctly.** The previous claim — "this plan consumes no newly-trapped method" — was false: `add_series` calls `find_series_by_tvdb` inside the client. The real invariant is `sonarr_configured_` gating (the mock exists iff the key is empty, and this screen makes zero Sonarr calls in that state), plus a binding warning that any future degraded-state Sonarr affordance puts the whole dishonest-mock family live at once and must fix those overrides first.
-16. **Task 5 review fixes (post-`45e17d0`, folded into the text above).** Four Important + four minor findings from the Task-5 review, all mirrored into Task 5's blocks: (a) `add_series` returns `ok=true` from its find-existing branch having applied nothing, so the settled path now READS the outcome off the returned record — lowest non-special season monitored? has files? — and either monitors+searches explicitly, says "already in your TV library", or keeps the search toast; (b) `spawn_mutation` stamps `mut_fetch_gen_` and the drain gates on it (A→B→A); (c) a SELECT gated by the global in-flight flag now toasts instead of dying silently, because the dim is series-scoped; (d) `SonarrClient::get_quality_profiles` gained the entry `set_error({})` its siblings all have, without which the "couldn't reach Sonarr" branch could echo an unrelated stale error — the one out-of-screen change; (e) the row's focus algebra moved into `decide_action_row` in series_detail_logic.h with 8 table cases, since it is pure decision logic and its bug was a plan-time Critical; (f) rotary focus freezes while the same series is mutating (the ring is hidden, so movement would be invisible); (g) the action row stops drawing before a button would cross the safe inset and clamps focus to what was actually drawn (640x480 is the motivating canvas); (h) the identity-gate failure logs the dropped application.
+16. **Task 5 review fixes (post-`45e17d0`, folded into the text above).** Four Important + four minor findings from the Task-5 review, all mirrored into Task 5's blocks: (a) `add_series` returns `ok=true` from its find-existing branch having applied nothing, so the settled path now READS the outcome off the returned record — lowest non-special season monitored? has files? — and either monitors+searches explicitly, says "already in your TV library", or keeps the search toast; (b) `spawn_mutation` stamps `mut_fetch_gen_` and the drain gates on it (A→B→A); (c) a SELECT gated by the global in-flight flag now toasts instead of dying silently, because the dim is series-scoped; (d) `SonarrClient::get_quality_profiles` gained the entry `set_error({})` its siblings all have, without which the "couldn't reach Sonarr" branch could echo an unrelated stale error — the one out-of-screen change; (e) the row's focus algebra moved into `decide_action_row` in series_detail_logic.h with 9 table cases, since it is pure decision logic and its bug was a plan-time Critical; (f) rotary focus freezes while the same series is mutating (the ring is hidden, so movement would be invisible); (g) the action row stops drawing before a button would cross the safe inset and clamps focus to what was actually drawn (640x480 is the motivating canvas); (h) the identity-gate failure logs the dropped application.
 17. **Shared helper.** `wrap_text` is promoted from detail_screen.cpp's anonymous namespace into `mb_chrome.{h,cpp}` — the `truncate_to_width` precedent — rather than copied a second time. PlaybackOverlay's separate `wrap_text_overlay` is deliberately left alone.
+18. **Final whole-branch review fixes (post-`36b360c`, folded into the text above).** Two Important findings, both mirrored into their tasks' blocks. (a) **A focus the layout FORCED is not a user choice.** `ActionRowInputs` gains `prev_row_remove_only`, `rebuild_buttons` sets it when the row being replaced held nothing but Remove/ConfirmRemove (canonicalized), and `decide_action_row` skips the identity-preservation loop when it is set, deferring to the bias-away-from-Remove fallback. Without it the chain *press Add → unsettled row collapses to [Remove] (focus forced) → ~9 s later the poll settles and re-expands to [NextSeason, WholeSeries, Remove]* left the ring on the delete button exactly when a waiting user taps SELECT — arming ConfirmRemove, with a second tap inside 2 s deleting the series and its files. Task 5's table set gains a 9th case reproducing all three steps, asserting focus 0 = NextSeason and pinning the counterfactual. (b) **The preflight's second free-space source honors the path-resolution tier.** The press-1 worker now captures the MATCHED `/tv` root folder's container path (even when its own reading is the ambiguous 0) and probes `std::filesystem::space(resolve_host_path(rf_path))`; the literal `/mnt/ssd/library/tv` survives only for the case where `get_root_folders()` named no `/tv` folder at all. A box whose STORAGE_ROOT moved was otherwise statting a nonexistent path, setting `ec` forever, and pinning the second source to WarnOnly — no blocking preflight at all, precisely where the ambiguous Sonarr zero needs the backup. `resolve_host_path` is a pure, non-virtual string mapping over the client's configured prefixes, so the worker pays no round-trip for it.

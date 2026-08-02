@@ -281,6 +281,15 @@ void SeriesDetailScreen::rebuild_buttons() {
     in.whole_estimate_bytes = whole_estimate_bytes_;
     if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
         in.prev_focus_action = buttons_[static_cast<size_t>(focus_)].action;
+    // Was the ring's current position FORCED by the layout rather than chosen?
+    // It was iff the row we are replacing held nothing but Remove/ConfirmRemove
+    // (canonicalized — they are one button in two states). decide_action_row
+    // drops the identity preservation in that case; see its comment.
+    in.prev_row_remove_only =
+        !buttons_.empty() &&
+        std::all_of(buttons_.begin(), buttons_.end(), [](const ActionButton& b) {
+            return canonical_action(b.action) == Action::Remove;
+        });
 
     ActionRow row = decide_action_row(in);
     buttons_ = std::move(row.buttons);
@@ -781,18 +790,43 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                 //    distinct error code, so a returned 0 is a REAL full
                 //    disk and whole_series_verdict correctly Blocks on it.
                 //
+                // The host path is the MATCHED root folder's container path put
+                // through resolve_host_path, not a literal: main.cpp resolves
+                // this client's prefixes in three tiers (explicit TV var →
+                // parent movie var + "tv" → compiled default), so a box whose
+                // STORAGE_ROOT moved would otherwise stat a path that does not
+                // exist, set `ec` forever, and pin the second source to
+                // WarnOnly — turning the blocking preflight into no preflight
+                // at all, exactly where the ambiguous Sonarr zero above needs
+                // the backup. resolve_host_path is a PURE, non-virtual string
+                // mapping over cfg_.container_library_prefix /
+                // cfg_.host_library_prefix (read sonarr_client.h's declaration
+                // and sonarr_client.cpp's body to confirm) — no HTTP, no
+                // virtual dispatch, safe to call from this worker.
+                //
                 // Do not "simplify" the two guards into one.
                 std::optional<int64_t> free_bytes;
+                std::string tv_root;  // container path of the matched /tv folder
                 for (const auto& rf : sonarr_.get_root_folders()) {
-                    if (rf.path.find("/tv") != std::string::npos &&
-                        rf.free_space_bytes > 0) {
+                    if (rf.path.find("/tv") == std::string::npos) continue;
+                    // Captured even when the reading is 0/ambiguous — that IS
+                    // the case the host-path probe exists to answer.
+                    if (tv_root.empty()) tv_root = rf.path;
+                    if (rf.free_space_bytes > 0) {
                         free_bytes = rf.free_space_bytes;
                         break;
                     }
                 }
                 if (!free_bytes.has_value()) {
+                    // Literal fallback ONLY when Sonarr named no /tv folder at
+                    // all (it never answered, or the box is misconfigured):
+                    // there is no container path to resolve, so the compiled
+                    // default is the best guess available.
+                    const std::string host_path =
+                        tv_root.empty() ? std::string("/mnt/ssd/library/tv")
+                                        : sonarr_.resolve_host_path(tv_root);
                     std::error_code ec;
-                    auto info = std::filesystem::space("/mnt/ssd/library/tv", ec);
+                    auto info = std::filesystem::space(host_path, ec);
                     if (!ec) free_bytes = static_cast<int64_t>(info.available);
                 }
                 const DiskVerdict v = whole_series_verdict(estimate, free_bytes);
