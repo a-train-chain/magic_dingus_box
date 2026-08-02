@@ -211,6 +211,27 @@ public:
     // user is deleting a download, not blacklisting the show.
     virtual bool remove_series(int sonarr_id, bool delete_files = false);
 
+    // Episodes of one library series, via
+    // GET /api/v3/episode?seriesId=<id>&includeEpisodeFile=true — the Phase 3
+    // episode picker's fetch. Same checked contract as get_library_checked,
+    // INCLUDING its accepted misclassification: nullopt ONLY when transport
+    // failed (http_get returned ""); any non-empty body goes through the
+    // parser, so a malformed/unparseable body reads as engaged-EMPTY, not
+    // nullopt — "Sonarr answered garbage" collapses into "no episodes"
+    // exactly as it does for the library fetch, and keeping the two checked
+    // variants' discipline identical beats a private, subtly different one.
+    //
+    // Returned sorted by (season_number, episode_number) — next_up assumes
+    // it. Season 0 (specials) is NOT filtered here: the client stays
+    // policy-free, the UI excludes specials to match merge_season_rows.
+    virtual std::optional<std::vector<EpisodeInfo>> get_episodes_checked(
+        int sonarr_id);
+
+    // Parser behind get_episodes_checked, public static for tests (house
+    // pattern, like the URL builders below). Tolerant: non-array/unparseable
+    // bodies yield empty; every field read is guarded, absent → empty/0.
+    static std::vector<EpisodeInfo> parse_episode_list(const std::string& json);
+
     // Queue / downloads. get_queue_checked() is the primary shape: nullopt on
     // HTTP failure vs a possibly-empty vector on success — same relationship
     // as get_library_checked() / get_series_download_hashes_checked(). The

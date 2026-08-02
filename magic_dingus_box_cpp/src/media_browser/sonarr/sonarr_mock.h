@@ -38,6 +38,14 @@ public:
     bool trigger_season_search(int sonarr_id, int season_number) override;
     bool trigger_series_search(int sonarr_id) override;
     bool remove_series(int sonarr_id, bool delete_files = false) override;
+    // Always nullopt, same honesty rule as get_library_checked above: the
+    // checked contract is reachability, this mock stands in for a box with NO
+    // Sonarr configured (main.cpp's keyless fallback), and keyless boxes must
+    // not fabricate data — an engaged episode list here would hand
+    // SeriesDetail a fake picker on a box whose owner has no Sonarr at all.
+    std::optional<std::vector<EpisodeInfo>> get_episodes_checked(int) override {
+        return std::nullopt;
+    }
     std::vector<QualityProfile> get_quality_profiles() override;
     std::vector<RootFolder> get_root_folders() override;
     std::vector<QualityDefinition> get_quality_definitions() override;

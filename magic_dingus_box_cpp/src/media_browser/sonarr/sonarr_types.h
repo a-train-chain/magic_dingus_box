@@ -35,6 +35,32 @@ struct Episode {
     std::string air_date;   // ISO yyyy-mm-dd; empty for unaired/unknown
 };
 
+// One record of GET /api/v3/episode?seriesId=&includeEpisodeFile=true — the
+// Phase 3 episode picker's row type. Distinct from the minimal Episode above
+// (queue embeds keep using that); this one carries the file facts the picker
+// and playback handoff need. Live-verified against Sonarr 4.0.19:
+// hasFile=false records have NO episodeFile embed and episode_file_id == 0,
+// so the three file_* fields keep their empty/0 defaults; runtime may be 0
+// (specials) and is stored as-is — callers fall back to the series runtime.
+// episode_logic.h's templates touch ONLY season_number / episode_number /
+// has_file; those three names are load-bearing.
+struct EpisodeInfo {
+    int id = 0;
+    int season_number = 0;
+    int episode_number = 0;
+    std::string title;
+    int runtime_minutes = 0;         // json `runtime`; 0 is real (specials)
+    std::string air_date;            // ISO yyyy-mm-dd; empty for unaired/unknown
+    bool has_file = false;
+    int episode_file_id = 0;         // 0 when there is no file
+    bool monitored = false;
+    // episodeFile.path, container-absolute (/data/library/tv/...). Run it
+    // through SonarrClient::resolve_host_path before touching the host.
+    std::string file_container_path;
+    long long file_size_bytes = 0;   // episodeFile.size
+    std::string file_quality;        // episodeFile.quality.quality.name
+};
+
 // A series as returned by /api/v3/series/lookup — not yet in the library, so
 // no Sonarr id and no path.
 struct SeriesSearchHit {

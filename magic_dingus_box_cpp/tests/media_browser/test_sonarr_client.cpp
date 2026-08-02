@@ -982,3 +982,173 @@ TEST_CASE("SonarrMockClient serves fixture-shaped quality definitions",
     REQUIRE(defs.size() == 2);
     CHECK(media_browser::ui::pick_preferred_mb_per_min(defs) == 70.0);
 }
+
+// --- episodes ------------------------------------------------------------
+
+namespace {
+// GET /api/v3/episode?seriesId=&includeEpisodeFile=true, live-verified
+// 2026-08-02 against Sonarr 4.0.19:
+//   - hasFile=false records carry NO `episodeFile` key and episodeFileId==0
+//     (S1E1 below pins both).
+//   - the episodeFile embed, when present, has `path` (container-absolute
+//     /data/library/tv/...), `size`, and quality.quality.name. NOTE: this
+//     embedded shape is from Sonarr's docs, not a live import (zero files
+//     existed at design time) — Task 9 re-verifies it against the first real
+//     import and updates this fixture if reality differs.
+//   - `runtime` may be 0 on specials (S0E1 below); stored as-is, callers
+//     fall back to the series runtime.
+// Records are DELIBERATELY out of (season, episode) order so the sort
+// contract is actually exercised, and a season-0 special is present to pin
+// that the client does NOT filter it (policy lives in the UI, which excludes
+// specials to match merge_season_rows).
+const char* kEpisodesFixture = R"JSON([
+  {
+    "id": 12,
+    "seriesId": 7,
+    "seasonNumber": 1,
+    "episodeNumber": 2,
+    "title": "Cat's in the Bag...",
+    "airDate": "2008-01-27",
+    "runtime": 48,
+    "hasFile": true,
+    "monitored": true,
+    "episodeFileId": 101,
+    "episodeFile": {
+      "id": 101,
+      "seriesId": 7,
+      "path": "/data/library/tv/Breaking Bad/Season 1/Breaking Bad - S01E02.mkv",
+      "size": 1234567890,
+      "quality": {
+        "quality": { "id": 3, "name": "WEBDL-1080p" },
+        "revision": { "version": 1, "real": 0, "isRepack": false }
+      }
+    }
+  },
+  {
+    "id": 30,
+    "seriesId": 7,
+    "seasonNumber": 0,
+    "episodeNumber": 1,
+    "title": "Good Cop / Bad Cop",
+    "airDate": "2009-02-17",
+    "runtime": 0,
+    "hasFile": false,
+    "monitored": false,
+    "episodeFileId": 0
+  },
+  {
+    "id": 11,
+    "seriesId": 7,
+    "seasonNumber": 1,
+    "episodeNumber": 1,
+    "title": "Pilot",
+    "airDate": "2008-01-20",
+    "runtime": 58,
+    "hasFile": false,
+    "monitored": true,
+    "episodeFileId": 0
+  }
+])JSON";
+}  // namespace
+
+TEST_CASE("parse_episode_list extracts fields, sorts by (season, episode), "
+          "and defaults the no-file shape", "[sonarr][episodes]") {
+    auto eps = mb::SonarrClient::parse_episode_list(kEpisodesFixture);
+    REQUIRE(eps.size() == 3);
+
+    // Sorted by (season_number, episode_number) — next_up assumes it — and
+    // season 0 is NOT filtered here (the client stays policy-free).
+    CHECK(eps[0].season_number == 0);
+    CHECK(eps[0].episode_number == 1);
+    CHECK(eps[1].season_number == 1);
+    CHECK(eps[1].episode_number == 1);
+    CHECK(eps[2].season_number == 1);
+    CHECK(eps[2].episode_number == 2);
+
+    // The special: runtime 0 stored AS-IS, never invented.
+    CHECK(eps[0].id == 30);
+    CHECK(eps[0].title == "Good Cop / Bad Cop");
+    CHECK(eps[0].runtime_minutes == 0);
+    CHECK_FALSE(eps[0].monitored);
+
+    // hasFile=false: no episodeFile key, episodeFileId 0 — every file field
+    // stays at its empty/0 default.
+    CHECK(eps[1].id == 11);
+    CHECK(eps[1].title == "Pilot");
+    CHECK(eps[1].air_date == "2008-01-20");
+    CHECK(eps[1].runtime_minutes == 58);
+    CHECK(eps[1].monitored);
+    CHECK_FALSE(eps[1].has_file);
+    CHECK(eps[1].episode_file_id == 0);
+    CHECK(eps[1].file_container_path.empty());
+    CHECK(eps[1].file_size_bytes == 0);
+    CHECK(eps[1].file_quality.empty());
+
+    // hasFile=true: the full embed maps across.
+    CHECK(eps[2].id == 12);
+    CHECK(eps[2].title == "Cat's in the Bag...");
+    CHECK(eps[2].air_date == "2008-01-27");
+    CHECK(eps[2].runtime_minutes == 48);
+    CHECK(eps[2].has_file);
+    CHECK(eps[2].monitored);
+    CHECK(eps[2].episode_file_id == 101);
+    CHECK(eps[2].file_container_path ==
+          "/data/library/tv/Breaking Bad/Season 1/Breaking Bad - S01E02.mkv");
+    CHECK(eps[2].file_size_bytes == 1234567890LL);
+    CHECK(eps[2].file_quality == "WEBDL-1080p");
+}
+
+TEST_CASE("get_episodes_checked distinguishes unreachable from empty",
+          "[sonarr][episodes]") {
+    // Same contract as get_library_checked, for the same reason: Sonarr rides
+    // Gluetun's netns, so transport blips are routine, and "{} because the
+    // fetch failed" must never read as "this series has no episodes".
+    SECTION("transport failure → nullopt") {
+        StubSonarr s;  // no replies configured → http_get returns ""
+        CHECK_FALSE(s.get_episodes_checked(7).has_value());
+        REQUIRE(s.gets.size() == 1);
+        CHECK(s.gets[0] == "/api/v3/episode?seriesId=7&includeEpisodeFile=true");
+    }
+    SECTION("genuinely empty episode list → engaged optional, empty vector") {
+        StubSonarr s;
+        s.get_replies = {{"/api/v3/episode?seriesId=7", "[]"}};
+        auto eps = s.get_episodes_checked(7);
+        REQUIRE(eps.has_value());
+        CHECK(eps->empty());
+    }
+    SECTION("populated") {
+        StubSonarr s;
+        s.get_replies = {{"/api/v3/episode?seriesId=7", kEpisodesFixture}};
+        auto eps = s.get_episodes_checked(7);
+        REQUIRE(eps.has_value());
+        CHECK(eps->size() == 3);
+    }
+    SECTION("malformed body → engaged-EMPTY, not nullopt (accepted "
+            "misclassification, exactly like get_library_checked)") {
+        // A non-empty body means transport succeeded, so it goes through the
+        // parser; an unparseable body then parses to an empty vector. That
+        // misreads "Sonarr answered garbage" as "no episodes" — accepted,
+        // because it mirrors get_library_checked verbatim and a divergent
+        // error discipline between the two checked variants would be worse
+        // than the shared, known quirk.
+        StubSonarr s;
+        s.get_replies = {{"/api/v3/episode?seriesId=7", "not json {{{"}};
+        auto eps = s.get_episodes_checked(7);
+        REQUIRE(eps.has_value());
+        CHECK(eps->empty());
+        CHECK(mb::SonarrClient::parse_episode_list("not json {{{").empty());
+        // Non-array JSON (an error object) is the same engaged-empty.
+        CHECK(mb::SonarrClient::parse_episode_list(R"({"error":"x"})").empty());
+    }
+}
+
+TEST_CASE("SonarrMockClient's get_episodes_checked reports unreachable, "
+          "matching a real box with no Sonarr configured", "[sonarr][mock]") {
+    // Same honesty rule as get_library_checked's pin test above: the mock
+    // stands in for an ABSENT Sonarr (main.cpp falls back to it when the API
+    // key is empty), so the checked shape must answer "did not answer" —
+    // fabricating an episode list would hand SeriesDetail a fake picker on a
+    // box whose owner has no Sonarr at all.
+    mb::SonarrMockClient m;
+    CHECK_FALSE(m.get_episodes_checked(1).has_value());
+}
