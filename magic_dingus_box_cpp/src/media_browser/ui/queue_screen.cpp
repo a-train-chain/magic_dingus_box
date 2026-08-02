@@ -515,15 +515,10 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     int header_bottom = 0;
     {
         namespace chrome = ::media_browser::ui::chrome;
-        // 6-tab strip: Popular | Top Rated | Search | Library | Queue | Settings
-        const std::vector<chrome::TabSpec> tabs = {
-            {"Popular",   chrome::TabState::Inactive},
-            {"Top Rated", chrome::TabState::Inactive},
-            {"Search",    chrome::TabState::Inactive},
-            {"Library",   chrome::TabState::Inactive},
-            {"Queue",     chrome::TabState::Active},
-            {"Settings",  chrome::TabState::Inactive},
-        };
+        // Shared strip (chrome::marquee_tabs) — this screen used to carry
+        // its own six-label copy, which silently lost the "For You" chip
+        // when that tab was added to Browse.
+        const std::vector<chrome::TabSpec> tabs = chrome::marquee_tabs("Queue");
         header_bottom = chrome::draw_screen_header(
             r, screen_w, "Queue", tabs, /*focused_tab=*/-1);
     }

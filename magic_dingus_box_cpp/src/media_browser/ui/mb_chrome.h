@@ -242,4 +242,20 @@ int draw_screen_header(::ui::Renderer& r,
                        int focused_tab_index,   // -1 = no tab focused
                        const std::string& sub_info = "");  // Optional right-side info text
 
+// THE canonical Marquee tab strip, in display order. Every screen that
+// draws the strip MUST build it from here.
+//
+// This exists because it didn't: when "For You" was added to the strip,
+// BrowseScreen's two local copies were consolidated but the four sibling
+// screens (Library, Search, Queue, Settings) each kept their own
+// hardcoded six-label array, so the chip silently disappeared from the
+// header the moment the user tabbed off Browse. Four copies of a list is
+// four chances to forget one; there is now one.
+//
+// `active_label` marks the caller's own chip Active (pass a label that
+// isn't in the strip — or "" — to render every chip Inactive). Matching
+// is exact against the labels below.
+const std::vector<std::string>& marquee_tab_labels();
+std::vector<TabSpec> marquee_tabs(const std::string& active_label);
+
 }  // namespace media_browser::ui::chrome

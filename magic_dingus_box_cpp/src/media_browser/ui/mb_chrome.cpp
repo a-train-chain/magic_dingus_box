@@ -582,4 +582,38 @@ int draw_screen_header(::ui::Renderer& r,
     return header_top + header_h;
 }
 
+const std::vector<std::string>& marquee_tab_labels() {
+    // Display order, left to right. Must stay in sync with BrowseScreen's
+    // kVisibleTabs (which maps these to Category values for input
+    // dispatch) — that array is the navigation source of truth, this is
+    // the rendering one, and they describe the same strip.
+    //
+    // *** WIDTH-CONSTRAINED. *** This strip is 915 px wide and starts 102 px
+    // to the right of the "Marquee" title on the 1280-wide logical canvas,
+    // and draw_screen_header has NO overflow guard. Before adding a chip or
+    // lengthening a label, run the repo-root tools/measure_strip_fit.cpp
+    // (i.e. ../tools/measure_strip_fit.cpp from magic_dingus_box_cpp/ — ONE
+    // LEVEL ABOVE this magic_dingus_box_cpp/ tree, not
+    // magic_dingus_box_cpp/tools/, which does not exist) — a per-mode
+    // " · TV" suffix on the three content labels was measured at -63 px
+    // (overlapping) and is why the Movies/TV indicator lives in the title.
+    static const std::vector<std::string> kLabels = {
+        "Popular", "Top Rated", "For You", "Search", "Library", "Queue", "Settings",
+    };
+    return kLabels;
+}
+
+std::vector<TabSpec> marquee_tabs(const std::string& active_label) {
+    const auto& labels = marquee_tab_labels();
+    std::vector<TabSpec> tabs;
+    tabs.reserve(labels.size());
+    for (const auto& label : labels) {
+        TabSpec t;
+        t.label = label;
+        t.state = (label == active_label) ? TabState::Active : TabState::Inactive;
+        tabs.push_back(std::move(t));
+    }
+    return tabs;
+}
+
 }  // namespace media_browser::ui::chrome

@@ -778,17 +778,10 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // tabs for header real estate.
     namespace chrome = ::media_browser::ui::chrome;
     {
-        // v1.6.x strip: Now Playing dropped, Settings added on the right.
-        // Settings sits at index 4 (rightmost). Labels must stay in sync
-        // with kVisibleTabs[] in browse_screen.cpp.
-        const std::vector<chrome::TabSpec> tabs = {
-            {"Popular",   chrome::TabState::Inactive},
-            {"Top Rated", chrome::TabState::Inactive},
-            {"Search",    chrome::TabState::Inactive},
-            {"Library",   chrome::TabState::Inactive},
-            {"Queue",     chrome::TabState::Inactive},
-            {"Settings",  chrome::TabState::Active},
-        };
+        // Shared strip (chrome::marquee_tabs) — this screen used to carry
+        // its own six-label copy, which silently lost the "For You" chip
+        // when that tab was added to Browse.
+        const std::vector<chrome::TabSpec> tabs = chrome::marquee_tabs("Settings");
         chrome::draw_screen_header(r, screen_w, "Settings",
                                    tabs, /*focused_tab=*/-1);
     }

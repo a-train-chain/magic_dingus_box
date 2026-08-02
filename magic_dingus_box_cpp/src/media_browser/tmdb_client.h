@@ -5,32 +5,21 @@
 #include <vector>
 #include <optional>
 
+#include "media_browser/media_ref.h"
+
 namespace media_browser {
 
-// Which TMDB namespace a row came from. Defaults to Movie on every hit so
-// the entire pre-TV movie path (Browse, Search, For You, playback overlay)
-// is untouched by the TV work — a TV row is only ever produced by the
-// parse_tv_* family, which sets this explicitly.
+// MediaKind and the kind-aware MediaRef key live in media_ref.h (included
+// above).
 //
-// *** TMDB's movie and TV id spaces OVERLAP COMPLETELY. *** tmdb_id 1396 is
-// Breaking Bad (TV) AND an unrelated movie — the two id spaces are
-// independently assigned, so a bare `int tmdb_id` is NOT a unique key across
-// kinds. Any set/map keyed on tmdb_id alone (std::unordered_set<int>,
-// std::unordered_map<int, ...>, etc.) MUST hold entries of a single kind
-// only; mixing Movie and Tv ids in one such container is a correctness bug
-// — it will silently collapse an unrelated movie and show into one entry
-// (dedupe, "owned"/"in library" checks, exclude-lists, ...). The safe form
-// is a `{kind, id}` pair (e.g. a future MediaRef), not a bare id.
+// TMDB's movie and TV id spaces OVERLAP — id 1396 is Breaking Bad AND an
+// unrelated film — so any set or map that can see both kinds must be keyed
+// on MediaRef, never on a bare tmdb id. A bare id is only safe in a
+// container that is single-kind by construction.
 //
-// Currently-safe-because-movie-only int-keyed collections (all four will
-// become hazards the moment a caller starts mixing TV ids into them —
-// nothing in Phase 2b does, since it ships no TV UI, but Phase 2c's
-// Library/Queue work is expected to; audit these first):
-//   - browse_screen.cpp: library_tmdb_ids_.count(m.tmdb_id) (owned/hide
-//     filter, two call sites)
-//   - browse_screen.h:   loaded_tmdb_ids_ (append-page dedupe)
-//   - mb_recs.cpp:       by_id / exclude (recommendation merge/exclude)
-enum class MediaKind { Movie, Tv };
+// Migrated in Phase 2c-1: browse_screen's library/downloading/loaded sets
+// and mb_recs' by_id / exclude are all MediaRef-keyed, so they can hold
+// both kinds safely. Any NEW container that can see both must be too.
 
 struct TmdbSearchHit {
     int tmdb_id = 0;
@@ -49,6 +38,12 @@ struct TmdbSearchHit {
     // never touch fill_list_row — rely on this default.
     MediaKind kind = MediaKind::Movie;
 };
+
+// The MediaRef key for a list row. Use this everywhere a hit is stored in,
+// or looked up against, a kind-mixing container.
+inline MediaRef media_ref_of(const TmdbSearchHit& h) {
+    return MediaRef{h.kind, h.tmdb_id};
+}
 
 // Result of any TMDB "results[]" list endpoint. `ok` distinguishes a fetch/
 // parse failure from a genuinely empty page — the bare-vector endpoints could

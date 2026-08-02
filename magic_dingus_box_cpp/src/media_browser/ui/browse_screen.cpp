@@ -17,7 +17,9 @@
 
 #include "app/settings_persistence.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/mb_filter_state.h"
 #include "media_browser/ui/mb_recs.h"
 #include "media_browser/ui/mb_ui_utils.h"
 #include "ui/renderer.h"
@@ -138,162 +140,16 @@ int current_year_now() {
 
 using FilterTabKind = ::media_browser::ui::FilterTabKind;
 using FilterState   = ::media_browser::ui::FilterState;
-
-// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated.
-// Both branch `if (tab == Popular) ... else ...`, so FilterTabKind::ForYou
-// would silently alias TopRated's storage — ForYou keeps no persisted
-// filter state (spec 1c) and must never reach this helper. Every ForYou
-// call site routes around it instead (open() passes FilterState{} directly,
-// persist_filter_state() early-returns on ForYou, active_chart_filters_
-// active() only evaluates for Popular/TopRated).
-FilterState read_filter_state(const ::app::AppState::DisplaySettings& s, FilterTabKind tab) {
-    FilterState fs;
-    if (tab == FilterTabKind::Popular) {
-        fs.genre_mask = s.mb_popular_genre_mask;
-        fs.decade     = static_cast<int>(s.mb_popular_decade);
-        fs.min_rating = static_cast<int>(s.mb_popular_min_rating);
-        fs.runtime    = static_cast<int>(s.mb_popular_runtime);
-        fs.language   = static_cast<int>(s.mb_popular_language);
-        fs.sort       = static_cast<int>(s.mb_popular_sort);
-    } else {
-        fs.genre_mask = s.mb_toprated_genre_mask;
-        fs.decade     = static_cast<int>(s.mb_toprated_decade);
-        fs.min_rating = static_cast<int>(s.mb_toprated_min_rating);
-        fs.runtime    = static_cast<int>(s.mb_toprated_runtime);
-        fs.language   = static_cast<int>(s.mb_toprated_language);
-        fs.sort       = static_cast<int>(s.mb_toprated_sort);
-    }
-    return fs;
-}
-
-// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
-// see read_filter_state's comment above. persist_filter_state() early-returns
-// on ForYou before this is ever called with FilterTabKind::ForYou.
-void write_filter_state(::app::AppState::DisplaySettings& s, FilterTabKind tab,
-                        const FilterState& fs) {
-    using DS = ::app::AppState::DisplaySettings;
-    if (tab == FilterTabKind::Popular) {
-        s.mb_popular_genre_mask = fs.genre_mask;
-        s.mb_popular_decade     = static_cast<DS::MbDecade>(fs.decade);
-        s.mb_popular_min_rating = static_cast<DS::MbMinRating>(fs.min_rating);
-        s.mb_popular_runtime    = static_cast<DS::MbRuntime>(fs.runtime);
-        s.mb_popular_language   = static_cast<DS::MbLanguage>(fs.language);
-        s.mb_popular_sort       = static_cast<DS::MbDiscoverSort>(fs.sort);
-    } else {
-        s.mb_toprated_genre_mask = fs.genre_mask;
-        s.mb_toprated_decade     = static_cast<DS::MbDecade>(fs.decade);
-        s.mb_toprated_min_rating = static_cast<DS::MbMinRating>(fs.min_rating);
-        s.mb_toprated_runtime    = static_cast<DS::MbRuntime>(fs.runtime);
-        s.mb_toprated_language   = static_cast<DS::MbLanguage>(fs.language);
-        s.mb_toprated_sort       = static_cast<DS::MbDiscoverSort>(fs.sort);
-    }
-}
-
-// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
-// the default-sort comparison below is Popular-vs-TopRated only, so ForYou
-// would silently compare against TopRated's default. active_chart_filters_
-// active() (the only caller reachable from a ForYou-active screen) returns
-// false before category_ == ForYou can flow in here.
-bool any_filter_active(const FilterState& fs, FilterTabKind tab) {
-    using DS = ::app::AppState::DisplaySettings;
-    if (fs.genre_mask != 0) return true;
-    if (fs.decade != 0)     return true;
-    if (fs.min_rating != 0) return true;
-    if (fs.runtime != 0)    return true;
-    if (fs.language != 0)   return true;
-    // Default sort differs per tab.
-    if (tab == FilterTabKind::Popular &&
-        fs.sort != static_cast<int>(DS::MbDiscoverSort::Popularity)) return true;
-    if (tab == FilterTabKind::TopRated &&
-        fs.sort != static_cast<int>(DS::MbDiscoverSort::TopRated))   return true;
-    return false;
-}
-
-// CONSTRAINT: accepts only FilterTabKind::Popular / FilterTabKind::TopRated —
-// the vote_count_gte baseline below is a Popular-vs-TopRated ternary, so
-// ForYou would silently inherit TopRated's gate. Only reached via
-// reload_for_category()/do_shuffle()/revalidate_active_chart(), all of
-// which gate on category_ == Popular/TopRated before building a tab kind.
-::media_browser::DiscoverFilter build_discover_filter(const FilterState& fs,
-                                                      FilterTabKind tab) {
-    ::media_browser::DiscoverFilter df;
-
-    // Genre IDs from mask.
-    const auto& gids = ::media_browser::ui::filter_overlay_genre_ids();
-    for (int i = 0; i < static_cast<int>(gids.size()); ++i) {
-        if ((fs.genre_mask & (1u << i)) != 0) df.genre_ids.push_back(gids[i]);
-    }
-
-    // Decade → year range.
-    using D = ::app::AppState::DisplaySettings::MbDecade;
-    auto dec = static_cast<D>(fs.decade);
-    auto set_year_range = [&](int start, int end) {
-        df.primary_release_year_gte = start;
-        df.primary_release_year_lte = end;
-    };
-    switch (dec) {
-        case D::D2020s:  set_year_range(2020, 2029); break;
-        case D::D2010s:  set_year_range(2010, 2019); break;
-        case D::D2000s:  set_year_range(2000, 2009); break;
-        case D::D1990s:  set_year_range(1990, 1999); break;
-        case D::D1980s:  set_year_range(1980, 1989); break;
-        case D::D1970s:  set_year_range(1970, 1979); break;
-        case D::Classic: df.primary_release_year_lte = 1969; break;
-        case D::Any:     break;
-    }
-
-    // Min rating.
-    using R = ::app::AppState::DisplaySettings::MbMinRating;
-    auto rat = static_cast<R>(fs.min_rating);
-    if (rat == R::Six)   df.vote_average_gte = 6.0f;
-    if (rat == R::Seven) df.vote_average_gte = 7.0f;
-    if (rat == R::Eight) df.vote_average_gte = 8.0f;
-
-    // Runtime.
-    using T = ::app::AppState::DisplaySettings::MbRuntime;
-    auto rt = static_cast<T>(fs.runtime);
-    if (rt == T::Under90)      { df.with_runtime_lte = 89; }
-    if (rt == T::Range90To120) { df.with_runtime_gte = 90;  df.with_runtime_lte = 120; }
-    if (rt == T::Range2To3Hr)  { df.with_runtime_gte = 121; df.with_runtime_lte = 180; }
-    if (rt == T::Over3Hr)      { df.with_runtime_gte = 181; }
-
-    // Language.
-    using L = ::app::AppState::DisplaySettings::MbLanguage;
-    auto lang = static_cast<L>(fs.language);
-    auto set_lang = [&](const char* code) { df.with_original_language = std::string{code}; };
-    switch (lang) {
-        case L::English:  set_lang("en"); break;
-        case L::Japanese: set_lang("ja"); break;
-        case L::French:   set_lang("fr"); break;
-        case L::Spanish:  set_lang("es"); break;
-        case L::Korean:   set_lang("ko"); break;
-        case L::Italian:  set_lang("it"); break;
-        case L::German:   set_lang("de"); break;
-        case L::Hindi:    set_lang("hi"); break;
-        case L::Mandarin: set_lang("zh"); break;
-        case L::Any:      break;
-    }
-
-    // Sort + baseline vote_count gate.
-    using S = ::app::AppState::DisplaySettings::MbDiscoverSort;
-    auto sort = static_cast<S>(fs.sort);
-    switch (sort) {
-        case S::Popularity:    df.sort_by = "popularity.desc"; break;
-        case S::TopRated:      df.sort_by = "vote_average.desc"; break;
-        case S::MostVoted:     df.sort_by = "vote_count.desc"; break;
-        case S::RecentRelease: df.sort_by = "primary_release_date.desc"; break;
-    }
-    // Baseline vote_count gate matches what /popular and /top_rated bake in.
-    df.vote_count_gte = (tab == FilterTabKind::Popular) ? 200 : 300;
-
-    return df;
-}
+using MediaKind     = ::media_browser::MediaKind;
+using MediaRef      = ::media_browser::MediaRef;
 
 }  // namespace
 
-BrowseScreen::BrowseScreen(RadarrClient& radarr, TmdbClient& tmdb,
-                           ::app::AppState& state)
-    : radarr_(radarr), tmdb_(tmdb), state_(state) {}
+BrowseScreen::BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr,
+                           TmdbClient& tmdb, ::app::AppState& state,
+                           bool sonarr_configured)
+    : radarr_(radarr), sonarr_(sonarr), tmdb_(tmdb), state_(state),
+      sonarr_configured_(sonarr_configured) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
@@ -301,10 +157,10 @@ void BrowseScreen::enter() {
         load_category(category_);
         loaded_ = true;
     } else if (category_ == Category::ForYou) {
-        if (tmdb_grid_stale(foryou_loaded_at_, std::chrono::steady_clock::now()) &&
-            !foryou_movies_.empty()) {
+        if (tmdb_grid_stale(foryou().loaded_at, std::chrono::steady_clock::now()) &&
+            !foryou().hits.empty()) {
             start_foryou_sample(/*background=*/true);   // spec 1a SWR for For You
-        } else if (foryou_movies_.empty()) {
+        } else if (foryou().hits.empty()) {
             activate_foryou();                          // never loaded — entry rule
         }
     } else if (!is_nav_chip(category_) && category_ != Category::Filter &&
@@ -341,13 +197,75 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     // Worker thread: all blocking Radarr I/O happens here. Touches NO live
     // member except lib_pending_/lib_result_ready_/lib_refresh_in_flight_.
     PendingLibrary r;
+    // Sonarr's TV library runs CONCURRENTLY with the Radarr block below, and
+    // on EVERY refresh regardless of the active mode — a MODE toggle must not
+    // wait on a round-trip before the in-library hide is correct. Concurrency
+    // is not an optimisation here: SonarrClient::get_library_checked() is a
+    // single http_get with NO retry ladder against Config::timeout_secs = 5,
+    // and refresh_library_async() runs on every Browse entry INCLUDING every
+    // re-entry from Detail/Playback. Inline-serial would therefore add up to
+    // 5 s to every entry for movie-only owners who never open TV mode,
+    // delaying the retro-hide sweep, the DOWNLOADING badges and the
+    // lib_refresh_done_once_ gate For You blocks on. Worst case is now
+    // max(radarr, sonarr), not their sum.
+    //
+    // No queue cross-reference for TV — nothing is addable in 2c-1, so no TV
+    // poster can be downloading. The checked shape already separates "Sonarr
+    // said the library is empty" from "the request failed", which is the only
+    // signal this needs, so it does not ride on Radarr's services_ok.
+    std::unordered_set<MediaRef> tv_refs;
+    std::atomic<bool> tv_ok{false};
+    // Constructing std::thread can itself throw std::system_error (thread
+    // exhaustion — realistic on the 1.5 GB Pi 4B, this project's binding
+    // performance envelope). run_library_refresh is ITSELF a std::thread
+    // entry function (see refresh_library_async's
+    // `std::thread(&BrowseScreen::run_library_refresh, ...)`), so an
+    // uncaught exception here would escape it and call std::terminate() —
+    // a hard kiosk crash instead of a degraded TV mode. Mirror
+    // ensure_genres_loaded()'s idiom: default-construct sonarr_worker
+    // (non-joinable) and only give it a live thread if the spawn succeeds.
+    // On failure it stays non-joinable — safe for both the RAII guard below
+    // and the explicit join() further down — tv_ok stays false, and we
+    // proceed with just the Radarr half; that is already the correct
+    // "Sonarr didn't answer" path (see apply_library_pending's
+    // r.tv_fetch_ok handling).
+    std::thread sonarr_worker;
+    try {
+        sonarr_worker = std::thread([this, &tv_refs, &tv_ok]() {
+            if (auto tv_lib = sonarr_.get_library_checked()) {
+                for (const auto& srs : *tv_lib) {
+                    if (srs.tmdb_id > 0) {
+                        tv_refs.insert(MediaRef{MediaKind::Tv, srs.tmdb_id});
+                    }
+                }
+                tv_ok.store(true);
+            }
+        });
+    } catch (const std::system_error& e) {
+        spdlog::warn("[BrowseScreen] failed to spawn Sonarr library worker "
+                     "(proceeding with Radarr only): {}", e.what());
+    }
+    // RAII join, defensive rather than load-bearing: run_library_refresh has
+    // no early return today, so the plain sonarr_worker.join() before publish
+    // (below) already covers the only path this function takes. This guard's
+    // job is to keep that guarantee true if a future edit adds one, without
+    // anyone having to remember to join on every new exit. It does NOT make
+    // an exception thrown out of the Radarr block below safe: the guard's
+    // destructor runs during unwinding and joins sonarr_worker cleanly, but
+    // the exception then keeps propagating and escapes run_library_refresh
+    // itself — the entry function of a std::thread — which calls
+    // std::terminate() regardless of whether the join already happened.
+    struct SonarrJoin {
+        std::thread& t;
+        ~SonarrJoin() { if (t.joinable()) t.join(); }
+    } sonarr_join{sonarr_worker};
     // Health-check Radarr so render() can surface a banner when the service
     // isn't answering. Radarr is still required for add-to-library / queue
     // actions even though Discovery is TMDB-powered.
     r.services_ok = radarr_.is_reachable();
     if (r.services_ok) {
         auto lib_checked = radarr_.get_library_checked();
-        r.library_fetch_ok = lib_checked.has_value();
+        r.movie_fetch_ok = lib_checked.has_value();
         // Both ternary operands must be lvalues or this forces a full copy of
         // the library on every refresh (a prvalue std::vector<Movie>{} on the
         // false branch makes the whole expression a prvalue).
@@ -357,7 +275,7 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
         std::unordered_map<int, int> radarr_to_tmdb;
         for (const auto& m : lib) {
             if (m.tmdb_id > 0) {
-                r.library_ids.insert(m.tmdb_id);
+                r.movie_refs.insert(MediaRef{MediaKind::Movie, m.tmdb_id});
                 radarr_to_tmdb[m.radarr_id] = m.tmdb_id;
             }
         }
@@ -365,7 +283,7 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
         for (const auto& qi : radarr_.get_queue()) {
             auto it = radarr_to_tmdb.find(qi.movie_id);
             if (it != radarr_to_tmdb.end()) {
-                r.downloading_ids.insert(it->second);
+                r.downloading_refs.insert(MediaRef{MediaKind::Movie, it->second});
             }
         }
         // Quality profiles change only when the operator reconfigures Radarr
@@ -376,6 +294,32 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
             r.quality_fetched = true;
         }
     }
+    // tv_refs is written only by the worker and read only after this join, so
+    // the plain (non-atomic) container needs no further synchronisation.
+    // Guarded: sonarr_worker is non-joinable when the spawn above threw, and
+    // std::thread::join() itself throws std::system_error on a non-joinable
+    // thread — exactly the crash this whole block exists to avoid.
+    //
+    // KNOWN BOUNDED LATENCY (final-review Fix 6, judged not worth a
+    // concurrency change): there is exactly ONE publish point for this
+    // function's result — apply_library_pending() drains it as a single
+    // PendingLibrary struct after THIS join, further below. Radarr typically
+    // answers in ~200 ms, but if Sonarr is configured and unreachable (its
+    // container stopped, VPN down, etc.), get_library_checked()'s 5 s
+    // timeout with no retry (see the comment above sonarr_worker's spawn)
+    // holds this join — and therefore Radarr's already-finished result too —
+    // for up to 5 s. That means Movies mode's posters, IN LIBRARY hide, and
+    // DOWNLOADING badges wait on Sonarr's timeout in that scenario, even
+    // though nothing in Movies mode needs Sonarr's answer. A clean fix would
+    // split the publish so each service's result lands independently, but
+    // that touches the CAS single-flight guard (lib_refresh_in_flight_), the
+    // generation/TTL bookkeeping, and the deferred For-You hook in
+    // apply_library_pending() — reviewed as not worth the risk for this
+    // branch. See "Sonarr stopped bounds Movies mode..." in
+    // docs/superpowers/plans/2026-08-01-tv-browse.md's hardware checklist.
+    if (sonarr_worker.joinable()) sonarr_worker.join();
+    r.tv_refs = std::move(tv_refs);
+    r.tv_fetch_ok = tv_ok.load();
     {
         std::lock_guard<std::mutex> lk(lib_pending_mtx_);
         lib_pending_ = std::move(r);
@@ -395,36 +339,75 @@ void BrowseScreen::apply_library_pending() {
 
     services_ok_ = r.services_ok;
     lib_refresh_done_once_ = true;
-    lib_fetch_ok_ = r.services_ok && r.library_fetch_ok;
+    lib_fetch_ok_[static_cast<int>(MbMode::Movies)] =
+        r.services_ok && r.movie_fetch_ok;
+    lib_fetch_ok_[static_cast<int>(MbMode::Tv)] = r.tv_fetch_ok;
     spdlog::info("[BrowseScreen] library refresh applied: radarr_ok={}, "
-                 "in_library={}, downloading={}",
-                 services_ok_, r.library_ids.size(), r.downloading_ids.size());
-    // Only replace the id-sets when Radarr answered. When it didn't, keep the
-    // previous visit's cache intact (matches the old code, where the clear +
-    // rebuild lived entirely inside the services_ok_ branch). Replacing
-    // atomically — never clearing first — means quick_add_focused() always
-    // reads a complete set, never a momentarily-empty one.
+                 "movies={} (ok={}), shows={} (ok={}), downloading={}",
+                 services_ok_, r.movie_refs.size(), r.movie_fetch_ok,
+                 r.tv_refs.size(), r.tv_fetch_ok, r.downloading_refs.size());
+    // Replace per kind, never wholesale: when only one service answered, the
+    // other's contribution must survive or its mode's in-library hide
+    // silently stops working. Replacing (rather than clearing then filling)
+    // means quick_add_focused() never reads a momentarily-empty set.
+    bool refs_changed = false;
+    // MOVIE GATE IS `r.services_ok` ALONE — unchanged from the shipped code.
+    // Adding `&& r.movie_fetch_ok` here would RETAIN the previous sets when a
+    // reachable Radarr's library GET fails, instead of replacing them with
+    // empties. That is probably better behavior, but it is a change to a
+    // shipped movie path, and this task is the TV task. Movie mode must
+    // behave identically; if the retain-on-failure fix is wanted it gets its
+    // own change and its own hardware check.
     if (r.services_ok) {
-        library_tmdb_ids_     = std::move(r.library_ids);
-        downloading_tmdb_ids_ = std::move(r.downloading_ids);
-        if (r.quality_fetched) {
-            quality_profiles_ = std::move(r.quality_profiles);
-            library_cached_   = true;
-        }
+        replace_refs_of_kind(library_refs_, MediaKind::Movie, r.movie_refs);
+        // Deliberate asymmetry for now: downloading_refs_ is still a full
+        // replace, not kind-aware like library_refs_ above. Safe today
+        // because only Radarr (movies) feeds this. Once Sonarr feeds TV
+        // downloading refs, a movie-only refresh landing here will wipe
+        // every TV DOWNLOADING badge — switch this to
+        // replace_refs_of_kind(downloading_refs_, MediaKind::Movie,
+        // r.downloading_refs) when that lands.
+        downloading_refs_ = std::move(r.downloading_refs);
+        refs_changed = true;
+    }
+    if (r.tv_fetch_ok) {
+        replace_refs_of_kind(library_refs_, MediaKind::Tv, r.tv_refs);
+        refs_changed = true;
+    }
+    if (r.services_ok && r.quality_fetched) {
+        quality_profiles_ = std::move(r.quality_profiles);
+        library_cached_   = true;
+    }
+    if (refs_changed) {
         // Retro-hide: pages can land before the (async) library refresh on a
-        // cold entry, and a title can join the library mid-session via
-        // Detail — sweep both the visible grid and the For You cache so
-        // owned titles disappear instead of wearing a badge. The ids stay in
-        // loaded_tmdb_ids_, so later append pages can't re-add them.
+        // cold entry, and a title can join the library mid-session — sweep the
+        // visible grid and BOTH For You caches so owned titles disappear
+        // instead of wearing a badge. The predicate is kind-aware, so a movie
+        // is never hidden because a show shares its id. The refs stay in
+        // loaded_refs_, so later append pages can't resurrect them.
+        //
+        // Intentional deviation from the shipped movie-only behavior: this
+        // sweep used to be gated on `if (r.services_ok)` (Radarr answered).
+        // Gating on `refs_changed` instead means it now ALSO runs when Radarr
+        // is down but Sonarr answered — against the retained previous-visit
+        // movie ref set (movie library_refs_ entries are untouched when
+        // r.services_ok is false; see the MOVIE GATE comment above). This is
+        // safe, not just tolerated: apply_pending() already drops in-library
+        // hits at page-append time using this exact predicate
+        // (library_refs_.count(media_ref_of(m)) > 0), so by the time this
+        // sweep runs on a Radarr-down visit, movies_/foryou_ already contain
+        // nothing it would remove — an extra no-op pass, not a behavior
+        // change. Movie mode still behaves identically end to end.
         auto owned = [this](const TmdbSearchHit& m) {
-            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+            return library_refs_.count(media_ref_of(m)) > 0;
         };
         const size_t before = movies_.size();
         movies_.erase(std::remove_if(movies_.begin(), movies_.end(), owned),
                       movies_.end());
-        foryou_movies_.erase(std::remove_if(foryou_movies_.begin(),
-                                            foryou_movies_.end(), owned),
-                             foryou_movies_.end());
+        for (auto& cache : foryou_) {
+            cache.hits.erase(std::remove_if(cache.hits.begin(), cache.hits.end(), owned),
+                             cache.hits.end());
+        }
         if (movies_.size() != before) {
             if (grid_cursor_ >= static_cast<int>(movies_.size())) {
                 grid_cursor_ = movies_.empty()
@@ -465,13 +448,32 @@ void BrowseScreen::activate_foryou() {
     // WaitForLibrary case below re-sets it when it actually applies.
     foryou_waiting_for_library_ = false;
     foryou_failed_ = false;
-    switch (decide_foryou_entry(!foryou_movies_.empty(), lib_refresh_done_once_,
-                                lib_fetch_ok_, library_tmdb_ids_.empty())) {
+    // Kind-aware decision: the EmptyLibrary check looks at the active mode's
+    // seed pool, not the whole (mixed-kind) library_refs_ — a movie-only
+    // library must not read as "non-empty" while browsing TV, and vice versa.
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
+    switch (decide_foryou_entry(!foryou().hits.empty(), lib_refresh_done_once_,
+                                lib_fetch_ok_[static_cast<int>(mode())],
+                                seed_pool(library_refs_, kind).empty())) {
         case ForYouEntry::UseCache:
-            movies_ = foryou_movies_;
+            movies_ = foryou().hits;
             loading_ = false;
             more_available_ = false;   // no scroll-driven pages on For You
             fetching_more_ = false;
+            // Stale-while-revalidate on ACTIVATION, not just on enter().
+            // decide_foryou_entry short-circuits on the cache with no age
+            // check, and the TTL was only ever evaluated in enter() — so a
+            // MODE toggle (which reaches here via reload_for_category ->
+            // load_category(ForYou) -> activate_foryou) would show a
+            // days-old grid verbatim. The per-mode split makes that far
+            // likelier, since the inactive mode's cache ages the whole time
+            // the user browses the other one. Same SWR contract as enter():
+            // show the cache, revalidate behind it, never clear, never
+            // Loading.
+            if (tmdb_grid_stale(foryou().loaded_at,
+                                std::chrono::steady_clock::now())) {
+                start_foryou_sample(/*background=*/true);
+            }
             break;
         case ForYouEntry::WaitForLibrary:
             loading_ = true;
@@ -489,8 +491,16 @@ void BrowseScreen::activate_foryou() {
 }
 
 void BrowseScreen::start_foryou_sample(bool background) {
-    // Sample min(8, library size) seeds uniformly without replacement.
-    std::vector<int> pool(library_tmdb_ids_.begin(), library_tmdb_ids_.end());
+    // Sample min(8, library size) seeds uniformly without replacement, from
+    // the ACTIVE mode's kind only. TMDB's movie and TV id spaces OVERLAP
+    // (e.g. id 1396 is both Breaking Bad and an unrelated film) and the
+    // recommendation endpoints are kind-specific
+    // (/movie/{id}/recommendations vs /tv/{id}/recommendations) — a TV ref
+    // fed through the movie endpoint would silently return valid
+    // recommendations for the wrong, unrelated movie, no error, no log line.
+    // seed_pool() (browse_logic.h) is the single place that filters by kind.
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
+    std::vector<int> pool = seed_pool(library_refs_, kind);
     if (pool.empty()) { loading_ = false; return; }
     // Structural clear (spec 1c review fix, Important): covers the direct
     // shuffle/TTL callers (do_shuffle(), enter()'s SWR branch) that reach
@@ -510,8 +520,23 @@ void BrowseScreen::start_foryou_sample(bool background) {
     // superseded job's results get silently discarded, so this is purely a
     // worker-stacking cap, not a correctness fix.
     if (foryou_job_ && foryou_job_->remaining.load(std::memory_order_acquire) > 0) {
-        spdlog::info("[BrowseScreen] For You sample already in flight; ignoring");
-        return;
+        if (foryou_job_->mode == mode()) {
+            // Same mode: a repeat trigger would only stack another batch of
+            // workers onto a slow egress. Ignore, as before.
+            spdlog::info("[BrowseScreen] For You sample already in flight; ignoring");
+            return;
+        }
+        // DIFFERENT mode: the toggle already bumped the generation, so that
+        // job's results are guaranteed to be discarded at drain time. Bailing
+        // out here would be a dead end — this early return happens BEFORE
+        // `loading_ = true`, and load_category has already cleared movies_, so
+        // For You would sit on a blank "no shows" state for the ~12 s the old
+        // sample takes to finish and then repaint nothing, until the user
+        // tabbed away and back. Drop the stale job and start the replacement.
+        spdlog::info("[BrowseScreen] For You: dropping in-flight {} sample for a {} one",
+                     foryou_job_->mode == MbMode::Tv ? "tv" : "movies",
+                     tv_mode() ? "tv" : "movies");
+        foryou_job_.reset();   // its workers run on; the gen check discards them
     }
     static thread_local std::mt19937 rng{std::random_device{}()};
     std::vector<int> seeds;
@@ -531,17 +556,25 @@ void BrowseScreen::start_foryou_sample(bool background) {
     auto job = std::make_shared<ForYouJob>();
     job->gen = tmdb_current_gen_.load();
     job->background = background;
+    job->mode = mode();
     job->remaining.store(static_cast<int>(seeds.size()));
     foryou_job_ = job;
     spdlog::info("[BrowseScreen] For You sample: {} seeds (gen={}, background={})",
                  seeds.size(), job->gen, background);
     for (int seed : seeds) {
-        tmdb_workers_.spawn([this, job, seed]() {
-            // Recommendations with documented get_similar fallback — the same
-            // contract the playback overlay uses (spec 1c step 2).
-            auto list = tmdb_.get_recommendations(seed, /*page=*/1);
+        tmdb_workers_.spawn([this, job, seed, kind]() {
+            // Recommendations with the documented similar-fallback — the same
+            // contract the playback overlay uses (spec 1c step 2). The
+            // endpoint pair is kind-specific: a movie id and a show id can be
+            // the same number, so calling the wrong family returns a plausible
+            // grid of the wrong medium rather than an error.
+            auto list = (kind == MediaKind::Tv)
+                            ? tmdb_.get_tv_recommendations(seed, /*page=*/1)
+                            : tmdb_.get_recommendations(seed, /*page=*/1);
             if (list.hits.empty()) {
-                auto fb = tmdb_.get_similar(seed, /*page=*/1);
+                auto fb = (kind == MediaKind::Tv)
+                              ? tmdb_.get_tv_similar(seed, /*page=*/1)
+                              : tmdb_.get_similar(seed, /*page=*/1);
                 if (fb.ok || !list.ok) list = std::move(fb);
             }
             {
@@ -581,12 +614,18 @@ void BrowseScreen::apply_foryou_pending() {
         }
         return;
     }
-    foryou_movies_ = merge_recommendations(per_seed, library_tmdb_ids_);
-    foryou_loaded_at_ = std::chrono::steady_clock::now();
-    spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s)",
-                 foryou_movies_.size(), ok_seeds);
-    if (category_ == Category::ForYou) {
-        movies_ = foryou_movies_;
+    // The job knows which mode it was started under — a MODE toggle mid-flight
+    // must not file TV results into the movie cache. (The generation check
+    // above already discards a preempted job; this covers the case where the
+    // toggle's own reload left this job's generation current.)
+    ForYouCache& target = foryou_[static_cast<int>(job->mode)];
+    target.hits = merge_recommendations(per_seed, library_refs_);
+    target.loaded_at = std::chrono::steady_clock::now();
+    spdlog::info("[BrowseScreen] For You merged: {} titles from {} ok seed(s), mode={}",
+                 target.hits.size(), ok_seeds,
+                 job->mode == MbMode::Tv ? "tv" : "movies");
+    if (category_ == Category::ForYou && job->mode == mode()) {
+        movies_ = target.hits;
         grid_cursor_ = 0;
         scroll_row_ = 0;
         loading_ = false;
@@ -596,6 +635,23 @@ void BrowseScreen::apply_foryou_pending() {
 }
 
 void BrowseScreen::quick_add_focused() {
+    // *** TRAP FOR A FUTURE CALLER, DO NOT REACTIVATE AS-IS. ***
+    // This function is KIND-BLIND: the in-library check below correctly
+    // uses media_ref_of(hit)/library_refs_.count(...) (kind-aware, since
+    // Phase 2c-1), but the add itself is hardcoded to
+    // radarr_.add_movie(hit.tmdb_id, ...). Since Phase 2c-1, movies_ can
+    // hold TV rows (TV mode's Popular/TopRated/For You all populate it),
+    // and movie and TV TMDB id spaces OVERLAP COMPLETELY — e.g. id 1396 is
+    // Breaking Bad (a show) AND an entirely unrelated film. A caller who
+    // reactivates this while focused on a TV poster would silently add the
+    // WRONG, UNRELATED MOVIE to Radarr — no error, no mismatch detectable
+    // from the call site. Before wiring this back up: branch on
+    // media_ref_of(hit).kind and route TV through a Sonarr add_series() call
+    // (NOT implemented here — out of scope per the final whole-branch
+    // review), never let a TV hit reach radarr_.add_movie(). Same hazard
+    // class as the deferred SonarrMockClient traps documented in
+    // sonarr_mock.cpp and tests/media_browser/test_sonarr_client.cpp.
+    //
     // Only meaningful when a poster is focused.
     if (focus_ != Focus::PosterGrid) return;
     if (movies_.empty()) return;
@@ -605,7 +661,7 @@ void BrowseScreen::quick_add_focused() {
     if (hit.tmdb_id <= 0) return;
 
     // Already in library? Short-circuit with a toast.
-    if (library_tmdb_ids_.count(hit.tmdb_id) > 0) {
+    if (library_refs_.count(media_ref_of(hit)) > 0) {
         ::ui::Toast::show("Already in library");
         return;
     }
@@ -641,12 +697,14 @@ void BrowseScreen::quick_add_focused() {
         }
     }
 
+    // KIND-BLIND — see the hazard comment at the top of this function
+    // before reactivating this caller. hit may be a TV row.
     bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
     if (!ok) {
         ::ui::Toast::show("Add failed — see Radarr logs");
         return;
     }
-    library_tmdb_ids_.insert(hit.tmdb_id);
+    library_refs_.insert(media_ref_of(hit));
     std::string msg = "Added: ";
     msg += (hit.title.empty() ? "movie" : hit.title);
     ::ui::Toast::show(msg);
@@ -709,7 +767,7 @@ void BrowseScreen::load_category(Category cat) {
     next_page_to_fetch_ = 1;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     page_window_base_ = 1;
     shuffle_retry_base1_ = false;
     window_is_discover_ = false;
@@ -749,7 +807,7 @@ void BrowseScreen::load_shuffle(Category cat, int base_page) {
     scroll_row_ = 0;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
     window_is_discover_ = false;
@@ -766,7 +824,7 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
     scroll_row_ = 0;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     shuffle_retry_base1_ = false;
     page_window_base_ = base_page;
     window_is_discover_ = true;
@@ -779,9 +837,9 @@ void BrowseScreen::load_shuffle_discover(int base_page) {
 
 bool BrowseScreen::active_chart_filters_active() const {
     if (category_ != Category::Popular && category_ != Category::TopRated) return false;
-    FilterTabKind tab = (category_ == Category::Popular)
-                        ? FilterTabKind::Popular : FilterTabKind::TopRated;
-    return any_filter_active(read_filter_state(state_.display_settings, tab), tab);
+    const FilterTabKind tab = (category_ == Category::Popular)
+                              ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    return any_filter_active(read_filter_state(state_.display_settings, mode(), tab), tab);
 }
 
 void BrowseScreen::revalidate_active_chart() {
@@ -812,19 +870,27 @@ void BrowseScreen::revalidate_active_chart() {
     if (movies_.empty()) {
         loading_ = true;
     }
+    const FilterTabKind rev_tab = (category_ == Category::Popular)
+                                  ? FilterTabKind::Popular : FilterTabKind::TopRated;
+    const MbMode m = mode();
     if (active_chart_filters_active()) {
         window_is_discover_ = true;
-        FilterTabKind tab = (category_ == Category::Popular)
-                            ? FilterTabKind::Popular : FilterTabKind::TopRated;
-        current_filter_ = build_discover_filter(
-            read_filter_state(state_.display_settings, tab), tab);
-        tmdb_workers_.spawn([this, gen, filter = current_filter_]() {
-            run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
-        });
+        const FilterState fs = read_filter_state(state_.display_settings, m, rev_tab);
+        if (m == MbMode::Tv) {
+            current_tv_filter_ = build_tv_discover_filter(fs, rev_tab);
+            tmdb_workers_.spawn([this, gen, filter = current_tv_filter_]() {
+                run_reload_tv_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
+            });
+        } else {
+            current_filter_ = build_discover_filter(fs, rev_tab);
+            tmdb_workers_.spawn([this, gen, filter = current_filter_]() {
+                run_reload_filter_page(gen, filter, /*page=*/1, /*is_revalidate=*/true);
+            });
+        }
     } else {
         window_is_discover_ = false;
-        tmdb_workers_.spawn([this, gen, cat = category_]() {
-            run_load_page(gen, cat, /*page=*/1, /*is_revalidate=*/true);
+        tmdb_workers_.spawn([this, gen, cat = category_, m]() {
+            run_load_page(gen, cat, m, /*page=*/1, /*is_revalidate=*/true);
         });
     }
 }
@@ -833,30 +899,45 @@ void BrowseScreen::spawn_page_worker(Category cat, int page) {
     fetching_more_ = true;
     next_page_to_fetch_ = page + 1;
     const uint64_t gen = tmdb_current_gen_.load();
+    const MbMode m = mode();
     if (cat == Category::Filter) {
-        // Filter goes through discover(); branch on category here so
-        // load_category(Filter) and scroll-driven follow-up pages both
-        // hit the right endpoint. Pass filter by value to avoid races
-        // with the user mutating current_filter_ while we fetch.
-        tmdb_workers_.spawn([this, gen, filter = current_filter_, page]() {
-            run_reload_filter_page(gen, filter, page);
-        });
+        // Filter goes through discover(); branch on mode here so the window's
+        // follow-up pages hit the same endpoint the base page did. Pass the
+        // filter by value to avoid racing the user mutating it while we fetch.
+        if (m == MbMode::Tv) {
+            tmdb_workers_.spawn([this, gen, filter = current_tv_filter_, page]() {
+                run_reload_tv_filter_page(gen, filter, page);
+            });
+        } else {
+            tmdb_workers_.spawn([this, gen, filter = current_filter_, page]() {
+                run_reload_filter_page(gen, filter, page);
+            });
+        }
     } else {
-        tmdb_workers_.spawn([this, gen, cat, page]() {
-            run_load_page(gen, cat, page);
+        tmdb_workers_.spawn([this, gen, cat, m, page]() {
+            run_load_page(gen, cat, m, page);
         });
     }
 }
 
-void BrowseScreen::run_load_page(uint64_t gen, Category cat, int page,
-                                 bool is_revalidate) {
+void BrowseScreen::run_load_page(uint64_t gen, Category cat, MbMode mode_for_page, int page, bool is_revalidate) {
     TmdbList list;
-    switch (cat) {
-        case Category::Popular:    list = tmdb_.get_popular(page);     break;
-        case Category::NowPlaying: list = tmdb_.get_now_playing(page); break;
-        case Category::TopRated:   list = tmdb_.get_top_rated(page);   break;
-        case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
-        default: break;
+    if (mode_for_page == MbMode::Tv) {
+        // Only the two chart tabs exist in TV mode. NowPlaying/Upcoming have
+        // no TV analogue and are not in the visible strip anyway.
+        switch (cat) {
+            case Category::Popular:  list = tmdb_.get_tv_popular(page);   break;
+            case Category::TopRated: list = tmdb_.get_tv_top_rated(page); break;
+            default: break;
+        }
+    } else {
+        switch (cat) {
+            case Category::Popular:    list = tmdb_.get_popular(page);     break;
+            case Category::NowPlaying: list = tmdb_.get_now_playing(page); break;
+            case Category::TopRated:   list = tmdb_.get_top_rated(page);   break;
+            case Category::Upcoming:   list = tmdb_.get_upcoming(page);    break;
+            default: break;
+        }
     }
     const bool no_more = list.hits.size() < 5;
     if (gen != tmdb_current_gen_.load()) {
@@ -887,19 +968,31 @@ void BrowseScreen::reload_filter_results() {
     next_page_to_fetch_ = 1;
     more_available_ = true;
     fetching_more_ = false;
-    loaded_tmdb_ids_.clear();
+    loaded_refs_.clear();
     page_window_base_ = 1;
     shuffle_retry_base1_ = false;
     window_is_discover_ = true;
     loading_ = true;
     tmdb_current_gen_.fetch_add(1);
-    spdlog::info(
-        "[BrowseScreen] discover (async, gen={}): genre_ids.size={} year_gte={} year_lte={} sort_by={}",
-        tmdb_current_gen_.load(),
-        current_filter_.genre_ids.size(),
-        current_filter_.primary_release_year_gte.value_or(-1),
-        current_filter_.primary_release_year_lte.value_or(-1),
-        current_filter_.sort_by);
+    if (tv_mode()) {
+        spdlog::info(
+            "[BrowseScreen] discover_tv (async, gen={}): genre_ids.size={} "
+            "first_air_gte={} first_air_lte={} sort_by={}",
+            tmdb_current_gen_.load(),
+            current_tv_filter_.genre_ids.size(),
+            current_tv_filter_.first_air_date_year_gte.value_or(-1),
+            current_tv_filter_.first_air_date_year_lte.value_or(-1),
+            current_tv_filter_.sort_by);
+    } else {
+        spdlog::info(
+            "[BrowseScreen] discover (async, gen={}): genre_ids.size={} "
+            "year_gte={} year_lte={} sort_by={}",
+            tmdb_current_gen_.load(),
+            current_filter_.genre_ids.size(),
+            current_filter_.primary_release_year_gte.value_or(-1),
+            current_filter_.primary_release_year_lte.value_or(-1),
+            current_filter_.sort_by);
+    }
     spawn_page_worker(Category::Filter, /*page=*/1);
 }
 
@@ -911,10 +1004,11 @@ void BrowseScreen::reload_for_category() {
         FilterTabKind tab = (category_ == Category::Popular)
                             ? FilterTabKind::Popular
                             : FilterTabKind::TopRated;
-        FilterState fs = read_filter_state(state_.display_settings, tab);
+        FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
         if (any_filter_active(fs, tab)) {
-            // Filter active → route through /discover/movie.
-            current_filter_ = build_discover_filter(fs, tab);
+            // Filter active → route through /discover/movie or /discover/tv.
+            if (tv_mode()) current_tv_filter_ = build_tv_discover_filter(fs, tab);
+            else           current_filter_    = build_discover_filter(fs, tab);
             reload_filter_results();
             return;
         }
@@ -926,23 +1020,55 @@ void BrowseScreen::reload_for_category() {
     load_category(category_);
 }
 
-void BrowseScreen::persist_filter_state(FilterTabKind tab, const FilterState& fs) {
-    // ForYou keeps no persisted filter state in Phase 1 (spec 1c).
+void BrowseScreen::persist_filter_state(MbMode mode_for_write, FilterTabKind tab,
+                                        const FilterState& fs) {
+    // KEEP this guard. write_filter_state is itself a no-op for ForYou, but
+    // the guard suppresses the SAVE as well — and save_settings is a
+    // synchronous serialize + tmp-write + fs::rename on the render thread.
+    // SHUFFLE is a repeat-press action that routes here on every press, so
+    // dropping the guard would cost one SD write per press for a payload that
+    // provably did not change.
     if (tab == FilterTabKind::ForYou) return;
-    write_filter_state(state_.display_settings, tab, fs);
+    write_filter_state(state_.display_settings, mode_for_write, tab, fs);
     ::app::SettingsPersistence::save_settings(state_);
+}
+
+void BrowseScreen::apply_mode_change() {
+    // The library cache holds both kinds (Radarr for movies, Sonarr for TV),
+    // but the OTHER kind's set may be stale or never fetched — re-kick so the
+    // in-library hide is right for what is about to be drawn. CAS-guarded: a
+    // no-op when one is in flight.
+    refresh_library_async();
+    // reload_for_category(), NOT load_category(). load_category is the
+    // FILTER-BLIND entry point: it sets window_is_discover_ = false and routes
+    // to the curated /tv/popular or /popular endpoint regardless of what is
+    // persisted. Toggling into a mode that HAS active filters would then show
+    // the unfiltered chart while the overlay row and settings.json both say
+    // GENRE=Drama — and nothing self-corrects, because the overlay's commit
+    // only fires when working_ != opened_ and the toggle re-syncs both. Worse,
+    // active_chart_filters_active() would read true against a
+    // window_is_discover_ == false grid, so the next SHUFFLE or TTL
+    // revalidate would silently swap the same tab to a different result set.
+    // reload_for_category is a strict superset — it falls through to
+    // load_category(category_) for For You and for the no-filter case.
+    reload_for_category();
 }
 
 void BrowseScreen::do_shuffle() {
     static thread_local std::mt19937 rng{std::random_device{}()};
     if (category_ == Category::Popular || category_ == Category::TopRated) {
         if (active_chart_filters_active()) {
-            FilterTabKind tab = (category_ == Category::Popular)
-                                ? FilterTabKind::Popular : FilterTabKind::TopRated;
-            current_filter_ = build_discover_filter(
-                read_filter_state(state_.display_settings, tab), tab);
-            const std::string sig =
-                TmdbClient::build_discover_url("", current_filter_, 1);
+            const FilterTabKind tab = (category_ == Category::Popular)
+                                      ? FilterTabKind::Popular : FilterTabKind::TopRated;
+            const FilterState fs = read_filter_state(state_.display_settings, mode(), tab);
+            std::string sig;
+            if (tv_mode()) {
+                current_tv_filter_ = build_tv_discover_filter(fs, tab);
+                sig = TmdbClient::build_tv_discover_url("", current_tv_filter_, 1);
+            } else {
+                current_filter_ = build_discover_filter(fs, tab);
+                sig = TmdbClient::build_discover_url("", current_filter_, 1);
+            }
             const auto it = discover_total_pages_.find(sig);
             const int max_base =
                 discover_max_base(it == discover_total_pages_.end() ? 0 : it->second,
@@ -981,6 +1107,34 @@ void BrowseScreen::run_reload_filter_page(uint64_t gen, DiscoverFilter filter,
         pp.total_pages = list.total_pages;
         pp.is_revalidate = is_revalidate;
         pp.discover_sig = TmdbClient::build_discover_url("", filter, 1);
+        pp.gen = gen;
+        tmdb_pending_pages_.push_back(std::move(pp));
+    }
+    tmdb_result_ready_.store(true);
+}
+
+void BrowseScreen::run_reload_tv_filter_page(uint64_t gen, TvDiscoverFilter filter,
+                                             int page, bool is_revalidate) {
+    auto list = tmdb_.discover_tv(filter, page);
+    const bool no_more = list.hits.size() < 5;
+    if (gen != tmdb_current_gen_.load()) {
+        spdlog::info("[BrowseScreen] discover_tv page={} gen={} stale; discarding",
+                     page, gen);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(tmdb_result_mtx_);
+        if (gen != tmdb_current_gen_.load()) return;
+        PendingPage pp;
+        pp.movies = std::move(list.hits);
+        pp.page = page;
+        pp.no_more = no_more;
+        pp.ok = list.ok;
+        pp.total_pages = list.total_pages;
+        pp.is_revalidate = is_revalidate;
+        // The TV signature can never alias a movie one — build_tv_discover_url
+        // emits /discover/tv, build_discover_url emits /discover/movie.
+        pp.discover_sig = TmdbClient::build_tv_discover_url("", filter, 1);
         pp.gen = gen;
         tmdb_pending_pages_.push_back(std::move(pp));
     }
@@ -1047,18 +1201,18 @@ void BrowseScreen::apply_pending() {
         // hidden from the chart grids entirely — the owner asked for
         // discovery surfaces to show only what they DON'T have. The For You
         // merge applies the same exclusion at merge time; this covers the
-        // page-based tabs. Note the id still enters loaded_tmdb_ids_ so a
+        // page-based tabs. Note the id still enters loaded_refs_ so a
         // later append page can't resurrect it.
         auto owned_by_library = [this](const TmdbSearchHit& m) {
-            return library_tmdb_ids_.count(m.tmdb_id) > 0;
+            return library_refs_.count(media_ref_of(m)) > 0;
         };
         if (pp.page == page_window_base_) {
             // Window-base page — canonical replacement (was hardcoded page 1).
             movies_.clear();
-            loaded_tmdb_ids_.clear();
+            loaded_refs_.clear();
             movies_.reserve(pp.movies.size());
             for (auto& m : pp.movies) {
-                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_refs_.insert(media_ref_of(m)).second) {
                     ++dups;
                 } else if (owned_by_library(m)) {
                     ++owned;
@@ -1090,7 +1244,7 @@ void BrowseScreen::apply_pending() {
         } else {
             movies_.reserve(movies_.size() + pp.movies.size());
             for (auto& m : pp.movies) {
-                if (!loaded_tmdb_ids_.insert(m.tmdb_id).second) {
+                if (!loaded_refs_.insert(media_ref_of(m)).second) {
                     ++dups;
                 } else if (owned_by_library(m)) {
                     ++owned;
@@ -1310,21 +1464,37 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
                     (category_ == Category::Popular)  ? FilterTabKind::Popular :
                     (category_ == Category::TopRated) ? FilterTabKind::TopRated :
                                                         FilterTabKind::ForYou;
-                // read_filter_state is only defined for Popular/TopRated
-                // (see its CONSTRAINT comment) — ForYou gets a default state
-                // since the SHUFFLE-only row never reads working_ values.
-                filter_overlay_.open(tk, tk == FilterTabKind::ForYou
-                                              ? FilterState{}
-                                              : read_filter_state(state_.display_settings, tk));
+                filter_overlay_.open(tk, mode(),
+                                     read_filter_state(state_.display_settings,
+                                                       mode(), tk));
                 filter_overlay_.set_on_commit(
                     [this](const FilterState& fs, FilterTabKind tk2) {
-                        this->persist_filter_state(tk2, fs);
+                        this->persist_filter_state(this->mode(), tk2, fs);
                         this->reload_for_category();
                     });
                 filter_overlay_.set_on_shuffle(
                     [this](const FilterState& fs, FilterTabKind tk2) {
-                        this->persist_filter_state(tk2, fs);
+                        this->persist_filter_state(this->mode(), tk2, fs);
                         this->do_shuffle();
+                    });
+                filter_overlay_.set_on_mode_toggle(
+                    [this](MbMode new_mode, FilterTabKind tk2,
+                           const FilterState& staged) {
+                        // One tested pure transaction (mb_filter_state's
+                        // apply_mode_toggle: staged edits -> the OUTGOING
+                        // mode's slot, mb_mode -> incoming, return the
+                        // incoming mode's persisted state), then exactly ONE
+                        // settings.json write. save_settings is a synchronous
+                        // serialize + tmp-write + rename on the render thread;
+                        // the earlier two-call shape cost an extra SD write
+                        // per press for no benefit.
+                        const MbMode outgoing = this->mode();
+                        const FilterState restaged = apply_mode_toggle(
+                            state_.display_settings, outgoing, new_mode,
+                            tk2, staged);
+                        ::app::SettingsPersistence::save_settings(state_);
+                        this->apply_mode_change();
+                        return restaged;
                     });
             }
             continue;
@@ -1391,7 +1561,18 @@ Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& event
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (!movies_.empty() && grid_cursor_ >= 0 &&
                 grid_cursor_ < static_cast<int>(movies_.size())) {
-                selected_tmdb_id_ = movies_[grid_cursor_].tmdb_id;
+                const auto& hit = movies_[grid_cursor_];
+                // 2c-1 ships discovery only. DetailScreen is Movie/Radarr-typed
+                // end to end (Mode keyed on one has_file bool and one file
+                // path; every mutating action is RadarrClient-shaped), so
+                // handing it a TV id would show a movie's detail page for
+                // whatever film shares that number. The series detail screen
+                // is a later milestone — say so rather than misroute.
+                if (hit.kind == MediaKind::Tv) {
+                    ::ui::Toast::show("TV details coming soon");
+                    continue;
+                }
+                selected_tmdb_id_ = hit.tmdb_id;
                 return Screen::Detail;
             }
         }
@@ -1420,11 +1601,7 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     r.mb_fill_background();
 
-    // Shared kVisibleTabs class member — same strip handle_input() uses,
-    // single source of truth (was duplicated here with a "keep in sync"
-    // comment prior to the For You tab).
-
-    // --- Header: "Marquee" title (left) + tab strip (right) ---
+    // --- Header: mode-aware title (left) + tab strip (right) ---
     std::vector<chrome::TabSpec> tabs;
     tabs.reserve(kNumVisibleTabs);
     for (int i = 0; i < kNumVisibleTabs; ++i) {
@@ -1435,216 +1612,275 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                       : chrome::TabState::Inactive;
         tabs.push_back(t);
     }
+    // The mode marker lives here, not in a chip label — see
+    // marquee_title_for_mode's comment for the measured reason.
     const int content_top = chrome::draw_screen_header(
-        r, screen_w, "Marquee", tabs, /*focused_tab=*/-1);
+        r, screen_w, marquee_title_for_mode(tv_mode()), tabs, /*focused_tab=*/-1);
 
-    // Library/Search tabs are transition-only — handle_input() returns
-    // Screen::Library/Search on tab activation, so render() should never
-    // see them. Belt-and-suspenders early return.
     if (category_ == Category::Library || category_ == Category::Search) {
+        // Transition-only tabs — handle_input returns Screen::Library/Search
+        // on activation, so render() should never see them. The overlay is
+        // drawn even on this belt-and-suspenders path: it is a modal that
+        // keeps consuming input while Open, and a return that skips its draw
+        // leaves an invisible panel eating the user's presses.
+        filter_overlay_.render(r, screen_w, screen_h);
         return;
     }
 
-    // --- Loading / empty / error states ---
-    auto draw_centered_msg = [&](const std::string& msg, const ::ui::Color& c) {
+    const bool filter_available = (category_ == Category::Popular ||
+                                   category_ == Category::TopRated);
+    const bool shuffle_only = (category_ == Category::ForYou);
+    const MediaKind kind = tv_mode() ? MediaKind::Tv : MediaKind::Movie;
+    const bool lib_ok = lib_fetch_ok_[static_cast<int>(mode())];
+
+    // ---- State resolution -------------------------------------------------
+    // Every "nothing to draw" condition becomes a message here rather than an
+    // early return. THIS FUNCTION HAS EXACTLY ONE EXIT BELOW, and it always
+    // draws the footer and then the filter overlay. That is structural, not
+    // stylistic: the overlay is a modal that swallows ROTATE/SELECT/PREV/NEXT
+    // for as long as it is Open, so a return that skips its draw leaves an
+    // invisible panel consuming input. Pressing MODE clears movies_ and sets
+    // loading_, which used to take the "Loading..." early return and make the
+    // panel disappear for the entire 6-12 s reload; a For You activation that
+    // lands on EmptyLibrary made it disappear permanently. Do not reintroduce
+    // an early return here — add a BrowseGridState instead.
+    BrowseStateInputs si;
+    si.is_foryou              = (category_ == Category::ForYou);
+    si.grid_empty             = movies_.empty();
+    si.loading                = loading_;
+    si.lib_refresh_done_once  = lib_refresh_done_once_;
+    si.lib_fetch_ok           = lib_ok;
+    // Allocation-free equivalent of seed_pool(library_refs_, kind).empty():
+    // seed_pool reserves + fills a std::vector<int> over BOTH kinds to
+    // answer a boolean, which is a per-frame malloc/free on the Pi 4B's
+    // tight 1.5 GB envelope. any_of walks library_refs_ without allocating;
+    // seeds_empty is true when NO ref of `kind` exists, i.e. !any_of.
+    si.seeds_empty            = !std::any_of(
+        library_refs_.begin(), library_refs_.end(),
+        [kind](const MediaRef& ref) { return ref.kind == kind; });
+    si.foryou_failed          = foryou_failed_;
+    si.has_api_key            = tmdb_.has_api_key();
+    const BrowseGridState grid_state = decide_browse_grid_state(si);
+
+    // Message text itself is decided by the pure, Mac-testable
+    // browse_grid_state_message() (browse_logic.h) — this switch only
+    // assigns the COLOR per state, since ::ui::Color/Theme can't live in
+    // that Renderer-free header.
+    const char* state_msg =
+        browse_grid_state_message(grid_state, tv_mode(), sonarr_configured_);
+    ::ui::Color state_color = th.dim;
+    switch (grid_state) {
+        case BrowseGridState::Grid:
+            break;
+        case BrowseGridState::Loading:
+            break;
+        case BrowseGridState::LibraryUnavailable:
+            // Blocking, because For You genuinely REQUIRES its library — the
+            // seed sample has no other source. The chart tabs are TMDB-sourced
+            // and get the non-blocking line below instead.
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::RecommendationsFailed:
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::EmptyLibrary:
+            break;
+        case BrowseGridState::NoApiKey:
+            state_color = th.highlight2;
+            break;
+        case BrowseGridState::EmptyCategory:
+            break;
+    }
+
+    // Non-blocking service line. Popular and Top Rated need only TMDB; a dead
+    // Radarr (or Sonarr) degrades the in-library hide but must not blank a
+    // perfectly good grid — which is exactly what the old screen-wide
+    // `if (!services_ok_)` return did, on Radarr's ping alone, even in TV
+    // mode where nothing on the path touches Radarr. This also gives the
+    // Sonarr-down case a voice: previously the TV hide just stopped working
+    // with no message anywhere on screen.
+    //
+    // For You gets this line too (no `!shuffle_only` gate): its IN LIBRARY
+    // badges are drawn from the same lib_ok-gated library_refs_ as the chart
+    // tabs, so a cached grid with the library down needs the same staleness
+    // signal.
+    //
+    // Suppressed under LibraryUnavailable, though. That state's condition is a
+    // strict SUBSET of this one (both key off lib_refresh_done_once_ && !lib_ok;
+    // it just adds is_foryou && grid_empty), so without the guard the two would
+    // co-occur 100% of the time — never one without the other. Unlike the chart
+    // tabs, where this line pairs with a Loading/EmptyCategory message about a
+    // DIFFERENT subject, here it would name the same service twice for the same
+    // fact. Worse, it would be inapplicable: it warns that in-library hiding may
+    // be stale, and LibraryUnavailable means there are no posters on screen to
+    // carry a badge.
+    // Same never-configured-vs-outage distinction as browse_grid_state_message
+    // above (see BrowseScreen's constructor doc comment / Fix 1): a box that
+    // never had Sonarr set up must not be told Sonarr is "offline" every time
+    // it lands on a chart tab in TV mode. sonarr_configured_ is irrelevant in
+    // Movies mode — Radarr is never mocked in a way that reaches this path.
+    const char* service_warning = nullptr;
+    if (lib_refresh_done_once_ && !lib_ok &&
+        grid_state != BrowseGridState::LibraryUnavailable) {
+        if (tv_mode()) {
+            service_warning = sonarr_configured_
+                ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
+                : "TV library not set up \xE2\x80\x94 in-library hiding "
+                  "unavailable";
+        } else {
+            service_warning =
+                "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
+        }
+    }
+    constexpr int kWarnFontPx = 14;
+    constexpr int kWarnLineH  = 20;
+    if (service_warning) {
+        r.mb_draw_text(service_warning,
+                       static_cast<float>(chrome::kSafeInset_px),
+                       static_cast<float>(content_top + kWarnFontPx),
+                       kWarnFontPx, th.highlight2);
+    }
+
+    if (state_msg) {
+        const std::string msg(state_msg);
         const int tw = r.mb_text_width(msg, 18);
         r.mb_draw_text(msg,
                        static_cast<float>((screen_w - tw) / 2),
                        static_cast<float>(screen_h / 2),
-                       18, c);
-    };
-    const bool filter_available = (category_ == Category::Popular ||
-                                   category_ == Category::TopRated);
-    const bool shuffle_only = (category_ == Category::ForYou);
-    auto draw_baseline_footer = [&]() {
-        chrome::draw_footer_hints(r, screen_w, screen_h, {
-            {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
-            {chrome::HintIcon::Btn2Red,     "Exit"},
-            {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
-            {chrome::HintIcon::Btn4Black,
-             filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
-            {chrome::HintIcon::RotaryNav,   "Browse"},
-            {chrome::HintIcon::RotaryPress, "Detail"},
-        });
-    };
+                       18, state_color);
+    } else {
+        // --- 9-column poster grid ---
+        // Meta area below each poster fits 2 lines so long titles can wrap.
+        // Year was previously appended to the meta line; it now lives inside
+        // the poster card (bottom-right, on a semi-transparent dark pill via
+        // chrome::draw_poster_card), so the meta line shows only the title.
+        constexpr int kCellGap       = 8;
+        constexpr int kRowGap        = 22;   // bumped from 16 to give the
+                                             // 2-line meta area breathing
+                                             // room before the next row
+        constexpr int kVisibleRows   = 2;
+        constexpr int kMetaFontPx    = 14;   // 14 px legibility floor under CRT
+        constexpr int kMetaLineGap   = 2;
+        constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
+        constexpr int kMetaGap       = 4;    // poster-bottom → meta-top
+        const int content_w = screen_w - 2 * chrome::kSafeInset_px;
+        const int cell_w = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
+        const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f); // 2:3 aspect
+        const int cell_h = poster_h + kMetaGap + kMetaTotalH;
+        const int grid_top = content_top + chrome::kPad3 +
+                             (service_warning ? kWarnLineH : 0);
+        const int grid_left = chrome::kSafeInset_px;
 
-    if (!services_ok_) {
-        draw_centered_msg("Radarr service offline", th.highlight2);
-        draw_baseline_footer();
-        return;
-    }
-    if (category_ == Category::ForYou) {
-        // movies_.empty() guard (spec 1c review fix, Important): without it
-        // a transient get_library failure (Radarr reachable — services_ok_
-        // true — but the GET itself 500s/times out) replaces a fully-loaded
-        // For You grid with the offline message even though render needs
-        // nothing further from Radarr once the grid is cached. Matches
-        // decide_foryou_entry's cache-first priority (UseCache wins over
-        // ServiceUnavailable).
-        if (movies_.empty() && lib_refresh_done_once_ && !lib_fetch_ok_) {
-            draw_centered_msg("Radarr service offline", th.highlight2);
-            draw_baseline_footer();
-            return;
-        }
-        if (foryou_failed_) {
-            draw_centered_msg("Couldn't load recommendations \xE2\x80\x94 try again later",
-                              th.highlight2);
-            draw_baseline_footer();
-            return;
-        }
-        if (!loading_ && movies_.empty() && lib_refresh_done_once_ &&
-            library_tmdb_ids_.empty()) {
-            draw_centered_msg("Add movies to your library to get recommendations",
-                              th.dim);
-            draw_baseline_footer();
-            return;
-        }
-    }
-    if (loading_ && movies_.empty()) {
-        draw_centered_msg("Loading...", th.dim);
-        draw_baseline_footer();
-        return;
-    }
-    if (!loading_ && movies_.empty()) {
-        // Distinguish "unconfigured" from "genuinely empty". Without a
-        // TMDB key every category comes back empty, so the generic
-        // message made a box that just needs a key look broken. Same
-        // condition main.cpp warns about at startup — this is the
-        // on-screen half of it.
-        if (!tmdb_.has_api_key()) {
-            draw_centered_msg(
-                "No TMDB key — add one in the Content Manager, "
-                "Media Browser tab", th.highlight2);
-        } else {
-            draw_centered_msg("No movies in this category", th.dim);
-        }
-        draw_baseline_footer();
-        return;
-    }
+        // Page-based: scroll_row_ is already set to the page-first-row in
+        // handle_input(). No smoothing here — just derive the window.
+        const int total_rows =
+            (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
+        const int last_visible_row =
+            std::min(scroll_row_ + kVisibleRows, total_rows);
 
-    // --- 9-column poster grid ---
-    // Meta area below each poster fits 2 lines so long titles can wrap.
-    // Year was previously appended to the meta line; it now lives inside
-    // the poster card (bottom-right, on a semi-transparent dark pill via
-    // chrome::draw_poster_card), so the meta line shows only the title.
-    constexpr int kCellGap       = 8;
-    constexpr int kRowGap        = 22;   // bumped from 16 to give the
-                                         // 2-line meta area breathing
-                                         // room before the next row
-    constexpr int kVisibleRows   = 2;
-    constexpr int kMetaFontPx    = 14;   // 14 px legibility floor under CRT
-    constexpr int kMetaLineGap   = 2;
-    constexpr int kMetaTotalH    = kMetaFontPx + kMetaLineGap + kMetaFontPx; // 30
-    constexpr int kMetaGap       = 4;    // poster-bottom → meta-top
-    const int content_w = screen_w - 2 * chrome::kSafeInset_px;
-    const int cell_w = (content_w - (kGridCols - 1) * kCellGap) / kGridCols;
-    const int poster_h = static_cast<int>(static_cast<float>(cell_w) * 1.5f); // 2:3 aspect
-    const int cell_h = poster_h + kMetaGap + kMetaTotalH;
-    const int grid_top = content_top + chrome::kPad3;
-    const int grid_left = chrome::kSafeInset_px;
+        for (int row = scroll_row_; row < last_visible_row; ++row) {
+            for (int col = 0; col < kGridCols; ++col) {
+                const int idx = row * kGridCols + col;
+                if (idx >= static_cast<int>(movies_.size())) break;
+                const auto& movie = movies_[idx];
 
-    // Page-based: scroll_row_ is already set to the page-first-row in
-    // handle_input(). No smoothing here — just derive the window.
-    const int total_rows =
-        (static_cast<int>(movies_.size()) + kGridCols - 1) / kGridCols;
-    const int last_visible_row =
-        std::min(scroll_row_ + kVisibleRows, total_rows);
+                const int x = grid_left + col * (cell_w + kCellGap);
+                const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
 
-    for (int row = scroll_row_; row < last_visible_row; ++row) {
-        for (int col = 0; col < kGridCols; ++col) {
-            const int idx = row * kGridCols + col;
-            if (idx >= static_cast<int>(movies_.size())) break;
-            const auto& movie = movies_[idx];
+                // Poster CARD: draws the colored tint plus title overlay, year,
+                // top/bottom accent dashes, and IN LIBRARY badge — all the
+                // Marquee design elements that make the slot read as a
+                // designed object even before TMDB artwork loads. When real
+                // artwork is later available, mb_draw_poster_or_tint can
+                // overlay on top; for now the styled card IS the visual.
+                const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
+                const MediaRef ref = media_ref_of(movie);
+                const bool in_library = library_refs_.count(ref) > 0;
+                const bool is_downloading = downloading_refs_.count(ref) > 0;
+                chrome::draw_poster_card(
+                    r, x, y, cell_w, poster_h,
+                    movie.title, movie.year,
+                    tint, in_library,
+                    /*download_pct=*/is_downloading ? 0 : -1,
+                    // TmdbSearchHit names the URL field `poster_path` even
+                    // though it's already a fully-resolved CDN URL (see
+                    // tmdb_client.cpp resolve_poster_url). The artwork
+                    // cache treats it as opaque, so the field-name mismatch
+                    // is harmless here.
+                    /*poster_url=*/movie.poster_path);
 
-            const int x = grid_left + col * (cell_w + kCellGap);
-            const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
-
-            // Poster CARD: draws the colored tint plus title overlay, year,
-            // top/bottom accent dashes, and IN LIBRARY badge — all the
-            // Marquee design elements that make the slot read as a
-            // designed object even before TMDB artwork loads. When real
-            // artwork is later available, mb_draw_poster_or_tint can
-            // overlay on top; for now the styled card IS the visual.
-            const ::ui::Color tint = stable_tint_for_id(movie.tmdb_id);
-            const bool in_library = library_tmdb_ids_.count(movie.tmdb_id) > 0;
-            const bool is_downloading = downloading_tmdb_ids_.count(movie.tmdb_id) > 0;
-            chrome::draw_poster_card(
-                r, x, y, cell_w, poster_h,
-                movie.title, movie.year,
-                tint, in_library,
-                /*download_pct=*/is_downloading ? 0 : -1,
-                // TmdbSearchHit names the URL field `poster_path` even
-                // though it's already a fully-resolved CDN URL (see
-                // tmdb_client.cpp resolve_poster_url). The artwork
-                // cache treats it as opaque, so the field-name mismatch
-                // is harmless here.
-                /*poster_url=*/movie.poster_path);
-
-            // Meta line below poster: title only, wrapped to 2 lines
-            // when needed. Year now lives inside the poster card. If
-            // the title fits on one line, line 2 stays empty so the
-            // tile reads compact; if not, the longest leading word
-            // chunk that fits goes on line 1 and the remainder on
-            // line 2 (truncate-with-ellipsis if line 2 also overflows).
-            const std::string& title = movie.title;
-            const float max_w_f = static_cast<float>(cell_w);
-            std::string line1, line2;
-            if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
-                line1 = title;
-            } else {
-                // Walk forward through whitespace, keep the longest
-                // prefix that still fits in one line. Fallback: bisect
-                // by character if the title has no spaces.
-                size_t split = std::string::npos;
-                size_t pos = 0;
-                while (true) {
-                    size_t next = title.find(' ', pos + 1);
-                    if (next == std::string::npos) break;
-                    if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
-                            > max_w_f) break;
-                    split = next;
-                    pos = next;
-                }
-                if (split == std::string::npos) {
-                    line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                // Meta line below poster: title only, wrapped to 2 lines
+                // when needed. Year now lives inside the poster card. If
+                // the title fits on one line, line 2 stays empty so the
+                // tile reads compact; if not, the longest leading word
+                // chunk that fits goes on line 1 and the remainder on
+                // line 2 (truncate-with-ellipsis if line 2 also overflows).
+                const std::string& title = movie.title;
+                const float max_w_f = static_cast<float>(cell_w);
+                std::string line1, line2;
+                if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
+                    line1 = title;
                 } else {
-                    line1 = title.substr(0, split);
-                    std::string remainder = title.substr(split + 1);
-                    line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                    // Walk forward through whitespace, keep the longest
+                    // prefix that still fits in one line. Fallback: bisect
+                    // by character if the title has no spaces.
+                    size_t split = std::string::npos;
+                    size_t pos = 0;
+                    while (true) {
+                        size_t next = title.find(' ', pos + 1);
+                        if (next == std::string::npos) break;
+                        if (r.mb_text_width(title.substr(0, next), kMetaFontPx)
+                                > max_w_f) break;
+                        split = next;
+                        pos = next;
+                    }
+                    if (split == std::string::npos) {
+                        line1 = truncate_to_width(r, title, kMetaFontPx, max_w_f);
+                    } else {
+                        line1 = title.substr(0, split);
+                        std::string remainder = title.substr(split + 1);
+                        line2 = truncate_to_width(r, remainder, kMetaFontPx, max_w_f);
+                    }
+                }
+                const int meta_top = y + poster_h + kMetaGap;
+                r.mb_draw_text(line1,
+                               static_cast<float>(x),
+                               static_cast<float>(meta_top + kMetaFontPx),
+                               kMetaFontPx, th.dim);
+                if (!line2.empty()) {
+                    r.mb_draw_text(line2,
+                                   static_cast<float>(x),
+                                   static_cast<float>(meta_top + kMetaFontPx
+                                                      + kMetaLineGap + kMetaFontPx),
+                                   kMetaFontPx, th.dim);
+                }
+
+                // Focus ring on the cursor cell. 2 px gold, 2 px outside.
+                if (idx == grid_cursor_) {
+                    chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
                 }
             }
-            const int meta_top = y + poster_h + kMetaGap;
-            r.mb_draw_text(line1,
-                           static_cast<float>(x),
-                           static_cast<float>(meta_top + kMetaFontPx),
-                           kMetaFontPx, th.dim);
-            if (!line2.empty()) {
-                r.mb_draw_text(line2,
-                               static_cast<float>(x),
-                               static_cast<float>(meta_top + kMetaFontPx
-                                                  + kMetaLineGap + kMetaFontPx),
-                               kMetaFontPx, th.dim);
-            }
-
-            // Focus ring on the cursor cell. 2 px gold, 2 px outside.
-            if (idx == grid_cursor_) {
-                chrome::draw_focus_ring(r, x, y, cell_w, poster_h);
-            }
         }
+
     }
 
-    // --- Footer hints ---
+    // --- Footer hints (ONE call — the old draw_baseline_footer lambda and
+    // its duplicate hint list are gone with the early returns) ---
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,  "Tab \xE2\x86\x90"},
         {chrome::HintIcon::Btn2Red,     "Exit"},
         {chrome::HintIcon::Btn3Green,   "Tab \xE2\x86\x92"},
         {chrome::HintIcon::Btn4Black,
-         filter_available ? "Filters" : (shuffle_only ? "Shuffle" : "\xE2\x80\x94")},
+         filter_available ? "Filters" : (shuffle_only ? "Mode/Shuffle" : "\xE2\x80\x94")},
         {chrome::HintIcon::RotaryNav,   "Browse"},
-        {chrome::HintIcon::RotaryPress, "Detail"},
+        // In TV mode a rotary press only toasts "TV details coming soon"
+        // (Task 8) — promising "Detail" for it reads as broken rather than
+        // as scoped, especially since a TV poster is otherwise visually
+        // identical to a movie one.
+        {chrome::HintIcon::RotaryPress, tv_mode() ? "Coming soon" : "Detail"},
     });
 
-    // Render filter overlay on top of everything else (draws above the grid).
+    // ALWAYS LAST, ALWAYS REACHED. See the state-resolution comment above.
     filter_overlay_.render(r, screen_w, screen_h);
 }
 

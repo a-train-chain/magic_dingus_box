@@ -553,21 +553,51 @@ public:
             RecentRelease  = 3,
         };
 
-        // Popular tab filters
-        uint32_t       mb_popular_genre_mask  = 0;
-        MbDecade       mb_popular_decade      = MbDecade::Any;
-        MbMinRating    mb_popular_min_rating  = MbMinRating::Any;
-        MbRuntime      mb_popular_runtime     = MbRuntime::Any;
-        MbLanguage     mb_popular_language    = MbLanguage::Any;
-        MbDiscoverSort mb_popular_sort        = MbDiscoverSort::Popularity;
+        // One tab's discover filter, for one mode. Aggregate on purpose so
+        // the four defaults below can be written as brace-init.
+        struct MbFilterSet {
+            uint32_t       genre_mask = 0;
+            MbDecade       decade     = MbDecade::Any;
+            MbMinRating    min_rating = MbMinRating::Any;
+            MbRuntime      runtime    = MbRuntime::Any;
+            MbLanguage     language   = MbLanguage::Any;
+            MbDiscoverSort sort       = MbDiscoverSort::Popularity;
+        };
 
-        // TopRated tab filters
-        uint32_t       mb_toprated_genre_mask  = 0;
-        MbDecade       mb_toprated_decade      = MbDecade::Any;
-        MbMinRating    mb_toprated_min_rating  = MbMinRating::Any;
-        MbRuntime      mb_toprated_runtime     = MbRuntime::Any;
-        MbLanguage     mb_toprated_language    = MbLanguage::Any;
-        MbDiscoverSort mb_toprated_sort        = MbDiscoverSort::TopRated;
+        // Which media the Marquee content tabs (Popular / Top Rated / For
+        // You) are browsing. Persisted as display.mb_mode; toggled from the
+        // filter overlay's MODE row. Library and Queue ignore it by design.
+        enum class MbMode : uint8_t { Movies = 0, Tv = 1 };
+        // The two chart tabs that own persisted filter state. For You keeps
+        // none, in either mode, so it deliberately has no value here.
+        enum class MbChartTab : uint8_t { Popular = 0, TopRated = 1 };
+
+        MbMode mb_mode = MbMode::Movies;
+
+        // [mode][tab]. Popular and Top Rated each keep two independent
+        // filter sets keyed by mode, so toggling mode swaps sets without
+        // clearing either. Genre masks index DIFFERENT catalogs per mode
+        // (TMDB's movie and TV genre id spaces differ), which is exactly why
+        // the two modes must not share storage. Index via mb_filter().
+        MbFilterSet mb_filters[2][2] = {
+            /* Movies */ {
+                MbFilterSet{},
+                MbFilterSet{0, MbDecade::Any, MbMinRating::Any, MbRuntime::Any,
+                            MbLanguage::Any, MbDiscoverSort::TopRated},
+            },
+            /* Tv */ {
+                MbFilterSet{},
+                MbFilterSet{0, MbDecade::Any, MbMinRating::Any, MbRuntime::Any,
+                            MbLanguage::Any, MbDiscoverSort::TopRated},
+            },
+        };
+
+        MbFilterSet& mb_filter(MbMode m, MbChartTab t) {
+            return mb_filters[static_cast<int>(m)][static_cast<int>(t)];
+        }
+        const MbFilterSet& mb_filter(MbMode m, MbChartTab t) const {
+            return mb_filters[static_cast<int>(m)][static_cast<int>(t)];
+        }
 
         // Helper to cycle intensity: OFF -> Low (0.25) -> Medium (0.50) -> High (0.75) -> OFF.
         //
