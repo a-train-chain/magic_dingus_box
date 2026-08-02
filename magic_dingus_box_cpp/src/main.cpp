@@ -877,7 +877,12 @@ int main(int /* argc */, char* /* argv */[]) {
         }});
 
     // Six screens — dispatcher owns one instance of each.
-    media_browser::ui::BrowseScreen     mb_browse(radarr, sonarr, *tmdb, state);
+    // sonarr_key.empty() is exactly the fallback-to-SonarrMockClient
+    // condition above — BrowseScreen needs to know it so a box that never
+    // had Sonarr set up isn't told "Sonarr service offline" (final review
+    // Fix 1; see BrowseScreen's constructor doc comment).
+    media_browser::ui::BrowseScreen     mb_browse(radarr, sonarr, *tmdb, state,
+                                                   /*sonarr_configured=*/!sonarr_key.empty());
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get(),

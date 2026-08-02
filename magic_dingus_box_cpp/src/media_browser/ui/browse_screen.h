@@ -61,8 +61,18 @@ namespace media_browser::ui {
 //   add-movie, queue. Clean separation.
 class BrowseScreen : public MbScreen {
 public:
+    // `sonarr_configured` is set once at the main.cpp construction site: true
+    // when a real SonarrClient was built (a Sonarr API key was found), false
+    // when main.cpp fell back to SonarrMockClient (no key — e.g. a box
+    // provisioned before the Sonarr stack existed). It distinguishes "this
+    // box has never had Sonarr set up" from "Sonarr was configured but isn't
+    // answering right now" for the TV-mode copy in browse_grid_state_message
+    // and the non-blocking service-warning line — both collapse to
+    // lib_fetch_ok_[Tv]==false, but only one of them is honestly described as
+    // an outage. See sonarr_mock.cpp's get_library_checked() doc comment for
+    // why the mock always reports unreachable.
     BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr, TmdbClient& tmdb,
-                 ::app::AppState& state);
+                 ::app::AppState& state, bool sonarr_configured);
     ~BrowseScreen();
 
     void enter() override;
@@ -206,6 +216,10 @@ private:
     SonarrClient& sonarr_;
     TmdbClient& tmdb_;
     ::app::AppState& state_;
+    // See the constructor's doc comment. Read only by render() (via
+    // browse_grid_state_message and the service-warning line) and never
+    // written after construction.
+    bool sonarr_configured_;
 
     FilterOverlay filter_overlay_;
 

@@ -232,6 +232,22 @@ TEST_CASE("profiles and root folders use the Servarr paths", "[sonarr][config]")
 
 TEST_CASE("SonarrMockClient serves a coherent seeded library", "[sonarr][mock]") {
     mb::SonarrMockClient m;
+    // is_reachable()==true and (below/elsewhere) find_series_by_tvdb()
+    // returning an engaged optional are KNOWN, DELIBERATE, currently
+    // out-of-scope traps, not a contract to preserve. Neither has a live
+    // caller today, but get_library_checked() — the method that DOES have
+    // callers (BrowseScreen's TV library refresh) — was deliberately made to
+    // report unreachable (nullopt) even though this mock otherwise looks
+    // "up", specifically so a box with no Sonarr configured reads as
+    // "no TV library" rather than fabricating one (see 63f9046 and
+    // sonarr_mock.cpp's get_library_checked() doc comment for the full
+    // rationale: an engaged optional here would poison the in-library hide
+    // and seed For You's TV recommendations from a fake Breaking Bad entry).
+    // If a future Sonarr health gate or add flow ever keys off
+    // is_reachable() or find_series_by_tvdb() the way BrowseScreen keys off
+    // get_library_checked(), it would silently re-open that exact hole.
+    // Changing this assertion later means you are changing a known-deferred
+    // trap, not breaking a contract — go read that rationale first.
     CHECK(m.is_reachable());
     // Seeded-data assertions go through the unchecked shape now — see the
     // dedicated get_library_checked test below for the reachability contract.

@@ -250,26 +250,67 @@ TEST_CASE("browse_grid_state_message: mode-aware states name the right "
     using media_browser::ui::browse_grid_state_message;
     using media_browser::ui::BrowseGridState;
 
+    // sonarr_configured=true (a real SonarrClient was constructed) is the
+    // baseline used everywhere below except the dedicated
+    // never-configured test case.
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::LibraryUnavailable, /*tv_mode=*/false)) ==
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/false,
+              /*sonarr_configured=*/true)) ==
           "Radarr service offline");
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::LibraryUnavailable, /*tv_mode=*/true)) ==
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/true,
+              /*sonarr_configured=*/true)) ==
           "Sonarr service offline");
 
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::EmptyLibrary, /*tv_mode=*/false)) ==
+              BrowseGridState::EmptyLibrary, /*tv_mode=*/false,
+              /*sonarr_configured=*/true)) ==
           "Add movies to your library to get recommendations");
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::EmptyLibrary, /*tv_mode=*/true)) ==
+              BrowseGridState::EmptyLibrary, /*tv_mode=*/true,
+              /*sonarr_configured=*/true)) ==
           "Add TV shows to your library to get recommendations");
 
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::EmptyCategory, /*tv_mode=*/false)) ==
+              BrowseGridState::EmptyCategory, /*tv_mode=*/false,
+              /*sonarr_configured=*/true)) ==
           "No movies in this category");
     CHECK(std::string(browse_grid_state_message(
-              BrowseGridState::EmptyCategory, /*tv_mode=*/true)) ==
+              BrowseGridState::EmptyCategory, /*tv_mode=*/true,
+              /*sonarr_configured=*/true)) ==
           "No shows in this category");
+}
+
+TEST_CASE("browse_grid_state_message: LibraryUnavailable in TV mode "
+          "distinguishes never-configured from configured-but-unreachable",
+          "[browse_logic]") {
+    // Final-review Fix 1: main.cpp falls back to SonarrMockClient whenever
+    // SONARR_API_KEY resolves empty, and that mock's get_library_checked()
+    // permanently returns nullopt (63f9046) — so a box provisioned before
+    // Sonarr existed hits LibraryUnavailable forever, not intermittently.
+    // "Sonarr service offline" would accuse a service the box never had of
+    // having gone down; sonarr_configured=false must say something true and
+    // non-blaming instead.
+    using media_browser::ui::browse_grid_state_message;
+    using media_browser::ui::BrowseGridState;
+
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/true,
+              /*sonarr_configured=*/false)) ==
+          "TV library not set up on this box");
+
+    // sonarr_configured is unused in Movies mode — Radarr is never mocked
+    // in a way that reaches this path (Media Browser's feature gate hides
+    // MB entirely when Radarr is unreachable), so the value must not
+    // change the movie-mode string either way.
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/false,
+              /*sonarr_configured=*/false)) ==
+          "Radarr service offline");
+    CHECK(std::string(browse_grid_state_message(
+              BrowseGridState::LibraryUnavailable, /*tv_mode=*/false,
+              /*sonarr_configured=*/true)) ==
+          "Radarr service offline");
 }
 
 TEST_CASE("browse_grid_state_message: mode-invariant states and Grid",
@@ -278,20 +319,26 @@ TEST_CASE("browse_grid_state_message: mode-invariant states and Grid",
     using media_browser::ui::BrowseGridState;
 
     // Grid draws posters, not a message.
-    CHECK(browse_grid_state_message(BrowseGridState::Grid, false) == nullptr);
-    CHECK(browse_grid_state_message(BrowseGridState::Grid, true) == nullptr);
+    CHECK(browse_grid_state_message(BrowseGridState::Grid, false, true) ==
+          nullptr);
+    CHECK(browse_grid_state_message(BrowseGridState::Grid, true, true) ==
+          nullptr);
 
     // These three don't mention a service or content kind — same string in
-    // both modes.
+    // both modes, regardless of sonarr_configured.
     for (bool tv : {false, true}) {
-        CHECK(std::string(browse_grid_state_message(
-                  BrowseGridState::Loading, tv)) == "Loading...");
-        CHECK(std::string(browse_grid_state_message(
-                  BrowseGridState::RecommendationsFailed, tv)) ==
-              "Couldn't load recommendations \xE2\x80\x94 try again later");
-        CHECK(std::string(browse_grid_state_message(
-                  BrowseGridState::NoApiKey, tv)) ==
-              "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
-              "Media Browser tab");
+        for (bool sonarr_configured : {false, true}) {
+            CHECK(std::string(browse_grid_state_message(
+                      BrowseGridState::Loading, tv, sonarr_configured)) ==
+                  "Loading...");
+            CHECK(std::string(browse_grid_state_message(
+                      BrowseGridState::RecommendationsFailed, tv,
+                      sonarr_configured)) ==
+                  "Couldn't load recommendations \xE2\x80\x94 try again later");
+            CHECK(std::string(browse_grid_state_message(
+                      BrowseGridState::NoApiKey, tv, sonarr_configured)) ==
+                  "No TMDB key \xE2\x80\x94 add one in the Content Manager, "
+                  "Media Browser tab");
+        }
     }
 }

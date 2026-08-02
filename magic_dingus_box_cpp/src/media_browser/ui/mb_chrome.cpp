@@ -591,7 +591,10 @@ const std::vector<std::string>& marquee_tab_labels() {
     // *** WIDTH-CONSTRAINED. *** This strip is 915 px wide and starts 102 px
     // to the right of the "Marquee" title on the 1280-wide logical canvas,
     // and draw_screen_header has NO overflow guard. Before adding a chip or
-    // lengthening a label, run tools/measure_strip_fit.cpp — a per-mode
+    // lengthening a label, run the repo-root tools/measure_strip_fit.cpp
+    // (i.e. ../tools/measure_strip_fit.cpp from magic_dingus_box_cpp/ — ONE
+    // LEVEL ABOVE this magic_dingus_box_cpp/ tree, not
+    // magic_dingus_box_cpp/tools/, which does not exist) — a per-mode
     // " · TV" suffix on the three content labels was measured at -63 px
     // (overlapping) and is why the Movies/TV indicator lives in the title.
     static const std::vector<std::string> kLabels = {

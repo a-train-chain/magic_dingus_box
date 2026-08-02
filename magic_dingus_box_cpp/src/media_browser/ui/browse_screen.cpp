@@ -146,8 +146,10 @@ using MediaRef      = ::media_browser::MediaRef;
 }  // namespace
 
 BrowseScreen::BrowseScreen(RadarrClient& radarr, SonarrClient& sonarr,
-                           TmdbClient& tmdb, ::app::AppState& state)
-    : radarr_(radarr), sonarr_(sonarr), tmdb_(tmdb), state_(state) {}
+                           TmdbClient& tmdb, ::app::AppState& state,
+                           bool sonarr_configured)
+    : radarr_(radarr), sonarr_(sonarr), tmdb_(tmdb), state_(state),
+      sonarr_configured_(sonarr_configured) {}
 
 void BrowseScreen::enter() {
     want_search_screen_ = false;
@@ -213,16 +215,36 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     // signal this needs, so it does not ride on Radarr's services_ok.
     std::unordered_set<MediaRef> tv_refs;
     std::atomic<bool> tv_ok{false};
-    std::thread sonarr_worker([this, &tv_refs, &tv_ok]() {
-        if (auto tv_lib = sonarr_.get_library_checked()) {
-            for (const auto& srs : *tv_lib) {
-                if (srs.tmdb_id > 0) {
-                    tv_refs.insert(MediaRef{MediaKind::Tv, srs.tmdb_id});
+    // Constructing std::thread can itself throw std::system_error (thread
+    // exhaustion — realistic on the 1.5 GB Pi 4B, this project's binding
+    // performance envelope). run_library_refresh is ITSELF a std::thread
+    // entry function (see refresh_library_async's
+    // `std::thread(&BrowseScreen::run_library_refresh, ...)`), so an
+    // uncaught exception here would escape it and call std::terminate() —
+    // a hard kiosk crash instead of a degraded TV mode. Mirror
+    // ensure_genres_loaded()'s idiom: default-construct sonarr_worker
+    // (non-joinable) and only give it a live thread if the spawn succeeds.
+    // On failure it stays non-joinable — safe for both the RAII guard below
+    // and the explicit join() further down — tv_ok stays false, and we
+    // proceed with just the Radarr half; that is already the correct
+    // "Sonarr didn't answer" path (see apply_library_pending's
+    // r.tv_fetch_ok handling).
+    std::thread sonarr_worker;
+    try {
+        sonarr_worker = std::thread([this, &tv_refs, &tv_ok]() {
+            if (auto tv_lib = sonarr_.get_library_checked()) {
+                for (const auto& srs : *tv_lib) {
+                    if (srs.tmdb_id > 0) {
+                        tv_refs.insert(MediaRef{MediaKind::Tv, srs.tmdb_id});
+                    }
                 }
+                tv_ok.store(true);
             }
-            tv_ok.store(true);
-        }
-    });
+        });
+    } catch (const std::system_error& e) {
+        spdlog::warn("[BrowseScreen] failed to spawn Sonarr library worker "
+                     "(proceeding with Radarr only): {}", e.what());
+    }
     // RAII join, defensive rather than load-bearing: run_library_refresh has
     // no early return today, so the plain sonarr_worker.join() before publish
     // (below) already covers the only path this function takes. This guard's
@@ -274,7 +296,28 @@ void BrowseScreen::run_library_refresh(bool fetch_quality) {
     }
     // tv_refs is written only by the worker and read only after this join, so
     // the plain (non-atomic) container needs no further synchronisation.
-    sonarr_worker.join();
+    // Guarded: sonarr_worker is non-joinable when the spawn above threw, and
+    // std::thread::join() itself throws std::system_error on a non-joinable
+    // thread — exactly the crash this whole block exists to avoid.
+    //
+    // KNOWN BOUNDED LATENCY (final-review Fix 6, judged not worth a
+    // concurrency change): there is exactly ONE publish point for this
+    // function's result — apply_library_pending() drains it as a single
+    // PendingLibrary struct after THIS join, further below. Radarr typically
+    // answers in ~200 ms, but if Sonarr is configured and unreachable (its
+    // container stopped, VPN down, etc.), get_library_checked()'s 5 s
+    // timeout with no retry (see the comment above sonarr_worker's spawn)
+    // holds this join — and therefore Radarr's already-finished result too —
+    // for up to 5 s. That means Movies mode's posters, IN LIBRARY hide, and
+    // DOWNLOADING badges wait on Sonarr's timeout in that scenario, even
+    // though nothing in Movies mode needs Sonarr's answer. A clean fix would
+    // split the publish so each service's result lands independently, but
+    // that touches the CAS single-flight guard (lib_refresh_in_flight_), the
+    // generation/TTL bookkeeping, and the deferred For-You hook in
+    // apply_library_pending() — reviewed as not worth the risk for this
+    // branch. See "Sonarr stopped bounds Movies mode..." in
+    // docs/superpowers/plans/2026-08-01-tv-browse.md's hardware checklist.
+    if (sonarr_worker.joinable()) sonarr_worker.join();
     r.tv_refs = std::move(tv_refs);
     r.tv_fetch_ok = tv_ok.load();
     {
@@ -592,6 +635,23 @@ void BrowseScreen::apply_foryou_pending() {
 }
 
 void BrowseScreen::quick_add_focused() {
+    // *** TRAP FOR A FUTURE CALLER, DO NOT REACTIVATE AS-IS. ***
+    // This function is KIND-BLIND: the in-library check below correctly
+    // uses media_ref_of(hit)/library_refs_.count(...) (kind-aware, since
+    // Phase 2c-1), but the add itself is hardcoded to
+    // radarr_.add_movie(hit.tmdb_id, ...). Since Phase 2c-1, movies_ can
+    // hold TV rows (TV mode's Popular/TopRated/For You all populate it),
+    // and movie and TV TMDB id spaces OVERLAP COMPLETELY — e.g. id 1396 is
+    // Breaking Bad (a show) AND an entirely unrelated film. A caller who
+    // reactivates this while focused on a TV poster would silently add the
+    // WRONG, UNRELATED MOVIE to Radarr — no error, no mismatch detectable
+    // from the call site. Before wiring this back up: branch on
+    // media_ref_of(hit).kind and route TV through a Sonarr add_series() call
+    // (NOT implemented here — out of scope per the final whole-branch
+    // review), never let a TV hit reach radarr_.add_movie(). Same hazard
+    // class as the deferred SonarrMockClient traps documented in
+    // sonarr_mock.cpp and tests/media_browser/test_sonarr_client.cpp.
+    //
     // Only meaningful when a poster is focused.
     if (focus_ != Focus::PosterGrid) return;
     if (movies_.empty()) return;
@@ -637,6 +697,8 @@ void BrowseScreen::quick_add_focused() {
         }
     }
 
+    // KIND-BLIND — see the hazard comment at the top of this function
+    // before reactivating this caller. hit may be a TV row.
     bool ok = radarr_.add_movie(hit.tmdb_id, qp, /*monitor=*/true);
     if (!ok) {
         ::ui::Toast::show("Add failed — see Radarr logs");
@@ -1604,7 +1666,8 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // browse_grid_state_message() (browse_logic.h) — this switch only
     // assigns the COLOR per state, since ::ui::Color/Theme can't live in
     // that Renderer-free header.
-    const char* state_msg = browse_grid_state_message(grid_state, tv_mode());
+    const char* state_msg =
+        browse_grid_state_message(grid_state, tv_mode(), sonarr_configured_);
     ::ui::Color state_color = th.dim;
     switch (grid_state) {
         case BrowseGridState::Grid:
@@ -1651,12 +1714,23 @@ void BrowseScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // fact. Worse, it would be inapplicable: it warns that in-library hiding may
     // be stale, and LibraryUnavailable means there are no posters on screen to
     // carry a badge.
+    // Same never-configured-vs-outage distinction as browse_grid_state_message
+    // above (see BrowseScreen's constructor doc comment / Fix 1): a box that
+    // never had Sonarr set up must not be told Sonarr is "offline" every time
+    // it lands on a chart tab in TV mode. sonarr_configured_ is irrelevant in
+    // Movies mode — Radarr is never mocked in a way that reaches this path.
     const char* service_warning = nullptr;
     if (lib_refresh_done_once_ && !lib_ok &&
         grid_state != BrowseGridState::LibraryUnavailable) {
-        service_warning = tv_mode()
-            ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
-            : "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
+        if (tv_mode()) {
+            service_warning = sonarr_configured_
+                ? "Sonarr offline \xE2\x80\x94 in-library hiding may be stale"
+                : "TV library not set up \xE2\x80\x94 in-library hiding "
+                  "unavailable";
+        } else {
+            service_warning =
+                "Radarr offline \xE2\x80\x94 in-library hiding may be stale";
+        }
     }
     constexpr int kWarnFontPx = 14;
     constexpr int kWarnLineH  = 20;

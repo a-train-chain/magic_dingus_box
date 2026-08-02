@@ -105,8 +105,11 @@ inline void replace_refs_of_kind(std::unordered_set<MediaRef>& dst,
 // strip to 1080 px and runs it 63 px into the title. The title has 102 px of
 // slack, and "Marquee TV" consumes 57 of it, leaving +45.
 //
-// Re-measure with tools/measure_strip_fit.cpp before changing either string;
-// the unit test below pins the literal, not the fit.
+// Re-measure with the repo-root tools/measure_strip_fit.cpp (i.e.
+// ../tools/measure_strip_fit.cpp from magic_dingus_box_cpp/ — ONE LEVEL
+// ABOVE this magic_dingus_box_cpp/ tree, not magic_dingus_box_cpp/tools/,
+// which does not exist) before changing either string; the unit test below
+// pins the literal, not the fit.
 inline const char* marquee_title_for_mode(bool tv_mode) {
     return tv_mode ? "Marquee TV" : "Marquee";
 }
@@ -183,14 +186,31 @@ inline BrowseGridState decide_browse_grid_state(const BrowseStateInputs& in) {
 // Text only: the per-state COLOR (dim vs. highlight2) stays in render()'s
 // switch, since ::ui::Color would drag Renderer/theme types into this
 // header and break the Mac test target's Renderer-free build.
-inline const char* browse_grid_state_message(BrowseGridState state, bool tv_mode) {
+//
+// `sonarr_configured` distinguishes "this box has never had Sonarr set up"
+// from "Sonarr was configured but isn't answering right now" — both collapse
+// to lib_fetch_ok_[Tv]==false, but they are not the same fact. main.cpp falls
+// back to SonarrMockClient whenever SONARR_API_KEY resolves empty (any box
+// provisioned before the Sonarr stack existed, or never paired with it), and
+// the mock's get_library_checked() always returns nullopt (63f9046) — so
+// lib_fetch_ok_[Tv] is permanently false there, not intermittently. Telling
+// that owner "Sonarr service offline" accuses a service they never had of
+// having gone down. Only the TV branch of LibraryUnavailable reads this
+// flag: Movies mode never reaches it, because Radarr is never mocked in a
+// way that reaches this path (Media Browser's feature gate hides MB
+// entirely when Radarr is unreachable), so `sonarr_configured` is unused
+// when `tv_mode` is false.
+inline const char* browse_grid_state_message(BrowseGridState state, bool tv_mode,
+                                              bool sonarr_configured) {
     switch (state) {
         case BrowseGridState::Grid:
             return nullptr;
         case BrowseGridState::Loading:
             return "Loading...";
         case BrowseGridState::LibraryUnavailable:
-            return tv_mode ? "Sonarr service offline" : "Radarr service offline";
+            if (!tv_mode) return "Radarr service offline";
+            return sonarr_configured ? "Sonarr service offline"
+                                      : "TV library not set up on this box";
         case BrowseGridState::RecommendationsFailed:
             return "Couldn't load recommendations \xE2\x80\x94 try again later";
         case BrowseGridState::EmptyLibrary:
