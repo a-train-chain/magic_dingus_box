@@ -34,12 +34,15 @@ Idempotent + cheap: a run with zero missing titles is a no-op. Both
 SONARR_API_KEY skips the Sonarr pass (boxes provisioned before Sonarr
 existed).
 """
+import http.client
 import json
 import os
 import sys
 import time
 import urllib.request
 import urllib.error
+
+NET_ERRORS = (OSError, http.client.HTTPException, ValueError)
 
 RADARR_BASE = "http://localhost:7878"
 SONARR_BASE = "http://localhost:8989"
@@ -78,7 +81,7 @@ def wait_for_ping(base, timeout_s=300, poll_s=5):
             with urllib.request.urlopen(req, timeout=5) as r:
                 if r.status == 200:
                     return True
-        except OSError:
+        except NET_ERRORS:
             pass
         time.sleep(poll_s)
     return False
@@ -96,7 +99,7 @@ def http(base, key, method, path, body=None):
 
 def radarr_pass(key) -> int:
     if not wait_for_ping(RADARR_BASE):
-        print("[missing-search] Radarr not ready within 120s — "
+        print("[missing-search] Radarr not ready within 300s — "
               "will retry next timer")
         return 1
 
@@ -107,7 +110,7 @@ def radarr_pass(key) -> int:
     # reset mid-read while Radarr is still warming up).
     try:
         movies = http(RADARR_BASE, key, "GET", "/api/v3/movie")
-    except OSError as e:
+    except NET_ERRORS as e:
         print(f"[missing-search] Radarr unreachable ({e}) — will retry next timer")
         return 1
 
@@ -128,7 +131,7 @@ def radarr_pass(key) -> int:
                    {"name": "MissingMoviesSearch"})
         cmd_id = cmd.get("id") if isinstance(cmd, dict) else "?"
         print(f"[missing-search] MissingMoviesSearch queued (command id={cmd_id})")
-    except OSError as e:
+    except NET_ERRORS as e:
         print(f"[missing-search] failed to queue movie search ({e})")
         return 1
     return 0
@@ -136,7 +139,7 @@ def radarr_pass(key) -> int:
 
 def sonarr_pass(key) -> int:
     if not wait_for_ping(SONARR_BASE):
-        print("[missing-search] Sonarr not ready within 120s — "
+        print("[missing-search] Sonarr not ready within 300s — "
               "will retry next timer")
         return 1
 
@@ -147,7 +150,7 @@ def sonarr_pass(key) -> int:
         wanted = http(SONARR_BASE, key, "GET",
                       "/api/v3/wanted/missing?pageSize=1"
                       "&includeSeries=false&monitored=true")
-    except OSError as e:
+    except NET_ERRORS as e:
         print(f"[missing-search] Sonarr unreachable ({e}) — will retry next timer")
         return 1
 
@@ -166,7 +169,7 @@ def sonarr_pass(key) -> int:
                    {"name": "MissingEpisodeSearch"})
         cmd_id = cmd.get("id") if isinstance(cmd, dict) else "?"
         print(f"[missing-search] MissingEpisodeSearch queued (command id={cmd_id})")
-    except OSError as e:
+    except NET_ERRORS as e:
         print(f"[missing-search] failed to queue episode search ({e})")
         return 1
     return 0

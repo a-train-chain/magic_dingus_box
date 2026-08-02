@@ -72,6 +72,7 @@ changing anything. A missing API key skips that *arr's pass (boxes
 provisioned before Sonarr existed have no SONARR_API_KEY). Designed to
 run via a 15-min systemd timer.
 """
+import http.client
 import json
 import re
 import sys
@@ -79,6 +80,12 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Connection-level failures that must never flap the unit: OSError covers
+# RST/timeouts/URLError; HTTPException covers orderly-FIN truncations
+# (IncompleteRead/BadStatusLine); ValueError covers a truncated 200 body
+# failing json.loads.
+NET_ERRORS = (OSError, http.client.HTTPException, ValueError)
 
 ENV_FILE = Path("/opt/magic_dingus_box/services/.env")
 RADARR_BASE = "http://localhost:7878/api/v3"
@@ -238,7 +245,7 @@ def radarr_pass(now, stall_state):
     try:
         q = api(RADARR_BASE, key, "GET",
                 "/queue?includeUnknownMovieItems=true&pageSize=200")
-    except OSError as e:
+    except NET_ERRORS as e:
         # OSError, not just urllib.error.URLError. urlopen only wraps failures
         # it hits while ESTABLISHING the connection; a reset part-way through
         # the RESPONSE surfaces raw from http.client as ConnectionResetError,
@@ -284,9 +291,12 @@ def radarr_pass(now, stall_state):
             if movie_id:
                 affected_movie_ids.add(movie_id)
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:120]
+            try:
+                body = e.read().decode(errors="replace")[:120]
+            except OSError:
+                body = "<unreadable>"
             print(f"    ✗ delete failed: HTTP {e.code} {body}", file=sys.stderr)
-        except OSError as e:
+        except NET_ERRORS as e:
             # Same netns-cycle class the GET guard documents — the service
             # went away mid-run. Bail out of the delete loop (every further
             # call would burn its full timeout too); already-deleted items
@@ -306,6 +316,8 @@ def radarr_pass(now, stall_state):
             print("  ✓ search triggered")
         except Exception as e:
             print(f"  ✗ search failed: {e}", file=sys.stderr)
+
+    return seen
 
 
 def sonarr_search_already_active(key, series_id, season) -> bool:
@@ -342,7 +354,7 @@ def sonarr_pass(now, stall_state):
     try:
         q = api(SONARR_BASE, key, "GET",
                 "/queue?includeUnknownSeriesItems=true&pageSize=200")
-    except OSError as e:
+    except NET_ERRORS as e:
         # Same netns story as Radarr above — Sonarr rides gluetun too.
         print(f"[auto-blocklist] Sonarr unreachable: {e}", file=sys.stderr)
         return None
@@ -388,9 +400,12 @@ def sonarr_pass(now, stall_state):
                 if rr.get("seriesId") and rr.get("seasonNumber") is not None:
                     affected_seasons.add((rr["seriesId"], rr["seasonNumber"]))
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")[:120]
+            try:
+                body = e.read().decode(errors="replace")[:120]
+            except OSError:
+                body = "<unreadable>"
             print(f"    ✗ delete failed: HTTP {e.code} {body}", file=sys.stderr)
-        except OSError as e:
+        except NET_ERRORS as e:
             print(f"    ✗ Sonarr went away mid-run: {e}", file=sys.stderr)
             break
 
