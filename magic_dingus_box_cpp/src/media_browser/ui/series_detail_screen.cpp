@@ -1,6 +1,7 @@
 #include "media_browser/ui/series_detail_screen.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <system_error>
 
 #include "media_browser/qbittorrent/qbittorrent_client.h"
@@ -540,7 +541,8 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // Monitored with nothing on disk yet — the add path
                     // genuinely acted (or a prior add did) and
                     // searchForMissingEpisodes rode in with monitor=true.
-                    toast = title + ": Season 1 search started";
+                    toast = title + ": Season " + std::to_string(first_season) +
+                            " search started";
                 }
                 std::lock_guard<std::mutex> lk(mut_mtx_);
                 if (fresh.has_value()) {
@@ -586,10 +588,220 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             });
             break;
         }
-        case Action::WholeSeries:
+        case Action::WholeSeries: {
+            if (whole_armed_) {
+                // ---- press 2: execute ----
+                whole_armed_ = false;
+                const bool pre_add = !in_library_;
+                const int id = tmdb_id_;
+                const std::string title =
+                    detail_.has_value() ? detail_->title
+                                        : std::string("This series");
+                const int sid = series_.has_value() ? series_->sonarr_id : 0;
+                std::vector<int> to_monitor;
+                for (const auto& row : rows_) {
+                    if (!row.monitored) to_monitor.push_back(row.season_number);
+                }
+                spawn_mutation([this, pre_add, id, title, sid, to_monitor]() {
+                    int series_id = sid;
+                    std::optional<Series> added;
+                    if (pre_add) {
+                        const auto profiles = sonarr_.get_quality_profiles();
+                        int qp_id = 0;
+                        for (const auto& qp : profiles) {
+                            if (qp_id == 0) qp_id = qp.id;
+                            if (qp.name == "Any") { qp_id = qp.id; break; }
+                        }
+                        if (qp_id == 0) {
+                            const std::string err = sonarr_.last_error();
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_toast_ = err.empty()
+                                ? title + ": Sonarr has no quality profile "
+                                          "\xE2\x80\x94 not added"
+                                : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
+                            return;
+                        }
+                        // *** monitor=true is REQUIRED here. *** add_series
+                        // writes the SERIES-LEVEL monitored flag from this
+                        // same parameter (series["monitored"] = monitor) and
+                        // no client method exists to flip it afterwards.
+                        // "none" would leave the series permanently
+                        // unmonitored, and Sonarr's
+                        // MonitoredEpisodeSpecification rejects every release
+                        // for an unmonitored series: seasons monitored,
+                        // search runs, NOTHING ever downloads — invisibly.
+                        //
+                        // The firstSeason-vs-our-PUTs race this used to fear
+                        // is provably over when settled==true: add_settled
+                        // (monitor=true) requires the applied monitoring
+                        // state to have been OBSERVED. The race exists only
+                        // on the timeout path — which is why the season PUTs
+                        // below are gated on res.settled.
+                        auto res = sonarr_.add_series(id, qp_id,
+                                                      /*monitor=*/true, title);
+                        if (!res.ok) {
+                            const std::string err = sonarr_.last_error();
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
+                            return;
+                        }
+                        if (!res.settled) {
+                            // firstSeason has NOT been applied yet; seasons
+                            // PUT now would be unmonitored behind us when it
+                            // lands. Stop honestly: the row shows [Remove]
+                            // only until the poll settles, then "Whole
+                            // series…" reappears and the retry takes the
+                            // in-library path — idempotent by design.
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_series_ = res.series;
+                            mut_settled_ = false;
+                            mut_toast_ = title + ": added \xE2\x80\x94 syncing seasons; "
+                                         "the whole-series option returns when "
+                                         "Sonarr finishes";
+                            return;
+                        }
+                        // Settled: S1 is already monitored and the add-time
+                        // search already covers it (searchForMissingEpisodes
+                        // rode in with monitor=true); S1's entry in
+                        // to_monitor is a harmless idempotent PUT, and the
+                        // series search below may re-query S1 — redundant,
+                        // not harmful.
+                        series_id = res.series.sonarr_id;
+                        added = res.series;
+                    }
+                    if (series_id <= 0) {
+                        std::lock_guard<std::mutex> lk(mut_mtx_);
+                        if (added.has_value()) {
+                            mut_series_ = std::move(added);
+                            mut_settled_ = false;
+                        }
+                        mut_toast_ = title + ": added, but Sonarr hasn't assigned "
+                                     "an id yet \xE2\x80\x94 try Whole series again "
+                                     "in a moment";
+                        return;
+                    }
+                    // For an ANNOUNCED series Sonarr may not know every
+                    // season yet, so some of these PUTs legitimately fail.
+                    // They are counted, not hidden, and the toast below is
+                    // composed from the real count.
+                    int failed = 0;
+                    for (int season : to_monitor) {
+                        if (!sonarr_.set_season_monitored(series_id, season, true))
+                            ++failed;
+                    }
+                    const bool searched = sonarr_.trigger_series_search(series_id);
+                    auto fresh = sonarr_.get_series(series_id);
+                    const int total = static_cast<int>(to_monitor.size());
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    if (fresh.has_value()) {
+                        mut_settled_ = record_refreshed(*fresh);
+                        mut_series_ = std::move(fresh);
+                    } else if (added.has_value()) {
+                        mut_series_ = std::move(added);
+                        mut_settled_ = false;
+                    }
+                    // Composed from BOTH signals — the failure count AND the
+                    // search outcome. Never claim "Monitored" or promise RSS
+                    // when every PUT failed (Sonarr stopped mid-flow): the
+                    // series is in the library with nothing monitored and
+                    // nothing will ever arrive.
+                    if (total > 0 && failed == total) {
+                        mut_toast_ = title + ": couldn't monitor seasons "
+                                     "\xE2\x80\x94 is Sonarr running?";
+                    } else if (!searched) {
+                        mut_toast_ = title + ": seasons monitored, but the search "
+                                     "didn't start \xE2\x80\x94 Sonarr will pick "
+                                     "them up on RSS";
+                    } else if (failed > 0) {
+                        mut_toast_ = title + ": search started (" +
+                                     std::to_string(failed) + " of " +
+                                     std::to_string(total) +
+                                     " seasons couldn't be monitored)";
+                    } else {
+                        mut_toast_ = title + ": whole-series search started";
+                    }
+                });
+                break;
+            }
+            // ---- press 1: estimate + free space + verdict, off-thread ----
+            // The multiplicand: in-library uses Sonarr's real per-episode
+            // runtime; PRE-ADD there is no record, so estimate_remaining_bytes
+            // falls back to 45 minutes. We deliberately do NOT call
+            // lookup_by_tmdb to fetch the real runtime first: that would give
+            // find_series_by_tvdb's mock family its first indirect kiosk
+            // surface AND add a round-trip to a gesture that already waits.
+            // The armed label says "(est)" precisely because of this.
+            const int runtime = (in_library_ && series_.has_value())
+                                    ? series_->runtime_minutes : 0;
+            const int64_t estimate =
+                estimate_remaining_bytes(rows_, runtime, mb_per_min_);
+            const std::string title =
+                detail_.has_value() ? detail_->title : std::string("This series");
+            // Immediate feedback: the free-space fetch can take the full 5 s
+            // HTTP timeout, and the Allow path's only signal is the armed
+            // label appearing — a user who glances away would otherwise read
+            // press-1 as "the button did nothing".
+            ::ui::Toast::show(title + ": checking free space\xE2\x80\xA6");
+            spawn_mutation([this, estimate, title]() {
+                // Free space, two sources with DIFFERENT zero semantics:
+                //
+                //  - Sonarr's root folder: freeSpace is parsed with a 0
+                //    default, so an ABSENT/null field (Sonarr can't stat the
+                //    folder — the stale-container-bind state that
+                //    magic-dingus-storage-attach.service exists for) is
+                //    indistinguishable from a genuinely full disk. A 0 here
+                //    is therefore AMBIGUOUS and must fall through, or a
+                //    healthy box with 400 GB free gets a false "0 GB free"
+                //    Block with a wrong diagnosis.
+                //  - std::filesystem::space on the host path: failure is a
+                //    distinct error code, so a returned 0 is a REAL full
+                //    disk and whole_series_verdict correctly Blocks on it.
+                //
+                // Do not "simplify" the two guards into one.
+                std::optional<int64_t> free_bytes;
+                for (const auto& rf : sonarr_.get_root_folders()) {
+                    if (rf.path.find("/tv") != std::string::npos &&
+                        rf.free_space_bytes > 0) {
+                        free_bytes = rf.free_space_bytes;
+                        break;
+                    }
+                }
+                if (!free_bytes.has_value()) {
+                    std::error_code ec;
+                    auto info = std::filesystem::space("/mnt/ssd/library/tv", ec);
+                    if (!ec) free_bytes = static_cast<int64_t>(info.available);
+                }
+                const DiskVerdict v = whole_series_verdict(estimate, free_bytes);
+                const auto gb = [](int64_t b) {
+                    return std::to_string(b / (1024LL * 1024 * 1024)) + " GB";
+                };
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_have_verdict_ = true;
+                mut_verdict_ = v;
+                mut_estimate_ = estimate;
+                switch (v) {
+                    case DiskVerdict::Block:
+                        // The codebase's FIRST blocking preflight: publish a
+                        // Block verdict so drain_mutation does NOT arm, and
+                        // show both numbers plus the floor.
+                        mut_toast_ = title + ": not enough space \xE2\x80\x94 needs ~" +
+                                     gb(estimate) + " (est), " +
+                                     gb(free_bytes.value_or(0)) +
+                                     " free (20 GB floor)";
+                        break;
+                    case DiskVerdict::WarnOnly:
+                        mut_toast_ = title + ": couldn't check free space "
+                                     "\xE2\x80\x94 confirm to proceed anyway";
+                        break;
+                    case DiskVerdict::Allow:
+                        break;  // the armed label IS the feedback
+                }
+            });
+            break;
+        }
         case Action::Remove:
         case Action::ConfirmRemove:
-            break;  // Tasks 6 and 7
+            break;  // Task 7
     }
 }
 
