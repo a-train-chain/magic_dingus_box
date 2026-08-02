@@ -8,12 +8,16 @@ using namespace media_browser::ui;
 namespace {
 
 // episode_logic templates on the episode type and may touch ONLY
-// season_number / episode_number / has_file — this deliberately minimal
-// fake is the compile-time proof (EpisodeInfo itself arrives in Task 2).
+// season_number / episode_number / has_file / title — this deliberately
+// minimal fake is the compile-time proof (EpisodeInfo itself arrives in
+// Task 2). `title` was APPENDED for Task 5's decide_end_overlay (its
+// Countdown title_line reads ep.title); trailing position keeps every
+// pre-existing three-field brace-init valid (title value-initializes).
 struct FakeEp {
     int season_number;
     int episode_number;
     bool has_file;
+    std::string title;
 };
 
 FakeEp ep(int season, int episode, bool file) { return FakeEp{season, episode, file}; }
@@ -229,6 +233,99 @@ TEST_CASE("season end copy is pinned", "[episode_logic]") {
         SeasonEndCard card{SeasonEndKind::SeriesDone, 1, 0};
         CHECK(season_end_title(card, "Breaking Bad") == "That's everything!");
         CHECK(season_end_button_label(card) == "Done");
+    }
+}
+
+TEST_CASE("decide_end_overlay resolves the end-of-episode overlay", "[episode_logic]") {
+    SECTION("next episode available -> Countdown with the pinned title line") {
+        std::vector<FakeEp> eps = {
+            FakeEp{1, 4, true, "The Shadow"},
+            FakeEp{1, 5, true, "The Wolf and the Lion"}};
+        std::vector<SeasonRow> rows = {season_row(1, SeasonState::Complete, true, 5)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "Game of Thrones");
+        CHECK(m.kind == EndOverlayKind::Countdown);
+        // Pinned: "Next: S1E5 · The Wolf and the Lion" (U+00B7 middle dot).
+        CHECK(m.title_line == "Next: S1E5 \xC2\xB7 The Wolf and the Lion");
+        // The countdown line ("Starting in N…") derives from the screen's
+        // frame timer, never from the model — body stays empty here.
+        CHECK(m.body_line == "");
+        CHECK(m.primary_label == "Play now");
+        CHECK(m.has_primary);
+        CHECK(m.next_index == 1);
+        CHECK(m.card.kind == SeasonEndKind::NextEpisode);
+    }
+    SECTION("next_index is the vector position — fileless gaps are skipped") {
+        std::vector<FakeEp> eps = {
+            FakeEp{1, 4, true, "A"},
+            FakeEp{1, 5, false, "B"},
+            FakeEp{1, 6, true, "C"}};
+        std::vector<SeasonRow> rows = {season_row(1, SeasonState::Complete, true, 5)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "T");
+        CHECK(m.kind == EndOverlayKind::Countdown);
+        CHECK(m.next_index == 2);
+        CHECK(m.title_line == "Next: S1E6 \xC2\xB7 C");
+    }
+    SECTION("season-crossing countdown uses the next episode's own coords") {
+        std::vector<FakeEp> eps = {
+            FakeEp{1, 10, true, "Finale"},
+            FakeEp{2, 1, true, "Premiere"}};
+        std::vector<SeasonRow> rows = {
+            season_row(1, SeasonState::Complete, true, 10),
+            season_row(2, SeasonState::Partial, true, 1)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "T");
+        CHECK(m.kind == EndOverlayKind::Countdown);
+        CHECK(m.next_index == 1);
+        CHECK(m.title_line == "Next: S2E1 \xC2\xB7 Premiere");
+    }
+    SECTION("OfferNextSeason -> Card with the upsell primary") {
+        std::vector<FakeEp> eps = {FakeEp{1, 10, true, "Finale"}};
+        std::vector<SeasonRow> rows = {
+            season_row(1, SeasonState::Complete, true, 10),
+            season_row(2, SeasonState::None, false, 0)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "T");
+        CHECK(m.kind == EndOverlayKind::Card);
+        CHECK(m.title_line == "Season 1 finished");
+        CHECK(m.body_line == "Start the Season 2 download?");
+        CHECK(m.primary_label == "Start Season 2");
+        CHECK(m.has_primary);
+        CHECK(m.next_index == -1);
+        CHECK(m.card.kind == SeasonEndKind::OfferNextSeason);
+        CHECK(m.card.next_season == 2);
+    }
+    SECTION("Downloading -> Card, queue pointer body, no primary") {
+        std::vector<FakeEp> eps = {FakeEp{1, 10, true, "Finale"}};
+        std::vector<SeasonRow> rows = {
+            season_row(1, SeasonState::Complete, true, 10),
+            season_row(2, SeasonState::Downloading, false, 0)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "T");
+        CHECK(m.kind == EndOverlayKind::Card);
+        CHECK(m.title_line == "Season 2 is on its way");
+        CHECK(m.body_line == "Check the Queue for progress.");
+        CHECK(m.primary_label == "Done");
+        CHECK_FALSE(m.has_primary);
+        CHECK(m.next_index == -1);
+        CHECK(m.card.kind == SeasonEndKind::Downloading);
+    }
+    SECTION("SeriesDone -> Card, empty body, no primary") {
+        std::vector<FakeEp> eps = {FakeEp{1, 10, true, "Finale"}};
+        std::vector<SeasonRow> rows = {season_row(1, SeasonState::Complete, true, 10)};
+        auto m = decide_end_overlay(rows, eps, watch_map{}, eps[0], "T");
+        CHECK(m.kind == EndOverlayKind::Card);
+        CHECK(m.title_line == "That's everything!");
+        CHECK(m.body_line == "");
+        CHECK(m.primary_label == "Done");
+        CHECK_FALSE(m.has_primary);
+        CHECK(m.next_index == -1);
+        CHECK(m.card.kind == SeasonEndKind::SeriesDone);
+    }
+    SECTION("has_primary matrix pin: Countdown/Offer true, Downloading/Done false") {
+        // The four kinds' has_primary values are asserted individually above;
+        // this section pins the DEFAULT-constructed model as the screen's
+        // idle state: kind None, no primary, no next index.
+        EndOverlayModel idle;
+        CHECK(idle.kind == EndOverlayKind::None);
+        CHECK_FALSE(idle.has_primary);
+        CHECK(idle.next_index == -1);
     }
 }
 

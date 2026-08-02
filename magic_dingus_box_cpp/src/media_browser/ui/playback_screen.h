@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 
+#include "media_browser/sonarr/sonarr_types.h"  // EpisodeInfo (stored by value)
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/playback_overlay.h"
@@ -100,14 +101,43 @@ public:
 
     // Consume-once EOS accessor: returns the engaged watch identity exactly
     // once per EOS latch (eos_reported_ flips on first call; both flags
-    // reset together in enter() / any future in-place reload). main.cpp
-    // polls this every frame and calls WatchStore::mark_watched only on an
-    // engaged return — so EOS costs exactly ONE SQLite write, never a
-    // per-frame write while a countdown or season-end card idles on screen.
+    // reset together in enter() and in the in-place episode advance).
+    // main.cpp polls this every frame and calls WatchStore::mark_watched
+    // only on an engaged return — so EOS costs exactly ONE SQLite write,
+    // never a per-frame write while a countdown or season-end card idles
+    // on screen.
     std::optional<WatchIdentity> take_eos_watched() {
         if (!eos_latched_ || eos_reported_) return std::nullopt;
         eos_reported_ = true;
         return watch_identity_;  // may be disengaged -> caller skips
+    }
+
+    // TV episode context — handed by the dispatcher (Task 6) on every
+    // SeriesDetail->Playback handoff, BEFORE the transition. host_paths is
+    // index-aligned with episodes (empty string when the episode has no
+    // file), pre-resolved by SeriesDetail via SonarrClient::resolve_host_path
+    // so playback never touches the Sonarr layer. rows/watch are the season
+    // rows and the per-series watch map the end-of-episode overlay decides
+    // from; the map is this screen's IN-MEMORY copy only — the persistent
+    // store write stays in main.cpp's take_eos_watched() drain. Cleared in
+    // leave().
+    void set_episode_context(std::vector<EpisodeInfo> episodes,
+                             std::vector<std::string> host_paths,
+                             std::vector<SeasonRow> rows,
+                             watch_map watch,
+                             std::string series_title);
+
+    // One-shot "Start Season N" intent from the season-end card's primary.
+    // Consumed by the dispatcher on the Playback->SeriesDetail transition
+    // (Task 6 wires the receiving side). Deliberately NOT cleared in
+    // leave(): the dispatcher may drain it before or after leave() runs on
+    // that transition, and clearing there would race the consumer. enter()
+    // clears it instead, so a never-consumed intent cannot leak into a
+    // later session.
+    std::optional<int> take_pending_next_season() {
+        auto v = pending_next_season_;
+        pending_next_season_.reset();
+        return v;
     }
 
     void enter() override;
@@ -138,11 +168,52 @@ private:
     std::optional<WatchIdentity> watch_identity_;  // cleared in leave()
 
     // EOS latch pair. eos_latched_ is set by update()'s video_active
-    // true→false edge (the same edge that arms exit_pending_);
-    // eos_reported_ flips on the first take_eos_watched() so the caller
-    // sees the latch exactly once. Both reset together in enter().
+    // true→false edge; eos_reported_ flips on the first take_eos_watched()
+    // so the caller sees the latch exactly once. Both reset together in
+    // enter() AND in advance_to_next_episode() — the two session starts.
+    // At the edge, movie/no-identity sessions ALSO arm exit_pending_
+    // (unchanged behavior); TV sessions latch ONLY and hand control to the
+    // end-of-episode overlay, whose own outcomes are the only TV setters
+    // of exit_pending_ (missing file / load failure).
     bool eos_latched_ = false;
     bool eos_reported_ = false;
+
+    // ---- TV episode context (Task 5) — see set_episode_context() ----
+    std::vector<EpisodeInfo> episodes_;
+    std::vector<std::string> episode_host_paths_;  // index-aligned with episodes_
+    std::vector<SeasonRow> season_rows_;
+    watch_map watch_;              // in-memory copy; store writes live in main.cpp
+    std::string series_title_;
+    // Cached position of the playing episode in episodes_. A hint, never
+    // trusted blindly: begin_end_overlay() re-validates it against the
+    // watch identity's (season, episode) and falls back to a linear search
+    // — a stale vector (or an identity that advanced past it) takes the
+    // movie-style exit instead of indexing garbage.
+    int current_index_ = -1;
+
+    // ---- End-of-episode overlay state machine ----
+    // kind == None -> no overlay (movies never leave None). Countdown uses
+    // the frame-clock timer below (the series_detail confirm-timer idiom);
+    // expiry or SELECT triggers the in-place advance, RED/BTN4 exit.
+    EndOverlayModel end_overlay_;
+    std::chrono::steady_clock::time_point countdown_started_at_{};
+    std::optional<int> pending_next_season_;  // see take_pending_next_season()
+
+    // Arms end_overlay_ at a TV EOS edge: locates the finished episode
+    // (identity-validated), syncs the in-memory watch map, and resolves
+    // the overlay via decide_end_overlay. S0 identities, an empty episode
+    // vector, or a no-match all skip the overlay -> movie-style exit.
+    void begin_end_overlay();
+
+    // In-place advance to episodes_[end_overlay_.next_index]: stop, swap
+    // path/title/meta (preserving overlay meta), re-arm the enter() side
+    // effects explicitly (enter() is NOT re-run), reset the EOS latch pair
+    // together, and load. Missing file / load failure -> deferred toast +
+    // exit_pending_ (the enter() precedent).
+    void advance_to_next_episode();
+
+    // Dim scrim + countdown / season-end card. Drawn last (above the HUD).
+    void render_end_overlay(::ui::Renderer& r, int screen_w, int screen_h);
 
     bool was_video_active_ = false;
     bool exit_pending_ = false;

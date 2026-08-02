@@ -246,4 +246,91 @@ inline std::string season_end_button_label(const SeasonEndCard& card) {
     return "Done";
 }
 
+// ---------- End-of-episode overlay model ----------
+
+// What PlaybackScreen shows when a TV episode reaches EOS. None is the
+// screen's idle state; Countdown is the 8-second next-episode overlay;
+// Card is the season-end card (offer / downloading / series done).
+enum class EndOverlayKind { None, Countdown, Card };
+
+// Fully-resolved overlay content: every pinned string the screen renders
+// is composed HERE (Mac-tested), never inline in the kiosk TU. next_index
+// is the POSITION of the next episode in the episodes vector handed to
+// decide_end_overlay (-1 when there is no next episode) — an index, not a
+// pointer, so the model stays typed, copyable and testable, and the screen
+// pairs it with its index-aligned host-path vector.
+//
+// has_primary marks a primary ACTION beyond dismissal: the countdown's
+// "Play now" and the season-end card's "Start Season N" upsell. The
+// Downloading / SeriesDone cards carry only the dismissing "Done" label
+// (primary_label still holds it — the card renders one button either way;
+// has_primary tells the screen whether SELECT fires an intent or just
+// closes).
+struct EndOverlayModel {
+    EndOverlayKind kind = EndOverlayKind::None;
+    std::string title_line;
+    std::string body_line;
+    std::string primary_label;
+    bool has_primary = false;
+    SeasonEndCard card{SeasonEndKind::SeriesDone, 0, 0};
+    int next_index = -1;
+};
+
+// Resolves the whole end-of-episode overlay for `finished`:
+//   - next_up finds a playable next episode -> Countdown.
+//     title_line = "Next: S<season>E<episode> · <title>" (the middle dot is
+//     UTF-8 \xC2\xB7); body_line stays empty — the "Starting in N…" line is
+//     the screen's frame-timer's job, not static copy.
+//   - otherwise -> Card, with the season_end_title / season_end_button_label
+//     strings and per-kind body copy:
+//       OfferNextSeason -> "Start the Season <next_season> download?"
+//       Downloading     -> "Check the Queue for progress."
+//       SeriesDone      -> ""
+// Touches ep.title in addition to the three next_up fields — the template
+// contract grows to four names here, enforced by the test fake.
+template <class Ep>
+EndOverlayModel decide_end_overlay(
+        const std::vector<SeasonRow>& rows, const std::vector<Ep>& episodes,
+        const std::unordered_map<WatchKey, WatchRowLite, WatchKeyHash>& watch,
+        const Ep& finished, const std::string& series_title) {
+    EndOverlayModel m;
+    m.card = season_end_card(rows, episodes, watch, finished);
+    if (m.card.kind == SeasonEndKind::NextEpisode) {
+        // season_end_card only returns NextEpisode when next_up found one,
+        // so `next` is non-null by construction; the guard keeps a future
+        // regression from dereferencing null instead of degrading to Card.
+        const Ep* next = next_up(episodes, watch, &finished);
+        if (next != nullptr) {
+            m.kind = EndOverlayKind::Countdown;
+            m.next_index = static_cast<int>(next - episodes.data());
+            m.title_line = "Next: S" + std::to_string(next->season_number) +
+                           "E" + std::to_string(next->episode_number) +
+                           " \xC2\xB7 " + next->title;
+            m.primary_label = "Play now";
+            m.has_primary = true;
+            return m;
+        }
+        m.card.kind = SeasonEndKind::SeriesDone;  // honest fallback
+    }
+    m.kind = EndOverlayKind::Card;
+    m.title_line = season_end_title(m.card, series_title);
+    switch (m.card.kind) {
+        case SeasonEndKind::NextEpisode:
+            break;  // unreachable: handled above
+        case SeasonEndKind::OfferNextSeason:
+            m.body_line = "Start the Season " +
+                          std::to_string(m.card.next_season) + " download?";
+            break;
+        case SeasonEndKind::Downloading:
+            m.body_line = "Check the Queue for progress.";
+            break;
+        case SeasonEndKind::SeriesDone:
+            m.body_line = "";
+            break;
+    }
+    m.primary_label = season_end_button_label(m.card);
+    m.has_primary = (m.card.kind == SeasonEndKind::OfferNextSeason);
+    return m;
+}
+
 }  // namespace media_browser::ui

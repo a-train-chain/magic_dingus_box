@@ -1,6 +1,7 @@
 #include "media_browser/ui/playback_screen.h"
 
 #include <cstdlib>  // std::system — used to call playback_services_pause.sh
+#include <filesystem>  // exists() guard before the in-place episode advance
 #include <spdlog/spdlog.h>
 
 #include "app/app_state.h"
@@ -50,15 +51,36 @@ void PlaybackScreen::set_movie_meta(PlaybackOverlayMovieMeta meta) {
     overlay_meta_ = std::move(meta);
 }
 
+void PlaybackScreen::set_episode_context(std::vector<EpisodeInfo> episodes,
+                                         std::vector<std::string> host_paths,
+                                         std::vector<SeasonRow> rows,
+                                         watch_map watch,
+                                         std::string series_title) {
+    episodes_ = std::move(episodes);
+    episode_host_paths_ = std::move(host_paths);
+    season_rows_ = std::move(rows);
+    watch_ = std::move(watch);
+    series_title_ = std::move(series_title);
+    // The cached index belongs to the PREVIOUS context; begin_end_overlay()
+    // re-derives it from the watch identity at the first EOS.
+    current_index_ = -1;
+}
+
 void PlaybackScreen::enter() {
     exit_pending_ = false;
     deferred_toast_.clear();
     qbit_was_paused_by_us_ = false;
-    // EOS latch pair resets TOGETHER here (and only here until Task 5's
-    // in-place reload) so each playback session gets exactly one
+    // EOS latch pair resets TOGETHER here and in advance_to_next_episode()
+    // — the two session starts — so each playback session gets exactly one
     // consume-once report from take_eos_watched().
     eos_latched_ = false;
     eos_reported_ = false;
+    // Fresh session: no end-of-episode overlay, and any never-consumed
+    // "Start Season N" intent from a PREVIOUS session dies here (leave()
+    // deliberately does not clear it — the dispatcher drains it around the
+    // Playback->SeriesDetail transition, possibly after leave()).
+    end_overlay_ = {};
+    pending_next_season_.reset();
     // Tracks state.video_active across update() ticks for end-of-stream
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
@@ -230,6 +252,18 @@ void PlaybackScreen::leave() {
     start_position_ = 0.0;
     watch_identity_.reset();
 
+    // Episode context dies with the session too — a stale vector must never
+    // feed a later session's end-of-episode overlay. pending_next_season_
+    // survives on purpose (drained by the dispatcher around this very
+    // transition; cleared in the next enter() instead — see the header).
+    episodes_.clear();
+    episode_host_paths_.clear();
+    season_rows_.clear();
+    watch_.clear();
+    series_title_.clear();
+    current_index_ = -1;
+    end_overlay_ = {};
+
     // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
     // froze in enter(). Deliberately left UNCONDITIONAL even though
     // enter() is now platform-gated: the helper is idempotent (a no-op
@@ -245,11 +279,51 @@ void PlaybackScreen::leave() {
 
 Screen PlaybackScreen::handle_input(
         const std::vector<platform::InputEvent>& events) {
-    // First: if natural end-of-stream or load failure already armed an exit,
-    // honor it. This fires every frame even with empty events because the
-    // dispatcher always calls handle_input.
+    // First: if an armed exit is pending, honor it. Fires every frame even
+    // with empty events because the dispatcher always calls handle_input.
+    // Movies arm this at natural EOS; TV sessions only via the end-overlay's
+    // own outcomes (missing file / load failure) — the countdown/card branch
+    // below is what runs while eos_latched_ && !exit_pending_.
     if (exit_pending_) {
         return origin_;
+    }
+
+    // End-of-episode overlay (TV only — begin_end_overlay() armed it at the
+    // EOS edge). It owns ALL input while active: the movie has ended, so
+    // seeks/pause/similar-films are dead controls until the next episode
+    // loads or the session exits.
+    if (end_overlay_.kind != EndOverlayKind::None) {
+        for (const auto& e : events) {
+            if (!e.pressed) continue;
+            // Rotary press: countdown -> play the next episode now;
+            // card primary -> fire the Start-Season intent; plain "Done"
+            // card -> dismiss back to where we came from.
+            if (e.action == platform::InputAction::SELECT) {
+                if (end_overlay_.kind == EndOverlayKind::Countdown) {
+                    advance_to_next_episode();
+                    // On failure the advance armed exit_pending_ + deferred
+                    // toast; the fast-return above exits next frame.
+                    return Screen::Playback;
+                }
+                if (end_overlay_.has_primary) {
+                    // "Start Season N" — the dispatcher consumes the intent
+                    // on the Playback->SeriesDetail transition (Task 6).
+                    pending_next_season_ = end_overlay_.card.next_season;
+                    return Screen::SeriesDetail;
+                }
+                return origin_;  // "Done"
+            }
+            // BTN2 (red) = Stop / close; BTN4 = Back. Both leave playback.
+            // origin_ is SeriesDetail for every TV handoff (Task 6 sets it),
+            // and returning it (rather than a hardcoded SeriesDetail) keeps
+            // the exit robust if a future entry path passes a different
+            // origin.
+            if (e.action == platform::InputAction::PLAY_PAUSE ||
+                e.action == platform::InputAction::SETTINGS_MENU) {
+                return origin_;
+            }
+        }
+        return Screen::Playback;  // swallow everything else while it's up
     }
 
     for (const auto& e : events) {
@@ -462,19 +536,181 @@ void PlaybackScreen::update() {
     // true→false when the GStreamer pipeline reaches EOS. We only
     // treat it as end-of-stream if WE didn't trigger the stop AND the
     // suppression counter has fully decayed (no recent seek that could
-    // be causing the flicker).
+    // be causing the flicker) AND this session hasn't already latched
+    // (an idling countdown/card must not re-arm off pipeline noise).
+    //
+    // The latch/exit split is the whole TV feature: a TV session latches
+    // eos_latched_ ONLY and hands control to the end-of-episode overlay —
+    // arming exit_pending_ here too would make handle_input's fast-return
+    // bail to origin_ on the very next frame and the countdown could never
+    // render. Movies and identity-less sessions keep the old both-flags
+    // behavior exactly.
     bool video_active_now = state_.video_active;
     if (was_video_active_ && !video_active_now && !exit_pending_
-        && eos_suppress_frames_ <= 0) {
-        exit_pending_ = true;
-        // Latch for the consume-once take_eos_watched() accessor —
-        // main.cpp polls it each frame and marks the identity watched
-        // exactly once. (Task 5 rewrites this edge for TV: exit_pending_
-        // gets suppressed in favor of the countdown; the latch stays.)
+        && !eos_latched_ && eos_suppress_frames_ <= 0) {
         eos_latched_ = true;
-        spdlog::info("[playback] natural end-of-stream detected");
+        const bool tv_session =
+            watch_identity_.has_value() &&
+            watch_identity_->ref.kind == MediaKind::Tv;
+        if (tv_session) {
+            // May itself arm exit_pending_ (S0 identity / stale vector /
+            // no episode context) — the movie-style exit for TV edge cases.
+            begin_end_overlay();
+        } else {
+            exit_pending_ = true;
+        }
+        spdlog::info("[playback] natural end-of-stream detected (tv={})",
+                     tv_session);
     }
     was_video_active_ = video_active_now;
+
+    // Countdown expiry -> in-place advance. Frame-clock timer, same idiom
+    // as SeriesDetail's confirm timers; render() derives its "Starting in
+    // N…" line from the same start point so the two can't drift.
+    if (end_overlay_.kind == EndOverlayKind::Countdown && !exit_pending_) {
+        const auto elapsed = std::chrono::steady_clock::now()
+                           - countdown_started_at_;
+        if (elapsed >= std::chrono::seconds(kNextUpCountdownSeconds)) {
+            advance_to_next_episode();
+        }
+    }
+}
+
+// Arms the end-of-episode overlay at a TV EOS edge. Every skip path here
+// is the movie-style exit (exit_pending_ -> origin_): specials (S0) are
+// never wired into the overlay, and a finished episode we cannot find in
+// the vector means the context is stale — never promise a "next" computed
+// from data that disagrees with what just played.
+void PlaybackScreen::begin_end_overlay() {
+    const WatchIdentity& id = *watch_identity_;
+    if (id.season == 0) {
+        exit_pending_ = true;
+        return;
+    }
+
+    // Locate the finished episode: trust current_index_ only after
+    // re-validating it against the identity; otherwise linear-search for
+    // (season, episode). No match -> movie-style exit.
+    int idx = -1;
+    if (current_index_ >= 0 &&
+        current_index_ < static_cast<int>(episodes_.size()) &&
+        episodes_[current_index_].season_number == id.season &&
+        episodes_[current_index_].episode_number == id.episode) {
+        idx = current_index_;
+    } else {
+        for (size_t i = 0; i < episodes_.size(); ++i) {
+            if (episodes_[i].season_number == id.season &&
+                episodes_[i].episode_number == id.episode) {
+                idx = static_cast<int>(i);
+                break;
+            }
+        }
+    }
+    if (idx < 0) {
+        exit_pending_ = true;
+        return;
+    }
+    current_index_ = idx;
+
+    // In-memory watched sync BEFORE deciding the overlay. main.cpp owns
+    // the persistent write (it drains take_eos_watched() and calls
+    // WatchStore::mark_watched); this keeps OUR copy consistent with what
+    // that drain is about to persist, so the decision below and any later
+    // decision in this session see the same world.
+    watch_[WatchKey{id.season, id.episode}].watched = true;
+
+    // The similar-films overlay must not float above the end overlay —
+    // and its SELECT semantics would fight the countdown's "Play now".
+    overlay_.close();
+
+    end_overlay_ = decide_end_overlay(season_rows_, episodes_, watch_,
+                                      episodes_[idx], series_title_);
+    if (end_overlay_.kind == EndOverlayKind::Countdown) {
+        countdown_started_at_ = std::chrono::steady_clock::now();
+    }
+    spdlog::info("[playback] end overlay armed (kind={}, next_index={})",
+                 static_cast<int>(end_overlay_.kind), end_overlay_.next_index);
+}
+
+// In-place advance to episodes_[end_overlay_.next_index]. enter() is NOT
+// re-run, so its side effects are re-armed explicitly here; leave() is NOT
+// run either, so the episode context and watch identity survive into the
+// next episode's session (the setters overwrite what must change).
+void PlaybackScreen::advance_to_next_episode() {
+    const int idx = end_overlay_.next_index;
+
+    // Belt-and-braces on the model's index, then the brief's existence
+    // guard: an empty host path (no file) or a file deleted since the
+    // handoff both exit with the pinned toast rather than feeding
+    // GStreamer a path that cannot play.
+    std::string next_host_path;
+    if (idx >= 0 && idx < static_cast<int>(episodes_.size()) &&
+        idx < static_cast<int>(episode_host_paths_.size())) {
+        next_host_path = episode_host_paths_[idx];
+    }
+    if (next_host_path.empty() ||
+        !std::filesystem::exists(next_host_path)) {
+        spdlog::warn("[playback] next episode file missing (index={}, "
+                     "path='{}')", idx, next_host_path);
+        deferred_toast_ = "File missing on disk";  // surfaced by leave()
+        end_overlay_ = {};
+        exit_pending_ = true;
+        return;
+    }
+
+    const EpisodeInfo& next = episodes_[idx];
+    controller_.stop();
+
+    // "<series> — S<season>E<episode> · <title>" (em dash / middle dot).
+    const std::string new_title =
+        series_title_ + " \xE2\x80\x94 S" +
+        std::to_string(next.season_number) + "E" +
+        std::to_string(next.episode_number) + " \xC2\xB7 " + next.title;
+
+    // set_movie() RESETS overlay_meta_ (see its definition) — save the
+    // series meta across the call and restore it with the new title so
+    // poster/synopsis/cast survive the whole binge.
+    auto meta = overlay_meta_;
+    set_movie(next_host_path, new_title);
+    meta.title = new_title;
+    set_movie_meta(std::move(meta));
+
+    // Re-attribute watch state to the next episode; the MediaRef (series)
+    // part is unchanged. current_index_ is the cache begin_end_overlay()
+    // re-validates at the next EOS.
+    set_watch_identity(WatchIdentity{watch_identity_->ref,
+                                     next.season_number,
+                                     next.episode_number});
+    current_index_ = idx;
+    set_start_position(0.0);
+
+    // Session restart bookkeeping — the enter() side effects, re-armed
+    // explicitly. EOS latch pair resets TOGETHER (the take_eos_watched
+    // contract), and the edge detector needs a fresh false→true→false.
+    eos_latched_ = false;
+    eos_reported_ = false;
+    was_video_active_ = false;
+    eos_suppress_frames_ = 60;
+    end_overlay_ = {};
+    title_marquee_until_ = std::chrono::steady_clock::now()
+                         + std::chrono::seconds(3);
+    bump_hud_visibility();
+
+    // One play per load (load_file_with_resolution plays internally —
+    // see enter()). Empty playlist_dir: the path is host-absolute.
+    auto load_result = controller_.load_file_with_resolution(
+        movie_path_, /*playlist_dir=*/"", /*start=*/0.0,
+        /*end=*/0.0, /*loop=*/false);
+    if (!load_result) {
+        deferred_toast_ = "Playback failed: " + load_result.error();
+        spdlog::error("[playback] in-place advance load failed for '{}': {}",
+                      movie_path_, load_result.error());
+        exit_pending_ = true;
+        return;
+    }
+
+    spdlog::info("[playback] advanced to '{}' (path='{}')",
+                 movie_title_, movie_path_);
 }
 
 void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
@@ -518,7 +754,10 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // When the overlay is open, the overlay has its own footer hints — the
     // no-overlay HUD does NOT render in that case anyway, so the auto-hide
     // only ever applies to the no-overlay playback state.
-    if (!overlay_.is_open()) {
+    // The end-of-episode overlay suppresses the HUD entirely: the stream
+    // has ended (pipeline reads "paused", which would pin the HUD at full
+    // alpha) and every HUD hint is a dead control while it's up.
+    if (!overlay_.is_open() && end_overlay_.kind == EndOverlayKind::None) {
         // Determine whether the movie is currently paused. video_active is
         // false when paused (GStreamer pipeline in PAUSED state).
         const bool paused = !state_.video_active;
@@ -573,11 +812,106 @@ void PlaybackScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // Overlay: bottom-1/3 panel with movie meta + similar-films carousel.
-    // Drawn LAST so it sits above all other HUD elements.
+    // Drawn above all other HUD elements.
     overlay_.render(r, screen_w, screen_h);
+
+    // End-of-episode countdown / season-end card — drawn LAST: its scrim
+    // must dim everything, including any HUD remnants.
+    render_end_overlay(r, screen_w, screen_h);
 
     (void)w;
     (void)h;
+}
+
+void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
+                                        int screen_w, int screen_h) {
+    if (end_overlay_.kind == EndOverlayKind::None) return;
+
+    namespace mc = ::media_browser::ui::chrome;
+    const ::ui::Theme& th = r.mb_theme();
+
+    // Dim scrim over the whole frame (the exit-modal idiom, a touch
+    // stronger — the backdrop here is the last decoded video frame).
+    r.mb_fill_rect(0.0f, 0.0f,
+                   static_cast<float>(screen_w), static_cast<float>(screen_h),
+                   th.bg, 0.65f);
+
+    // Centered card — same chrome as the exit modal / overlay panels:
+    // bg_lift fill, 2 px gold border on all four sides.
+    const bool is_card = (end_overlay_.kind == EndOverlayKind::Card);
+    const bool has_body = !end_overlay_.body_line.empty();
+    constexpr int kCardW = 640;
+    constexpr int kPadX = 32;
+    constexpr int kPadY = 26;
+    // Rows: title (~30), body/countdown line (~28 when present), action
+    // area (button ~44 for cards, hint row ~24 for the countdown).
+    const int card_h = kPadY + 30 + (is_card ? (has_body ? 28 : 0) + 16 + 44
+                                             : 28 + 16 + 24) + kPadY;
+    const int cx = (screen_w - kCardW) / 2;
+    const int cy = (screen_h - card_h) / 2;
+    const float fcx = static_cast<float>(cx);
+    const float fcy = static_cast<float>(cy);
+    const float fcw = static_cast<float>(kCardW);
+    const float fch = static_cast<float>(card_h);
+    r.mb_fill_rect(fcx, fcy, fcw, fch, th.bg_lift, 1.0f);
+    r.mb_fill_rect(fcx, fcy, fcw, 2.0f, th.accent, 1.0f);
+    r.mb_fill_rect(fcx, fcy + fch - 2.0f, fcw, 2.0f, th.accent, 1.0f);
+    r.mb_fill_rect(fcx, fcy, 2.0f, fch, th.accent, 1.0f);
+    r.mb_fill_rect(fcx + fcw - 2.0f, fcy, 2.0f, fch, th.accent, 1.0f);
+
+    const float text_x = fcx + static_cast<float>(kPadX);
+    const float max_text_w = static_cast<float>(kCardW - 2 * kPadX);
+    float y = fcy + static_cast<float>(kPadY) + 22.0f;  // title baseline
+
+    if (end_overlay_.kind == EndOverlayKind::Countdown) {
+        // Title: "Next: SxEy · <episode title>" — body font (episode titles
+        // are unbounded; the title font has no truncation helper), gold.
+        const std::string title =
+            truncate_to_width(r, end_overlay_.title_line, 20, max_text_w);
+        r.mb_draw_text(title, text_x, y, 20, th.accent, 1.0f);
+
+        // "Starting in N…" — N derived from the same frame clock update()
+        // expires on, so the displayed count and the actual advance agree.
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - countdown_started_at_)
+                .count();
+        int remaining = kNextUpCountdownSeconds
+                      - static_cast<int>(elapsed_ms / 1000);
+        if (remaining < 1) remaining = 1;  // update() advances at expiry
+        y += 28.0f + 16.0f;
+        r.mb_draw_text("Starting in " + std::to_string(remaining)
+                           + "\xE2\x80\xA6",
+                       text_x, y, 16, th.fg, 1.0f);
+
+        // Pinned hint row (the brief's copy): rotary press plays now,
+        // BTN2 (red) stops.
+        mc::draw_hint_row(r, cx + kPadX,
+                          cy + card_h - kPadY,
+                          {
+                              {mc::HintIcon::RotaryPress, "Play now"},
+                              {mc::HintIcon::Btn2Red, "Stop"},
+                          });
+        return;
+    }
+
+    // Season-end card. Title in the title font (short pinned strings),
+    // optional body line, then the single action button — its label is the
+    // model's primary_label ("Start Season N" or "Done"); Ok styling only
+    // when it fires a real intent.
+    r.mb_draw_title_text(end_overlay_.title_line, text_x, y, 22, th.accent,
+                         1.0f);
+    if (has_body) {
+        y += 28.0f + 8.0f;
+        const std::string body =
+            truncate_to_width(r, end_overlay_.body_line, 16, max_text_w);
+        r.mb_draw_text(body, text_x, y, 16, th.fg, 1.0f);
+    }
+    const int btn_y = cy + card_h - kPadY - 44;
+    mc::draw_button(r, cx + kPadX, btn_y, end_overlay_.primary_label,
+                    end_overlay_.has_primary ? mc::ButtonKind::Ok
+                                             : mc::ButtonKind::Neutral,
+                    /*focused=*/true);
 }
 
 }  // namespace media_browser::ui
