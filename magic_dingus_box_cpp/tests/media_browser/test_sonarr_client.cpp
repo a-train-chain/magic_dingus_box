@@ -96,7 +96,7 @@ public:
     }
     std::string http_post(const std::string&, const std::string&) override { return ""; }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
-    std::string http_delete(const std::string&) override { return ""; }
+    long http_delete(const std::string&) override { return 200; }
 };
 }  // namespace
 
@@ -372,7 +372,7 @@ public:
         return read_fixture("series_added_pending.json");
     }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
-    std::string http_delete(const std::string&) override { return ""; }
+    long http_delete(const std::string&) override { return 200; }
 };
 }  // namespace
 
@@ -562,7 +562,7 @@ TEST_CASE("add_series fails cleanly when the lookup finds nothing",
             return "";
         }
         std::string http_put(const std::string&, const std::string&) override { return ""; }
-        std::string http_delete(const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
     };
     EmptyLookup s;
     CHECK_FALSE(s.add_series(1396, 1, true).ok);
@@ -592,9 +592,9 @@ public:
         post_body = body;
         return R"({"id":1,"name":"SeasonSearch","status":"queued"})";
     }
-    std::string http_delete(const std::string& path) override {
+    long http_delete(const std::string& path) override {
         delete_path = path;
-        return "{}";
+        return 200;
     }
 };
 }  // namespace
@@ -682,9 +682,9 @@ public:
     }
     std::string http_post(const std::string&, const std::string&) override { return ""; }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
-    std::string http_delete(const std::string& path) override {
+    long http_delete(const std::string& path) override {
         delete_path = path;
-        return "{}";
+        return 200;
     }
 };
 }  // namespace
@@ -749,7 +749,7 @@ TEST_CASE("get_queue pages until the queue is exhausted", "[sonarr][queue]") {
         }
         std::string http_post(const std::string&, const std::string&) override { return ""; }
         std::string http_put(const std::string&, const std::string&) override { return ""; }
-        std::string http_delete(const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
     };
     PagedSonarr s;
     auto q = s.get_queue();
@@ -768,7 +768,7 @@ TEST_CASE("get_queue returns empty on transport failure", "[sonarr][queue]") {
         std::string http_get(const std::string&) override { return ""; }
         std::string http_post(const std::string&, const std::string&) override { return ""; }
         std::string http_put(const std::string&, const std::string&) override { return ""; }
-        std::string http_delete(const std::string&) override { return ""; }
+        long http_delete(const std::string&) override { return 200; }
     };
     Dead d;
     CHECK(d.get_queue().empty());
@@ -858,7 +858,7 @@ TEST_CASE("SonarrMockClient seeds a coherent season pack", "[sonarr][mock]") {
 TEST_CASE("SonarrMockClient's get_series_download_hashes_checked stays "
           "coherent with the raw variant", "[sonarr][mock]") {
     // Unlike get_library_checked (deliberately always nullopt — see the
-    // dedicated test below for why), this mock has no field-observed
+    // dedicated test above for why), this mock has no field-observed
     // reachability lie to defend against here, so the checked override is
     // engaged and must agree exactly with the raw wrapper it backs.
     mb::SonarrMockClient m;

@@ -289,7 +289,15 @@ protected:
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path, const std::string& body);
     virtual std::string http_put(const std::string& path, const std::string& body);
-    virtual std::string http_delete(const std::string& path);
+    // Returns the HTTP STATUS CODE, not the body — 0 means the request never
+    // got an answer (transport failure). DELETE endpoints answer with an empty
+    // body on success, so the body cannot distinguish success from failure and
+    // the old "did last_error() stay empty?" read is a cross-thread split read
+    // now that Task 8's background re-poll shares this client's one
+    // last_error_ member. Callers branch on `code > 0 && code < 400`.
+    // last_error side effects are unchanged: still set on transport failure
+    // and on HTTP >= 400, so the UI keeps its message.
+    virtual long http_delete(const std::string& path);
 
     Config cfg_;
 

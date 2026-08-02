@@ -181,10 +181,10 @@ std::string SonarrClient::http_put(const std::string& path, const std::string& b
     return req.body;
 }
 
-std::string SonarrClient::http_delete(const std::string& path) {
+long SonarrClient::http_delete(const std::string& path) {
     CurlRequest req;
     req.curl = curl_easy_init();
-    if (!req.curl) { set_error("curl init failed"); return {}; }
+    if (!req.curl) { set_error("curl init failed"); return 0; }
     const std::string url = cfg_.base_url + path;
     req.headers = curl_slist_append(req.headers,
                                     ("X-Api-Key: " + cfg_.api_key).c_str());
@@ -199,13 +199,15 @@ std::string SonarrClient::http_delete(const std::string& path) {
     CURLcode rc = curl_easy_perform(req.curl);
     long http_code = 0;
     curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
+    // 0 is the ONE reserved "no answer" value: a transport failure never
+    // produced a status line, so callers can treat it as "this DELETE did not
+    // happen" without consulting last_error() across a thread boundary.
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
         set_error(os.str());
-        return {};
     }
-    return req.body;
+    return http_code;
 }
 
 // --- endpoints -----------------------------------------------------------
@@ -592,8 +594,14 @@ bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
     const std::string path = "/api/v3/series/" + std::to_string(sonarr_id)
                            + "?deleteFiles=" + (delete_files ? "true" : "false")
                            + "&addImportListExclusion=false";
-    http_delete(path);
-    return last_error().empty();
+    // The verdict is IN-BAND. Reading last_error() back would be a split read
+    // across threads: Task 8's background re-poll drives this same client and
+    // clears last_error_ on entry, so a poll landing between the DELETE and
+    // the read reports a FAILED remove as a success — "removed" toast, series
+    // record still in Sonarr, and the torrents already purged by step 2. The
+    // status code belongs to this call alone.
+    const long code = http_delete(path);
+    return code > 0 && code < 400;
 }
 
 std::vector<SonarrQueueItem> SonarrClient::get_queue() {
@@ -655,9 +663,13 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
 
 bool SonarrClient::cancel_queue_item(int queue_id) {
     set_error({});
-    http_delete("/api/v3/queue/" + std::to_string(queue_id)
-                + "?removeFromClient=true&blocklist=false");
-    return last_error().empty();
+    // In-band verdict, same reason as remove_series: last_error() is shared
+    // with the background re-poll, and the other direction of that race is
+    // just as live — a poll's Sonarr failure landing mid-window would fail a
+    // cancel that actually succeeded, aborting the remove with a lying toast.
+    const long code = http_delete("/api/v3/queue/" + std::to_string(queue_id)
+                                  + "?removeFromClient=true&blocklist=false");
+    return code > 0 && code < 400;
 }
 
 std::optional<std::vector<std::string>>

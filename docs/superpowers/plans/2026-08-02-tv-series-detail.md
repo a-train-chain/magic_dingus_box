@@ -2991,6 +2991,84 @@ defend against here, so the override is ENGAGED and delegates to the same
 fixture-consistent computation its raw override already had — see Task 8's
 carry-forward step for the exact body and its Mac test.
 
+> **Same ruling, applied to the two DELETEs (Task 8 review fix).** `remove_series`
+> and `cancel_queue_item` decided the same way — `set_error({}); http_delete(...);
+> return last_error().empty();` — and are on the same shared `last_error_`. Both
+> directions of that race are live once the re-poll runs Sonarr HTTP
+> concurrently: a poll failure mid-window false-FAILS a cancel that succeeded
+> (aborting the remove with a lying toast), and a poll's entry-clear landing
+> before `remove_series`' read false-SUCCEEDS a failed DELETE — "removed" toast,
+> series record still in Sonarr, torrents already purged by step 2. Fix is the
+> same shape: the private `http_delete` returns the HTTP STATUS CODE (0 =
+> transport failure), `last_error` side effects untouched, and both callers
+> branch in-band on `code > 0 && code < 400`. No public signature changes, so
+> `SonarrMockClient` is unaffected. This is the code now in the tree:
+
+`src/media_browser/sonarr/sonarr_client.h`:
+
+```cpp
+    // Returns the HTTP STATUS CODE, not the body — 0 means the request never
+    // got an answer (transport failure). DELETE endpoints answer with an empty
+    // body on success, so the body cannot distinguish success from failure and
+    // the old "did last_error() stay empty?" read is a cross-thread split read
+    // now that Task 8's background re-poll shares this client's one
+    // last_error_ member. Callers branch on `code > 0 && code < 400`.
+    // last_error side effects are unchanged: still set on transport failure
+    // and on HTTP >= 400, so the UI keeps its message.
+    virtual long http_delete(const std::string& path);
+```
+
+`src/media_browser/sonarr/sonarr_client.cpp`:
+
+```cpp
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    // 0 is the ONE reserved "no answer" value: a transport failure never
+    // produced a status line, so callers can treat it as "this DELETE did not
+    // happen" without consulting last_error() across a thread boundary.
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code;
+        set_error(os.str());
+    }
+    return http_code;
+}
+```
+
+```cpp
+    // The verdict is IN-BAND. Reading last_error() back would be a split read
+    // across threads: Task 8's background re-poll drives this same client and
+    // clears last_error_ on entry, so a poll landing between the DELETE and
+    // the read reports a FAILED remove as a success — "removed" toast, series
+    // record still in Sonarr, and the torrents already purged by step 2. The
+    // status code belongs to this call alone.
+    const long code = http_delete(path);
+    return code > 0 && code < 400;
+}
+```
+
+```cpp
+bool SonarrClient::cancel_queue_item(int queue_id) {
+    set_error({});
+    // In-band verdict, same reason as remove_series: last_error() is shared
+    // with the background re-poll, and the other direction of that race is
+    // just as live — a poll's Sonarr failure landing mid-window would fail a
+    // cancel that actually succeeded, aborting the remove with a lying toast.
+    const long code = http_delete("/api/v3/queue/" + std::to_string(queue_id)
+                                  + "?removeFromClient=true&blocklist=false");
+    return code > 0 && code < 400;
+}
+```
+
+The seven `StubSonarr`-family overrides in
+`tests/media_browser/test_sonarr_client.cpp` move to
+`long http_delete(...) { return 200; }` (200 preserves the old "no error ⇒
+success" reading); the two that record `delete_path` keep recording it, and
+the `remove_series` / `cancel_queue_item` cases still assert the same paths.
+`RadarrClient::http_delete` is deliberately left on the old shape — Radarr's
+client has no concurrent background poll sharing its `last_error_`.
+
 - [ ] **Step 3: The confirm swap + the remove worker**
 
 Replace `dispatch_action`'s trailing `case Action::Remove: case Action::ConfirmRemove: break;` with:
@@ -3501,7 +3579,7 @@ TEST_CASE("get_series_download_hashes_checked distinguishes empty from failed",
 TEST_CASE("SonarrMockClient's get_series_download_hashes_checked stays "
           "coherent with the raw variant", "[sonarr][mock]") {
     // Unlike get_library_checked (deliberately always nullopt — see the
-    // dedicated test below for why), this mock has no field-observed
+    // dedicated test above for why), this mock has no field-observed
     // reachability lie to defend against here, so the checked override is
     // engaged and must agree exactly with the raw wrapper it backs.
     mb::SonarrMockClient m;
@@ -3587,35 +3665,52 @@ void SeriesDetailScreen::maybe_repoll_series() {
 void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
                                          bool prev_sonarr_ok,
                                          bool prev_in_library) {
+    // Clears the in-flight flag on EVERY exit path, the gen-mismatch discard
+    // included. Without it, one future early return leaves poll_inflight_
+    // stuck true and maybe_repoll_series() never polls again for the rest of
+    // the session — silently, since the page still renders its last snapshot.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{poll_inflight_};
     auto fresh = sonarr_.get_series(sonarr_id);
     std::unordered_set<int> downloading;
     for (const auto& q : sonarr_.get_queue()) {
         if (q.series_id == sonarr_id) downloading.insert(q.season_number);
     }
-    if (gen == poll_gen_.load()) {
-        std::lock_guard<std::mutex> lk(pending_mtx_);
-        pending_.sonarr_done = true;
-        // A poll is ADVISORY: a transient blip must not flip the page to
-        // SonarrUnreachable under the user. Success proves reachability;
-        // failure leaves the original fetch's verdict standing. Both priors
-        // arrive by value so nothing here reads render-thread state.
-        pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
-        if (fresh.has_value()) {
-            pending_.in_library = true;
-            // The settle signal for an existing record: has Sonarr ever
-            // actually refreshed it? This is what un-hides the add controls
-            // ~9 s after an unsettled add, with no user action.
-            pending_.settled = record_refreshed(*fresh);
-            pending_.has_settled = true;
-            pending_.series = std::move(fresh);
-        } else {
-            pending_.in_library = prev_in_library;
-        }
+    std::lock_guard<std::mutex> lk(pending_mtx_);
+    // Recheck under the lock — a worker that passed a pre-lock check could
+    // be descheduled across fetch()'s bump-and-clear and publish stale data
+    // into the new series' pending_.
+    if (gen != poll_gen_.load()) return;  // preempted — discard
+    pending_.sonarr_done = true;
+    // A poll is ADVISORY: a transient blip must not flip the page to
+    // SonarrUnreachable under the user. Success proves reachability;
+    // failure leaves the original fetch's verdict standing. Both priors
+    // arrive by value so nothing here reads render-thread state.
+    pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
+    if (fresh.has_value()) {
+        pending_.in_library = true;
+        // The settle signal for an existing record: has Sonarr ever
+        // actually refreshed it? This is what un-hides the add controls
+        // ~9 s after an unsettled add, with no user action.
+        pending_.settled = record_refreshed(*fresh);
+        pending_.has_settled = true;
+        pending_.series = std::move(fresh);
+        // The queue snapshot rides on get_series' verdict. get_queue()
+        // returns an EMPTY vector both for "nothing is downloading" and for
+        // "Sonarr did not answer", and only get_series can tell those apart:
+        // it succeeded, so Sonarr is answering and an empty set is the truth.
+        // Publishing it unconditionally would let one transport blip blank
+        // every real per-season badge until the next poll ~9 s later.
         pending_.downloading = std::move(downloading);
         pending_.has_downloading = true;
-        pending_ready_.store(true, std::memory_order_release);
+    } else {
+        pending_.in_library = prev_in_library;
+        // has_downloading stays false — apply_pending() leaves the existing
+        // badges standing rather than clearing them on no evidence.
     }
-    poll_inflight_.store(false, std::memory_order_release);
+    pending_ready_.store(true, std::memory_order_release);
 }
 ```
 

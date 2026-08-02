@@ -1057,35 +1057,52 @@ void SeriesDetailScreen::maybe_repoll_series() {
 void SeriesDetailScreen::run_series_poll(uint64_t gen, int sonarr_id,
                                          bool prev_sonarr_ok,
                                          bool prev_in_library) {
+    // Clears the in-flight flag on EVERY exit path, the gen-mismatch discard
+    // included. Without it, one future early return leaves poll_inflight_
+    // stuck true and maybe_repoll_series() never polls again for the rest of
+    // the session — silently, since the page still renders its last snapshot.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{poll_inflight_};
     auto fresh = sonarr_.get_series(sonarr_id);
     std::unordered_set<int> downloading;
     for (const auto& q : sonarr_.get_queue()) {
         if (q.series_id == sonarr_id) downloading.insert(q.season_number);
     }
-    if (gen == poll_gen_.load()) {
-        std::lock_guard<std::mutex> lk(pending_mtx_);
-        pending_.sonarr_done = true;
-        // A poll is ADVISORY: a transient blip must not flip the page to
-        // SonarrUnreachable under the user. Success proves reachability;
-        // failure leaves the original fetch's verdict standing. Both priors
-        // arrive by value so nothing here reads render-thread state.
-        pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
-        if (fresh.has_value()) {
-            pending_.in_library = true;
-            // The settle signal for an existing record: has Sonarr ever
-            // actually refreshed it? This is what un-hides the add controls
-            // ~9 s after an unsettled add, with no user action.
-            pending_.settled = record_refreshed(*fresh);
-            pending_.has_settled = true;
-            pending_.series = std::move(fresh);
-        } else {
-            pending_.in_library = prev_in_library;
-        }
+    std::lock_guard<std::mutex> lk(pending_mtx_);
+    // Recheck under the lock — a worker that passed a pre-lock check could
+    // be descheduled across fetch()'s bump-and-clear and publish stale data
+    // into the new series' pending_.
+    if (gen != poll_gen_.load()) return;  // preempted — discard
+    pending_.sonarr_done = true;
+    // A poll is ADVISORY: a transient blip must not flip the page to
+    // SonarrUnreachable under the user. Success proves reachability;
+    // failure leaves the original fetch's verdict standing. Both priors
+    // arrive by value so nothing here reads render-thread state.
+    pending_.sonarr_ok = fresh.has_value() ? true : prev_sonarr_ok;
+    if (fresh.has_value()) {
+        pending_.in_library = true;
+        // The settle signal for an existing record: has Sonarr ever
+        // actually refreshed it? This is what un-hides the add controls
+        // ~9 s after an unsettled add, with no user action.
+        pending_.settled = record_refreshed(*fresh);
+        pending_.has_settled = true;
+        pending_.series = std::move(fresh);
+        // The queue snapshot rides on get_series' verdict. get_queue()
+        // returns an EMPTY vector both for "nothing is downloading" and for
+        // "Sonarr did not answer", and only get_series can tell those apart:
+        // it succeeded, so Sonarr is answering and an empty set is the truth.
+        // Publishing it unconditionally would let one transport blip blank
+        // every real per-season badge until the next poll ~9 s later.
         pending_.downloading = std::move(downloading);
         pending_.has_downloading = true;
-        pending_ready_.store(true, std::memory_order_release);
+    } else {
+        pending_.in_library = prev_in_library;
+        // has_downloading stays false — apply_pending() leaves the existing
+        // badges standing rather than clearing them on no evidence.
     }
-    poll_inflight_.store(false, std::memory_order_release);
+    pending_ready_.store(true, std::memory_order_release);
 }
 
 void SeriesDetailScreen::update() {
