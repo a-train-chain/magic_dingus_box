@@ -124,6 +124,25 @@ static const Migration MIGRATIONS[] = {
      ");"
      "CREATE INDEX idx_queue_state ON queue(state);"
      "CREATE INDEX idx_history_title ON history(title_id);"},
+    // Watch state for TV + movies (Phase 3, spec
+    // 2026-08-02-tv-playback-design.md). Keyed (kind, tmdb_id, season,
+    // episode) because the TMDB movie and TV id spaces overlap completely;
+    // movies use season=episode=0. Bare CREATE is safe: version-gated,
+    // matching v2's convention.
+    {3, "watch_state",
+     "CREATE TABLE watch_state("
+     "  id INTEGER PRIMARY KEY,"
+     "  kind TEXT NOT NULL CHECK(kind IN ('movie','tv')),"
+     "  tmdb_id INTEGER NOT NULL,"
+     "  season INTEGER NOT NULL DEFAULT 0,"
+     "  episode INTEGER NOT NULL DEFAULT 0,"
+     "  position_s REAL NOT NULL DEFAULT 0,"
+     "  duration_s REAL NOT NULL DEFAULT 0,"
+     "  watched INTEGER NOT NULL DEFAULT 0,"
+     "  updated_at INTEGER NOT NULL,"
+     "  UNIQUE(kind, tmdb_id, season, episode)"
+     ");"
+     "CREATE INDEX idx_watch_lookup ON watch_state(kind, tmdb_id);"},
 };
 }  // namespace
 

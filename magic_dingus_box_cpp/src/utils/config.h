@@ -34,6 +34,12 @@ std::string get_home_path();
 // Settings file ($CONFIG/settings.json)
 std::string get_settings_file();
 
+// Media Browser watch-state database ($DATA/media_browser.db). Excluded
+// from deploy_cpp.sh's rsync (with its -wal/-shm sidecars) so resume
+// positions and watched flags survive deploys. MAGIC_MEDIA_DB_FILE
+// overrides for tests.
+std::string get_media_db_file();
+
 // Captured controller profiles file ($CONFIG/controller_profiles.json).
 // Excluded from the OTA updater's rsync, so captured profiles survive
 // firmware updates. MAGIC_CONTROLLER_PROFILES_FILE overrides for tests.
