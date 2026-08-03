@@ -97,10 +97,38 @@ def http(base, key, method, path, body=None):
         return json.loads(raw) if raw else None
 
 
+def download_client_unavailable(base, key) -> bool:
+    """True when the *arr reports its download client unreachable.
+
+    THE BOOT-WINDOW DUPLICATE-GRAB GUARD (observed live 2026-08-02): the
+    OnBootSec catch-up can fire while qBittorrent is still starting. The
+    *arr answers /ping (it's up), but with the download client down its
+    tracked-download view is EMPTY — so the in-queue rejection that
+    normally blocks re-grabbing an already-downloading release does not
+    apply, and the sweep grabs a DUPLICATE of a season pack that is
+    already 59% downloaded. Skipping the sweep whenever /health carries a
+    DownloadClient* check closes the window; the next 4h tick (or the
+    unit's failure-retry semantics) covers the missed sweep. Fail-open:
+    if /health itself errors, we proceed — the ping already succeeded and
+    a missed guard is a bounded-waste risk, not a correctness one.
+    """
+    try:
+        checks = http(base, key, "GET", "/api/v3/health") or []
+        return any("downloadclient" in (c.get("source", "") or "").lower()
+                   for c in checks)
+    except NET_ERRORS:
+        return False
+
+
 def radarr_pass(key) -> int:
     if not wait_for_ping(RADARR_BASE):
         print("[missing-search] Radarr not ready within 300s — "
               "will retry next timer")
+        return 1
+
+    if download_client_unavailable(RADARR_BASE, key):
+        print("[missing-search] Radarr reports its download client "
+              "unavailable — skipping sweep (duplicate-grab guard)")
         return 1
 
     # Count the current monitored-but-missing backlog purely for the
@@ -141,6 +169,11 @@ def sonarr_pass(key) -> int:
     if not wait_for_ping(SONARR_BASE):
         print("[missing-search] Sonarr not ready within 300s — "
               "will retry next timer")
+        return 1
+
+    if download_client_unavailable(SONARR_BASE, key):
+        print("[missing-search] Sonarr reports its download client "
+              "unavailable — skipping sweep (duplicate-grab guard)")
         return 1
 
     # Count the missing-episode backlog for the log line. wanted/missing
