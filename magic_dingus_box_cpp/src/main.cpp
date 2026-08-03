@@ -914,8 +914,14 @@ int main(int /* argc */, char* /* argv */[]) {
     // unconditionally — board-agnostic, since a leftover cap is
     // qBit-side state that can travel with a cloned image or SSD.
     if (std::filesystem::exists("/opt/magic_dingus_box/services/.env")) {
-        if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/1536,
-                                                    /*up_kib_s=*/256)) {
+        // 2.5 MB/s down / 768 KiB/s up — retuned live 2026-08-03 with
+        // Alex watching: at 1536/256 the swarms choked to ~0 because the
+        // tight UPLOAD cap broke tit-for-tat reciprocity (we looked like
+        // a leech); zero stutter observed at the old cap, and the Pi 5's
+        // measured headroom (uncapped stack tolerated during 1080p
+        // playback, 2026-07-26) covers the raise comfortably.
+        if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/2560,
+                                                    /*up_kib_s=*/768)) {
             std::cout << "[media_browser] qbit alt-limit rate config failed "
                          "(best-effort; qBit may not be up yet)" << std::endl;
         }
