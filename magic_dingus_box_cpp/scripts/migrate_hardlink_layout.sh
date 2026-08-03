@@ -77,45 +77,49 @@ db_cp()     { ${SUDO} cp -a "$@"; }
 cd "${SERVICES_DIR}"
 
 # --- Idempotency / state check -------------------------------------------
+# TWO independent halves can each be pending (observed live 2026-08-02: a
+# box with a /data-native radarr.db but qBit still saving to /downloads —
+# the "half-migrated" state where imports still COPY). The DB rewrite is
+# skipped when already applied; the qBit half ALWAYS runs (its own calls
+# are idempotent: setting an already-set save path is a no-op).
 CUR_ROOT="$(db_sqlite "SELECT Path FROM RootFolders LIMIT 1;")"
+BACKUP="(none — DB rewrite skipped)"
 if [ "${CUR_ROOT}" = "/data/library" ]; then
-    log "root folder is already /data/library — migration already applied, nothing to do."
-    exit 0
-fi
-if [ "${CUR_ROOT}" != "/library" ]; then
-    die "unexpected root folder '${CUR_ROOT}' (expected '/library'). Aborting so we don't corrupt a custom layout."
-fi
+    log "radarr.db already /data-native — skipping DB rewrite, proceeding to qBit save path."
+elif [ "${CUR_ROOT}" = "/library" ]; then
+    LIB_COUNT_BEFORE="$(db_sqlite "SELECT count(*) FROM Movies;")"
+    log "current root folder: ${CUR_ROOT}  |  ${LIB_COUNT_BEFORE} movies in DB"
 
-LIB_COUNT_BEFORE="$(db_sqlite "SELECT count(*) FROM Movies;")"
-log "current root folder: ${CUR_ROOT}  |  ${LIB_COUNT_BEFORE} movies in DB"
+    # --- 1. Backup --------------------------------------------------------
+    TS="$(date +%Y%m%d-%H%M%S)"
+    BACKUP="${RADARR_DB}.pre-hardlink-${TS}.bak"
+    # Stop Radarr first so the DB is quiescent during copy + edit (a running
+    # Radarr holds SQLite locks and could write between our copy and edit).
+    log "stopping radarr + qbittorrent for a consistent edit..."
+    docker compose stop radarr qbittorrent >/dev/null
+    db_cp "${RADARR_DB}" "${BACKUP}"
+    log "radarr.db backed up to: ${BACKUP}"
 
-# --- 1. Backup ------------------------------------------------------------
-TS="$(date +%Y%m%d-%H%M%S)"
-BACKUP="${RADARR_DB}.pre-hardlink-${TS}.bak"
-# Stop Radarr first so the DB is quiescent during copy + edit (a running
-# Radarr holds SQLite locks and could write between our copy and edit).
-log "stopping radarr + qbittorrent for a consistent edit..."
-docker compose stop radarr qbittorrent >/dev/null
-db_cp "${RADARR_DB}" "${BACKUP}"
-log "radarr.db backed up to: ${BACKUP}"
-
-# --- 2. Rewrite radarr.db paths (transactional, exact-prefix) ------------
-log "rewriting /library -> /data/library in radarr.db..."
-db_sqlite <<'SQL'
+    # --- 2. Rewrite radarr.db paths (transactional, exact-prefix) ---------
+    log "rewriting /library -> /data/library in radarr.db..."
+    db_sqlite <<'SQL'
 BEGIN;
 UPDATE RootFolders SET Path = '/data/library' WHERE Path = '/library';
 UPDATE Movies      SET Path = '/data' || Path WHERE Path LIKE '/library/%';
 COMMIT;
 SQL
 
-# Verify the rewrite + integrity before bringing Radarr back.
-REMAIN="$(db_sqlite "SELECT count(*) FROM Movies WHERE Path LIKE '/library/%';")"
-INTEG="$(db_sqlite "PRAGMA integrity_check;")"
-LIB_COUNT_AFTER="$(db_sqlite "SELECT count(*) FROM Movies;")"
-[ "${REMAIN}" = "0" ]      || { db_cp "${BACKUP}" "${RADARR_DB}"; die "rewrite left ${REMAIN} /library paths — restored backup, aborted"; }
-[ "${INTEG}" = "ok" ]      || { db_cp "${BACKUP}" "${RADARR_DB}"; die "integrity_check=${INTEG} — restored backup, aborted"; }
-[ "${LIB_COUNT_AFTER}" = "${LIB_COUNT_BEFORE}" ] || { db_cp "${BACKUP}" "${RADARR_DB}"; die "movie count changed ${LIB_COUNT_BEFORE}->${LIB_COUNT_AFTER} — restored backup, aborted"; }
-log "radarr.db rewritten: 0 /library remaining, integrity ok, ${LIB_COUNT_AFTER} movies intact."
+    # Verify the rewrite + integrity before bringing Radarr back.
+    REMAIN="$(db_sqlite "SELECT count(*) FROM Movies WHERE Path LIKE '/library/%';")"
+    INTEG="$(db_sqlite "PRAGMA integrity_check;")"
+    LIB_COUNT_AFTER="$(db_sqlite "SELECT count(*) FROM Movies;")"
+    [ "${REMAIN}" = "0" ]      || { db_cp "${BACKUP}" "${RADARR_DB}"; die "rewrite left ${REMAIN} /library paths — restored backup, aborted"; }
+    [ "${INTEG}" = "ok" ]      || { db_cp "${BACKUP}" "${RADARR_DB}"; die "integrity_check=${INTEG} — restored backup, aborted"; }
+    [ "${LIB_COUNT_AFTER}" = "${LIB_COUNT_BEFORE}" ] || { db_cp "${BACKUP}" "${RADARR_DB}"; die "movie count changed ${LIB_COUNT_BEFORE}->${LIB_COUNT_AFTER} — restored backup, aborted"; }
+    log "radarr.db rewritten: 0 /library remaining, integrity ok, ${LIB_COUNT_AFTER} movies intact."
+else
+    die "unexpected root folder '${CUR_ROOT}' (expected '/library' or '/data/library'). Aborting so we don't corrupt a custom layout."
+fi
 
 # --- 3. qBittorrent save path + relocate existing torrents ---------------
 # Read qBit creds from .env (MDB_QBIT_PASS). Best-effort: if qBit auth
@@ -169,6 +173,30 @@ if [ -n "${RADARR_KEY}" ]; then
     log "If it dropped to 0/low, restore the backup: docker compose stop radarr && ${SUDO} cp -a '${BACKUP}' '${RADARR_DB}' && docker compose up -d radarr"
 else
     log "Radarr back up (could not read API key to auto-verify file count — check the Library screen)."
+fi
+
+# --- 5. Sonarr-era verification (added 2026-08-02) ------------------------
+# Sonarr's DB was provisioned /data-native in Phase 2a — no rewrite needed.
+# But prove the layout actually enables hardlinks now, for BOTH services:
+# a cross-directory link inside the container must succeed (same mount).
+SONARR_KEY="$(grep -oP '(?<=^SONARR_API_KEY=).*' "${ENV_FILE}" 2>/dev/null || true)"
+if [ -n "${SONARR_KEY}" ]; then
+    SROOT_OK="$(curl -sf -H "X-Api-Key: ${SONARR_KEY}" \
+        "http://localhost:8989/api/v3/rootfolder" 2>/dev/null \
+        | python3 -c 'import json,sys; rs=json.load(sys.stdin); print("yes" if rs and all(r.get("accessible") for r in rs) else "no")' 2>/dev/null || echo '?')"
+    log "Sonarr root folder accessible: ${SROOT_OK}"
+fi
+# Hardlink probe: create a scratch file under /data/downloads and try to
+# link it into the library subtree from INSIDE the sonarr container. EXDEV
+# here means the mounts are still split and imports will keep copying.
+if docker exec mdb_sonarr sh -c \
+    'mkdir -p /data/downloads && echo probe > /data/downloads/.mdb-linkprobe \
+     && ln /data/downloads/.mdb-linkprobe /data/library/tv/.mdb-linkprobe \
+     && rm /data/downloads/.mdb-linkprobe /data/library/tv/.mdb-linkprobe' \
+    >/dev/null 2>&1; then
+    log "hardlink probe: OK — imports will link, not copy."
+else
+    log "WARN: hardlink probe FAILED (EXDEV?) — check that sonarr/radarr/qbit all mount \${STORAGE_ROOT}:/data."
 fi
 
 log "DONE. Backup kept at: ${BACKUP}"
