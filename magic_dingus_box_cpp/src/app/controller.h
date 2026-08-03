@@ -105,9 +105,18 @@ public:
     
     // Initialize RetroArch launcher
     utils::Result<> initialize_retroarch_launcher();
-    
+
     // Get RetroArch launcher (for core downloader)
     retroarch::RetroArchLauncher& get_retroarch_launcher() { return retroarch_launcher_; }
+
+    // The display mode the kiosk runs at, for restoring after RetroArch.
+    // Set at boot once the final mode is known, and again whenever the
+    // CRT_NATIVE <-> MODERN_TV toggle changes it at runtime — otherwise the
+    // stored value goes stale the first time an operator flips display mode.
+    void set_kiosk_display_mode(uint32_t w, uint32_t h) {
+        kiosk_mode_w_ = w;
+        kiosk_mode_h_ = h;
+    }
 
 private:
     // Poll until playback starts, up to max_ms. Ticks the player's state
@@ -122,6 +131,11 @@ private:
     retroarch::RetroArchLauncher retroarch_launcher_;
     std::function<void(const app::PlaylistItem&)> game_session_begin_;
     std::function<void()> game_session_end_;
+
+    // Mode to restore after RetroArch exits. 0 = never set (fall back to
+    // the legacy 640x480 floor).
+    uint32_t kiosk_mode_w_ = 0;
+    uint32_t kiosk_mode_h_ = 0;
 
     // Deferred amixer apply (see set_system_volume): the fork+exec pair
     // runs from update_state(), at most once per call, so a burst of

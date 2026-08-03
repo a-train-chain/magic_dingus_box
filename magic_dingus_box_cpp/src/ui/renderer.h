@@ -240,6 +240,11 @@ public:
     bool load_bezel(const std::string& path);  // Load bezel texture from file
     void render_bezel();  // Render bezel overlay (fullscreen)
 
+    // Fullscreen black quad at `alpha` — the menu fade-up after a game.
+    // Fullscreen like render_bezel (original_width_/original_height_, not the
+    // possibly-letterboxed content viewport); caller sets glViewport first.
+    void render_post_game_fade(float alpha);
+
     // Marquee wood-grain frame — the "TV cabinet" outer 30px border.
     // Used ONLY when the kiosk is on Marquee (Media Browser) screens. Other
     // surfaces (main playlist, settings, RetroArch handoff) keep their

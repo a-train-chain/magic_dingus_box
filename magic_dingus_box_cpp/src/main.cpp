@@ -49,6 +49,7 @@
 #include "media_browser/ui/episode_logic.h"
 #endif
 #include "app/app_state.h"
+#include "app/game_launch_recovery.h"
 #include "app/game_quiet_mode.h"
 #include "app/playlist_loader.h"
 #include "app/controller.h"
@@ -1088,7 +1089,10 @@ int main(int /* argc */, char* /* argv */[]) {
     std::thread game_session_gpio_thread;
     controller.set_game_session_hooks(
         [&](const app::PlaylistItem& item) {
-            state.is_loading_game = true;
+            // Raises is_loading_game, resets loading_alpha to opaque, and
+            // cancels any in-flight post-game fade — a stale alpha of 0 from
+            // the previous exit would make this launch's plate invisible.
+            app::prepare_loading_state_for_launch(state);
 #ifdef MEDIA_BROWSER_ENABLED
             // Quiet the media stack for the whole session (async — never
             // delays launch) and drop poster textures while the GL
@@ -1129,11 +1133,11 @@ int main(int /* argc */, char* /* argv */[]) {
             if (game_session_gpio_thread.joinable()) {
                 game_session_gpio_thread.join();
             }
-            // Reset loading state. loading_is_exit must clear too or the
-            // NEXT launch would open on the return wording and the green
-            // frame.
+            // Reset loading state. loading_alpha is deliberately NOT reset
+            // here — it is 0.0 (dissolved) and stays 0.0 until the next
+            // launch's prepare_loading_state_for_launch, so nothing can
+            // flash the plate between now and the menu fade-in.
             state.is_loading_game = false;
-            state.loading_is_exit.store(false);
             state.loading_progress.store(0.0f);
             state.loading_phase.clear();
 #ifdef MEDIA_BROWSER_ENABLED
@@ -1545,6 +1549,9 @@ int main(int /* argc */, char* /* argv */[]) {
     mode = display.get_current_mode();
     std::cout << "Final Display Mode: " << mode.width << "x" << mode.height << " @ " << (mode.refresh/1000.0) << "Hz" << std::endl;
     gst_renderer.set_screen_size(mode.width, mode.height);
+    // Remember the real kiosk mode so the game-exit path can restore it
+    // directly (one mode change, not a 640x480 round-trip).
+    controller.set_kiosk_display_mode(mode.width, mode.height);
 
     // Tell the UI renderer what the *actual* HDMI framebuffer size is.
     // This is distinct from the call to resize_screen() below — that
@@ -1687,7 +1694,11 @@ int main(int /* argc */, char* /* argv */[]) {
             }
 
             // Force mode restoration (RetroArch might have changed resolution)
-            if (!display.set_mode(mode.width, mode.height)) {
+            // — unless the game-exit path already did it, in which case a
+            // second set_mode here would make the TV resync twice.
+            if (state.display_mode_restored.exchange(false)) {
+                std::cout << "Display mode already restored by game-exit path; skipping set_mode" << std::endl;
+            } else if (!display.set_mode(mode.width, mode.height)) {
                 std::cerr << "Warning: Failed to restore display mode: " << mode.width << "x" << mode.height << std::endl;
             } else {
                 std::cout << "Restored display mode: " << mode.width << "x" << mode.height << std::endl;
@@ -1810,6 +1821,8 @@ int main(int /* argc */, char* /* argv */[]) {
                 // Update mode info and notify renderers
                 mode = display.get_current_mode();
                 std::cout << "Switched to: " << mode.name << " (" << mode.width << "x" << mode.height << ")" << std::endl;
+                // Keep the game-exit restore target in sync with the new mode.
+                controller.set_kiosk_display_mode(mode.width, mode.height);
 
                 gst_renderer.set_screen_size(mode.width, mode.height);
                 // Keep the enhanced-CRT composite path's framebuffer
@@ -3739,6 +3752,44 @@ int main(int /* argc */, char* /* argv */[]) {
         // exactly as they do in the legacy direct-to-default-FB path.
         if (scene_fbo_used) {
             ui_renderer.end_scene_fbo_and_composite(state);
+        }
+
+        // Post-game fade-up: black quad over the freshly rebuilt menu,
+        // decreasing alpha over kPostGameFadeMs. Drawn UNDER the bezel so
+        // the bezel stays solid across the dissolve AND this fade — one
+        // continuous element bridging the whole game round trip. A separate
+        // mechanism from is_fading/ui_overlay_alpha on purpose: that path is
+        // entangled with video-active and UI-visibility semantics and early-
+        // returns on is_transitioning, which prepare_kiosk_state_after_game
+        // only incidentally avoids.
+        //
+        // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
+        // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
+        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // re-init) between the two can eat 200ms+, and a wall-clock start
+        // would leave the fade mostly over before the first frame rendered.
+        {
+            int64_t fade_start = state.post_game_fade_start_ms.load();
+            if (fade_start != 0) {
+                constexpr int64_t kPostGameFadeMs = 250;
+                const int64_t now_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                if (fade_start < 0) {
+                    state.post_game_fade_start_ms.store(now_ms);
+                    fade_start = now_ms;
+                }
+                const int64_t elapsed = now_ms - fade_start;
+                if (elapsed >= kPostGameFadeMs) {
+                    state.post_game_fade_start_ms.store(0);
+                } else {
+                    glViewport(0, 0, mode.width, mode.height);
+                    ui_renderer.render_post_game_fade(
+                        1.0f - static_cast<float>(elapsed) /
+                                   static_cast<float>(kPostGameFadeMs));
+                }
+            }
         }
 
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
