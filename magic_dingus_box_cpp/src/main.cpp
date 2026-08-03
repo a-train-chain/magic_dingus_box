@@ -908,15 +908,22 @@ int main(int /* argc */, char* /* argv */[]) {
     //     every future download silently capped at trickle speed with
     //     nothing in any UI to explain why. The wrapper is idempotent
     //     (read-then-toggle), so the ordinary clean boot is a no-op read.
-    if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/1536,
-                                                /*up_kib_s=*/256)) {
-        std::cout << "[media_browser] qbit alt-limit rate config failed "
-                     "(best-effort; qBit may not be up yet)" << std::endl;
-    }
-    if (!qbit_owned->set_alt_speed_limits_enabled(false)) {
-        std::cout << "[media_browser] qbit alt-limit crash-recovery clear "
-                     "failed (best-effort; qBit may not be up yet)"
-                  << std::endl;
+    // Gated on the provisioning marker like GameQuietMode below, so
+    // unprovisioned Pis and dev machines do exactly nothing (no qBit
+    // failure lines on every boot). Provisioned boxes still clear
+    // unconditionally — board-agnostic, since a leftover cap is
+    // qBit-side state that can travel with a cloned image or SSD.
+    if (std::filesystem::exists("/opt/magic_dingus_box/services/.env")) {
+        if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/1536,
+                                                    /*up_kib_s=*/256)) {
+            std::cout << "[media_browser] qbit alt-limit rate config failed "
+                         "(best-effort; qBit may not be up yet)" << std::endl;
+        }
+        if (!qbit_owned->set_alt_speed_limits_enabled(false)) {
+            std::cout << "[media_browser] qbit alt-limit crash-recovery "
+                         "clear failed (best-effort; qBit may not be up yet)"
+                      << std::endl;
+        }
     }
 
     // Track-1 quiet mode: silence the torrent/media stack for the whole
