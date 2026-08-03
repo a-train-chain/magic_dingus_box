@@ -920,8 +920,10 @@ int main(int /* argc */, char* /* argv */[]) {
         // a leech); zero stutter observed at the old cap, and the Pi 5's
         // measured headroom (uncapped stack tolerated during 1080p
         // playback, 2026-07-26) covers the raise comfortably.
-        if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/2560,
-                                                    /*up_kib_s=*/768)) {
+        // (qBit snapped a 2560/768 request to these round binary values
+        // when applied live — pin what it actually accepts.)
+        if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/2048,
+                                                    /*up_kib_s=*/1024)) {
             std::cout << "[media_browser] qbit alt-limit rate config failed "
                          "(best-effort; qBit may not be up yet)" << std::endl;
         }
