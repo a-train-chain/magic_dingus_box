@@ -1,0 +1,23 @@
+# Magic Dingus Box — library-deletion tripwire (auditd)
+#
+# Installed to /etc/audit/rules.d/mdb-tv-sweeper.rules by setup_services.sh.
+#
+# Why this exists: on 2026-08-02 the TV library directory was deleted four
+# times by an unknown actor (31 GB lost) and nothing in any application log
+# said who. These watches were installed live during the investigation and
+# produced the answer within one strike: Radarr's remove-with-files acting on
+# a phantom movie that import_library_movies.sh's unmappedFolders adoption had
+# fuzzy-matched onto the "tv" folder. The import script is fixed, but the
+# watches ship on every unit as insurance — if any box ever eats its library
+# again, `ausearch -k mdb-tv-sweeper` (or grep the raw audit.log — ausearch
+# --start has lied to us) names the culprit process immediately, instead of a
+# multi-hour forensic session against a cold trail.
+#
+# Cost: silent unless something writes/deletes under the watched trees;
+# during normal imports it logs a handful of records per file move.
+# prepare_for_cloning.sh truncates the accumulated log before every clone.
+#
+# Keys match the live investigation's, so documented ausearch commands work
+# unchanged on every unit.
+-w /mnt/ssd/library -p wa -k mdb-tv-sweeper
+-w /mnt/ssd/downloads -p wa -k mdb-dl-sweeper

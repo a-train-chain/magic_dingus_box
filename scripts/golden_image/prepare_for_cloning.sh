@@ -76,6 +76,45 @@ if [[ -f "$MARKER_PATH" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Preflight: secret tripwire — refuse to clone with stray secret-bearing
+# backups on disk
+# ---------------------------------------------------------------------------
+# The SECRET_PATHS machinery below strips every secret this script KNOWS
+# about. What it cannot know about is operator debris: ad-hoc backups made
+# during maintenance sessions. This is not hypothetical — the 2026-08-03
+# pre-golden-image audit found /home/magic/db-backup-*/radarr.db carrying the
+# qBittorrent password in plaintext, plus .env backups, none of which any
+# scrub list named. A dd would have shipped them in every unit.
+#
+# Rather than trying to enumerate-and-stash every possible backup name (the
+# exact failure mode that bit the Backups/ zips), ABORT and make the operator
+# delete or relocate them. Globs are intentionally broad; a false positive
+# costs a minute of moving a file, a false negative ships a credential.
+shopt -s nullglob
+TRIPWIRE_HITS=(
+    /home/magic/db-backup-*
+    /home/magic/*.env.backup* /home/magic/.env.backup*
+    /home/magic/*.env.bak* /home/magic/env-backup*
+    /home/magic/state_backup*
+    /home/magic/.magic_dingus_box_backup*
+    /home/magic/*secret* /home/magic/*credential*
+    /root/db-backup-* /root/*.env*
+)
+shopt -u nullglob
+if [[ ${#TRIPWIRE_HITS[@]} -gt 0 ]]; then
+    log "ERROR: secret tripwire — refusing to clone while these exist:"
+    for hit in "${TRIPWIRE_HITS[@]}"; do
+        log "         $hit"
+    done
+    log "       These look like operator backups that may carry credentials"
+    log "       (API keys, the qBittorrent password, VPN keys). Delete them"
+    log "       or move them off the SD card (e.g. to /mnt/ssd or another"
+    log "       machine), then re-run. The clone captures every byte on the SD."
+    exit 1
+fi
+log "Preflight: secret tripwire clean"
+
+# ---------------------------------------------------------------------------
 # Step 1: Stop services
 # ---------------------------------------------------------------------------
 log "[1/5] Stopping kiosk + Content Manager + Docker stack..."
@@ -294,6 +333,28 @@ SECRET_PATHS=(
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
     "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
+    # Watch history (Phase 3). media_browser.db's watch_state table is the
+    # operator's complete viewing record — every episode/movie watched, resume
+    # positions, timestamps. Personal data, not product content; the kiosk
+    # recreates an empty schema-v3 db on first launch. Globbed for the SQLite
+    # -wal/-shm sidecars (db and WAL must travel together or the restore is
+    # corrupt), and BOTH copies — build/data/ is populated by on-Pi test runs,
+    # the same dual-copy trap flask_secret.key already taught us.
+    # first_boot.sh Step 6 wipes these on the clone as the on-unit safety net;
+    # this entry keeps them out of the .img.gz artifact itself.
+    "/opt/magic_dingus_box/magic_dingus_box_cpp/data/media_browser.db*"
+    "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/media_browser.db*"
+    # The operator's Wi-Fi profile — carries the home network PSK in
+    # plaintext (psk= line, root-readable but faithfully dd'd). first_boot.sh
+    # Step 6c wipes it on the clone; this keeps it out of the artifact.
+    # Safe to remove while the box is USING that Wi-Fi: NetworkManager does
+    # not watch connection files (monitor-connection-files defaults to
+    # false), so the active connection lives in memory until a reload or
+    # reboot — and restore_after_cloning.sh puts the file back (and reloads
+    # NM) before either can happen. The prepare-script header's "do not
+    # reboot between prepare and restore" rule was already load-bearing for
+    # the boot-partition stash; it now covers Wi-Fi continuity too.
+    "/etc/NetworkManager/system-connections/*.nmconnection"
 )
 
 for _app in "${ARR_APPS[@]}"; do
@@ -444,6 +505,31 @@ cat > "$MARKER_PATH" <<EOF
 # put the Pi back into normal state.
 EOF
 chmod 600 "$MARKER_PATH"
+
+# ---------------------------------------------------------------------------
+# Step 4b: Vacuum system logs — the operator's activity record and dead
+# image weight
+# ---------------------------------------------------------------------------
+# The persistent journal + auditd logs measured 112 MB on the source box at
+# audit time. Two reasons they don't ship: (1) they are a verbatim record of
+# the source operator's activity — every service start, download, playback
+# session, and (in audit.log) every watched-path file deletion with full
+# library filenames; (2) they are pure dead weight in every .img.gz copy.
+# NOT stash-and-restored: logs are disposable by design, and keeping ~16 MB
+# of recent journal preserves enough context for post-clone debugging on the
+# source. auditd keeps running with a truncated log — the tripwire rules
+# stay armed throughout.
+log "[4b/5] Vacuuming journal + audit logs..."
+journalctl --rotate 2>/dev/null || true
+journalctl --vacuum-size=16M 2>&1 | tail -1 | sed 's/^/    /' || true
+if [[ -d /var/log/audit ]]; then
+    # Truncate in place rather than delete: auditd holds the fd open and
+    # keeps writing; a deleted file would hold its blocks invisibly until
+    # the daemon restarts. Rotated siblings (audit.log.1 ...) go entirely.
+    rm -f /var/log/audit/audit.log.* 2>/dev/null || true
+    truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
+    log "[4b/5] audit logs truncated (rules stay armed)"
+fi
 
 # ---------------------------------------------------------------------------
 # Step 5: Flush dirty pages to SD so dd reads consistent state

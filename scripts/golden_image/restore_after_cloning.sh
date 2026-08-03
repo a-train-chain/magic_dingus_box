@@ -141,6 +141,13 @@ if [[ -f "${SECRET_STASH}/manifest" ]]; then
     sync
     rm -rf "$SECRET_STASH"
     log "[1/4] Restored ${restored} application secret(s) and cleared the stash"
+
+    # The stash now includes the Wi-Fi profile (*.nmconnection). The active
+    # connection survived in NM's memory while the file was gone (NM does not
+    # watch connection files); reload so NM's file view matches again rather
+    # than waiting for the next reboot. Best-effort — Ethernet-only boxes
+    # have nothing to reload.
+    nmcli connection reload 2>/dev/null || true
 else
     log "[1/4] No application-secret stash found (nothing to restore)"
 fi

@@ -44,7 +44,13 @@ sudo apt install -y \
   gstreamer1.0-libav \
   python3-evdev \
   python3-pip \
+  auditd \
   dnsmasq
+
+# auditd powers the library-deletion tripwire (scripts/data/
+# audit-mdb-sweeper.rules, installed by setup_services.sh). It earned its
+# place in the base install on 2026-08-02, when the TV library was deleted
+# four times (31 GB) and no application log named the actor — auditd did.
 
 # Phone Remote — flask-sock for WebSocket support is not in Debian Bookworm
 # repos. Install via pip with --break-system-packages so the system python

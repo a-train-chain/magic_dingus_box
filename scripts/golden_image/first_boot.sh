@@ -343,6 +343,43 @@ except Exception as e:
     log "[6/7] Reset media_browser_unlocked flag (cloned Pi starts locked)"
 fi
 
+# Reset the source operator's personal Media Browser browse-filter state to
+# factory defaults. These keys record what the OPERATOR was browsing —
+# Movies-vs-TV mode, library sort/filter, and the per-mode discover filters
+# (decade / genre / language / rating / runtime / sort for popular and
+# top-rated, movie and TV variants). A customer's fresh box should not open
+# to someone else's 2020s-decade filter. The settings loader is
+# absent-tolerant by contract (settings_persistence.cpp: "Every key is
+# absent-tolerant"), so DELETING the keys is the reset — the kiosk fills in
+# defaults on next load and rewrites the file.
+#
+# Deliberately NOT touched: display.mode (Modern TV is the shipped standard),
+# every *_intensity key and mb_playback_show_frame (the tuned CRT overlay
+# look IS the product standard), and audio settings.
+if [[ -f "$SETTINGS_PATH" ]] && command -v python3 &>/dev/null; then
+    python3 -c "
+import json, sys
+try:
+    with open('$SETTINGS_PATH') as f:
+        s = json.load(f)
+    d = s.get('display', {})
+    doomed = [k for k in d
+              if k in ('mb_mode', 'mb_library_sort', 'mb_library_filter')
+              or k.startswith(('mb_popular_', 'mb_toprated_',
+                               'mb_tv_popular_', 'mb_tv_toprated_'))]
+    for k in doomed:
+        del d[k]
+    if doomed:
+        s['display'] = d
+        with open('$SETTINGS_PATH', 'w') as f:
+            json.dump(s, f, indent=2)
+    print(f'reset {len(doomed)} personal browse-filter key(s) to defaults')
+except Exception as e:
+    print(f'could not reset filters: {e}', file=sys.stderr)
+" 2>&1 | sed 's/^/    /' || true
+    log "[6/7] Reset personal browse filters (customer starts at factory defaults)"
+fi
+
 # Phone Remote: a cloned Pi must NOT inherit the source's paired phones
 # or its Flask HMAC secret. Wiping flask_secret.key forces create_app() to
 # generate a fresh one on first boot, which invalidates any cookies issued
@@ -384,15 +421,42 @@ done
 # the loop above, so a clone kept a working copy of the source box's Flask
 # HMAC secret and its paired-phone records. A phone paired to the source
 # would have authenticated against the clone.
+#
+# kiosk_status.json and seek_request.json are here for the same reason they
+# are in the data/ list above: transient kiosk↔Flask state a fresh box
+# regenerates on demand, and the build copy shipped when only data/ was wiped.
 BUILD_DATA_DIR="${CPP_DIR}/build/data"
 if [[ -d "$BUILD_DATA_DIR" ]]; then
-    for f in paired_remotes.json pairing_session.json pairing_audit.log flask_secret.key; do
+    for f in paired_remotes.json pairing_session.json pairing_audit.log \
+             pending_revocations.txt seek_request.json kiosk_status.json \
+             flask_secret.key; do
         if [[ -f "${BUILD_DATA_DIR}/${f}" ]]; then
             rm -f "${BUILD_DATA_DIR}/${f}"
             log "    wiped: build/data/${f}"
         fi
     done
 fi
+
+# Media Browser watch history. media_browser.db holds the source operator's
+# entire viewing record — every episode and movie watched, resume positions,
+# timestamps (watch_state table, schema v3) — plus their library cache. It is
+# personal data and must not ship on any unit. The glob covers the SQLite
+# -wal/-shm sidecars, which travel with the db or corrupt it. Both copies:
+# data/ (production) and build/data/ (populated by on-Pi test runs). The
+# kiosk recreates an empty db with the full schema on first launch, so
+# deleting it is always safe. prepare_for_cloning.sh also strips these from
+# the image itself; this is the on-unit safety net for a card read between
+# flash and first boot.
+for d in "$DATA_DIR" "$BUILD_DATA_DIR"; do
+    [[ -d "$d" ]] || continue
+    shopt -s nullglob
+    WATCH_DB_FILES=("$d"/media_browser.db*)
+    shopt -u nullglob
+    for f in "${WATCH_DB_FILES[@]}"; do
+        rm -f "$f"
+        log "    wiped: ${f#${INSTALL_DIR}/} (watch history)"
+    done
+done
 
 # Operator's personal TMDB API key. Nothing wiped this before, so every unit
 # made Media Browser metadata calls against one person's key — rate limits are
@@ -536,22 +600,31 @@ else
     log "[6/7] Board is '${PI_MODEL:-unknown}' — no platform pruning needed"
 fi
 
-# NOTE on data/saves, data/states, data/media:
+# Step 6f: Wipe RetroArch saves and save states — units ship PRISTINE.
 #
-# These three directories are deliberately PRESERVED on cloned
-# Pis. The Magic Dingus Box golden-image workflow ships a fully-
-# curated "showcase" experience — the source operator's RetroArch
-# saves, save states, and uploaded videos are part of the product
-# the cloned Pi is meant to deliver. Every flashed Pi should boot
-# into the same production-ready state the source Pi has.
+# History of this decision, because it has flipped twice: v1.5.2 wiped
+# saves here; v1.5.3 reverted to ship the operator's "showcase" progress;
+# 2026-08-03 the operator decided units ship pristine — every customer
+# starts every game fresh. data/media (uploaded videos / playlist content)
+# remains PRESERVED: that is the curated product content, not personal
+# state. Only game progress is wiped.
 #
-# (v1.5.2 introduced a wipe block here; v1.5.3 reverted it after
-# operator clarification that the golden image is meant to ship
-# fully-loaded, not as a fresh-defaults starter image. If you want
-# the wipe behavior for a clean redistribution image, use
-# `prepare_golden_image.sh` on the source before cloning instead —
-# that script intentionally wipes operator content with a clear
-# destructive-action prompt.)
+# Directory skeletons are kept (rm contents, not the dirs) — Step 4 created
+# them and RetroArch's sort_savefiles_by_content_enable recreates per-core
+# subdirs on demand anyway.
+log "[6/7] Wiping RetroArch saves + save states (pristine-unit policy)..."
+for d in "${DATA_DIR}/saves" "${DATA_DIR}/states"; do
+    if [[ -d "$d" ]]; then
+        entry_count=$(find "$d" -mindepth 1 2>/dev/null | wc -l)
+        if [[ "$entry_count" -gt 0 ]]; then
+            find "$d" -mindepth 1 -delete 2>/dev/null || true
+            log "    wiped: ${d#${INSTALL_DIR}/} (${entry_count} entries)"
+        fi
+    fi
+done
+
+# NOTE on data/media: deliberately PRESERVED — uploaded videos and playlist
+# content are the shipped product, same as ROMs, cores, and thumbnails.
 
 # ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)

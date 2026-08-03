@@ -308,6 +308,32 @@ if id magic >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then
     fi
 fi
 
+# (e) auditd library-deletion tripwire. Watches the library + downloads
+#     trees so any future mass-deletion names its culprit process in
+#     audit.log (the 2026-08-02 sweeper incident took hours to attribute
+#     without this; with it, one strike). See the fixture's header for the
+#     full story. auditd itself comes from install_deps.sh; skip cleanly
+#     if it's absent (dev machines). The watched dirs are created first —
+#     auditd refuses a watch on a nonexistent path, and on a box whose SSD
+#     isn't attached yet the empty mount-point dirs are expected anyway.
+if [ -f "${SCRIPT_DIR}/data/audit-mdb-sweeper.rules" ] && \
+   command -v auditctl >/dev/null 2>&1; then
+    sudo mkdir -p /mnt/ssd/library /mnt/ssd/downloads
+    sudo install -m 0640 \
+        "${SCRIPT_DIR}/data/audit-mdb-sweeper.rules" \
+        /etc/audit/rules.d/mdb-tv-sweeper.rules
+    sudo systemctl enable --now auditd >/dev/null 2>&1 || true
+    # augenrules --load merges rules.d/ and applies to the running daemon;
+    # exits nonzero on some auditd versions even on success, so verify by
+    # asking the kernel what it actually loaded.
+    sudo augenrules --load >/dev/null 2>&1 || true
+    if sudo auditctl -l 2>/dev/null | grep -q 'mdb-tv-sweeper'; then
+        echo "auditd library-deletion tripwire armed (keys: mdb-tv-sweeper, mdb-dl-sweeper)."
+    else
+        echo "WARN: auditd tripwire rules did not load — check 'auditctl -l' and /etc/audit/rules.d/mdb-tv-sweeper.rules"
+    fi
+fi
+
 # 3.5. Install + enable the gluetun-cascade-restart watcher (idempotent).
 # Whenever Gluetun (re)starts in isolation — manual `docker stop`, an
 # OOM kill, anything not orchestrated through `docker compose` — the

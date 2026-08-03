@@ -58,42 +58,32 @@ echo "Step 3: Stopping display manager (lightdm)..."
 systemctl stop lightdm.service 2>/dev/null || true
 echo "  ✓ Display manager stopped"
 
-# Step 3.5: Configure GPIO overlay for power switch
+# Step 3.5: Ensure the RETIRED gpio-shutdown overlay is absent
 echo ""
-echo "Step 3.5: Configuring GPIO3 power switch overlay..."
+echo "Step 3.5: Checking for retired GPIO3 gpio-shutdown overlay..."
 BOOT_CONFIG="/boot/config.txt"
 # For newer Raspberry Pi OS, config may be in /boot/firmware/config.txt
 if [ ! -f "$BOOT_CONFIG" ] && [ -f "/boot/firmware/config.txt" ]; then
     BOOT_CONFIG="/boot/firmware/config.txt"
 fi
 
-# Power switch wiring:
-#   Toggle COM -> GPIO3
-#   Toggle ON throw -> GND
-#   Toggle OFF throw -> unconnected
-# Behavior:
-#   Switch ON: GPIO3 = LOW (connected to GND) -> Pi runs normally
-#   Switch OFF: GPIO3 = HIGH (pull-up) -> triggers shutdown
-#   Switch OFF->ON: GPIO3 goes LOW -> wakes from halt (hardware feature)
-GPIO_OVERLAY="dtoverlay=gpio-shutdown,gpio_pin=3,active_low=0,gpio_pull=up"
-
-if [ -f "$BOOT_CONFIG" ]; then
-    if grep -q "dtoverlay=gpio-shutdown" "$BOOT_CONFIG"; then
-        echo "  Updating existing GPIO shutdown overlay..."
-        # Remove old overlay line and add new one
-        sed -i '/dtoverlay=gpio-shutdown/d' "$BOOT_CONFIG"
-        sed -i '/# GPIO3.*Magic Dingus Box/d' "$BOOT_CONFIG"
-    fi
-    echo "  Adding GPIO power switch overlay to $BOOT_CONFIG..."
-    echo "" >> "$BOOT_CONFIG"
-    echo "# GPIO3 power switch (Magic Dingus Box)" >> "$BOOT_CONFIG"
-    echo "# ON position = GPIO3 LOW (run), OFF position = GPIO3 HIGH (shutdown)" >> "$BOOT_CONFIG"
-    echo "$GPIO_OVERLAY" >> "$BOOT_CONFIG"
-    echo "  ✓ GPIO overlay configured (reboot required for this change to take effect)"
+# This step used to INSTALL dtoverlay=gpio-shutdown on GPIO 3 — flip the
+# switch OFF and the Pi powered off, needing a 90s+ boot (and an fsck
+# cycle) to recover. kiosk-standby-watcher.service replaced that design
+# with kiosk standby (~10s wake, Pi stays up), and the two must never
+# coexist: both act on GPIO 3, and the overlay's poweroff fires no matter
+# what the watcher intends. Harness setup (switch, LEDs, restart button)
+# now lives in scripts/setup_harness_services.sh; this step only cleans
+# up boxes that ran the old version of this script.
+if [ -f "$BOOT_CONFIG" ] && grep -q "dtoverlay=gpio-shutdown" "$BOOT_CONFIG"; then
+    sed -i '/dtoverlay=gpio-shutdown/d' "$BOOT_CONFIG"
+    sed -i '/# GPIO3.*Magic Dingus Box/d' "$BOOT_CONFIG"
+    sed -i '/# ON position = GPIO3 LOW/d' "$BOOT_CONFIG"
+    echo "  ✓ Removed retired gpio-shutdown overlay (reboot to apply)"
 else
-    echo "  ⚠ Warning: $BOOT_CONFIG not found - please manually add:"
-    echo "    $GPIO_OVERLAY"
+    echo "  ✓ No retired overlay present"
 fi
+echo "  Harness setup: scripts/setup_harness_services.sh"
 
 # Step 4: Install the canonical service file
 echo ""
