@@ -590,6 +590,16 @@ bool SonarrClient::trigger_series_search(int sonarr_id) {
     return !http_post("/api/v3/command", body.str()).empty();
 }
 
+bool SonarrClient::trigger_episode_search(int episode_id) {
+    // Same clear-first rule as trigger_season_search: without it a success
+    // here would leave a PRIOR call's error text sitting in last_error()
+    // for the UI to surface as if it were current.
+    set_error({});
+    std::ostringstream body;
+    body << R"({"name":"EpisodeSearch","episodeIds":[)" << episode_id << R"(]})";
+    return !http_post("/api/v3/command", body.str()).empty();
+}
+
 bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
     set_error({});
     const std::string path = "/api/v3/series/" + std::to_string(sonarr_id)

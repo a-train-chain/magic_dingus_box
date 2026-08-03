@@ -185,6 +185,9 @@ bool SonarrMockClient::set_season_monitored(int sonarr_id, int season_number,
 
 bool SonarrMockClient::trigger_season_search(int /*id*/, int /*season*/) { return true; }
 bool SonarrMockClient::trigger_series_search(int /*id*/) { return true; }
+// Honest false — see the header comment: keyless boxes must not claim a
+// search started.
+bool SonarrMockClient::trigger_episode_search(int /*episode_id*/) { return false; }
 
 bool SonarrMockClient::remove_series(int sonarr_id, bool /*delete_files*/) {
     auto it = std::remove_if(library_.begin(), library_.end(),

@@ -557,6 +557,37 @@ else
     echo "Note: missing-search assets not found, skipping install."
 fi
 
+# 4.1. Install + enable the episode-priority timer (Quick Start ordering).
+#
+# The kiosk's Quick Start fires a single-episode E1 search alongside every
+# season search so something watchable lands in minutes (~2 GB single vs a
+# 10-30 GB pack). When several per-episode torrents are queued at once,
+# qBittorrent downloads them in the order they were ADDED — indexer-response
+# order, not episode order. episode_priority.py keeps each series-season's
+# single-episode torrents downloading in EPISODE order so a binge always has
+# the next episode arriving first. Idempotent: a correctly ordered queue
+# produces zero API calls, and an unreachable qBit exits 0 (no unit flap at
+# the 2-minute cadence).
+EPISODE_PRIORITY_DIR="${SCRIPT_DIR}/episode_priority"
+if [ -f "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" ] && \
+   [ -f "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.timer" ] && \
+   [ -f "${EPISODE_PRIORITY_DIR}/episode_priority.py" ]; then
+    # NOTE: no copy to /usr/local/bin — same rule as missing-search above:
+    # this unit's ExecStart points at the deployed repo path, so a
+    # /usr/local/bin copy would never be executed and would silently go stale.
+    sudo install -m 0644 \
+        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.service" \
+        /etc/systemd/system/magic-dingus-episode-priority.service
+    sudo install -m 0644 \
+        "${EPISODE_PRIORITY_DIR}/magic-dingus-episode-priority.timer" \
+        /etc/systemd/system/magic-dingus-episode-priority.timer
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now magic-dingus-episode-priority.timer
+    echo "Episode-priority timer (every 2min) installed + active."
+else
+    echo "Note: episode-priority assets not found, skipping install."
+fi
+
 # 4.4. Phone Remote — udev rule + group membership for /dev/uinput access.
 #
 # Grants the magic-dingus-web service user permission to open uinput so the
