@@ -313,7 +313,7 @@ medium, so playback quiets qBittorrent — but HOW is per-board
 `PlaybackScreen::enter()/leave()`):
 
 - **Pi 5 movies: trickle, not pause.** Playback engages qBit's
-  *alternative speed limits* (~1.5 MB/s down / 256 KiB/s up) instead of
+  *alternative speed limits* (~2 MiB/s (bytes-unit field — see qbittorrent_client.h) down / 256 KiB/s up) instead of
   `pause_all()` — the SSD library and spare CPU absorb a trickle, so
   downloads keep progressing through a 2-hour film instead of the swarm
   being stopped. qBit 5.x has no explicit-set endpoint for the mode

@@ -172,14 +172,15 @@ TEST_CASE("alt limits: success means the FINAL state matches — a toggle "
     REQUIRE_FALSE(q.last_error().empty());
 }
 
-TEST_CASE("configure_alt_speed_limits posts KiB/s rates as json= preferences",
+TEST_CASE("configure_alt_speed_limits posts BYTES/s rates as json= preferences",
           "[qbit][alt-speed]") {
     FakeQbit q;
-    REQUIRE(q.configure_alt_speed_limits(1536, 256));
+    REQUIRE(q.configure_alt_speed_limits(2097152, 1048576));
     REQUIRE(q.post_bodies.size() == 1);
     // alt_dl_limit / alt_up_limit are KiB/s in qBit's preferences JSON —
-    // 1536 KiB/s = the 1.5 MB/s movie trickle, 256 KiB/s up.
+    // 2 MiB/s down / 1 MiB/s up IN BYTES — the field is bytes/s on
+    // qBit 5.0.3 (live-verified; the KiB docs are wrong).
     REQUIRE(q.post_bodies[0] ==
             "/api/v2/app/setPreferences|"
-            "json={\"alt_dl_limit\":1536,\"alt_up_limit\":256}");
+            "json={\"alt_dl_limit\":2097152,\"alt_up_limit\":1048576}");
 }

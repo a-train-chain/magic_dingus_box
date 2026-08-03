@@ -486,7 +486,7 @@ bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
     return true;
 }
 
-bool QbittorrentClient::configure_alt_speed_limits(int dl_kib_s, int up_kib_s) {
+bool QbittorrentClient::configure_alt_speed_limits(int dl_bytes_s, int up_bytes_s) {
     // setPreferences takes a form-urlencoded body whose single field is
     // json=<object>. alt_dl_limit / alt_up_limit are in KiB/s (preference
     // units — NOT the byte/s of the /transfer/ limit endpoints).
@@ -494,17 +494,17 @@ bool QbittorrentClient::configure_alt_speed_limits(int dl_kib_s, int up_kib_s) {
     // set_alt_speed_limits_enabled above.
     set_error({});
     const std::string body = "json={\"alt_dl_limit\":"
-                           + std::to_string(dl_kib_s)
+                           + std::to_string(dl_bytes_s)
                            + ",\"alt_up_limit\":"
-                           + std::to_string(up_kib_s) + "}";
+                           + std::to_string(up_bytes_s) + "}";
     http_post("/api/v2/app/setPreferences", body);
     if (!last_error().empty()) {
         spdlog::warn("[qbit] configure_alt_speed_limits({}, {}) failed: {}",
-                     dl_kib_s, up_kib_s, last_error());
+                     dl_bytes_s, up_bytes_s, last_error());
         return false;
     }
     spdlog::info("[qbit] alt speed limits configured (dl={} KiB/s, up={} KiB/s)",
-                 dl_kib_s, up_kib_s);
+                 dl_bytes_s, up_bytes_s);
     return true;
 }
 

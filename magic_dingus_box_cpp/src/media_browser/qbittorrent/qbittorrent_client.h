@@ -144,7 +144,12 @@ public:
     // KiB/s — qBit's preference unit, unlike the byte/s transfer
     // endpoints). Called once at kiosk startup so every box converges on
     // the tuned trickle rates regardless of what the WebUI defaults were.
-    virtual bool configure_alt_speed_limits(int dl_kib_s, int up_kib_s);
+    // UNITS ARE BYTES/S — live-verified against qBit 5.0.3 (2026-08-03):
+    // the community API docs claim KiB/s for alt_dl_limit/alt_up_limit,
+    // but /transfer/downloadLimit echoed our value back as bytes/s and
+    // the enforced rate matched. The original KiB assumption shipped a
+    // 1.5 KB/s strangle that zeroed every download during trickle.
+    virtual bool configure_alt_speed_limits(int dl_bytes_s, int up_bytes_s);
 
     // Diagnostics. Copy under err_mtx_ — the render thread reads this
     // while worker threads run client calls that write it (same race
