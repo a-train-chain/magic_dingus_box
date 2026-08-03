@@ -97,6 +97,27 @@ def http(base, key, method, path, body=None):
         return json.loads(raw) if raw else None
 
 
+def in_boot_window(min_uptime_s=600) -> bool:
+    """True during the first minutes after boot — skip the sweep entirely.
+
+    The download-client health check below proved INSUFFICIENT on its own
+    (observed live 2026-08-02, second incident): qBittorrent was up and
+    healthy at the OnBootSec catch-up, but Sonarr's tracked-download view
+    was still cold (RefreshMonitoredDownloads had not completed), so the
+    in-queue rejection saw an empty queue and the sweep grabbed SEVEN
+    per-episode duplicates of a fully-downloaded season pack. Tracking
+    warmth is not observable via any single API flag, so the honest guard
+    is time: the boot catch-up exists to cover machines that were OFF for
+    days — deferring it ten minutes costs nothing, and the regular 4 h
+    cadence is unaffected (uptime is far past the gate by then).
+    """
+    try:
+        with open("/proc/uptime") as f:
+            return float(f.read().split()[0]) < min_uptime_s
+    except (OSError, ValueError):
+        return False
+
+
 def download_client_unavailable(base, key) -> bool:
     """True when the *arr reports its download client unreachable.
 
@@ -214,6 +235,12 @@ def main():
     except FileNotFoundError:
         print("[missing-search] no services/.env — skipping (unprovisioned Pi)")
         return 0
+
+    if in_boot_window():
+        print("[missing-search] within 10 min of boot — deferring sweep "
+              "(tracking may be cold; duplicate-grab guard). "
+              "Next timer tick covers it.")
+        return 1
 
     rc = 0
     if keys.get("RADARR_API_KEY"):
