@@ -112,7 +112,8 @@ void SeriesDetailScreen::enter() {
             target.has_value() && *target == want) {
             dispatch_action(Action::NextSeason);
         } else {
-            ::ui::Toast::show("Season already started");
+            ::ui::Toast::show(
+                "Season update didn't apply — try from this screen");
         }
     }
 }

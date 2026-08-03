@@ -82,7 +82,8 @@ public:
     // (PRE-leave); consumed in enter(), which re-derives the target via
     // next_unmonitored_season and runs the EXISTING NextSeason dispatch
     // only when they still agree — drift means the world changed while
-    // playing, and the safe answer is a "Season already started" toast.
+    // playing, and the safe answer is a no-op said out loud ("Season
+    // update didn't apply — try from this screen").
     void set_pending_intent_next_season(int season) {
         pending_intent_next_season_ = season;
     }

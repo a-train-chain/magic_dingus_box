@@ -43,7 +43,8 @@ struct Episode {
 // so the three file_* fields keep their empty/0 defaults; runtime may be 0
 // (specials) and is stored as-is — callers fall back to the series runtime.
 // episode_logic.h's templates touch ONLY season_number / episode_number /
-// has_file; those three names are load-bearing.
+// has_file / title (title feeds decide_end_overlay's countdown line);
+// those four names are load-bearing.
 struct EpisodeInfo {
     int id = 0;
     int season_number = 0;

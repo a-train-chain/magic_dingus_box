@@ -37,6 +37,10 @@ constexpr int kKeyHintLabelGap   = 6;          // Gap between the [key] and its 
 constexpr int kBadgeFontPx       = 12;
 constexpr int kBadgePadX         = 6;
 constexpr int kBadgePadY         = 2;
+// The public badge box height (mb_chrome.h) is what other screens
+// stack their own chips against — keep it welded to the layout here.
+static_assert(kBadgeBoxH == kBadgeFontPx + 2 * kBadgePadY,
+              "chrome::kBadgeBoxH must track the badge font/padding");
 constexpr int kTabFontPx         = 24;          // ZenDots section size
 constexpr int kTabHorizPad       = 10;          // was kPad3 (16) — 7-chip strip fit
 constexpr int kTabVertPad        = kPad2;       // Inside-tab vertical padding
@@ -110,7 +114,7 @@ ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y) {
     const std::string label = "IN LIBRARY";
     const int text_w = r.mb_text_width(label, kBadgeFontPx);
     const int box_w  = text_w + 2 * kBadgePadX;
-    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    const int box_h  = kBadgeBoxH;
     // Solid bg fill so the chip stays readable over any poster art.
     r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
                    static_cast<float>(box_w), static_cast<float>(box_h),
@@ -137,7 +141,7 @@ ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y,
     const std::string label = "DOWNLOADING";
     const int text_w = r.mb_text_width(label, kBadgeFontPx);
     const int box_w  = text_w + 2 * kBadgePadX;
-    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    const int box_h  = kBadgeBoxH;
     r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
                    static_cast<float>(box_w), static_cast<float>(box_h),
                    th.bg);
@@ -161,7 +165,7 @@ ChipRect draw_importing_badge(::ui::Renderer& r, int x, int y) {
     const std::string label = "IMPORTING";
     const int text_w = r.mb_text_width(label, kBadgeFontPx);
     const int box_w  = text_w + 2 * kBadgePadX;
-    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    const int box_h  = kBadgeBoxH;
     r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
                    static_cast<float>(box_w), static_cast<float>(box_h),
                    th.bg);
@@ -180,7 +184,7 @@ ChipRect draw_stuck_badge(::ui::Renderer& r, int x, int y) {
     const std::string label = "BAD RELEASE";
     const int text_w = r.mb_text_width(label, kBadgeFontPx);
     const int box_w  = text_w + 2 * kBadgePadX;
-    const int box_h  = kBadgeFontPx + 2 * kBadgePadY;
+    const int box_h  = kBadgeBoxH;
     // Fill the badge with the warning color so it pops harder than
     // the bordered DOWNLOADING chip — stuck items should jump out
     // at a glance.

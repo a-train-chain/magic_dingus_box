@@ -147,14 +147,16 @@ static void reload_menu_overlays(platform::InputManager& input) {
 #ifdef MEDIA_BROWSER_ENABLED
 // Persist the in-flight playback position for the active watch identity
 // (resume-on-next-play). ORDERING CONTRACT — called at ALL THREE Playback
-// exit sites in the dispatcher, ALWAYS BEFORE active_mb_screen->leave()
-// and in the SAME frame as the transition decision (update_state ran at
-// frame top, so the position read is valid). leave() calls
-// controller.stop(), which zeroes the pipeline's position/duration, and
-// the next Controller::update_state() copies the zeros into AppState — a
-// post-leave or next-frame call would upsert (0, 0) and CLOBBER the
-// resume point (WatchStore's MAX() ratchet protects only `watched`,
-// never position). Skips when the identity is disengaged (untracked
+// exit sites in the dispatcher, ALWAYS BEFORE active_mb_screen->leave().
+// Controller::update_state runs at the BOTTOM of the frame loop, and only
+// every other frame, so the position read here is up to 2 frames stale —
+// but it was captured while the pipeline was still playing, which is
+// exactly what a resume point wants. The hazard is ordering, not
+// staleness: leave() calls controller.stop(), which zeroes the pipeline's
+// position/duration, and the next Controller::update_state() copies the
+// zeros into AppState — a post-leave (or later-frame) call would upsert
+// (0, 0) and CLOBBER the resume point (WatchStore's MAX() ratchet
+// protects only `watched`, never position). Skips when the identity is disengaged (untracked
 // playback) or the position reads 0: a 0 write is at best worthless and
 // at worst — when a prior checkpoint holds a real position — destroys it.
 static void flush_watch_state(media_browser::ui::PlaybackScreen& playback,
@@ -2459,11 +2461,12 @@ int main(int /* argc */, char* /* argv */[]) {
                 }
                 // Leaving Playback for a sibling screen (BTN4 back to
                 // Detail, natural movie EOS, etc.): flush the watch
-                // position BEFORE leave() and in THIS frame — update_state
-                // ran at frame top so the read is valid; one frame later
-                // (or one line later, post-leave) it reads 0/0 and
-                // clobbers the resume point. Third of the three exit
-                // sites; see flush_watch_state.
+                // position BEFORE leave() — update_state runs at the
+                // BOTTOM of the loop (every other frame), so the read is
+                // up to 2 frames stale but pre-stop-valid; one line later
+                // (post-leave, after stop() zeroes the pipeline) it
+                // reads 0/0 and clobbers the resume point. Third of the
+                // three exit sites; see flush_watch_state.
                 if (current_mb_screen == media_browser::ui::Screen::Playback &&
                     next != media_browser::ui::Screen::Playback) {
                     flush_watch_state(mb_playback, watch_store, state);

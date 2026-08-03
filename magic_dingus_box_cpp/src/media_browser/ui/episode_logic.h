@@ -7,10 +7,11 @@
 // can pin it on the Mac. Same rationale as series_detail_logic.h.
 //
 // The episode functions template on the episode type and touch ONLY
-// .season_number / .episode_number / .has_file: EpisodeInfo is defined by the
+// .season_number / .episode_number / .has_file / .title (title is consumed
+// by decide_end_overlay's countdown line): EpisodeInfo is defined by the
 // Sonarr layer (Task 2), and depending on it here would make this header
 // uncompilable on its own and untestable without the client. The tests compile
-// the templates against a three-field fake — the minimal contract, enforced.
+// the templates against a four-field fake — the minimal contract, enforced.
 
 #include <cstdio>
 #include <string>

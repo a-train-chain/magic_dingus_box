@@ -196,6 +196,10 @@ std::optional<WatchStore::Row> WatchStore::movie_watch(int tmdb_id) {
     row.position_s = sqlite3_column_double(s, 2);
     row.duration_s = sqlite3_column_double(s, 3);
     row.watched = sqlite3_column_int(s, 4) != 0;
+    // Reset now, not at the next call: a statement left sitting on
+    // SQLITE_ROW keeps its read snapshot (and cursor) open. The other
+    // readers all step through to done; match that hygiene here.
+    sqlite3_reset(s);
     return row;
 }
 

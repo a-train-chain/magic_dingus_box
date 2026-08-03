@@ -841,11 +841,9 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 constexpr int kTvChipFontPx = 12;
                 constexpr int kTvChipPadX   = 6;
                 constexpr int kTvChipPadY   = 2;
-                // Badge box height in mb_chrome: font 12 + 2*pad 2 = 16.
-                constexpr int kBadgeBoxH    = 16;
                 const std::string tv_label = "TV";
                 const int chip_x = x + chrome::kPad1;
-                const int chip_y = y + chrome::kPad1 + kBadgeBoxH
+                const int chip_y = y + chrome::kPad1 + chrome::kBadgeBoxH
                                  + chrome::kPad1;
                 const int text_w = r.mb_text_width(tv_label, kTvChipFontPx);
                 const int box_w  = text_w + 2 * kTvChipPadX;
