@@ -1,0 +1,18 @@
+[Unit]
+Description=Reorder per-episode torrent downloads into episode order every 2 minutes
+Requires=magic-dingus-episode-priority.service
+
+[Timer]
+# 2 minutes after boot (the docker stack needs a moment; the script
+# exits 0 harmlessly if qBit is still down), then every 2 minutes —
+# tight enough that a Quick Start binge's next episode is re-prioritized
+# well inside one episode's runtime. Persistent=false on purpose: queue
+# ORDER is ephemeral state with no catch-up value — a tick missed while
+# the box was off is meaningless once the next tick re-derives the whole
+# ordering from scratch.
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

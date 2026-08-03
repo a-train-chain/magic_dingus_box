@@ -37,6 +37,12 @@ public:
     bool set_season_monitored(int sonarr_id, int season_number, bool monitored) override;
     bool trigger_season_search(int sonarr_id, int season_number) override;
     bool trigger_series_search(int sonarr_id) override;
+    // false, unlike the two triggers above: this mock stands in for a box
+    // with NO Sonarr configured (main.cpp's keyless fallback), and Quick
+    // Start treats the return as "did a real search start?" — a keyless box
+    // must answer no, not pretend. Callers are best-effort by contract, so
+    // false costs one info log and nothing else.
+    bool trigger_episode_search(int episode_id) override;
     bool remove_series(int sonarr_id, bool delete_files = false) override;
     // Always nullopt, same honesty rule as get_library_checked above: the
     // checked contract is reachability, this mock stands in for a box with NO

@@ -206,6 +206,11 @@ public:
     // sweeps the entire library.
     virtual bool trigger_season_search(int sonarr_id, int season_number);
     virtual bool trigger_series_search(int sonarr_id);
+    // Single-episode search: {"name":"EpisodeSearch","episodeIds":[id]}.
+    // Quick Start's fast lane — a ~2 GB single-episode release lands in
+    // minutes while the season pack fills in behind it. The episode id
+    // comes from get_episodes_checked, never guessed.
+    virtual bool trigger_episode_search(int episode_id);
 
     // DELETE /api/v3/series/{id}. Never sets addImportListExclusion — the
     // user is deleting a download, not blacklisting the show.

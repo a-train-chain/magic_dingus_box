@@ -44,6 +44,55 @@ constexpr int kIndicatorRowH = 24;
 // only after it has already painted, which is too late to decline.
 constexpr int kButtonFontPx = 18;
 constexpr int kButtonPadX_px = 18;
+
+// Quick Start: after a season's search/monitor has landed, ALSO fire a
+// search scoped to that season's episode 1. A season pack is typically
+// 10-30 GB and takes an hour+; a single-episode release (~1-2 GB) lands in
+// minutes and imports hardlink-instant, so E1 is watchable while the pack
+// fills in behind it. Sonarr itself dedupes the overlap: whichever grab
+// covers E1 first wins and the loser's release is rejected in-queue.
+//
+// STRICTLY BEST-EFFORT, by contract with the mutation workers that call
+// it: runs INSIDE the worker (worker-thread HTTP is correct there — the
+// mutation lane serializes), but only after the user-visible outcome is
+// already decided. Every failure path logs at info and returns — it never
+// touches toasts, mut_* publish state, or the drain. Callers must never
+// let its result change theirs.
+//
+// The episode fetch right after an add/settle is expected to be usable
+// (metadata refresh is done at settle, so ids are real), but nullopt
+// (transport blip) or an empty list (refresh drift, garbage body) are
+// both quietly acceptable: the season search already queued covers the
+// content either way.
+void fire_episode1_search(SonarrClient& sonarr, int sid, int season,
+                          const std::string& title) {
+    if (sid <= 0 || season <= 0) return;
+    const auto eps = sonarr.get_episodes_checked(sid);
+    if (!eps.has_value() || eps->empty()) {
+        spdlog::info("[SeriesDetail] quick-start: no episode list for '{}' "
+                     "S{} — skipping E1 search", title, season);
+        return;
+    }
+    for (const auto& ep : *eps) {
+        if (ep.season_number != season || ep.episode_number != 1) continue;
+        if (ep.has_file) {
+            // Already on disk — nothing to fast-lane.
+            return;
+        }
+        if (ep.id <= 0) return;  // unusable id: never POST a guess
+        if (sonarr.trigger_episode_search(ep.id)) {
+            spdlog::info("[SeriesDetail] quick-start: E1 search fired for "
+                         "'{}' S{}E1 (episode id {})", title, season, ep.id);
+        } else {
+            spdlog::info("[SeriesDetail] quick-start: E1 search for '{}' S{} "
+                         "didn't start — the season search still covers it",
+                         title, season);
+        }
+        return;
+    }
+    spdlog::info("[SeriesDetail] quick-start: '{}' S{} has no episode 1 — "
+                 "skipping E1 search", title, season);
+}
 }  // namespace
 
 SeriesDetailScreen::SeriesDetailScreen(SonarrClient& sonarr, TmdbClient& tmdb,
@@ -739,6 +788,11 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     }
                     const bool searched =
                         sonarr_.trigger_season_search(sid, first_season);
+                    // Quick Start rides only on a search that actually
+                    // started; on the RSS fallback there is no pack grab to
+                    // outrun. Best-effort — see fire_episode1_search.
+                    if (searched)
+                        fire_episode1_search(sonarr_, sid, first_season, title);
                     fresh = sonarr_.get_series(sid);
                     toast = searched
                         ? title + ": Season " + std::to_string(first_season) +
@@ -757,6 +811,12 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // searchForMissingEpisodes rode in with monitor=true.
                     toast = title + ": Season " + std::to_string(first_season) +
                             " search started";
+                    // Quick Start: the add-time search is already hunting the
+                    // season pack; pair it with the fast E1 single. Settled
+                    // (this whole branch is behind res.settled) means the
+                    // metadata refresh is done, so episode ids are real.
+                    // Best-effort — see fire_episode1_search.
+                    fire_episode1_search(sonarr_, sid, first_season, title);
                 }
                 std::lock_guard<std::mutex> lk(mut_mtx_);
                 if (fresh.has_value()) {
@@ -790,6 +850,11 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     return;
                 }
                 const bool searched = sonarr_.trigger_season_search(sid, season);
+                // Quick Start: fast E1 single alongside the season pack.
+                // Only when the season search actually started, and strictly
+                // best-effort — see fire_episode1_search.
+                if (searched)
+                    fire_episode1_search(sonarr_, sid, season, title);
                 auto fresh = sonarr_.get_series(sid);
                 std::lock_guard<std::mutex> lk(mut_mtx_);
                 mut_toast_ = searched

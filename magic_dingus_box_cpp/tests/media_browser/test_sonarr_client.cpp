@@ -667,6 +667,17 @@ TEST_CASE("trigger_series_search posts the SeriesSearch command",
     CHECK(s.post_body == R"({"name":"SeriesSearch","seriesId":7})");
 }
 
+TEST_CASE("trigger_episode_search posts the EpisodeSearch command",
+          "[sonarr][commands]") {
+    // Pins the exact wire shape: episodeIds is an ARRAY even for one id —
+    // Sonarr's EpisodeSearchCommand deserializes a List<int>, and a bare
+    // int would 400 without ever reaching an indexer.
+    PutSonarr s;
+    REQUIRE(s.trigger_episode_search(42));
+    CHECK(s.post_path == "/api/v3/command");
+    CHECK(s.post_body == R"({"name":"EpisodeSearch","episodeIds":[42]})");
+}
+
 TEST_CASE("remove_series deletes with files and no import-list exclusion",
           "[sonarr][remove]") {
     PutSonarr s;

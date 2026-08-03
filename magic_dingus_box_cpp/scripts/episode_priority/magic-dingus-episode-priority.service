@@ -1,0 +1,14 @@
+[Unit]
+Description=Magic Dingus Box — keep per-episode TV torrents downloading in episode order
+After=magic-dingus-services.service
+Requires=docker.service
+ConditionPathExists=/opt/magic_dingus_box/services/.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/episode_priority/episode_priority.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
