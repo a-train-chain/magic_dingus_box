@@ -189,11 +189,26 @@ the first Pi 5 golden image:
   lose one, failing with "Failed to set DRM master (Permission
   denied)". Production images must never ship with a display
   manager enabled.
-- **kiosk-standby-watcher caveat**: do NOT enable the watcher on a
-  bench Pi with no switch harness attached — GPIO 3 floats HIGH
-  (pull-up), which reads as "switch OFF" and the watcher stops the
-  kiosk on every boot. Enable it only in the final image for units
-  that ship with the physical switch.
+- **kiosk-standby-watcher (updated 2026-08-03)**: the watcher is now
+  clone-safe and ships ENABLED — its reconcile acts only on runtime
+  switch transitions and never stops services on an ambiguous
+  HIGH-at-boot (an unwired switch floats HIGH), so a bench Pi without
+  the harness just runs normally. Install everything harness-related
+  with `magic_dingus_box_cpp/scripts/setup_harness_services.sh`
+  (watcher + LED animations + the GPIO 24 restart-button overlay).
+  Two hard rules it encodes: power-switch-check.service must never be
+  auto-enabled (it halts on that same ambiguous HIGH), and the kiosk
+  must never claim GPIO 24 (the gpio-key overlay's kernel driver owns
+  it; claiming it fails the kiosk's whole GPIO bulk request and kills
+  every button and LED — observed live 2026-08-03).
+- **Pre-clone hygiene (2026-08-03)**: `prepare_for_cloning.sh` now
+  ABORTS if stray operator backups sit in /home/magic (secret
+  tripwire — delete them or move them to /mnt/ssd, which the SD-only
+  dd never captures), strips the watch-history DB and the operator's
+  Wi-Fi profile from the image, and vacuums journal + audit logs.
+  `first_boot.sh` wipes RetroArch saves/states on new units (pristine
+  policy, decided 2026-08-03 — data/media playlist content still
+  ships) and resets the personal mb_* browse filters to defaults.
 - **MOVIES drive automount + library self-import**: fstab gets
   `LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2`
   and `magic-dingus-library-import.service` (WantedBy=mnt-ssd.mount)

@@ -324,9 +324,14 @@ int main(int /* argc */, char* /* argv */[]) {
         LOG_DEBUG("GPIO not available (normal if not on Raspberry Pi)");
     } else {
         LOG_DEBUG("GPIO initialized");
-        // Stop the boot LED chase sequence now that the app is starting
-        gpio.stop_boot_led_sequence();
     }
+    // Stop the boot LED chase sequence now that the app is starting.
+    // UNCONDITIONAL — when GPIO init fails on a real Pi (2026-08-03: a
+    // kernel-owned line failed the whole bulk request), the animation
+    // service otherwise keeps pinctrl-poking the LED pins all session,
+    // fighting whoever owns them next. Off-Pi the systemctl inside is a
+    // harmless no-op.
+    gpio.stop_boot_led_sequence();
 
     // Initialize GStreamer player
     LOG_DEBUG("Initializing GStreamer player...");

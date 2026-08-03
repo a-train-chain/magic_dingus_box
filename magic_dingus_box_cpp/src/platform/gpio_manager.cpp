@@ -110,10 +110,13 @@ bool GpioManager::initialize() {
         return false;
     }
     
-    // Add all input GPIOs (GPIO3 not included - handled by device tree overlay for power)
+    // Add all input GPIOs. Deliberately absent: GPIO 3 (power switch,
+    // owned by kiosk-standby-watcher) and GPIO 24 (restart button, owned
+    // by the kernel's gpio-keys driver via the gpio-key overlay).
+    // Claiming a kernel-owned line fails this ENTIRE bulk request and
+    // kills every button and LED — observed live 2026-08-03 with GPIO 24.
     unsigned int input_offsets[] = {
         gpio::ENCODER_SW,
-        gpio::RESTART_BTN,
         gpio::BTN1_SW, gpio::BTN2_SW, gpio::BTN3_SW, gpio::BTN4_SW
     };
     size_t num_inputs = sizeof(input_offsets) / sizeof(input_offsets[0]);
@@ -198,9 +201,9 @@ bool GpioManager::initialize() {
     available_ = true;
     std::cout << "  GPIO initialized successfully" << std::endl;
     std::cout << "    Inputs: Encoder switch (SW=" << gpio::ENCODER_SW << ")" << std::endl;
-    std::cout << "    Inputs: Buttons (5, 6, 13, 19), Restart Button (" << gpio::RESTART_BTN << ")" << std::endl;
+    std::cout << "    Inputs: Buttons (5, 6, 13, 19)" << std::endl;
     std::cout << "    Outputs: LEDs (12, 16, 26, 20)" << std::endl;
-    std::cout << "    Power: GPIO3 (hardware controlled via device tree overlay)" << std::endl;
+    std::cout << "    Power: GPIO3 (kiosk-standby-watcher), Restart: GPIO24 (gpio-key overlay)" << std::endl;
     
     return true;
 }
@@ -212,33 +215,6 @@ int GpioManager::read_line(int gpio) {
     return (value == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
 }
 
-void GpioManager::check_restart_button() {
-    int current = read_line(gpio::RESTART_BTN);
-    bool pressed = (current == 0);  // Active low - LOW when pressed
-    
-    uint64_t now = get_time_ms();
-    
-    // Debounce and detect press event (not release)
-    if (pressed != !restart_btn_state_.last_state) {
-        if (now - restart_btn_state_.last_change_time >= ButtonState::DEBOUNCE_MS) {
-            restart_btn_state_.last_state = !pressed;
-            restart_btn_state_.last_change_time = now;
-            
-            if (pressed) {
-                std::cout << "  Restart button pressed - playing shutdown animation..." << std::endl;
-                
-                // Play shutdown LED animation before restart
-                play_shutdown_animation();
-                
-                std::cout << "  Restarting service..." << std::endl;
-                
-                // Restart the service (this process will be killed and restarted)
-                std::system("sudo systemctl restart magic-dingus-box-cpp.service &");
-            }
-        }
-    }
-}
-
 std::vector<InputEvent> GpioManager::poll() {
     std::vector<InputEvent> events;
     
@@ -247,10 +223,7 @@ std::vector<InputEvent> GpioManager::poll() {
     }
     
     uint64_t now = get_time_ms();
-    
-    // Check restart button
-    check_restart_button();
-    
+
     // ----- Rotary Encoder -----
     // Handled by kernel overlay (rotary-encoder) + libevdev in InputManager
     // We only handle the switch here
@@ -535,7 +508,6 @@ void GpioManager::set_all_leds(bool /*on*/) {}
 void GpioManager::cleanup() { available_ = false; }
 uint64_t GpioManager::get_time_ms() const { return 0; }
 int GpioManager::read_line(int /*gpio*/) { return 1; }
-void GpioManager::check_restart_button() {}
 void GpioManager::stop_boot_led_sequence() {}
 void GpioManager::update_intro_animation(uint64_t /*elapsed_ms*/) {}
 void GpioManager::play_shutdown_animation() {}

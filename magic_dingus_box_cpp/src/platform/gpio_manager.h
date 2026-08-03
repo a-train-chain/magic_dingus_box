@@ -24,9 +24,16 @@ namespace gpio {
     constexpr int ENCODER_DT = 27;     // Quadrature signal B
     constexpr int ENCODER_SW = 22;     // Push button
     
-    // Restart Button (restarts app service, not full reboot)
-    // Note: Power switch is on GPIO3, handled by hardware device tree overlay
-    constexpr int RESTART_BTN = 24;    // Press to restart app service
+    // Restart button (GPIO 24) is deliberately NOT claimed here. The
+    // gpio-key device-tree overlay (setup_harness_services.sh) hands the
+    // pin to the kernel's gpio-keys driver, which emits KEY_RESTART and
+    // systemd-logind performs a clean full reboot — working even when
+    // this process is hung or dead, which is when a physical restart
+    // control matters. Requesting the line here fails the whole bulk
+    // input request (the kernel owns it) and takes every button and LED
+    // down with it — observed live 2026-08-03. The old in-app
+    // "restart app service" behavior is retired with it.
+    // Power switch is on GPIO 3, owned by kiosk-standby-watcher.service.
     
     // Illuminated Button Switches (active low)
     constexpr int BTN1_SW = 5;         // Yellow - Previous/Rewind
@@ -113,19 +120,11 @@ private:
     std::chrono::steady_clock::time_point button_press_times_[gpio::NUM_BUTTONS];
 #endif
 
-    // Encoder state
-    
-    // Restart button state
-    ButtonState restart_btn_state_;
-    
     // Helper to get current time in milliseconds
     uint64_t get_time_ms() const;
-    
+
     // Read GPIO line state
     int read_line(int gpio);
-    
-    // Check restart button and restart service if pressed
-    void check_restart_button();
 };
 
 } // namespace platform
