@@ -792,6 +792,12 @@ print(json.dumps({
     'web_ui_password': sys.argv[1],
     'bypass_local_auth': False,
     'bypass_auth_subnet_whitelist_enabled': False,
+    # Torrent queueing must stay ON: episode_priority.py's queue
+    # ordering is a silent no-op without it (priorities read -1), and
+    # the 3-active-downloads cap is part of the disk-contention story.
+    # qBit 5.x ships it on by default; this pins against drift.
+    'queueing_enabled': True,
+    'max_active_downloads': 3,
 }))" "${QBIT_PW}")
         if curl -fsS -b "${QBIT_COOKIE}" -X POST \
             "http://localhost:8080/api/v2/app/setPreferences" \
