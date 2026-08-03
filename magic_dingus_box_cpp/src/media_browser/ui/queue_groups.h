@@ -44,9 +44,20 @@ struct TvQueueGroup {
     std::string download_id;      // torrent hash; empty falls back to title key
     // Sonarr's queue carries no series title: SonarrQueueItem::title is the
     // RELEASE title and the embedded Episode only has an EPISODE title
-    // (sonarr_types.h). The release title is the best available identity
-    // without a second /api/v3/series fetch, so that is what lands here.
+    // (sonarr_types.h). group_tv_queue() itself stays lookup-free, so the
+    // release title lands here as the fallback identity; enrich_tv_groups()
+    // (below) REPLACES it with the clean "<series> — Season N" form when the
+    // caller supplies a library snapshot that knows series_id.
     std::string series_title;
+    // First row's seriesId. Every row of one download belongs to one series
+    // (a download is one release grabbed for one series), so the first row
+    // speaks for the pack — same first-row-wins rule status follows.
+    // enrich_tv_groups() keys the library lookup on this.
+    int series_id = 0;
+    // Filled by enrich_tv_groups() from the library snapshot — Sonarr's
+    // /queue payload itself carries no images. Empty means the row renders
+    // the deterministic-tint placeholder, exactly like a poster-less movie.
+    std::string poster_url;
     int season_number = -1;       // -1 = rows span multiple seasons
     int episode_count = 0;        // rows in this download
     int64_t size_bytes = 0;       // MAX across rows (rows repeat the pack size)
@@ -95,6 +106,7 @@ group_tv_queue(const std::vector<SonarrQueueItem>& rows) {
             // First row of this download establishes identity + status.
             g.download_id            = q.download_id;
             g.series_title           = q.title;
+            g.series_id              = q.series_id;
             g.season_number          = q.season_number;
             g.status                 = q.state;
             g.tracked_download_state = q.tracked_download_state;
@@ -108,6 +120,49 @@ group_tv_queue(const std::vector<SonarrQueueItem>& rows) {
         if (q.sizeleft_bytes > g.sizeleft_bytes) g.sizeleft_bytes = q.sizeleft_bytes;
     }
     return out;
+}
+
+// The two library facts enrichment needs, decoupled from the full Series
+// struct so this header stays testable without constructing library rows
+// (and so the caller decides which snapshot the map is built from).
+struct SeriesRef {
+    std::string title;       // clean series title, e.g. "Breaking Bad"
+    std::string poster_url;  // same URL shape the movie rows feed the
+                             // artwork cache; empty keeps the tint
+};
+
+// Second pass over group_tv_queue()'s output: resolve each group's
+// series_id against a library snapshot (sonarr_id -> SeriesRef) to fill
+// poster_url and replace the release-name fallback title with the clean
+// "<series title> — Season N" form ("<series title>" alone when the pack
+// spans seasons, season_number < 0). A group whose id the map does not
+// know is left UNTOUCHED — the release title is still the best available
+// identity when the library fetch failed or lagged, and an empty
+// poster_url keeps the deterministic tint. Kept separate from
+// group_tv_queue() so the collapse stays pure over queue rows and both
+// halves unit-test independently.
+//
+// The season is baked in HERE, not appended at render time — the render's
+// row-title builder must not add its own " — Season N" or every enriched
+// row would read "Breaking Bad — Season 1 — Season 1 (10 eps)".
+inline void enrich_tv_groups(
+    std::vector<TvQueueGroup>& groups,
+    const std::unordered_map<int, SeriesRef>& by_id) {
+    for (auto& g : groups) {
+        auto it = by_id.find(g.series_id);
+        if (it == by_id.end()) continue;  // fallback identity stands
+        const SeriesRef& ref = it->second;
+        g.poster_url = ref.poster_url;
+        // A library row with no title has nothing better than the release
+        // name — take the poster but keep the fallback title.
+        if (ref.title.empty()) continue;
+        if (g.season_number >= 0) {
+            g.series_title = ref.title + " \xE2\x80\x94 Season "
+                           + std::to_string(g.season_number);
+        } else {
+            g.series_title = ref.title;
+        }
+    }
 }
 
 }  // namespace media_browser::ui

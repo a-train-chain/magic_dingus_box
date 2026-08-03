@@ -285,6 +285,17 @@ private:
     std::vector<Movie> lib_cache_;
     std::chrono::steady_clock::time_point lib_cache_at_{};
 
+    // Sonarr series-library snapshot cache — same contract as lib_cache_
+    // above: WORKER-THREAD-ONLY, 30s TTL, and a queue group whose
+    // series_id the snapshot doesn't know forces an immediate refetch (a
+    // just-added series must get its poster + clean title right away, not
+    // after the TTL). Feeds enrich_tv_groups() only, so it's fetched only
+    // on cycles that actually have TV groups to enrich — there is no TV
+    // "awaiting" section to keep warm. Untouched when sonarr_ is null
+    // (tv groups can't exist then).
+    std::vector<Series> tv_lib_cache_;
+    std::chrono::steady_clock::time_point tv_lib_cache_at_{};
+
     // Cancel-confirmation state. The id alone is NOT a unique row key
     // across both sections — Radarr and Sonarr both hand out small
     // sequential queue ids, so movie row 5 and TV row 5 can coexist.
