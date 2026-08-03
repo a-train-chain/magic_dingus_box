@@ -493,6 +493,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_prowlarr_client.cpp
         tests/media_browser/test_release_picker.cpp
         tests/media_browser/test_download_watchdog.cpp
+        tests/media_browser/test_qbit_alt_speed.cpp
         tests/media_browser/test_vpn_health_monitor.cpp
         tests/media_browser/test_mb_ui_utils.cpp
         tests/media_browser/test_library_view.cpp

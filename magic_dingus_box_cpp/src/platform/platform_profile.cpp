@@ -77,6 +77,11 @@ PlatformProfile profile_for(PiModel model) {
             // 1122MB free during 1080p playback with the stack running
             // — pausing buys nothing and causes the post-movie flicker.
             p.pause_services_during_movie = false;
+            // Movie playback trickles torrents at the qBit alternative
+            // speed limits instead of pausing the swarm — the Pi 5 has
+            // the IO/CPU headroom, so downloads keep moving during films.
+            // Pi 4 / Unknown keep the full pause (struct default false).
+            p.trickle_torrents_during_video = true;
             break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on

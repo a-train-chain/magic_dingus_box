@@ -892,6 +892,33 @@ int main(int /* argc */, char* /* argv */[]) {
     std::cout << "[media_browser] qBittorrent client enabled "
               << "(base_url=http://localhost:8080)" << std::endl;
 
+    // Trickle-limit bootstrap (movie playback contention guard, Pi 5).
+    // Two one-shot, best-effort calls — qBit may well be down this early
+    // in boot (the Docker stack races kiosk startup), so a failure is
+    // informational only and must never block the kiosk coming up.
+    //
+    // (a) Converge the alternative-limit rates: 1536 KiB/s down
+    //     (~1.5 MB/s — leaves the swarm progressing through a 2h movie
+    //     without contending with GStreamer's reads), 256 KiB/s up.
+    //     Written every boot so shipped boxes converge on retuned rates
+    //     via OTA without anyone touching the qBit WebUI.
+    // (b) CRASH RECOVERY: unconditionally clear the alt-limits cap. Only
+    //     PlaybackScreen sets it (Pi 5 movie playback), and its leave()
+    //     clears it — but a kiosk crash/power-cut mid-movie would leave
+    //     every future download silently capped at trickle speed with
+    //     nothing in any UI to explain why. The wrapper is idempotent
+    //     (read-then-toggle), so the ordinary clean boot is a no-op read.
+    if (!qbit_owned->configure_alt_speed_limits(/*dl_kib_s=*/1536,
+                                                /*up_kib_s=*/256)) {
+        std::cout << "[media_browser] qbit alt-limit rate config failed "
+                     "(best-effort; qBit may not be up yet)" << std::endl;
+    }
+    if (!qbit_owned->set_alt_speed_limits_enabled(false)) {
+        std::cout << "[media_browser] qbit alt-limit crash-recovery clear "
+                     "failed (best-effort; qBit may not be up yet)"
+                  << std::endl;
+    }
+
     // Track-1 quiet mode: silence the torrent/media stack for the whole
     // game session, mirroring PlaybackScreen's movie behavior. Gated on
     // the provisioning marker so unprovisioned Pis do exactly nothing

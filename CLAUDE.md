@@ -305,6 +305,40 @@ episode totals.
 - AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
 - Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
 
+### Playback contention guard (torrents vs. the video pipeline) — per-board split
+
+Torrent piece-writes contend with GStreamer's reads on the library
+medium, so playback quiets qBittorrent — but HOW is per-board
+(`PlatformProfile::trickle_torrents_during_video`, branch in
+`PlaybackScreen::enter()/leave()`):
+
+- **Pi 5 movies: trickle, not pause.** Playback engages qBit's
+  *alternative speed limits* (~1.5 MB/s down / 256 KiB/s up) instead of
+  `pause_all()` — the SSD library and spare CPU absorb a trickle, so
+  downloads keep progressing through a 2-hour film instead of the swarm
+  being stopped. qBit 5.x has no explicit-set endpoint for the mode
+  (verified live on 5.0.3: GET `/transfer/speedLimitsMode` returns
+  "0"/"1", POST `/transfer/toggleSpeedLimitsMode` flips), so
+  `QbittorrentClient::set_alt_speed_limits_enabled()` reads first and
+  toggles only on mismatch (idempotent), and only reports success when
+  the re-read final state matches the request.
+- **Pi 4B (and Unknown boards) movies: full `pause_all()`**, unchanged —
+  USB-flash media has no random-IO headroom to trickle into.
+- **Games: full `pause_all()` on EVERY board** (`GameQuietMode` in
+  main.cpp) — games need the CPU/RAM back, not just disk quiet. The
+  trickle flag is movie-scoped by design.
+- **Startup clears the cap (crash recovery):** main.cpp's MB init calls
+  `set_alt_speed_limits_enabled(false)` unconditionally and re-applies
+  the trickle rates via `configure_alt_speed_limits(1536, 256)`
+  (preferences `alt_dl_limit`/`alt_up_limit`, KiB/s) — a kiosk crash
+  mid-movie must never leave downloads silently capped, and shipped
+  boxes converge on retuned rates via OTA. Both best-effort: qBit may
+  still be down at kiosk start; failures log and never block startup.
+- `PlaybackScreen::leave()` clears only what enter() set
+  (`qbit_alt_limited_by_us_` / `qbit_was_paused_by_us_` are the consent
+  records) — an operator's own alt-limits or manual pauses are never
+  flipped.
+
 ### Quality configuration (3-layer enforcement)
 
 1. **Quality profile "Any"** — only allows 720p/1080p HDTV/WEB/Bluray (no SD, no 4K, no Remux)
@@ -385,7 +419,7 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
   hardware, and it would have made the re-link fail permanently and
   silently. Orphaned renames are swept first so an affected box heals
   itself.
-- **magic-dingus-auto-blocklist.timer** (systemd, on Pi host) — runs every 15 minutes (OnBootSec=90s for cold-boot catch-up; TimeoutSec=300). Two failure classes, for BOTH Radarr and Sonarr: (1) `trackedDownloadStatus=warning` items whose `statusMessages` match known-bad signatures (executable extensions, "no videos in folder", "invalid video file", "unsupported extension", "sample file too large") — the scam-completion case; (2) dead-swarm stalls (2026-08-02 GoT case: TorrentDownload advertised 24 seeders on a 0-seed swarm; the stalled item then rejected all 213 live replacements with "Release in queue already meets cutoff", and neither *arr ever recovers because qBit stalls surface as WARNING, never FAILURE). Stall reap policy: errorMessage "stalled with no connections" + <=2% progress + grab >45 min old + the TWO-STRIKE rule — the same downloadId must be stall-condemned on two runs >=12 min apart with sizeleft unchanged, tracked in `/tmp/mdb_stall_candidates.json` (tmpfs — reboot resets the clock). One observation is never enough: qBit reports stalledDL during the healthy reconnection window after the kiosk's playback-pause guard resumes torrents at every movie end and on every boot. Condemned items are DELETEd with `blocklist=true + removeFromClient=true + skipRedownload=true`, then an explicit `MoviesSearch` / per-season `SeasonSearch` fires (with an idempotence guard that skips when an equivalent Sonarr search is already in flight). Season packs are N queue rows sharing one downloadId — exactly one row is deleted per download (siblings 404 by design) while every condemned row's (series, season) is re-searched. Paused torrents are never touched (they carry no errorMessage at all). Missing SONARR_API_KEY skips the Sonarr pass (pre-Sonarr boxes).
+- **magic-dingus-auto-blocklist.timer** (systemd, on Pi host) — runs every 15 minutes (OnBootSec=90s for cold-boot catch-up; TimeoutSec=300). Two failure classes, for BOTH Radarr and Sonarr: (1) `trackedDownloadStatus=warning` items whose `statusMessages` match known-bad signatures (executable extensions, "no videos in folder", "invalid video file", "unsupported extension", "sample file too large") — the scam-completion case; (2) dead-swarm stalls (2026-08-02 GoT case: TorrentDownload advertised 24 seeders on a 0-seed swarm; the stalled item then rejected all 213 live replacements with "Release in queue already meets cutoff", and neither *arr ever recovers because qBit stalls surface as WARNING, never FAILURE). Stall reap policy: errorMessage "stalled with no connections" + <=2% progress + grab >45 min old + the TWO-STRIKE rule — the same downloadId must be stall-condemned on two runs >=12 min apart with sizeleft unchanged, tracked in `/tmp/mdb_stall_candidates.json` (tmpfs — reboot resets the clock). One observation is never enough: qBit reports stalledDL during the healthy reconnection window after the kiosk's playback contention guard resumes torrents — at every game end on all boards, every movie end on Pi 4B, and on every boot (Pi 5 movie ends don't create this window: the trickle guard only rate-caps, never stops the swarm — see "Playback contention guard" above). Condemned items are DELETEd with `blocklist=true + removeFromClient=true + skipRedownload=true`, then an explicit `MoviesSearch` / per-season `SeasonSearch` fires (with an idempotence guard that skips when an equivalent Sonarr search is already in flight). Season packs are N queue rows sharing one downloadId — exactly one row is deleted per download (siblings 404 by design) while every condemned row's (series, season) is re-searched. Paused torrents are never touched (they carry no errorMessage at all). Missing SONARR_API_KEY skips the Sonarr pass (pre-Sonarr boxes).
 - **magic-dingus-missing-search.timer** (systemd, on Pi host) — runs every 4 hours (OnBootSec=3min for cold-boot catch-up). POSTs `MissingMoviesSearch` to Radarr when any monitored movie has no file yet. Plugs the add-time-miss gap: "Add to Library" sets `addOptions.searchForMovie=true` so Radarr fires exactly ONE auto-search the instant a movie is added; if that single search comes up empty (good release not posted yet, indexer in transient cooldown, Byparr mid-Cloudflare-challenge), Radarr does not retry at a useful cadence (RSS sync only catches brand-new releases going forward). The title then sits with no download until the user manually opens the release picker. Observed live with "Wolfs (2024)" — the +50-scoring x264 YTS release the user later grabbed by hand simply wasn't available at the add-time search instant. This timer retries the missing backlog so those self-heal. Note the *selection* logic was already correct (x264 +50 preferred, HEVC/AV1/foreign/remux rejected by Custom Format scores below the `minFormatScore=-200` floor); the only gap was retry-on-empty. `missing_search.py` is idempotent — a run with zero missing titles is a no-op. As of 2026-08-02 it also runs a Sonarr pass: `MissingEpisodeSearch` (the library-wide missing-episode sweep, Sonarr's mirror of `MissingMoviesSearch`) closes the identical one-shot fragility for TV — add-time `searchForMissingEpisodes` and Start-Season-N's single `SeasonSearch` otherwise have no retry. Missing SONARR_API_KEY skips the pass.
 - **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, Byparr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.
 - **Pre-ship acceptance test**: `scripts/verify_box.sh` — the single

@@ -65,6 +65,24 @@ struct PlatformProfile {
     // frees CPU, which CPU-bound emulators genuinely benefit from.
     bool pause_services_during_movie = true;
 
+    // During MOVIE playback, cap qBittorrent to its alternative speed
+    // limits (a ~1.5 MB/s trickle) instead of pausing every torrent?
+    // The full pause exists because concurrent torrent piece-writes
+    // contend with GStreamer's reads on the library medium; on the Pi 5
+    // (SSD library, ample CPU) a trickle keeps downloads progressing
+    // through a movie without measurable playback impact, so stopping
+    // the swarm outright is pure loss there.
+    //   Pi 5: true  — trickle via qBit alt speed limits.
+    //   Pi 4: false — full pause_all() preserved (USB-flash media has no
+    //                 random-IO headroom to give away; fielded behavior).
+    //   Unknown: false — conservative: an unrecognized board keeps the
+    //                 long-shipped full pause.
+    // GAME launches are unaffected everywhere: GameQuietMode's pause_all
+    // also frees CPU/RAM, which emulators genuinely need on both boards.
+    // Kiosk startup unconditionally clears a leftover cap (crash
+    // recovery) — see main.cpp's qBit init.
+    bool trickle_torrents_during_video = false;
+
     // Game systems this board cannot run at an acceptable quality bar,
     // as normalized tokens (see normalize_game_system). ONE golden image
     // serves both boards, so the image carries every system's content;

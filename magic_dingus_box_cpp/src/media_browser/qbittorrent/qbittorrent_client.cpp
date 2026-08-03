@@ -422,6 +422,92 @@ bool QbittorrentClient::resume_all() {
     return true;
 }
 
+bool QbittorrentClient::set_alt_speed_limits_enabled(bool on) {
+    // Read-then-toggle (qBit has no explicit-set endpoint — see header).
+    //
+    // Deliberately NO explicit lazy-login block here, unlike pause_all():
+    // http_get/http_post already recover a missing or expired session via
+    // their 403 -> login_locked() -> retry path, and keeping this method
+    // free of direct login_locked() calls means unit tests can drive the
+    // full toggle logic through the virtual http seam alone (login_locked
+    // does real curl I/O and is not part of the seam).
+    auto read_mode = [this]() -> std::string {
+        std::string mode = http_get("/api/v2/transfer/speedLimitsMode");
+        // Plain-text "0"/"1"; tolerate trailing newline/CR from proxies.
+        while (!mode.empty() &&
+               (mode.back() == '\n' || mode.back() == '\r' ||
+                mode.back() == ' ')) {
+            mode.pop_back();
+        }
+        return mode;
+    };
+
+    set_error({});
+    std::string mode = read_mode();
+    if (mode != "0" && mode != "1") {
+        // Empty (transport/auth failure — last_error_ already set by
+        // http_get) or malformed (anything but the documented "0"/"1").
+        // Either way we cannot know the current state, so a toggle could
+        // flip it the WRONG way — fail instead.
+        if (last_error().empty()) {
+            set_error("qbit speedLimitsMode unrecognized: '" + mode + "'");
+        }
+        spdlog::warn("[qbit] set_alt_speed_limits_enabled({}) read failed: {}",
+                     on, last_error());
+        return false;
+    }
+
+    const bool current = (mode == "1");
+    if (current == on) {
+        return true;  // idempotent: already in the requested state
+    }
+
+    set_error({});
+    http_post("/api/v2/transfer/toggleSpeedLimitsMode", "");
+    if (!last_error().empty()) {
+        spdlog::warn("[qbit] toggleSpeedLimitsMode failed: {}", last_error());
+        return false;
+    }
+
+    // Success = the FINAL state matches the request, so verify with a
+    // re-read rather than trusting the toggle's empty 200.
+    set_error({});
+    std::string mode2 = read_mode();
+    if (mode2 != (on ? "1" : "0")) {
+        if (last_error().empty()) {
+            set_error("qbit speedLimitsMode still '" + mode2
+                      + "' after toggle");
+        }
+        spdlog::warn("[qbit] set_alt_speed_limits_enabled({}) verify failed: {}",
+                     on, last_error());
+        return false;
+    }
+    spdlog::info("[qbit] alt speed limits (trickle) {}", on ? "ON" : "OFF");
+    return true;
+}
+
+bool QbittorrentClient::configure_alt_speed_limits(int dl_kib_s, int up_kib_s) {
+    // setPreferences takes a form-urlencoded body whose single field is
+    // json=<object>. alt_dl_limit / alt_up_limit are in KiB/s (preference
+    // units — NOT the byte/s of the /transfer/ limit endpoints).
+    // No explicit lazy-login for the same seam-testability reason as
+    // set_alt_speed_limits_enabled above.
+    set_error({});
+    const std::string body = "json={\"alt_dl_limit\":"
+                           + std::to_string(dl_kib_s)
+                           + ",\"alt_up_limit\":"
+                           + std::to_string(up_kib_s) + "}";
+    http_post("/api/v2/app/setPreferences", body);
+    if (!last_error().empty()) {
+        spdlog::warn("[qbit] configure_alt_speed_limits({}, {}) failed: {}",
+                     dl_kib_s, up_kib_s, last_error());
+        return false;
+    }
+    spdlog::info("[qbit] alt speed limits configured (dl={} KiB/s, up={} KiB/s)",
+                 dl_kib_s, up_kib_s);
+    return true;
+}
+
 std::unordered_map<std::string, QbitTorrent>
 QbittorrentClient::get_torrents_by_hash() {
     auto list = get_torrents();

@@ -46,12 +46,16 @@ namespace media_browser::ui {
 //                                       deferred toast; cancels prefetch.
 class PlaybackScreen : public MbScreen {
 public:
-    // qbit pointer is optional. When provided, enter()/leave()
-    // pause/resume all torrents to free disk IO for smooth playback —
-    // necessary on USB-flash media because concurrent torrent writes
-    // contend with GStreamer's reads and cause scrubbing freezes.
-    // When null, playback simply runs without managing qBit state
-    // (e.g., unit tests, devs running without the Docker stack).
+    // qbit pointer is optional. When provided, enter()/leave() quiet the
+    // torrent stack for the duration of playback — concurrent torrent
+    // writes contend with GStreamer's reads and cause scrubbing freezes.
+    // HOW they quiet it is per-board (state.platform_profile
+    // .trickle_torrents_during_video): Pi 5 engages qBit's alternative
+    // speed limits (~1.5 MB/s trickle — downloads keep progressing);
+    // Pi 4B / Unknown keep the full pause_all() (USB-flash media has no
+    // random-IO headroom to give away). When null, playback simply runs
+    // without managing qBit state (e.g., unit tests, devs running
+    // without the Docker stack).
     //
     // tmdb is used by the PlaybackOverlay to fetch similar films in the
     // background when the user opens the overlay (rotary press).
@@ -158,6 +162,13 @@ private:
     // torrents that the operator manually paused before entering
     // playback (we'd be flipping their state without consent).
     bool qbit_was_paused_by_us_ = false;
+
+    // Trickle-branch mirror of the flag above: set when enter() engaged
+    // qBit's alternative speed limits, so leave() clears the cap only if
+    // WE set it — an operator who had alt limits on for their own
+    // reasons keeps them. Exactly one of these two flags can be set per
+    // session (the enter() branch is either/or on the platform profile).
+    bool qbit_alt_limited_by_us_ = false;
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path
