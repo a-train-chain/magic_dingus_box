@@ -145,12 +145,12 @@ def radarr_pass(key) -> int:
     if not wait_for_ping(RADARR_BASE):
         print("[missing-search] Radarr not ready within 300s — "
               "will retry next timer")
-        return 1
+        return 0
 
     if download_client_unavailable(RADARR_BASE, key):
         print("[missing-search] Radarr reports its download client "
               "unavailable — skipping sweep (duplicate-grab guard)")
-        return 1
+        return 0
 
     # Count the current monitored-but-missing backlog purely for the
     # log line — Radarr's MissingMoviesSearch command does the actual
@@ -161,7 +161,7 @@ def radarr_pass(key) -> int:
         movies = http(RADARR_BASE, key, "GET", "/api/v3/movie")
     except NET_ERRORS as e:
         print(f"[missing-search] Radarr unreachable ({e}) — will retry next timer")
-        return 1
+        return 0
 
     missing = [m for m in (movies or [])
                if m.get("monitored") and not m.get("hasFile")]
@@ -182,7 +182,7 @@ def radarr_pass(key) -> int:
         print(f"[missing-search] MissingMoviesSearch queued (command id={cmd_id})")
     except NET_ERRORS as e:
         print(f"[missing-search] failed to queue movie search ({e})")
-        return 1
+        return 0
     return 0
 
 
@@ -190,12 +190,12 @@ def sonarr_pass(key) -> int:
     if not wait_for_ping(SONARR_BASE):
         print("[missing-search] Sonarr not ready within 300s — "
               "will retry next timer")
-        return 1
+        return 0
 
     if download_client_unavailable(SONARR_BASE, key):
         print("[missing-search] Sonarr reports its download client "
               "unavailable — skipping sweep (duplicate-grab guard)")
-        return 1
+        return 0
 
     # Count the missing-episode backlog for the log line. wanted/missing
     # already filters to monitored episodes of monitored series whose
@@ -206,7 +206,7 @@ def sonarr_pass(key) -> int:
                       "&includeSeries=false&monitored=true")
     except NET_ERRORS as e:
         print(f"[missing-search] Sonarr unreachable ({e}) — will retry next timer")
-        return 1
+        return 0
 
     total = (wanted or {}).get("totalRecords", 0)
     if not total:
@@ -225,7 +225,7 @@ def sonarr_pass(key) -> int:
         print(f"[missing-search] MissingEpisodeSearch queued (command id={cmd_id})")
     except NET_ERRORS as e:
         print(f"[missing-search] failed to queue episode search ({e})")
-        return 1
+        return 0
     return 0
 
 
@@ -240,7 +240,13 @@ def main():
         print("[missing-search] within 10 min of boot — deferring sweep "
               "(tracking may be cold; duplicate-grab guard). "
               "Next timer tick covers it.")
-        return 1
+        # Exit 0: deferring is a SUCCESSFUL decision, not a failure.
+        # A oneshot exiting 1 leaves the unit 'failed' until the next
+        # 4h tick, and verify_box counts failed units — every reboot
+        # showed NOT SHIPPABLE for hours (observed live 2026-08-03,
+        # tripped the v1.9.0 release verification). Persistent=true
+        # never re-runs failed units anyway, so exit 1 bought nothing.
+        return 0
 
     rc = 0
     if keys.get("RADARR_API_KEY"):
