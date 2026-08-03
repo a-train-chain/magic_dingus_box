@@ -70,6 +70,7 @@ void PlaybackScreen::enter() {
     exit_pending_ = false;
     deferred_toast_.clear();
     qbit_was_paused_by_us_ = false;
+    qbit_alt_limited_by_us_ = false;
     // EOS latch pair resets TOGETHER here and in advance_to_next_episode()
     // — the two session starts — so each playback session gets exactly one
     // consume-once report from take_eos_watched().
@@ -92,23 +93,39 @@ void PlaybackScreen::enter() {
         return;
     }
 
-    // Pause torrents BEFORE loading the movie so the GStreamer
+    // Quiet the torrent stack BEFORE loading the movie so the GStreamer
     // demuxer's initial reads don't have to fight qBit's piece-write
-    // bursts for disk bandwidth. On USB-flash media (the typical Pi
-    // setup), concurrent random read+write tanks throughput to
-    // single-digit MB/s and makes scrubbing feel frozen. Pausing
-    // gives the playback reader exclusive disk access.
+    // bursts for disk bandwidth. Per-board (platform profile):
     //
-    // Best-effort: a qBit failure here doesn't abort playback — we
-    // just log and continue with whatever performance the disk can
+    //   Trickle (Pi 5): engage qBit's alternative speed limits
+    //   (~1.5 MB/s, configured at kiosk startup) instead of stopping the
+    //   swarm — the SSD library and spare CPU absorb a trickle without
+    //   playback impact, so downloads keep progressing through a movie.
+    //
+    //   Full pause (Pi 4B / Unknown): on USB-flash media (the typical
+    //   Pi 4 setup), concurrent random read+write tanks throughput to
+    //   single-digit MB/s and makes scrubbing feel frozen. Pausing
+    //   gives the playback reader exclusive disk access.
+    //
+    // Best-effort either way: a qBit failure here doesn't abort playback
+    // — we just log and continue with whatever performance the disk can
     // give us. Same rationale as the controller_.load_file fallback
     // path below.
     if (qbit_ != nullptr) {
-        if (qbit_->pause_all()) {
-            qbit_was_paused_by_us_ = true;
+        if (state_.platform_profile.trickle_torrents_during_video) {
+            if (qbit_->set_alt_speed_limits_enabled(true)) {
+                qbit_alt_limited_by_us_ = true;
+            } else {
+                spdlog::warn("[playback] qbit trickle cap failed; "
+                             "downloads run uncapped during playback");
+            }
         } else {
-            spdlog::warn("[playback] qbit pause_all failed; "
-                         "playback may stutter on USB-flash media");
+            if (qbit_->pause_all()) {
+                qbit_was_paused_by_us_ = true;
+            } else {
+                spdlog::warn("[playback] qbit pause_all failed; "
+                             "playback may stutter on USB-flash media");
+            }
         }
     }
 
@@ -230,9 +247,20 @@ void PlaybackScreen::leave() {
         deferred_toast_.clear();
     }
 
-    // Resume torrents only if WE paused them — never resume a torrent
-    // the operator had manually stopped before entering playback. The
-    // qbit_was_paused_by_us_ flag is the consent record.
+    // Undo whatever torrent quieting enter() did — and ONLY what enter()
+    // did. The two flags are the consent records: never resume a torrent
+    // the operator had manually stopped before entering playback, and
+    // never clear an alt-limits cap the operator engaged for their own
+    // reasons. (A cap WE set that fails to clear here is additionally
+    // covered by the unconditional clear at kiosk startup — crash
+    // recovery in main.cpp's qBit init.)
+    if (qbit_ != nullptr && qbit_alt_limited_by_us_) {
+        if (!qbit_->set_alt_speed_limits_enabled(false)) {
+            spdlog::warn("[playback] qbit trickle cap clear failed; "
+                         "downloads stay capped until the next kiosk start");
+        }
+        qbit_alt_limited_by_us_ = false;
+    }
     if (qbit_ != nullptr && qbit_was_paused_by_us_) {
         if (!qbit_->resume_all()) {
             spdlog::warn("[playback] qbit resume_all failed; "

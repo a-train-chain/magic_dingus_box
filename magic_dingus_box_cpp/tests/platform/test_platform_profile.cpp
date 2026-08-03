@@ -280,6 +280,34 @@ TEST_CASE("unknown boards keep the pause (conservative default)") {
 }
 
 // ---------------------------------------------------------------
+// Movie-playback torrent handling: trickle (alt limits) vs full pause
+// ---------------------------------------------------------------
+
+TEST_CASE("Pi 5 trickles torrents during movie playback (alt speed limits)") {
+    // The Pi 5's SSD library + spare CPU can absorb a ~1.5 MB/s trickle
+    // while a movie plays, so downloads keep progressing instead of the
+    // swarm being stopped for two hours. PlaybackScreen branches on this
+    // field: trickle -> set_alt_speed_limits_enabled(true), else the
+    // long-shipped pause_all().
+    REQUIRE(profile_for(PiModel::Pi5).trickle_torrents_during_video);
+}
+
+TEST_CASE("Pi 4 keeps the full torrent pause during movie playback") {
+    // USB-flash media: concurrent random read+write tanks throughput to
+    // single-digit MB/s — there is no headroom to trickle into. Fielded
+    // behavior must not change.
+    REQUIRE_FALSE(profile_for(PiModel::Pi4).trickle_torrents_during_video);
+}
+
+TEST_CASE("unknown boards get the full pause, not the trickle (conservative)") {
+    // Note the flag is movie-scoped by design: GameQuietMode in main.cpp
+    // calls pause_all() unconditionally on every board — games need the
+    // CPU/RAM back, not just disk quiet — so no profile field softens the
+    // game-time pause, and none should be added.
+    REQUIRE_FALSE(profile_for(PiModel::Unknown).trickle_torrents_during_video);
+}
+
+// ---------------------------------------------------------------
 // Game-system support gating (one golden image, two boards)
 // ---------------------------------------------------------------
 

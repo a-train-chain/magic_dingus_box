@@ -60,7 +60,12 @@ public:
     };
 
     explicit QbittorrentClient(Config cfg);
-    ~QbittorrentClient();
+    // Virtual: the class is a polymorphic test seam (http_get/http_post
+    // overrides in unit tests), so deleting a derived instance through a
+    // base pointer must not be UB. Was non-virtual until the alt-speed
+    // tests made the seam load-bearing (clang flagged it via
+    // -Wdelete-non-abstract-non-virtual-dtor).
+    virtual ~QbittorrentClient();
 
     QbittorrentClient(const QbittorrentClient&) = delete;
     QbittorrentClient& operator=(const QbittorrentClient&) = delete;
@@ -94,8 +99,10 @@ public:
     // No-op (returns true) if no torrent with that hash exists.
     virtual bool delete_torrent(const std::string& hash, bool delete_files);
 
-    // Pause/resume ALL torrents — used by PlaybackScreen to halt
-    // disk-write contention during movie playback. The library lives
+    // Pause/resume ALL torrents — used by GameQuietMode on every board,
+    // and by PlaybackScreen on boards WITHOUT trickle_torrents_during_
+    // video (Pi 4B / Unknown; Pi 5 movies use the alt-limits trickle
+    // below instead), to halt disk-write contention. The library lives
     // on the same medium qBit writes torrent pieces to (typically a
     // single USB flash drive on the Pi), so concurrent read+write
     // hammers the drive's random-IO ceiling and makes playback hitch
@@ -113,6 +120,31 @@ public:
     // Caller logs and proceeds either way.
     virtual bool pause_all();
     virtual bool resume_all();
+
+    // Alternative ("trickle") speed-limits mode — the Pi 5 movie-playback
+    // contention guard. Pi 5 boxes don't pause_all() during movies; they
+    // flip qBit into its alternative speed limits (~1.5 MB/s) so downloads
+    // keep progressing while the GStreamer reader still gets the bulk of
+    // the disk. Pi 4B keeps the full pause (see PlaybackScreen::enter()).
+    //
+    // qBit 5.x has NO explicit-set endpoint for this mode (verified live
+    // on 5.0.3): GET /api/v2/transfer/speedLimitsMode returns plain-text
+    // "0"/"1" and POST /api/v2/transfer/toggleSpeedLimitsMode flips it.
+    // This wrapper reads first and toggles only on mismatch, which makes
+    // it idempotent — safe to call "off" at every kiosk startup as crash
+    // recovery without ever accidentally turning the cap ON.
+    //
+    // Returns true only when the FINAL state matches the request (the
+    // post-toggle state is re-read to verify). An empty or malformed GET
+    // response is a failure -> false, never a blind toggle.
+    virtual bool set_alt_speed_limits_enabled(bool on);
+
+    // Set the alternative-limit rates themselves via
+    // /api/v2/app/setPreferences (alt_dl_limit / alt_up_limit, both in
+    // KiB/s — qBit's preference unit, unlike the byte/s transfer
+    // endpoints). Called once at kiosk startup so every box converges on
+    // the tuned trickle rates regardless of what the WebUI defaults were.
+    virtual bool configure_alt_speed_limits(int dl_kib_s, int up_kib_s);
 
     // Diagnostics. Copy under err_mtx_ — the render thread reads this
     // while worker threads run client calls that write it (same race
