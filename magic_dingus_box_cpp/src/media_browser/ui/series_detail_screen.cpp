@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <system_error>
 
+#include "media_browser/library/watch_store.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/ui/mb_chrome.h"
@@ -47,8 +48,9 @@ constexpr int kButtonPadX_px = 18;
 
 SeriesDetailScreen::SeriesDetailScreen(SonarrClient& sonarr, TmdbClient& tmdb,
                                        QbittorrentClient* qbit,
-                                       bool sonarr_configured)
-    : sonarr_(sonarr), tmdb_(tmdb), qbit_(qbit),
+                                       bool sonarr_configured,
+                                       library::WatchStore* watch)
+    : sonarr_(sonarr), tmdb_(tmdb), qbit_(qbit), watch_(watch),
       sonarr_configured_(sonarr_configured) {}
 
 SeriesDetailScreen::~SeriesDetailScreen() {
@@ -83,6 +85,36 @@ void SeriesDetailScreen::enter() {
     if (needs_refresh_) {
         needs_refresh_ = false;
         fetch();
+        // fetch() cleared pending_intent_next_season_: a full reload is a
+        // new world, and the intent belonged to the page it was set on.
+    } else if (tmdb_id_ > 0) {
+        // UNCONDITIONAL watch-state re-join on same-id re-entry. The
+        // Playback->SeriesDetail return never calls set_tmdb_id, so
+        // needs_refresh_ stays false and no fetch fires — without this
+        // join the page would show pre-playback ✓/▶ glyphs and a stale
+        // PlayNextUp label until the next 9 s poll drains. Cheap indexed
+        // read; WatchStore is main-thread-only and enter() runs on the
+        // render thread, so the direct read is legal.
+        if (watch_ != nullptr) episode_watch_ = watch_->series_watch(tmdb_id_);
+        rebuild_rows();
+        rebuild_buttons();
+    }
+    // Season-end card intent ("Start Season N" pressed during playback).
+    // Re-derive the target through the SAME decision the button uses; only
+    // dispatch when it still agrees with the intent. Drift means the world
+    // changed while playing (another remote monitored it, the poll hasn't
+    // settled, the record vanished) — safest is no-op, said out loud.
+    if (pending_intent_next_season_.has_value()) {
+        const int want = *pending_intent_next_season_;
+        pending_intent_next_season_.reset();
+        const auto target = next_unmonitored_season(rows_);
+        if (series_.has_value() && series_->sonarr_id > 0 && series_settled_ &&
+            target.has_value() && *target == want) {
+            dispatch_action(Action::NextSeason);
+        } else {
+            ::ui::Toast::show(
+                "Season update didn't apply — try from this screen");
+        }
     }
 }
 
@@ -133,6 +165,23 @@ void SeriesDetailScreen::fetch() {
     // Task 8's poll gate must not inherit series A's timestamp — it would
     // delay series B's first poll by a full interval.
     last_poll_at_ = {};
+    // Episode picker state (Task 6): a new load starts on the season page
+    // with no episodes, no watch join, and no armed play/intent leftovers.
+    // The in-flight episode worker (if any) was invalidated by the gen bump
+    // above; its publish gen-mismatches and drops.
+    region_ = DetailRegion::Seasons;
+    episodes_.clear();
+    episode_watch_.clear();
+    episodes_done_ = episodes_ok_ = false;
+    last_episode_file_total_ = -1;
+    episodes_season_ = 0;
+    episode_focus_ = 0;
+    episode_page_ = 0;
+    episode_page_count_ = 1;
+    season_focus_ = -1;
+    pending_play_index_ = -1;
+    navigate_playback_ = false;
+    pending_intent_next_season_.reset();
     const int id = tmdb_id_;
     if (id <= 0) {
         tmdb_done_ = true;  // resolver -> TmdbError; nothing to fetch
@@ -221,6 +270,68 @@ void SeriesDetailScreen::run_sonarr_fetch(uint64_t gen, int tmdb_id,
     pending_ready_.store(true, std::memory_order_release);
 }
 
+void SeriesDetailScreen::maybe_fetch_episodes() {
+    // RENDER THREAD ONLY, called from apply_pending() after a publish landed
+    // series_. Spawning from run_series_poll instead would race the
+    // render-thread-only workers_ vector — the brief's rule (b).
+    if (!series_.has_value() || series_->sonarr_id <= 0) return;
+    // Cheap refetch trigger: the per-season file-count total. Compared HERE,
+    // on the render thread, against the total at the last accepted spawn —
+    // a moved total means an import/delete landed and the picker's has_file
+    // facts are stale. -1 (never fetched this load / retry after a failed
+    // publish) never equals a real total, so the first sight of a sonarr_id
+    // spawns the initial fetch through the same gate.
+    int total = 0;
+    for (const auto& s : series_->seasons) {
+        if (s.season_number == 0) continue;
+        total += s.episode_file_count;
+    }
+    if (total == last_episode_file_total_) return;
+    // Double-spawn guard — the poll_inflight_ idiom. On CAS failure the
+    // total is deliberately NOT recorded, so the next drain retries.
+    bool expected = false;
+    if (!episodes_inflight_.compare_exchange_strong(expected, true)) return;
+    // Capture the generation WITHOUT bumping: fetch() is the ONLY bumper of
+    // fetch_gen_. A bump here would invalidate any in-flight tmdb/sonarr
+    // worker for the SAME series — their publishes would gen-mismatch and
+    // the page would wedge in Loading (the brief's rule (a)).
+    const uint64_t gen = fetch_gen_.load();
+    reap_finished_workers();
+    try {
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        std::thread t(&SeriesDetailScreen::run_episodes_fetch, this, gen,
+                      series_->sonarr_id, done);
+        workers_.push_back(FetchWorker{std::move(t), std::move(done)});
+        last_episode_file_total_ = total;
+    } catch (const std::system_error& e) {
+        spdlog::warn("[SeriesDetail] episode worker spawn failed: {}",
+                     e.what());
+        episodes_inflight_.store(false, std::memory_order_release);
+        // last_episode_file_total_ untouched — the next drain retries.
+    }
+}
+
+void SeriesDetailScreen::run_episodes_fetch(
+        uint64_t gen, int sonarr_id, std::shared_ptr<std::atomic<bool>> done) {
+    DoneFlag df{done};
+    // Clears the in-flight flag on EVERY exit path, gen-mismatch included —
+    // run_series_poll's InflightGuard, verbatim rationale.
+    struct InflightGuard {
+        std::atomic<bool>& flag;
+        ~InflightGuard() { flag.store(false, std::memory_order_release); }
+    } inflight_guard{episodes_inflight_};
+    auto eps = sonarr_.get_episodes_checked(sonarr_id);
+    std::lock_guard<std::mutex> lk(pending_mtx_);
+    // Recheck under the lock — a worker that passed a pre-lock check could
+    // be descheduled across fetch()'s bump-and-clear and publish stale data
+    // into the new series' pending_.
+    if (gen != fetch_gen_.load()) return;  // preempted — discard
+    pending_.episodes_done = true;
+    pending_.episodes_ok = eps.has_value();
+    if (eps.has_value()) pending_.episodes = std::move(*eps);
+    pending_ready_.store(true, std::memory_order_release);
+}
+
 void SeriesDetailScreen::apply_pending() {
     if (!pending_ready_.load(std::memory_order_acquire)) return;
     PendingLoad p;
@@ -250,8 +361,30 @@ void SeriesDetailScreen::apply_pending() {
             mb_per_min_ = pick_preferred_mb_per_min(p.quality_defs);
     }
     if (p.has_downloading) downloading_seasons_ = std::move(p.downloading);
+    if (p.episodes_done) {
+        episodes_done_ = true;
+        episodes_ok_ = p.episodes_ok;
+        if (p.episodes_ok) {
+            episodes_ = std::move(p.episodes);
+        } else {
+            // nullopt = Sonarr never answered. The region renders the outage
+            // line; arming a retry (the -1 sentinel) lets the NEXT poll
+            // drain respawn the fetch instead of wedging on the outage
+            // until a file count happens to move.
+            last_episode_file_total_ = -1;
+        }
+    }
+    // Watch-state join on EVERY drain (the brief's rule (c)): checkpoints
+    // written during playback and EOS watched-marks land in the store from
+    // main.cpp — this page's ✓/▶ glyphs and the PlayNextUp label must track
+    // them without waiting for anything else to change. Render thread;
+    // WatchStore is main-thread-only, so the direct read is legal.
+    if (watch_ != nullptr && tmdb_id_ > 0)
+        episode_watch_ = watch_->series_watch(tmdb_id_);
     rebuild_rows();
     rebuild_buttons();
+    // AFTER series_ landed: initial episode fetch / file-count refetch.
+    maybe_fetch_episodes();
 }
 
 void SeriesDetailScreen::rebuild_rows() {
@@ -262,6 +395,10 @@ void SeriesDetailScreen::rebuild_rows() {
     rows_ = merge_season_rows(detail_->seasons,
                               series_.has_value() ? &*series_ : nullptr,
                               downloading_seasons_);
+    // A shrink must not leave the season ring pointing past the end (SELECT
+    // would index garbage). -1 = the ring is on the action row.
+    if (season_focus_ >= static_cast<int>(rows_.size()))
+        season_focus_ = static_cast<int>(rows_.size()) - 1;
 }
 
 void SeriesDetailScreen::rebuild_buttons() {
@@ -276,6 +413,29 @@ void SeriesDetailScreen::rebuild_buttons() {
                            sonarr_done_, sonarr_ok_, in_library_});
     in.series_settled = series_settled_;
     in.next_unmonitored = next_unmonitored_season(rows_);
+    // PlayNextUp inputs (Task 6): evidence-based — next_up's current==nullptr
+    // form skips watched episodes and only ever returns one WITH a file, so
+    // the button can never promise an episode that cannot start. "First"
+    // (label "Start watching") = no watched flag and no resumable position
+    // anywhere in the series' watch map.
+    const EpisodeInfo* nu = episodes_.empty()
+        ? nullptr
+        : next_up<EpisodeInfo>(episodes_, episode_watch_, nullptr);
+    in.has_next_up = nu != nullptr;
+    if (nu != nullptr) {
+        in.next_up_season = nu->season_number;
+        in.next_up_episode = nu->episode_number;
+        bool any_progress = false;
+        for (const auto& kv : episode_watch_) {
+            if (kv.second.watched ||
+                is_resumable_position(kv.second.position_s,
+                                      kv.second.duration_s)) {
+                any_progress = true;
+                break;
+            }
+        }
+        in.next_up_is_first = !any_progress;
+    }
     in.remove_pending = remove_pending_;
     in.whole_armed = whole_armed_;
     in.whole_estimate_bytes = whole_estimate_bytes_;
@@ -465,6 +625,22 @@ void SeriesDetailScreen::dispatch_action(Action a) {
     if (a != Action::WholeSeries) whole_armed_ = false;
     if (a != Action::Remove && a != Action::ConfirmRemove) remove_pending_ = false;
     switch (a) {
+        case Action::PlayNextUp: {
+            // Re-derive at press time — the button's label was decided on an
+            // earlier rebuild, and an EOS drain may have advanced next_up
+            // since. nullptr here means the world moved (all watched, or the
+            // file facts went stale): repaint the row honestly, no toast —
+            // the refreshed row IS the answer.
+            const EpisodeInfo* nu = episodes_.empty()
+                ? nullptr
+                : next_up<EpisodeInfo>(episodes_, episode_watch_, nullptr);
+            if (nu == nullptr) {
+                rebuild_buttons();
+                break;
+            }
+            start_playback_for(static_cast<int>(nu - episodes_.data()));
+            break;
+        }
         case Action::AddSeason1: {
             const int id = tmdb_id_;
             const std::string title =
@@ -1004,6 +1180,97 @@ void SeriesDetailScreen::dispatch_action(Action a) {
     }
 }
 
+void SeriesDetailScreen::start_playback_for(int index) {
+    if (index < 0 || index >= static_cast<int>(episodes_.size())) return;
+    const auto& ep = episodes_[static_cast<size_t>(index)];
+    if (!ep.has_file) {
+        ::ui::Toast::show("Not downloaded yet");
+        return;
+    }
+    // The do_play precedent (detail_screen.cpp): resolve, then stat the HOST
+    // path before promising playback — Sonarr's has_file is its container
+    // view, and the drive can have moved/unmounted under it.
+    const std::string host = ep.file_container_path.empty()
+        ? std::string()
+        : sonarr_.resolve_host_path(ep.file_container_path);
+    std::error_code ec;
+    if (host.empty() || !std::filesystem::exists(host, ec)) {
+        ::ui::Toast::show("File missing on disk");
+        return;
+    }
+    pending_play_index_ = index;
+    navigate_playback_ = true;
+}
+
+std::vector<int> SeriesDetailScreen::season_episode_indices(int season) const {
+    std::vector<int> idxs;
+    for (size_t i = 0; i < episodes_.size(); ++i) {
+        if (episodes_[i].season_number == season)
+            idxs.push_back(static_cast<int>(i));
+    }
+    return idxs;
+}
+
+SeriesDetailScreen::SeriesPlayTarget SeriesDetailScreen::get_play_target() {
+    SeriesPlayTarget pt;
+    const std::string series_title =
+        detail_.has_value() ? detail_->title : std::string("Series");
+    pt.series_title = series_title;
+    pt.rows = rows_;
+    pt.watch = episode_watch_;
+    pt.episodes = episodes_;
+    // Index-aligned host paths for the WHOLE vector — the end-of-episode
+    // overlay's in-place advance loads episodes this screen never focused.
+    // resolve_host_path is a pure, non-virtual string mapping (no HTTP), so
+    // the render thread can afford one pass here.
+    pt.host_paths.reserve(episodes_.size());
+    for (const auto& e : episodes_) {
+        pt.host_paths.push_back(
+            (e.has_file && !e.file_container_path.empty())
+                ? sonarr_.resolve_host_path(e.file_container_path)
+                : std::string());
+    }
+    if (detail_.has_value()) {
+        pt.year = detail_->year;
+        pt.synopsis = detail_->overview;
+        pt.poster_url = detail_->poster_path;
+        // Up to 3 genre names joined with " · " (DetailScreen's precedent).
+        for (size_t i = 0; i < detail_->genres.size() && i < 3; ++i) {
+            if (i > 0) pt.genres += " \xC2\xB7 ";
+            pt.genres += detail_->genres[i];
+        }
+    }
+    // Identity is ALWAYS the TV ref — even on the (guarded-out) fallback
+    // path below, a session must never be attributable to Movie/tmdb_id:
+    // the two id spaces overlap completely.
+    pt.identity = WatchIdentity{MediaRef{MediaKind::Tv, tmdb_id_}, 0, 0};
+    const int idx = pending_play_index_;
+    if (idx < 0 || idx >= static_cast<int>(episodes_.size()))
+        return pt;  // no armed episode: host_path stays empty, caller-safe
+    const auto& ep = episodes_[static_cast<size_t>(idx)];
+    pt.host_path = pt.host_paths[static_cast<size_t>(idx)];
+    pt.display_title = series_title + " \xE2\x80\x94 S" +
+                       std::to_string(ep.season_number) + "E" +
+                       std::to_string(ep.episode_number) + " \xC2\xB7 " +
+                       ep.title;
+    // Episode runtime, falling back to the series' per-episode figure
+    // (sonarr_types.h documents runtime 0 as real for specials/unknown).
+    pt.runtime_min = ep.runtime_minutes > 0
+        ? ep.runtime_minutes
+        : (series_.has_value() ? series_->runtime_minutes : 0);
+    pt.identity.season = ep.season_number;
+    pt.identity.episode = ep.episode_number;
+    // Resume via the joined watch map — same rule as the movie path: only a
+    // resumable position (>= 60 s, short of the watched threshold) carries.
+    const auto it = episode_watch_.find(
+        WatchKey{ep.season_number, ep.episode_number});
+    if (it != episode_watch_.end() &&
+        is_resumable_position(it->second.position_s, it->second.duration_s)) {
+        pt.resume_position = it->second.position_s;
+    }
+    return pt;
+}
+
 Screen SeriesDetailScreen::handle_input(
         const std::vector<platform::InputEvent>& events) {
     // Async completion relay, FIRST — DetailScreen's drain_remove_result
@@ -1014,6 +1281,68 @@ Screen SeriesDetailScreen::handle_input(
         return origin_;
     }
     for (const auto& e : events) {
+        // ---- Episodes region: one season's episode list owns the input ----
+        if (region_ == DetailRegion::Episodes) {
+            // BTN4 returns to the SEASON page, never to origin_ — the
+            // episode list is a drill-down inside this screen.
+            if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+                region_ = DetailRegion::Seasons;
+                continue;
+            }
+            const int n = static_cast<int>(
+                season_episode_indices(episodes_season_).size());
+            if ((e.action == platform::InputAction::ROTATE ||
+                 e.action == platform::InputAction::ROTATE_VERTICAL) &&
+                e.delta != 0) {
+                if (n == 0) continue;
+                episode_focus_ = std::clamp(episode_focus_ + e.delta, 0, n - 1);
+                // Page follows focus (render re-derives it too; this keeps
+                // the indicator honest within the same frame's input burst).
+                if (episode_per_page_ > 0)
+                    episode_page_ = episode_focus_ / episode_per_page_;
+                continue;
+            }
+            // BTN1 / BTN3 page by moving FOCUS a page at a time — page and
+            // focus never diverge, so SELECT always fires a visible row.
+            if (e.action == platform::InputAction::PREV && e.pressed) {
+                if (n > 0 && episode_per_page_ > 0)
+                    episode_focus_ =
+                        std::max(0, episode_focus_ - episode_per_page_);
+                continue;
+            }
+            if (e.action == platform::InputAction::NEXT && e.pressed) {
+                if (n > 0 && episode_per_page_ > 0)
+                    episode_focus_ = std::min(
+                        n - 1, episode_focus_ + episode_per_page_);
+                continue;
+            }
+            if (e.action == platform::InputAction::SELECT && e.pressed) {
+                if (n == 0) continue;
+                // per_page 0 = the canvas draws NO episode rows (CRT_NATIVE's
+                // 640x480). Firing a row nobody can see is the invisible-
+                // affordance bug class; the drill-down is a 720p+ affordance
+                // like the season detail, and PlayNextUp still covers play.
+                if (episode_per_page_ <= 0) continue;
+                // Same global gate as the action row: one mutation worker,
+                // and a silent no-op reads as a dead button.
+                if (mut_in_flight_.load()) {
+                    ::ui::Toast::show(
+                        "Still finishing the last action\xE2\x80\xA6");
+                    continue;
+                }
+                const auto idxs = season_episode_indices(episodes_season_);
+                if (episode_focus_ < 0 ||
+                    episode_focus_ >= static_cast<int>(idxs.size()))
+                    continue;
+                start_playback_for(idxs[static_cast<size_t>(episode_focus_)]);
+                if (navigate_playback_) {
+                    navigate_playback_ = false;
+                    return Screen::Playback;
+                }
+                continue;
+            }
+            continue;  // everything else is inert inside the drill-down
+        }
         // BTN4 (SETTINGS_MENU, black) — back to whoever opened us.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             return origin_;
@@ -1029,11 +1358,39 @@ Screen SeriesDetailScreen::handle_input(
             // would be invisible, and the post-drain rebuild would then land
             // focus on a button the user never saw themselves select.
             const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
-            if (buttons_.empty() || busy) continue;
-            const int n = static_cast<int>(buttons_.size());
+            if (busy) continue;
+            // ONE navigation chain: season rows top-to-bottom, then the
+            // action buttons left-to-right. season_focus_ == -1 means the
+            // ring is on the button row (focus_), preserving every pre-Task-6
+            // behavior when no season rows exist.
+            // per_page 0 = the canvas draws NO season rows (CRT_NATIVE's
+            // 640x480 clamps list_avail to zero in render()). Walking the
+            // ring into an undrawn row is the invisible-affordance bug class
+            // the episode-side SELECT already guards, so the chain holds
+            // zero season rows there — action buttons only; PlayNextUp
+            // stays the CRT play path.
+            const int n_rows = season_per_page_ > 0
+                ? static_cast<int>(rows_.size()) : 0;
+            const int n_btns = static_cast<int>(buttons_.size());
+            const int total = n_rows + n_btns;
+            if (total == 0) continue;
+            // A season ring at/past n_rows (stale after the CRT clamp or a
+            // shrink) restarts from the visible button row instead.
+            int pos = (season_focus_ >= 0 && season_focus_ < n_rows)
+                ? season_focus_ : n_rows + focus_;
             // Clamp, do not wrap — DetailScreen's exact idiom, so the ends
-            // of the row feel like ends rather than teleporting focus.
-            focus_ = std::clamp(focus_ + e.delta, 0, n - 1);
+            // of the chain feel like ends rather than teleporting focus.
+            pos = std::clamp(pos + e.delta, 0, total - 1);
+            if (pos < n_rows) {
+                season_focus_ = pos;
+                // The list page follows the ring so SELECT always targets a
+                // visible row (render clamps again, belt-and-braces).
+                if (season_per_page_ > 0)
+                    season_page_ = season_focus_ / season_per_page_;
+            } else {
+                season_focus_ = -1;
+                focus_ = pos - n_rows;
+            }
             // Any navigation cancels BOTH pending confirms, so the user can
             // never press-move-press their way into a mutation they were not
             // looking at.
@@ -1044,27 +1401,76 @@ Screen SeriesDetailScreen::handle_input(
             }
             continue;
         }
-        // BTN1 / BTN3 page the season list when it overflows.
+        // BTN1 / BTN3 page the season list when it overflows. When the ring
+        // is IN the list, it moves with the page (page-start row) so it can
+        // never sit on an off-screen row; on the action row the pages browse
+        // freely underneath, exactly as before.
         if (e.action == platform::InputAction::PREV && e.pressed) {
-            if (season_page_ > 0) --season_page_;
+            if (season_page_ > 0) {
+                --season_page_;
+                if (season_focus_ >= 0 && season_per_page_ > 0)
+                    season_focus_ = season_page_ * season_per_page_;
+            }
             continue;
         }
         if (e.action == platform::InputAction::NEXT && e.pressed) {
-            if (season_page_ + 1 < season_page_count_) ++season_page_;
+            if (season_page_ + 1 < season_page_count_) {
+                ++season_page_;
+                if (season_focus_ >= 0 && season_per_page_ > 0)
+                    season_focus_ = std::min(
+                        season_page_ * season_per_page_,
+                        static_cast<int>(rows_.size()) - 1);
+            }
             continue;
         }
         if (e.action == platform::InputAction::SELECT && e.pressed) {
-            if (buttons_.empty()) continue;
             // The gate is GLOBAL (one mutation worker) but the dim is
             // series-scoped, so series B's row looks perfectly live while
             // series A's mutation finishes — up to ~14 s of presses landing
             // on nothing. A silent no-op reads as a dead button; say it.
+            if (season_focus_ >= 0 &&
+                season_focus_ < static_cast<int>(rows_.size())) {
+                // Mirror of the episode-side per_page guard: on the
+                // CRT_NATIVE canvas no season rows are drawn, so a season
+                // ring here is invisible and SELECT would open a drill-down
+                // the user never saw targeted (the invisible-affordance bug
+                // class). Return the ring to the visible action row.
+                if (season_per_page_ <= 0) {
+                    season_focus_ = -1;
+                    continue;
+                }
+                if (mut_in_flight_.load()) {
+                    ::ui::Toast::show(
+                        "Still finishing the last action\xE2\x80\xA6");
+                    continue;
+                }
+                const auto& row = rows_[static_cast<size_t>(season_focus_)];
+                if (row.episode_file_count > 0) {
+                    // Open the drill-down. The episode fetch covers ALL
+                    // seasons and ran at load; loading/outage/empty states
+                    // render inside the region.
+                    region_ = DetailRegion::Episodes;
+                    episodes_season_ = row.season_number;
+                    episode_focus_ = 0;
+                    episode_page_ = 0;
+                } else {
+                    ::ui::Toast::show("Not downloaded yet");
+                }
+                continue;
+            }
+            if (buttons_.empty()) continue;
             if (mut_in_flight_.load()) {
                 ::ui::Toast::show("Still finishing the last action\xE2\x80\xA6");
                 continue;
             }
             if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
                 dispatch_action(buttons_[static_cast<size_t>(focus_)].action);
+            // PlayNextUp arms the transition synchronously inside
+            // dispatch_action (the navigate_back_ idiom, same-frame form).
+            if (navigate_playback_) {
+                navigate_playback_ = false;
+                return Screen::Playback;
+            }
             continue;
         }
         // BTN2 (PLAY_PAUSE, red) — intercepted globally by the exit modal in
@@ -1154,6 +1560,124 @@ void SeriesDetailScreen::update() {
     maybe_repoll_series();
 }
 
+void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
+                                               int body_x, int list_top,
+                                               int list_bottom,
+                                               bool& ep_overflow) {
+    const auto& th = r.mb_theme();
+    // Region title: which season is open.
+    r.mb_draw_text("Season " + std::to_string(episodes_season_) +
+                       " \xC2\xB7 Episodes",
+                   static_cast<float>(body_x),
+                   static_cast<float>(list_top + 22), kRowFontPx, th.accent);
+    const int rows_top = list_top + kRowH;
+    // Loading / outage / empty. The outage copy comes through the SAME
+    // resolver as the page-level banner so the two lines can never drift.
+    const char* placeholder = nullptr;
+    ::ui::Color pcol = th.dim;
+    if (!episodes_done_) {
+        placeholder = "Loading...";
+    } else if (!episodes_ok_) {
+        placeholder = series_detail_state_message(
+            SeriesDetailState::SonarrUnreachable);
+        pcol = th.highlight2;
+    }
+    const auto idxs = season_episode_indices(episodes_season_);
+    const int total = static_cast<int>(idxs.size());
+    if (placeholder == nullptr && total == 0) placeholder = "No episodes";
+    if (placeholder != nullptr) {
+        r.mb_draw_text(placeholder, static_cast<float>(body_x),
+                       static_cast<float>(rows_top + 22), kRowFontPx, pcol);
+        return;
+    }
+    // The season-paging idiom: geometry decides per_page each frame, zero is
+    // legal (CRT_NATIVE's 640x480 canvas), and EVERY division is guarded.
+    const int list_avail = list_bottom - kIndicatorRowH - rows_top;
+    const int per_page = std::max(0, list_avail / kRowH);
+    episode_per_page_ = per_page;
+    episode_page_count_ =
+        per_page > 0 ? std::max(1, (total + per_page - 1) / per_page) : 1;
+    if (episode_focus_ >= total) episode_focus_ = total - 1;
+    if (episode_focus_ < 0) episode_focus_ = 0;
+    // Page follows focus, so SELECT can only ever fire a visible row.
+    episode_page_ = per_page > 0 ? episode_focus_ / per_page : 0;
+    if (episode_page_ >= episode_page_count_)
+        episode_page_ = episode_page_count_ - 1;
+    ep_overflow = per_page > 0 && total > per_page;
+    const int first = episode_page_ * per_page;
+    const int last = per_page > 0 ? std::min(total, first + per_page) : 0;
+    // The no-file rows' suffix rides on THIS season's live state.
+    bool season_downloading = false;
+    for (const auto& row : rows_) {
+        if (row.season_number == episodes_season_) {
+            season_downloading = row.state == SeasonState::Downloading;
+            break;
+        }
+    }
+    // Columns: focus marker | state glyph (▶ h:mm:ss is the widest) | text.
+    const int glyph_x = body_x + 18;
+    const int text_x = body_x + 118;
+    const float text_w =
+        static_cast<float>(screen_w - text_x - chrome::kSafeInset_px);
+    int list_y = rows_top;
+    for (int i = first; i < last; ++i) {
+        const auto& ep =
+            episodes_[static_cast<size_t>(idxs[static_cast<size_t>(i)])];
+        const float row_baseline = static_cast<float>(list_y + 22);
+        if (i == episode_focus_) {
+            r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
+                           row_baseline, kBodyFontPx, th.accent);
+        }
+        // Glyph: ✓ watched, "▶ <hms>" resumable, · unwatched-with-file,
+        // nothing for a fileless row (the dim text IS its state).
+        const auto it = episode_watch_.find(
+            WatchKey{ep.season_number, ep.episode_number});
+        const bool watched =
+            it != episode_watch_.end() &&
+            (it->second.watched ||
+             is_watched_position(it->second.position_s, it->second.duration_s));
+        const bool resumable =
+            it != episode_watch_.end() && !watched &&
+            is_resumable_position(it->second.position_s, it->second.duration_s);
+        if (ep.has_file) {
+            if (watched) {
+                r.mb_draw_text("\xE2\x9C\x93", static_cast<float>(glyph_x),
+                               row_baseline, kBodyFontPx, th.highlight1);
+            } else if (resumable) {
+                r.mb_draw_text(
+                    "\xE2\x96\xB6 " + format_position_hms(it->second.position_s),
+                    static_cast<float>(glyph_x), row_baseline, kBodyFontPx,
+                    th.accent);
+            } else {
+                r.mb_draw_text("\xC2\xB7", static_cast<float>(glyph_x),
+                               row_baseline, kBodyFontPx, th.dim);
+            }
+        }
+        // "E<n> · <title> · <runtime>m" — runtime falls back to the series'
+        // per-episode figure and is omitted when genuinely unknown.
+        std::string text = "E" + std::to_string(ep.episode_number) +
+                           " \xC2\xB7 " + ep.title;
+        const int rt = ep.runtime_minutes > 0
+            ? ep.runtime_minutes
+            : (series_.has_value() ? series_->runtime_minutes : 0);
+        if (rt > 0) text += " \xC2\xB7 " + std::to_string(rt) + "m";
+        if (!ep.has_file && season_downloading) text += " \xC2\xB7 downloading";
+        r.mb_draw_text(truncate_to_width(r, text, kBodyFontPx, text_w),
+                       static_cast<float>(text_x), row_baseline, kBodyFontPx,
+                       ep.has_file ? th.fg : th.dim);
+        list_y += kRowH;
+    }
+    if (ep_overflow) {
+        const std::string ind =
+            "Episodes " + std::to_string(first + 1) + "\xE2\x80\x93" +
+            std::to_string(last) + " of " + std::to_string(total) +
+            " \xC2\xB7 [BTN1/BTN3]";
+        r.mb_draw_text(ind, static_cast<float>(body_x),
+                       static_cast<float>(list_bottom - 8), kBodyFontPx,
+                       th.dim);
+    }
+}
+
 void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     const auto& th = r.mb_theme();
     r.mb_fill_rect(0, 0, static_cast<float>(screen_w),
@@ -1161,6 +1685,7 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // Recomputed by the body path below; body-less states have one page.
     season_page_count_ = 1;
     bool overflow = false;
+    bool ep_overflow = false;
 
     // Header: EMPTY tab strip, exactly like DetailScreen (detail_screen.cpp
     // passes /*tabs=*/{}). This screen is a drill-down, not a strip member,
@@ -1258,141 +1783,181 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // band). 28 = hint-row height above baseline (~20) + an 8 px gap.
         const int list_bottom = screen_h - chrome::kFrameInset_px -
                                 chrome::kPad3 - 28;
-        const int list_avail =
-            list_bottom - kButtonRowH - kIndicatorRowH - list_top;
-        // CRT_NATIVE (640x480 logical) leaves no room below the poster —
-        // list_avail goes NEGATIVE there, and a forced one-row minimum drew
-        // into the reserved button band. Clamp to zero rows: the totals
-        // line, action row, and footer still render; per-season detail is a
-        // 720p+ affordance.
-        const int per_page = std::max(0, list_avail / kRowH);
-        const int total_rows = static_cast<int>(rows_.size());
-        // per_page can be 0 on the 640x480 canvas (the clamp above) —
-        // dividing by it is UB, and the indicator would land back in the
-        // poster region. Zero rows means one page and no paging affordance.
-        season_page_count_ = per_page > 0
-            ? std::max(1, (total_rows + per_page - 1) / per_page) : 1;
-        if (season_page_ >= season_page_count_)
-            season_page_ = season_page_count_ - 1;
-        if (season_page_ < 0) season_page_ = 0;
-        overflow = per_page > 0 && total_rows > per_page;
-        const int first = season_page_ * per_page;
-        const int last = std::min(total_rows, first + per_page);
+        if (region_ == DetailRegion::Episodes) {
+            // The drill-down replaces the season list AND the action row in
+            // the same band; BTN4 brings both back.
+            render_episode_region(r, screen_w, body_x, list_top, list_bottom,
+                                  ep_overflow);
+        } else {
+            const int list_avail =
+                list_bottom - kButtonRowH - kIndicatorRowH - list_top;
+            // CRT_NATIVE (640x480 logical) leaves no room below the poster —
+            // list_avail goes NEGATIVE there, and a forced one-row minimum
+            // drew into the reserved button band. Clamp to zero rows: the
+            // totals line, action row, and footer still render; per-season
+            // detail is a 720p+ affordance.
+            const int per_page = std::max(0, list_avail / kRowH);
+            season_per_page_ = per_page;  // handle_input's page/focus sync
+            const int total_rows = static_cast<int>(rows_.size());
+            // per_page can be 0 on the 640x480 canvas (the clamp above) —
+            // dividing by it is UB, and the indicator would land back in the
+            // poster region. Zero rows means one page, no paging affordance.
+            season_page_count_ = per_page > 0
+                ? std::max(1, (total_rows + per_page - 1) / per_page) : 1;
+            if (season_page_ >= season_page_count_)
+                season_page_ = season_page_count_ - 1;
+            if (season_page_ < 0) season_page_ = 0;
+            overflow = per_page > 0 && total_rows > per_page;
+            const int first = season_page_ * per_page;
+            const int last = std::min(total_rows, first + per_page);
+            // The ring must never sit on a row this page does not show —
+            // rebuild/geometry churn can strand it. Snap it into the page.
+            if (season_focus_ >= 0 && per_page > 0 &&
+                (season_focus_ < first || season_focus_ >= last)) {
+                season_focus_ = std::min(last - 1, std::max(first,
+                                                            season_focus_));
+            }
 
-        int list_y = list_top;
-        for (int i = first; i < last; ++i) {
-            const auto& row = rows_[static_cast<size_t>(i)];
-            std::string label = "Season " + std::to_string(row.season_number);
-            std::string counts =
-                std::to_string(row.episode_file_count) + "/" +
-                std::to_string(row.episode_count) + " eps";
-            const char* state_txt = nullptr;
-            ::ui::Color state_col = th.dim;
-            switch (row.state) {
-                case SeasonState::None:
-                    state_txt = row.monitored ? "monitored" : "\xE2\x80\x94";
-                    break;
-                case SeasonState::Downloading:
-                    state_txt = "downloading";
-                    state_col = th.highlight2;
-                    break;
-                case SeasonState::Partial:
-                    state_txt = "partial";
-                    state_col = th.accent;
-                    break;
-                case SeasonState::Complete:
-                    state_txt = "complete";
-                    state_col = th.highlight1;
-                    break;
-            }
-            r.mb_draw_text(label, static_cast<float>(body_x),
-                           static_cast<float>(list_y + 22), kRowFontPx, th.fg);
-            r.mb_draw_text(counts, static_cast<float>(body_x + 220),
-                           static_cast<float>(list_y + 22), kBodyFontPx,
-                           th.dim);
-            r.mb_draw_text(state_txt, static_cast<float>(body_x + 360),
-                           static_cast<float>(list_y + 22), kBodyFontPx,
-                           state_col);
-            list_y += kRowH;
-        }
-        // Paging indicator — inside the reserved band, only when it earns
-        // its line. A 21-season show is the headline case for this screen;
-        // without paging its later seasons were simply unreachable.
-        if (overflow) {
-            const std::string ind =
-                "Seasons " + std::to_string(first + 1) + "\xE2\x80\x93" +
-                std::to_string(last) + " of " + std::to_string(total_rows) +
-                " \xC2\xB7 [BTN1/BTN3]";
-            r.mb_draw_text(ind, static_cast<float>(body_x),
-                           static_cast<float>(list_bottom - kButtonRowH - 8),
-                           kBodyFontPx, th.dim);
-        }
-        // Action row. Its height was already reserved out of the season
-        // list's budget above (kButtonRowH), so it can never overlap a row.
-        if (!buttons_.empty()) {
-            // SERIES-SCOPED: another series' still-finishing mutation must
-            // not gray THIS page's row. SELECT stays globally gated (one
-            // worker), so a press in that window is ignored briefly (≤14 s
-            // worst case) — never misapplied.
-            const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
-            int bx = body_x;
-            const int brow_y = list_bottom - kButtonRowH;
-            const int row_right = screen_w - chrome::kSafeInset_px;
-            int drawn = 0;
-            for (size_t i = 0; i < buttons_.size(); ++i) {
-                // Defensive clamp: stop before a button would cross the safe
-                // inset rather than running it under the cabinet art. The
-                // motivating canvas is 640x480 (CRT_NATIVE), where three
-                // buttons plus a long "Confirm ~N GB (est)" label are not
-                // guaranteed to fit; Task 9's acceptance eyeballs the row on
-                // the real box. Width is predicted with draw_button's own
-                // geometry (kBtnFontPx 18 + kBtnPadX 18 a side, mb_chrome.cpp)
-                // — worst case a drift there clamps one button early, which
-                // is still strictly better than drawing it where nobody can
-                // see it.
-                const int bw = r.mb_text_width(buttons_[i].label,
-                                               kButtonFontPx) +
-                               2 * kButtonPadX_px;
-                if (drawn > 0 && bx + bw > row_right) break;
-                chrome::ButtonKind kind = chrome::ButtonKind::Ok;
-                if (buttons_[i].action == Action::Remove ||
-                    buttons_[i].action == Action::ConfirmRemove ||
-                    (buttons_[i].action == Action::WholeSeries && whole_armed_)) {
-                    kind = chrome::ButtonKind::Warn;
-                } else if (buttons_[i].action == Action::WholeSeries) {
-                    kind = chrome::ButtonKind::Action;
+            int list_y = list_top;
+            for (int i = first; i < last; ++i) {
+                const auto& row = rows_[static_cast<size_t>(i)];
+                std::string label =
+                    "Season " + std::to_string(row.season_number);
+                std::string counts =
+                    std::to_string(row.episode_file_count) + "/" +
+                    std::to_string(row.episode_count) + " eps";
+                const char* state_txt = nullptr;
+                ::ui::Color state_col = th.dim;
+                switch (row.state) {
+                    case SeasonState::None:
+                        state_txt = row.monitored ? "monitored" : "\xE2\x80\x94";
+                        break;
+                    case SeasonState::Downloading:
+                        state_txt = "downloading";
+                        state_col = th.highlight2;
+                        break;
+                    case SeasonState::Partial:
+                        state_txt = "partial";
+                        state_col = th.accent;
+                        break;
+                    case SeasonState::Complete:
+                        state_txt = "complete";
+                        state_col = th.highlight1;
+                        break;
                 }
-                // While a mutation runs the row stays put with its labels
-                // unchanged and simply loses its focus ring — it reads as
-                // "busy" without destroying focus identity. SELECT is
-                // already gated on !mut_in_flight_ in handle_input.
-                const auto rect = chrome::draw_button(
-                    r, bx, brow_y, buttons_[i].label, kind,
-                    /*focused=*/!busy && static_cast<int>(i) == focus_);
-                bx = rect.x + rect.w + chrome::kPad3;
-                ++drawn;
+                // Focus marker (Task 6): the season rows joined the rotary
+                // chain, so the ring needs a visible home in the list.
+                if (i == season_focus_) {
+                    r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
+                                   static_cast<float>(list_y + 22),
+                                   kBodyFontPx, th.accent);
+                }
+                r.mb_draw_text(label, static_cast<float>(body_x + 18),
+                               static_cast<float>(list_y + 22), kRowFontPx,
+                               th.fg);
+                r.mb_draw_text(counts, static_cast<float>(body_x + 220),
+                               static_cast<float>(list_y + 22), kBodyFontPx,
+                               th.dim);
+                r.mb_draw_text(state_txt, static_cast<float>(body_x + 360),
+                               static_cast<float>(list_y + 22), kBodyFontPx,
+                               state_col);
+                list_y += kRowH;
             }
-            // A focused button that was never drawn is an invisible
-            // affordance: SELECT would fire something the user cannot see.
-            // Clamp onto the last button that actually made it onto the
-            // screen (render() already clamps season_page_ the same way).
-            if (focus_ >= drawn) focus_ = drawn > 0 ? drawn - 1 : 0;
+            // Paging indicator — inside the reserved band, only when it
+            // earns its line. A 21-season show is the headline case for this
+            // screen; without paging its later seasons were unreachable.
+            if (overflow) {
+                const std::string ind =
+                    "Seasons " + std::to_string(first + 1) + "\xE2\x80\x93" +
+                    std::to_string(last) + " of " +
+                    std::to_string(total_rows) + " \xC2\xB7 [BTN1/BTN3]";
+                r.mb_draw_text(ind, static_cast<float>(body_x),
+                               static_cast<float>(list_bottom - kButtonRowH -
+                                                  8),
+                               kBodyFontPx, th.dim);
+            }
+            // Action row. Its height was already reserved out of the season
+            // list's budget above (kButtonRowH), so it cannot overlap a row.
+            if (!buttons_.empty()) {
+                // SERIES-SCOPED: another series' still-finishing mutation
+                // must not gray THIS page's row. SELECT stays globally gated
+                // (one worker), so a press in that window is ignored briefly
+                // (≤14 s worst case) — never misapplied.
+                const bool busy =
+                    mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
+                int bx = body_x;
+                const int brow_y = list_bottom - kButtonRowH;
+                const int row_right = screen_w - chrome::kSafeInset_px;
+                int drawn = 0;
+                for (size_t i = 0; i < buttons_.size(); ++i) {
+                    // Defensive clamp: stop before a button would cross the
+                    // safe inset rather than running it under the cabinet
+                    // art. The motivating canvas is 640x480 (CRT_NATIVE),
+                    // where the buttons plus a long "Confirm ~N GB (est)"
+                    // label are not guaranteed to fit; Task 9's acceptance
+                    // eyeballs the row on the real box. Width is predicted
+                    // with draw_button's own geometry (kBtnFontPx 18 +
+                    // kBtnPadX 18 a side, mb_chrome.cpp) — worst case a
+                    // drift there clamps one button early, which is still
+                    // strictly better than drawing it where nobody can see.
+                    const int bw = r.mb_text_width(buttons_[i].label,
+                                                   kButtonFontPx) +
+                                   2 * kButtonPadX_px;
+                    if (drawn > 0 && bx + bw > row_right) break;
+                    chrome::ButtonKind kind = chrome::ButtonKind::Ok;
+                    if (buttons_[i].action == Action::Remove ||
+                        buttons_[i].action == Action::ConfirmRemove ||
+                        (buttons_[i].action == Action::WholeSeries &&
+                         whole_armed_)) {
+                        kind = chrome::ButtonKind::Warn;
+                    } else if (buttons_[i].action == Action::WholeSeries) {
+                        kind = chrome::ButtonKind::Action;
+                    }
+                    // While a mutation runs the row stays put with its
+                    // labels unchanged and simply loses its focus ring — it
+                    // reads as "busy" without destroying focus identity.
+                    // SELECT is already gated on !mut_in_flight_ in
+                    // handle_input. The ring also hides while it lives in
+                    // the season list (season_focus_ >= 0) — one chain, one
+                    // ring.
+                    const auto rect = chrome::draw_button(
+                        r, bx, brow_y, buttons_[i].label, kind,
+                        /*focused=*/!busy && season_focus_ < 0 &&
+                            static_cast<int>(i) == focus_);
+                    bx = rect.x + rect.w + chrome::kPad3;
+                    ++drawn;
+                }
+                // A focused button that was never drawn is an invisible
+                // affordance: SELECT would fire something the user cannot
+                // see. Clamp onto the last button that actually made it onto
+                // the screen (render() already clamps season_page_ the same
+                // way).
+                if (focus_ >= drawn) focus_ = drawn > 0 ? drawn - 1 : 0;
+            }
         }
     }
 
     // ALWAYS LAST on every path. The Toast is NOT drawn here: main.cpp owns
     // the single app-wide Toast::render in the correct projection.
+    const bool in_episodes = region_ == DetailRegion::Episodes;
+    const bool nothing_focusable = buttons_.empty() && rows_.empty();
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,
-         overflow ? "Seasons \xE2\x86\x90" : "\xE2\x80\x94"},
+         in_episodes
+             ? (ep_overflow ? "Episodes \xE2\x86\x90" : "\xE2\x80\x94")
+             : (overflow ? "Seasons \xE2\x86\x90" : "\xE2\x80\x94")},
         {chrome::HintIcon::Btn2Red, "Exit"},
         {chrome::HintIcon::Btn3Green,
-         overflow ? "Seasons \xE2\x86\x92" : "\xE2\x80\x94"},
-        {chrome::HintIcon::Btn4Black, "Back"},
+         in_episodes
+             ? (ep_overflow ? "Episodes \xE2\x86\x92" : "\xE2\x80\x94")
+             : (overflow ? "Seasons \xE2\x86\x92" : "\xE2\x80\x94")},
+        {chrome::HintIcon::Btn4Black, in_episodes ? "Seasons" : "Back"},
         {chrome::HintIcon::RotaryNav,
-         buttons_.empty() ? "\xE2\x80\x94" : "Choose"},
+         in_episodes ? "Choose"
+                     : (nothing_focusable ? "\xE2\x80\x94" : "Choose")},
         {chrome::HintIcon::RotaryPress,
-         buttons_.empty() ? "\xE2\x80\x94" : "Select"},
+         in_episodes ? "Play"
+                     : (nothing_focusable ? "\xE2\x80\x94" : "Select")},
     });
 }
 

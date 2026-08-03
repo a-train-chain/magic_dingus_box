@@ -79,6 +79,7 @@ The kiosk engine must build and run on **both Raspberry Pi 4B and Raspberry Pi 5
 - `libsystemd` — sd_notify watchdog integration (optional, auto-detected)
 - `gstreamer-1.0` + `gstreamer-app-1.0` + `gstreamer-video-1.0` + `gstreamer-gl-1.0` + `gstreamer1.0-libav` — video pipeline
 - `yaml-cpp`, `jsoncpp` — config and playlist parsing
+- `libsqlite3` + the `sqlite3` CLI — Media Browser library/watch-state store (`media_browser.db`); the CLI backs the on-box acceptance checks (Media Browser builds only)
 
 Plus header-only deps fetched at build time: `stb_truetype.h`, `stb_image.h`, `spdlog` (via CMake `FetchContent`), `Catch2` (test targets only).
 

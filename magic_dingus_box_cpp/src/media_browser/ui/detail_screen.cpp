@@ -10,6 +10,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "media_browser/library/watch_store.h"
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -158,8 +159,10 @@ std::string join_with_bullet(const std::vector<std::string>& items) {
 
 DetailScreen::DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
                            ProwlarrClient* prowlarr,
-                           QbittorrentClient* qbit)
-    : radarr_(radarr), tmdb_(tmdb), prowlarr_(prowlarr), qbit_(qbit) {
+                           QbittorrentClient* qbit,
+                           library::WatchStore* watch)
+    : radarr_(radarr), tmdb_(tmdb), prowlarr_(prowlarr), qbit_(qbit),
+      watch_(watch) {
     mode_ = Mode::Loading;
     rebuild_buttons();
 }
@@ -1071,6 +1074,21 @@ DetailScreen::PlayTarget DetailScreen::get_play_target() const {
         }
     } else {
         pt.tmdb_id = tmdb_id_;  // at least carry the id for the prefetch
+    }
+
+    // Watch-state handoff (Task 4). Identity is ALWAYS engaged for a
+    // playable movie — MediaRef{Movie, tmdb_id_} with season=episode=0 —
+    // so the playback session is attributable even when the store is
+    // absent (writes then no-op inside main.cpp's degraded WatchStore).
+    // Resume point only when the store has a resumable row: past the
+    // watched threshold "resume" degrades to "replay from the start".
+    pt.watch_identity = WatchIdentity{MediaRef{MediaKind::Movie, tmdb_id_}, 0, 0};
+    if (watch_ != nullptr) {
+        if (auto row = watch_->movie_watch(tmdb_id_)) {
+            if (is_resumable_position(row->position_s, row->duration_s)) {
+                pt.resume_position = row->position_s;
+            }
+        }
     }
 
     return pt;

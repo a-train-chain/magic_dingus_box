@@ -45,6 +45,8 @@
 #include "media_browser/qbittorrent/download_watchdog.h"
 #include "media_browser/health/vpn_health_monitor.h"
 #include "media_browser/artwork/artwork_cache.h"
+#include "media_browser/library/watch_store.h"
+#include "media_browser/ui/episode_logic.h"
 #endif
 #include "app/app_state.h"
 #include "app/game_quiet_mode.h"
@@ -141,6 +143,33 @@ static void reload_menu_overlays(platform::InputManager& input) {
     }
     input.set_menu_overlays(std::move(overlays));
 }
+
+#ifdef MEDIA_BROWSER_ENABLED
+// Persist the in-flight playback position for the active watch identity
+// (resume-on-next-play). ORDERING CONTRACT — called at ALL THREE Playback
+// exit sites in the dispatcher, ALWAYS BEFORE active_mb_screen->leave().
+// Controller::update_state runs at the BOTTOM of the frame loop, and only
+// every other frame, so the position read here is up to 2 frames stale —
+// but it was captured while the pipeline was still playing, which is
+// exactly what a resume point wants. The hazard is ordering, not
+// staleness: leave() calls controller.stop(), which zeroes the pipeline's
+// position/duration, and the next Controller::update_state() copies the
+// zeros into AppState — a post-leave (or later-frame) call would upsert
+// (0, 0) and CLOBBER the resume point (WatchStore's MAX() ratchet
+// protects only `watched`, never position). Skips when the identity is disengaged (untracked
+// playback) or the position reads 0: a 0 write is at best worthless and
+// at worst — when a prior checkpoint holds a real position — destroys it.
+static void flush_watch_state(media_browser::ui::PlaybackScreen& playback,
+                              media_browser::library::WatchStore& store,
+                              const app::AppState& state) {
+    const auto id = playback.watch_identity();
+    if (!id.has_value()) return;
+    const double pos = state.get_position();
+    if (pos <= 0.0) return;
+    store.upsert_position(id->ref, id->season, id->episode,
+                          pos, state.get_duration());
+}
+#endif
 
 int main(int /* argc */, char* /* argv */[]) {
     // Initialize logging system
@@ -894,6 +923,16 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }});
 
+    // Watch-state store (Phase 3): resume positions + watched flags for
+    // movies and TV, in the media_browser.db SQLite file. Main/render-
+    // thread-only by construction — workers never touch it. Best-effort:
+    // open() failure leaves ok()==false, every method degrades to a safe
+    // no-op (no resume, no checkpoints, no watched marks) and the store
+    // logs its own one-shot warning. Declared BEFORE the screens so it
+    // outlives every pointer handed to them.
+    media_browser::library::WatchStore watch_store;
+    (void)watch_store.open(config::get_media_db_file());
+
     // Six screens — dispatcher owns one instance of each.
     // sonarr_key.empty() is exactly the fallback-to-SonarrMockClient
     // condition above — BrowseScreen needs to know it so a box that never
@@ -904,10 +943,11 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::SearchScreen     mb_search(radarr);
     media_browser::ui::DetailScreen     mb_detail(radarr, *tmdb,
                                                   prowlarr_owned.get(),
-                                                  qbit_owned.get());
+                                                  qbit_owned.get(),
+                                                  &watch_store);
     media_browser::ui::SeriesDetailScreen mb_series_detail(
         sonarr, *tmdb, qbit_owned.get(),
-        /*sonarr_configured=*/!sonarr_key.empty());
+        /*sonarr_configured=*/!sonarr_key.empty(), &watch_store);
     // Queue shows Sonarr's TV downloads alongside Radarr's movies. Gated
     // on sonarr_key.empty() for the same reason BrowseScreen and
     // SeriesDetailScreen are: without a key `sonarr` is a
@@ -918,7 +958,17 @@ int main(int /* argc */, char* /* argv */[]) {
                                                   qbit_owned.get(),
                                                   sonarr_key.empty()
                                                       ? nullptr : &sonarr);
-    media_browser::ui::LibraryScreen    mb_library(radarr, state);
+    // Library mixes Radarr movies with Sonarr TV (Phase 3 Task 7). The
+    // Sonarr pointer is null-gated on sonarr_key.empty() exactly like
+    // QueueScreen above — with no key, `sonarr` is a SonarrMockClient whose
+    // fixture library would render phantom TV tiles on every box that never
+    // set Sonarr up. WatchStore feeds the real Unwatched filter; the screen
+    // reads it only on the render thread (apply_pending), per its
+    // main-thread-only contract.
+    media_browser::ui::LibraryScreen    mb_library(radarr,
+                                                    sonarr_key.empty()
+                                                        ? nullptr : &sonarr,
+                                                    &watch_store, state);
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      radarr,
                                                      qbit_owned.get());
@@ -2242,6 +2292,14 @@ int main(int /* argc */, char* /* argv */[]) {
                 // reset dispatcher state, and let the rest of the main loop
                 // run this frame (rendering, etc.) with current_screen flipped
                 // to MainMenu.
+                //
+                // Watch-state flush MUST run BEFORE leave() — leave() stops
+                // the pipeline and zeroes position/duration, so a later
+                // write would clobber the resume point with (0, 0). See
+                // flush_watch_state's contract comment.
+                if (current_mb_screen == media_browser::ui::Screen::Playback) {
+                    flush_watch_state(mb_playback, watch_store, state);
+                }
                 ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
                 reset_main_ui_state();
@@ -2252,6 +2310,11 @@ int main(int /* argc */, char* /* argv */[]) {
             } else if (!mb_modal_exited) {
             auto next = active_mb_screen->handle_input(input_events);
             if (next == media_browser::ui::Screen::Exit) {
+                // Watch-state flush pre-leave(), same rationale as the
+                // long-press site above.
+                if (current_mb_screen == media_browser::ui::Screen::Playback) {
+                    flush_watch_state(mb_playback, watch_store, state);
+                }
                 ui_renderer.artwork_cache().resume();  // un-stick if exiting Playback
                 active_mb_screen->leave();
                 reset_main_ui_state();
@@ -2271,7 +2334,15 @@ int main(int /* argc */, char* /* argv */[]) {
                     } else if (current_mb_screen == media_browser::ui::Screen::Search) {
                         mb_detail.set_tmdb_id(mb_search.selected_tmdb_id());
                     } else if (current_mb_screen == media_browser::ui::Screen::Library) {
-                        mb_detail.set_tmdb_id(mb_library.selected_tmdb_id());
+                        // Library is mixed-kind now; only movies reach
+                        // Detail (TV returns Screen::SeriesDetail, handled
+                        // below). Guard the kind anyway — the ids collide
+                        // across kinds, so feeding a TV id to the movie
+                        // Detail screen would show an unrelated film.
+                        const auto ref = mb_library.selected_ref();
+                        if (ref.kind == media_browser::MediaKind::Movie) {
+                            mb_detail.set_tmdb_id(ref.id);
+                        }
                     }
                     // Remember where we came from so BTN4 on Detail
                     // returns the user to the screen that opened it
@@ -2291,12 +2362,31 @@ int main(int /* argc */, char* /* argv */[]) {
                     }
                 }
                 if (next == media_browser::ui::Screen::SeriesDetail) {
-                    // Only Browse can produce this transition, and it only
-                    // produces it for a TV hit — the kind lives in the
-                    // transition itself, not in a BrowseScreen accessor.
-                    if (current_mb_screen == media_browser::ui::Screen::Browse) {
-                        mb_series_detail.set_tmdb_id(mb_browse.selected_tmdb_id());
+                    // Browse and Library both produce this transition, and
+                    // only for a TV hit — the kind lives in the transition
+                    // itself. The tmdb id comes from the respective
+                    // screen's selected accessor.
+                    if (current_mb_screen == media_browser::ui::Screen::Browse ||
+                        current_mb_screen == media_browser::ui::Screen::Library) {
+                        mb_series_detail.set_tmdb_id(
+                            current_mb_screen == media_browser::ui::Screen::Browse
+                                ? mb_browse.selected_tmdb_id()
+                                : mb_library.selected_ref().id);
                         mb_series_detail.set_origin(current_mb_screen);
+                    }
+                    // Playback -> SeriesDetail: drain the one-shot "Start
+                    // Season N" intent from the season-end card, PRE-leave.
+                    // Task 5's enter() clears an unconsumed intent, and this
+                    // is the only consumer — taking it here (before the
+                    // leave()/enter() pair below) is what makes the card's
+                    // primary actually start the season. SeriesDetail's tmdb
+                    // identity and origin are untouched: playback never
+                    // changes them, and pointing origin at Playback would
+                    // loop BTN4 straight back into the player.
+                    if (current_mb_screen == media_browser::ui::Screen::Playback) {
+                        if (auto s = mb_playback.take_pending_next_season()) {
+                            mb_series_detail.set_pending_intent_next_season(*s);
+                        }
                     }
                 }
                 // Detail -> Playback: copy resolved host path + title from
@@ -2318,6 +2408,45 @@ int main(int /* argc */, char* /* argv */[]) {
                     meta.cast        = pt.cast;
                     meta.director    = pt.director;
                     mb_playback.set_movie_meta(std::move(meta));
+                    // Watch-state handoff (Task 4): one-shot resume offset
+                    // (cleared in PlaybackScreen::leave()), the identity
+                    // that checkpoint/EOS writes attribute to, and where
+                    // BTN4 / natural EOS should return.
+                    mb_playback.set_start_position(pt.resume_position);
+                    mb_playback.set_watch_identity(pt.watch_identity);
+                    mb_playback.set_origin(media_browser::ui::Screen::Detail);
+                }
+                // SeriesDetail -> Playback (Task 6): the TV mirror of the
+                // Detail handoff above, plus the episode context that arms
+                // Task 5's end-of-episode overlay (countdown / season-end
+                // card). SeriesDetail validated has_file + on-disk existence
+                // before returning Screen::Playback, so host_path is
+                // playable here.
+                if (next == media_browser::ui::Screen::Playback &&
+                    current_mb_screen == media_browser::ui::Screen::SeriesDetail) {
+                    auto pt = mb_series_detail.get_play_target();
+                    mb_playback.set_movie(pt.host_path, pt.display_title);
+                    media_browser::ui::PlaybackOverlayMovieMeta meta;
+                    // tmdb_id stays 0 ON PURPOSE: the overlay's similar-films
+                    // prefetch hits TMDB's MOVIE endpoints, and the movie/TV
+                    // id spaces overlap completely — a TV id here would fetch
+                    // an unrelated movie's "similar" rail. 0 = overlay
+                    // renders the meta header without similar films.
+                    meta.title       = pt.display_title;
+                    meta.year        = pt.year;
+                    meta.runtime_min = pt.runtime_min;
+                    meta.synopsis    = pt.synopsis;
+                    meta.genres      = pt.genres;
+                    meta.poster_url  = pt.poster_url;
+                    mb_playback.set_movie_meta(std::move(meta));
+                    mb_playback.set_start_position(pt.resume_position);
+                    mb_playback.set_watch_identity(pt.identity);
+                    mb_playback.set_origin(
+                        media_browser::ui::Screen::SeriesDetail);
+                    mb_playback.set_episode_context(
+                        std::move(pt.episodes), std::move(pt.host_paths),
+                        std::move(pt.rows), std::move(pt.watch),
+                        std::move(pt.series_title));
                 }
                 // Artwork I/O contention guard: pause the artwork worker
                 // when entering Playback so it doesn't compete with
@@ -2329,6 +2458,18 @@ int main(int /* argc */, char* /* argv */[]) {
                 } else if (current_mb_screen == media_browser::ui::Screen::Playback &&
                            next != media_browser::ui::Screen::Playback) {
                     ui_renderer.artwork_cache().resume();
+                }
+                // Leaving Playback for a sibling screen (BTN4 back to
+                // Detail, natural movie EOS, etc.): flush the watch
+                // position BEFORE leave() — update_state runs at the
+                // BOTTOM of the loop (every other frame), so the read is
+                // up to 2 frames stale but pre-stop-valid; one line later
+                // (post-leave, after stop() zeroes the pipeline) it
+                // reads 0/0 and clobbers the resume point. Third of the
+                // three exit sites; see flush_watch_state.
+                if (current_mb_screen == media_browser::ui::Screen::Playback &&
+                    next != media_browser::ui::Screen::Playback) {
+                    flush_watch_state(mb_playback, watch_store, state);
                 }
                 active_mb_screen->leave();
                 current_mb_screen = next;
@@ -3825,6 +3966,51 @@ int main(int /* argc */, char* /* argv */[]) {
                 last_status_write = sw_now;
             }
         }
+
+#ifdef MEDIA_BROWSER_ENABLED
+        // ── Watch-state checkpoint + EOS watched marking (Task 4) ────────
+        {
+            // 30 s position checkpoints while a tracked file plays on the
+            // MB Playback screen — same static-time_point idiom as
+            // last_status_write above. Outside Playback the timer is
+            // continually re-armed, so every session waits a FULL interval
+            // before its first write (a stale/0 position read right after
+            // enter() can never be checkpointed — doubly guarded by the
+            // pos > 0 skip, which also keeps a paused-at-EOS or mid-seek 0
+            // read from clobbering the resume point).
+            static auto last_checkpoint = std::chrono::steady_clock::now();
+            const bool in_mb_playback =
+                state.current_screen == app::AppScreen::MediaBrowser &&
+                current_mb_screen == media_browser::ui::Screen::Playback;
+            const auto cp_now = std::chrono::steady_clock::now();
+            if (!in_mb_playback) {
+                last_checkpoint = cp_now;
+            } else if (cp_now - last_checkpoint >=
+                       std::chrono::milliseconds(
+                           media_browser::ui::kCheckpointIntervalMs)) {
+                last_checkpoint = cp_now;
+                const auto wid = mb_playback.watch_identity();
+                const double wpos = state.get_position();
+                if (wid.has_value() && wpos > 0.0) {
+                    watch_store.upsert_position(wid->ref, wid->season,
+                                                wid->episode, wpos,
+                                                state.get_duration());
+                }
+            }
+
+            // EOS → watched. take_eos_watched() is consume-once per latch,
+            // so this per-frame poll costs exactly ONE SQLite write per
+            // end-of-stream — never a per-frame write while Task 5's
+            // countdown / season-end card idles on screen. Kind-agnostic
+            // on purpose: watched marking applies to movies and TV alike
+            // (only the exit_pending_ EOS behavior stays movie-only, and
+            // that lives inside PlaybackScreen, unchanged this task).
+            if (auto eos_id = mb_playback.take_eos_watched()) {
+                watch_store.mark_watched(eos_id->ref, eos_id->season,
+                                         eos_id->episode);
+            }
+        }
+#endif
 
         // ── Playback stall watchdog ──────────────────────────────────────
         // Catches the pipeline silently stalling while the kiosk still

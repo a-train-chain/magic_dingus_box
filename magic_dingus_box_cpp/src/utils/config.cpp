@@ -63,6 +63,13 @@ std::string get_settings_file() {
     return get_config_path() + "/settings.json";
 }
 
+std::string get_media_db_file() {
+    if (const char* env = std::getenv("MAGIC_MEDIA_DB_FILE")) {
+        return env;
+    }
+    return get_data_path() + "/media_browser.db";
+}
+
 std::string get_controller_profiles_file() {
     if (const char* env = std::getenv("MAGIC_CONTROLLER_PROFILES_FILE")) {
         return env;

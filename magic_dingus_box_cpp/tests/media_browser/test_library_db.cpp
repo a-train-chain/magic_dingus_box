@@ -76,11 +76,14 @@ TEST_CASE("LibraryDb: phase 1 schema creates queue table", "[library_db][schema]
     fs::remove(path);
 }
 
-TEST_CASE("LibraryDb: phase 1 schema is at version 2", "[library_db][schema]") {
+TEST_CASE("LibraryDb: full migration lands at the current version (3)",
+          "[library_db][schema]") {
     auto path = make_temp_db_path();
     media_browser::LibraryDb db;
     REQUIRE(db.open(path.string()));
     REQUIRE(db.run_migrations());
-    REQUIRE(db.schema_version() == 2);
+    // Bump this pin when appending to MIGRATIONS[] — it exists so a
+    // migration that silently fails to apply can't go unnoticed.
+    REQUIRE(db.schema_version() == 3);
     fs::remove(path);
 }

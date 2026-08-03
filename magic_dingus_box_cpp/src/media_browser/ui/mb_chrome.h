@@ -113,6 +113,14 @@ struct TabSpec {
 // Use to mark the keyboard-focused element on any Marquee screen.
 void draw_focus_ring(::ui::Renderer& r, int x, int y, int w, int h);
 
+// Height of every chip box the draw_*_badge helpers below produce
+// (badge font 12 px + 2 x 2 px vertical padding — static_assert-tied
+// to the private layout constants in mb_chrome.cpp). Exported so a
+// screen stacking its own chip under a badge (LibraryScreen's TV kind
+// chip) offsets by the real height instead of duplicating the
+// arithmetic.
+inline constexpr int kBadgeBoxH = 16;
+
 // "IN LIBRARY" green-bordered chip overlay. Drawn at the top-left of
 // a poster cell. Returns the rect drawn (so the caller knows the
 // vertical space consumed if more chips need to stack).

@@ -265,7 +265,11 @@ inline const char* series_detail_state_message(SeriesDetailState s) {
 // decide_action_row below) and its table tests are Mac-side: the enum has to
 // be reachable from a TU that cannot include a Renderer-bound header. Tasks
 // 6-7's dispatch cases name these same enumerators.
-enum class Action { AddSeason1, NextSeason, WholeSeries, Remove, ConfirmRemove };
+// PlayNextUp is deliberately FIRST (Task 6's dispatch contract pins it with a
+// test): it is the row's head whenever it exists, and keeping enumerator
+// order aligned with on-screen order keeps the focus fallback loop honest.
+enum class Action { PlayNextUp, AddSeason1, NextSeason, WholeSeries, Remove,
+                    ConfirmRemove };
 
 struct ActionButton {
     Action action;
@@ -305,6 +309,16 @@ struct ActionRowInputs {
     bool remove_pending = false;
     bool whole_armed = false;
     int64_t whole_estimate_bytes = 0;
+    // Task 6: "keep watching" affordance. has_next_up is EVIDENCE-based — the
+    // screen sets it only when ui::next_up (current==nullptr form) found an
+    // unwatched episode WITH a file, so the button can never promise an
+    // episode that cannot start. next_up_is_first = nothing watched yet
+    // (no watched flag and no resumable position anywhere in the series'
+    // watch map), which flips the label from "Continue" to "Start watching".
+    bool has_next_up = false;
+    int next_up_season = 0;
+    int next_up_episode = 0;
+    bool next_up_is_first = false;
     // The action under the focus ring BEFORE this rebuild, if any. Focus is
     // preserved by ACTION IDENTITY, never by index.
     std::optional<Action> prev_focus_action;
@@ -341,6 +355,20 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
             {Action::WholeSeries,
              whole_series_label(in.whole_armed, in.whole_estimate_bytes)});
     } else if (in.state == SeriesDetailState::InLibrary) {
+        // PlayNextUp leads whenever an episode is genuinely playable. It is
+        // NOT gated on series_settled: the settled gate exists because the
+        // ADD controls derive a garbage target while every season reads
+        // unmonitored — playing a file already on disk has no such hazard,
+        // and hiding "keep watching" for ~9 s after an add would read as a
+        // regression to anyone mid-binge.
+        if (in.has_next_up) {
+            out.buttons.push_back(
+                {Action::PlayNextUp,
+                 (in.next_up_is_first ? std::string("Start watching S")
+                                      : std::string("Continue S")) +
+                     std::to_string(in.next_up_season) + "E" +
+                     std::to_string(in.next_up_episode)});
+        }
         // While the record is unsettled EVERY season reads unmonitored, so
         // next_unmonitored would answer "1" one second after we added
         // season 1 and the primary button would read "Download Season 1".

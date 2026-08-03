@@ -16,7 +16,9 @@
 #include <unordered_map>
 
 #include "app/settings_persistence.h"
+#include "media_browser/library/watch_store.h"
 #include "media_browser/radarr/radarr_client.h"
+#include "media_browser/sonarr/sonarr_client.h"
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "utils/time_format.h"
@@ -166,8 +168,11 @@ LibraryScreen::FileState LibraryScreen::classify(const Movie& m) {
 // Construction / lifecycle
 // ---------------------------------------------------------------------------
 
-LibraryScreen::LibraryScreen(RadarrClient& radarr, ::app::AppState& state)
-    : radarr_(radarr), state_(state) {}
+LibraryScreen::LibraryScreen(RadarrClient& radarr, SonarrClient* sonarr,
+                             library::WatchStore* watch_store,
+                             ::app::AppState& state)
+    : radarr_(radarr), sonarr_(sonarr), watch_store_(watch_store),
+      state_(state) {}
 
 LibraryScreen::~LibraryScreen() {
     // Join the async refresh worker so a thread mid-CURL can't outlive
@@ -279,9 +284,11 @@ void LibraryScreen::refresh_async() {
 }
 
 void LibraryScreen::run_refresh() {
-    // Worker thread: do the two blocking Radarr calls here, build the
+    // Worker thread: do the blocking Radarr/Sonarr calls here, build the
     // result locally, publish under the mutex. Touches NO live member
-    // except pending_/result_ready_/refresh_in_flight_.
+    // except pending_/result_ready_/refresh_in_flight_ — and NEVER
+    // watch_store_, which is main/render-thread-only by its own contract
+    // (apply_pending reads it at drain time).
     PendingResult r;
     r.library = radarr_.get_library();
 
@@ -297,15 +304,54 @@ void LibraryScreen::run_refresh() {
     for (const auto& qi : radarr_.get_queue()) {
         auto it = radarr_to_tmdb.find(qi.movie_id);
         if (it == radarr_to_tmdb.end()) continue;
-        const int tmdb_id = it->second;
+        const MediaRef ref{MediaKind::Movie, it->second};
         const std::string& tds = qi.tracked_download_state;
         if (tds == "importBlocked" || tds == "importFailed") {
-            r.stuck.insert(tmdb_id);
+            r.stuck.insert(ref);
         } else if (tds == "importing" || tds == "importPending") {
-            r.importing.insert(tmdb_id);
+            r.importing.insert(ref);
         } else {
-            r.downloading.insert(tmdb_id);
+            r.downloading.insert(ref);
         }
+    }
+
+    // ---- TV library + downloading refs (Phase 3 Task 7) ----
+    if (sonarr_) {
+        // get_library_checked(), NOT get_library(): Sonarr rides Gluetun's
+        // netns, so a routine re-link can fail this call mid-refresh, and
+        // {} must not read as "the user's shows all vanished". nullopt →
+        // sonarr_ok stays false: TV entries are absent this cycle and
+        // render() shows the warning line; movies are unaffected.
+        if (auto tv_checked = sonarr_->get_library_checked()) {
+            r.tv_library = std::move(*tv_checked);
+            r.sonarr_ok = true;
+
+            // TV downloading refs, from the queue mapped series_id →
+            // tmdb_id via the series vector just fetched (Series carries
+            // both ids). Without this, the inclusion rule has no source
+            // for a freshly-started 0-file season download — it would
+            // never appear in the Library and no TV tile could ever show
+            // DOWNLOADING. A nullopt queue is treated as empty, same as
+            // the movie path's bare get_queue() above: the library
+            // answered, so the grid still shows; only the badge/inclusion
+            // signal for in-flight grabs is missing this cycle.
+            std::unordered_map<int, int> sonarr_to_tmdb;
+            sonarr_to_tmdb.reserve(r.tv_library.size());
+            for (const auto& s : r.tv_library) {
+                if (s.tmdb_id > 0) sonarr_to_tmdb[s.sonarr_id] = s.tmdb_id;
+            }
+            if (auto tv_queue = sonarr_->get_queue_checked()) {
+                for (const auto& qi : *tv_queue) {
+                    auto it = sonarr_to_tmdb.find(qi.series_id);
+                    if (it == sonarr_to_tmdb.end()) continue;
+                    r.downloading.insert(MediaRef{MediaKind::Tv, it->second});
+                }
+            }
+        }
+    } else {
+        // No Sonarr configured (keyless box holding the mock): an empty TV
+        // library is the genuine answer, not an outage — no warning line.
+        r.sonarr_ok = true;
     }
 
     {
@@ -325,15 +371,32 @@ void LibraryScreen::apply_pending() {
     }
     result_ready_.store(false);
 
-    // Swap into live state + rebuild the filtered view. rebuild_view()
-    // MUST run here on the render thread — it reads state_.display_settings
-    // and mutates grid_cursor_/scroll_row_/view_ (raw Movie* into library_),
-    // so library_ and view_ must be swapped+rebuilt atomically on one thread.
-    library_             = std::move(r.library);
-    downloading_tmdb_ids_ = std::move(r.downloading);
-    stuck_tmdb_ids_       = std::move(r.stuck);
-    importing_tmdb_ids_   = std::move(r.importing);
+    // Swap into live state + rebuild entries and the filtered view. This
+    // MUST all run here on the render thread — entries_ holds raw
+    // Movie*/Series* into library_/tv_library_, view_ holds raw
+    // LibraryEntry* into entries_, and rebuild_view() reads
+    // state_.display_settings and mutates grid_cursor_/scroll_row_ — so
+    // all four containers are swapped+rebuilt atomically on one thread.
+    library_          = std::move(r.library);
+    tv_library_       = std::move(r.tv_library);
+    downloading_refs_ = std::move(r.downloading);
+    stuck_refs_       = std::move(r.stuck);
+    importing_refs_   = std::move(r.importing);
+    sonarr_ok_        = r.sonarr_ok;
     loaded_ = true;
+
+    // Watch data is read HERE, at drain time on the render thread —
+    // WatchStore is main/render-thread-only by construction, so the worker
+    // in run_refresh() must never touch it. Null/degraded store → empty
+    // snapshots → nothing reads as watched, which is the honest fallback.
+    std::unordered_set<int> watched_movie_ids;
+    std::unordered_map<int, int> tv_watched_counts;
+    if (watch_store_) {
+        watched_movie_ids = watch_store_->watched_movie_ids();
+        tv_watched_counts = watch_store_->tv_watched_counts();
+    }
+    entries_ = build_library_entries(library_, tv_library_, watched_movie_ids,
+                                     tv_watched_counts, downloading_refs_);
     rebuild_view();
 }
 
@@ -394,10 +457,13 @@ void LibraryScreen::rebuild_view() {
         }
     }
     // ---- Filter + sort ----
-    // view_ holds raw Movie* into library_, so this MUST stay on the render
-    // thread and immediately follow the library_ swap in apply_pending() — any
-    // reallocation of library_ invalidates every pointer built here.
-    view_ = build_library_view(library_, filter,
+    // view_ holds raw LibraryEntry* into entries_ (whose entries in turn
+    // borrow library_/tv_library_), so this MUST stay on the render thread
+    // and immediately follow the swaps in apply_pending() — any
+    // reallocation of those containers invalidates every pointer built
+    // here. (The overlay's SELECT branch also calls this; entries_ is
+    // untouched there, so the aliasing holds.)
+    view_ = build_library_view(entries_, filter,
                                state_.display_settings.mb_library_sort,
                                thirty_days_ago_iso, recent_cutoff_valid);
 
@@ -474,8 +540,7 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
                     case 2: state_.display_settings.mb_library_sort = S::Year;          changed = true; break;
                     case 3: state_.display_settings.mb_library_sort = S::Size;          changed = true; break;
                     case 4: state_.display_settings.mb_library_filter = F::All;           changed = true; break;
-                    case 5: /* Unwatched is a placeholder — accept the click but render the row as "(soon)"; no real filter wired yet. */
-                            state_.display_settings.mb_library_filter = F::Unwatched;    changed = true; break;
+                    case 5: state_.display_settings.mb_library_filter = F::Unwatched;     changed = true; break;
                     case 6: state_.display_settings.mb_library_filter = F::MissingFiles;  changed = true; break;
                     case 7: state_.display_settings.mb_library_filter = F::RecentlyAdded; changed = true; break;
                 }
@@ -550,12 +615,17 @@ Screen LibraryScreen::handle_input(const std::vector<platform::InputEvent>& even
             continue;
         }
 
-        // SELECT (rotary click + gamepad A) — open detail.
+        // SELECT (rotary click + gamepad A) — open detail. The KIND picks
+        // the destination and rides in the returned Screen value, exactly
+        // like BrowseScreen's TV handoff: movie/TV TMDB id spaces overlap
+        // completely, so the id alone must never choose the screen.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             if (!view_.empty() && grid_cursor_ >= 0 &&
                 grid_cursor_ < static_cast<int>(view_.size())) {
-                selected_tmdb_id_ = view_[grid_cursor_]->tmdb_id;
-                return Screen::Detail;
+                selected_ref_ = view_[grid_cursor_]->ref;
+                return selected_ref_.kind == MediaKind::Tv
+                           ? Screen::SeriesDetail
+                           : Screen::Detail;
             }
         }
     }
@@ -602,16 +672,25 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (stats_line_.empty() ||
             now - last_stats_refresh_ >= std::chrono::seconds(5)) {
             last_stats_refresh_ = now;
+            // Mixed basis: entries_ is the grid's truth (movies + included
+            // TV), so the count and the used-bytes sum both read it. Movie
+            // bytes come from the file, TV bytes from Sonarr's
+            // sizeOnDisk (which includes S0 specials — correct for a DISK
+            // stat, unlike the watched math).
             int64_t used_bytes = 0;
-            for (const Movie& m : library_) {
-                if (m.has_file) used_bytes += m.file_size_bytes;
+            for (const LibraryEntry& e : entries_) {
+                if (e.movie) {
+                    if (e.movie->has_file) used_bytes += e.movie->file_size_bytes;
+                } else if (e.series) {
+                    used_bytes += e.series->size_on_disk_bytes;
+                }
             }
             int64_t free_bytes = 0;
             std::error_code ec;
             auto info = std::filesystem::space("/mnt/ssd/library", ec);
             if (!ec) free_bytes = static_cast<int64_t>(info.available);
             stats_line_ =
-                std::to_string(library_.size()) + " titles  ·  "
+                std::to_string(entries_.size()) + " titles  ·  "
                 + (used_bytes > 0 ? format_bytes(used_bytes)
                                   : std::string("0 B")) + " used  ·  "
                 + (free_bytes > 0 ? format_bytes(free_bytes) + " free" : "");
@@ -623,6 +702,24 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                    static_cast<float>(chrome::kSafeInset_px),
                    static_cast<float>(stats_y + 14),
                    14, th.dim);
+
+    // Sonarr-offline warning line (queue_screen idiom: accent-colored
+    // sub-line, drawn only when Sonarr was configured but didn't answer
+    // the last library fetch). TV entries are simply ABSENT that cycle —
+    // this line is what keeps that from reading as "my shows vanished".
+    // Right-aligned on the stats row so the layout below never shifts.
+    // Drawn before the empty-state early-returns on purpose: a
+    // movies-empty box mid-outage still needs the explanation.
+    if (sonarr_ && !sonarr_ok_) {
+        const std::string warn_text =
+            "Sonarr offline \xE2\x80\x94 TV shows hidden";
+        const int warn_w = r.mb_text_width(warn_text, 14);
+        r.mb_draw_text(warn_text,
+                       static_cast<float>(screen_w - chrome::kSafeInset_px
+                                          - warn_w),
+                       static_cast<float>(stats_y + 14),
+                       14, th.accent, 0.95f);
+    }
 
     // Legacy sort sub-tab strip (Recent / Title / Year / Size) was
     // dropped in v1.6.4 — the slide-in overlay (BTN4) is the canonical
@@ -649,7 +746,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         return;
     }
     if (view_.empty()) {
-        const std::string msg = library_.empty()
+        const std::string msg = entries_.empty()
             ? "Library is empty — add movies from Browse"
             : "No matches for the current filter";
         const int tw = r.mb_text_width(msg, 18);
@@ -696,7 +793,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         for (int col = 0; col < kGridCols; ++col) {
             const int idx = row * kGridCols + col;
             if (idx >= static_cast<int>(view_.size())) break;
-            const Movie* mv = view_[idx];
+            const LibraryEntry* en = view_[idx];
 
             const int x = grid_left + col * (cell_w + kCellGap);
             const int y = grid_top + (row - scroll_row_) * (cell_h + kRowGap);
@@ -704,32 +801,68 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // Poster CARD via shared chrome helper — real TMDB image
             // when loaded, deterministic tint placeholder while it
             // fetches, plus year pill + IN LIBRARY badge (or
-            // DOWNLOADING / BAD RELEASE badge when the movie is in the
-            // queue or stuck on importBlocked).
-            const ::ui::Color tint = stable_tint_for_id(mv->tmdb_id);
+            // DOWNLOADING / BAD RELEASE badge when the title is in the
+            // queue or stuck on importBlocked). Tint keyed on the bare id
+            // is fine — a movie/TV id collision sharing a placeholder
+            // color is cosmetic, unlike sharing a key.
+            const ::ui::Color tint = stable_tint_for_id(en->ref.id);
             // Badge precedence mirrors draw_poster_card: stuck > importing
             // > downloading > in_library. Compute each exclusive of the
             // higher-priority ones so at most one badge is requested.
-            // A file whose measured duration is wildly off the expected
-            // runtime (renamed trailer/junk upload) earns the same BAD
-            // RELEASE badge as an importBlocked queue item — Detail
-            // explains the specifics.
+            // A movie file whose measured duration is wildly off the
+            // expected runtime (renamed trailer/junk upload) earns the
+            // same BAD RELEASE badge as an importBlocked queue item —
+            // Detail explains the specifics. (Movie-only signal; the
+            // stuck/importing sets also carry only Movie refs today.)
             const bool is_stuck =
-                stuck_tmdb_ids_.count(mv->tmdb_id) > 0 ||
-                file_runtime_suspicious(*mv);
+                stuck_refs_.count(en->ref) > 0 ||
+                (en->movie && file_runtime_suspicious(*en->movie));
             const bool is_importing =
-                !is_stuck && importing_tmdb_ids_.count(mv->tmdb_id) > 0;
+                !is_stuck && importing_refs_.count(en->ref) > 0;
             const bool is_downloading =
-                !is_stuck && !is_importing &&
-                downloading_tmdb_ids_.count(mv->tmdb_id) > 0;
+                !is_stuck && !is_importing && en->downloading;
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
-                mv->title, mv->year,
+                en->title, en->year,
                 tint, /*in_library=*/true,
                 /*download_pct=*/is_downloading ? 0 : -1,
-                /*poster_url=*/mv->poster_url,
+                /*poster_url=*/en->poster_url,
                 /*is_stuck=*/is_stuck,
                 /*is_importing=*/is_importing);
+
+            // TV chip — a small kind marker so mixed rows stay scannable.
+            // Same drawing idiom as the chrome badges (solid bg quad so it
+            // reads over any poster art, bordered, small font), accent
+            // colored, top-left — stacked BELOW the status badge, which
+            // always occupies the corner itself (in_library is
+            // unconditionally true here, so draw_poster_card always drew
+            // one of its four badges above).
+            if (en->ref.kind == MediaKind::Tv) {
+                constexpr int kTvChipFontPx = 12;
+                constexpr int kTvChipPadX   = 6;
+                constexpr int kTvChipPadY   = 2;
+                const std::string tv_label = "TV";
+                const int chip_x = x + chrome::kPad1;
+                const int chip_y = y + chrome::kPad1 + chrome::kBadgeBoxH
+                                 + chrome::kPad1;
+                const int text_w = r.mb_text_width(tv_label, kTvChipFontPx);
+                const int box_w  = text_w + 2 * kTvChipPadX;
+                const int box_h  = kTvChipFontPx + 2 * kTvChipPadY;
+                r.mb_fill_rect(static_cast<float>(chip_x),
+                               static_cast<float>(chip_y),
+                               static_cast<float>(box_w),
+                               static_cast<float>(box_h), th.bg);
+                r.mb_stroke_rect(static_cast<float>(chip_x),
+                                 static_cast<float>(chip_y),
+                                 static_cast<float>(box_w),
+                                 static_cast<float>(box_h),
+                                 2.0f, th.accent);
+                r.mb_draw_text(tv_label,
+                               static_cast<float>(chip_x + kTvChipPadX),
+                               static_cast<float>(chip_y + kTvChipPadY
+                                                  + kTvChipFontPx - 2),
+                               kTvChipFontPx, th.accent);
+            }
 
             // Meta line below poster: title only, wrapped to 2 lines
             // when needed. Year now lives inside the poster card.
@@ -738,7 +871,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
             // also overflows. Same logic BrowseScreen uses — kept
             // inline (rather than factored into mb_chrome) because the
             // truncation pattern depends on the renderer instance.
-            const std::string& title = mv->title;
+            const std::string& title = en->title;
             const float max_w_f = static_cast<float>(cell_w);
             std::string line1, line2;
             if (r.mb_text_width(title, kMetaFontPx) <= max_w_f) {
@@ -815,10 +948,10 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         }
         const char* filter_label = "All";
         switch (state_.display_settings.mb_library_filter) {
-            case F::All:           filter_label = "All";              break;
-            case F::Unwatched:     filter_label = "Unwatched (soon)"; break;
-            case F::MissingFiles:  filter_label = "Missing files";    break;
-            case F::RecentlyAdded: filter_label = "Recently added";   break;
+            case F::All:           filter_label = "All";            break;
+            case F::Unwatched:     filter_label = "Unwatched";      break;
+            case F::MissingFiles:  filter_label = "Missing files";  break;
+            case F::RecentlyAdded: filter_label = "Recently added"; break;
         }
         std::string indicator = std::string("Sort: ") + sort_label
                               + "  \xC2\xB7  Filter: " + filter_label;
@@ -888,10 +1021,14 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         const int stat_y0 = title_baseline + 24;
         char buf_titles[64], buf_used[64], buf_free[64];
         std::snprintf(buf_titles, sizeof(buf_titles), "%zu titles",
-                      library_.size());
+                      entries_.size());
         int64_t used_bytes_ov = 0;
-        for (const Movie& m : library_) {
-            if (m.has_file) used_bytes_ov += m.file_size_bytes;
+        for (const LibraryEntry& en : entries_) {
+            if (en.movie) {
+                if (en.movie->has_file) used_bytes_ov += en.movie->file_size_bytes;
+            } else if (en.series) {
+                used_bytes_ov += en.series->size_on_disk_bytes;
+            }
         }
         // Shared format_bytes() covers bytes > 0 only; an empty library is a
         // real zero and keeps the "0 B" the deleted local copy produced.
@@ -992,20 +1129,22 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
         using F = ::app::AppState::DisplaySettings::MbLibraryFilter;
         const F active_filter = state_.display_settings.mb_library_filter;
-        struct FilterRow { const char* label; bool is_active; bool is_focused; bool is_soon; };
+        // Unwatched is a real filter as of Phase 3 (WatchStore-fed
+        // entry.watched) — the "(soon)" dimming this block used to carry
+        // is gone with the placeholder.
+        struct FilterRow { const char* label; bool is_active; bool is_focused; };
         const FilterRow filter_rows[4] = {
-            {"All",            active_filter == F::All,            overlay_focus_row_ == 4, false},
-            {"Unwatched",      active_filter == F::Unwatched,      overlay_focus_row_ == 5, true},
-            {"Missing files",  active_filter == F::MissingFiles,   overlay_focus_row_ == 6, false},
-            {"Recently added", active_filter == F::RecentlyAdded,  overlay_focus_row_ == 7, false},
+            {"All",            active_filter == F::All,            overlay_focus_row_ == 4},
+            {"Unwatched",      active_filter == F::Unwatched,      overlay_focus_row_ == 5},
+            {"Missing files",  active_filter == F::MissingFiles,   overlay_focus_row_ == 6},
+            {"Recently added", active_filter == F::RecentlyAdded,  overlay_focus_row_ == 7},
         };
         const int filter_rows_y0 = filter_heading_y + kOverlaySectionHeaderH;
         for (int i = 0; i < 4; ++i) {
             const int row_y = filter_rows_y0 + i * kOverlayRowHeight;
             const ::ui::Color label_color =
-                filter_rows[i].is_soon ? th.dim
-              : (filter_rows[i].is_active || filter_rows[i].is_focused) ? th.accent
-              : th.dim;
+                (filter_rows[i].is_active || filter_rows[i].is_focused)
+                    ? th.accent : th.dim;
             if (filter_rows[i].is_focused) {
                 const float marker_x = static_cast<float>(content_x);
                 const float marker_cy = static_cast<float>(row_y + kOverlayRowHeight / 2);
@@ -1017,9 +1156,7 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                     marker_x + kMarkerW, marker_cy,
                     th.accent, 1.0f);
             }
-            std::string label = filter_rows[i].label;
-            if (filter_rows[i].is_soon) label += "  (soon)";
-            r.mb_draw_text(label,
+            r.mb_draw_text(filter_rows[i].label,
                            static_cast<float>(content_x + 18),
                            static_cast<float>(row_y + kOverlayRowHeight - 10),
                            kRowFontPx, label_color);

@@ -219,11 +219,18 @@ set(ALL_SOURCES
 
 if(BUILD_KIOSK)
     # Media Browser UI + Radarr client sources are linked into the kiosk
-    # binary when the feature flag is on. Torrent/library-db stay test-only
-    # for now (Tasks 24+ will wire them in).
+    # binary when the feature flag is on. Torrent stays test-only for now;
+    # library_db/watch_store joined the kiosk in Phase 3 (watch state).
     set(KIOSK_MEDIA_BROWSER_SOURCES "")
     if(ENABLE_MEDIA_BROWSER)
         list(APPEND KIOSK_MEDIA_BROWSER_SOURCES
+            # The watch-state store (Phase 3 TV playback). Same dual-list
+            # arrangement as library_view/mb_recs below: both files also
+            # live in MEDIA_BROWSER_SOURCES for unit testing, and main.cpp's
+            # WatchStore needs them compiled here or the kiosk link fails on
+            # undefined LibraryDb::*/WatchStore::*.
+            src/media_browser/library/library_db.cpp
+            src/media_browser/library/watch_store.cpp
             src/media_browser/sonarr/sonarr_parsers.cpp
             src/media_browser/sonarr/sonarr_client.cpp
             src/media_browser/sonarr/sonarr_mock.cpp
@@ -269,6 +276,10 @@ if(BUILD_KIOSK)
         )
         # libcurl is required by radarr_client.cpp.
         pkg_check_modules(CURL REQUIRED libcurl)
+        # sqlite3 is required by library_db.cpp/watch_store.cpp — without
+        # this the kiosk binary has no sqlite3 link at all (the :395 check
+        # only feeds the test targets, which BUILD_KIOSK Pi builds skip).
+        pkg_check_modules(SQLITE3 REQUIRED sqlite3)
     endif()
 
     # Executable
@@ -290,6 +301,7 @@ if(BUILD_KIOSK)
         ${GST_VIDEO_INCLUDE_DIRS}
         ${GST_GL_INCLUDE_DIRS}
         ${CURL_INCLUDE_DIRS}
+        ${SQLITE3_INCLUDE_DIRS}
         src/
     )
 
@@ -309,6 +321,7 @@ if(BUILD_KIOSK)
         ${GST_VIDEO_LIBRARIES}
         ${GST_GL_LIBRARIES}
         ${CURL_LIBRARIES}
+        ${SQLITE3_LIBRARIES}
         spdlog::spdlog_header_only
         pthread
         m
@@ -412,6 +425,7 @@ if(ENABLE_MEDIA_BROWSER)
         src/media_browser/sonarr/sonarr_client.cpp
         src/media_browser/sonarr/sonarr_mock.cpp
         src/media_browser/library/library_db.cpp
+        src/media_browser/library/watch_store.cpp
         src/media_browser/tmdb_client.cpp
         src/media_browser/torrent/torrent_session.cpp
         src/media_browser/radarr/radarr_parsers.cpp
@@ -458,6 +472,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_smoke.cpp
         tests/media_browser/test_movie_drive.cpp
         tests/media_browser/test_library_db.cpp
+        tests/media_browser/test_watch_store.cpp
         tests/media_browser/test_tmdb_client.cpp
         tests/media_browser/test_tmdb_tv.cpp
         tests/media_browser/test_media_ref.cpp
@@ -466,6 +481,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_filter_rows.cpp
         tests/media_browser/test_browse_logic.cpp
         tests/media_browser/test_series_detail_logic.cpp
+        tests/media_browser/test_episode_logic.cpp
         tests/media_browser/test_queue_groups.cpp
         tests/media_browser/test_mb_recs.cpp
         tests/media_browser/test_sequence_detector.cpp

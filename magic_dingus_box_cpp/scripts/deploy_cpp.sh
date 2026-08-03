@@ -176,6 +176,7 @@ rsync -avz --checksum \
     --exclude 'data/kiosk_status.json' \
     --exclude 'data/seek_request.json' \
     --exclude 'data/text_input_queue.jsonl' \
+    --exclude 'data/media_browser.db*' \
     --filter 'P data/thumbnails/ps1' \
     --filter 'P data/thumbnails/nes' \
     --filter 'P data/thumbnails/snes' \

@@ -14,6 +14,7 @@
 #include "media_browser/prowlarr/prowlarr_client.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/tmdb_client.h"
+#include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/release_picker_screen.h"
 
@@ -22,6 +23,7 @@ namespace media_browser { class TmdbClient; }
 namespace media_browser { class ProwlarrClient; }
 namespace media_browser { class QbittorrentClient; }
 namespace media_browser { class DownloadWatchdog; }
+namespace media_browser::library { class WatchStore; }
 
 namespace media_browser::ui {
 
@@ -82,9 +84,15 @@ public:
     // active or finished+seeding) so the disk doesn't accumulate
     // orphan files. Without it, the existing "cancel queue items"
     // path still runs, but won't catch finished torrents.
+    //
+    // watch is optional — pass nullptr in tests / builds without the
+    // watch-state store. Null-safe: without it get_play_target() simply
+    // reports resume_position = 0 (play from the start); the watch
+    // identity is still populated so playback sessions stay attributable.
     DetailScreen(RadarrClient& radarr, TmdbClient& tmdb,
                  ProwlarrClient* prowlarr = nullptr,
-                 QbittorrentClient* qbit = nullptr);
+                 QbittorrentClient* qbit = nullptr,
+                 library::WatchStore* watch = nullptr);
     ~DetailScreen();
 
     // Set the tmdb_id of the movie the detail screen should display. The
@@ -124,6 +132,16 @@ public:
         std::string poster_url;       // full URL from TmdbMovieDetail::poster_path
         std::vector<std::string> cast;       // top cast names from TmdbMovieDetail
         std::string director;                // primary director name
+        // Resume offset in seconds — 0.0 means play from the beginning.
+        // Populated from the watch store's movie row when
+        // ui::is_resumable_position holds; always 0.0 when the store is
+        // absent or the position isn't resumable.
+        double resume_position = 0.0;
+        // Watch-state identity for the playback session (kind=Movie,
+        // season=episode=0). Engaged even when the watch store is null —
+        // identity says what is playing; the store decides whether writes
+        // persist.
+        std::optional<WatchIdentity> watch_identity;
     };
 
     // Returns the host-resolved file path + display title (+ TMDB overlay
@@ -323,6 +341,11 @@ private:
     TmdbClient& tmdb_;
     ProwlarrClient* prowlarr_ = nullptr;
     QbittorrentClient* qbit_ = nullptr;
+    // Optional watch-state store (resume positions). Read-only here —
+    // writes happen in main.cpp's checkpoint/flush paths. Main/render-
+    // thread-only by the store's own contract, which get_play_target()
+    // (render thread) respects.
+    library::WatchStore* watch_ = nullptr;
     int tmdb_id_ = 0;
     bool needs_refresh_ = false;
 

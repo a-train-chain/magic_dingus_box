@@ -441,6 +441,152 @@ TEST_CASE("action row: the non-actionable states have an EMPTY row",
     }
 }
 
+// ---------- PlayNextUp (Task 6) ----------
+//
+// The play affordance leads the in-library row whenever an episode is
+// actually playable (has_next_up is evidence-based: the screen only sets it
+// when next_up found an episode WITH a file). It must lead — the most common
+// gesture on a series page is "keep watching", and every focus rule below
+// (identity preservation, the forced-remove escape) has to survive the row
+// growing a new head.
+
+TEST_CASE("action row: PlayNextUp leads the in-library row, labels pinned",
+          "[series_detail][series_detail_logic]") {
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = true;
+    in.next_unmonitored = 2;
+    in.has_next_up = true;
+    in.next_up_season = 2;
+    in.next_up_episode = 5;
+    in.next_up_is_first = false;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 4);
+    CHECK(row.buttons[0].action == Action::PlayNextUp);
+    CHECK(row.buttons[0].label == "Continue S2E5");
+    CHECK(row.buttons[1].action == Action::NextSeason);
+    CHECK(row.buttons[2].action == Action::WholeSeries);
+    CHECK(row.buttons[3].action == Action::Remove);
+    CHECK(row.focus == 0);  // the play affordance is the default
+
+    // Nothing watched yet: the same button reads as a first start.
+    in.next_up_is_first = true;
+    in.next_up_season = 1;
+    in.next_up_episode = 1;
+    const auto first = decide_action_row(in);
+    REQUIRE(first.buttons.size() == 4);
+    CHECK(first.buttons[0].action == Action::PlayNextUp);
+    CHECK(first.buttons[0].label == "Start watching S1E1");
+}
+
+TEST_CASE("action row: PlayNextUp requires InLibrary; absent when has_next_up is false",
+          "[series_detail][series_detail_logic]") {
+    // Not-in-library: even a (stale) has_next_up must not add a play button
+    // to the add pair — there is nothing of ours on disk to play.
+    auto in = row_inputs(SeriesDetailState::NotInLibrary);
+    in.has_next_up = true;
+    in.next_up_season = 1;
+    in.next_up_episode = 1;
+    in.next_up_is_first = true;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 2);
+    CHECK(row.buttons[0].action == Action::AddSeason1);
+
+    // In-library without a playable episode: the pre-Task-6 row, unchanged.
+    auto lib = row_inputs(SeriesDetailState::InLibrary);
+    lib.series_settled = true;
+    lib.next_unmonitored = 2;
+    lib.has_next_up = false;
+    const auto no_nu = decide_action_row(lib);
+    REQUIRE(no_nu.buttons.size() == 3);
+    CHECK(no_nu.buttons[0].action == Action::NextSeason);
+}
+
+TEST_CASE("action row: an UNSETTLED record with a playable episode is [PlayNextUp, Remove]",
+          "[series_detail][series_detail_logic]") {
+    // The settled gate hides the ADD controls (their target derivation is
+    // garbage while every season reads unmonitored); playing a file already
+    // on disk is safe in that window, so PlayNextUp stays.
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = false;
+    in.next_unmonitored = 1;
+    in.has_next_up = true;
+    in.next_up_season = 1;
+    in.next_up_episode = 3;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 2);
+    CHECK(row.buttons[0].action == Action::PlayNextUp);
+    CHECK(row.buttons[0].label == "Continue S1E3");
+    CHECK(row.buttons[1].action == Action::Remove);
+    CHECK(row.focus == 0);
+}
+
+TEST_CASE("action row: focus identity survives a PlayNextUp insertion and relabel",
+          "[series_detail][series_detail_logic]") {
+    // The user sat on NextSeason; an episode-watch drain adds PlayNextUp at
+    // the head. Identity, not index: the ring must FOLLOW NextSeason to 1.
+    auto in = row_inputs(SeriesDetailState::InLibrary);
+    in.series_settled = true;
+    in.next_unmonitored = 2;
+    in.has_next_up = true;
+    in.next_up_season = 1;
+    in.next_up_episode = 1;
+    in.next_up_is_first = true;
+    in.prev_focus_action = Action::NextSeason;
+    const auto row = decide_action_row(in);
+    REQUIRE(row.buttons.size() == 4);
+    CHECK(row.focus == 1);
+    CHECK(row.buttons[row.focus].action == Action::NextSeason);
+
+    // ...and a relabel (Start watching -> Continue after E1's EOS drain)
+    // keeps the ring on PlayNextUp: same identity, new label.
+    in.prev_focus_action = Action::PlayNextUp;
+    in.next_up_is_first = false;
+    in.next_up_episode = 2;
+    const auto relabeled = decide_action_row(in);
+    REQUIRE(relabeled.buttons.size() == 4);
+    CHECK(relabeled.buttons[0].label == "Continue S1E2");
+    CHECK(relabeled.focus == 0);
+}
+
+TEST_CASE("action row: the forced [Remove]-only escape lands on PlayNextUp when present",
+          "[series_detail][series_detail_logic]") {
+    // The Task-5 forced-focus chain, re-run against a row that now STARTS
+    // with PlayNextUp: the escape's bias-away-from-Remove must land on the
+    // new head (index 0), never back on the delete button.
+    auto s2 = row_inputs(SeriesDetailState::InLibrary);
+    s2.series_settled = false;
+    s2.next_unmonitored = 1;
+    s2.prev_focus_action = Action::AddSeason1;
+    const auto forced = decide_action_row(s2);
+    REQUIRE(forced.buttons.size() == 1);
+    REQUIRE(forced.buttons[0].action == Action::Remove);
+
+    auto s3 = row_inputs(SeriesDetailState::InLibrary);
+    s3.series_settled = true;
+    s3.next_unmonitored = 2;
+    s3.has_next_up = true;
+    s3.next_up_season = 1;
+    s3.next_up_episode = 1;
+    s3.next_up_is_first = true;
+    s3.prev_focus_action = forced.buttons[0].action;  // Remove
+    s3.prev_row_remove_only = true;                   // ...and it was forced
+    const auto settled = decide_action_row(s3);
+    REQUIRE(settled.buttons.size() == 4);
+    CHECK(settled.focus == 0);
+    CHECK(settled.buttons[settled.focus].action == Action::PlayNextUp);
+
+    // Counterfactual: without the flag the identity loop preserves Remove.
+    s3.prev_row_remove_only = false;
+    const auto unguarded = decide_action_row(s3);
+    CHECK(unguarded.buttons[unguarded.focus].action == Action::Remove);
+}
+
+TEST_CASE("action: PlayNextUp is the FIRST enumerator", "[series_detail][series_detail_logic]") {
+    // Task 6's dispatch contract pins the enum head; a reorder would
+    // silently renumber every persisted/compared value downstream.
+    CHECK(static_cast<int>(Action::PlayNextUp) == 0);
+}
+
 TEST_CASE("action row: the armed whole-series label carries the GiB estimate",
           "[series_detail]") {
     CHECK(whole_series_label(false, 0) == "Whole series\xE2\x80\xA6");

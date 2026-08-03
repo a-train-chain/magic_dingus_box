@@ -7,6 +7,7 @@
 #include <json/json.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <sstream>
 #include <thread>
@@ -602,6 +603,69 @@ bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
     // status code belongs to this call alone.
     const long code = http_delete(path);
     return code > 0 && code < 400;
+}
+
+std::optional<std::vector<EpisodeInfo>>
+SonarrClient::get_episodes_checked(int sonarr_id) {
+    // Mirrors get_library_checked verbatim, accepted misclassification
+    // included: nullopt ONLY when transport failed (empty body); any
+    // non-empty body goes through the parser, so malformed JSON collapses to
+    // engaged-empty. See the header doc comment.
+    auto resp = http_get("/api/v3/episode?seriesId="
+                         + std::to_string(sonarr_id)
+                         + "&includeEpisodeFile=true");
+    if (resp.empty()) return std::nullopt;
+    return parse_episode_list(resp);
+}
+
+std::vector<EpisodeInfo> SonarrClient::parse_episode_list(const std::string& json) {
+    std::vector<EpisodeInfo> out;
+    Json::Value root;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(json);
+        if (!Json::parseFromStream(rb, is, &root, &err)) return out;
+    }
+    if (!root.isArray()) return out;
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
+        EpisodeInfo e;
+        e.id              = r.get("id", 0).asInt();
+        e.season_number   = r.get("seasonNumber", 0).asInt();
+        e.episode_number  = r.get("episodeNumber", 0).asInt();
+        e.title           = r.get("title", "").asString();
+        // 0 is a REAL value here (specials) — stored as-is, callers fall
+        // back to the series runtime.
+        e.runtime_minutes = r.get("runtime", 0).asInt();
+        e.air_date        = r.get("airDate", "").asString();
+        e.has_file        = r.get("hasFile", false).asBool();
+        e.episode_file_id = r.get("episodeFileId", 0).asInt();
+        e.monitored       = r.get("monitored", false).asBool();
+        // hasFile=false records carry NO episodeFile key at all
+        // (live-verified, Sonarr 4.0.19) — the guard leaves the file fields
+        // at their empty/0 defaults rather than touching a null.
+        if (r.isMember("episodeFile") && r["episodeFile"].isObject()) {
+            const auto& f = r["episodeFile"];
+            e.file_container_path = f.get("path", "").asString();
+            e.file_size_bytes     = f.get("size", 0).asInt64();
+            if (f.isMember("quality") && f["quality"].isObject() &&
+                f["quality"]["quality"].isObject()) {
+                e.file_quality =
+                    f["quality"]["quality"].get("name", "").asString();
+            }
+        }
+        out.push_back(std::move(e));
+    }
+    // (season, episode) order — next_up assumes it. Sonarr usually serves it
+    // this way already, but "usually" is not a contract.
+    std::sort(out.begin(), out.end(),
+              [](const EpisodeInfo& a, const EpisodeInfo& b) {
+                  if (a.season_number != b.season_number)
+                      return a.season_number < b.season_number;
+                  return a.episode_number < b.episode_number;
+              });
+    return out;
 }
 
 std::optional<std::vector<SonarrQueueItem>> SonarrClient::get_queue_checked() {

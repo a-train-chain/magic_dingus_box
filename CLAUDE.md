@@ -282,6 +282,21 @@ The Media Browser is a sub-mode of the kiosk that provides movie discovery, down
 - Gluetun → VPN tunnel for all torrent traffic with NAT-PMP port forwarding
 - GStreamer playbin → PlaybackScreen (hardware H.264 decode on Pi 4, software decode on Pi 5, software HEVC fallback on both)
 
+**TV playback (Phase 3):** TV is fully play-capable, not just browsable.
+SeriesDetailScreen offers a per-episode picker backed by a live Sonarr
+`/episode` fetch (files land between polls, so the picker never trusts a
+cached season map), and PlaybackScreen resumes mid-episode via the
+`load_file` start parameter. Watch state persists through `WatchStore` —
+30-second checkpoints during playback plus mark-on-EOS — into the SQLite
+`media_browser.db` (schema migration v3). The store is main-thread-only
+by contract, and the DB file is deploy-excluded so a redeploy never wipes
+watch history. At episode end, a next-episode countdown (8 s) reloads the
+pipeline in place — no screen transition — and at season end an offer
+card feeds the existing Start-Season-N monitor+search flow. The Library
+grid mixes movies and TV in one rail; its Unwatched filter uses real
+per-series watched counts with season 0 (specials) excluded from the
+episode totals.
+
 ### Playback hardware notes
 
 - **Pi 4**: `v4l2h264dec` (hardware H.264) is rank-promoted and used by default

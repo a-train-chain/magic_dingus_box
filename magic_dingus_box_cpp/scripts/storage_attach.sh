@@ -47,6 +47,18 @@ if ! mountpoint -q "$STORAGE_ROOT"; then
     exit 0
 fi
 
+# Sonarr's root folder must exist before any import fires. It has been
+# destroyed twice by an unidentified empty-dir sweep (2026-08-02); the
+# keep-file makes it permanently non-empty so sweeps cannot match it.
+# This ensure needs only the mount (guarded above), NOT docker — it must
+# run before the docker-readiness early-exits below, because the
+# early-boot mount-activation state they bail out of is exactly when the
+# directory has to be (re)created. Idempotent: install -d and the
+# keep-file check are both no-ops when the state is already correct.
+TV_ROOT="${STORAGE_ROOT}/library/tv"
+install -d -o magic -g magic "$TV_ROOT"
+[[ -f "${TV_ROOT}/.mdb-keep" ]] || { touch "${TV_ROOT}/.mdb-keep" && chown magic:magic "${TV_ROOT}/.mdb-keep"; }
+
 # Docker itself may not be up yet if the drive attached very early in boot.
 # In that case magic-dingus-services.service will start the stack with the
 # drive already mounted, which is the correct state anyway.
