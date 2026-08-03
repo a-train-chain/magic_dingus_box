@@ -53,6 +53,18 @@ imported, skipped, unmatched = [], [], []
 for root in roots:
     for folder in root.get("unmappedFolders", []):
         name, path = folder["name"], folder["path"]
+        # NEVER adopt the TV subtree (or dot-dirs). Sonarr's root
+        # (/data/library/tv) nests inside Radarr's movie root, and
+        # Radarr's fuzzy lookup matched the folder literally named
+        # "tv" to the movie "I Saw the TV Glow (2024)" — a phantom
+        # library entry whose removal (with files, the kiosk's normal
+        # Confirm-Remove) recursively deleted the ENTIRE TV library.
+        # Observed live 2026-08-02: four strikes, ~31 GB of freshly
+        # imported episodes destroyed. Audit-trail attributed
+        # (ausearch key mdb-tv-sweeper). Skip it unconditionally.
+        if name.lower() == "tv" or name.startswith("."):
+            skipped.append(name)
+            continue
         # "Title (Year)" -> lookup term. Radarr's lookup handles the
         # year suffix natively and ranks exact-year matches first.
         results = http("GET", "/movie/lookup?term=" + urllib.parse.quote(name))
