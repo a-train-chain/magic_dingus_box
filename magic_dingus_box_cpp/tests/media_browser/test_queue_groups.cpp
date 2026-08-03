@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "media_browser/ui/queue_groups.h"
@@ -57,6 +58,8 @@ TEST_CASE("a 10-row season pack collapses to one group", "[queue][tv][group]") {
     const auto& g = groups.front();
     CHECK(g.download_id == "HASH-A");
     CHECK(g.series_title == "Game.of.Thrones.S01.1080p.BluRay.x264-GROUP");
+    CHECK(g.series_id == 7);           // first row's — the enrichment key
+    CHECK(g.poster_url.empty());       // /queue has no images; enrichment fills
     CHECK(g.season_number == 1);
     CHECK(g.episode_count == 10);
     // MAX, not SUM: ten rows of a 12 GB pack are still a 12 GB pack.
@@ -191,4 +194,95 @@ TEST_CASE("status and tracked state come from the first row",
     REQUIRE(groups.size() == 1);
     CHECK(groups[0].status == "completed");
     CHECK(groups[0].tracked_download_state == "importPending");
+}
+
+// ---------------------------------------------------------------------------
+// enrich_tv_groups() — the library cross-ref that replaces the release-name
+// fallback with the clean series identity + poster. Kept separate from
+// group_tv_queue() so the collapse stays pure over queue rows.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("enrichment fills the poster and season-qualifies the title",
+          "[queue][tv][group][enrich]") {
+    std::vector<SonarrQueueItem> rows;
+    for (int ep = 1; ep <= 10; ++ep) {
+        rows.push_back(row(100 + ep, "HASH-A",
+                           "Game.of.Thrones.S01.1080p.BluRay.x264-GROUP", 1));
+    }
+    auto groups = mbu::group_tv_queue(rows);
+    REQUIRE(groups.size() == 1);
+
+    std::unordered_map<int, mbu::SeriesRef> by_id;
+    by_id.emplace(7, mbu::SeriesRef{"Game of Thrones",
+                                    "https://img.example/got.jpg"});
+    mbu::enrich_tv_groups(groups, by_id);
+
+    CHECK(groups[0].series_title ==
+          "Game of Thrones \xE2\x80\x94 Season 1");
+    CHECK(groups[0].poster_url == "https://img.example/got.jpg");
+    // Enrichment must not disturb the collapse facts.
+    CHECK(groups[0].episode_count == 10);
+    CHECK(groups[0].first_queue_id == 101);
+}
+
+TEST_CASE("a series the map does not know keeps the release-title fallback",
+          "[queue][tv][group][enrich]") {
+    auto groups = mbu::group_tv_queue(
+        {row(1, "HASH-A", "Some.Show.S02.720p.WEB-GROUP", 2)});
+    REQUIRE(groups.size() == 1);
+
+    std::unordered_map<int, mbu::SeriesRef> by_id;
+    by_id.emplace(999, mbu::SeriesRef{"Some Other Show", "https://x/y.jpg"});
+    mbu::enrich_tv_groups(groups, by_id);
+
+    // series_id 7 isn't in the map — nothing about the group changes.
+    CHECK(groups[0].series_title == "Some.Show.S02.720p.WEB-GROUP");
+    CHECK(groups[0].poster_url.empty());
+}
+
+TEST_CASE("a multi-season pack enriches to the bare series title",
+          "[queue][tv][group][enrich]") {
+    auto groups = mbu::group_tv_queue({
+        row(40, "HASH-Z", "Series.COMPLETE.1080p", 1),
+        row(41, "HASH-Z", "Series.COMPLETE.1080p", 2),
+    });
+    REQUIRE(groups.size() == 1);
+    REQUIRE(groups[0].season_number == -1);
+
+    std::unordered_map<int, mbu::SeriesRef> by_id;
+    by_id.emplace(7, mbu::SeriesRef{"Breaking Bad", "https://img/bb.jpg"});
+    mbu::enrich_tv_groups(groups, by_id);
+
+    // No single season to name — the clean title stands alone.
+    CHECK(groups[0].series_title == "Breaking Bad");
+    CHECK(groups[0].poster_url == "https://img/bb.jpg");
+}
+
+TEST_CASE("an empty library map is a no-op", "[queue][tv][group][enrich]") {
+    auto groups = mbu::group_tv_queue(
+        {row(1, "HASH-A", "Show.S01.1080p", 1)});
+    REQUIRE(groups.size() == 1);
+
+    mbu::enrich_tv_groups(groups, {});
+
+    CHECK(groups[0].series_title == "Show.S01.1080p");
+    CHECK(groups[0].poster_url.empty());
+    CHECK(groups[0].season_number == 1);
+    CHECK(groups[0].episode_count == 1);
+}
+
+TEST_CASE("a library row with an empty title yields its poster only",
+          "[queue][tv][group][enrich]") {
+    // Defensive: a half-parsed library row must not blank the row identity —
+    // the release name is still better than " — Season 2".
+    auto groups = mbu::group_tv_queue(
+        {row(1, "HASH-A", "Show.S02.1080p", 2)});
+    REQUIRE(groups.size() == 1);
+
+    std::unordered_map<int, mbu::SeriesRef> by_id;
+    by_id.emplace(7, mbu::SeriesRef{"", "https://img/p.jpg"});
+    mbu::enrich_tv_groups(groups, by_id);
+
+    CHECK(groups[0].series_title == "Show.S02.1080p");
+    CHECK(groups[0].poster_url == "https://img/p.jpg");
 }

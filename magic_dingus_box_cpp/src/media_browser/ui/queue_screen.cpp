@@ -143,10 +143,11 @@ std::string titlecase_state(const std::string& s) {
 struct RowView {
     int id = 0;              // cancel key WITHIN its section (see is_tv)
     bool is_tv = false;
-    std::string poster_url;  // always empty for TV — Sonarr's /queue carries
-                             // no images, so the row draws the same
-                             // deterministic-tint placeholder a poster-less
-                             // movie row does.
+    std::string poster_url;  // movie rows: Radarr's (library-patched); TV
+                             // rows: the series poster enrich_tv_groups()
+                             // resolved from the Sonarr library snapshot.
+                             // Empty either way draws the deterministic-tint
+                             // placeholder.
     std::string title;
     std::string state;
     double  progress = 0.0;
@@ -190,16 +191,19 @@ std::string lc_hash(const std::string& s) {
     return out;
 }
 
-// One line of TV row identity: "Series.S01.1080p — Season 1 (10 eps)", or
-// "… — 10 eps" when the pack spans seasons (season_number == -1).
+// One line of TV row identity: "Breaking Bad — Season 1 (10 eps)".
+// series_title arrives PRE-QUALIFIED: enrich_tv_groups() bakes the
+// " — Season N" suffix into it when the Sonarr library snapshot resolves
+// the series (queue_groups.h), and the un-enriched fallback is the raw
+// release name, which carries its own S01/E05 tokens. Appending the season
+// HERE too would render "Breaking Bad — Season 1 — Season 1 (10 eps)" on
+// every enriched row, so this adds only the episode count.
 std::string tv_row_title(const TvQueueGroup& g) {
     std::string base = g.series_title.empty() ? std::string("Untitled")
                                               : g.series_title;
     std::ostringstream ss;
-    ss << base << " \xE2\x80\x94 ";
-    if (g.season_number >= 0) ss << "Season " << g.season_number << " (";
-    ss << g.episode_count << " ep" << (g.episode_count == 1 ? "" : "s");
-    if (g.season_number >= 0) ss << ")";
+    ss << base << " (" << g.episode_count << " ep"
+       << (g.episode_count == 1 ? "" : "s") << ")";
     return ss.str();
 }
 
@@ -281,7 +285,54 @@ void QueueScreen::run_refresh() {
             eta_by_row_id.reserve(tv_rows.size());
             for (const auto& q : tv_rows) eta_by_row_id.emplace(q.id, q.eta_seconds);
 
-            for (auto& g : group_tv_queue(tv_rows)) {
+            auto tv_groups = group_tv_queue(tv_rows);
+
+            // Poster + clean-title enrichment. Sonarr's /queue carries no
+            // images and no series title (queue_groups.h), so cross-ref
+            // the series library — the exact mirror of the Radarr library
+            // cross-ref below that fills movie posters. Same cache
+            // contract too: tv_lib_cache_* are worker-thread-only
+            // (serialized by refresh_in_flight_), 30s TTL, and a group
+            // whose series_id the snapshot doesn't know forces an
+            // immediate refetch so a just-added series shows its poster
+            // right away. Only fetched when there are groups to enrich —
+            // unlike the movie library there is no TV awaiting section,
+            // so an empty TV queue needs no snapshot at all.
+            if (!tv_groups.empty()) {
+                const auto tv_now = std::chrono::steady_clock::now();
+                bool tv_lib_stale =
+                    (tv_now - tv_lib_cache_at_) > std::chrono::seconds(30);
+                if (!tv_lib_stale) {
+                    std::unordered_set<int> cached_ids;
+                    cached_ids.reserve(tv_lib_cache_.size());
+                    for (const auto& s : tv_lib_cache_) {
+                        cached_ids.insert(s.sonarr_id);
+                    }
+                    for (const auto& g : tv_groups) {
+                        // series_id 0 can never resolve — treating it as
+                        // "missing" would force a refetch every 1.5s tick.
+                        if (g.series_id <= 0) continue;
+                        if (cached_ids.count(g.series_id) == 0) {
+                            tv_lib_stale = true;
+                            break;
+                        }
+                    }
+                }
+                if (tv_lib_stale) {
+                    tv_lib_cache_ = sonarr_->get_library();
+                    tv_lib_cache_at_ = tv_now;
+                }
+
+                std::unordered_map<int, SeriesRef> series_by_id;
+                series_by_id.reserve(tv_lib_cache_.size());
+                for (const auto& s : tv_lib_cache_) {
+                    series_by_id.emplace(s.sonarr_id,
+                                         SeriesRef{s.title, s.poster_url});
+                }
+                enrich_tv_groups(tv_groups, series_by_id);
+            }
+
+            for (auto& g : tv_groups) {
                 TvQueueRow row;
                 auto eta_it = eta_by_row_id.find(g.first_queue_id);
                 row.eta_seconds = (eta_it == eta_by_row_id.end()) ? 0 : eta_it->second;
@@ -918,6 +969,9 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         RowView v;
         v.id                = t.group.first_queue_id;
         v.is_tv             = true;
+        // Same poster path the movie rows use (mb_draw_poster_fit +
+        // artwork cache, keyed by URL); empty falls back to the tint.
+        v.poster_url        = t.group.poster_url;
         v.title             = tv_row_title(t.group);
         v.state             = t.group.status;
         v.progress          = t.progress;
