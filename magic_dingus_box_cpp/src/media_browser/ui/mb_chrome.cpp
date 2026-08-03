@@ -132,6 +132,27 @@ ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y) {
     return {x, y, box_w, box_h};
 }
 
+ChipRect draw_new_badge(::ui::Renderer& r, int x, int y) {
+    const auto& th = r.mb_theme();
+    const std::string label = "NEW";
+    const int text_w = r.mb_text_width(label, kBadgeFontPx);
+    const int box_w  = text_w + 2 * kBadgePadX;
+    const int box_h  = kBadgeBoxH;
+    r.mb_fill_rect(static_cast<float>(x), static_cast<float>(y),
+                   static_cast<float>(box_w), static_cast<float>(box_h),
+                   th.bg);
+    // Accent border = freshness marker, distinct from the green
+    // in-library state and matching the Library's TV chip accent.
+    r.mb_stroke_rect(static_cast<float>(x), static_cast<float>(y),
+                     static_cast<float>(box_w), static_cast<float>(box_h),
+                     static_cast<float>(kFocusBorder_px), th.accent);
+    r.mb_draw_text(label,
+                   static_cast<float>(x + kBadgePadX),
+                   static_cast<float>(y + kBadgePadY + kBadgeFontPx - 2),
+                   kBadgeFontPx, th.accent);
+    return {x, y, box_w, box_h};
+}
+
 ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y,
                        [[maybe_unused]] int percent_0_to_99) {
     const auto& th = r.mb_theme();

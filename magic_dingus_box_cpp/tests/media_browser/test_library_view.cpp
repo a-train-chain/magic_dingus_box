@@ -122,6 +122,7 @@ std::vector<std::string> entry_titles(const std::vector<Entry>& entries) {
 const std::unordered_set<int> kNoWatchedMovies;
 const std::unordered_map<int, int> kNoTvCounts;
 const std::unordered_set<MediaRef> kNoDownloads;
+const std::unordered_set<int> kNoStarted;  // no movie ever opened
 
 // The cutoff shape LibraryScreen produces: utils::iso8601_utc output, fixed
 // width, so lexicographic order equals chronological order.
@@ -145,7 +146,7 @@ TEST_CASE("A movie entry carries the Movie's fields and a Movie-kind ref",
     const std::vector<Series> no_tv;
 
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     const Entry& e = entries[0];
@@ -171,7 +172,7 @@ TEST_CASE("A file-less movie is still an entry, with file_count 0",
     const std::vector<Series> no_tv;
 
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     REQUIRE(entries[0].file_count == 0);
@@ -190,7 +191,7 @@ TEST_CASE("Movie watched comes from watched_movie_ids membership",
     const std::unordered_set<int> watched{1};
 
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, watched, kNoTvCounts, kNoDownloads);
+        movies, no_tv, watched, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 2);
     REQUIRE(entries[0].watched);
@@ -207,7 +208,7 @@ TEST_CASE("Movie downloading comes from a Movie-kind ref in downloading_refs",
     const std::unordered_set<MediaRef> downloading{movie_ref(7)};
 
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, downloading);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, downloading, kNoStarted);
 
     REQUIRE(entries.size() == 2);
     REQUIRE(entries[0].downloading);
@@ -230,7 +231,7 @@ TEST_CASE("A 0-file, non-downloading series produces no entry",
     };
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.empty());
 }
@@ -248,7 +249,7 @@ TEST_CASE("A 0-file series WITH an active download is present, downloading",
     const std::unordered_set<MediaRef> downloading{tv_ref(100)};
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, downloading);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, downloading, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     REQUIRE(entries[0].ref == tv_ref(100));
@@ -274,7 +275,7 @@ TEST_CASE("Inclusion reads the SERIES-LEVEL stat, not the season sums",
     };
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     REQUIRE(entries[0].file_count == 0);   // S0 excluded from the counts
@@ -300,7 +301,7 @@ TEST_CASE("TV file/total counts sum S1+ seasons and ignore the series stat",
     };
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     const Entry& e = entries[0];
@@ -321,7 +322,7 @@ TEST_CASE("A TV entry carries the Series' display fields",
     };
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     const Entry& e = entries[0];
@@ -345,7 +346,7 @@ TEST_CASE("Empty poster_url stays empty on both kinds (tint fallback input)",
     };
 
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 2);
     REQUIRE(entries[0].poster_url.empty());
@@ -370,7 +371,7 @@ TEST_CASE("TV watched: watched_count >= s0-excluded file_count, files > 0",
     const std::unordered_map<int, int> counts{{400, 8}, {401, 3}};
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 3);
     REQUIRE(entries[0].watched);        // 8 >= 8
@@ -395,7 +396,7 @@ TEST_CASE("SPECIALS: imported S0 files cannot make a series un-watchable",
     const std::unordered_map<int, int> counts{{500, 8}};  // all of S1 watched
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     REQUIRE(entries[0].file_count == 8);
@@ -415,7 +416,7 @@ TEST_CASE("Watched-count overshoot (re-sourced series) still reads watched",
     const std::unordered_map<int, int> counts{{600, 9}};
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, counts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 1);
     REQUIRE(entries[0].watched);
@@ -438,7 +439,7 @@ TEST_CASE("Movie 1396 watched does not mark TV 1396 watched, and vice versa",
     SECTION("movie watched, tv untouched") {
         const std::unordered_set<int> watched_movies{1396};
         const auto entries = mbu::build_library_entries(
-            movies, tv, watched_movies, kNoTvCounts, kNoDownloads);
+            movies, tv, watched_movies, kNoTvCounts, kNoDownloads, kNoStarted);
         REQUIRE(entries.size() == 2);
         // Movies precede series in the built vector.
         REQUIRE(entries[0].ref == movie_ref(1396));
@@ -450,7 +451,7 @@ TEST_CASE("Movie 1396 watched does not mark TV 1396 watched, and vice versa",
     SECTION("tv watched, movie untouched") {
         const std::unordered_map<int, int> counts{{1396, 7}};
         const auto entries = mbu::build_library_entries(
-            movies, tv, kNoWatchedMovies, counts, kNoDownloads);
+            movies, tv, kNoWatchedMovies, counts, kNoDownloads, kNoStarted);
         REQUIRE(entries.size() == 2);
         REQUIRE_FALSE(entries[0].watched);
         REQUIRE(entries[1].watched);
@@ -459,7 +460,7 @@ TEST_CASE("Movie 1396 watched does not mark TV 1396 watched, and vice versa",
     SECTION("a Tv-kind downloading ref does not light up the movie") {
         const std::unordered_set<MediaRef> downloading{tv_ref(1396)};
         const auto entries = mbu::build_library_entries(
-            movies, tv, kNoWatchedMovies, kNoTvCounts, downloading);
+            movies, tv, kNoWatchedMovies, kNoTvCounts, downloading, kNoStarted);
         REQUIRE(entries.size() == 2);
         REQUIRE_FALSE(entries[0].downloading);
         REQUIRE(entries[1].downloading);
@@ -490,7 +491,7 @@ TEST_CASE("Unwatched keeps exactly the entries with watched == false",
     const std::unordered_set<MediaRef> downloading{tv_ref(6)};
 
     const auto entries = mbu::build_library_entries(
-        movies, tv, watched_movies, counts, downloading);
+        movies, tv, watched_movies, counts, downloading, kNoStarted);
     REQUIRE(entries.size() == 6);
 
     // Row-level: one line, both kinds, cutoff args irrelevant.
@@ -529,7 +530,7 @@ TEST_CASE("MissingFiles keeps entries whose file_count < total_count",
     };
 
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.size() == 4);
 
     REQUIRE_FALSE(mbu::library_row_kept(F::MissingFiles, entries[0], kCutoff, true));
@@ -560,7 +561,7 @@ TEST_CASE("MissingFiles counts S0 gaps as no gap at all",
     };
 
     const auto entries = mbu::build_library_entries(
-        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.size() == 1);
     REQUIRE_FALSE(mbu::library_row_kept(F::MissingFiles, entries[0],
                                         kCutoff, true));
@@ -586,7 +587,7 @@ TEST_CASE("RecentlyAdded with an invalid cutoff keeps every entry",
     };
 
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.size() == 3);
 
     SECTION("empty cutoff string (what iso8601_utc returns on failure)") {
@@ -629,7 +630,7 @@ TEST_CASE("RecentlyAdded with a valid cutoff compares >= against added_at",
     };
 
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.size() == 6);
 
     REQUIRE(mbu::library_row_kept(F::RecentlyAdded, entries[0], kCutoff, true));
@@ -660,7 +661,7 @@ TEST_CASE("All keeps an entry that fails every other filter",
     const std::unordered_set<int> watched_movies{1};
 
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, watched_movies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, watched_movies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.size() == 1);
 
     REQUIRE_FALSE(mbu::library_row_kept(F::Unwatched, entries[0], kCutoff, true));
@@ -697,7 +698,7 @@ struct MixedFixture {
                         {make_season(1, 6, 6)}, 6, 1LL * 1024 * 1024 * 1024),
         };
         entries = mbu::build_library_entries(
-            movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+            movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     }
 };
 
@@ -721,7 +722,7 @@ TEST_CASE("Recent puts an empty added_at last", "[library_view][sort]") {
     };
     const std::vector<Series> no_tv;
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::All, S::Recent,
                                               kCutoff, true);
@@ -740,7 +741,7 @@ TEST_CASE("Title sorts case-INSENSITIVELY across kinds",
         make_series(3, "Cherry", 2021, kCutoff, {make_season(1, 3, 3)}, 3),
     };
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::All, S::Title,
                                               kCutoff, true);
@@ -782,7 +783,7 @@ TEST_CASE("Size sorts past the 32-bit boundary", "[library_view][sort][size]") {
                     {make_season(1, 3, 3)}, 3, 4LL * 1024 * 1024 * 1024),
     };
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::All, S::Size,
                                               kCutoff, true);
@@ -806,7 +807,7 @@ TEST_CASE("The filter runs before the sort", "[library_view][compose]") {
     };
     const std::vector<Series> no_tv;
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::MissingFiles,
                                               S::Recent, kCutoff, true);
@@ -823,7 +824,7 @@ TEST_CASE("Empty inputs yield no entries and an empty view everywhere",
     const std::vector<Series> no_tv;
 
     const auto entries = mbu::build_library_entries(
-        no_movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        no_movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entries.empty());
 
     const F filters[] = {F::All, F::Unwatched, F::MissingFiles,
@@ -851,7 +852,7 @@ TEST_CASE("The view holds pointers into the caller's own entries",
     };
     const std::vector<Series> no_tv;
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::All, S::Title,
                                               kCutoff, true);
@@ -873,7 +874,7 @@ TEST_CASE("Entries borrow the caller's Movie/Series storage",
         make_series(2, "Show", 2020, kCutoff, {make_season(1, 2, 2)}, 2),
     };
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     REQUIRE(entries.size() == 2);
     movies[0].file_size_bytes = 777;
@@ -899,7 +900,7 @@ TEST_CASE("The view reserves the full entry count up front",
     }
     const std::vector<Series> no_tv;
     const auto entries = mbu::build_library_entries(
-        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, no_tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
 
     const auto view = mbu::build_library_view(entries, F::MissingFiles,
                                               S::Title, kCutoff, true);
@@ -924,7 +925,39 @@ TEST_CASE("build_library_entries emits movies then series, in input order",
         make_series(4, "S2", 2018, kCutoff, {make_season(1, 2, 2)}, 2),
     };
     const auto entries = mbu::build_library_entries(
-        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads);
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, kNoStarted);
     REQUIRE(entry_titles(entries) == std::vector<std::string>{
         "M1", "M2", "S1", "S2"});
+}
+
+// ---------------------------------------------------------------------------
+// NEW-badge basis: LibraryEntry::started (operator request 2026-08-02 —
+// badges only when informative; NEW = has-file movie never opened).
+// ---------------------------------------------------------------------------
+TEST_CASE("started flag: movies from the started set, TV always false",
+          "[library_view]") {
+    std::vector<Movie> movies;
+    Movie a; a.tmdb_id = 603;  a.title = "The Matrix";  a.has_file = true;
+    Movie b; b.tmdb_id = 680;  b.title = "Pulp Fiction"; b.has_file = true;
+    movies.push_back(a); movies.push_back(b);
+
+    std::vector<Series> tv;
+    Series s; s.tmdb_id = 1399; s.title = "Game of Thrones";
+    s.episode_file_count = 3;
+    Season s1; s1.season_number = 1; s1.episode_count = 10;
+    s1.episode_file_count = 3; s.seasons.push_back(s1);
+    tv.push_back(s);
+
+    // Movie 603 opened once (row exists); 680 never; series id 1399 in the
+    // MOVIE started set must NOT mark the TV entry (kind collision pin).
+    const std::unordered_set<int> started = {603, 1399};
+    const auto entries = mbu::build_library_entries(
+        movies, tv, kNoWatchedMovies, kNoTvCounts, kNoDownloads, started);
+
+    REQUIRE(entries.size() == 3);
+    for (const auto& e : entries) {
+        if (e.ref == movie_ref(603))  REQUIRE(e.started);
+        if (e.ref == movie_ref(680))  REQUIRE_FALSE(e.started);
+        if (e.ref.kind == MediaKind::Tv) REQUIRE_FALSE(e.started);
+    }
 }

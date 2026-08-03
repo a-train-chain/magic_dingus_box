@@ -70,6 +70,10 @@ struct LibraryEntry {
     int total_count = 0;
     bool downloading = false;
     bool watched = false;
+    // Movies only: the title has at least one watch row (opened at least
+    // once). Drives the Library's NEW badge (has-file && !started). TV
+    // entries leave it false — the TV chip is their marker.
+    bool started = false;
     const Movie* movie = nullptr;
     const Series* series = nullptr;
 };
@@ -97,7 +101,8 @@ std::vector<LibraryEntry> build_library_entries(
     const std::vector<Series>& tv,
     const std::unordered_set<int>& watched_movie_ids,
     const std::unordered_map<int, int>& tv_watched_counts,
-    const std::unordered_set<MediaRef>& downloading_refs);
+    const std::unordered_set<MediaRef>& downloading_refs,
+    const std::unordered_set<int>& started_movie_ids);
 
 // Whether one entry survives `filter`.
 //

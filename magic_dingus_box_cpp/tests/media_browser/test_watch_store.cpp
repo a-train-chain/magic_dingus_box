@@ -348,3 +348,26 @@ TEST_CASE("WatchStore: degraded mode is quiet, empty, and warns exactly once",
 
     spdlog::set_default_logger(prev);
 }
+
+TEST_CASE("started_movie_ids: any row counts, kind-isolated",
+          "[watch_store]") {
+    auto path = make_temp_db_path();
+    media_browser::library::WatchStore ws;
+    REQUIRE(ws.open(path.string()));
+
+    // In-progress (not watched) movie row -> started.
+    ws.upsert_position(MediaRef{MediaKind::Movie, 603}, 0, 0, 300.0, 7200.0);
+    // Watched movie row -> also started.
+    ws.mark_watched(MediaRef{MediaKind::Movie, 680}, 0, 0);
+    // TV row with the SAME id as an absent movie must not leak in.
+    ws.upsert_position(MediaRef{MediaKind::Tv, 555}, 1, 1, 300.0, 3600.0);
+
+    const auto started = ws.started_movie_ids();
+    REQUIRE(started.count(603) == 1);
+    REQUIRE(started.count(680) == 1);
+    REQUIRE(started.count(555) == 0);
+    // watched_movie_ids stays the strict subset.
+    const auto watched = ws.watched_movie_ids();
+    REQUIRE(watched.count(603) == 0);
+    REQUIRE(watched.count(680) == 1);
+}

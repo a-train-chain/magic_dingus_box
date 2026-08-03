@@ -391,12 +391,15 @@ void LibraryScreen::apply_pending() {
     // snapshots → nothing reads as watched, which is the honest fallback.
     std::unordered_set<int> watched_movie_ids;
     std::unordered_map<int, int> tv_watched_counts;
+    std::unordered_set<int> started_movie_ids;
     if (watch_store_) {
         watched_movie_ids = watch_store_->watched_movie_ids();
         tv_watched_counts = watch_store_->tv_watched_counts();
+        started_movie_ids = watch_store_->started_movie_ids();
     }
     entries_ = build_library_entries(library_, tv_library_, watched_movie_ids,
-                                     tv_watched_counts, downloading_refs_);
+                                     tv_watched_counts, downloading_refs_,
+                                     started_movie_ids);
     rebuild_view();
 }
 
@@ -821,30 +824,49 @@ void LibraryScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                 !is_stuck && importing_refs_.count(en->ref) > 0;
             const bool is_downloading =
                 !is_stuck && !is_importing && en->downloading;
+            // Inside the Library everything is by definition in the
+            // library, so the IN LIBRARY badge is pure noise — pass
+            // in_library=false (the state badges above it draw
+            // regardless). Badges now appear ONLY when they carry
+            // information: download state, or NEW for a has-file movie
+            // that has never been played (no watch row). Everything
+            // else is a clean poster. (Operator request, 2026-08-02.)
             chrome::draw_poster_card(
                 r, x, y, cell_w, poster_h,
                 en->title, en->year,
-                tint, /*in_library=*/true,
+                tint, /*in_library=*/false,
                 /*download_pct=*/is_downloading ? 0 : -1,
                 /*poster_url=*/en->poster_url,
                 /*is_stuck=*/is_stuck,
                 /*is_importing=*/is_importing);
 
+            const bool state_badge_shown =
+                is_stuck || is_importing || is_downloading;
+            const bool show_new =
+                en->ref.kind == MediaKind::Movie && en->file_count > 0 &&
+                !state_badge_shown && !en->started;
+            if (show_new) {
+                chrome::draw_new_badge(r, x + chrome::kPad1,
+                                       y + chrome::kPad1);
+            }
+
             // TV chip — a small kind marker so mixed rows stay scannable.
             // Same drawing idiom as the chrome badges (solid bg quad so it
             // reads over any poster art, bordered, small font), accent
-            // colored, top-left — stacked BELOW the status badge, which
-            // always occupies the corner itself (in_library is
-            // unconditionally true here, so draw_poster_card always drew
-            // one of its four badges above).
+            // colored, top-left. With the IN LIBRARY badge retired the
+            // corner is often free now — the chip takes the top slot
+            // unless a state badge (downloading/stuck/importing) occupies
+            // it, in which case the chip stacks below as before.
             if (en->ref.kind == MediaKind::Tv) {
                 constexpr int kTvChipFontPx = 12;
                 constexpr int kTvChipPadX   = 6;
                 constexpr int kTvChipPadY   = 2;
                 const std::string tv_label = "TV";
                 const int chip_x = x + chrome::kPad1;
-                const int chip_y = y + chrome::kPad1 + chrome::kBadgeBoxH
-                                 + chrome::kPad1;
+                const int chip_y = state_badge_shown
+                                 ? y + chrome::kPad1 + chrome::kBadgeBoxH
+                                     + chrome::kPad1
+                                 : y + chrome::kPad1;
                 const int text_w = r.mb_text_width(tv_label, kTvChipFontPx);
                 const int box_w  = text_w + 2 * kTvChipPadX;
                 const int box_h  = kTvChipFontPx + 2 * kTvChipPadY;

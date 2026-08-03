@@ -75,6 +75,13 @@ public:
     // tmdb_ids of movies with watched=1 — the Library filter's input.
     std::unordered_set<int> watched_movie_ids();
 
+    // Movies with ANY watch row (opened at least once, watched or not).
+    // Drives the Library's NEW badge: has-file movies absent from this
+    // set have never been played. Rows appear via the 30 s checkpoint or
+    // the exit flush, so "opened for a few seconds and backed out" may
+    // still read as new — acceptable for a freshness marker.
+    std::unordered_set<int> started_movie_ids();
+
     // tmdb_id -> COUNT(watched=1) across a series' episodes. Season 0
     // (specials) is excluded, matching merge_season_rows. Accepted v1
     // behavior: rows are never garbage-collected, so counts can exceed the
@@ -96,6 +103,7 @@ private:
     sqlite3_stmt* series_stmt_ = nullptr;
     sqlite3_stmt* movie_stmt_ = nullptr;
     sqlite3_stmt* movie_ids_stmt_ = nullptr;
+    sqlite3_stmt* started_ids_stmt_ = nullptr;
     sqlite3_stmt* tv_counts_stmt_ = nullptr;
 };
 

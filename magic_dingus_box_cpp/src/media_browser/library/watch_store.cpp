@@ -46,6 +46,10 @@ constexpr const char* kMovieSql =
 constexpr const char* kMovieIdsSql =
     "SELECT tmdb_id FROM watch_state WHERE kind='movie' AND watched=1;";
 
+// Any row at all = the movie was opened at least once (NEW-badge basis).
+constexpr const char* kStartedIdsSql =
+    "SELECT DISTINCT tmdb_id FROM watch_state WHERE kind='movie';";
+
 // Season 0 (specials) is excluded everywhere, matching merge_season_rows —
 // a watched special must not inflate a series' watched count.
 constexpr const char* kTvCountsSql =
@@ -68,7 +72,8 @@ void WatchStore::warn_once(const std::string& why) {
 void WatchStore::finalize_statements() {
     sqlite3_stmt** stmts[] = {&upsert_stmt_, &mark_watched_stmt_,
                               &series_stmt_, &movie_stmt_,
-                              &movie_ids_stmt_, &tv_counts_stmt_};
+                              &movie_ids_stmt_, &started_ids_stmt_,
+                              &tv_counts_stmt_};
     for (auto** s : stmts) {
         if (*s) {
             sqlite3_finalize(*s);
@@ -97,7 +102,8 @@ bool WatchStore::open(const std::string& db_path) {
     const StmtSpec specs[] = {
         {&upsert_stmt_, kUpsertSql},   {&mark_watched_stmt_, kMarkWatchedSql},
         {&series_stmt_, kSeriesSql},   {&movie_stmt_, kMovieSql},
-        {&movie_ids_stmt_, kMovieIdsSql}, {&tv_counts_stmt_, kTvCountsSql},
+        {&movie_ids_stmt_, kMovieIdsSql}, {&started_ids_stmt_, kStartedIdsSql},
+        {&tv_counts_stmt_, kTvCountsSql},
     };
     for (const auto& spec : specs) {
         if (sqlite3_prepare_v2(db_.handle(), spec.sql, -1, spec.slot,
@@ -210,6 +216,20 @@ std::unordered_set<int> WatchStore::watched_movie_ids() {
         return out;
     }
     sqlite3_stmt* s = movie_ids_stmt_;
+    sqlite3_reset(s);
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        out.insert(sqlite3_column_int(s, 0));
+    }
+    return out;
+}
+
+std::unordered_set<int> WatchStore::started_movie_ids() {
+    std::unordered_set<int> out;
+    if (!ok_) {
+        warn_once("not open");
+        return out;
+    }
+    sqlite3_stmt* s = started_ids_stmt_;
     sqlite3_reset(s);
     while (sqlite3_step(s) == SQLITE_ROW) {
         out.insert(sqlite3_column_int(s, 0));

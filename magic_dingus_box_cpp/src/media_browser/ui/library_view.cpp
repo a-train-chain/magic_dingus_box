@@ -27,7 +27,8 @@ std::vector<LibraryEntry> build_library_entries(
     const std::vector<Series>& tv,
     const std::unordered_set<int>& watched_movie_ids,
     const std::unordered_map<int, int>& tv_watched_counts,
-    const std::unordered_set<MediaRef>& downloading_refs) {
+    const std::unordered_set<MediaRef>& downloading_refs,
+    const std::unordered_set<int>& started_movie_ids) {
     std::vector<LibraryEntry> entries;
     entries.reserve(movies.size() + tv.size());
 
@@ -43,6 +44,7 @@ std::vector<LibraryEntry> build_library_entries(
         e.total_count = 1;
         e.downloading = downloading_refs.count(e.ref) > 0;
         e.watched     = watched_movie_ids.count(m.tmdb_id) > 0;
+        e.started     = started_movie_ids.count(m.tmdb_id) > 0;
         e.movie       = &m;
         entries.push_back(std::move(e));
     }

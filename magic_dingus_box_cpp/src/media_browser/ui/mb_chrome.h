@@ -127,6 +127,11 @@ inline constexpr int kBadgeBoxH = 16;
 struct ChipRect { int x, y, w, h; };
 ChipRect draw_lib_badge(::ui::Renderer& r, int x, int y);
 
+// NEW badge — Library-only freshness marker for has-file titles that have
+// never been played (no watch row). Accent-styled so it reads as "look at
+// me", distinct from the green in-library state.
+ChipRect draw_new_badge(::ui::Renderer& r, int x, int y);
+
 // "62%" red-bordered downloading-progress chip. Same anchor as the
 // IN LIBRARY badge — only one shows at a time per poster.
 ChipRect draw_dl_badge(::ui::Renderer& r, int x, int y, int percent_0_to_99);
