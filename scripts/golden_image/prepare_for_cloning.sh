@@ -698,13 +698,24 @@ else
     # is not hypothetical: an unbound-variable abort three lines below this
     # did exactly that on the source box, and nothing in the script would
     # ever have put it back. The trap makes the restore unconditional.
-    restore_root_reserve() {
+    ZERO_FILE=/var/tmp/mdb-zerofill.tmp
+    BOOT_ZERO=/boot/firmware/.mdb-zerofill.tmp
+    unwind_zerofill() {
+        # Order matters: free the space FIRST, so that whatever comes next
+        # (including a human logging in to see what happened) has room.
+        rm -f "$ZERO_FILE" "$BOOT_ZERO" 2>/dev/null || true
         [[ "${RESERVE_RESTORED:-0}" == "1" ]] || return 0
         RESERVE_RESTORED=0
         tune2fs -r "$RESERVE_BLOCKS" "$ROOT_DEV" >/dev/null 2>&1 \
             || log "[4c/5] WARNING: could not restore the ${RESERVE_BLOCKS}-block root reserve on ${ROOT_DEV} — run: sudo tune2fs -r ${RESERVE_BLOCKS} ${ROOT_DEV}"
     }
-    trap restore_root_reserve EXIT INT TERM
+    # HUP is the one that actually happened. This script runs under ssh, and
+    # when the link drops the remote shell gets SIGHUP — which bash does NOT
+    # convert into an EXIT-trap run unless HUP is trapped explicitly. A USB
+    # gadget link dropped mid-fill and left the source box with a zero root
+    # reserve and an 18 GB junk file, because the trap listed only EXIT INT
+    # TERM. Losing the link is the NORMAL failure here, not an exotic one.
+    trap unwind_zerofill EXIT INT TERM HUP
 
     if [[ -n "$RESERVE_BLOCKS" && "$RESERVE_BLOCKS" != "0" ]] && tune2fs -r 0 "$ROOT_DEV" >/dev/null 2>&1; then
         RESERVE_RESTORED=1
@@ -720,11 +731,14 @@ else
     avail_mb=$(df -Pm / | awk 'NR==2 {print $4}')
     log "[4c/5] Zeroing ~${avail_mb} MB of free space, including the ${RESERVE_BLOCKS:-0}-block root reserve (10-20 min on SD)..."
 
-    # Keep a small margin so the filesystem never actually hits zero free —
-    # journald, systemd and the rest of this script still need to write while
-    # the clone runs.
-    ZERO_FILE=/var/tmp/mdb-zerofill.tmp
-    zero_mb=$(( avail_mb > 64 ? avail_mb - 64 : 0 ))
+    # Margin. With the root reserve dropped there is no longer 2.4 GB of
+    # hidden headroom underneath this number, so the old 64 MB left the box
+    # at genuinely zero free: auditd logged "no space left on logging
+    # partition" and systemd units failed to start during the window.
+    # 256 MB costs ~1.3% of coverage and keeps daemons alive; the artifact
+    # scan in clone_live_sd.sh is the authority on whether anything actually
+    # survived, so trading a sliver of coverage for stability is safe.
+    zero_mb=$(( avail_mb > 256 ? avail_mb - 256 : 0 ))
     if [[ "$zero_mb" -gt 0 ]]; then
         dd if=/dev/zero of="$ZERO_FILE" bs=4M count=$(( zero_mb / 4 )) \
            status=none 2>/dev/null || true
@@ -732,15 +746,14 @@ else
     sync
     rm -f "$ZERO_FILE"
     sync
-    restore_root_reserve
-    trap - EXIT INT TERM
+    unwind_zerofill
+    trap - EXIT INT TERM HUP
 
     # The FAT boot partition has its own free space and was never zeroed at
     # all. Step 2b overwrites the NAMED cloud-init files there, but FAT
     # rewrites a file to fresh clusters rather than in place, so earlier
     # copies persist as unlinked remnants — three fragments of network-config
     # naming the operator's SSID were found in the shipped image at ~20 MB.
-    BOOT_ZERO=/boot/firmware/.mdb-zerofill.tmp
     boot_avail=$(df -Pm /boot/firmware 2>/dev/null | awk 'NR==2 {print $4}')
     if [[ -n "$boot_avail" && "$boot_avail" -gt 8 ]]; then
         log "[4c/5] Zeroing ~$((boot_avail - 4)) MB of boot-partition free space..."

@@ -92,20 +92,44 @@ SSH_OPTS=(-o ControlMaster=auto
 # Trap handler: always run restore + close master, even on Ctrl-C / errors
 # ---------------------------------------------------------------------------
 RESTORE_DONE=0
-NEEDLE_FILE=""
+# Filled in at preflight from the box's own hostname. The restore has to be
+# reachable by MORE than the address the clone was started on: a clone begun
+# over the USB gadget (10.55.0.1) dropped when the USB link went away, and
+# the single-address restore then failed with "Operation timed out" even
+# though the box was up and answering on Wi-Fi the whole time. It was left
+# stripped, with 258 secrets parked in /dev/shm that a reboot would have
+# destroyed permanently.
+RESTORE_FALLBACK=""
+
+restore_on() {
+    # Deliberately does NOT reuse SSH_OPTS: the ControlMaster socket is
+    # itself dead in exactly the situation this function exists for.
+    ssh -o ConnectTimeout=10 -o BatchMode=yes -o StrictHostKeyChecking=no "$1" \
+        "sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh" 2>&1 \
+        | sed 's/^/    /'
+    return "${PIPESTATUS[0]}"
+}
+
 cleanup() {
     local rc=$?
-    [[ -n "$NEEDLE_FILE" ]] && rm -f "$NEEDLE_FILE"
     if [[ $RESTORE_DONE -eq 0 ]]; then
         echo
         echo -e "${YELLOW}${BOLD}Running restore on source Pi (cleanup path)...${NC}"
-        # Best-effort restore. If this fails too, operator must SSH in
-        # manually and run restore_after_cloning.sh. But that scenario
-        # only triggers when SSH is genuinely broken.
-        ssh "${SSH_OPTS[@]}" "$PI_HOST" \
-            "sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh" \
-            2>&1 | sed 's/^/    /' || \
-            echo -e "${RED}    Restore failed. SSH manually and run restore_after_cloning.sh.${NC}"
+        local host ok=0
+        for host in "$PI_HOST" $RESTORE_FALLBACK; do
+            [[ -z "$host" ]] && continue
+            echo -e "    ${DIM}trying ${host}...${NC}"
+            if restore_on "$host"; then ok=1; break; fi
+            echo -e "    ${YELLOW}restore via ${host} failed${NC}"
+        done
+        if [[ $ok -eq 0 ]]; then
+            echo
+            echo -e "${RED}${BOLD}    RESTORE DID NOT RUN — THE SOURCE PI IS STILL STRIPPED.${NC}"
+            echo -e "${RED}    Its secrets are stashed in /dev/shm, which is RAM: rebooting or${NC}"
+            echo -e "${RED}    powering off the Pi DESTROYS THEM PERMANENTLY.${NC}"
+            echo -e "${RED}    Do not reboot it. Reach it by any route and run:${NC}"
+            echo -e "${RED}      sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh${NC}"
+        fi
         RESTORE_DONE=1
     fi
     # Close the SSH control master
@@ -150,6 +174,14 @@ if ! ssh "${SSH_OPTS[@]}" "$PI_HOST" "sudo -n true" 2>/dev/null; then
     exit 1
 fi
 echo -e "  ${GREEN}OK${NC} sudo NOPASSWD"
+
+# Record a second way back in, for the cleanup path.
+PI_USER="${PI_HOST%%@*}"
+PI_SHORTNAME=$(ssh "${SSH_OPTS[@]}" "$PI_HOST" "hostname" 2>/dev/null | tr -d '[:space:]')
+if [[ -n "$PI_SHORTNAME" && "$PI_HOST" != *"${PI_SHORTNAME}.local"* ]]; then
+    RESTORE_FALLBACK="${PI_USER}@${PI_SHORTNAME}.local"
+    echo -e "  ${GREEN}OK${NC} restore fallback address: ${RESTORE_FALLBACK}"
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight 2: SD device size + Mac-side disk space
@@ -218,41 +250,6 @@ elif [[ $DRY_RUN -eq 1 ]]; then
     echo -e "${YELLOW}DRY RUN: skipping confirmation${NC}"
 else
     echo -e "${YELLOW}--yes: skipping confirmation${NC}"
-fi
-
-# ---------------------------------------------------------------------------
-# Step 3.5: Harvest the operator's live secrets as scan needles
-# ---------------------------------------------------------------------------
-# The post-scrub leak check inside prepare_for_cloning.sh inspects the live
-# FILESYSTEM. What ships is the IMAGE — and those are not the same thing: a
-# deleted file is gone from the filesystem while its blocks still sit in free
-# space, which dd copies verbatim. The 2026-08-04 v1.9.3 image passed the
-# filesystem check and still carried a deleted cloud-init.log with the Wi-Fi
-# password in plaintext, 0.7 GB into the root partition.
-#
-# So grab the real values NOW, while they still exist, and grep the finished
-# artifact for them at the end. These are held in a 0600 temp file and are
-# never printed — findings are reported by needle INDEX and count only.
-if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 ]]; then
-    echo
-    echo -e "${CYAN}[3.5/6] Harvesting scan needles from source Pi...${NC}"
-    NEEDLE_FILE=$(mktemp "${TMPDIR:-/tmp}/magic-clone-needles.XXXXXX")
-    chmod 600 "$NEEDLE_FILE"
-    # Wi-Fi SSIDs + PSKs, the WireGuard private key, and the qBittorrent
-    # password. Short values are dropped by the scanner (an 8-character
-    # numeric PSK matches ~17k times in 60 GB of binary by pure chance,
-    # which is noise, not a finding).
-    ssh "${SSH_OPTS[@]}" "$PI_HOST" "
-        sudo grep -hoE '^(ssid|psk)=.+' /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed 's/^[a-z]*=//'
-        sudo grep -hoE '^(WIREGUARD_PRIVATE_KEY|MDB_QBIT_PASS|QBIT_PASS)=.+' /opt/magic_dingus_box/services/.env 2>/dev/null | sed 's/^[A-Z_]*=//'
-    " 2>/dev/null | sed 's/[[:space:]]*$//' | grep -v '^$' | sort -u > "$NEEDLE_FILE" || true
-    NEEDLE_COUNT=$(wc -l < "$NEEDLE_FILE" | tr -d ' ')
-    if [[ "$NEEDLE_COUNT" -eq 0 ]]; then
-        echo -e "  ${YELLOW}WARNING${NC} no secrets found to scan for — the artifact scan will be vacuous."
-        echo -e "  ${DIM}Expected at least a Wi-Fi SSID. Check that this Pi is the provisioned source box.${NC}"
-    else
-        echo -e "  ${GREEN}OK${NC} ${NEEDLE_COUNT} secret value(s) captured for the post-clone scan (not shown)"
-    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -331,138 +328,60 @@ RESTORE_DONE=1
 # Step 6.5: Scan the FINISHED ARTIFACT for the operator's credentials
 # ---------------------------------------------------------------------------
 # The ship gate. Everything before this validated the live filesystem; this
-# validates the bytes that actually go onto every customer's SD card. It
-# decompresses the whole image once and counts occurrences of each harvested
-# secret. Values are never printed — a finding is reported as "needle #N,
-# <len> chars, <count> hits".
-LEAK_SCAN_FAILED=0
-if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 && -s "${NEEDLE_FILE:-/nonexistent}" ]]; then
+# validates the bytes that actually go onto every customer's SD card. Those
+# are not the same thing -- a deleted file is absent from the filesystem and
+# fully present in the image, which is exactly how the v1.9.3 leak passed its
+# own audit.
+#
+# Delegated to scan_image_for_secrets.sh so there is ONE scanner to keep
+# correct, and so the same check can be re-run by hand on any older image.
+# It runs AFTER the restore, when the box's secrets are back on disk to be
+# harvested as needles.
+if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 ]]; then
     echo
     echo -e "${CYAN}[6.5/6] Scanning the image for credential remnants (~5-10 min)...${NC}"
-    echo -e "  ${DIM}Reads the full decompressed image. This is the ship gate.${NC}"
 
-    if [[ $COMPRESS -eq 1 ]]; then IMG_READER=(gzip -dc "$OUTPUT_PATH")
-    else                           IMG_READER=(cat "$OUTPUT_PATH"); fi
-
-    SCAN_RC_FILE=$(mktemp "${TMPDIR:-/tmp}/magic-clone-scanrc.XXXXXX")
-    "${IMG_READER[@]}" | { python3 -c '
-import sys
-
-needles = []
-with open(sys.argv[1], "rb") as f:
-    for line in f:
-        v = line.rstrip(b"\n")
-        # Short secrets are useless as needles: an 8-character numeric PSK
-        # matched 17538 times in a 60 GB image purely by chance, and a
-        # descending control string matched 516 times. Below 12 bytes the
-        # signal is indistinguishable from noise, so scanning for it would
-        # only produce false failures that train the operator to ignore
-        # this gate. Reported as SKIPPED, never silently dropped.
-        if len(v) >= 12:
-            needles.append(v)
-        elif v:
-            print(f"  SKIPPED a {len(v)}-char secret (too short to scan without false positives)")
-
-if not needles:
-    print("  WARNING: no needle long enough to scan. Gate is vacuous.")
-    sys.exit(0)
-
-counts = [0] * len(needles)
-overlap = max(len(n) for n in needles) - 1
-tail = b""
-total = 0
-CHUNK = 8 << 20
-src = sys.stdin.buffer
-
-
-def count_before(buf, needle, limit):
-    """Occurrences of needle STARTING at an index below limit.
-
-    The carried tail makes boundary-straddling hits visible, but a hit
-    lying wholly inside that tail is then seen twice — once in this
-    buffer and once in the next, where the tail is prepended. Counting
-    only matches that start before the tail keeps every hit and counts
-    each exactly once; anything starting at or after limit is found on
-    the next pass instead.
-    """
-    n, start = 0, 0
-    while True:
-        i = buf.find(needle, start)
-        if i == -1 or i >= limit:
-            return n
-        n += 1
-        start = i + 1
-
-
-while True:
-    chunk = src.read(CHUNK)
-    buf = tail + chunk
-    last = not chunk
-    # On the final buffer there is no next pass, so count all the way out.
-    limit = len(buf) if last else max(0, len(buf) - overlap)
-    for i, needle in enumerate(needles):
-        counts[i] += count_before(buf, needle, limit)
-    if last:
-        break
-    total += len(chunk)
-    tail = buf[-overlap:] if overlap else b""
-
-hits = [(i, len(needles[i]), c) for i, c in enumerate(counts) if c]
-print(f"  Scanned {total / (1<<30):.1f} GiB across {len(needles)} needle(s).")
-
-# A decompressor that dies mid-stream hands the scanner a truncated image,
-# in which it finds nothing and would report a clean PASS — a false clean,
-# which is the one direction this gate must never fail in. The image is a
-# whole-device dd, so its decompressed length is known exactly.
-# Report findings before any verdict — a hit is definitive evidence and
-# must not be swallowed by an incomplete-scan exit.
-for i, ln, c in hits:
-    print(f"  LEAK: needle #{i+1} ({ln} chars) appears {c} time(s) in the image")
-
-expected = int(sys.argv[2]) if len(sys.argv) > 2 else 0
-if expected and total != expected:
-    print(f"  SCAN INCOMPLETE: read {total} bytes, expected {expected}.")
-    print("  The image is truncated or the decompressor failed. Result is NOT a pass.")
-    sys.exit(2)
-
-if hits:
-    sys.exit(1)
-print("  No credential remnants found.")
-sys.exit(0)
-'  "$NEEDLE_FILE" "$SD_SIZE_BYTES" 2>&1; echo $? > "$SCAN_RC_FILE"; } | sed 's/^/  /'
-    SCAN_RC=$(cat "$SCAN_RC_FILE" 2>/dev/null || echo 99)
-    rm -f "$SCAN_RC_FILE"
-    case "$SCAN_RC" in
-        0) echo -e "  ${GREEN}PASS${NC} image carries no operator credentials" ;;
-        1) LEAK_SCAN_FAILED=1 ;;
-        *) LEAK_SCAN_FAILED=2 ;;
-    esac
-
-    if [[ $LEAK_SCAN_FAILED -eq 2 ]]; then
-        echo
-        echo -e "${RED}${BOLD}  SCAN DID NOT COMPLETE — image NOT cleared for shipping${NC}"
-        echo -e "  The scanner exited ${SCAN_RC} without finishing (truncated image,"
-        echo -e "  decompressor failure, or a broken pipe). This is NOT a pass and"
-        echo -e "  NOT a leak — the image simply has not been checked."
-        echo -e "  The source Pi has been fully restored and is safe."
-        echo -e "  Re-run the scan alone with:"
-        echo -e "    ${BOLD}gzip -dc ${OUTPUT_PATH} | wc -c${NC}   ${DIM}(should print ${SD_SIZE_BYTES})${NC}"
-        echo
+    SCANNER="$(dirname "${BASH_SOURCE[0]}")/scan_image_for_secrets.sh"
+    if [[ ! -x "$SCANNER" ]]; then
+        echo -e "${RED}  Scanner not found or not executable: ${SCANNER}${NC}"
+        echo -e "${RED}  The image has NOT been checked. Do not ship it until it is.${NC}"
         exit 1
     fi
 
-    if [[ $LEAK_SCAN_FAILED -eq 1 ]]; then
+    SCAN_HOST="$PI_HOST"
+    if ! ssh -o ConnectTimeout=8 -o BatchMode=yes "$SCAN_HOST" true 2>/dev/null; then
+        SCAN_HOST="$RESTORE_FALLBACK"
+    fi
+    if [[ -z "$SCAN_HOST" ]]; then
+        echo -e "${RED}  Cannot reach the Pi to harvest scan needles.${NC}"
+        echo -e "${RED}  The image has NOT been checked. Re-run by hand:${NC}"
+        echo -e "${RED}    ${SCANNER} --image ${OUTPUT_PATH} --pi <host>${NC}"
+        exit 1
+    fi
+
+    set +e
+    "$SCANNER" --image "$OUTPUT_PATH" --pi "$SCAN_HOST" --expect-bytes "$SD_SIZE_BYTES"
+    SCAN_RC=$?
+    set -e
+
+    if [[ "$SCAN_RC" -ne 0 ]]; then
         echo
         echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════${NC}"
-        echo -e "${RED}${BOLD}  DO NOT SHIP THIS IMAGE${NC}"
-        echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════${NC}"
-        echo -e "  The artifact contains at least one of this Pi's live secrets."
-        echo -e "  Every card flashed from it would carry that credential."
-        echo
-        echo -e "  Most likely cause: free-space zeroing did not cover the whole"
-        echo -e "  filesystem, leaving deleted files readable in unallocated blocks."
-        echo -e "  Check the ${BOLD}[4c/5]${NC} lines in the output above for a WARNING about"
-        echo -e "  the ext4 root reserve, and confirm ${BOLD}tune2fs${NC} exists on the Pi."
+        if [[ "$SCAN_RC" -eq 1 ]]; then
+            echo -e "${RED}${BOLD}  DO NOT SHIP THIS IMAGE${NC}"
+            echo -e "${RED}${BOLD}════════════════════════════════════════════════════════════════${NC}"
+            echo -e "  The artifact contains at least one of this Pi's live secrets."
+            echo -e "  Every card flashed from it would carry that credential."
+            echo
+            echo -e "  Most likely cause: free-space zeroing did not cover the whole"
+            echo -e "  filesystem. Check the ${BOLD}[4c/5]${NC} lines above for a WARNING about"
+            echo -e "  the ext4 root reserve, and confirm ${BOLD}tune2fs${NC} exists on the Pi."
+        else
+            echo -e "${YELLOW}${BOLD}  IMAGE NOT CHECKED${NC}"
+            echo -e "${YELLOW}${BOLD}════════════════════════════════════════════════════════════════${NC}"
+            echo -e "  The scan did not complete (exit ${SCAN_RC}). This is NOT a pass and"
+            echo -e "  NOT a leak — the image simply has not been verified."
+        fi
         echo
         echo -e "  The source Pi has been fully restored — it is safe and unchanged."
         echo -e "  Delete ${BOLD}${OUTPUT_PATH}${NC} and re-run the clone."
