@@ -326,6 +326,53 @@ EOF
 echo "  ✓ First-boot service unit installed (stays disabled until cloning)"
 echo ""
 
+# Step 1.66: Install + ENABLE the USB-gadget network unit.
+#
+# This is the one piece of USB-C gadget mode that nothing ever installed.
+# Everything else was already in place on the production box and would have
+# shipped: the dwc2 peripheral overlay under [all] in config.txt,
+# modules-load=dwc2,g_ether in cmdline.txt, the whole g_ether/libcomposite
+# stack loaded, usb0 present, and dnsmasq enabled with a usb0.conf ready to
+# hand out leases. All of it inert, because usb0 never got an address and was
+# never brought up — so the interface sat DOWN forever and the documented
+# "plug in a USB-C cable and reach the box at 10.55.0.1:5000" flow simply did
+# not work. The unit existed in the repo; the only caller was an operator
+# manually running setup_usb_gadget.sh, which no provisioning path invoked.
+#
+# Installed HERE rather than in setup_services.sh on purpose: that script only
+# runs when a customer provisions the Media Browser's VPN, so a games-and-
+# videos owner would never get it. Gadget mode is base platform, not an
+# add-on.
+#
+# ENABLED, unlike magic-first-boot above: it is safe on the source box and on
+# every unit. The unit is BindsTo= the usb0 device, so with no cable plugged
+# in it just sits inactive; dnsmasq's usb0.conf uses bind-dynamic and port=0,
+# so it serves DHCP on usb0 alone and never touches Wi-Fi DNS.
+#
+# Why it matters commercially: measured on this hardware, Wi-Fi to the box
+# runs about 8 MB/s. USB 2.0 gadget gives roughly 25-35 MB/s, so uploading a
+# video or a playlist pack over the power cable is several times faster than
+# over the network, and needs no network at all.
+echo "Step 1.66: Installing USB-gadget network unit..."
+rsync -avz --checksum \
+    "${CPP_DIR}/../systemd/usb-gadget-network.service" \
+    "${PI_HOST}:/tmp/usb-gadget-network.service"
+
+ssh "${PI_HOST}" bash <<EOF
+sudo install -m 644 -o magic -g magic /tmp/usb-gadget-network.service ${PI_DIR}/systemd/usb-gadget-network.service
+sudo cp /tmp/usb-gadget-network.service /etc/systemd/system/usb-gadget-network.service
+sudo systemctl daemon-reload
+sudo systemctl enable usb-gadget-network.service 2>/dev/null || true
+# Bring it up now if usb0 already exists, so the box does not need a reboot
+# to gain the feature. Harmless when the address is already assigned.
+if [ -e /sys/class/net/usb0 ]; then
+    sudo systemctl start usb-gadget-network.service 2>/dev/null || true
+fi
+rm -f /tmp/usb-gadget-network.service
+EOF
+echo "  ✓ USB-gadget network unit installed + enabled (usb0 -> 10.55.0.1)"
+echo ""
+
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz --checksum \
