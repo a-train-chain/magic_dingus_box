@@ -267,8 +267,14 @@ TEST_CASE("captured PS-style pad resolves the universal N64 layout",
         CHECK(map.a_btn == "9");       // R2                 -> C-Down
         CHECK(map.l_btn.empty());
         CHECK(map.start_btn == "11");
+        // Physical Select (10) + physical Start (11) = QUIT, regardless of
+        // the mupen table having repurposed the RetroPad select SLOT for
+        // N64 L above -- this exact case is where the old start+select
+        // gamepad combo silently listened on Start+L1 instead and the
+        // owner could not exit an N64 game from the pad.
         CHECK(map.enable_hotkey_btn == "10");
-        CHECK(map.menu_toggle_btn == "11");
+        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "11");
         CHECK(map.l3_btn.empty());
         CHECK(map.r3_btn.empty());
 

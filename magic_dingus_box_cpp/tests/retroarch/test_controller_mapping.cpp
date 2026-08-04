@@ -251,8 +251,11 @@ TEST_CASE("PS-style pads use the universal N64 layout",
         CHECK(map.a_btn == "7");       // R2       -> C-Down
         CHECK(map.l_btn.empty());      // C-Left stays on the right stick
         CHECK(map.start_btn == "9");
+        // PS-style: hold Select + press Start = direct QUIT (see the
+        // semantic preamble); the menu-toggle hotkey is gone.
         CHECK(map.enable_hotkey_btn == "8");
-        CHECK(map.menu_toggle_btn == "9");
+        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "9");
         CHECK(map.l3_btn.empty());
         CHECK(map.r3_btn.empty());
 

@@ -142,7 +142,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=nestopia_audio_vol_sq1 = "100"
 nestopia_audio_vol_sq2 = "100"
 nestopia_audio_vol_tri = "100"
@@ -158,7 +158,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|genesis_plus_gx_libretro", R"GOLD(name=Sega Genesis (PS-style)
 adm=0|drv=udev|pad=
@@ -169,7 +169,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|pcsx_rearmed_libretro", R"GOLD(name=PS1 (PS-style, 1:1)
 adm=0|drv=udev|pad=analog
@@ -180,7 +180,7 @@ ls=+0,-0,+1,-1
 rs_axis=+2,-2,+3,-3
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|mednafen_pce_fast_libretro", R"GOLD(name=PC Engine (PS-style)
 adm=0|drv=udev|pad=
@@ -191,7 +191,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|prosystem_libretro", R"GOLD(name=Atari 7800 (PS-style)
 adm=0|drv=udev|pad=
@@ -202,7 +202,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|fbneo_libretro", R"GOLD(name=Arcade / FBNeo (PS-style)
 adm=0|drv=udev|pad=
@@ -213,7 +213,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|mupen64plus_next_libretro", R"GOLD(name=Nintendo 64 (PS-style)
 adm=0|drv=udev|pad=
@@ -224,7 +224,7 @@ ls=+0,-0,+1,-1
 rs_axis=+2,-2,+3,-3
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|parallel_n64_libretro", R"GOLD(name=Nintendo 64 (PS-style)
 adm=0|drv=udev|pad=
@@ -235,7 +235,7 @@ ls=+0,-0,+1,-1
 rs_axis=+2,-2,+3,-3
 rs_btn=,,,
 dpad_axis=,,,
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|flycast_libretro", R"GOLD(name=Dreamcast (PS-style)
 adm=0|drv=udev|pad=
@@ -246,7 +246,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"PS|totally_unknown_core", R"GOLD(name=Default
 adm=0|drv=udev|pad=
@@ -257,7 +257,7 @@ ls=+0,-0,+1,-1
 rs_axis=,,,
 rs_btn=,,,
 dpad_axis=-1,+1,-0,+0
-hotkeys=8,9,
+hotkeys=8,,9
 extra=)GOLD"},
 {"UNKNOWN|nestopia_libretro", R"GOLD(name=NES (N64 Controller)
 adm=0|drv=udev|pad=

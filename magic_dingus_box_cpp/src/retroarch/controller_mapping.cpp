@@ -179,7 +179,24 @@ SemanticMapping semantic_n64_style(const std::string& core) {
 SemanticMapping semantic_ps_style(const std::string& core) {
     SemanticMapping s;
     s.analog_dpad_mode = "0";
-    s.hotkey_enable = L::SELECT; s.menu_toggle = L::START;
+    // Hold SELECT + press START = QUIT the game, directly. This is the
+    // kiosk's exit gesture on PS-style pads, and it must not depend on the
+    // per-core RetroPad slot layout: the owner reported it dead in N64
+    // games, where the mupen table below repurposes the RetroPad *select
+    // slot* for the N64 L trigger (s.select = L1), so RetroArch's
+    // start+select gamepad combo was listening on physical Start+L1 and
+    // physical Start+Select did nothing. Binding input_exit_emulator_btn
+    // from the PHYSICAL select/start makes the gesture core-independent.
+    //
+    // Direct quit, not menu toggle, on purpose: auto-save-on-exit is on,
+    // and a customer facing RetroArch's own menu is a kiosk failure. The
+    // old menu_toggle bind sat on the same Start press and is dropped —
+    // two hotkey actions on one gesture is a coin flip. The RetroArch menu
+    // stays reachable through the start+select GAMEPAD COMBO on cores
+    // where the select slot is really select (and Start+L1 on N64) for
+    // operators who need it; on those cores the exit hotkey fires the same
+    // frame and wins, which is the correct outcome for a kiosk.
+    s.hotkey_enable = L::SELECT; s.exit_emulator = L::START;
     s.stick_up = L::LSTICK_UP; s.stick_down = L::LSTICK_DOWN;
     s.stick_left = L::LSTICK_LEFT; s.stick_right = L::LSTICK_RIGHT;
     s.left_stick = true; s.stick_to_dpad = true;   // preamble defaults
@@ -513,6 +530,7 @@ ControllerMapping build_mapping(const SemanticMapping& sem,
     // i.e. the same digital-only form as the face buttons above.
     put_btn(&ControllerMapping::enable_hotkey_btn, sem.hotkey_enable);
     put_btn(&ControllerMapping::menu_toggle_btn, sem.menu_toggle);
+    put_btn(&ControllerMapping::exit_emulator_btn, sem.exit_emulator);
     return m;
 }
 

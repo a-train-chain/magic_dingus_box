@@ -162,8 +162,10 @@ struct SemanticMapping {
     bool stick_to_dpad = false; // emit up/down/left/right_axis from stick_*
     // RetroPad right-stick slots (RSTICK_* or N64_C_*); presence gates emission
     std::optional<LogicalControl> r_up, r_down, r_left, r_right;
-    // Hotkeys
-    std::optional<LogicalControl> hotkey_enable, menu_toggle;
+    // Hotkeys. exit_emulator quits the game directly (hold hotkey_enable,
+    // press this); bound from PHYSICAL controls in the style preamble so the
+    // exit gesture never depends on a per-core RetroPad slot layout.
+    std::optional<LogicalControl> hotkey_enable, menu_toggle, exit_emulator;
 };
 
 SemanticMapping get_semantic_mapping(ControllerStyle style,

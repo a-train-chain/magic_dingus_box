@@ -129,10 +129,13 @@ TEST_CASE("an analog trigger never produces a bogus l2_btn/r2_btn",
     CHECK(m.r_btn == "5");    // R1
     CHECK(m.select_btn == "8");
     CHECK(m.start_btn == "9");
-    // ...including the hotkey pair, whose absence disables the RetroArch menu
-    // combo entirely (retroarch_launcher.cpp skips the whole block).
+    // ...including the hotkeys. PS-style binds a DIRECT EXIT (hold select,
+    // press start) instead of a menu toggle -- the kiosk's exit gesture must
+    // not depend on per-core RetroPad slot layouts, and a customer facing
+    // RetroArch's own menu is a kiosk failure.
     CHECK(m.enable_hotkey_btn == "8");
-    CHECK(m.menu_toggle_btn == "9");
+    CHECK(m.menu_toggle_btn.empty());
+    CHECK(m.exit_emulator_btn == "9");
 }
 
 TEST_CASE("an unbound shared left stick cannot erase the d-pad axis binds",
