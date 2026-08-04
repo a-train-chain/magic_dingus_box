@@ -434,17 +434,112 @@ for _app in "${ARR_APPS[@]}"; do
     _cfg="/opt/magic_dingus_box/services/config/${_app}"
     SECRET_PATHS+=(
         "${_cfg}/config.xml"
-        "${_cfg}/${_app}.db"
-        "${_cfg}/${_app}.db-wal"
-        "${_cfg}/${_app}.db-shm"
-        "${_cfg}/logs.db"
-        "${_cfg}/logs.db-wal"
-        "${_cfg}/logs.db-shm"
+        # GLOB, not three literal suffixes. migrate_hardlink_layout.sh:95
+        # writes "${RADARR_DB}.pre-hardlink-<ts>.bak" and never deletes it —
+        # a full copy of radarr.db carrying the qBittorrent password and the
+        # Radarr API key — and setup_services.sh actively tells the operator
+        # to run that migration. `radarr.db` as a literal matched the live DB
+        # and nothing else, so the backup shipped in the artifact. It is a
+        # live file, so Step 4c's free-space fill never had any bearing on it.
+        # `.db*` also picks up -wal/-shm/-journal without naming each one.
+        "${_cfg}/${_app}.db*"
+        "${_cfg}/logs.db*"
+        "${_cfg}/*.bak"
         "${_cfg}/Backups/**"
         "${_cfg}/logs/**"
+        # Poster/fanart cache for every title in the operator's library — a
+        # browsable picture-book of what they watch, same disclosure class as
+        # BT_backup/** which this list already strips on those grounds.
+        # first_boot.sh:306 deletes it on the CLONE, which is exactly why it
+        # went unnoticed in the IMAGE.
+        "${_cfg}/MediaCover/**"
+        "${_cfg}/UpdateLogs/**"
     )
 done
 unset _app _cfg
+
+# Shell history. This is a verbatim record of everything the operator typed on
+# the source box, and maintenance sessions put credentials on the command line
+# routinely: `nmcli dev wifi connect <ssid> password <psk>`, curl calls with an
+# API key in the URL, sqlite queries against radarr.db. It is exactly the class
+# of file the whole scrub exists for.
+#
+# It is NOT a new discovery that this matters: the legacy destructive path in
+# prepare_golden_image.sh has cleaned .bash_history for both accounts since it
+# was written. The live-clone path — the one that actually produces the golden
+# image today — simply never inherited it, so this has been shipping in every
+# artifact this script has ever made.
+#
+# These go through the normal stash-and-restore machinery, so the operator does
+# not lose their own history; it is removed for the duration of the dd and put
+# back afterwards.
+SECRET_PATHS+=(
+    "/home/magic/.bash_history"
+    "/root/.bash_history"
+    "/home/magic/.zsh_history"
+    "/root/.zsh_history"
+    "/home/magic/.python_history"
+    "/root/.python_history"
+    "/home/magic/.sqlite_history"
+    "/home/magic/.mysql_history"
+    "/home/magic/.lesshst"
+    "/root/.lesshst"
+)
+
+# Phone-remote per-Pi state. EVERY other layer already classifies these as
+# per-Pi secrets — deploy_cpp.sh excludes them from rsync, update.sh excludes
+# them on every OTA path, first_boot.sh wipes them from data/ AND build/data/,
+# migrate_box.sh migrates them as sensitive — and SECRET_PATHS carried only
+# flask_secret.key of the set. So the running unit was protected and the
+# artifact was not, which is the precise asymmetry this script's own Step 2c
+# header argues against.
+#
+# text_input_queue.jsonl is the sharp end: the phone remote appends one JSONL
+# event PER CHARACTER typed, and one of the fields it is used to type into is
+# the Wi-Fi password keyboard. Hence the *.jsonl glob rather than a name list
+# — first_boot.sh globs for the same reason, after a hand-maintained list
+# there missed remote_viewport_diag.jsonl.
+for _d in data build/data; do
+    SECRET_PATHS+=(
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/paired_remotes.json"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/pairing_session.json"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/pairing_audit.log"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/pending_revocations.txt"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/seek_request.json"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/kiosk_status.json"
+        "/opt/magic_dingus_box/magic_dingus_box_cpp/${_d}/"'*.jsonl'
+    )
+done
+unset _d
+
+# Dot-prefixed staging siblings. admin.py:545 stages atomic writes with
+# `prefix=f".{path.name}."`, so an interrupted save leaves
+# `.tmdb_api_key.<rand>.tmp` / `.flask_secret.key.<rand>.tmp` — and a leading
+# dot defeats both the `tmdb_api_key*` glob and the two literal
+# flask_secret.key entries. first_boot.sh justifies its own glob with "a
+# half-written .tmp from an interrupted save"; the only .tmp this codebase
+# produces is the one neither list matched.
+SECRET_PATHS+=(
+    "/home/magic/.config/magic_dingus_box/*tmdb_api_key*"
+    "/opt/magic_dingus_box/magic_dingus_box_cpp/data/*flask_secret.key*"
+    "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/*flask_secret.key*"
+)
+
+# The kiosk's own log. config.cpp resolves it to
+# /opt/magic_dingus_box/config/magic_dingus_box.log, the unit sets no
+# MAGIC_LOG_FILE override, and the sink is DEBUG-level and rotating (5 MB x 3),
+# so up to four files of the operator's verbatim activity: Prowlarr query
+# strings, movie and series titles, TMDB ids, poster URLs. The legacy
+# destructive path has cleaned this since it was written; the live-clone path
+# never inherited it, and first_boot.sh does not remove it either — so it ships
+# in the image AND then persists on the customer's unit indefinitely.
+#
+# Stashed rather than deleted: it is the first thing worth reading when the
+# source box misbehaves, and /dev/shm has ample room for 20 MB.
+SECRET_PATHS+=(
+    "/opt/magic_dingus_box/config/magic_dingus_box.log*"
+    "/home/magic/retroarch_launcher.log*"
+)
 
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray

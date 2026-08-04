@@ -90,15 +90,46 @@ if [[ -n "$PI_HOST" ]]; then
     # Every VALUE in services/.env is taken, whatever its key, so a newly
     # added credential is covered without anyone remembering to update this
     # list -- a list going stale is precisely how the scrub failed before.
+    # Each line is SOURCE<TAB>VALUE. The source label is what makes a finding
+    # actionable ("services/.env key RADARR_API_KEY appears 3 times") without
+    # ever printing the value itself.
+    #
+    # Non-secret .env keys are skipped deliberately. Harvesting every value
+    # regardless of key put TZ in the needle set, which matches /etc/timezone
+    # and six Docker config.v2.json files on any correct image -- guaranteed
+    # hits that bury a real one.
+    #
+    # SSH host keys are labelled `expected:` because prepare_for_cloning.sh
+    # leaves them in place ON PURPOSE (sshd holds the operator's live session).
+    # They are still scanned -- if that design decision changes, the gate
+    # notices immediately -- but they are reported separately instead of
+    # turning every correct image red.
     ssh -o ConnectTimeout=10 "$PI_HOST" '
-        sudo grep -hoE "^(ssid|psk)=.+" /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^[a-z]*=//"
-        sudo grep -hoE "^[A-Za-z_][A-Za-z0-9_]*=.+" /opt/magic_dingus_box/services/.env 2>/dev/null | sed "s/^[^=]*=//"
-        sudo cat /opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key 2>/dev/null
-        sudo grep -h -v -e "-----" /etc/ssh/ssh_host_*_key 2>/dev/null
+        sudo grep -hoE "^ssid=.+" /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^ssid=/wifi-ssid\t/"
+        sudo grep -hoE "^psk=.+"  /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null | sed "s/^psk=/wifi-psk\t/"
+        sudo grep -hoE "^[A-Za-z_][A-Za-z0-9_]*=.+" /opt/magic_dingus_box/services/.env 2>/dev/null \
+          | grep -vE "^(PUID|PGID|TZ|STORAGE_ROOT|VPN_TYPE|VPN_SERVICE_PROVIDER|VPN_COUNTRIES|WIREGUARD_ADDRESSES|WIREGUARD_ENDPOINT_IP|WIREGUARD_ENDPOINT_PORT|WIREGUARD_PUBLIC_KEY|FIREWALL_OUTBOUND_SUBNETS|DOT|COMPOSE_PROJECT_NAME)=" \
+          | sed "s/^\([A-Za-z_][A-Za-z0-9_]*\)=/env:\1\t/"
+        sudo sed "s/^/flask-secret\t/" /opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key 2>/dev/null
+        sudo grep -h -v -e "-----" /etc/ssh/ssh_host_*_key 2>/dev/null | sed "s/^/expected:ssh-host-key\t/"
     ' 2>/dev/null \
-        | sed -e 's/[[:space:]]*$//' \
-        | grep -v '^$' | sort -u > "$TMP_NEEDLES" || true
+        | sed -e 's/[[:space:]]*$//' -e '/^$/d' -e '/\t$/d' \
+        | sort -u > "$TMP_NEEDLES" || true
     NEEDLES="$TMP_NEEDLES"
+fi
+
+# A needles file authored on Windows, or pasted out of Notes or a spreadsheet,
+# carries CR. Left in place it glues 0x0d to every value, nothing matches, and
+# the verdict is a green CLEAN -- a silent false clean, the one direction this
+# gate must never fail in.
+if [[ -n "$NEEDLES" && -f "$NEEDLES" ]] && LC_ALL=C grep -q $'\r' "$NEEDLES" 2>/dev/null; then
+    echo -e "  ${YELLOW}NOTE${NC} needles file contains CR characters — normalising (CRLF would silently match nothing)"
+    NORMALISED=$(mktemp "${TMPDIR:-/tmp}/mdb-needles-lf.XXXXXX")
+    chmod 600 "$NORMALISED"
+    tr -d '\r' < "$NEEDLES" > "$NORMALISED"
+    [[ -n "$TMP_NEEDLES" ]] && rm -f "$TMP_NEEDLES"
+    TMP_NEEDLES="$NORMALISED"
+    NEEDLES="$NORMALISED"
 fi
 
 N_TOTAL=$(grep -c . "$NEEDLES" 2>/dev/null || echo 0)
@@ -153,12 +184,31 @@ import sys
 #     'password': '<psk>'
 # which is unambiguous at 22 characters. These prefixes cover NetworkManager
 # keyfiles, cloud-init / JSON / YAML renderings, and shell-style env files.
-SHORT_CONTEXTS = [
+# Framings a short secret takes on disk. Split by family so an SSID is looked
+# for in SSID syntax and a PSK in password syntax -- the previous list was all
+# password/psk framings, so a short SSID was undetectable by either scanner
+# even though the v1.9.3 leak included three fragments naming the SSID.
+PSK_CONTEXTS = [
     b"psk=", b"password=", b"passwd=", b"pass=",
     b"'password': '", b'"password": "',
     b"'psk': '", b'"psk": "',
     b"password: ", b"psk: ",
 ]
+SSID_CONTEXTS = [
+    b"ssid=", b"SSID=", b"'ssid': '", b'"ssid": "', b"ssid: ",
+    b"'access-points': {'", b'"access-points": {"',
+]
+DEFAULT_CONTEXTS = PSK_CONTEXTS + SSID_CONTEXTS
+
+
+def contexts_for(source):
+    if source.endswith("wifi-ssid"):
+        return SSID_CONTEXTS
+    if source.endswith("wifi-psk"):
+        return PSK_CONTEXTS
+    return DEFAULT_CONTEXTS
+
+
 MIN_LEN = 12
 
 def variants_of(v):
@@ -176,28 +226,40 @@ def variants_of(v):
     return out
 
 
+# Input is SOURCE<TAB>VALUE. A bare line (no tab) is still accepted so a
+# hand-written --needles file keeps working; it is simply labelled "unlabelled".
 raw_values = []
 with open(sys.argv[1], "rb") as fh:
     for raw in fh:
-        line = raw.rstrip(b"\n")
-        if line:
-            for form in variants_of(line):
-                if form not in raw_values:
-                    raw_values.append(form)
+        line = raw.rstrip(b"\r\n")          # \r matters: see the CRLF note above
+        if not line:
+            continue
+        source, _, value = line.partition(b"\t")
+        if not value:
+            source, value = b"unlabelled", line
+        src = source.decode("utf-8", "replace")
+        for form in variants_of(value):
+            if (src, form) not in raw_values:
+                raw_values.append((src, form))
 
-needles, labels = [], []
-for v in raw_values:
+needles, labels, expected_flags = [], [], []
+for src, v in raw_values:
+    is_expected = src.startswith("expected:")
+    shown = src[len("expected:"):] if is_expected else src
     if len(v) >= MIN_LEN:
         needles.append(v)
-        labels.append("a %d-char secret" % len(v))
+        labels.append("%s (%d chars)" % (shown, len(v)))
+        expected_flags.append(is_expected)
     else:
-        variants = [c + v for c in SHORT_CONTEXTS if len(c + v) >= MIN_LEN]
+        ctxs = contexts_for(src)
+        variants = [c + v for c in ctxs if len(c + v) >= MIN_LEN]
         for var in variants:
             ctx = var[:len(var) - len(v)].decode("utf-8", "replace")
             needles.append(var)
-            labels.append("a %d-char secret preceded by [%s]" % (len(v), ctx))
-        print("  %d-char secret expanded into %d contextual needle(s)"
-              % (len(v), len(variants)))
+            labels.append("%s (%d chars) framed as [%s]" % (shown, len(v), ctx))
+            expected_flags.append(is_expected)
+        print("  %s: %d chars, too short to scan alone — expanded into %d framed needle(s)"
+              % (shown, len(v), len(variants)))
 
 if not needles:
     print("  No needle long enough to scan. Result is NOT a pass.")
@@ -243,9 +305,20 @@ print("  Scanned %.1f GiB against %d needle(s)." % (total / float(1 << 30), len(
 
 # Report findings BEFORE any verdict -- a hit is definitive evidence and must
 # not be swallowed by an incomplete-scan exit.
-hits = [(i, c) for i, c in enumerate(counts) if c]
-for i, c in hits:
+# Split real findings from the ones the current design guarantees. SSH host
+# keys are in the image ON PURPOSE; reporting them as LEAK made every correct
+# image red, and one extra unlabelled line was what a genuine WireGuard-key
+# hit would have looked like.
+real = [(i, c) for i, c in enumerate(counts) if c and not expected_flags[i]]
+expected_hits = [(i, c) for i, c in enumerate(counts) if c and expected_flags[i]]
+
+for i, c in expected_hits:
+    print("  expected-present: %s appears %d time(s) "
+          "(left in the image by design; first_boot regenerates it per unit)"
+          % (labels[i], c))
+for i, c in real:
     print("  LEAK: %s appears %d time(s)" % (labels[i], c))
+hits = real
 
 # A decompressor that dies mid-stream hands the scanner a truncated image, in
 # which it finds nothing and would report a clean PASS -- a false clean, the
