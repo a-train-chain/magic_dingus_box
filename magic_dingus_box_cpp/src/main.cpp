@@ -88,6 +88,7 @@
 #include <cerrno>
 #include <sys/select.h>
 #include <unistd.h>
+#include <cstdio>   // std::fflush before _exit skips static teardown
 
 #ifdef HAVE_SYSTEMD
 #include <systemd/sd-daemon.h>
@@ -2779,7 +2780,21 @@ int main(int /* argc */, char* /* argv */[]) {
                                         }
                                         // Return to the playlist UI after every launch outcome;
                                         // a failed takeover must not leave the game browser open.
-                                        settings_menu.close();
+                                        //
+                                        // force_close (teleport), NOT close (animate). The call
+                                        // above blocks for the entire game session, so by the time
+                                        // we reach this line RetroArch has already exited and the
+                                        // display handover back to the kiosk is done. close() would
+                                        // start a FRESH 300ms slide-shut right then — outlasting the
+                                        // 250ms post-game fade-up — so the fade revealed the settings
+                                        // menu animating closed instead of the main menu, which reads
+                                        // as a glitch on the way out of every game.
+                                        //
+                                        // Nothing is lost by skipping the animation: the menu was on
+                                        // screen before RetroArch took over, minutes or hours ago, and
+                                        // the user's mental model is "I was in a game, now I'm back",
+                                        // not "I am still in the menu I launched from".
+                                        settings_menu.force_close();
                                     } else {
                                         std::cout << "Invalid game index: " << game_idx << " (max: " << playlist.items.size() << ")" << std::endl;
                                     }
@@ -3798,43 +3813,8 @@ int main(int /* argc */, char* /* argv */[]) {
             ui_renderer.end_scene_fbo_and_composite(state);
         }
 
-        // Post-game fade-up: black quad over the freshly rebuilt menu,
-        // decreasing alpha over kPostGameFadeMs. Drawn UNDER the bezel so
-        // the bezel stays solid across the dissolve AND this fade — one
-        // continuous element bridging the whole game round trip. A separate
-        // mechanism from is_fading/ui_overlay_alpha on purpose: that path is
-        // entangled with video-active and UI-visibility semantics and early-
-        // returns on is_transitioning, which prepare_kiosk_state_after_game
-        // only incidentally avoids.
-        //
-        // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
-        // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
-        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
-        // re-init) between the two can eat 200ms+, and a wall-clock start
-        // would leave the fade mostly over before the first frame rendered.
-        {
-            int64_t fade_start = state.post_game_fade_start_ms.load();
-            if (fade_start != 0) {
-                constexpr int64_t kPostGameFadeMs = 250;
-                const int64_t now_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count();
-                if (fade_start < 0) {
-                    state.post_game_fade_start_ms.store(now_ms);
-                    fade_start = now_ms;
-                }
-                const int64_t elapsed = now_ms - fade_start;
-                if (elapsed >= kPostGameFadeMs) {
-                    state.post_game_fade_start_ms.store(0);
-                } else {
-                    glViewport(0, 0, mode.width, mode.height);
-                    ui_renderer.render_post_game_fade(
-                        1.0f - static_cast<float>(elapsed) /
-                                   static_cast<float>(kPostGameFadeMs));
-                }
-            }
-        }
+        // Post-game fade-up is drawn at the very END of the frame, just
+        // before the swap — see the block above "Swap EGL buffers".
 
         // Render bezel overlay LAST in Modern TV mode (on top of EVERYTHING including CRT effects)
         // The bezel PNG is stretched fullscreen - content is visible through the transparent center.
@@ -4489,6 +4469,57 @@ int main(int /* argc */, char* /* argv */[]) {
         }
         // ─────────────────────────────────────────────────────────────────────
 
+        // Post-game fade-up: a black quad over the WHOLE finished frame, its
+        // alpha falling to zero over kPostGameFadeMs, so the menu, the CRT
+        // effects and the bezel all rise out of black together as one image.
+        //
+        // It used to be drawn before the bezel, on the reasoning that a bezel
+        // held solid across the round trip reads as one continuous frame. On
+        // the TV it does not: RetroArch owned the whole screen a moment
+        // earlier, so the bezel has nothing to be continuous WITH, and it
+        // snapped to full opacity over a menu that was still fading — the
+        // frame arrived before the picture it frames. Drawing last is what
+        // "the whole thing eases in" actually looks like.
+        //
+        // Deliberately the last draw of the frame, after the Media Browser
+        // dispatcher and the marquee, so nothing can appear over the top of
+        // it at full brightness. Costs nothing when idle: the block is
+        // skipped entirely unless a fade is in flight.
+        //
+        // A separate mechanism from is_fading/ui_overlay_alpha on purpose:
+        // that path is entangled with video-active and UI-visibility
+        // semantics and early-returns on is_transitioning, which
+        // prepare_kiosk_state_after_game only incidentally avoids.
+        //
+        // -1 is the "requested" sentinel from prepare_kiosk_state_after_game;
+        // the clock starts at the FIRST FRAME WE ACTUALLY DRAW, not when the
+        // request was made — the reset_display work (frame_ctx/EGL/GStreamer
+        // re-init) between the two can eat 200ms+, and a wall-clock start
+        // would leave the fade mostly over before the first frame rendered.
+        {
+            int64_t fade_start = state.post_game_fade_start_ms.load();
+            if (fade_start != 0) {
+                constexpr int64_t kPostGameFadeMs = 250;
+                const int64_t now_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count();
+                if (fade_start < 0) {
+                    state.post_game_fade_start_ms.store(now_ms);
+                    fade_start = now_ms;
+                }
+                const int64_t elapsed = now_ms - fade_start;
+                if (elapsed >= kPostGameFadeMs) {
+                    state.post_game_fade_start_ms.store(0);
+                } else {
+                    glViewport(0, 0, mode.width, mode.height);
+                    ui_renderer.render_post_game_fade(
+                        1.0f - static_cast<float>(elapsed) /
+                                   static_cast<float>(kPostGameFadeMs));
+                }
+            }
+        }
+
         // Swap EGL buffers
         if (!egl.swap_buffers()) {
             std::cerr << "Failed to swap buffers!" << std::endl;
@@ -4582,5 +4613,27 @@ int main(int /* argc */, char* /* argv */[]) {
     LOG_INFO("Shutdown complete");
     logging::shutdown();
 
-    return 0;
+    // Leave NOW, without unwinding static destructors.
+    //
+    // Everything above this line is the real teardown, and it finishes fast.
+    // What came after it did not: measured on the box, the process logged
+    // "Shutdown complete" and then sat there for another 4.8 SECONDS until
+    // systemd's TimeoutStopSec=5 ran out and SIGKILLed it — on every single
+    // stop. Static teardown of the process-lifetime singletons (background
+    // pollers, GStreamer, the HTTP clients' worker threads) blocks; none of
+    // it has anything left to save.
+    //
+    // That 5 seconds is not cosmetic. It is charged to the standby switch,
+    // where the owner is watching the screen and waiting, and to the restart
+    // button, and it made systemd mark a perfectly clean shutdown as
+    // "Failed with result 'timeout'" every time — noise that hides a real
+    // failure the day there is one.
+    //
+    // Safe because nothing is left to persist: watch position is flushed
+    // above, settings save at each change site rather than at exit (14 call
+    // sites in the settings menu alone), and logging::shutdown() has already
+    // flushed and closed the log. The kernel reclaims the rest, exactly as it
+    // would after the SIGKILL this replaces.
+    std::fflush(nullptr);
+    _exit(0);
 }
