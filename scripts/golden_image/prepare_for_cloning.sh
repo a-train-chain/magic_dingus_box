@@ -579,6 +579,81 @@ SECRET_PATHS+=(
     "/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db"
 )
 
+# ---------------------------------------------------------------------------
+# Content curation: what the golden image SHIPS
+# ---------------------------------------------------------------------------
+# Not secrets — product curation. The source box is a working development
+# machine and accumulates the operator's own playlists and uploaded videos;
+# a customer's unit should carry the game playlists plus ONE video playlist
+# as a worked example of how to build one, and nothing personal.
+#
+# Measured on the source box before this existed: 13 playlists and 1.9 GB of
+# the operator's own music videos (31 files) shipped in every image.
+#
+# These go through the normal stash-and-restore machinery, so the source box
+# keeps every playlist and every video; they are simply absent for the
+# duration of the dd. That is deliberately different from pruning in
+# first_boot.sh: doing it there would still leave the operator's personal
+# content readable inside the .img.gz artifact and on any flashed-but-unbooted
+# card, and would leave the image needlessly large.
+SHIP_PLAYLISTS=(
+    games_arcade.yaml
+    games_atari7800.yaml
+    games_dreamcast.yaml
+    games_genesis.yaml
+    games_n64.yaml
+    games_nes.yaml
+    games_pcengine.yaml
+    games_ps1.yaml
+    games_snes.yaml
+    The_Nostalgia_Channel.yaml
+)
+
+_curated=0
+for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
+    [[ -d "${_d}/playlists" ]] || continue
+
+    # 1. Playlists that are not on the ship list.
+    shopt -s nullglob
+    for _pl in "${_d}"/playlists/*.yaml "${_d}"/playlists/*.yml; do
+        _base=$(basename "$_pl")
+        _keep=0
+        for _want in "${SHIP_PLAYLISTS[@]}"; do
+            [[ "$_base" == "$_want" ]] && { _keep=1; break; }
+        done
+        if [[ "$_keep" -eq 0 ]]; then
+            SECRET_PATHS+=("$_pl")
+            _curated=$(( _curated + 1 ))
+        fi
+    done
+
+    # 2. Media files no SHIPPED playlist references.
+    #
+    # Derived from the kept playlists rather than from a second hand-written
+    # list, so removing a playlist from SHIP_PLAYLISTS automatically drops the
+    # videos only it used. Entries look like:  path: 'media/Some File.mp4'
+    [[ -d "${_d}/media" ]] || { shopt -u nullglob; continue; }
+    _refs_file=$(mktemp)
+    for _want in "${SHIP_PLAYLISTS[@]}"; do
+        [[ -f "${_d}/playlists/${_want}" ]] || continue
+        grep -hE "^[[:space:]]*path:" "${_d}/playlists/${_want}" 2>/dev/null \
+            | sed -e "s/^[[:space:]]*path:[[:space:]]*//" \
+                  -e "s/^['\"]//" -e "s/['\"][[:space:]]*$//" \
+            | xargs -I{} basename "{}" 2>/dev/null >> "$_refs_file" || true
+    done
+    for _m in "${_d}"/media/*; do
+        [[ -f "$_m" ]] || continue
+        if ! grep -qxF "$(basename "$_m")" "$_refs_file" 2>/dev/null; then
+            SECRET_PATHS+=("$_m")
+            _curated=$(( _curated + 1 ))
+        fi
+    done
+    rm -f "$_refs_file"
+    shopt -u nullglob
+done
+unset _d _pl _base _keep _want _m _refs_file
+log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) held back from the image"
+
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray
 # tmdb_api_key.bak on the source Pi was cleaned off the running unit at first
