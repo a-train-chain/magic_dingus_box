@@ -115,6 +115,38 @@ fi
 log "Preflight: secret tripwire clean"
 
 # ---------------------------------------------------------------------------
+# Preflight: drop the in-progress marker BEFORE touching anything
+# ---------------------------------------------------------------------------
+# This used to live in Step 4, after Step 2 removed device_info.json, Step 2b
+# emptied the boot partition and Step 2c shredded ~250 secret files. But
+# restore_after_cloning.sh exits 0 the instant the marker is ABSENT ("nothing
+# to restore"), so a failure anywhere in that window left the operator with a
+# stripped box, an orphaned /dev/shm stash, and a restore script that
+# cheerfully declined to do anything. The window covered every destructive
+# step in the script.
+#
+# The marker is the record that destructive work has begun, so it has to be
+# written before the first destructive step, not after the last one. Writing
+# it early costs nothing: restore removes it, and the re-run guard above
+# already refuses to start when it is present.
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+log "[4/5] Marking clone in progress at ${MARKER_PATH}..."
+
+cat > "$MARKER_PATH" <<EOF
+# Magic Dingus Box - clone in progress
+# Created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# Hostname at prep time: $(hostname)
+#
+# This file exists ONLY between prepare_for_cloning.sh and
+# restore_after_cloning.sh. If you see it after a reboot, the previous
+# clone attempt did not complete — run restore_after_cloning.sh to
+# put the Pi back into normal state.
+EOF
+chmod 600 "$MARKER_PATH"
+log "Preflight: clone-in-progress marker written (restore is now armed)"
+
+# ---------------------------------------------------------------------------
 # Step 1: Stop services
 # ---------------------------------------------------------------------------
 log "[1/5] Stopping kiosk + Content Manager + Docker stack..."
@@ -492,6 +524,22 @@ done
 sync
 log "[2c/5] ${stripped} application secret file(s) removed (stash: ${SECRET_STASH})"
 
+# cloud-init's logs are a THIRD copy of the Wi-Fi PSK, after the boot
+# partition and /var/lib/cloud. cloud-init renders the whole netplan dict at
+# DEBUG on every run, password field included. Measured on this box:
+#   /var/log/cloud-init.log        5 plaintext occurrences
+#   cloud-init.log.{1,2,3}.gz     17 + 18 + 18
+# 58 in total, 784 KB, and nothing removed them.
+#
+# Deleted outright rather than stashed: they are boot diagnostics for an
+# instance the clone will never be, and the source Pi loses nothing it will
+# miss. Done HERE, immediately before the leak check below, and not with the
+# other log vacuuming in Step 4b — the check runs at this point in the
+# script, so a removal after it would leave the guard asserting against files
+# that still existed when it looked.
+rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
+log "[2c/5] cloud-init logs removed (they render the Wi-Fi PSK at DEBUG)"
+
 # POST-CONDITION: prove the credential-bearing classes are actually gone
 # before we hand the card to dd. Every entry in SECRET_PATHS above is a
 # pattern someone wrote by hand, and the way this script has failed twice is
@@ -509,7 +557,9 @@ for pat in \
     '/var/lib/cloud -name network-config*' \
     '/var/lib/cloud -name obj.pkl' \
     '/etc/NetworkManager/system-connections -name *.nmconnection' \
-    '/opt/magic_dingus_box/services -name .env'; do
+    '/opt/magic_dingus_box/services -name .env' \
+    '/var/log -name cloud-init.log*' \
+    '/var/log -name cloud-init-output.log*'; do
     # shellcheck disable=SC2086  # deliberate: $pat carries find's own args
     n=$(find $pat -type f 2>/dev/null | wc -l)
     if [[ "$n" -gt 0 ]]; then
@@ -565,19 +615,7 @@ fi
 # Step 4: Drop the in-progress marker so a Pi reboot mid-clone leaves
 # evidence for restore_after_cloning.sh to find.
 # ---------------------------------------------------------------------------
-log "[4/5] Marking clone in progress at ${MARKER_PATH}..."
-
-cat > "$MARKER_PATH" <<EOF
-# Magic Dingus Box - clone in progress
-# Created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# Hostname at prep time: $(hostname)
-#
-# This file exists ONLY between prepare_for_cloning.sh and
-# restore_after_cloning.sh. If you see it after a reboot, the previous
-# clone attempt did not complete — run restore_after_cloning.sh to
-# put the Pi back into normal state.
-EOF
-chmod 600 "$MARKER_PATH"
+log "[4/5] Clone-in-progress marker was written during preflight (see above)"
 
 # ---------------------------------------------------------------------------
 # Step 4b: Vacuum system logs — the operator's activity record and dead
@@ -593,8 +631,16 @@ chmod 600 "$MARKER_PATH"
 # source. auditd keeps running with a truncated log — the tripwire rules
 # stay armed throughout.
 log "[4b/5] Vacuuming journal + audit logs..."
+
+# The journal is a FOURTH copy, by a different route: sudo records every
+# command line verbatim, so an operator who joined Wi-Fi with
+# `nmcli dev wifi connect <ssid> password <psk>` put the PSK straight into
+# the journal. --vacuum-size keeps the NEWEST slices, which is exactly where
+# a recent join sits. Vacuum by TIME instead so nothing from this session's
+# work survives, then rotate again so the now-active file starts empty.
 journalctl --rotate 2>/dev/null || true
-journalctl --vacuum-size=16M 2>&1 | tail -1 | sed 's/^/    /' || true
+journalctl --vacuum-time=1s 2>&1 | tail -1 | sed 's/^/    /' || true
+journalctl --rotate 2>/dev/null || true
 if [[ -d /var/log/audit ]]; then
     # Truncate in place rather than delete: auditd holds the fd open and
     # keeps writing; a deleted file would hold its blocks invisibly until

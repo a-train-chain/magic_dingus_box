@@ -517,6 +517,34 @@ if [[ -d "$NM_DIR" ]]; then
     fi
 fi
 
+# Step 6c-2: Wipe inherited system logs.
+#
+# The on-unit safety net for the operator's logs, mirroring the way every
+# other secret here is handled in BOTH places: prepare_for_cloning.sh keeps
+# them out of the .img.gz, this keeps them off a unit whose card was read
+# before its first boot, or whose prepare aborted partway (that script runs
+# under `set -euo pipefail`).
+#
+# Two distinct leaks, both measured on the source box:
+#   - cloud-init renders the whole netplan dict at DEBUG, Wi-Fi password
+#     field included: 58 plaintext occurrences of the PSK across
+#     cloud-init.log and its three rotated siblings.
+#   - the journal records every sudo command line verbatim, so joining Wi-Fi
+#     with `nmcli ... password <psk>` writes the PSK straight into it, and it
+#     holds a complete record of the operator's pre-ship activity besides.
+#
+# Vacuum by TIME, not size: --vacuum-size keeps the NEWEST slices, which is
+# exactly where a recent Wi-Fi join sits.
+log "[6/7] Wiping inherited system logs (cloud-init + journal)..."
+rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
+journalctl --rotate 2>/dev/null || true
+journalctl --vacuum-time=1s >/dev/null 2>&1 || true
+if [[ -d /var/log/audit ]]; then
+    rm -f /var/log/audit/audit.log.* 2>/dev/null || true
+    truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
+fi
+log "[6/7] Inherited logs cleared (this unit's own history starts now)"
+
 # Step 6d: Wipe inherited cloning-backup state.
 #
 # /var/lib/magic-dingus-box/cloning_backup/ is created by
