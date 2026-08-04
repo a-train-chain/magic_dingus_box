@@ -612,8 +612,19 @@ fi
 # Directory skeletons are kept (rm contents, not the dirs) — Step 4 created
 # them and RetroArch's sort_savefiles_by_content_enable recreates per-core
 # subdirs on demand anyway.
+#
+# BOTH data/ AND build/data/ — the build tree carries a full SECOND copy of
+# game progress, populated when the C++ tests run on the box. Measured on the
+# source box 2026-08-03: data/ held 57 saves + 63 states, and build/data/ held
+# another 40 saves + 63 states, 133 MB of them. Wiping only data/ (as this
+# step first did) shipped the operator's entire save-state library on every
+# unit under a path nobody was looking at — the exact thing the pristine-unit
+# decision exists to prevent. Same dual-copy trap as flask_secret.key and
+# media_browser.db above; this tree has now caught three separate leaks, so
+# assume any new per-unit state has a build/data twin until proven otherwise.
 log "[6/7] Wiping RetroArch saves + save states (pristine-unit policy)..."
-for d in "${DATA_DIR}/saves" "${DATA_DIR}/states"; do
+for d in "${DATA_DIR}/saves" "${DATA_DIR}/states" \
+         "${BUILD_DATA_DIR}/saves" "${BUILD_DATA_DIR}/states"; do
     if [[ -d "$d" ]]; then
         entry_count=$(find "$d" -mindepth 1 2>/dev/null | wc -l)
         if [[ "$entry_count" -gt 0 ]]; then

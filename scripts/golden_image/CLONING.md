@@ -195,12 +195,23 @@ the first Pi 5 golden image:
   HIGH-at-boot (an unwired switch floats HIGH), so a bench Pi without
   the harness just runs normally. Install everything harness-related
   with `magic_dingus_box_cpp/scripts/setup_harness_services.sh`
-  (watcher + LED animations + the GPIO 24 restart-button overlay).
-  Two hard rules it encodes: power-switch-check.service must never be
-  auto-enabled (it halts on that same ambiguous HIGH), and the kiosk
-  must never claim GPIO 24 (the gpio-key overlay's kernel driver owns
-  it; claiming it fails the kiosk's whole GPIO bulk request and kills
-  every button and LED — observed live 2026-08-03).
+  (watcher + LED animations, and it REMOVES any GPIO 24 device-tree
+  overlay).
+  Two hard rules it encodes:
+  1. `power-switch-check.service` must never be auto-enabled — it halts
+     on that same ambiguous HIGH, which would power off every
+     not-yet-assembled unit at first boot.
+  2. **Nothing in the device tree may claim GPIO 24.** The KIOSK owns
+     that pin and uses it for the restart button (press = restart the
+     kiosk service, ~10s back to the menu — NOT an OS reboot). A
+     gpio-key overlay was tried there on 2026-08-03 to get a logind
+     reboot instead; it worked and was rejected on the hardware for
+     being a 90-second cold boot when the owner just wants the UI
+     back. It must be actively removed, not merely left out: libgpiod
+     requests every kiosk input line in ONE bulk call, so a
+     kernel-owned GPIO 24 fails the whole request and takes all four
+     buttons, the encoder switch and every LED down with it — observed
+     live the same day.
 - **Pre-clone hygiene (2026-08-03)**: `prepare_for_cloning.sh` now
   ABORTS if stray operator backups sit in /home/magic (secret
   tripwire — delete them or move them to /mnt/ssd, which the SD-only

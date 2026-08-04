@@ -267,6 +267,23 @@ start_services() {
     systemctl --no-block start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
         log "WARN: failed to queue the Docker stack"
 
+    # And explicitly re-run the qBittorrent reconciler, which owns the
+    # crash-recovery that clears a stuck download throttle.
+    #
+    # It cannot ride along on its own here: it is WantedBy=multi-user.target,
+    # so systemd pulls it in when that TARGET starts — i.e. at boot only.
+    # Starting magic-dingus-services directly, as we just did, does not drag
+    # it along. Without this line, flipping to standby part-way through a
+    # movie leaves the playback trickle cap engaged and NOTHING clears it
+    # until the next full reboot: every download on the box crawls at ~2 MB/s
+    # with nothing on screen to explain why. That is precisely the failure
+    # the reconciler was written to eliminate, on the path most likely to
+    # cause it. Its own After=/Requires=magic-dingus-services keeps the
+    # ordering correct, and --no-block keeps it off this loop's critical path.
+    systemctl reset-failed magic-dingus-sync-qbit-password.service 2>/dev/null || true
+    systemctl --no-block start magic-dingus-sync-qbit-password.service 2>&1 | sed 's/^/    /' || \
+        log "WARN: failed to queue the qBittorrent reconciler"
+
     log "Running state — kiosk up; Docker stack starting behind it"
 }
 

@@ -578,8 +578,17 @@ else
     # Leave a 64 MB margin so the root filesystem never actually hits 0
     # free — a genuinely full root can wedge journald and systemd while
     # we still need them to finish the clone.
+    # The margin has to be an explicit COUNT. Letting dd run until ENOSPC —
+    # which is what this did originally, making the 64 MB above a comment
+    # describing something the code never did — takes the root filesystem to
+    # genuinely zero free, and journald, systemd and the rest of this script
+    # still need to write while the clone finishes.
     ZERO_FILE=/var/tmp/mdb-zerofill.tmp
-    dd if=/dev/zero of="$ZERO_FILE" bs=4M status=none 2>/dev/null || true
+    zero_mb=$(( avail_mb > 64 ? avail_mb - 64 : 0 ))
+    if [[ "$zero_mb" -gt 0 ]]; then
+        dd if=/dev/zero of="$ZERO_FILE" bs=4M count=$(( zero_mb / 4 )) \
+           status=none 2>/dev/null || true
+    fi
     sync
     rm -f "$ZERO_FILE"
     sync

@@ -247,6 +247,35 @@ void GpioManager::check_restart_button() {
     std::cout << "  Restart button pressed — playing shutdown animation..." << std::endl;
     play_shutdown_animation();
 
+    // If a game is running, let RetroArch exit on its OWN first so it writes
+    // its save. This path is reachable during gameplay on purpose — main.cpp
+    // spins a GPIO polling thread for the whole session precisely so this
+    // button still works while the main loop is blocked in waitpid() — and
+    // that block is exactly the problem: the kiosk cannot act on the SIGTERM
+    // the restart below delivers, so systemd waits out TimeoutStopSec and
+    // SIGKILLs the entire control group with the emulator inside it. The
+    // player's progress since their last save dies with it.
+    //
+    // "A game is stuck, press restart" is this button's primary use, so that
+    // was the case guaranteed to lose data. Same fix, and the same reasoning,
+    // as the standby switch's quiesce_retroarch() in kiosk_standby_watcher.sh.
+    //
+    // pkill -x matches the executable name EXACTLY: this process is
+    // "magic_dingus_bo" to the kernel, so it can never match itself. Never
+    // use pkill -f here — that pattern-matches full command lines and would.
+    if (std::system("pgrep -x retroarch >/dev/null 2>&1") == 0) {
+        std::cout << "  Game in progress — asking RetroArch to exit so it can save first..."
+                  << std::endl;
+        std::system("pkill -x -TERM retroarch >/dev/null 2>&1");
+        for (int i = 0; i < 40; ++i) {  // up to 10s, then restart regardless
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (std::system("pgrep -x retroarch >/dev/null 2>&1") != 0) {
+                std::cout << "  RetroArch exited cleanly (save written)" << std::endl;
+                break;
+            }
+        }
+    }
+
     // --no-block rather than a trailing '&': systemd queues the job and
     // returns immediately, with no orphaned shell left behind to be
     // reparented when this process dies half a second later.
