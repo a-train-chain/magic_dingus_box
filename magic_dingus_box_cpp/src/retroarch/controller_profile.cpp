@@ -393,6 +393,25 @@ std::map<std::string, PhysicalProfile> load_profile_store() {
     return profiles_from_json(ss.str());
 }
 
+// The recommended-accessory pads, compiled in. The header explains why they
+// belong in the binary and not only in config/controller_profiles.json.
+//
+// Deliberately reuses profiles_from_json instead of hand-writing 42 bindings
+// as C++ literals: the payload is byte-for-byte what the capture wizard
+// produced, so there is no transcription step to get wrong, and regenerating
+// after capturing another pad is a copy-paste rather than an editing job.
+// Parsed once on first use. The parser never throws and degrades per entry,
+// so even a mangled .inc costs at most "this pad has no built-in profile".
+#include "builtin_controller_profiles.inc"
+
+const PhysicalProfile* builtin_profile_for(uint16_t vid, uint16_t pid) {
+    static const std::map<std::string, PhysicalProfile> kStore =
+        profiles_from_json(kBuiltinControllerProfilesJson);
+
+    auto it = kStore.find(vidpid_key(vid, pid));
+    return it == kStore.end() ? nullptr : &it->second;
+}
+
 bool save_profile_store(const std::map<std::string, PhysicalProfile>& profiles) {
     const std::string path = config::get_controller_profiles_file();
 

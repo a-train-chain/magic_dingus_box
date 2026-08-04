@@ -82,23 +82,30 @@ constexpr char kCapturedPadName[] = "SWITCH CO.,LTD. Controller (Dinput)";
 // leaked onto a fielded configuration it must not touch. Every other line
 // below remains the capture, byte for byte.
 constexpr char kExpectedBinds[] =
-    "input_player1_analog_dpad_mode = \"0\"\n"  // reconstructed -- see note above
-    "input_player1_b_btn = \"1\"\n"              // reconstructed -- see note above
-    "input_player1_y_btn = \"3\"\n"
+    // REGENERATED 2026-08-03. These are no longer the legacy-fallback binds
+    // the fielded box emitted for this pad, and that is the point: 2563:0575
+    // now has a compiled-in profile of its own (builtin_controller_profiles
+    // .inc), captured from this exact controller, so it no longer borrows the
+    // 0e6d:111d adapter's layout. The visible consequence is the face
+    // buttons: the physical button reporting token "1" is this pad's A, and
+    // was previously being driven as RetroPad B.
+    "input_player1_analog_dpad_mode = \"0\"\n"
+    "input_player1_b_btn = \"2\"\n"
+    "input_player1_y_btn = \"0\"\n"
     "input_player1_select_btn = \"10\"\n"
     "input_player1_start_btn = \"12\"\n"
     "input_player1_up_btn = \"h0up\"\n"
     "input_player1_down_btn = \"h0down\"\n"
     "input_player1_left_btn = \"h0left\"\n"
     "input_player1_right_btn = \"h0right\"\n"
-    "input_player1_a_btn = \"2\"\n"
-    "input_player1_x_btn = \"0\"\n"
+    "input_player1_a_btn = \"1\"\n"
+    "input_player1_x_btn = \"3\"\n"
     "input_player1_l_btn = \"4\"\n"
     "input_player1_r_btn = \"5\"\n"
     "input_player1_l2_btn = \"nul\"\n"
     "input_player1_r2_btn = \"nul\"\n"
-    "input_player1_l3_btn = \"nul\"\n"  // added post-capture -- see note above
-    "input_player1_r3_btn = \"nul\"\n"  // added post-capture -- see note above
+    "input_player1_l3_btn = \"nul\"\n"
+    "input_player1_r3_btn = \"nul\"\n"
     "input_player1_l_x_plus_axis = \"+0\"\n"
     "input_player1_l_x_minus_axis = \"-0\"\n"
     "input_player1_l_y_plus_axis = \"+1\"\n"
@@ -108,22 +115,22 @@ constexpr char kExpectedBinds[] =
     "input_player1_left_axis = \"-0\"\n"
     "input_player1_right_axis = \"+0\"\n"
     "input_player2_analog_dpad_mode = \"0\"\n"
-    "input_player2_b_btn = \"1\"\n"
-    "input_player2_y_btn = \"3\"\n"
+    "input_player2_b_btn = \"2\"\n"
+    "input_player2_y_btn = \"0\"\n"
     "input_player2_select_btn = \"10\"\n"
     "input_player2_start_btn = \"12\"\n"
     "input_player2_up_btn = \"h0up\"\n"
     "input_player2_down_btn = \"h0down\"\n"
     "input_player2_left_btn = \"h0left\"\n"
     "input_player2_right_btn = \"h0right\"\n"
-    "input_player2_a_btn = \"2\"\n"
-    "input_player2_x_btn = \"0\"\n"
+    "input_player2_a_btn = \"1\"\n"
+    "input_player2_x_btn = \"3\"\n"
     "input_player2_l_btn = \"4\"\n"
     "input_player2_r_btn = \"5\"\n"
     "input_player2_l2_btn = \"nul\"\n"
     "input_player2_r2_btn = \"nul\"\n"
-    "input_player2_l3_btn = \"nul\"\n"  // added post-capture -- see note above
-    "input_player2_r3_btn = \"nul\"\n"  // added post-capture -- see note above
+    "input_player2_l3_btn = \"nul\"\n"
+    "input_player2_r3_btn = \"nul\"\n"
     "input_player2_l_x_plus_axis = \"+0\"\n"
     "input_player2_l_x_minus_axis = \"-0\"\n"
     "input_player2_l_y_plus_axis = \"+1\"\n"

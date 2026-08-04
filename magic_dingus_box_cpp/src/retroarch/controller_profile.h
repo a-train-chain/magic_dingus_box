@@ -63,6 +63,25 @@ struct PhysicalProfile {
 const PhysicalProfile& builtin_n64_adapter_profile();
 const PhysicalProfile& builtin_dragonrise_profile();
 
+// Built-in profiles for the pads sold alongside the box as the recommended
+// controllers, compiled in from the operator's wizard captures (the data
+// lives in builtin_controller_profiles.inc). Returns nullptr for any other
+// VID/PID.
+//
+// Why these are in the binary rather than only in config/: without them the
+// pads work ONLY for as long as config/controller_profiles.json survives, and
+// match_vid_pid() recognises NEITHER of them — so the moment that file goes
+// (a customer using Settings -> "Reset Controller Setup", a corrupt write, a
+// box built from source rather than the image) both pads silently fall back
+// to the legacy N64-style mapping, which is simply wrong for the PS-style
+// pad. Compiled in, they cannot be lost, they reach fielded boxes over OTA,
+// and "reset to the built-in mapping" restores the RIGHT mapping rather than
+// a wrong one.
+//
+// A wizard-captured profile for the same VID/PID still wins, so a customer
+// who rewires or recaptures a pad is never overridden by this.
+const PhysicalProfile* builtin_profile_for(uint16_t vid, uint16_t pid);
+
 std::string vidpid_key(uint16_t vid, uint16_t pid);  // "0079:0006"
 
 // Derive the kiosk MENU-navigation mapping for a pad from its physical

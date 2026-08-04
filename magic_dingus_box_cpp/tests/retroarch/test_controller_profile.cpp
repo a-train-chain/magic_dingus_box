@@ -648,3 +648,72 @@ TEST_CASE("menu overlay picks stick axes per style", "[controller_profile][overl
     REQUIRE(o.nav_x_abs == kAbsX);
     REQUIRE(o.seek_abs == kAbsZ);   // an N64 pad whose C-cluster IS an axis
 }
+
+// ---------------------------------------------------------------------------
+// Recommended-accessory pads compiled into the binary
+// ---------------------------------------------------------------------------
+// These two profiles are the reason a customer can plug in either controller
+// we recommend and have it work with no setup. They used to exist only in
+// config/controller_profiles.json on the golden image, which meant Settings ->
+// "Reset Controller Setup" (a two-press confirm any customer can reach)
+// permanently destroyed them, and neither VID/PID is known to match_vid_pid,
+// so the fallback was the legacy N64 mapping — wrong for the PS-style pad.
+//
+// The assertions below pin the identity and the style of each, because those
+// are what decide which semantic table a pad gets. A regeneration of the .inc
+// that dropped or restyled a pad would otherwise be silent until someone
+// plugged one in.
+TEST_CASE("recommended pads have compiled-in profiles", "[controller_profile][builtin]") {
+    // SHANWAN Android Gamepad — the PS-style recommendation.
+    const PhysicalProfile* shanwan = builtin_profile_for(0x2563, 0x0526);
+    REQUIRE(shanwan != nullptr);
+    REQUIRE(shanwan->style == ControllerStyle::PS_STYLE);
+    // Face buttons are what a wrong style would scramble first.
+    REQUIRE(shanwan->binding(LogicalControl::CROSS) != nullptr);
+    REQUIRE(shanwan->binding(LogicalControl::CIRCLE) != nullptr);
+
+    // SWITCH CO.,LTD. Controller (Dinput) — the N64-style recommendation.
+    const PhysicalProfile* n64ish = builtin_profile_for(0x2563, 0x0575);
+    REQUIRE(n64ish != nullptr);
+    REQUIRE(n64ish->style == ControllerStyle::N64_STYLE);
+    REQUIRE(n64ish->binding(LogicalControl::N64_A) != nullptr);
+    REQUIRE(n64ish->binding(LogicalControl::N64_B) != nullptr);
+
+    // Anything else must fall through to the existing resolution path rather
+    // than being handed one of these by accident.
+    REQUIRE(builtin_profile_for(0x0000, 0x0000) == nullptr);
+    REQUIRE(builtin_profile_for(0x0079, 0x0006) == nullptr);  // DragonRise keeps its own path
+}
+
+// A captured profile must still beat the compiled-in one. This pins the ORDER
+// of the two lookups in resolve_mapping_for_pad: putting the compiled-in step
+// first would silently ignore every capture a customer makes, which is the
+// exact opposite of what the wizard exists for.
+//
+// Uses the N64-style pad and N64_A because the built-in-vs-captured test above
+// already establishes that a_btn is where N64_A lands for this core.
+TEST_CASE("a captured profile still beats the compiled-in recommended profile",
+          "[controller_profile][builtin]") {
+    const PhysicalProfile* builtin = builtin_profile_for(0x2563, 0x0575);
+    REQUIRE(builtin != nullptr);
+    const std::string shipped_a = builtin->token(LogicalControl::N64_A);
+    REQUIRE(shipped_a != "77");  // guard: the sentinel below must be distinct
+
+    PhysicalProfile mine;
+    mine.name = "rewired";
+    mine.style = ControllerStyle::N64_STYLE;
+    mine.vid = 0x2563;
+    mine.pid = 0x0575;
+    mine.controls[LogicalControl::N64_A] = {K::BUTTON, 999, 0, "77"};
+
+    std::map<std::string, PhysicalProfile> store;
+    store[vidpid_key(0x2563, 0x0575)] = mine;
+
+    const auto m = resolve_mapping_for_pad(0x2563, 0x0575, store, "snes9x2010_libretro");
+    REQUIRE(m.a_btn == "77");
+
+    // ...and with no capture present, the compiled-in profile is what gets
+    // used, rather than falling through to the legacy N64 mapping.
+    const auto shipped = resolve_mapping_for_pad(0x2563, 0x0575, {}, "snes9x2010_libretro");
+    REQUIRE(shipped.a_btn == shipped_a);
+}

@@ -539,7 +539,17 @@ ControllerMapping resolve_mapping_for_pad(
         return build_mapping(get_semantic_mapping(it->second.style, core_name),
                              it->second);
     }
-    // 2. Builtin by VID/PID; 3. legacy N64 fallback for everything else.
+    // 2. Compiled-in profile for a pad shipped as a recommended accessory.
+    //    Neither of those pads appears in match_vid_pid below, so without
+    //    this step both fall all the way through to the legacy N64 fallback:
+    //    the right style by luck for the N64-style pad, flatly wrong for the
+    //    PS-style one. Each profile carries its own style, so the semantic
+    //    table comes from the profile rather than being guessed.
+    if (const PhysicalProfile* builtin = builtin_profile_for(vid, pid)) {
+        return build_mapping(get_semantic_mapping(builtin->style, core_name),
+                             *builtin);
+    }
+    // 3. Builtin by VID/PID; 4. legacy N64 fallback for everything else.
     return get_mapping(match_vid_pid(vid, pid), core_name);
 }
 
