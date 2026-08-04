@@ -182,6 +182,13 @@ systemctl start magic-dingus-web.service 2>&1 | sed 's/^/    /' || \
 systemctl start magic-dingus-box-cpp.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-box-cpp.service failed to start"
 
+# Re-arm the front-panel standby switch, which prepare stopped so a bump
+# of the toggle could not restart services underneath the dd.
+if systemctl is-enabled kiosk-standby-watcher.service &>/dev/null; then
+    systemctl start kiosk-standby-watcher.service 2>&1 | sed 's/^/    /' || \
+        log "[3/4] WARN: kiosk-standby-watcher.service failed to start"
+fi
+
 # ---------------------------------------------------------------------------
 # Step 4: Clear the in-progress marker + cleanup
 # ---------------------------------------------------------------------------

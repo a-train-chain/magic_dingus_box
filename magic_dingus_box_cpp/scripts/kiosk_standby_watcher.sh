@@ -50,6 +50,27 @@ COMPANION_SERVICES=(
 )
 
 KIOSK_SERVICE=magic-dingus-box-cpp.service
+WEB_SERVICE=magic-dingus-web.service
+
+# Mechanical toggles bounce. Measured on this hardware 2026-08-03: ONE
+# flip of the front switch produced a falling edge and a rising edge 25
+# MICROSECONDS apart, then two more edges — four events from one human
+# action. Acting on each in turn started the whole stack, tore it down,
+# and started it again, SIGKILLing the kiosk mid-launch and leaving the
+# box in the opposite state from the switch.
+#
+# Two independent defences, because either alone still has a hole:
+#   1. gpiomon's own --debounce-period, which filters in the kernel.
+#   2. reconcile_to_level(), which ignores the edge DIRECTION entirely
+#      and acts on the pin's settled level. Needed because stop_services
+#      takes several seconds (LED sweep + docker), and any bounce that
+#      arrives during it is still sitting in the pipe afterwards.
+DEBOUNCE_PERIOD=100ms
+SETTLE_SLEEP=0.25
+
+# What we last drove the box to: "running", "standby", or "" for
+# not-yet-known. Makes every repeated event an explicit no-op.
+LAST_APPLIED=""
 
 # LED "powering down" sweep, shared with the restart button's in-app
 # version. Absent on a board with no harness — every use is guarded.
@@ -77,14 +98,91 @@ read_gpio() {
     fi
 }
 
+# Drive the box to whatever the switch is ACTUALLY set to right now, and
+# do nothing if we are already there. This is what makes bounce harmless:
+# the second, third and fourth events of a single flip all resolve to the
+# same level we just applied, and each returns immediately.
+#
+# It also self-heals. If an event is ever missed — the watcher restarts,
+# or an edge lands while stop_services is mid-teardown — the next event
+# of any kind re-reads the pin and converges on the truth, instead of
+# toggling to the opposite of wherever we drifted to.
+reconcile_to_level() {
+    local level desired
+    level=$(read_gpio)
+
+    case "$level" in
+        low)  desired=running ;;   # switch closed to ground = ON
+        high) desired=standby ;;
+        *)
+            # Unreadable. Never guess: acting on a failed read could put
+            # a perfectly good box into standby with no way to see why.
+            log "GPIO ${GPIO_PIN} unreadable — leaving services untouched"
+            return
+            ;;
+    esac
+
+    if [[ "$desired" == "$LAST_APPLIED" ]]; then
+        log "Already ${desired} — ignoring (switch bounce or duplicate event)"
+        return
+    fi
+
+    LAST_APPLIED="$desired"
+    if [[ "$desired" == running ]]; then
+        start_services
+    else
+        stop_services
+    fi
+}
+
 all_leds_off() {
     for pin in "${LED_PINS[@]}"; do
         pinctrl set "$pin" op dl 2>/dev/null || true
     done
 }
 
+# Give RetroArch a chance to exit on its own before anything stops the
+# kiosk. While a game is running the kiosk is parked inside waitpid() and
+# CANNOT act on SIGTERM — so `systemctl stop` waits out TimeoutStopSec=5
+# and then SIGKILLs the whole control group, emulator included, and the
+# player's progress since their last save is gone with it.
+#
+# RetroArch is configured to auto-save SRAM and write a save state on
+# exit, so a plain SIGTERM is all it needs. Once it exits, the kiosk's
+# waitpid returns, it restores its own display state, and the ordinary
+# stop below is clean.
+#
+# Exact-name match and kill by PID — never `pkill -f retroarch`, whose
+# pattern would also match this script's own command line.
+quiesce_retroarch() {
+    local pids
+    pids=$(pgrep -x retroarch 2>/dev/null || true)
+    [[ -n "$pids" ]] || return 0
+
+    log "Game in progress — asking RetroArch to exit so it can save first"
+    # shellcheck disable=SC2086  # deliberate word-splitting: one or more PIDs
+    kill -TERM $pids 2>/dev/null || true
+
+    local waited=0
+    while [[ $waited -lt 40 ]]; do
+        if ! pgrep -x retroarch >/dev/null 2>&1; then
+            log "RetroArch exited cleanly (save written)"
+            # The kiosk still has to re-acquire DRM master and re-init
+            # input after the emulator hands back. Let that finish rather
+            # than stopping it mid-handoff.
+            sleep 2
+            return 0
+        fi
+        sleep 0.25
+        waited=$((waited + 1))
+    done
+    log "WARN: RetroArch still running after 10s — continuing with the stop anyway"
+}
+
 stop_services() {
     log "Switch OFF detected — stopping kiosk + companion services"
+
+    quiesce_retroarch
 
     # The kiosk goes down FIRST, alone, for two reasons pointing the same
     # way. It owns the four LED lines through libgpiod, and the sweep
@@ -134,20 +232,42 @@ start_services() {
     # Media Browser availability and simply shows the tunnel-down state
     # until the containers answer — exactly what it already does on every
     # cold boot, where the same race exists.
+    # The web admin goes up BEFORE the kiosk, and we wait for it, even
+    # though that costs a second or two of wake time. It hosts the phone
+    # remote's virtual gamepad (/dev/uinput), and InputManager enumerates
+    # /dev/input exactly once, at startup, with no hotplug. A kiosk that
+    # starts first therefore never sees the remote, and every paired
+    # phone is silently dead — no error, no toast, nothing in a log —
+    # until something restarts the kiosk again.
+    systemctl reset-failed "$WEB_SERVICE" 2>/dev/null || true
+    systemctl start "$WEB_SERVICE" 2>&1 | sed 's/^/    /' || \
+        log "WARN: failed to start the web admin"
+
+    # systemctl returns as soon as the process is forked; Flask still has
+    # to create the uinput device. Poll for the device itself rather than
+    # guessing a sleep. Bounded — if it never appears we start the kiosk
+    # anyway, because a working screen without a phone remote beats no
+    # screen at all.
+    for _ in $(seq 1 40); do
+        if grep -q "MagicDingus Phone Remote" /proc/bus/input/devices 2>/dev/null; then
+            log "Phone-remote gamepad present — starting kiosk"
+            break
+        fi
+        sleep 0.25
+    done
+
     systemctl reset-failed "$KIOSK_SERVICE" 2>/dev/null || true
     systemctl start "$KIOSK_SERVICE" 2>&1 | sed 's/^/    /' || \
         log "WARN: failed to start the kiosk"
 
-    for svc in "${COMPANION_SERVICES[@]}"; do
-        systemctl reset-failed "$svc" 2>/dev/null || true
-        # --no-block: queue it and move on. The Docker stack especially
-        # must not hold this function, or a slow container start would
-        # delay the watcher's reaction to the NEXT flip of the switch.
-        systemctl --no-block start "$svc" 2>&1 | sed 's/^/    /' || \
-            log "WARN: failed to queue $svc"
-    done
+    # Docker last and --no-block: six containers and a VPN tunnel take
+    # 20-40s, and none of that is on screen. Queue it and return, so the
+    # watcher is free to react to the NEXT flip of the switch.
+    systemctl reset-failed magic-dingus-services.service 2>/dev/null || true
+    systemctl --no-block start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
+        log "WARN: failed to queue the Docker stack"
 
-    log "Running state — kiosk up; Content Manager + Docker starting behind it"
+    log "Running state — kiosk up; Docker stack starting behind it"
 }
 
 reconcile_initial_state() {
@@ -188,6 +308,7 @@ reconcile_initial_state() {
             # Switch wired and ON (or someone is actively pulling
             # GPIO 3 to ground). Make sure services are running.
             log "  → start_services (switch ON, or runtime restart of watcher)"
+            LAST_APPLIED=running
             start_services
             ;;
         high|*)
@@ -214,22 +335,14 @@ monitor_loop() {
     # claims the named line; the offset still works.
     while IFS= read -r line; do
         log "GPIO event: ${line}"
-        # libgpiod v2 prints "rising"/"falling" in the line
-        case "$line" in
-            *rising*|*RISING*)
-                # Pin went LOW -> HIGH. With our wiring, that means
-                # switch flipped from ON to OFF.
-                stop_services
-                ;;
-            *falling*|*FALLING*)
-                # Pin went HIGH -> LOW. Switch flipped from OFF to ON.
-                start_services
-                ;;
-            *)
-                log "Unrecognized event line: ${line}"
-                ;;
-        esac
-    done < <(gpiomon --edges=both --chip "$GPIO_CHIP" "$GPIO_PIN" 2>&1)
+        # The event's DIRECTION is deliberately ignored. A bouncing
+        # toggle emits both directions within microseconds, and acting on
+        # each in turn is what made one flip start-stop-start the box.
+        # Let the contacts settle, then ask the pin where it actually is.
+        sleep "$SETTLE_SLEEP"
+        reconcile_to_level
+    done < <(gpiomon --debounce-period "$DEBOUNCE_PERIOD" \
+                     --edges=both --chip "$GPIO_CHIP" "$GPIO_PIN" 2>&1)
 
     # If gpiomon exits unexpectedly, log and let systemd restart the
     # service (Restart=always in the unit file).

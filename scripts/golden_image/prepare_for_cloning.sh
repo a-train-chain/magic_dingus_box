@@ -122,6 +122,15 @@ log "[1/5] Stopping kiosk + Content Manager + Docker stack..."
 # Order matters: stop the kiosk first (it holds DRM master / EGL context),
 # then content manager, then the Docker stack last (it has the most state
 # to flush). All `|| true` because each may already be stopped.
+# The standby watcher goes FIRST and must not be forgotten. It sits on
+# GPIO 3 for the lifetime of the box, so with it running the front-panel
+# toggle is still armed during the clone — one bump of the switch mid-dd
+# starts the kiosk and the whole Docker stack back up underneath a copy
+# that is supposed to be reading a frozen filesystem, and the resulting
+# image is silently inconsistent. restore_after_cloning.sh starts it
+# again on the way out.
+systemctl stop kiosk-standby-watcher.service 2>/dev/null || true
+
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 systemctl stop magic-dingus-web.service 2>/dev/null || true
 
@@ -333,6 +342,16 @@ SECRET_PATHS=(
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
     "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/qBittorrent.conf"
+    # qBittorrent's own state, beyond the one conf file this list used to
+    # name. BT_backup holds a .torrent and a .fastresume per download the
+    # box has ever taken — file names, sizes and tracker URLs — so the
+    # artifact shipped a readable inventory of the operator's entire
+    # download history under a path nothing was watching. The rest is
+    # session/UI state that no fresh unit should inherit.
+    "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/data/BT_backup/**"
+    "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/data/logs/**"
+    "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/data/GeoDB/**"
+    "/opt/magic_dingus_box/services/config/qbittorrent/qBittorrent/watched_folders.json"
     # Watch history (Phase 3). media_browser.db's watch_state table is the
     # operator's complete viewing record — every episode/movie watched, resume
     # positions, timestamps. Personal data, not product content; the kiosk
@@ -529,6 +548,46 @@ if [[ -d /var/log/audit ]]; then
     rm -f /var/log/audit/audit.log.* 2>/dev/null || true
     truncate -s 0 /var/log/audit/audit.log 2>/dev/null || true
     log "[4b/5] audit logs truncated (rules stay armed)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 4c: Zero the free space
+# ---------------------------------------------------------------------------
+# Deleting a file unlinks it; the blocks keep their contents until
+# something reuses them, and `dd` copies blocks, not files. So every
+# secret this script just shredded a NAMED copy of can still exist in
+# free space — along with everything ever deleted on this card. On
+# 2026-08-03 roughly 800 MB of operator debris, including an
+# environment-file backup with service credentials, was moved off this
+# SD to the SSD; a move across filesystems leaves the originals sitting
+# unlinked but fully readable right where they were.
+#
+# The second reason is size. Free space full of old data is
+# incompressible noise, so it lands in the .img.gz at close to full
+# size; zeroed, it compresses to almost nothing. This step typically
+# makes the artifact several GB smaller.
+#
+# Cost is real: it writes zeros until the filesystem is full, which on a
+# slow SD can take 10-20 minutes. Set MDB_SKIP_ZEROFILL=1 to skip it for
+# a throwaway image — never for one that leaves the building.
+if [[ "${MDB_SKIP_ZEROFILL:-0}" == "1" ]]; then
+    log "[4c/5] Free-space zeroing SKIPPED (MDB_SKIP_ZEROFILL=1) — do not ship this image"
+else
+    avail_mb=$(df -Pm / | awk 'NR==2 {print $4}')
+    log "[4c/5] Zeroing ~${avail_mb} MB of free space (10-20 min on SD; makes the image much smaller)..."
+    # Leave a 64 MB margin so the root filesystem never actually hits 0
+    # free — a genuinely full root can wedge journald and systemd while
+    # we still need them to finish the clone.
+    ZERO_FILE=/var/tmp/mdb-zerofill.tmp
+    dd if=/dev/zero of="$ZERO_FILE" bs=4M status=none 2>/dev/null || true
+    sync
+    rm -f "$ZERO_FILE"
+    sync
+    # fstrim on top: on cards whose controller honors discard this also
+    # clears the flash translation layer's copies, which dd never sees
+    # but a chip-off reader would. Harmless no-op where unsupported.
+    fstrim / 2>/dev/null || true
+    log "[4c/5] Free space zeroed ($(df -Pm / | awk 'NR==2 {print $4}') MB free again)"
 fi
 
 # ---------------------------------------------------------------------------
