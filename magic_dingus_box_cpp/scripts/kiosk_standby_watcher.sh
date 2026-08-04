@@ -203,8 +203,10 @@ stop_services() {
     # that has crashed. Backgrounded under a hard timeout so a wedged
     # animation can never hold up standby itself: the LEDs are the
     # courtesy, the power saving is the point.
+    local anim_pid=""
     if [[ -x "$SHUTDOWN_ANIM" ]]; then
         ( timeout 6 "$SHUTDOWN_ANIM" >/dev/null 2>&1 || true ) &
+        anim_pid=$!
     fi
 
     for svc in "${COMPANION_SERVICES[@]}"; do
@@ -214,7 +216,20 @@ stop_services() {
         fi
     done
 
-    wait 2>/dev/null || true
+    # Wait for the ANIMATION ONLY, by pid.
+    #
+    # A bare `wait` here deadlocked the box on the first real switch flip.
+    # It waits for every background job of this shell — and gpiomon is one:
+    # monitor_loop feeds the event loop from `< <(gpiomon ...)`, which bash
+    # tracks as a background job. So stop_services sat waiting for the very
+    # process that delivers switch events, forever. The box went to standby
+    # correctly, then never came back and stopped responding to the toggle
+    # entirely, because the watcher never returned to read another event.
+    # Observed on hardware 2026-08-03: watcher blocked in kernel_wait4 with
+    # gpiomon as its only remaining child.
+    if [[ -n "$anim_pid" ]]; then
+        wait "$anim_pid" 2>/dev/null || true
+    fi
     all_leds_off
     log "Standby state — services stopped, Pi idle (~3W)"
 }

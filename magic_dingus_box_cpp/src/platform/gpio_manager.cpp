@@ -226,9 +226,20 @@ void GpioManager::check_restart_button() {
     const bool pressed = (read_line(gpio::RESTART_BTN) == 0);  // active low
     const uint64_t now = get_time_ms();
 
-    // restart_btn_state_.last_state holds "was released".
-    if (pressed == restart_btn_state_.last_state) {
-        return;  // no change since the last debounced edge
+    // restart_btn_state_.last_state holds "was RELEASED" (true at rest).
+    // Compare like against like: the current released-ness against the
+    // remembered released-ness. Equal means nothing happened.
+    //
+    // Getting this backwards is what made the button do nothing at all when
+    // it was first restored: the test was written as `pressed == last_state`,
+    // which is true exactly WHEN the button goes down (pressed=true meets
+    // last_state=true) and false while it sits at rest. So it returned early
+    // on every press and did work on every idle poll — the precise inverse.
+    // Caught on hardware, not by any test; there is no coverage of this
+    // function because it reads a real GPIO line.
+    const bool released_now = !pressed;
+    if (released_now == restart_btn_state_.last_state) {
+        return;  // no edge since the last debounced transition
     }
     if (now - restart_btn_state_.last_change_time < ButtonState::DEBOUNCE_MS) {
         return;
