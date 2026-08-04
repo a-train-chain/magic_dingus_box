@@ -172,6 +172,15 @@ log "[3/4] Starting services back up..."
 # Order matters: Docker stack first (kiosk's Media Browser depends on
 # Radarr being reachable), then content manager, then the kiosk last.
 # reset-failed first so a previously-failed unit can be restarted.
+# The container-runtime daemons first. prepare_for_cloning.sh stops dockerd and
+# containerd outright (not just the compose stack) so neither can rewrite its
+# secret-bearing metadata after the free-space zeroing has run. Nothing below
+# can start without them: magic-dingus-services shells out to `docker compose`.
+systemctl start containerd.service 2>/dev/null || true
+systemctl start docker.socket 2>/dev/null || true
+systemctl start docker.service 2>&1 | sed 's/^/    /' || \
+    log "[3/4] WARN: docker.service failed to start — the stack cannot come up without it"
+
 systemctl reset-failed magic-dingus-services.service 2>/dev/null || true
 systemctl start magic-dingus-services.service 2>&1 | sed 's/^/    /' || \
     log "[3/4] WARN: magic-dingus-services.service failed to start (check docker logs)"

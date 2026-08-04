@@ -181,6 +181,28 @@ if [[ -f "$SERVICES_DIR/docker-compose.yml" ]] && command -v docker &>/dev/null;
     (cd "$SERVICES_DIR" && docker compose down 2>&1 | sed 's/^/    /' || true)
 fi
 
+# Now stop the DAEMONS themselves. Stopping the compose stack leaves dockerd
+# and containerd running, and they keep rewriting their own metadata —
+# /var/lib/docker/containers/*/config.v2.json and containerd's BoltDB at
+# /var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db. Both embed every
+# container's ENVIRONMENT, which for gluetun means WIREGUARD_PRIVATE_KEY in
+# plaintext.
+#
+# Two distinct problems, and this fixes the harder one. The live copies are
+# handled by SECRET_PATHS below. But a daemon that is still running rewrites
+# those files AFTER Step 4c has finished zeroing, freeing old blocks that the
+# fill already passed over — so stale copies of the key land in free space
+# where nothing will ever overwrite them, and dd copies them verbatim.
+# Measured on the 2026-08-04 image: the key appeared 5 times while only 2 live
+# on-SD files contained it.
+#
+# docker.socket must go too, or the next docker command activates dockerd
+# again on demand.
+systemctl stop docker.socket 2>/dev/null || true
+systemctl stop docker.service 2>/dev/null || true
+systemctl stop containerd.service 2>/dev/null || true
+log "[1/5] Docker + containerd daemons stopped (they rewrite secret-bearing metadata)"
+
 log "[1/5] Services stopped"
 
 # ---------------------------------------------------------------------------
@@ -541,6 +563,22 @@ SECRET_PATHS+=(
     "/home/magic/retroarch_launcher.log*"
 )
 
+# Container-runtime metadata. Docker and containerd each keep their own copy
+# of every container's environment, so the WireGuard private key, the *arr API
+# keys and the qBittorrent password all exist a second time outside .env —
+# and nothing in this script has ever looked at /var/lib/docker.
+#
+# Found by scanning the finished artifact, not by reading code: the gate
+# reported `env:WIREGUARD_PRIVATE_KEY appears 5 time(s)` on an image whose
+# .env had been correctly stashed. The scrub strips the credential and the
+# infrastructure ships its own copy alongside.
+#
+# The daemons are stopped above, so these are quiescent and safe to move.
+SECRET_PATHS+=(
+    "/var/lib/docker/containers/*/config.v2.json"
+    "/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db"
+)
+
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray
 # tmdb_api_key.bak on the source Pi was cleaned off the running unit at first
@@ -618,6 +656,30 @@ for src in "${SECRET_PATHS[@]}"; do
 done
 sync
 log "[2c/5] ${stripped} application secret file(s) removed (stash: ${SECRET_STASH})"
+
+# The Wi-Fi profile is named after the network: the file is literally
+# "<SSID>.nmconnection". Stashing it removes the CONTENTS, but a deleted
+# filename lives on in its parent directory's data block, and that block stays
+# ALLOCATED to the directory — so Step 4c's free-space fill can never reach it
+# and the SSID rides into the image inside a dead directory entry.
+#
+# Confirmed on the 2026-08-04 artifact: the PSK was gone (all ten contextual
+# framings scored zero) while the SSID still scored one hit, and the only file
+# on the box containing it was that filename.
+#
+# Deleting the now-empty directory frees the block, so the fill DOES cover it,
+# and recreating it immediately keeps NetworkManager happy. rmdir refuses on a
+# non-empty directory, which is the safety property we want: if anything was
+# left behind, this quietly does nothing rather than destroying a live profile.
+NM_CONN_DIR=/etc/NetworkManager/system-connections
+if [[ -d "$NM_CONN_DIR" ]] && rmdir "$NM_CONN_DIR" 2>/dev/null; then
+    mkdir -p "$NM_CONN_DIR"
+    chmod 700 "$NM_CONN_DIR"
+    chown root:root "$NM_CONN_DIR" 2>/dev/null || true
+    log "[2c/5] Wi-Fi profile directory recreated (its old block held the SSID as a filename)"
+else
+    log "[2c/5] NOTE: ${NM_CONN_DIR} not empty after stashing — SSID may persist as a directory entry"
+fi
 
 # cloud-init's logs are a THIRD copy of the Wi-Fi PSK, after the boot
 # partition and /var/lib/cloud. cloud-init renders the whole netplan dict at
