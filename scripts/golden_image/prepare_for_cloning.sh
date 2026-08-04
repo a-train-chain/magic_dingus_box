@@ -856,11 +856,12 @@ else
     # did exactly that on the source box, and nothing in the script would
     # ever have put it back. The trap makes the restore unconditional.
     ZERO_FILE=/var/tmp/mdb-zerofill.tmp
+    ZERO_TAIL=/var/tmp/mdb-zerofill-tail.tmp
     BOOT_ZERO=/boot/firmware/.mdb-zerofill.tmp
     unwind_zerofill() {
         # Order matters: free the space FIRST, so that whatever comes next
         # (including a human logging in to see what happened) has room.
-        rm -f "$ZERO_FILE" "$BOOT_ZERO" 2>/dev/null || true
+        rm -f "$ZERO_FILE" "$ZERO_TAIL" "$BOOT_ZERO" 2>/dev/null || true
         [[ "${RESERVE_RESTORED:-0}" == "1" ]] || return 0
         RESERVE_RESTORED=0
         tune2fs -r "$RESERVE_BLOCKS" "$ROOT_DEV" >/dev/null 2>&1 \
@@ -901,6 +902,29 @@ else
            status=none 2>/dev/null || true
     fi
     sync
+
+    # STAGE 2 — the tail. A bounded fill leaves its margin's worth of free
+    # extents NEVER WRITTEN, and the allocator decides which ones those are.
+    # Step 2c deletes ~30 MB of secret-bearing files immediately before this
+    # (the *arr databases and their WALs, prowlarr's logs, the container
+    # metadata), and any of those freed blocks that land in the unwritten
+    # remainder ride into the image intact.
+    #
+    # Not hypothetical: with a 256 MB margin the 2026-08-04 image still
+    # carried PROWLARR_API_KEY twice and WIREGUARD_PRIVATE_KEY once, while
+    # every live file containing them had been correctly stashed. The
+    # remnants were in the margin.
+    #
+    # So finish the job with a second, unbounded fill. It runs to ENOSPC and
+    # therefore reaches every remaining free extent. The genuinely-zero-free
+    # window lasts only as long as writing <=256 MB — seconds — instead of
+    # spanning the whole multi-GB fill, which is what made a zero margin
+    # unsafe in the first place. Both files are removed by the trap on any
+    # exit path, and stage 2 is freed first so the box is never left tight.
+    dd if=/dev/zero of="$ZERO_TAIL" bs=1M status=none 2>/dev/null || true
+    sync
+    rm -f "$ZERO_TAIL"
+    sync
     rm -f "$ZERO_FILE"
     sync
     unwind_zerofill
@@ -914,8 +938,9 @@ else
     boot_avail=$(df -Pm /boot/firmware 2>/dev/null | awk 'NR==2 {print $4}')
     if [[ -n "$boot_avail" && "$boot_avail" -gt 8 ]]; then
         log "[4c/5] Zeroing ~$((boot_avail - 4)) MB of boot-partition free space..."
-        dd if=/dev/zero of="$BOOT_ZERO" bs=1M count=$(( boot_avail - 4 )) \
-           status=none 2>/dev/null || true
+        # Unbounded: the FAT boot partition has no daemon writing to it during
+        # a clone, so there is no reason to leave a margin here at all.
+        dd if=/dev/zero of="$BOOT_ZERO" bs=1M status=none 2>/dev/null || true
         sync
         rm -f "$BOOT_ZERO"
         sync
