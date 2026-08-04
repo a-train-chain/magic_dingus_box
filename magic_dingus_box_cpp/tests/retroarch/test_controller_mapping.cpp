@@ -43,8 +43,10 @@ TEST_CASE("N64 games on the legacy N64 adapter use native semantic slots",
         CHECK(map.r_y_plus_btn.empty());
         CHECK(map.r_y_minus_btn.empty());
 
+        // Z (6) held + Start (12) = direct QUIT; menu toggle dropped.
         CHECK(map.enable_hotkey_btn == "6");
-        CHECK(map.menu_toggle_btn == "12");
+        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "12");
     }
 }
 
@@ -95,7 +97,8 @@ TEST_CASE("N64 adapter uses the universal layer-free PS1 layout",
         CHECK(map.l3_btn.empty());
         CHECK(map.r3_btn.empty());
         CHECK(map.enable_hotkey_btn == "6");
-        CHECK(map.menu_toggle_btn == "12");
+        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "12");
 
         for (int player : {1, 2}) {
             INFO("player=" << player);
@@ -149,21 +152,26 @@ TEST_CASE("N64-style controllers use physical Z+Start on every core",
         const auto map =
             get_mapping(ControllerType::N64_ADAPTER, core);
         CHECK(map.enable_hotkey_btn == "6");
-        CHECK(map.menu_toggle_btn == "12");
-        CHECK(map.exit_emulator_btn.empty());
+        CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "12");
     }
 }
 
-TEST_CASE("N64-style hotkeys serialize once as a menu chord, never exit",
+TEST_CASE("N64-style hotkeys serialize as a direct exit chord, no menu",
           "[retroarch][mapping][hotkeys][config]") {
+    // Z (6) held + Start (12) quits the game outright. The menu-toggle
+    // bind is deliberately absent: the owner's verdict after using the
+    // PS-style Select+Start exit was that RetroArch's menu "isn't needed
+    // at all" on the kiosk — auto-save-on-exit already covers what the
+    // menu was for.
     const auto map = get_mapping(
         ControllerType::N64_ADAPTER, "pcsx_rearmed_libretro");
     std::ostringstream out;
     retroarch::write_hotkey_binds(out, map);
     CHECK(out.str() ==
           "input_enable_hotkey_btn = \"6\"\n"
-          "input_menu_toggle_btn = \"12\"\n");
-    CHECK(out.str().find("input_exit_emulator_btn") ==
+          "input_exit_emulator_btn = \"12\"\n");
+    CHECK(out.str().find("input_menu_toggle_btn") ==
           std::string::npos);
 }
 
@@ -204,7 +212,8 @@ TEST_CASE("N64 adapter uses the role-consistent Dreamcast layout",
     CHECK(map.l_y_minus == "-1");
 
     CHECK(map.enable_hotkey_btn == "6");
-    CHECK(map.menu_toggle_btn == "12");
+    CHECK(map.menu_toggle_btn.empty());
+        CHECK(map.exit_emulator_btn == "12");
 
     for (int player : {1, 2}) {
         INFO("player=" << player);

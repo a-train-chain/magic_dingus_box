@@ -227,8 +227,8 @@ TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N6
     REQUIRE(ps1.select_btn == "9");
     REQUIRE(ps1.start_btn == "12");
     REQUIRE(ps1.enable_hotkey_btn == "6");
-    REQUIRE(ps1.menu_toggle_btn == "12");
-    REQUIRE(ps1.exit_emulator_btn.empty());
+    REQUIRE(ps1.menu_toggle_btn.empty());
+    REQUIRE(ps1.exit_emulator_btn == "12");
 
     const auto dreamcast =
         resolve_mapping_for_pad(kUnknownVid, kUnknownPid, store, "flycast_libretro");
@@ -240,7 +240,8 @@ TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N6
     REQUIRE(dreamcast.r2_btn == "5");
     REQUIRE(dreamcast.start_btn == "12");
     REQUIRE(dreamcast.enable_hotkey_btn == "6");
-    REQUIRE(dreamcast.menu_toggle_btn == "12");
+    REQUIRE(dreamcast.menu_toggle_btn.empty());
+    REQUIRE(dreamcast.exit_emulator_btn == "12");
 
     for (const auto& core : {"mupen64plus_next_libretro",
                              "parallel_n64_libretro"}) {
@@ -266,7 +267,8 @@ TEST_CASE("a saved 2563:0575 wizard profile drives kiosk, PS1, Dreamcast, and N6
         CHECK(n64.r_y_plus_btn.empty());
         CHECK(n64.r_y_minus_btn.empty());
         CHECK(n64.enable_hotkey_btn == "6");
-        CHECK(n64.menu_toggle_btn == "12");
+        CHECK(n64.menu_toggle_btn.empty());
+        CHECK(n64.exit_emulator_btn == "12");
 
         CHECK(n64.up_btn == "h0up");
         CHECK(n64.down_btn == "h0down");

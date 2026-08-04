@@ -15,12 +15,17 @@ using L = LogicalControl;
 // builtin_n64_adapter_profile(); see controller_profile.cpp for that
 // adapter's physical button IDs and hardware evidence.
 //
-// Z trigger + Start is the universal N64-style hotkey combo for every core
-// mapping, including PS1.
+// Hold Z trigger + press Start = QUIT the game, directly, on every core
+// mapping including PS1 — the N64-style twin of the PS-style Select+Start
+// exit below, requested by the owner after using the PS version: the
+// RetroArch menu "isn't needed at all" on a kiosk (auto-save-on-exit is
+// on). Bound from PHYSICAL controls so no per-core RetroPad slot layout
+// can move the gesture. The old menu_toggle bind sat on the same Start
+// press and is dropped for the same reason as on the PS side.
 SemanticMapping semantic_n64_style(const std::string& core) {
     SemanticMapping s;
     s.hotkey_enable = L::N64_Z;
-    s.menu_toggle = L::N64_START;
+    s.exit_emulator = L::N64_START;
     auto stick = [&] {
         s.stick_up = L::N64_STICK_UP; s.stick_down = L::N64_STICK_DOWN;
         s.stick_left = L::N64_STICK_LEFT; s.stick_right = L::N64_STICK_RIGHT;

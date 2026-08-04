@@ -240,7 +240,7 @@ See `magic_dingus_box_cpp/docs/PLAYLIST_FORMAT.md` for full schema reference.
 
 ### In RetroArch
 - Per-core button mappings live in `controller_mapping.cpp` (semantic tables) combined with a pad's `PhysicalProfile`; player 1 and player 2 resolve independently from whichever pad is on each port
-- **Z + Start**: Toggle RetroArch menu (hotkey combo for all cores)
+- **Exit a game — direct quit, no RetroArch menu** (owner decision 2026-08-03; the RA menu "isn't needed at all" on a kiosk): N64-style pads = hold **Z + press Start**; PS-style pads = hold **Select + press Start**. Bound from PHYSICAL controls in the style preambles (`SemanticMapping::exit_emulator`) so per-core RetroPad slot remaps can never move the gesture — the mupen table repurposes the select SLOT for N64 L, which is exactly how the old start+select combo silently became Start+L1 in N64 games. RetroArch honors these hotkeys from the PLAYER 1 pad only (accepted limitation with two pads). Auto-save-on-exit makes direct quit safe.
 - Auto-save state on exit, auto-load on start
 
 ## RetroArch Cores
