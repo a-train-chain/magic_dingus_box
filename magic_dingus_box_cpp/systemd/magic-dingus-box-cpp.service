@@ -25,8 +25,22 @@ Conflicts=lightdm.service
 # Restart-rate limiting (these belong in [Unit], not [Service] — systemd
 # accepts them in [Service] silently in some versions but logs an
 # "Unknown key" warning on every daemon-reload).
-StartLimitIntervalSec=300
-StartLimitBurst=5
+#
+# TURNED OFF DELIBERATELY: StartLimitIntervalSec=0 disables the limiter.
+# It previously allowed 5 starts per 300s and then gave up permanently.
+# The failure that exposed this is the most ordinary thing a customer
+# does — plug in HDMI and power, THEN go hunting for the right TV input.
+# With no display answering, DRM init fails and main() exits 1; five
+# attempts 5s apart later, systemd stops trying for good. By the time the
+# TV is on, the box is dead until the plug is pulled, showing nothing but
+# the boot LED chase running forever (the kiosk never reaches the line
+# that stops it).
+#
+# Retrying indefinitely is right for an appliance whose display can
+# legitimately be absent for minutes. A truly broken box now retries
+# visibly instead of dying silently, and the moment the TV comes on the
+# next attempt succeeds and the chase stops.
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify

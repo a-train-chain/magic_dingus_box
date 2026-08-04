@@ -540,6 +540,28 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo systemctl daemon-reload
     sudo systemctl enable magic-dingus-library-import.service
     echo "Library-import-on-mount service installed + enabled."
+
+    # Run it NOW, once, in addition to arming it for future mounts.
+    #
+    # Mount-triggered alone has a hole that every new unit falls into.
+    # The import unit carries ConditionPathExists=<services/.env>, and the
+    # drive mounts during boot — long before a customer has provisioned
+    # their VPN, which is what creates that .env. So the condition fails,
+    # the import is skipped, and no further mount event ever occurs
+    # because the drive is already mounted. The result is a customer who
+    # finishes setup, opens Movies, and finds an empty Library despite a
+    # drive full of films — until they happen to reboot.
+    #
+    # This script IS the provisioning step, so by the time we reach here
+    # the .env exists and the condition passes. --no-block because
+    # scanning a large drive should not hold up the setup progress the
+    # Content Manager is streaming to the operator.
+    if mountpoint -q /mnt/ssd 2>/dev/null; then
+        sudo systemctl --no-block start magic-dingus-library-import.service
+        echo "Library import started for the already-mounted movie drive."
+    else
+        echo "No movie drive mounted; import will run when one is attached."
+    fi
 else
     echo "Note: auto-blocklist assets not found, skipping install."
 fi

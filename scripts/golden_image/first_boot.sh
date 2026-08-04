@@ -623,6 +623,46 @@ for d in "${DATA_DIR}/saves" "${DATA_DIR}/states"; do
     fi
 done
 
+# RetroArch keeps a SECOND set of personal state in the user's own config
+# directory, which the data/ wipe above never touched. Found on the source
+# box 2026-08-03: a Tomorrow Never Dies save, four content-history lists
+# naming the games the operator had played, and three Dreamcast memory
+# cards. All of it would have shipped on every unit.
+#
+# Surgical by necessity — system/ holds the PS1 BIOS (scph5501.bin) and the
+# N64 core data, which MUST survive, right beside the Dreamcast VMU files
+# which must not. Delete by exact pattern, never by directory.
+#
+# dc_nvmem.bin is deliberately KEPT: it is the Dreamcast's own NVRAM
+# (console date and language), not game progress, and removing it makes
+# flycast open its date-setting screen on a customer's first launch.
+RA_DIR="${MAGIC_HOME}/.config/retroarch"
+if [[ -d "$RA_DIR" ]]; then
+    log "[6/7] Wiping RetroArch personal state (history, saves, memory cards)..."
+
+    # Recently-played lists — these name titles, nothing else.
+    rm -f "$RA_DIR"/content_history.lpl \
+          "$RA_DIR"/content_image_history.lpl \
+          "$RA_DIR"/content_music_history.lpl \
+          "$RA_DIR"/content_video_history.lpl 2>/dev/null || true
+
+    # Battery saves + save states living under the config dir (the other
+    # copy, under data/, was wiped earlier in this step).
+    for d in "$RA_DIR/saves" "$RA_DIR/states" "$RA_DIR/screenshots" "$RA_DIR/records"; do
+        [[ -d "$d" ]] || continue
+        find "$d" -mindepth 1 -delete 2>/dev/null || true
+    done
+
+    # Dreamcast memory cards. A cleared card makes flycast offer to format
+    # on first use, which is correct for a new unit.
+    rm -f "$RA_DIR"/system/dc/vmu_save_*.bin 2>/dev/null || true
+
+    # RetroArch's own logs — a record of what the operator launched.
+    [[ -d "$RA_DIR/logs" ]] && { find "$RA_DIR/logs" -mindepth 1 -delete 2>/dev/null || true; }
+
+    log "[6/7] RetroArch personal state cleared (BIOS + core configs kept)"
+fi
+
 # NOTE on data/media: deliberately PRESERVED — uploaded videos and playlist
 # content are the shipped product, same as ROMs, cores, and thumbnails.
 
