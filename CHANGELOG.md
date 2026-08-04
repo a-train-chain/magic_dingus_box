@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-08-04
+
+Golden-image release. Everything accumulated since 1.7.2 is folded in here —
+the 1.8.x and 1.9.0-1.9.2 tags shipped without their own changelog sections,
+so this entry is cumulative rather than a delta on 1.9.2.
+
+### Added
+- **USB-C gadget mode actually works.** Every piece was already present and
+  shipping (dwc2 peripheral overlay, gadget modules, `usb0`, dnsmasq DHCP)
+  but nothing ever installed the one unit that gives `usb0` an address, so
+  the documented "plug in a cable and reach the box" flow had never worked on
+  any unit. Now installed and enabled by default. Measured on hardware:
+  ~33 MB/s over the cable versus ~8 MB/s over Wi-Fi.
+- **Front-panel harness**: standby switch (kiosk standby, ~10s wake), restart
+  button (restarts the kiosk service, not the machine), LED sweep on the way
+  down and a chase on the way up so both controls acknowledge the flip.
+- **Direct game exit from either pad** — hold Select+Start (PS-style) or
+  Z+Start (N64-style). The RetroArch menu is now unreachable from a
+  controller by design; auto-save-on-exit covers what it was for.
+- **The two recommended controllers' profiles are compiled into the binary**,
+  so they survive a Settings reset and cannot be lost.
+
+### Fixed
+- **TV off at boot no longer bricks the unit.** Plugging in power before
+  turning the TV on made systemd give up after five tries, ~25s in, leaving a
+  dead box until it was power-cycled.
+- **Game saves survive both physical controls.** Standby and restart each
+  killed the emulator mid-save; both now let it exit and write first.
+- A stuck download throttle could never self-heal (the recovery ran before
+  qBittorrent was up, so it had never once succeeded).
+- New units showed an empty movie library until a reboot.
+- Game exit eases back into the menu — no settings-panel flash, and the bezel
+  fades in with everything else.
+- Kiosk shutdown went from ~5.0s to ~0.45s; every stop had been ending in a
+  SIGKILL timeout.
+
+### Security
+- **The operator's Wi-Fi password no longer ships.** It existed in four
+  places on the card — the boot partition, cloud-init's cache, cloud-init's
+  logs, and the journal — of which only the first was ever scrubbed. All four
+  are now removed, and the clone **aborts** if any credential-bearing file
+  survives the scrub.
+- Watch history, game saves, browse filters, paired phones and RetroArch play
+  history are wiped on every new unit.
+
+
 ### Added (Media Browser)
 - **"For You" tab** — personalized recommendations seeded from the Radarr
   library: up to 8 random library titles fan out to TMDB's recommendations
