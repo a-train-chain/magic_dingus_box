@@ -237,6 +237,33 @@ stop_services() {
 start_services() {
     log "Switch ON detected — starting kiosk + companion services"
 
+    # Light the LEDs FIRST, before anything slow, so the flip is acknowledged
+    # the instant it happens. Standby leaves them dark and the screen stays
+    # black for 10-15s while the kiosk comes up, so without this the owner
+    # gets no sign the switch did anything and reasonably concludes the box
+    # is dead. The OFF flip already answers with the shutdown sweep; this is
+    # its counterpart, and it makes the pair symmetric: sweep down to sleep,
+    # chase up to wake.
+    #
+    # Reuses the cold-boot chase rather than inventing a wake animation, so
+    # waking looks exactly like booting — which is what it is, from the
+    # owner's side. Nothing new has to stop it either: the kiosk kills this
+    # unit as soon as it has the LED lines (main.cpp's stop_boot_led_sequence,
+    # called unconditionally), then plays its own intro dance. If the kiosk
+    # never comes up, the chase simply keeps running, which is a fair signal
+    # that something is wrong rather than a silent black box.
+    # ONLY on a genuine wake — i.e. when the kiosk is actually down. The chase
+    # is stopped by the kiosk during ITS startup, so if the kiosk is already
+    # running, `systemctl start` below is a no-op, nothing ever reclaims the
+    # LED lines, and they chase forever with the box sitting at the menu.
+    # That is not hypothetical: reconcile_initial_state calls this function on
+    # every watcher restart, which happens on every deploy — caught exactly
+    # that way while verifying this change.
+    if ! systemctl is-active --quiet "$KIOSK_SERVICE"; then
+        systemctl start led-boot-sequence.service 2>/dev/null || \
+            log "WARN: could not start the wake LED chase (harness may be absent)"
+    fi
+
     # Wake order is deliberately NOT the dependency order. The kiosk goes
     # first because it is the only part the owner can see; the Docker
     # stack needs 20-40s to bring six containers and a VPN tunnel back,
