@@ -346,3 +346,14 @@ you'd rather have a raw `.img` file (some flashing tools require it).
         │
         └──► Or via dd: gunzip < golden_image.img.gz | sudo dd of=/dev/diskN bs=4M
 ```
+
+**Never apply Imager's OS customisation (the gear icon) to a golden
+image.** It writes the operator's own Wi-Fi SSID and PSK, and often an
+SSH key and username, into the boot partition of every card flashed —
+undoing the entire credential scrub `prepare_for_cloning.sh` performs
+and shipping your home network's password inside each unit sold. Imager
+remembers saved settings between runs and offers to reapply them, so
+this is a "click Yes once by reflex" failure, not a deliberate one:
+answer **NO** to "Would you like to apply OS customisation settings?".
+Customers join Wi-Fi from the kiosk's own Settings screen; a golden card
+must ship with no network configured.

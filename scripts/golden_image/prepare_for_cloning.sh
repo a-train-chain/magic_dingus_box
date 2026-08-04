@@ -673,16 +673,40 @@ fi
 if [[ "${MDB_SKIP_ZEROFILL:-0}" == "1" ]]; then
     log "[4c/5] Free-space zeroing SKIPPED (MDB_SKIP_ZEROFILL=1) — do not ship this image"
 else
+    # ext4 RESERVES blocks for root — 5% by default, 2.6 GB on this card —
+    # and `df` does not count them as available. Filling only to df's number
+    # therefore leaves that whole reserve holding whatever was deleted from
+    # it, and dd copies those blocks verbatim.
+    #
+    # This is not theoretical: the 2026-08-04 image shipped a deleted
+    # cloud-init.log fragment containing
+    #   'access-points': {'<SSID>': {'password': '<PSK>'}}
+    # sitting in reserved space, found by grepping the finished artifact.
+    # The ORIGINAL code ran dd to ENOSPC, which as root does consume the
+    # reserve and would have caught it; a later "leave a 64 MB margin"
+    # change replaced that with a bounded count and silently reintroduced
+    # the leak. Hence: drop the reserve, fill, restore the reserve.
+    ROOT_DEV=$(findmnt -no SOURCE /)
+    # Restore by exact BLOCK COUNT, not a rounded percentage: this card's
+    # reserve is 631957 of 15458816 blocks = 4.088%, which rounds to 4 and
+    # would quietly shrink the reserve on every clone.
+    RESERVE_BLOCKS=$(tune2fs -l "$ROOT_DEV" 2>/dev/null \
+        | awk -F: '/^Reserved block count/{gsub(/ /,"",$2); print $2}')
+    RESERVE_RESTORED=0
+    if [[ -n "$RESERVE_BLOCKS" ]] && tune2fs -r 0 "$ROOT_DEV" >/dev/null 2>&1; then
+        RESERVE_RESTORED=1
+    else
+        log "[4c/5] WARNING: could not drop the ext4 root reserve on ${ROOT_DEV}."
+        log "         ~$(( ${RESERVE_BLOCKS:-0} * 4 / 1024 )) MB of free space will NOT be"
+        log "         zeroed and may carry deleted-file remnants into the image."
+    fi
+
     avail_mb=$(df -Pm / | awk 'NR==2 {print $4}')
-    log "[4c/5] Zeroing ~${avail_mb} MB of free space (10-20 min on SD; makes the image much smaller)..."
-    # Leave a 64 MB margin so the root filesystem never actually hits 0
-    # free — a genuinely full root can wedge journald and systemd while
-    # we still need them to finish the clone.
-    # The margin has to be an explicit COUNT. Letting dd run until ENOSPC —
-    # which is what this did originally, making the 64 MB above a comment
-    # describing something the code never did — takes the root filesystem to
-    # genuinely zero free, and journald, systemd and the rest of this script
-    # still need to write while the clone finishes.
+    log "[4c/5] Zeroing ~${avail_mb} MB of free space incl. the ${RESERVE_PCT}% root reserve (10-20 min on SD)..."
+
+    # Keep a small margin so the filesystem never actually hits zero free —
+    # journald, systemd and the rest of this script still need to write while
+    # the clone runs.
     ZERO_FILE=/var/tmp/mdb-zerofill.tmp
     zero_mb=$(( avail_mb > 64 ? avail_mb - 64 : 0 ))
     if [[ "$zero_mb" -gt 0 ]]; then
@@ -692,6 +716,26 @@ else
     sync
     rm -f "$ZERO_FILE"
     sync
+    if [[ "$RESERVE_RESTORED" == "1" ]]; then
+        tune2fs -r "$RESERVE_BLOCKS" "$ROOT_DEV" >/dev/null 2>&1 \
+            || log "[4c/5] WARNING: failed to restore the ${RESERVE_BLOCKS}-block root reserve"
+    fi
+
+    # The FAT boot partition has its own free space and was never zeroed at
+    # all. Step 2b overwrites the NAMED cloud-init files there, but FAT
+    # rewrites a file to fresh clusters rather than in place, so earlier
+    # copies persist as unlinked remnants — three fragments of network-config
+    # naming the operator's SSID were found in the shipped image at ~20 MB.
+    BOOT_ZERO=/boot/firmware/.mdb-zerofill.tmp
+    boot_avail=$(df -Pm /boot/firmware 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$boot_avail" && "$boot_avail" -gt 8 ]]; then
+        log "[4c/5] Zeroing ~$((boot_avail - 4)) MB of boot-partition free space..."
+        dd if=/dev/zero of="$BOOT_ZERO" bs=1M count=$(( boot_avail - 4 )) \
+           status=none 2>/dev/null || true
+        sync
+        rm -f "$BOOT_ZERO"
+        sync
+    fi
     # fstrim on top: on cards whose controller honors discard this also
     # clears the flash translation layer's copies, which dd never sees
     # but a chip-off reader would. Harmless no-op where unsupported.
