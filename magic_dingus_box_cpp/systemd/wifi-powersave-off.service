@@ -1,0 +1,10 @@
+[Unit]
+Description=Disable WiFi power save (keeps the kiosk reachable on the bench)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/iw wlan0 set power_save off
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

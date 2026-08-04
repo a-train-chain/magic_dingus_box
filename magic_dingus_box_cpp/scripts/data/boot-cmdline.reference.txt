@@ -1,0 +1,1 @@
+console=serial0,115200 console=tty1 root=PARTUUID=a7a5fa7d-02 rootfstype=ext4 fsck.repair=yes rootwait modules-load=dwc2,g_ether quiet plymouth.ignore-serial-consoles ds=nocloud;i=rpi-imager-1784747040393-usb2 cfg80211.ieee80211_regdom=US logo.nologo vt.global_cursor_default=0 loglevel=3 plymouth.enable=0

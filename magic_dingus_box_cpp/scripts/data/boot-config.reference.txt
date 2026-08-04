@@ -1,0 +1,129 @@
+# For more options and information see
+# http://rptl.io/configtxt
+# Some settings may impact device functionality. See link above for details
+
+# Uncomment some or all of these to enable the optional hardware interfaces
+#dtparam=i2c_arm=on
+#dtparam=i2s=on
+#dtparam=spi=on
+
+# Enable audio (loads snd_bcm2835)
+dtparam=audio=on
+
+# Additional overlays and parameters are documented
+# /boot/firmware/overlays/README
+
+# Automatically load overlays for detected cameras
+camera_auto_detect=1
+
+# Automatically load overlays for detected DSI displays
+display_auto_detect=1
+
+# Automatically load initramfs files, if found
+auto_initramfs=1
+
+# Enable DRM VC4 V3D driver
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
+# Don't have the firmware create an initial video= setting in cmdline.txt.
+# Use the kernel's default instead.
+disable_fw_kms_setup=1
+
+# Run in 64-bit mode
+arm_64bit=1
+
+# Disable compensation for displays with overscan
+disable_overscan=1
+
+# Run as fast as firmware / board allows
+arm_boost=1
+
+[cm4]
+# Enable host mode on the 2711 built-in XHCI USB controller.
+# This line should be removed if the legacy DWC2 controller is required
+# (e.g. for USB device mode) or if USB support is not required.
+otg_mode=1
+
+[cm5]
+dtoverlay=dwc2,dr_mode=host
+
+[pi5]
+dtoverlay=nospi10
+
+[all]
+# MDB bench: USB-C gadget mode so the Mac can reach this Pi over the
+# power cable (no Ethernet/Wi-Fi needed). Pairs with modules-load=
+# dwc2,g_ether in cmdline.txt and the usb0 static IP in network-config.
+dtoverlay=dwc2,dr_mode=peripheral
+dtoverlay=rotary-encoder,pin_a=17,pin_b=27,relative_axis=1,steps-per-period=2
+disable_splash=1
+
+[pi5]
+# Emulation headroom overclock -- VALIDATED 2026-07-26 IN THE SHIPPING
+# ENCLOSURE with the official Active Cooler (not an open bench).
+#
+# N64 (dynarec) and Dreamcast (SH4 recompiler) are CPU-bound, so clock
+# converts ~linearly into emulation speed. Measured:
+#   2800 + over_voltage_delta=50000  -> FAILED: 85C, thermally throttled,
+#                                       clock sagged 2800->2601 in 4 min.
+#                                       The OVERVOLT was the problem, not
+#                                       the clock (power ~ V^2*f).
+#   2600 @ stock voltage             -> PASS. stress-ng all-4-core worst
+#                                       case: peak 80.1C, NEVER throttled,
+#                                       held 2600 MHz. Real PS1 emulation:
+#                                       peak 63.1C, steady 59.3C, 22C below
+#                                       the 85C throttle point.
+#
+# Requires the Active Cooler. Re-validate on the first production units --
+# silicon varies board to board. Revert: config.txt.bak-preoverclock
+# arm_freq=2600 REMOVED for v1 shipping (2026-07-27).
+#
+# 2600MHz was validated on exactly ONE board — this one. Silicon lottery
+# means another Pi 5 can fail to boot, or boot and corrupt under load, and a
+# golden image that does not boot on the customer's board is unrecoverable
+# without reflashing. The measured win was ~8% and only on N64/Dreamcast;
+# every other workload on this box is I/O or decode bound, not clock bound.
+#
+# Stock for a Pi 5 is 2400MHz, which the firmware selects on its own with no
+# line here. If per-unit overclocking is wanted later, it belongs behind a
+# first-boot stability probe that can fall back, not as a hard default baked
+# into every image.
+# arm_freq=2600
+v3d_freq=1000
+
+[pi5]
+# 4 KB memory pages (2026-07-28). The Pi 5 default kernel_2712.img uses 16 KB
+# pages; kernel8.img is the same Debian kernel built for 4 KB. Both images and
+# both module trees ship in the stock image, so this is a supported switch.
+#
+# REQUIRED FOR DREAMCAST. flycast hardcodes a 4096-byte page size on
+# Linux/aarch64 (core/stdclass.h gives a runtime page size to Android and a
+# 16384 constant to Apple silicon; every other platform falls through to
+# `#define PAGE_SIZE 4096`). Its virtmem::region_unlock() therefore rounds an
+# address down to a 4 KB boundary and calls mprotect(), which returns EINVAL
+# on a 16 KB-page kernel -- flycast treats that as fatal and hits a
+# DEBUGBREAK. Result: every Dreamcast launch died ~4s in, 100% reproducible.
+# Verified with a standalone mprotect repro on this board (errno 22) and by
+# disassembling region_unlock (`and x0, x0, #~0xfff`).
+#
+# Rebuilding flycast does NOT fix it -- the 4096 is selected by platform
+# macros at compile time, not from the host page size.
+#
+# Validated on this board after the switch: emulator_smoke_test 9/9 clean
+# (all ten cores incl. flycast), 30s boot, no failed units.
+# Revert: /boot/firmware/config.txt.bak-pre4kpage
+kernel=kernel8.img
+
+[pi4]
+# One golden image serves Pi 4B and Pi 5. Everything above under [pi5]
+# (v3d_freq, kernel=kernel8.img) is skipped on a Pi 4; this section is
+# the Pi 4 side. gpu_mem=76 is the firmware-recommended floor for the
+# KMS/V3D stack (the long-shipped Pi 4 golden-image value; Pi 5 ignores
+# gpu_mem entirely, so it lives here rather than [all] for clarity).
+# The Pi 4 auto-selects its own 4 KB-page kernel8.img — no kernel= line
+# needed. The kiosk detects the board at runtime (PlatformProfile) and
+# hides Pi 5-only systems; first_boot.sh prunes their ROMs on Pi 4.
+gpu_mem=76
+
+[all]

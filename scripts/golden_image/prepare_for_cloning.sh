@@ -363,6 +363,28 @@ SECRET_PATHS=(
     # this entry keeps them out of the .img.gz artifact itself.
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/media_browser.db*"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/media_browser.db*"
+    # cloud-init's cache on the ROOT filesystem. This is the SAME secrets
+    # Step 2b strips from the FAT boot partition, kept a second time on ext4
+    # where Step 2b never looked — and /dev/mmcblk0p2 is inside the dd just
+    # as much as p1 is. Measured on this box before the fix: 9 user-data /
+    # network-config files across three instance directories, of which 2
+    # network-config.json carry a Wi-Fi `password` field and 6 user-data
+    # carry `ssh_authorized_keys` and the account `passwd` hash. 508 KB
+    # total, and every byte of it ships.
+    #
+    # obj.pkl is in scope and easy to miss: it is the pickled DataSource
+    # object, which holds the same user-data inside a binary blob that no
+    # grep for "password" would necessarily surface.
+    #
+    # Wiping the whole per-instance cache is also the RIGHT state for a new
+    # unit — it should inherit no instance identity, no completed-module
+    # markers, and no seed. Safe for the source Pi: `magic`'s passwordless
+    # sudo comes from /etc/sudoers.d/90-cloud-init-users and the account
+    # itself from /etc/passwd, neither of which lives here (checked before
+    # writing this), and restore_after_cloning.sh puts the cache back before
+    # anything reboots.
+    "/var/lib/cloud/instances/**"
+    "/var/lib/cloud/seed/**"
     # The operator's Wi-Fi profile — carries the home network PSK in
     # plaintext (psk= line, root-readable but faithfully dd'd). first_boot.sh
     # Step 6c wipes it on the clone; this keeps it out of the artifact.
@@ -469,6 +491,38 @@ for src in "${SECRET_PATHS[@]}"; do
 done
 sync
 log "[2c/5] ${stripped} application secret file(s) removed (stash: ${SECRET_STASH})"
+
+# POST-CONDITION: prove the credential-bearing classes are actually gone
+# before we hand the card to dd. Every entry in SECRET_PATHS above is a
+# pattern someone wrote by hand, and the way this script has failed twice is
+# a pattern that quietly matched nothing — the Backups/ zips, then the whole
+# cloud-init cache on the root partition. A list that silently covers less
+# than it claims is the failure mode, so assert the OUTCOME rather than
+# trusting the list.
+#
+# ABORTS the clone rather than warning: shipping the operator's home Wi-Fi
+# password and account hash on every unit is not something to discover from
+# a log line nobody read.
+leak_found=0
+for pat in \
+    '/var/lib/cloud -name user-data*' \
+    '/var/lib/cloud -name network-config*' \
+    '/var/lib/cloud -name obj.pkl' \
+    '/etc/NetworkManager/system-connections -name *.nmconnection' \
+    '/opt/magic_dingus_box/services -name .env'; do
+    # shellcheck disable=SC2086  # deliberate: $pat carries find's own args
+    n=$(find $pat -type f 2>/dev/null | wc -l)
+    if [[ "$n" -gt 0 ]]; then
+        log "ERROR: post-scrub leak check FAILED — ${n} file(s) still match: ${pat}"
+        leak_found=$((leak_found + 1))
+    fi
+done
+if [[ "$leak_found" -gt 0 ]]; then
+    log "ERROR: refusing to continue. The image would ship operator credentials."
+    log "       Run restore_after_cloning.sh to put the Pi back, then fix SECRET_PATHS."
+    exit 1
+fi
+log "[2c/5] post-scrub leak check clean (no cloud-init, Wi-Fi or .env credentials remain)"
 
 # ---------------------------------------------------------------------------
 # Step 3: Re-enable magic-first-boot.service
