@@ -4544,6 +4544,32 @@ int main(int /* argc */, char* /* argv */[]) {
     if (g_shutdown_requested) {
         LOG_INFO("Shutdown requested by signal (systemctl stop / SIGTERM)");
     }
+
+#ifdef MEDIA_BROWSER_ENABLED
+    // FOURTH watch-state flush site. The other three cover deliberate
+    // in-UI exits from Playback; this one covers the process being told
+    // to stop while a movie or episode is still on screen.
+    //
+    // It stopped being an edge case on 2026-08-03, when the front panel
+    // gained a standby switch and a restart button: both stop this
+    // service via SIGTERM, so "flip to standby partway through an
+    // episode" is now an ordinary thing an owner does, many times a day.
+    // Without this, the resume point falls back to the last 30-second
+    // checkpoint and the box appears to forget where you were.
+    //
+    // Ordering is the same contract the other three sites document: this
+    // MUST run before the cleanup below, because player.cleanup() stops
+    // the pipeline and zeroes position — flushing after it would write
+    // (0, 0) over a real resume point. flush_watch_state itself no-ops
+    // when nothing is playing or the position reads 0, so the menu-idle
+    // case costs one function call.
+    if (state.current_screen == app::AppScreen::MediaBrowser &&
+        current_mb_screen == media_browser::ui::Screen::Playback) {
+        flush_watch_state(mb_playback, watch_store, state);
+        LOG_INFO("Flushed watch position before shutdown");
+    }
+#endif
+
     LOG_INFO("Shutting down...");
     ui_renderer.cleanup();
     gst_renderer.cleanup();

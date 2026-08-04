@@ -110,13 +110,20 @@ bool GpioManager::initialize() {
         return false;
     }
     
-    // Add all input GPIOs. Deliberately absent: GPIO 3 (power switch,
-    // owned by kiosk-standby-watcher) and GPIO 24 (restart button, owned
-    // by the kernel's gpio-keys driver via the gpio-key overlay).
-    // Claiming a kernel-owned line fails this ENTIRE bulk request and
-    // kills every button and LED — observed live 2026-08-03 with GPIO 24.
+    // Add all input GPIOs. GPIO 3 is deliberately absent — the power
+    // switch belongs to kiosk-standby-watcher.service, which needs it
+    // while this process is STOPPED, so the kiosk must never hold it.
+    //
+    // This is ONE bulk request: if any single line here is already owned
+    // by a kernel driver (a device-tree overlay claiming it), the whole
+    // request fails and every button, the encoder switch, and all four
+    // LEDs go dead at once, with one terse error line to explain it.
+    // That happened on 2026-08-03 when a gpio-key overlay was put on
+    // GPIO 24. Before adding a pin here, confirm no overlay claims it:
+    //   ls /proc/device-tree/ | grep -i button    # should not list it
     unsigned int input_offsets[] = {
         gpio::ENCODER_SW,
+        gpio::RESTART_BTN,
         gpio::BTN1_SW, gpio::BTN2_SW, gpio::BTN3_SW, gpio::BTN4_SW
     };
     size_t num_inputs = sizeof(input_offsets) / sizeof(input_offsets[0]);
@@ -201,9 +208,9 @@ bool GpioManager::initialize() {
     available_ = true;
     std::cout << "  GPIO initialized successfully" << std::endl;
     std::cout << "    Inputs: Encoder switch (SW=" << gpio::ENCODER_SW << ")" << std::endl;
-    std::cout << "    Inputs: Buttons (5, 6, 13, 19)" << std::endl;
+    std::cout << "    Inputs: Buttons (5, 6, 13, 19), Restart Button (" << gpio::RESTART_BTN << ")" << std::endl;
     std::cout << "    Outputs: LEDs (12, 16, 26, 20)" << std::endl;
-    std::cout << "    Power: GPIO3 (kiosk-standby-watcher), Restart: GPIO24 (gpio-key overlay)" << std::endl;
+    std::cout << "    Power: GPIO3 (owned by kiosk-standby-watcher.service)" << std::endl;
     
     return true;
 }
@@ -215,14 +222,53 @@ int GpioManager::read_line(int gpio) {
     return (value == GPIOD_LINE_VALUE_ACTIVE) ? 1 : 0;
 }
 
+void GpioManager::check_restart_button() {
+    const bool pressed = (read_line(gpio::RESTART_BTN) == 0);  // active low
+    const uint64_t now = get_time_ms();
+
+    // restart_btn_state_.last_state holds "was released".
+    if (pressed == restart_btn_state_.last_state) {
+        return;  // no change since the last debounced edge
+    }
+    if (now - restart_btn_state_.last_change_time < ButtonState::DEBOUNCE_MS) {
+        return;
+    }
+    restart_btn_state_.last_state = !pressed;
+    restart_btn_state_.last_change_time = now;
+
+    if (!pressed) {
+        return;  // act on press, never on release
+    }
+
+    // The LED sweep is the whole point of doing this before the restart:
+    // without it the screen simply goes black and the box looks like it
+    // died. It runs ~2s on this thread, which is fine — we are about to
+    // be SIGTERMed anyway and nothing else needs the frame budget.
+    std::cout << "  Restart button pressed — playing shutdown animation..." << std::endl;
+    play_shutdown_animation();
+
+    // --no-block rather than a trailing '&': systemd queues the job and
+    // returns immediately, with no orphaned shell left behind to be
+    // reparented when this process dies half a second later.
+    //
+    // The restart delivers SIGTERM, which main.cpp handles — it flushes
+    // the watch position and runs the clean GL/DRM teardown, so pressing
+    // this mid-episode keeps your place.
+    std::cout << "  Restarting kiosk service..." << std::endl;
+    std::system("sudo systemctl --no-block restart magic-dingus-box-cpp.service");
+}
+
 std::vector<InputEvent> GpioManager::poll() {
     std::vector<InputEvent> events;
-    
+
     if (!available_) {
         return events;
     }
-    
+
     uint64_t now = get_time_ms();
+
+    // Restart button (GPIO 24)
+    check_restart_button();
 
     // ----- Rotary Encoder -----
     // Handled by kernel overlay (rotary-encoder) + libevdev in InputManager
@@ -508,6 +554,7 @@ void GpioManager::set_all_leds(bool /*on*/) {}
 void GpioManager::cleanup() { available_ = false; }
 uint64_t GpioManager::get_time_ms() const { return 0; }
 int GpioManager::read_line(int /*gpio*/) { return 1; }
+void GpioManager::check_restart_button() {}
 void GpioManager::stop_boot_led_sequence() {}
 void GpioManager::update_intro_animation(uint64_t /*elapsed_ms*/) {}
 void GpioManager::play_shutdown_animation() {}

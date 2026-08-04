@@ -24,15 +24,21 @@ namespace gpio {
     constexpr int ENCODER_DT = 27;     // Quadrature signal B
     constexpr int ENCODER_SW = 22;     // Push button
     
-    // Restart button (GPIO 24) is deliberately NOT claimed here. The
-    // gpio-key device-tree overlay (setup_harness_services.sh) hands the
-    // pin to the kernel's gpio-keys driver, which emits KEY_RESTART and
-    // systemd-logind performs a clean full reboot — working even when
-    // this process is hung or dead, which is when a physical restart
-    // control matters. Requesting the line here fails the whole bulk
-    // input request (the kernel owns it) and takes every button and LED
-    // down with it — observed live 2026-08-03. The old in-app
-    // "restart app service" behavior is retired with it.
+    // Restart button — restarts the KIOSK SERVICE, not the machine.
+    // Press -> LED shutdown sweep -> `systemctl restart` -> intro video ->
+    // main menu, about ten seconds. A full OS reboot was tried on
+    // 2026-08-03 (gpio-key overlay -> KEY_RESTART -> logind) and rejected
+    // on the hardware: it is a 90-second cold boot for what an owner
+    // means as "put the UI back to the start".
+    //
+    // TRAP, cost one dead-harness boot to learn: this pin must NOT also
+    // be claimed by a device-tree overlay. libgpiod requests every input
+    // line in ONE bulk call, so a single kernel-owned line fails the
+    // whole request and every button, the encoder, and all four LEDs go
+    // dead with it. setup_harness_services.sh actively removes the
+    // gpio-key overlay for exactly this reason — if the restart button
+    // ever reboots the machine again, that overlay is back in config.txt.
+    constexpr int RESTART_BTN = 24;    // Press to restart the kiosk service
     // Power switch is on GPIO 3, owned by kiosk-standby-watcher.service.
     
     // Illuminated Button Switches (active low)
@@ -120,11 +126,18 @@ private:
     std::chrono::steady_clock::time_point button_press_times_[gpio::NUM_BUTTONS];
 #endif
 
+    // Restart button state
+    ButtonState restart_btn_state_;
+
     // Helper to get current time in milliseconds
     uint64_t get_time_ms() const;
 
     // Read GPIO line state
     int read_line(int gpio);
+
+    // Check the restart button; on press, sweep the LEDs and restart the
+    // kiosk service.
+    void check_restart_button();
 };
 
 } // namespace platform

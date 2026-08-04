@@ -41,19 +41,20 @@ GPIO_PIN=3
 GPIO_CHIP=gpiochip0
 LOG_TAG=kiosk-standby
 
-# Services controlled by switch position.
-# Order matters on stop: kiosk first (it depends on services + web
-# admin), then content manager, then docker stack. Reverse on start.
-SERVICES_STOP_ORDER=(
-    magic-dingus-box-cpp.service
+# The kiosk is handled on its own, first on the way down and first on the
+# way up (see stop_services / start_services for why). These two are the
+# rest of the stack.
+COMPANION_SERVICES=(
     magic-dingus-web.service
     magic-dingus-services.service
 )
-SERVICES_START_ORDER=(
-    magic-dingus-services.service
-    magic-dingus-web.service
-    magic-dingus-box-cpp.service
-)
+
+KIOSK_SERVICE=magic-dingus-box-cpp.service
+
+# LED "powering down" sweep, shared with the restart button's in-app
+# version. Absent on a board with no harness — every use is guarded.
+SHUTDOWN_ANIM=/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/led_shutdown_animation.sh
+LED_PINS=(12 16 26 20)
 
 log() {
     echo "[kiosk-standby] $1"
@@ -76,29 +77,77 @@ read_gpio() {
     fi
 }
 
+all_leds_off() {
+    for pin in "${LED_PINS[@]}"; do
+        pinctrl set "$pin" op dl 2>/dev/null || true
+    done
+}
+
 stop_services() {
     log "Switch OFF detected — stopping kiosk + companion services"
-    for svc in "${SERVICES_STOP_ORDER[@]}"; do
+
+    # The kiosk goes down FIRST, alone, for two reasons pointing the same
+    # way. It owns the four LED lines through libgpiod, and the sweep
+    # below drives those same pins with pinctrl — running both at once is
+    # two writers on one pin. And it is the thing the owner is looking
+    # at, so killing it first is what makes the flip feel immediate.
+    #
+    # SIGTERM here is handled, not fatal: main.cpp flushes the watch
+    # position (so flipping to standby part-way through an episode keeps
+    # your place) and tears down GL/DRM cleanly.
+    if systemctl is-active --quiet "$KIOSK_SERVICE"; then
+        systemctl stop "$KIOSK_SERVICE" 2>&1 | sed 's/^/    /' || \
+            log "WARN: failed to stop the kiosk"
+    fi
+
+    # The powering-down indication. Without it the screen simply goes
+    # black, and a box working exactly as designed looks identical to one
+    # that has crashed. Backgrounded under a hard timeout so a wedged
+    # animation can never hold up standby itself: the LEDs are the
+    # courtesy, the power saving is the point.
+    if [[ -x "$SHUTDOWN_ANIM" ]]; then
+        ( timeout 6 "$SHUTDOWN_ANIM" >/dev/null 2>&1 || true ) &
+    fi
+
+    for svc in "${COMPANION_SERVICES[@]}"; do
         if systemctl is-active --quiet "$svc"; then
             systemctl stop "$svc" 2>&1 | sed 's/^/    /' || \
                 log "WARN: failed to stop $svc"
         fi
     done
+
+    wait 2>/dev/null || true
+    all_leds_off
     log "Standby state — services stopped, Pi idle (~3W)"
 }
 
 start_services() {
     log "Switch ON detected — starting kiosk + companion services"
-    for svc in "${SERVICES_START_ORDER[@]}"; do
-        if ! systemctl is-active --quiet "$svc"; then
-            # reset-failed first in case the unit is in failed state
-            # from a prior crash or external manipulation.
-            systemctl reset-failed "$svc" 2>/dev/null || true
-            systemctl start "$svc" 2>&1 | sed 's/^/    /' || \
-                log "WARN: failed to start $svc"
-        fi
+
+    # Wake order is deliberately NOT the dependency order. The kiosk goes
+    # first because it is the only part the owner can see; the Docker
+    # stack needs 20-40s to bring six containers and a VPN tunnel back,
+    # and making the picture wait on that turned "flip it back on" into a
+    # long stare at a black TV.
+    #
+    # Starting out of order breaks nothing: the kiosk polls Radarr for
+    # Media Browser availability and simply shows the tunnel-down state
+    # until the containers answer — exactly what it already does on every
+    # cold boot, where the same race exists.
+    systemctl reset-failed "$KIOSK_SERVICE" 2>/dev/null || true
+    systemctl start "$KIOSK_SERVICE" 2>&1 | sed 's/^/    /' || \
+        log "WARN: failed to start the kiosk"
+
+    for svc in "${COMPANION_SERVICES[@]}"; do
+        systemctl reset-failed "$svc" 2>/dev/null || true
+        # --no-block: queue it and move on. The Docker stack especially
+        # must not hold this function, or a slow container start would
+        # delay the watcher's reaction to the NEXT flip of the switch.
+        systemctl --no-block start "$svc" 2>&1 | sed 's/^/    /' || \
+            log "WARN: failed to queue $svc"
     done
-    log "Running state — kiosk + Content Manager + Docker stack up"
+
+    log "Running state — kiosk up; Content Manager + Docker starting behind it"
 }
 
 reconcile_initial_state() {

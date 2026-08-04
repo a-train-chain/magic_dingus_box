@@ -21,22 +21,13 @@
 #                                   it when it takes the LED lines over
 #                                   (gpio_manager.cpp).
 #   led-shutdown-animation.service  LED sweep on halt/reboot.
-#   GPIO 24 restart button          dtoverlay=gpio-key emitting KEY_RESTART;
-#                                   systemd-logind's HandleRebootKey (default
-#                                   `reboot`) performs a clean reboot. Zero
-#                                   daemons; works even when the kiosk is
-#                                   down — which is exactly when a physical
-#                                   restart control earns its keep. The
-#                                   kiosk never swallows it: InputManager
-#                                   only opens/grabs EV_ABS (joystick-like)
-#                                   devices, and a gpio-key device is
-#                                   EV_KEY-only. (The wiring design doc
-#                                   called this pin "shutdown button"; the
-#                                   product decision 2026-08-03 is RESTART.
-#                                   To make it power off instead, change
-#                                   keycode=408 to keycode=116 (KEY_POWER)
-#                                   below and logind's HandlePowerKey
-#                                   default `poweroff` takes over.)
+#   GPIO 24 restart button          Owned by the KIOSK BINARY, not by a
+#                                   device-tree overlay. Press -> LED
+#                                   shutdown sweep -> `systemctl restart
+#                                   magic-dingus-box-cpp` -> intro video ->
+#                                   main menu, ~10s. This script's job for
+#                                   that pin is to make sure NO overlay
+#                                   claims it (see Step 3).
 #
 # What is installed but deliberately NOT enabled:
 #
@@ -96,26 +87,30 @@ if [ -f "$BOOT_CONFIG" ] && grep -q '^dtoverlay=gpio-shutdown' "$BOOT_CONFIG"; t
 fi
 
 # ---------------------------------------------------------------------------
-# Step 3: Restart button overlay (GPIO 24, momentary, active-low)
+# Step 3: Make sure NOTHING in the device tree claims GPIO 24
 # ---------------------------------------------------------------------------
-# keycode 408 = KEY_RESTART (input-event-codes.h 0x198). udev tags
-# gpio-keys devices as power-switch; logind picks the key up with no
-# per-unit config. Appended under an explicit [all] header: config.txt
-# ends with [pi4]/[pi5] conditional sections, and a bare append would
-# land inside whichever section is last and silently apply to one board
-# only (dual-board contract rule 5).
-if [ -f "$BOOT_CONFIG" ] && ! grep -q 'gpio-key,gpio=24' "$BOOT_CONFIG"; then
-    sudo tee -a "$BOOT_CONFIG" >/dev/null <<'EOF'
-
-[all]
-# GPIO 24 front-panel restart button (Magic Dingus Box harness).
-# Press = KEY_RESTART -> systemd-logind clean reboot. See
-# scripts/setup_harness_services.sh for the poweroff alternative.
-dtoverlay=gpio-key,gpio=24,active_low=1,gpio_pull=up,keycode=408,label=mdb-restart
-EOF
-    echo "Added GPIO 24 restart-button overlay to ${BOOT_CONFIG} (reboot to apply)."
+# The restart button is handled by the kiosk binary (GpioManager), which
+# restarts the SERVICE — intro video back to the main menu in about ten
+# seconds. A gpio-key overlay was tried here on 2026-08-03 to get a clean
+# full reboot via logind instead; it worked, and was rejected on the
+# hardware for being a 90-second cold boot when the owner just wants the
+# UI back at the start.
+#
+# It must be actively removed, not merely "not added". Two reasons, and
+# the second one cost a dead harness:
+#   1. It reboots the box, which is the behavior we are undoing.
+#   2. libgpiod requests every kiosk input line in ONE bulk call. With the
+#      kernel holding GPIO 24, that whole request fails — all four
+#      buttons, the encoder switch, and all four LEDs go dead together,
+#      explained only by "Error: Could not request input GPIO lines".
+if [ -f "$BOOT_CONFIG" ] && grep -q 'gpio-key.*gpio=24' "$BOOT_CONFIG"; then
+    sudo sed -i '/dtoverlay=gpio-key.*gpio=24/d' "$BOOT_CONFIG"
+    sudo sed -i '/# GPIO 24 front-panel restart button/d; /# Press = KEY_RESTART/d; /# scripts\/setup_harness_services.sh for the poweroff/d' "$BOOT_CONFIG"
+    echo "Removed the GPIO 24 gpio-key overlay from ${BOOT_CONFIG} — REBOOT REQUIRED"
+    echo "  (until you reboot, the kernel still owns pin 24 and the kiosk's"
+    echo "   buttons/LEDs will stay dead)"
 else
-    echo "Restart-button overlay already present (or no config.txt)."
+    echo "GPIO 24 is free of device-tree overlays (correct)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -137,6 +132,8 @@ systemctl is-active kiosk-standby-watcher.service >/dev/null 2>&1 \
     && echo "kiosk-standby-watcher: active" \
     || echo "WARN: kiosk-standby-watcher not active — journalctl -u kiosk-standby-watcher"
 echo ""
-echo "Hardware acceptance: flip switch OFF (kiosk stops ~5s) -> ON (kiosk"
-echo "returns ~10s); press restart button (clean reboot; LED sweep plays)."
-echo "Restart-button overlay requires one reboot before its first use."
+echo "Hardware acceptance:"
+echo "  switch OFF -> LED sweep, screen dark in ~5s, Pi stays powered"
+echo "  switch ON  -> intro video in ~10s (Docker finishes behind it)"
+echo "  restart button -> LED sweep, then intro video + main menu in ~10s"
+echo "                    (the SERVICE restarts; the machine does not reboot)"
