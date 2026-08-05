@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-08-04
+
+Golden-image correctness release. Every fix here was found by flashing the
+v1.9.3 image to a card and booting it on a Pi that had never run the
+software — the first time that had been done. Five of these defects made a
+cloned unit unusable out of the box, and none of them were visible on the
+source Pi, which is why testing on the source Pi had never caught them.
+
+### Fixed
+- **A cloned unit could not finish its first boot.** Partition expansion ran
+  `parted` against the mounted root, which prompts, answers *No* to itself in
+  script mode, and exits non-zero — killing first-boot setup at step 2 of 7.
+  No clone had ever regenerated its hostname, wiped the previous owner's
+  saves, or re-locked the Media Browser; every unit came up claiming the
+  source box's identity and collided with it on the network. Now uses
+  `growpart`, and a failed expansion can no longer abort the boot: a unit
+  that wastes the tail of its card is an annoyance, one that skips the
+  credential wipes is a defective product.
+- **A unit with no movie drive never booted at all.** The `LABEL=MOVIES`
+  fstab entry used `x-systemd.automount`, which systemd starts at boot even
+  with `noauto` — that is the point of an automount. With no drive behind it,
+  boot stalled until the hardware watchdog reset the board at 60 seconds,
+  over and over, which reads as a reboot loop. `nofail` does not help; it
+  governs the mount, not the automount. Since most units ship with no drive
+  attached, this affected nearly all of them. The drive is now mounted by a
+  udev rule on device appearance: with no drive the rule never fires and the
+  unit boots in ~17 seconds, and with a drive it still mounts at boot and on
+  hotplug.
+- **Controller mappings did not apply in any game.** A paired phone remote
+  registers as a joypad, and it could claim joypad index 0 — the only index
+  RetroArch accepts for player 1 — so the per-core button mappings silently
+  landed on a port with no physical pad on it. The remote is now skipped
+  during port assignment while still working as a UI input.
+- **"Radarr service offline — no root folder configured"** on the first
+  download attempt. Provisioning created Sonarr's root folder but never
+  Radarr's, and no health check covered it. Both are now created, and both
+  are asserted by the smoke test (15 checks, up from 14).
+- **Provisioning could die partway and leave a half-written `.env`.** A rerun
+  preserved the broken file wholesale instead of filling the gaps, and an
+  unguarded `grep` under `set -e` aborted the script before reaching its own
+  guard. Missing keys are now backfilled individually.
+- **Season packs downloaded in arbitrary order.** Episode priority was
+  applied across torrents but not within one, so a pack could run for hours
+  before episode 1 was playable. Files inside a pack are now ordered so the
+  earliest episodes complete first.
+
+### Security
+- **Five distinct routes by which credentials reached the finished image**,
+  each needing its own fix: free space underneath ext4's root reserve was
+  never scrubbed (2.4 GB that `df` hides), live files were missing from the
+  wipe list (poster cache, kiosk log, phone-remote state), Docker and
+  containerd bake container environment into their own metadata, a Wi-Fi
+  network's name persisted as a *filename* in a directory block that stayed
+  allocated after deletion, and a bounded fill left extents the allocator
+  later reused. The ship gate now scans the finished `.img.gz` instead of the
+  live filesystem — a deleted file is absent from one and fully present in
+  the other, which is how the v1.9.3 image passed its own audit while
+  carrying a Wi-Fi PSK.
+
+### Added
+- **Only the example playlists ship.** The operator's personal playlists and
+  uploaded videos are curated out of the image, leaving the nine game
+  playlists and one demo channel as templates to copy.
+- `sync_source_box.sh` — one command that brings a source Pi up to date
+  before cloning and verifies every fix landed by content hash, including
+  reading the rebuilt binary rather than trusting a zero exit from `make`.
+
 ## [1.9.3] - 2026-08-04
 
 Golden-image release. Everything accumulated since 1.7.2 is folded in here —
