@@ -772,6 +772,45 @@ fi
 rm -f /var/log/cloud-init.log* /var/log/cloud-init-output.log* 2>/dev/null || true
 log "[2c/5] cloud-init logs removed (they render the Wi-Fi PSK at DEBUG)"
 
+# ---------------------------------------------------------------------------
+# Step 2d: the MOVIES-drive fstab entry must not block boot on a unit that
+# has no movie drive — which is EVERY unit, the first time a customer
+# powers it on.
+# ---------------------------------------------------------------------------
+# The source box has the drive attached, so a blocking entry is invisible
+# here and fatal there. Observed on the first golden-image boot test
+# (2026-08-04): systemd waited on /dev/disk/by-label/MOVIES, timed out after
+# 90 s, failed mnt-ssd.mount plus magic-dingus-library-import.service and
+# magic-dingus-storage-attach.service, and never reached the kiosk. To the
+# operator it looked like the Pi rebooting in a loop.
+#
+# setup_services.sh writes the correct line, but its guard only checked
+# whether ANY "LABEL=MOVIES" line existed, so a box provisioned before
+# nofail/automount were added kept the blocking one forever and the image
+# inherited it. That guard is fixed too; this is the golden-image net, so a
+# stale entry on any future source box cannot reach a customer.
+#
+# Not stashed-and-restored: the corrected line is strictly better on the
+# source box as well (it mounts on access instead of at boot, and a drive
+# that is unplugged stops being a boot-time failure), so the fix stays.
+MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2"
+if [[ -f /etc/fstab ]]; then
+    if grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
+        log "[2c/5] MOVIES fstab entry already non-blocking"
+    elif grep -q "LABEL=MOVIES" /etc/fstab; then
+        cp -p /etc/fstab "${BACKUP_DIR}/fstab.before-clone"
+        sed -i '/LABEL=MOVIES/d' /etc/fstab
+        printf '%s\n' "$MOVIES_FSTAB_LINE" >> /etc/fstab
+        systemctl daemon-reload 2>/dev/null || true
+        log "[2c/5] REPLACED a blocking MOVIES fstab entry — it would have hung"
+        log "         first boot on every unit with no movie drive attached"
+    else
+        printf '%s\n' "$MOVIES_FSTAB_LINE" >> /etc/fstab
+        systemctl daemon-reload 2>/dev/null || true
+        log "[2c/5] Added the MOVIES fstab automount entry (none was present)"
+    fi
+fi
+
 # POST-CONDITION: prove the credential-bearing classes are actually gone
 # before we hand the card to dd. Every entry in SECRET_PATHS above is a
 # pattern someone wrote by hand, and the way this script has failed twice is

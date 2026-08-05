@@ -532,10 +532,30 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo install -m 0644 \
         "${SYSTEMD_DIR}/magic-dingus-library-import.service" \
         /etc/systemd/system/magic-dingus-library-import.service
-    if ! grep -q "LABEL=MOVIES" /etc/fstab; then
-        echo "LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2" \
-            | sudo tee -a /etc/fstab >/dev/null
+    # Match on the FULL line, not just "LABEL=MOVIES". The old guard skipped
+    # whenever ANY MOVIES line existed, so a box provisioned before nofail and
+    # x-systemd.automount were added kept its blocking entry forever — and the
+    # golden image inherited it.
+    #
+    # What that costs: a unit with no movie drive (i.e. every unit a customer
+    # first powers on) blocks in systemd waiting for /dev/disk/by-label/MOVIES,
+    # times out after 90s, fails mnt-ssd.mount plus the library-import and
+    # storage-attach services, and never reaches the kiosk. Observed on the
+    # first golden-image boot test, 2026-08-04.
+    #
+    # nofail                     -> a missing drive is not a boot failure
+    # x-systemd.automount        -> mount on first access, not during boot
+    # x-systemd.device-timeout=5 -> 5s, not the 90s default
+    MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2"
+    if ! grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
+        if grep -q "LABEL=MOVIES" /etc/fstab; then
+            sudo cp /etc/fstab /etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)
+            sudo sed -i '/LABEL=MOVIES/d' /etc/fstab
+            echo "fstab: replaced a stale MOVIES entry (missing nofail/automount)."
+        fi
+        echo "$MOVIES_FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
         echo "fstab: MOVIES-drive automount entry added."
+        sudo systemctl daemon-reload
     fi
     sudo systemctl daemon-reload
     sudo systemctl enable magic-dingus-library-import.service
