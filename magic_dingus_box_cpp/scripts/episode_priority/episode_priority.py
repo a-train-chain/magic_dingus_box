@@ -200,6 +200,96 @@ def qbit_top_prio(sid, torrent_hash):
         r.read()
 
 
+# ---------------------------------------------------------------------------
+# Season packs: order episodes WITHIN one torrent, via per-file priority.
+# ---------------------------------------------------------------------------
+# The queue reordering above deliberately skips packs, and that reasoning is
+# correct for what it does: moving a single pack around the queue achieves
+# nothing. But it left a real hole. When Sonarr grabs a SEASON PACK -- often
+# the only or the best-quality option -- qBittorrent downloads all ten
+# episodes concurrently at equal priority, so NOTHING is playable until
+# roughly everything is. Measured on hardware 2026-08-04, House of the
+# Dragon S01: all 10 files at priority 1, between 0.0% and 5.7%, ETA 3.6h
+# before a single episode could be watched.
+#
+# Setting per-file priority is a different operation from queue order, and
+# qBit supports it: /api/v2/torrents/filePrio. Give the earliest incomplete
+# episode MAXIMUM and the next HIGH, leave the rest NORMAL, and qBit finishes
+# them in order -- E1 lands in minutes instead of hours.
+#
+# Priority 0 (skip) is NEVER used. A skipped file is excluded from the
+# torrent, which would leave the pack permanently incomplete and block
+# Sonarr's import of the whole season.
+PRIO_NORMAL = 1
+PRIO_HIGH = 6
+PRIO_MAX = 7
+
+# A file is "done enough" to stop prioritising well before 100%: the tail of
+# a piece can lag while the episode is already fully playable, and holding
+# MAX on it starves the next episode.
+FILE_DONE = 0.999
+
+
+def plan_file_prios(files):
+    """{file_index: new_priority} for one pack's file list. Pure.
+
+    Returns only files whose priority must CHANGE, so a correctly ordered
+    pack produces zero API calls -- the same idempotence property the queue
+    planner relies on.
+    """
+    eps = []
+    for idx, f in enumerate(files):
+        name = f.get("name", "")
+        m = EPISODE_RE.search(name)
+        if not m:
+            continue  # RARBG.txt, samples, artwork -- left alone entirely
+        eps.append((int(m.group(1)), int(m.group(2)), idx, f))
+    if len(eps) < 2:
+        return {}  # single-episode torrent: the queue planner owns it
+
+    eps.sort(key=lambda e: (e[0], e[1]))
+    incomplete = [e for e in eps if (e[3].get("progress") or 0) < FILE_DONE]
+
+    want = {}
+    for rank, (_s, _e, idx, _f) in enumerate(incomplete):
+        want[idx] = PRIO_MAX if rank == 0 else (PRIO_HIGH if rank == 1
+                                                else PRIO_NORMAL)
+    # Finished episodes drop back to NORMAL so they stop competing.
+    for _s, _e, idx, f in eps:
+        if idx not in want:
+            want[idx] = PRIO_NORMAL
+
+    return {i: p for i, p in want.items()
+            if (files[i].get("priority") or PRIO_NORMAL) != p}
+
+
+def is_pack(name):
+    """True for a season pack or multi-episode range -- what plan_moves skips."""
+    return bool(PACK_RE.search(name) or RANGE_RE.search(name))
+
+
+def qbit_files(sid, torrent_hash):
+    req = urllib.request.Request(
+        QBIT_BASE + "/api/v2/torrents/files?hash="
+        + urllib.parse.quote(torrent_hash),
+        headers={"Cookie": sid})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())
+
+
+def qbit_set_file_prio(sid, torrent_hash, ids, priority):
+    data = urllib.parse.urlencode({
+        "hash": torrent_hash,
+        "id": "|".join(str(i) for i in ids),
+        "priority": str(priority),
+    }).encode()
+    req = urllib.request.Request(QBIT_BASE + "/api/v2/torrents/filePrio",
+                                 data=data, method="POST",
+                                 headers={"Cookie": sid})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        r.read()
+
+
 def run():
     try:
         env = load_env()
@@ -242,8 +332,36 @@ def run():
             print(f"[episode-priority] topPrio failed after {made} "
                   f"move(s) ({e}) — remaining moves left to next tick")
             break
+    # Season packs: order episodes inside the torrent.
+    packs = 0
+    prio_calls = 0
+    for t in torrents:
+        if t.get("state") not in DOWNLOAD_STATES:
+            continue
+        if not is_pack(t.get("name", "")):
+            continue
+        packs += 1
+        try:
+            files = qbit_files(sid, t["hash"])
+            changes = plan_file_prios(files)
+            # Group indices by target priority -- one POST per distinct
+            # priority instead of one per file.
+            by_prio = {}
+            for idx, prio in changes.items():
+                by_prio.setdefault(prio, []).append(idx)
+            for prio, ids in sorted(by_prio.items()):
+                qbit_set_file_prio(sid, t["hash"], ids, prio)
+                prio_calls += 1
+        except NET_ERRORS as e:
+            # Same fail-soft contract as the queue moves: ordering is
+            # ephemeral and the next tick redoes it.
+            print(f"[episode-priority] filePrio failed on "
+                  f"{t.get('name','?')[:40]} ({e}) — left to next tick")
+            continue
+
     print(f"[episode-priority] {len(groups)} group(s) checked, "
-          f"{made} move(s) made")
+          f"{made} move(s) made; {packs} pack(s) checked, "
+          f"{prio_calls} file-priority call(s)")
     return 0
 
 
@@ -255,7 +373,63 @@ def _t(name, h, state="downloading", priority=1):
     return {"name": name, "hash": h, "state": state, "priority": priority}
 
 
+def _f(name, prio=1, progress=0.0):
+    return {"name": name, "priority": prio, "progress": progress}
+
+
+def _pack_tests():
+    """Season-pack per-file prioritisation. Pure, no network."""
+    P = "House.of.the.Dragon.S01"
+    # 1. Fresh pack, all normal -> E1 MAX, E2 HIGH, rest untouched (already 1).
+    files = [_f(f"{P}E{n:02d}.1080p.WEB.x264") for n in range(1, 11)]
+    files.append(_f("RARBG.txt"))
+    got = plan_file_prios(files)
+    assert got == {0: PRIO_MAX, 1: PRIO_HIGH}, got
+    assert 10 not in got, "non-episode file must never be touched"
+
+    # 2. Idempotent: re-running on the result produces zero calls. This is
+    #    what makes the 2-minute cadence free.
+    files[0]["priority"] = PRIO_MAX
+    files[1]["priority"] = PRIO_HIGH
+    assert plan_file_prios(files) == {}, plan_file_prios(files)
+
+    # 3. E1 finishes -> MAX rolls to E2, HIGH to E3, and E1 drops back to
+    #    NORMAL so it stops competing for bandwidth.
+    files[0]["progress"] = 1.0
+    got = plan_file_prios(files)
+    assert got[0] == PRIO_NORMAL, got
+    assert got[1] == PRIO_MAX, got
+    assert got[2] == PRIO_HIGH, got
+
+    # 4. A file at 99.95% counts as done -- the tail of a piece must not
+    #    starve the next episode.
+    files2 = [_f(f"{P}E{n:02d}.1080p") for n in range(1, 4)]
+    files2[0]["progress"] = 0.9995
+    got = plan_file_prios(files2)
+    assert got[1] == PRIO_MAX, got
+
+    # 5. Out-of-order file listing still orders by EPISODE, not by index.
+    files3 = [_f(f"{P}E03.1080p"), _f(f"{P}E01.1080p"), _f(f"{P}E02.1080p")]
+    got = plan_file_prios(files3)
+    assert got[1] == PRIO_MAX and got[2] == PRIO_HIGH, got
+
+    # 6. Single-episode torrent -> the QUEUE planner owns it, not this.
+    assert plan_file_prios([_f("Show.S01E01.1080p")]) == {}
+
+    # 7. PRIO_SKIP is never emitted: a skipped file is excluded from the
+    #    torrent and would block Sonarr's import of the whole season.
+    files4 = [_f(f"{P}E{n:02d}.1080p") for n in range(1, 11)]
+    assert 0 not in plan_file_prios(files4).values()
+
+    # 8. is_pack agrees with what plan_moves skips.
+    assert is_pack("House.of.the.Dragon.S01.1080p.HMAX.WEBRip")
+    assert is_pack("Show.S02E01-E05.1080p")
+    assert not is_pack("Show.S01E01.1080p.x264")
+    print("  pack tests: 8/8 passed")
+
+
 def self_test():
+    _pack_tests()
     # 1. Correct order → zero moves (the idempotence property the
     #    2-minute cadence depends on).
     ts = [_t("Show.S01E01.720p.x264", "a", priority=1),
