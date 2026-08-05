@@ -1,8 +1,10 @@
 [Unit]
 Description=Magic Dingus Box — import attached MOVIES-drive library into Radarr
-# Fires whenever the MOVIES drive mounts at /mnt/ssd (boot or hot-plug via
-# the fstab x-systemd.automount entry). The import script waits for Radarr
-# and is idempotent, so repeat mounts are harmless no-ops.
+# Fires whenever the MOVIES drive mounts at /mnt/ssd (boot or hot-plug —
+# udev/99-magic-movies-mount.rules starts mnt-ssd.mount on device
+# appearance; the fstab entry is noauto,nofail, never an automount, which
+# hangs a driveless boot). The import script waits for Radarr and is
+# idempotent, so repeat mounts are harmless no-ops.
 Requires=mnt-ssd.mount
 After=mnt-ssd.mount
 

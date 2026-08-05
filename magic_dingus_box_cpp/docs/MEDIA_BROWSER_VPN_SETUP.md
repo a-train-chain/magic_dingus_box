@@ -16,14 +16,19 @@ connects to a single VPN endpoint."
 
 ## What you need
 
-- **ProtonVPN account, Plus tier or higher.** Free-tier ProtonVPN
-  doesn't support port forwarding, which kills BitTorrent peer
-  connectivity. Other WireGuard providers (Mullvad, IVPN) are not
-  currently supported by Magic Dingus Box's setup workflow.
+- **ProtonVPN account, Plus tier or higher (recommended).** Free-tier
+  ProtonVPN doesn't support port forwarding, which kills BitTorrent peer
+  connectivity. Other WireGuard providers DO work — the setup accepts any
+  standard WireGuard `.conf` and falls back to a custom-provider
+  configuration — but only ProtonVPN's NAT-PMP port forwarding is wired
+  into the port-sync service, so incoming peer connectivity is best on
+  ProtonVPN.
 - **A WireGuard config file (.conf) downloaded from the ProtonVPN
   dashboard.** When generating it, you MUST enable the "NAT-PMP /
   Port Forwarding" toggle. Without it, peer connections fail.
-- **Network access to the Pi's Content Manager** (`http://magicpi.local:5000`
+- **Network access to the Pi's Content Manager**
+  (`http://<your-box>.local:5000` — each unit is named `magicpi-XXXX` at
+  first boot; the kiosk's Settings → Info screen shows the exact address —
   or `http://10.55.0.1:5000` over USB gadget).
 
 ## Step-by-step
@@ -121,8 +126,8 @@ Likely causes:
   Check Byparr is running: `docker ps | grep byparr`. If absent,
   re-run setup.
 - Indexer site is genuinely down or has changed its API. Check the
-  Prowlarr UI directly (`http://magicpi.local:9696` — requires SSH
-  tunnel since it's loopback-bound) for per-indexer health.
+  Prowlarr UI directly (`http://localhost:9696` through an SSH tunnel
+  to the box — it's loopback-bound) for per-indexer health.
 
 ## Privacy notes
 

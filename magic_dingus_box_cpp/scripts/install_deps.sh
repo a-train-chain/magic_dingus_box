@@ -45,7 +45,15 @@ sudo apt install -y \
   python3-evdev \
   python3-pip \
   auditd \
-  dnsmasq
+  dnsmasq \
+  cloud-guest-utils
+
+# cloud-guest-utils provides growpart, which first_boot.sh uses to expand a
+# cloned unit's root partition online (parted PROMPTS on a mounted partition
+# and its script mode answers No — the 2026-08-04 out-of-box failure). The
+# stock Raspberry Pi OS image happens to ship it; nothing else kept that
+# true for a future base image, and the failure is silent (first boot falls
+# back to a weaker path).
 
 # auditd powers the library-deletion tripwire (scripts/data/
 # audit-mdb-sweeper.rules, installed by setup_services.sh). It earned its

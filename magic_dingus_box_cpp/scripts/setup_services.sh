@@ -563,8 +563,9 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     # Library import on MOVIES-drive mount: registers pre-loaded movies
     # (/mnt/ssd/library/<Title (Year)>/) with Radarr so the kiosk Library
     # populates when a drive is attached — fresh provisions, replacement
-    # SDs, and swapped drives all self-heal. Requires the fstab entry
-    # (LABEL=MOVIES → /mnt/ssd, x-systemd.automount) which is added below.
+    # SDs, and swapped drives all self-heal. Requires the noauto,nofail
+    # fstab entry (LABEL=MOVIES → /mnt/ssd) plus the udev mount rule, both
+    # added below.
     sudo install -m 0644 \
         "${SYSTEMD_DIR}/magic-dingus-library-import.service" \
         /etc/systemd/system/magic-dingus-library-import.service
@@ -579,9 +580,7 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     # storage-attach services, and never reaches the kiosk. Observed on the
     # first golden-image boot test, 2026-08-04.
     #
-    # nofail                     -> a missing drive is not a boot failure
-    # x-systemd.automount        -> mount on first access, not during boot
-    # x-systemd.device-timeout=5 -> 5s, not the 90s default
+    # nofail -> a missing drive is not a boot failure
     # noauto + NO x-systemd.automount. See udev/99-magic-movies-mount.rules
     # for the full measurement, but in short: an automount unit starts at boot
     # even with noauto, and with no drive behind it the boot hangs until the
@@ -2895,7 +2894,10 @@ QBIT_CATS_FILE="${SCRIPT_DIR}/data/qbit_categories.json"
 if [[ ! -f "${QBIT_CATS_FILE}" ]]; then
     echo "  WARN: ${QBIT_CATS_FILE} not found — skipping."
 else
-    QBIT_PW="${QBIT_PW:-$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)}"
+    # Guarded like the three sibling greps: under set -euo pipefail an absent
+    # key makes the bare grep exit 1 and kill the whole provisioning run
+    # BEFORE the empty-check below ever gets to explain what is missing.
+    QBIT_PW="${QBIT_PW:-$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)}"
     if [[ -z "${QBIT_PW}" ]]; then
         echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
     else
@@ -3083,11 +3085,29 @@ else
     echo "  (verify_services.sh not found or not executable — skipping smoke test)"
 fi
 
-# 9. Print credentials to operator
+# 9. Tell the operator where the credentials LIVE — never print the values.
+# This stdout is not private: the Content Manager streams it verbatim into
+# the browser's setup-progress log (admin.py appends it to the polled job
+# log), and every line also lands in the journal. Printing the API keys and
+# the qBittorrent password here exposed all four secrets on every
+# provisioning run, while a dedicated lazy-loaded credentials endpoint
+# already exists precisely so they are only fetched on explicit request.
+# Presence is proven by count; values come from services/.env or the
+# Content Manager's Credentials panel.
+_creds_present=0
+for _k in RADARR_API_KEY SONARR_API_KEY PROWLARR_API_KEY QBITTORRENT_ADMIN_PASSWORD; do
+    grep -q "^${_k}=." "${ENV_FILE}" 2>/dev/null && _creds_present=$((_creds_present + 1))
+done
 cat <<EOF
 
 ======================================================================
-Services initialized. SAVE THESE CREDENTIALS in a password manager:
+Services initialized. ${_creds_present}/4 service credentials are stored in:
+  ${ENV_FILE}
+(RADARR_API_KEY, SONARR_API_KEY, PROWLARR_API_KEY,
+ QBITTORRENT_ADMIN_PASSWORD — values deliberately not printed here:
+ this log is streamed to the Content Manager UI and kept in the
+ journal. View them on demand in Content Manager → Media Browser →
+ Credentials, or read the file above over SSH.)
 
 All service UIs are bound to 127.0.0.1 on this Pi (zero LAN attack
 surface). Admin access requires an SSH tunnel from a trusted device:
@@ -3097,23 +3117,14 @@ surface). Admin access requires an SSH tunnel from a trusted device:
       -L 8989:localhost:8989 \\
       -L 8080:localhost:8080 \\
       -L 8191:localhost:8191 \\
-      magic@magicpi.local
+      magic@$(hostname).local
 
 Then from that device:
-
-Radarr    → http://localhost:7878 (via SSH tunnel only — see operator guide)
-            API key: ${RADARR_KEY}
-
-Sonarr    → http://localhost:8989 (via SSH tunnel only — see operator guide)
-            API key: ${SONARR_KEY}
-
-Prowlarr  → http://localhost:9696 (via SSH tunnel only — see operator guide)
-            API key: ${PROWLARR_KEY}
-
-qBittorrent → http://localhost:8080 (via SSH tunnel only — see operator guide)
-            Username: admin
-            Password: $(grep QBITTORRENT_ADMIN_PASSWORD "${ENV_FILE}" | cut -d= -f2)
-            (Localhost auth bypass DISABLED; this password is the only way in)
+  Radarr      → http://localhost:7878
+  Sonarr      → http://localhost:8989
+  Prowlarr    → http://localhost:9696
+  qBittorrent → http://localhost:8080  (user: admin; localhost auth
+                bypass DISABLED — the stored password is the only way in)
 
 NEXT STEPS:
   Indexers, quality profile, qBit download client, and Custom Formats

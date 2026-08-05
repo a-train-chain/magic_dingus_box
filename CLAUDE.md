@@ -435,7 +435,7 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
   container count. `--with-services` chains the service smoke test for a
   full sweep. Every check in it corresponds to a bug that was once found
   by hand.
-- **Smoke test**: `scripts/verify_services.sh` is the hard-assertion health check for the entire stack (5 expected indexers, qBit download client wired, quality profile state, 8 Custom Formats including 2 scam-rejection ones, qBit auth, MDB_QBIT_PASS in .env, no active indexer cooldowns, live indexer search ≥10 results — 9 checks total). Runs once at the end of `setup_services.sh` and weekly thereafter via `magic-dingus-smoke-test.timer` (Mon 03:14 with Persistent=true). Failures land in `journalctl -u magic-dingus-smoke-test`. Re-runnable standalone: exits 0/1 for CI/manual debugging.
+- **Smoke test**: `magic_dingus_box_cpp/scripts/verify_services.sh` is the hard-assertion health check for the entire stack (indexers, qBit download client wired, quality profile state, Custom Formats including the scam-rejection ones, qBit auth, MDB_QBIT_PASS in .env, Radarr AND Sonarr root folders, no active indexer cooldowns, live indexer search ≥10 results — 15 assertions on a fully provisioned box; the Sonarr checks skip on pre-Sonarr boxes). Runs once at the end of `setup_services.sh` and weekly thereafter via `magic-dingus-smoke-test.timer` (Mon 03:14 with Persistent=true). Failures land in `journalctl -u magic-dingus-smoke-test`. Re-runnable standalone: exits 0/1 for CI/manual debugging.
 
 ### Feature gating
 
@@ -634,7 +634,7 @@ auth problem); no entries mean it never arrived (address or network). Phone scan
 
 ## Additional Documentation
 
-Extensive docs in `magic_dingus_box_cpp/docs/` (note: `docs/` is gitignored — these live on the Pi locally and are reference material, not tracked in the repo):
+Extensive docs in `magic_dingus_box_cpp/docs/`. (A `.gitignore` rule matches this directory, but ~20 of these files were committed before it existed and ARE tracked — `git ls-files magic_dingus_box_cpp/docs/` is the truth. Treat the tracked ones as normal repo files: edits to them commit and ship.)
 - `ARCHITECTURE.md` - System design
 - `DISPLAY_MODES_USAGE.md` - CRT/Modern TV modes
 - `RETROARCH_INTEGRATION.md` - Emulator setup
