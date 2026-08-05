@@ -552,13 +552,37 @@ pattern**, because most units never have a drive attached at first boot.
 
 **Inherited source-box state is its own bug class.** Anything true only
 because the source box is the source box will ship: the `LABEL=MOVIES`
-fstab entry (a unit with no drive must still boot — `nofail` +
-`x-systemd.automount`), the operator's playlists and uploaded videos
-(`SHIP_PLAYLISTS` curates these), and the clone-in-progress marker.
+fstab entry (a unit with no drive must still boot — `noauto,nofail` plus
+the udev rule, never an automount), the operator's playlists and uploaded
+videos (`SHIP_PLAYLISTS` curates these), and the clone-in-progress marker.
 Guards that skip when a key is merely *present* rather than *correct* are
 the trap: `if ! grep -q LABEL=MOVIES /etc/fstab` never repaired a stale
-line, so a box provisioned before `nofail` existed kept the blocking
-entry forever.
+line, so a box provisioned before this pattern existed kept the blocking
+entry forever — and that is not hypothetical, the source box was still
+carrying the automount line on 2026-08-05, one step short of baking the
+boot hang into another image.
+
+**Run `scripts/golden_image/sync_source_box.sh --pi magic@<host>` before
+every clone.** The out-of-box fixes live in eight different files and
+missing any one of them reproduces its bug on every unit sold; a checklist
+is how you miss one at 1am. It pushes each file, verifies it by content
+hash, normalises the fstab line, reloads udev, rebuilds the kiosk, and
+asserts the rebuilt BINARY contains the change — `make` exiting 0 proves
+nothing when a stale object or a skipped rebuild exits 0 too. `--pi` is
+never defaulted, because `deploy_cpp.sh` defaults to a different box and
+two Pis are usually reachable at once; it prints the target's hostname
+before touching anything.
+
+**Two more out-of-box classes worth naming**, both invisible on a source
+box that has been running for weeks: a *provisioning step that was never
+written* (Radarr had no root folder, so the customer's first download died
+with "no root folder configured" — Sonarr's equivalent existed, and no
+health check covered either until `check_radarr_root_folder()`), and *a
+device that only exists after the customer sets it up* (a paired phone
+remote registers as a joypad and could claim index 0, the only index
+RetroArch accepts for player 1, so every per-core controller mapping
+landed on a port with no pad — `controller_detector.cpp` now skips it
+during port assignment while keeping it as a UI input).
 
 ### Live SD cloning
 
