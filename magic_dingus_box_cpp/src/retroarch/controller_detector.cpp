@@ -28,6 +28,32 @@ std::string read_sysfs_line(const std::filesystem::path& p) {
 
 // Parse a 4-char lowercase hex string into a uint16_t.
 // Returns 0 on any parse failure.
+// The phone remote is a uinput virtual gamepad created by the Flask web
+// service (web/remote/uinput_writer.py). The kernel gives it a js node like
+// any other joystick, and whichever device enumerates first takes js0 -- so
+// on a box where the web service wins that race, the phone remote becomes
+// RetroArch's player 1 and every real pad is pushed to player 2.
+//
+// Observed on hardware 2026-08-04:
+//   js0 = MagicDingus Phone Remote   vid=1 pid=1   -> no profile matches
+//   js1 = SHANWAN Android Gamepad    vid=2563 pid=0526 -> the captured profile
+//   input_player1_joypad_index = "0"
+//   input_player1_a_btn = "nul"   (and every other player-1 bind)
+//
+// The kiosk's own UI reads evdev directly and is unaffected, so the pad works
+// in menus and is dead in every game -- which is a confusing way to fail. It
+// is also a RACE: a pad plugged in before the web service starts may win js0,
+// so it works on some units and not others.
+//
+// Matched on NAME rather than vid/pid 1:1. The name is set by uinput_writer.py
+// and is exact; filtering on vid==1&&pid==1 would be broader than intended and
+// could exclude some other virtual-but-real input device later.
+constexpr const char* kPhoneRemoteName = "MagicDingus Phone Remote";
+
+bool is_phone_remote(const std::string& device_name) {
+    return device_name == kPhoneRemoteName;
+}
+
 uint16_t parse_hex4(const std::string& s) {
     if (s.size() != 4) return 0;
     try {
@@ -75,6 +101,15 @@ ControllerType detect_primary_controller() {
         const std::string basename = node.filename().string();  // e.g. "js0"
         const fs::path id_dir = fs::path("/sys/class/input") / basename / "device" / "id";
 
+        const std::string dev_name =
+            read_sysfs_line(fs::path("/sys/class/input") / basename / "device" / "name");
+        if (is_phone_remote(dev_name)) {
+            std::cout << "controller_detector: " << node.string()
+                      << " is the phone remote -- skipping (not a game pad)"
+                      << std::endl;
+            continue;
+        }
+
         std::string vid_s = read_sysfs_line(id_dir / "vendor");
         std::string pid_s = read_sysfs_line(id_dir / "product");
 
@@ -115,11 +150,23 @@ std::vector<DetectedPad> detect_connected_controllers() {
     for (const auto& node : js_nodes) {
         const std::string basename = node.filename().string();
         const fs::path id_dir = fs::path("/sys/class/input") / basename / "device" / "id";
+        const std::string dev_name =
+            read_sysfs_line(fs::path("/sys/class/input") / basename / "device" / "name");
+
+        // Skip BEFORE the port counter advances, so real pads still start at
+        // port 0 even when the phone remote holds a lower js node.
+        if (is_phone_remote(dev_name)) {
+            std::cout << "controller_detector: " << node.string()
+                      << " is the phone remote -- skipping (ports unaffected)"
+                      << std::endl;
+            continue;
+        }
+
         DetectedPad pad;
         pad.port = port++;
         pad.vid = parse_hex4(read_sysfs_line(id_dir / "vendor"));
         pad.pid = parse_hex4(read_sysfs_line(id_dir / "product"));
-        pad.name = read_sysfs_line(fs::path("/sys/class/input") / basename / "device" / "name");
+        pad.name = dev_name;
         std::cout << "controller_detector: " << node.string() << " vid="
                   << std::hex << pad.vid << " pid=" << pad.pid << std::dec
                   << " name=" << pad.name << std::endl;

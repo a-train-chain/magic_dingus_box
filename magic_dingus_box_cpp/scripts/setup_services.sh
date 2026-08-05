@@ -200,7 +200,43 @@ EOF
     chmod 600 "${ENV_FILE}"
     echo "Generated .env with random qBittorrent password."
 else
-    echo ".env already exists — preserving existing secrets."
+    # BACKFILL, don't just preserve. admin.py writes a PARTIAL .env when the
+    # operator uploads a WireGuard config -- VPN_* and WIREGUARD_* only. The
+    # old branch then saw "a file exists" and skipped generation entirely, so
+    # the keys THIS script owns were never added, and every consumer failed:
+    #
+    #   QBITTORRENT_ADMIN_PASSWORD missing -> hardening aborts (see below),
+    #     qBit keeps its random session password, MDB_QBIT_PASS never mirrors,
+    #     qbit-port-sync and episode-priority skip forever
+    #   RADARR_API_KEY missing -> magic-dingus-library-import.service exits 1
+    #
+    # Observed on the first real customer-shaped provisioning (2026-08-04):
+    # .env had 14 keys, all VPN/WireGuard plus SONARR_API_KEY, and setup died
+    # at exit 1 with the VPN tunnel healthy and all six containers running.
+    #
+    # "Preserving existing secrets" must mean "never overwrite what is there",
+    # not "never add what is missing".
+    echo ".env already exists — preserving existing secrets, backfilling any missing."
+    _added=0
+    _ensure_env_key() {
+        # $1 = key, $2 = default value
+        if ! grep -q "^${1}=" "${ENV_FILE}" 2>/dev/null; then
+            printf '%s=%s\n' "$1" "$2" >> "${ENV_FILE}"
+            echo "  backfilled ${1}"
+            _added=$(( _added + 1 ))
+        fi
+    }
+    _ensure_env_key PUID "$(id -u)"
+    _ensure_env_key PGID "$(id -g)"
+    _ensure_env_key TZ "$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)"
+    _ensure_env_key STORAGE_ROOT "${STORAGE_ROOT}"
+    _ensure_env_key RADARR_API_KEY "__WILL_BE_SET_AFTER_FIRST_START__"
+    _ensure_env_key PROWLARR_API_KEY "__WILL_BE_SET_AFTER_FIRST_START__"
+    _ensure_env_key SONARR_API_KEY "__WILL_BE_SET_AFTER_FIRST_START__"
+    _ensure_env_key QBITTORRENT_ADMIN_PASSWORD "$(openssl rand -base64 18 | tr -d '=+/')"
+    chmod 600 "${ENV_FILE}"
+    [ "${_added}" -eq 0 ] && echo "  (nothing missing)" || echo "  backfilled ${_added} key(s)"
+    unset _added
 fi
 
 # 4. Start stack
@@ -829,7 +865,13 @@ fi
 # bypass setting. If login fails, fall back to the docker default
 # `adminadmin` and reset the password.
 echo "Hardening qBittorrent: applying random password + disabling localhost auth bypass..."
-QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+# `|| true` is load-bearing: grep exits 1 when the key is absent, and under
+# `set -euo pipefail` that killed the whole script BEFORE the `if [ -z ]`
+# guard three lines down -- the guard that exists precisely to handle a
+# missing key. Same shape as the already-guarded RADARR/PROWLARR/SONARR key
+# reads above. Cost of omitting it: setup exits 1 with a healthy VPN tunnel
+# and every container running, and the operator sees only "Setup failed".
+QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)
 if [ -z "${QBIT_PW}" ]; then
     echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from .env — skipping qBit hardening."
 else
@@ -2345,7 +2387,13 @@ RADARR_DLCLIENTS_FILE="${SCRIPT_DIR}/data/radarr_downloadclients.json"
 if [[ ! -f "${RADARR_DLCLIENTS_FILE}" ]]; then
     echo "  WARN: ${RADARR_DLCLIENTS_FILE} not found — skipping."
 else
-    QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+    # `|| true` is load-bearing: grep exits 1 when the key is absent, and under
+# `set -euo pipefail` that killed the whole script BEFORE the `if [ -z ]`
+# guard three lines down -- the guard that exists precisely to handle a
+# missing key. Same shape as the already-guarded RADARR/PROWLARR/SONARR key
+# reads above. Cost of omitting it: setup exits 1 with a healthy VPN tunnel
+# and every container running, and the operator sees only "Setup failed".
+QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)
     if [[ -z "${QBIT_PW}" ]]; then
         echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
     elif [ "${RADARR_READY:-0}" -ne 1 ]; then
@@ -2489,7 +2537,13 @@ SONARR_DLCLIENTS_FILE="${SCRIPT_DIR}/data/sonarr_downloadclients.json"
 if [[ ! -f "${SONARR_DLCLIENTS_FILE}" ]]; then
     echo "  WARN: ${SONARR_DLCLIENTS_FILE} not found — skipping."
 else
-    QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" | cut -d= -f2-)
+    # `|| true` is load-bearing: grep exits 1 when the key is absent, and under
+# `set -euo pipefail` that killed the whole script BEFORE the `if [ -z ]`
+# guard three lines down -- the guard that exists precisely to handle a
+# missing key. Same shape as the already-guarded RADARR/PROWLARR/SONARR key
+# reads above. Cost of omitting it: setup exits 1 with a healthy VPN tunnel
+# and every container running, and the operator sees only "Setup failed".
+QBIT_PW=$(grep '^QBITTORRENT_ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)
     if [[ -z "${QBIT_PW}" ]]; then
         echo "  WARN: QBITTORRENT_ADMIN_PASSWORD missing from ${ENV_FILE} — skipping."
     elif [ "${SONARR_READY:-0}" -ne 1 ]; then
