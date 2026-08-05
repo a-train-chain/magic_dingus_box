@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-08-05
+
+Field-report release: the first unit living on someone else's network came
+back with a black screen on uploaded videos, and the cause was ours.
+
+### Fixed
+- **Drag-and-drop video uploads bypassed the transcoder and produced
+  black-screen playback.** The Content Manager had two upload paths that
+  looked identical on screen: *clicking* the upload box went through the
+  smart probe-and-transcode flow and always produced a kiosk-playable
+  H.264 file, while *drag-and-dropping* onto the same box (and the
+  playlist editor's retry/auto-add path) posted the raw file straight
+  into the media library. A phone video — typically HEVC, often 4K —
+  cannot be decoded by the kiosk (no hardware decoder on either board),
+  and played as a black screen. All video upload paths now converge on
+  `/admin/smart-upload`: compatible files are moved into place, everything
+  else is transcoded, the progress bar spans upload and transcode as one
+  monotonic pass, and the playlist auto-add uses the final transcoded
+  filename rather than assuming the original's.
+- **Provisioning no longer prints service credentials.** The final banner
+  of `setup_services.sh` printed the Radarr/Sonarr/Prowlarr API keys and
+  the qBittorrent password to stdout — which the Content Manager streams
+  verbatim into the browser during VPN setup and the journal retains. It
+  now proves presence by count and points at the lazy-loaded Credentials
+  panel, which exists precisely so secrets are only fetched on request.
+- **Two provisioning steps could die on a fresh box.** Unguarded
+  `grep | cut` substitutions under `set -euo pipefail` (qBittorrent
+  category setup, and the old credentials banner) aborted the whole
+  provisioning run when a key was legitimately absent — the same failure
+  class as the half-written `.env` bug fixed in 1.9.4.
+- Golden-image pipeline hardening (operator-side; see repo history for
+  the full list): curated content stashes to the movie drive instead of
+  overflowing tmpfs, first-boot identity is idempotent across a failed
+  attempt, expansion survives a bad `parted` parse, and the clone
+  orchestrator gained wrong-box/overwrite/HUP protections and quarantines
+  leaking or truncated artifacts.
+
+### Added
+- **`OWNER_GUIDE.md`** — the customer-facing walkthrough: first power-on,
+  controls, Wi-Fi, finding the Content Manager, phone pairing, the Movies
+  unlock sequence, ProtonVPN and TMDB step-by-step, and movie-drive setup.
+
 ## [1.9.4] - 2026-08-04
 
 Golden-image correctness release. Every fix here was found by flashing the

@@ -585,7 +585,10 @@ const MEDIA_CONFIG = {
         getAvailable: () => AppState.media.videos,
         // API
         endpoint: '/admin/media',
-        uploadEndpoint: '/admin/upload',
+        // Probe-and-transcode, ALWAYS. The raw /admin/upload endpoint must
+        // never be wired here: a raw phone video (HEVC/4K) plays as a black
+        // screen on the kiosk, which has no hardware decoder.
+        uploadEndpoint: '/admin/smart-upload',
         // Display
         icon: spriteIcon('ic-videos'),
         sourceType: 'local',
@@ -2257,9 +2260,86 @@ async function uploadVideos(fileList = null, autoAddToPlaylist = false) {
 }
 
 function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
+    // Goes through /admin/smart-upload — the SAME probe-and-transcode flow
+    // as the library uploader — never the raw /admin/upload endpoint. This
+    // function used to post the raw file, which meant every path that
+    // reached it (the drag-and-drop handler on the upload box, the retry
+    // button, playlist-editor auto-add) put the user's original phone video
+    // straight into data/media/: an iPhone HEVC/4K clip the kiosk cannot
+    // decode, playing as a black screen. Meanwhile CLICKING the same upload
+    // box went through handleDirectUpload's smart flow and worked — the
+    // input method silently decided whether the video would play.
+    //
+    // Upload maps to 0-40% of the bar and the transcode to 40-100%, so the
+    // bar is monotonic across both phases. The playlist auto-add uses the
+    // FINAL output path from the server: the transcoded file is .mp4 and
+    // may be renamed for uniqueness, so the original filename is wrong to
+    // assume.
     return new Promise((resolve) => {
         const { MAX_RETRIES, RETRY_DELAY_MS, TIMEOUT_MS } = UPLOAD_CONFIG;
         let attempts = 0;
+
+        const autoAddFinal = (finalPath) => {
+            if (!autoAddToPlaylist) return;
+            const videoItem = {
+                title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
+                artist: '',
+                source_type: 'local',
+                path: finalPath
+            };
+
+            const config = MEDIA_CONFIG['video'];
+            const items = config.getItems();
+            items.push(videoItem);
+            config.setItems(items);
+            renderPlaylistItems('video');
+
+            setTimeout(() => {
+                switchSourceTab('library');
+            }, 1000);
+        };
+
+        // Poll the transcode job to completion. Transcode failures do NOT
+        // retry the upload: the server already has the file, and re-sending
+        // it would just fail the same encode again. Transient status-fetch
+        // errors are tolerated (Wi-Fi blips shouldn't orphan a running job).
+        const pollTranscode = async (jobId) => {
+            const POLL_MS = 2000;
+            const MAX_CONSECUTIVE_FETCH_ERRORS = 30;
+            let fetchErrors = 0;
+            for (;;) {
+                await new Promise(r => setTimeout(r, POLL_MS));
+                let data;
+                try {
+                    const resp = await fetch(`${currentDevice.url}/admin/transcode-status/${jobId}`);
+                    if (!resp.ok) throw new Error(`status ${resp.status}`);
+                    data = (await resp.json()).data;
+                    fetchErrors = 0;
+                } catch (e) {
+                    if (++fetchErrors >= MAX_CONSECUTIVE_FETCH_ERRORS) {
+                        progressBar.error('Lost contact with transcode job');
+                        resolve({ success: false, error: 'Lost contact with transcode job' });
+                        return;
+                    }
+                    continue;
+                }
+                if (data.status === 'completed') {
+                    const finalPath = data.output_path || `data/media/${data.output_filename}`;
+                    progressBar.complete();
+                    autoAddFinal(finalPath);
+                    resolve({ success: true });
+                    return;
+                }
+                if (data.status === 'failed' || data.status === 'error') {
+                    const msg = data.message || 'Transcode failed';
+                    progressBar.error(msg);
+                    resolve({ success: false, error: msg });
+                    return;
+                }
+                const pct = Math.max(0, Math.min(100, data.progress || 0));
+                progressBar.update(40 + Math.round(pct * 0.6));
+            }
+        };
 
         const attemptUpload = () => {
             attempts++;
@@ -2275,7 +2355,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
 
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
+                    const percent = Math.round((e.loaded / e.total) * 40);
                     progressBar.update(percent);
                 }
             });
@@ -2284,35 +2364,26 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                 clearTimeout(timeoutId);
 
                 if (xhr.status === 200) {
-                    progressBar.complete();
-
+                    let response;
                     try {
-                        const response = JSON.parse(xhr.responseText);
-
-                        // If auto-add is requested, add to playlist immediately
-                        if (autoAddToPlaylist) {
-                            const videoItem = {
-                                title: file.name.replace(/\.[^/.]+$/, ""), // Remove extension
-                                artist: '',
-                                source_type: 'local',
-                                path: response.path || `data/media/${file.name}`
-                            };
-
-                            const config = MEDIA_CONFIG['video'];
-                            const items = config.getItems();
-                            items.push(videoItem);
-                            config.setItems(items);
-                            renderPlaylistItems('video');
-
-                            setTimeout(() => {
-                                switchSourceTab('library');
-                            }, 1000);
-                        }
+                        response = JSON.parse(xhr.responseText);
                     } catch (e) {
                         console.error('Error parsing upload response:', e);
+                        progressBar.error('Bad server response');
+                        resolve({ success: false, error: 'Bad server response' });
+                        return;
                     }
 
-                    resolve({ success: true });
+                    const data = response.data || {};
+                    if (data.action === 'transcode' && data.job_id) {
+                        progressBar.update(40);
+                        pollTranscode(data.job_id);
+                    } else {
+                        // 'direct' — already kiosk-compatible, moved into place.
+                        progressBar.complete();
+                        autoAddFinal(data.output_path || `data/media/${data.output_filename || file.name}`);
+                        resolve({ success: true });
+                    }
                 } else {
                     handleError(`Server error (${xhr.status})`);
                 }
@@ -2338,7 +2409,7 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
             };
 
             try {
-                xhr.open('POST', `${currentDevice.url}/admin/upload`);
+                xhr.open('POST', `${currentDevice.url}/admin/smart-upload`);
                 if (csrfToken) {
                     xhr.setRequestHeader('X-CSRF-Token', csrfToken);
                 }
