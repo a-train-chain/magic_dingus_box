@@ -529,6 +529,27 @@ the failing line number. Both exist because the original failure produced
 an EMPTY journal (Step 6c-2 wipes it by design), leaving nothing to
 diagnose from.
 
+**`x-systemd.automount` will hang a boot with no drive.** An automount unit
+is started at boot even with `noauto` — that is its purpose — and with no
+device behind it the boot stalls until the hardware watchdog resets the
+board at 60 s, which reads as a reboot loop. `nofail` does not help: it
+governs the MOUNT, not the automount. Measured on hardware 2026-08-04:
+
+| `/etc/fstab` options for LABEL=MOVIES | Result |
+|---|---|
+| `defaults,nofail,x-systemd.automount,device-timeout=5` | never completes |
+| `noauto,nofail,x-systemd.automount,device-timeout=5` | never completes |
+| line removed entirely | boots 17.1 s |
+| **`noauto,nofail` + `udev/99-magic-movies-mount.rules`** | **boots 16.7 s, and a drive still auto-mounts** |
+
+The drive is mounted by a udev rule on device appearance instead. With no
+drive the rule never fires, so it cannot delay boot; with a drive it fires
+at boot AND on hotplug, and `magic-dingus-storage-attach.service` still
+runs via its `WantedBy=mnt-ssd.mount`. Both directions are verified —
+attached: mounts, 0 failed units; unattached: rule fires 0 times, 0 failed
+units. **Any optional/removable mount added later must follow this
+pattern**, because most units never have a drive attached at first boot.
+
 **Inherited source-box state is its own bug class.** Anything true only
 because the source box is the source box will ship: the `LABEL=MOVIES`
 fstab entry (a unit with no drive must still boot — `nofail` +

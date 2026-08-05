@@ -1,0 +1,25 @@
+# Mount the MOVIES library drive when it APPEARS, not by waiting for it at boot.
+#
+# The fstab entry deliberately carries `noauto` and NO x-systemd.automount.
+# An automount unit is started at boot even with `noauto` -- that is its whole
+# purpose -- and on a unit with no drive attached (which is every unit the
+# first time a customer powers it on) it hung the boot until the hardware
+# watchdog reset the board at 60 seconds. To an operator that looks like a
+# reboot loop. `nofail` never helped: it governs the MOUNT, not the automount.
+#
+# Measured on hardware 2026-08-04:
+#   defaults,nofail,x-systemd.automount,device-timeout=5  -> never completes
+#   noauto,nofail,x-systemd.automount,device-timeout=5    -> never completes
+#   line removed entirely                                 -> boots in 17.1s
+#   noauto,nofail  + this rule                            -> boots in 16.7s
+#
+# Device-triggered is the right model for removable media: with no drive the
+# rule never fires, so it cannot delay or block boot; with a drive it fires at
+# boot AND on hotplug. Starting mnt-ssd.mount also pulls in
+# magic-dingus-storage-attach.service through its WantedBy=mnt-ssd.mount, so
+# the container re-link still happens exactly as before.
+#
+# --no-block matters: udev must never wait on a systemd job.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="partition", \
+  ENV{ID_FS_LABEL}=="MOVIES", \
+  RUN+="/usr/bin/systemctl --no-block start mnt-ssd.mount"

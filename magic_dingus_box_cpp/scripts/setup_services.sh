@@ -546,7 +546,13 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     # nofail                     -> a missing drive is not a boot failure
     # x-systemd.automount        -> mount on first access, not during boot
     # x-systemd.device-timeout=5 -> 5s, not the 90s default
-    MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2"
+    # noauto + NO x-systemd.automount. See udev/99-magic-movies-mount.rules
+    # for the full measurement, but in short: an automount unit starts at boot
+    # even with noauto, and with no drive behind it the boot hangs until the
+    # hardware watchdog resets the board at 60s. The udev rule mounts on device
+    # appearance instead, which is inert when no drive is present.
+    # fsck pass 0: never fsck a drive that may not exist.
+    MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0"
     if ! grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
         if grep -q "LABEL=MOVIES" /etc/fstab; then
             sudo cp /etc/fstab /etc/fstab.mdb-bak-$(date +%Y%m%d-%H%M%S)
@@ -554,8 +560,19 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
             echo "fstab: replaced a stale MOVIES entry (missing nofail/automount)."
         fi
         echo "$MOVIES_FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
-        echo "fstab: MOVIES-drive automount entry added."
+        echo "fstab: MOVIES-drive mount entry added (noauto — udev mounts it)."
         sudo systemctl daemon-reload
+    fi
+
+    # The udev rule is what actually mounts the drive. Without it the fstab
+    # entry above is inert and a customer's drive would never mount.
+    if [[ -f "${SCRIPT_DIR}/../udev/99-magic-movies-mount.rules" ]]; then
+        sudo install -m 0644 "${SCRIPT_DIR}/../udev/99-magic-movies-mount.rules" \
+            /etc/udev/rules.d/99-magic-movies-mount.rules
+        sudo udevadm control --reload-rules
+        echo "udev: MOVIES-drive mount rule installed."
+    else
+        echo "WARNING: udev/99-magic-movies-mount.rules missing — the movie drive will NOT auto-mount." >&2
     fi
     sudo systemctl daemon-reload
     sudo systemctl enable magic-dingus-library-import.service

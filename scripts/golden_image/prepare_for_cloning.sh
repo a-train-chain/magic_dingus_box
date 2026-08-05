@@ -793,7 +793,11 @@ log "[2c/5] cloud-init logs removed (they render the Wi-Fi PSK at DEBUG)"
 # Not stashed-and-restored: the corrected line is strictly better on the
 # source box as well (it mounts on access instead of at boot, and a drive
 # that is unplugged stops being a boot-time failure), so the fix stays.
-MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2"
+# noauto and NO x-systemd.automount. The automount was the actual cause of the
+# boot hang -- see udev/99-magic-movies-mount.rules. nofail was already present
+# on the source box and did not help, because it governs the mount, not the
+# automount. fsck pass 0: never fsck a drive that may not exist.
+MOVIES_FSTAB_LINE="LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0"
 if [[ -f /etc/fstab ]]; then
     if grep -qxF "$MOVIES_FSTAB_LINE" /etc/fstab; then
         log "[2c/5] MOVIES fstab entry already non-blocking"
@@ -807,8 +811,21 @@ if [[ -f /etc/fstab ]]; then
     else
         printf '%s\n' "$MOVIES_FSTAB_LINE" >> /etc/fstab
         systemctl daemon-reload 2>/dev/null || true
-        log "[2c/5] Added the MOVIES fstab automount entry (none was present)"
+        log "[2c/5] Added the MOVIES fstab mount entry (none was present)"
     fi
+
+    # The fstab line is inert without this rule -- it is what actually mounts
+    # the drive, at boot or on hotplug. Ship it in the image regardless of
+    # whether the source box happens to have it.
+    _udev_src="${CPP_DIR}/udev/99-magic-movies-mount.rules"
+    if [[ -f "$_udev_src" ]]; then
+        install -m 0644 "$_udev_src" /etc/udev/rules.d/99-magic-movies-mount.rules
+        udevadm control --reload-rules 2>/dev/null || true
+        log "[2c/5] MOVIES-drive udev mount rule installed into the image"
+    else
+        log "[2c/5] WARNING: ${_udev_src} missing — cloned units will NOT auto-mount a movie drive"
+    fi
+    unset _udev_src
 fi
 
 # POST-CONDITION: prove the credential-bearing classes are actually gone
