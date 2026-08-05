@@ -336,6 +336,35 @@ PYEOF
     fi
 }
 
+check_radarr_root_folder() {
+    header "Radarr root folder (/data/library)"
+    # This check exists because its ABSENCE hid a shipping-blocking bug.
+    # setup_services.sh created Sonarr's root folder and never Radarr's, so a
+    # fresh unit had zero Radarr root folders and every movie download failed
+    # with "no root folder configured in Radarr" -- while all 14 smoke checks
+    # passed, because only Sonarr's was asserted. Found 2026-08-04 on the
+    # first real provisioning. Asymmetric coverage between two near-identical
+    # services is exactly where this class of bug hides.
+    if [[ -z "${RADARR_API_KEY}" ]]; then
+        skip "Radarr root folder — RADARR_API_KEY not in .env (re-run setup_services.sh)"
+        return
+    fi
+    local response
+    response=$(curl -fsS -H "X-Api-Key: ${RADARR_API_KEY}" \
+        "http://localhost:7878/api/v3/rootfolder" 2>/dev/null) || {
+        fail "Radarr /api/v3/rootfolder unreachable"
+        return
+    }
+    # Presence alone is not health: the record survives the directory
+    # vanishing and just flips accessible=false, after which every import
+    # fails. Assert the record exists AND every root folder is accessible.
+    if echo "${response}" | python3 -c "import sys,json; rf=json.load(sys.stdin); sys.exit(0 if any(r.get('path')=='/data/library' for r in rf) and all(r.get('accessible') is True for r in rf) else 1)" 2>/dev/null; then
+        pass "Radarr root folder /data/library present and accessible"
+    else
+        fail "Radarr root folder missing or inaccessible — downloads will fail with 'no root folder configured'"
+    fi
+}
+
 check_sonarr_root_folder() {
     header "Sonarr root folder (/data/library/tv)"
     if [[ -z "${SONARR_API_KEY}" ]]; then
@@ -675,6 +704,7 @@ check_radarr_indexers
 check_radarr_download_client
 check_radarr_quality_profile
 check_radarr_custom_formats
+check_radarr_root_folder
 check_sonarr_root_folder
 check_sonarr_indexers
 check_sonarr_download_client

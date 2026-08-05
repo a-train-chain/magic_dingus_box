@@ -2493,6 +2493,45 @@ show("unchanged", s["unchanged"])
     fi
 fi
 
+# 15-R0. Radarr root folder /data/library.
+#
+# Sonarr got a root-folder step (15-S0 below); Radarr never had one. On a
+# fresh box -- blank radarr.db, which is every customer unit -- Radarr ends
+# up with ZERO root folders and every movie download fails with "no root
+# folder configured in Radarr". magicpi5 works only because its radarr.db
+# was configured long ago and persisted; the golden image clones a WIPED
+# services/config, so no unit inherits that.
+#
+# Found on the first real provisioning (2026-08-04). It went unnoticed
+# because verify_services.sh asserted Sonarr's root folder and had no
+# equivalent Radarr assertion -- all 14 smoke checks passed on a box that
+# could not download a single movie. A check is added there too.
+#
+# Same shape as 15-S0, including the ||-guarded curl inside the command
+# substitution: under set -euo pipefail a bare failing curl in $() aborts
+# the whole run before the tolerant python path executes.
+echo "Configuring Radarr root folder /data/library..."
+if [ "${RADARR_READY:-0}" -ne 1 ]; then
+    echo "  WARN: Radarr not reachable — later runs will apply it."
+else
+    RADARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
+        http://localhost:7878/api/v3/rootfolder 2>/dev/null || echo "[]") \
+        | python3 -c "import sys,json
+try: print(any(r.get('path')=='/data/library' for r in json.load(sys.stdin)))
+except Exception: print(False)")
+    if [[ "${RADARR_RF_PRESENT}" == "True" ]]; then
+        echo "  ✓ Radarr root folder /data/library already present"
+    else
+        if curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+            -d '{"path":"/data/library"}' \
+            http://localhost:7878/api/v3/rootfolder >/dev/null 2>&1; then
+            echo "  ✓ Radarr root folder /data/library created"
+        else
+            echo "  WARN: failed to create Radarr root folder; verify /data/library is writable"
+        fi
+    fi
+fi
+
 # 15-S0. Sonarr root folder /data/library/tv.
 #
 # Greenfield — Sonarr uses the hardlink-capable /data mount from day one
