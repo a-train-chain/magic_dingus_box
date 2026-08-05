@@ -114,13 +114,23 @@ echo -e "${BOLD}[4/5] Normalising /etc/fstab${NC}"
 # every unit at first power-on -- until the hardware watchdog resets it.
 # prepare_for_cloning.sh also normalises this, but fixing the source box
 # directly means the very next image is correct even if that path changes.
-ssh "${SSH_OPTS[@]}" "$PI_HOST" 'bash -s' <<'REMOTE' 2>/dev/null
+# The heredoc's exit status is CAPTURED and the outcome content-verified.
+# It used to run bare with stderr discarded, which made step 4 the one step
+# in this script that could not fail: a sudo error or read-only /etc still
+# ended at "Source box ready to clone." The remote side now ends by
+# asserting the exact line is present (set -e makes any earlier failure
+# propagate), mirroring how every push is hash-verified.
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
 LINE='LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0'
 if grep -qxF "$LINE" /etc/fstab; then
     echo "  OK      fstab already correct"
-elif grep -q "LABEL=MOVIES" /etc/fstab; then
+elif grep -q "^[^#]*LABEL=MOVIES" /etc/fstab; then
     sudo cp /etc/fstab "/etc/fstab.bak-$(date +%Y%m%d-%H%M%S)"
-    sudo sed -i '/LABEL=MOVIES/d' /etc/fstab
+    # ^[^#]* guard: only ACTIVE entries are stale entries. A commented-out
+    # LABEL=MOVIES line is documentation, not configuration — deleting it
+    # too is harmless but surprising, so the sed matches active lines only.
+    sudo sed -i '/^[^#]*LABEL=MOVIES/d' /etc/fstab
     echo "$LINE" | sudo tee -a /etc/fstab >/dev/null
     sudo systemctl daemon-reload
     echo "  FIXED   replaced a blocking MOVIES fstab entry"
@@ -129,8 +139,16 @@ else
     sudo systemctl daemon-reload
     echo "  ADDED   MOVIES fstab entry (none was present)"
 fi
+# Outcome assertion — the reason this step exists at all.
+grep -qxF "$LINE" /etc/fstab
 grep -i movies /etc/fstab | sed 's/^/          /'
 REMOTE
+then
+    :
+else
+    echo -e "  ${RED}FAILED${NC}  fstab normalisation did not complete on the box"
+    FAILED=1
+fi
 
 echo
 echo -e "${BOLD}[5/5] Kiosk source + rebuild${NC}"
@@ -144,8 +162,13 @@ if [[ $DO_BUILD -eq 1 ]]; then
         "cd /opt/magic_dingus_box/magic_dingus_box_cpp/build && make -j2" 2>&1 | tail -4 | sed 's/^/    /'; then
         # A zero exit from make is not proof the change is IN the binary --
         # a stale object or a skipped rebuild both exit 0. Assert on content.
+        # `|| true` INSIDE the remote command, not `|| echo 0` outside it:
+        # grep -c prints "0" AND exits 1 on zero matches, so the outer
+        # fallback appended a second line ("0\n0") and the -ge below then
+        # blew up in arithmetic context instead of comparing.
         n=$(ssh "${SSH_OPTS[@]}" "$PI_HOST" \
-            "strings /opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp 2>/dev/null | grep -c 'is the phone remote'" 2>/dev/null || echo 0)
+            "strings /opt/magic_dingus_box/magic_dingus_box_cpp/build/magic_dingus_box_cpp 2>/dev/null | grep -c 'is the phone remote' || true" 2>/dev/null)
+        n="${n:-0}"
         if [[ "${n:-0}" -ge 2 ]]; then
             echo -e "  ${GREEN}OK${NC}      binary contains the phone-remote skip (both paths)"
         else

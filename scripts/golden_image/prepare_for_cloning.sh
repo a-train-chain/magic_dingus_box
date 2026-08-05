@@ -108,8 +108,11 @@ if [[ ${#TRIPWIRE_HITS[@]} -gt 0 ]]; then
     done
     log "       These look like operator backups that may carry credentials"
     log "       (API keys, the qBittorrent password, VPN keys). Delete them"
-    log "       or move them off the SD card (e.g. to /mnt/ssd or another"
-    log "       machine), then re-run. The clone captures every byte on the SD."
+    log "       or move them off the SD card, then re-run. The clone captures"
+    log "       every byte on the SD. NOTE: /mnt/ssd only counts as off-card"
+    log "       when the movie drive is actually mounted there — verify with"
+    log "       'mountpoint /mnt/ssd' first, or the files land on the SD and"
+    log "       ship anyway."
     exit 1
 fi
 log "Preflight: secret tripwire clean"
@@ -131,7 +134,7 @@ log "Preflight: secret tripwire clean"
 # already refuses to start when it is present.
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
-log "[4/5] Marking clone in progress at ${MARKER_PATH}..."
+log "Preflight: marking clone in progress at ${MARKER_PATH}..."
 
 cat > "$MARKER_PATH" <<EOF
 # Magic Dingus Box - clone in progress
@@ -162,6 +165,30 @@ log "[1/5] Stopping kiosk + Content Manager + Docker stack..."
 # image is silently inconsistent. restore_after_cloning.sh starts it
 # again on the way out.
 systemctl stop kiosk-standby-watcher.service 2>/dev/null || true
+
+# The periodic units and the gluetun cascade watcher must stop too, and the
+# watcher must stop BEFORE dockerd does. Every one of these writes to the SD
+# on its own schedule — qbit-port-sync every 60 s, auto-blocklist every
+# 15 min — so leaving them running repeats, at machine cadence, the exact
+# "daemon rewrites data AFTER the fill" failure documented below for dockerd:
+# journal writes and state files landing in free space the zerofill already
+# passed over, then dd copying them verbatim. The cascade watcher is
+# Restart=always; once dockerd stops, its `docker events` subscription dies
+# and systemd respawns it every 10 s for the whole clone, each attempt
+# logging a fresh failure. restore_after_cloning.sh starts all of these
+# again on the way out.
+CLONE_QUIESCE_UNITS=(
+    gluetun-cascade-restart.service
+    qbit-port-sync.timer
+    magic-dingus-auto-blocklist.timer
+    magic-dingus-missing-search.timer
+    magic-dingus-smoke-test.timer
+)
+for _u in "${CLONE_QUIESCE_UNITS[@]}"; do
+    systemctl stop "$_u" 2>/dev/null || true
+done
+unset _u
+log "[1/5] Periodic timers + cascade watcher stopped for the duration of the clone"
 
 systemctl stop magic-dingus-box-cpp.service 2>/dev/null || true
 systemctl stop magic-dingus-web.service 2>/dev/null || true
@@ -391,7 +418,12 @@ ARR_APPS=(radarr sonarr prowlarr)
 
 SECRET_STASH="/dev/shm/mdb-secret-stash"
 SECRET_PATHS=(
-    "/opt/magic_dingus_box/services/.env"
+    # Globbed, not the bare literal: an operator `.env.bak` / `.env.old` made
+    # during a maintenance session carries the same credentials as .env itself,
+    # sat outside every pattern (the tripwire scans only /home/magic and
+    # /root), and would have passed the leak check below, which also tested
+    # `-name .env` exactly. The glob catches .env and every sibling.
+    "/opt/magic_dingus_box/services/.env*"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key"
     "/opt/magic_dingus_box/magic_dingus_box_cpp/build/data/flask_secret.key"
     "/home/magic/.config/magic_dingus_box/tmdb_api_key*"
@@ -590,12 +622,24 @@ SECRET_PATHS+=(
 # Measured on the source box before this existed: 13 playlists and 1.9 GB of
 # the operator's own music videos (31 files) shipped in every image.
 #
-# These go through the normal stash-and-restore machinery, so the source box
-# keeps every playlist and every video; they are simply absent for the
-# duration of the dd. That is deliberately different from pruning in
-# first_boot.sh: doing it there would still leave the operator's personal
-# content readable inside the .img.gz artifact and on any flashed-but-unbooted
-# card, and would leave the image needlessly large.
+# These are stashed-and-restored like the secrets, so the source box keeps
+# every playlist and every video; they are simply absent for the duration of
+# the dd. That is deliberately different from pruning in first_boot.sh: doing
+# it there would still leave the operator's personal content readable inside
+# the .img.gz artifact and on any flashed-but-unbooted card, and would leave
+# the image needlessly large.
+#
+# They do NOT go through SECRET_PATHS. That stash is tmpfs (/dev/shm, ~990 MB
+# on the 2 GB board) and the curated media measured 921 MB across 20 files on
+# the source box (2026-08-04) — with the ~72 MB secret pass sharing the same
+# tmpfs that overflows it, ENOSPC aborts the whole prepare under set -e, and
+# long before that the copy is eating RAM the board needs. Bulk content gets
+# its own DISK-backed stash on /mnt/ssd below
+# (the movie drive is attached on any box being used as a clone source, and
+# the SD-only dd never captures it). Content is also not zeroed in place the
+# way secrets are: these are music videos, not credentials — the two-stage
+# free-space fill in Step 4c overwrites their freed blocks, and even a
+# surviving fragment is harmless, so mv (no copy, no shred) is correct.
 SHIP_PLAYLISTS=(
     games_arcade.yaml
     games_atari7800.yaml
@@ -609,6 +653,8 @@ SHIP_PLAYLISTS=(
     The_Nostalgia_Channel.yaml
 )
 
+CONTENT_STASH="/mnt/ssd/.mdb-content-stash"
+CONTENT_PATHS=()
 _curated=0
 for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
     [[ -d "${_d}/playlists" ]] || continue
@@ -622,7 +668,7 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
             [[ "$_base" == "$_want" ]] && { _keep=1; break; }
         done
         if [[ "$_keep" -eq 0 ]]; then
-            SECRET_PATHS+=("$_pl")
+            CONTENT_PATHS+=("$_pl")
             _curated=$(( _curated + 1 ))
         fi
     done
@@ -632,19 +678,44 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
     # Derived from the kept playlists rather than from a second hand-written
     # list, so removing a playlist from SHIP_PLAYLISTS automatically drops the
     # videos only it used. Entries look like:  path: 'media/Some File.mp4'
+    #
+    # Basename extraction is sed, NOT `xargs -I{} basename`: xargs treats
+    # quotes in its INPUT as shell quoting even with -I, so one media title
+    # containing an apostrophe ("Don't Stop Believin'.mp4") aborts xargs with
+    # "unmatched single quote", silently drops every remaining reference from
+    # the file, and the loop below then curates AWAY media the kept playlist
+    # actually uses. Current filenames happen to be apostrophe-free; uploads
+    # through the web admin carry no such guarantee.
     [[ -d "${_d}/media" ]] || { shopt -u nullglob; continue; }
     _refs_file=$(mktemp)
     for _want in "${SHIP_PLAYLISTS[@]}"; do
         [[ -f "${_d}/playlists/${_want}" ]] || continue
-        grep -hE "^[[:space:]]*path:" "${_d}/playlists/${_want}" 2>/dev/null \
-            | sed -e "s/^[[:space:]]*path:[[:space:]]*//" \
+        # The (-[[:space:]]*)? alternative matters: YAML accepts both the
+        # indented form (`    path: ...`) and the first-key-of-item form
+        # (`  - path: ...`). Current playlists use the former, but a
+        # playlist authored the other way would silently contribute ZERO
+        # refs here, and every media file it references would be curated
+        # away from under it.
+        grep -hE "^[[:space:]]*(-[[:space:]]*)?path:" "${_d}/playlists/${_want}" 2>/dev/null \
+            | sed -e "s/^[[:space:]]*-*[[:space:]]*path:[[:space:]]*//" \
                   -e "s/^['\"]//" -e "s/['\"][[:space:]]*$//" \
-            | xargs -I{} basename "{}" 2>/dev/null >> "$_refs_file" || true
+                  -e 's#.*/##' >> "$_refs_file" || true
     done
+    # If the reference list came out EMPTY (unreadable playlists, a schema
+    # change in the path: lines), curating would sweep away every media file
+    # the shipped example playlist needs. Ship a slightly-larger image instead
+    # of a broken one.
+    if [[ ! -s "$_refs_file" ]]; then
+        log "[2c/5] WARNING: no media references parsed from kept playlists in ${_d} —"
+        log "         skipping media curation there (image may carry extra videos)"
+        rm -f "$_refs_file"
+        shopt -u nullglob
+        continue
+    fi
     for _m in "${_d}"/media/*; do
         [[ -f "$_m" ]] || continue
         if ! grep -qxF "$(basename "$_m")" "$_refs_file" 2>/dev/null; then
-            SECRET_PATHS+=("$_m")
+            CONTENT_PATHS+=("$_m")
             _curated=$(( _curated + 1 ))
         fi
     done
@@ -653,6 +724,39 @@ for _d in "${DATA_DIR}" "${CPP_DIR}/build/data"; do
 done
 unset _d _pl _base _keep _want _m _refs_file
 log "[2c/5] Content curation: ${_curated} non-shipping playlist/media file(s) held back from the image"
+
+# Move the curated content to its disk-backed stash NOW, before the secret
+# pass. mv preserves mode/ownership (we are root) and the manifest records
+# where each file goes back. Aborts rather than degrades if the movie drive
+# is not actually mounted: falling back to /dev/shm re-creates the ENOSPC
+# failure, and quietly shipping the operator's personal videos is exactly
+# what the curation exists to prevent. restore_after_cloning.sh reverses
+# this whether or not the rest of prepare completed.
+if [[ ${#CONTENT_PATHS[@]} -gt 0 ]]; then
+    if ! mountpoint -q /mnt/ssd; then
+        log "ERROR: ${#CONTENT_PATHS[@]} curated file(s) need the content stash, but /mnt/ssd"
+        log "       is not a mounted drive — stashing there would write to the SD card,"
+        log "       which the dd captures. Attach/mount the movie drive and re-run"
+        log "       (restore_after_cloning.sh first, to clear the marker)."
+        exit 1
+    fi
+    mkdir -p "$CONTENT_STASH"
+    chmod 700 "$CONTENT_STASH"
+    : > "${CONTENT_STASH}/manifest"
+    chmod 600 "${CONTENT_STASH}/manifest"
+    _moved_mb=0
+    for _src in "${CONTENT_PATHS[@]}"; do
+        [[ -f "$_src" ]] || continue
+        _key="$(printf '%s' "$_src" | tr '/' '_')"
+        _sz=$(stat -c %s "$_src" 2>/dev/null || echo 0)
+        mv "$_src" "${CONTENT_STASH}/${_key}"
+        printf '%s\t%s\n' "$_key" "$_src" >> "${CONTENT_STASH}/manifest"
+        _moved_mb=$(( _moved_mb + _sz / 1048576 ))
+    done
+    sync
+    log "[2c/5] Curated content moved to ${CONTENT_STASH} (~${_moved_mb} MB, restored after the dd)"
+    unset _src _key _sz _moved_mb
+fi
 
 # Expand the glob entries. This list has to match the SHAPE of what
 # first_boot.sh wipes on the clone: it globs tmdb_api_key*, so a stray
@@ -696,6 +800,12 @@ chmod 600 "${SECRET_STASH}/manifest"
 # a shredding pass over ~72 MB plus one sync per file, seconds on the SSD-backed
 # boxes and longer on a slow SD. The count logged below is what confirms the
 # pass actually ran over the whole list.
+#
+# INVARIANT: only small secret files belong on this list. Bulk content (the
+# curated playlists/media above) has its own disk-backed stash on /mnt/ssd —
+# 1.9 GB of curated video routed through this loop filled tmpfs mid-copy and
+# aborted the whole prepare with ENOSPC. If a future entry can plausibly
+# exceed a few hundred MB, it goes in CONTENT_PATHS, not here.
 stripped=0
 
 for src in "${SECRET_PATHS[@]}"; do
@@ -752,8 +862,21 @@ if [[ -d "$NM_CONN_DIR" ]] && rmdir "$NM_CONN_DIR" 2>/dev/null; then
     chmod 700 "$NM_CONN_DIR"
     chown root:root "$NM_CONN_DIR" 2>/dev/null || true
     log "[2c/5] Wi-Fi profile directory recreated (its old block held the SSID as a filename)"
-else
-    log "[2c/5] NOTE: ${NM_CONN_DIR} not empty after stashing — SSID may persist as a directory entry"
+elif [[ -d "$NM_CONN_DIR" ]]; then
+    # ABORT, not a note. If rmdir refused, something the stash didn't match is
+    # still in there (a .bak, an editor swapfile) — and a leftover file means
+    # the directory block that holds the deleted <SSID>.nmconnection FILENAME
+    # stays allocated, so the SSID rides into the image exactly the way the
+    # 2026-08-04 artifact proved it does. The leak check below only matches
+    # *.nmconnection, so it cannot catch whatever blocked the rmdir here.
+    # Filenames are NOT listed — the SSID may be in the name itself.
+    _nm_left=$(find "$NM_CONN_DIR" -mindepth 1 2>/dev/null | wc -l)
+    log "ERROR: ${NM_CONN_DIR} still holds ${_nm_left} entr(ies) after stashing —"
+    log "       the deleted Wi-Fi profile's filename would persist in the image."
+    log "       Inspect the directory by hand (names withheld here on purpose),"
+    log "       move the stragglers off the SD, then run restore_after_cloning.sh"
+    log "       and retry the clone."
+    exit 1
 fi
 
 # cloud-init's logs are a THIRD copy of the Wi-Fi PSK, after the boot
@@ -839,22 +962,42 @@ fi
 # ABORTS the clone rather than warning: shipping the operator's home Wi-Fi
 # password and account hash on every unit is not something to discover from
 # a log line nobody read.
+# Each entry is "directory|name-glob". The glob reaches find as a QUOTED
+# argument, never as a bare word: the old form (`find $pat` unquoted) let the
+# pattern words themselves be subject to pathname expansion against the CWD —
+# harmless only while nullglob happened to be off at this point in the script.
+# With nullglob on, an unmatched `*.nmconnection` word would simply vanish,
+# find would error on the dangling -name, stderr is discarded, and the guard
+# would report CLEAN over an image carrying the password. The one check whose
+# job is to abort the ship must not depend on shell-option ambience.
 leak_found=0
-for pat in \
-    '/var/lib/cloud -name user-data*' \
-    '/var/lib/cloud -name network-config*' \
-    '/var/lib/cloud -name obj.pkl' \
-    '/etc/NetworkManager/system-connections -name *.nmconnection' \
-    '/opt/magic_dingus_box/services -name .env' \
-    '/var/log -name cloud-init.log*' \
-    '/var/log -name cloud-init-output.log*'; do
-    # shellcheck disable=SC2086  # deliberate: $pat carries find's own args
-    n=$(find $pat -type f 2>/dev/null | wc -l)
+leak_checks=(
+    '/var/lib/cloud|user-data*'
+    '/var/lib/cloud|network-config*'
+    '/var/lib/cloud|obj.pkl'
+    '/etc/NetworkManager/system-connections|*.nmconnection'
+    '/opt/magic_dingus_box/services|.env*'
+    '/var/log|cloud-init.log*'
+    '/var/log|cloud-init-output.log*'
+    # Outcome assertions for stash classes that have silently matched nothing
+    # in past iterations: the *arr databases (API keys + qBit password) and
+    # the watch-history DB, both trees.
+    '/opt/magic_dingus_box/services/config/radarr|radarr.db*'
+    '/opt/magic_dingus_box/services/config/sonarr|sonarr.db*'
+    '/opt/magic_dingus_box/services/config/prowlarr|prowlarr.db*'
+    '/opt/magic_dingus_box/magic_dingus_box_cpp|media_browser.db*'
+)
+for chk in "${leak_checks[@]}"; do
+    dir="${chk%%|*}"
+    name="${chk#*|}"
+    [[ -d "$dir" ]] || continue
+    n=$(find "$dir" -name "$name" -type f 2>/dev/null | wc -l)
     if [[ "$n" -gt 0 ]]; then
-        log "ERROR: post-scrub leak check FAILED — ${n} file(s) still match: ${pat}"
+        log "ERROR: post-scrub leak check FAILED — ${n} file(s) still match: ${dir} ${name}"
         leak_found=$((leak_found + 1))
     fi
 done
+unset chk dir name
 if [[ "$leak_found" -gt 0 ]]; then
     log "ERROR: refusing to continue. The image would ship operator credentials."
     log "       Run restore_after_cloning.sh to put the Pi back, then fix SECRET_PATHS."
@@ -974,13 +1117,27 @@ else
     # reserve and would have caught it; a later "leave a 64 MB margin"
     # change replaced that with a bounded count and silently reintroduced
     # the leak. Hence: drop the reserve, fill, restore the reserve.
-    ROOT_DEV=$(findmnt -no SOURCE /)
+    # Both captures are guarded: under set -euo pipefail an absent tune2fs or
+    # a non-ext4 root makes the bare pipeline abort the script AT THE CAPTURE
+    # — before the trap below is armed — leaving a stripped box with the
+    # marker set. Empty values fall through to the existing "could not drop
+    # the reserve" warning path instead.
+    ROOT_DEV=$(findmnt -no SOURCE / 2>/dev/null || true)
     # Restore by exact BLOCK COUNT, not a rounded percentage: this card's
     # reserve is 631957 of 15458816 blocks = 4.088%, which rounds to 4 and
     # would quietly shrink the reserve on every clone.
     RESERVE_BLOCKS=$(tune2fs -l "$ROOT_DEV" 2>/dev/null \
-        | awk -F: '/^Reserved block count/{gsub(/ /,"",$2); print $2}')
+        | awk -F: '/^Reserved block count/{gsub(/ /,"",$2); print $2}' || true)
     RESERVE_RESTORED=0
+    # Persist the count where restore_after_cloning.sh can find it. The trap
+    # below covers every signal bash can see — but SIGKILL, an OOM kill, or a
+    # power cut bypass traps entirely, and the correct count then exists
+    # nowhere. restore reads this file and repairs a zero reserve; the unwind
+    # removes it once the reserve is back.
+    if [[ -n "$RESERVE_BLOCKS" && "$RESERVE_BLOCKS" != "0" ]]; then
+        printf '%s %s\n' "$RESERVE_BLOCKS" "$ROOT_DEV" > "${BACKUP_DIR}/reserve_blocks"
+        chmod 600 "${BACKUP_DIR}/reserve_blocks"
+    fi
     # Anything between the drop and the restore that exits the script would
     # otherwise leave the root filesystem permanently at zero reserve. That
     # is not hypothetical: an unbound-variable abort three lines below this
@@ -995,8 +1152,11 @@ else
         rm -f "$ZERO_FILE" "$ZERO_TAIL" "$BOOT_ZERO" 2>/dev/null || true
         [[ "${RESERVE_RESTORED:-0}" == "1" ]] || return 0
         RESERVE_RESTORED=0
-        tune2fs -r "$RESERVE_BLOCKS" "$ROOT_DEV" >/dev/null 2>&1 \
-            || log "[4c/5] WARNING: could not restore the ${RESERVE_BLOCKS}-block root reserve on ${ROOT_DEV} — run: sudo tune2fs -r ${RESERVE_BLOCKS} ${ROOT_DEV}"
+        if tune2fs -r "$RESERVE_BLOCKS" "$ROOT_DEV" >/dev/null 2>&1; then
+            rm -f "${BACKUP_DIR}/reserve_blocks" 2>/dev/null || true
+        else
+            log "[4c/5] WARNING: could not restore the ${RESERVE_BLOCKS}-block root reserve on ${ROOT_DEV} — run: sudo tune2fs -r ${RESERVE_BLOCKS} ${ROOT_DEV}"
+        fi
     }
     # HUP is the one that actually happened. This script runs under ssh, and
     # when the link drops the remote shell gets SIGHUP — which bash does NOT
@@ -1058,14 +1218,18 @@ else
     sync
     rm -f "$ZERO_FILE"
     sync
-    unwind_zerofill
-    trap - EXIT INT TERM HUP
 
     # The FAT boot partition has its own free space and was never zeroed at
     # all. Step 2b overwrites the NAMED cloud-init files there, but FAT
     # rewrites a file to fresh clusters rather than in place, so earlier
     # copies persist as unlinked remnants — three fragments of network-config
     # naming the operator's SSID were found in the shipped image at ~20 MB.
+    #
+    # This runs with the trap still ARMED. It used to sit after the disarm, so
+    # a dropped ssh link during this fill — the normal failure mode the trap
+    # exists for — left /boot/firmware 100% full of junk that neither prepare
+    # nor restore would ever remove (unwind_zerofill already knows about
+    # $BOOT_ZERO; it just wasn't listening any more).
     boot_avail=$(df -Pm /boot/firmware 2>/dev/null | awk 'NR==2 {print $4}')
     if [[ -n "$boot_avail" && "$boot_avail" -gt 8 ]]; then
         log "[4c/5] Zeroing ~$((boot_avail - 4)) MB of boot-partition free space..."
@@ -1076,6 +1240,9 @@ else
         rm -f "$BOOT_ZERO"
         sync
     fi
+
+    unwind_zerofill
+    trap - EXIT INT TERM HUP
     # fstrim on top: on cards whose controller honors discard this also
     # clears the flash translation layer's copies, which dd never sees
     # but a chip-off reader would. Harmless no-op where unsupported.

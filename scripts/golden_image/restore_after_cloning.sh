@@ -150,6 +150,69 @@ if [[ -f "${SECRET_STASH}/manifest" ]]; then
     nmcli connection reload 2>/dev/null || true
 else
     log "[1/4] No application-secret stash found (nothing to restore)"
+    # An orphaned stash DIRECTORY with no manifest cannot be mapped back to
+    # original paths (prepare creates the manifest before the first copy, so
+    # this state means nothing was actually removed from disk). Clear it so
+    # credentials do not linger in world-readable /dev/shm, and reload NM
+    # anyway — it is a harmless no-op when nothing changed.
+    rm -rf "$SECRET_STASH" 2>/dev/null || true
+    nmcli connection reload 2>/dev/null || true
+fi
+
+# Curated content (the operator's own playlists/videos) that prepare moved to
+# the disk-backed stash on the movie drive so the artifact would not carry
+# them. mv'd back exactly where they came from. This stash survives a reboot
+# (it is on the SSD, not tmpfs), so a crashed clone loses nothing.
+CONTENT_STASH="/mnt/ssd/.mdb-content-stash"
+
+if [[ -f "${CONTENT_STASH}/manifest" ]]; then
+    restored=0
+    while IFS=$'\t' read -r key dest; do
+        [[ -n "$key" && -n "$dest" ]] || continue
+        [[ -f "${CONTENT_STASH}/${key}" ]] || continue
+        mkdir -p "$(dirname "$dest")"
+        mv "${CONTENT_STASH}/${key}" "$dest"
+        restored=$((restored + 1))
+    done < "${CONTENT_STASH}/manifest"
+    sync
+    rm -rf "$CONTENT_STASH"
+    log "[1/4] Restored ${restored} curated content file(s) and cleared the content stash"
+else
+    log "[1/4] No curated-content stash found (nothing to restore)"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1b: Repair zerofill aftermath the trap could not reach
+# ---------------------------------------------------------------------------
+# prepare's own trap handles the normal failure modes (including SIGHUP from a
+# dropped ssh link), but SIGKILL, an OOM kill, or a power cut bypass traps
+# entirely. That leaves multi-GB junk fill files on disk and — worse — the
+# ext4 root reserve at 0, with the correct count existing nowhere in shell
+# memory. prepare persists the count to reserve_blocks for exactly this case.
+rm -f /var/tmp/mdb-zerofill.tmp /var/tmp/mdb-zerofill-tail.tmp \
+      /boot/firmware/.mdb-zerofill.tmp 2>/dev/null || true
+
+if [[ -f "${BACKUP_DIR}/reserve_blocks" ]]; then
+    read -r _blocks _dev < "${BACKUP_DIR}/reserve_blocks" || true
+    if [[ -n "${_blocks:-}" && -n "${_dev:-}" ]]; then
+        _current=$(tune2fs -l "$_dev" 2>/dev/null \
+            | awk -F: '/^Reserved block count/{gsub(/ /,"",$2); print $2}' || true)
+        if [[ "${_current:-}" != "0" ]]; then
+            # Reserve is intact (prepare's own unwind got there first).
+            rm -f "${BACKUP_DIR}/reserve_blocks"
+        elif tune2fs -r "$_blocks" "$_dev" >/dev/null 2>&1; then
+            log "[1/4] Restored the ${_blocks}-block root reserve on ${_dev} (a crashed zerofill had left it at 0)"
+            rm -f "${BACKUP_DIR}/reserve_blocks"
+        else
+            # Keep the file: it is the only surviving record of the correct
+            # count, and a re-run can retry once the underlying problem is
+            # fixed.
+            log "[1/4] WARNING: root reserve on ${_dev} is 0 and could not be restored — run: sudo tune2fs -r ${_blocks} ${_dev}"
+        fi
+    else
+        rm -f "${BACKUP_DIR}/reserve_blocks"
+    fi
+    unset _blocks _dev _current
 fi
 
 # ---------------------------------------------------------------------------
@@ -198,6 +261,22 @@ if systemctl is-enabled kiosk-standby-watcher.service &>/dev/null; then
         log "[3/4] WARN: kiosk-standby-watcher.service failed to start"
 fi
 
+# Re-arm the periodic units and the gluetun cascade watcher, which prepare
+# stopped so nothing could write to the SD behind the zerofill and the dd.
+# Same enabled-guard pattern as the standby watcher: an unprovisioned box
+# (no VPN yet) never enabled these, and starting them there would just fail.
+for _u in gluetun-cascade-restart.service \
+          qbit-port-sync.timer \
+          magic-dingus-auto-blocklist.timer \
+          magic-dingus-missing-search.timer \
+          magic-dingus-smoke-test.timer; do
+    if systemctl is-enabled "$_u" &>/dev/null; then
+        systemctl start "$_u" 2>/dev/null || \
+            log "[3/4] WARN: ${_u} failed to start"
+    fi
+done
+unset _u
+
 # ---------------------------------------------------------------------------
 # Step 4: Clear the in-progress marker + cleanup
 # ---------------------------------------------------------------------------
@@ -206,8 +285,13 @@ log "[4/4] Removing clone-in-progress marker..."
 rm -f "$MARKER_PATH"
 
 # Backup files no longer needed; remove them so a future prepare run
-# starts from a clean slate.
-rm -f "$BACKUP_DIR/device_info.json" "$BACKUP_DIR/hostname" "$BACKUP_DIR/hosts"
+# starts from a clean slate. fstab.before-clone is included: the corrected
+# MOVIES line is deliberately permanent (better on the source box too), so
+# the pre-fix snapshot is only clutter that kept the rmdir failing forever.
+# reserve_blocks is NOT force-removed here — Step 1b keeps it when a zero
+# reserve could not be repaired, and that record must survive.
+rm -f "$BACKUP_DIR/device_info.json" "$BACKUP_DIR/hostname" "$BACKUP_DIR/hosts" \
+      "$BACKUP_DIR/fstab.before-clone"
 rmdir "$BACKUP_DIR" 2>/dev/null || true
 
 log "=== restore_after_cloning.sh complete ==="

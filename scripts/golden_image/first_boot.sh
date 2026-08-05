@@ -125,7 +125,11 @@ rm -f /etc/machine-id /var/lib/dbus/machine-id
 systemd-machine-id-setup >/dev/null 2>&1 || true
 # Debian symlinks the dbus copy at /var/lib/dbus/machine-id; recreate it so
 # dbus and systemd agree rather than drifting to two different ids.
-ln -sf /etc/machine-id /var/lib/dbus/machine-id
+# Guarded: an absent /var/lib/dbus would otherwise abort the whole script
+# HERE, under set -e, before a single credential wipe has run.
+mkdir -p /var/lib/dbus 2>/dev/null || true
+ln -sf /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null \
+    || log "[1b/7] WARNING: could not link /var/lib/dbus/machine-id — dbus may drift"
 log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
 
 # ---------------------------------------------------------------------------
@@ -133,8 +137,13 @@ log "[1b/7] machine-id regenerated: $(cut -c1-8 /etc/machine-id 2>/dev/null)..."
 # ---------------------------------------------------------------------------
 log "[2/7] Expanding root filesystem..."
 
-# Wait for udev to settle before querying block devices
-udevadm settle
+# Wait for udev to settle before querying block devices. Guarded: settle
+# returns non-zero on its own timeout, and under set -e an unguarded call
+# here aborts the script BEFORE every identity and credential wipe — the
+# "defective product" outcome the rest of this step was rewritten to
+# prevent. A settle timeout only means the device queries below might race;
+# they have their own fallbacks.
+udevadm settle 2>/dev/null || true
 
 ROOT_PART=$(findmnt -n -o SOURCE /)
 ROOT_DISK_NAME=$(lsblk -no pkname "$ROOT_PART" 2>/dev/null || true)
@@ -150,9 +159,22 @@ else
         PART_NUM=$(echo "$ROOT_PART" | grep -o '[0-9]*$')
 
         # Check if there is unallocated space after the root partition
-        # Use parted to get the partition end and disk size in bytes
+        # Use parted to get the partition end and disk size in bytes.
+        #
+        # The `|| echo "0"` at the end of each pipeline is DEAD CODE kept only
+        # for shape: a pipeline's status is awk's, and awk exits 0 even when
+        # nothing matched — so a failed parse yields EMPTY, not "0". Empty
+        # then flowed into $((DISK_END - PART_END)) as zero, GAP came out 0,
+        # and the script logged "already fills the SD card" on a card that
+        # was never expanded — the same class as the original parted -s bug,
+        # and again only a larger-than-source card ever exercises it. The
+        # explicit numeric validation below is what actually routes a failed
+        # parse into the expand-anyway branch (growpart's NOCHANGE exit makes
+        # running it on an already-full card safe).
         PART_END=$(parted -s "$ROOT_DISK" unit B print 2>/dev/null | awk "/^ ${PART_NUM} /{gsub(/B/,\"\"); print \$3}" || echo "0")
         DISK_END=$(parted -s "$ROOT_DISK" unit B print 2>/dev/null | grep "Disk ${ROOT_DISK}" | awk '{gsub(/B/,""); print $3}' || echo "0")
+        [[ "$PART_END" =~ ^[0-9]+$ ]] || PART_END="0"
+        [[ "$DISK_END" =~ ^[0-9]+$ ]] || DISK_END="0"
 
         # If we couldn't parse parted output, just run the expansion (safe to re-run)
         if [[ "$PART_END" == "0" || "$DISK_END" == "0" ]]; then
@@ -189,26 +211,45 @@ else
             # growpart exists for exactly this: online growth of a mounted
             # root partition. parted with ---pretend-input-tty is the
             # fallback, which lets the "Yes" actually be answered.
+            # growpart's exit codes matter: 0 = grown, 2 = NOCHANGE (already
+            # fills the disk — expected whenever the gap measurement above
+            # fell back to expand-anyway), anything else = real error. A real
+            # growpart error falls through to the parted path rather than
+            # giving up: the old `elif command -v growpart` shape meant a
+            # growpart that existed-and-failed never tried parted at all.
             expand_ok=0
+            already_full=0
             if command -v growpart >/dev/null 2>&1; then
-                if growpart "$ROOT_DISK" "$PART_NUM"; then
+                _grc=0
+                growpart "$ROOT_DISK" "$PART_NUM" || _grc=$?
+                if [[ "$_grc" -eq 0 ]]; then
+                    expand_ok=1
+                elif [[ "$_grc" -eq 2 ]]; then
+                    already_full=1
+                    log "[2/7] growpart: partition already fills the card (NOCHANGE)"
+                else
+                    log "[2/7] WARNING: growpart failed on ${ROOT_DISK} ${PART_NUM} (rc=${_grc}) — trying parted"
+                fi
+            fi
+            if [[ "$expand_ok" -eq 0 && "$already_full" -eq 0 ]]; then
+                if printf 'Yes\n' | parted ---pretend-input-tty "$ROOT_DISK" \
+                         resizepart "$PART_NUM" 100%; then
                     expand_ok=1
                 else
-                    log "[2/7] WARNING: growpart failed on ${ROOT_DISK} ${PART_NUM}"
+                    log "[2/7] WARNING: parted resizepart failed on ${ROOT_DISK}"
                 fi
-            elif printf 'Yes\n' | parted ---pretend-input-tty "$ROOT_DISK" \
-                     resizepart "$PART_NUM" 100%; then
-                expand_ok=1
-            else
-                log "[2/7] WARNING: parted resizepart failed on ${ROOT_DISK}"
             fi
 
-            if [[ "$expand_ok" -eq 1 ]]; then
+            if [[ "$expand_ok" -eq 1 || "$already_full" -eq 1 ]]; then
                 # Notify kernel of the updated partition table
                 partprobe "$ROOT_DISK" 2>/dev/null || true
-                udevadm settle
+                udevadm settle 2>/dev/null || true
 
-                log "[2/7] Partition expanded, resizing filesystem on ${ROOT_PART}..."
+                # resize2fs also runs on the NOCHANGE path: the partition may
+                # already be full-size while the FILESYSTEM inside it is not
+                # (a crashed earlier boot that grew one but not the other).
+                # It is a fast no-op when nothing needs doing.
+                log "[2/7] Resizing filesystem on ${ROOT_PART}..."
                 if resize2fs "$ROOT_PART"; then
                     log "[2/7] Filesystem expanded successfully"
                 else
@@ -240,20 +281,24 @@ else
     DEVICE_UUID=$(cat /proc/sys/kernel/random/uuid)
     CREATED_AT=$(date +%s)
 
-    cat > "$DEVICE_INFO_PATH" <<DEVEOF
-{
-    "device_id": "${DEVICE_UUID}",
-    "device_name": "Magic Dingus Box",
-    "created_at": ${CREATED_AT}
-}
-DEVEOF
-
-    chown "${MAGIC_USER}:${MAGIC_USER}" "$DEVICE_INFO_PATH"
-
-    # Set unique hostname derived from device UUID (e.g., magicpi-a3f2)
+    # ORDER IS THE CONTRACT HERE: the hostname work happens FIRST, and
+    # device_info.json — the file this whole block gates on — is written
+    # LAST. It used to be the other way around, which made the block
+    # non-idempotent in the worst possible direction: hostnamectl failing
+    # once (systemd-hostnamed/dbus not up yet, this early in boot) aborted
+    # the run AFTER the gate file existed, so every retry boot skipped the
+    # block, the unit permanently kept the source box's hostname, collided
+    # with it on mDNS/DHCP, and phone pairing silently broke. Writing the
+    # gate record last means a failed attempt reruns in full on the next
+    # boot.
+    #
+    # Set unique hostname derived from device UUID (e.g., magicpi-a3f2).
+    # /etc/hostname is written DIRECTLY — a plain file write that cannot
+    # depend on dbus being ready; hostnamectl below is only the live-runtime
+    # nicety and is best-effort.
     SHORT_ID=$(echo "$DEVICE_UUID" | cut -c1-4)
     NEW_HOSTNAME="magicpi-${SHORT_ID}"
-    hostnamectl set-hostname "$NEW_HOSTNAME"
+    printf '%s\n' "$NEW_HOSTNAME" > /etc/hostname
 
     # /etc/hosts has a `127.0.1.1 <old hostname>` line that systemd's
     # nss-files lookup uses to map the local hostname back to a
@@ -277,6 +322,28 @@ DEVEOF
         echo "127.0.1.1 ${NEW_HOSTNAME} ${NEW_HOSTNAME}" >> /etc/hosts
         log "[3/7] Appended 127.0.1.1 → ${NEW_HOSTNAME} to /etc/hosts (no prior entry)"
     fi
+
+    # Live-runtime hostname, best-effort: /etc/hostname above is what makes
+    # the change durable; this makes it take effect without a reboot. Either
+    # tool may be unavailable this early — that must not abort the run.
+    hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null \
+        || hostname "$NEW_HOSTNAME" 2>/dev/null \
+        || log "[3/7] WARNING: runtime hostname not applied (takes effect on reboot)"
+
+    # The gate record, LAST. DATA_DIR may not exist yet on a minimal image
+    # (Step 4 normally creates it, but that runs after this): an unguarded
+    # redirect into a missing directory would abort the whole script before
+    # any wipe.
+    mkdir -p "$DATA_DIR"
+    cat > "$DEVICE_INFO_PATH" <<DEVEOF
+{
+    "device_id": "${DEVICE_UUID}",
+    "device_name": "Magic Dingus Box",
+    "created_at": ${CREATED_AT}
+}
+DEVEOF
+
+    chown "${MAGIC_USER}:${MAGIC_USER}" "$DEVICE_INFO_PATH"
 
     log "[3/7] Device identity created: ${DEVICE_UUID} (hostname: ${NEW_HOSTNAME})"
 fi
@@ -539,7 +606,11 @@ done
 # their own key through the Content Manager, so on a fresh box NO file in this
 # family should exist; deleting the whole set is the correct, safe behaviour.
 shopt -s nullglob
-TMDB_KEY_FILES=(/home/magic/.config/magic_dingus_box/tmdb_api_key*)
+# Leading-star glob, matching prepare_for_cloning.sh: admin.py stages atomic
+# writes as `.tmdb_api_key.<rand>.tmp`, and the leading dot defeats a glob
+# that starts at the literal name — the one .tmp form this codebase actually
+# produces was the one the old pattern missed.
+TMDB_KEY_FILES=(/home/magic/.config/magic_dingus_box/*tmdb_api_key*)
 shopt -u nullglob
 for f in "${TMDB_KEY_FILES[@]}"; do
     rm -f "$f"

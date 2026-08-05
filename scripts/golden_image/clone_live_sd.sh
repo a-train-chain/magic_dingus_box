@@ -21,15 +21,21 @@
 # the dd or the network drops mid-stream — the Pi never gets stuck in
 # the "in-progress" state.
 #
+# After the dd + restore, the finished .img.gz is scanned for the source
+# box's live credentials (scan_image_for_secrets.sh). A LEAK verdict renames
+# the artifact to *.LEAKED.img.gz and exits 1 — that image must not ship.
+# --skip-leak-scan disables the gate (throwaway images only, NEVER for one
+# that leaves the building).
+#
 # Usage:
-#   ./clone_live_sd.sh                                 # uses defaults
-#   ./clone_live_sd.sh --pi magic@magicpi-abcd.local
+#   ./clone_live_sd.sh --pi magic@magicpi-abcd.local   # --pi is REQUIRED
 #   ./clone_live_sd.sh --pi magic@10.55.0.1            # over USB-Gadget (much faster than wifi)
-#   ./clone_live_sd.sh --output ~/Desktop/golden.img.gz
-#   ./clone_live_sd.sh --dry-run                       # walk-through, no dd
-#   ./clone_live_sd.sh --no-compress                   # skip gzip (faster, larger)
-#   ./clone_live_sd.sh --device /dev/mmcblk0           # if non-default
-#   ./clone_live_sd.sh --yes                           # skip the "Continue?" prompt
+#   ./clone_live_sd.sh --pi ... --output /Volumes/SSD/golden.img.gz
+#   ./clone_live_sd.sh --pi ... --dry-run              # walk-through, no dd
+#   ./clone_live_sd.sh --pi ... --no-compress          # skip gzip (faster, larger)
+#   ./clone_live_sd.sh --pi ... --device /dev/mmcblk0  # if non-default
+#   ./clone_live_sd.sh --pi ... --yes                  # skip the "Continue?" prompt
+#   ./clone_live_sd.sh --pi ... --skip-leak-scan       # UNCHECKED image — do not ship
 #
 
 set -euo pipefail
@@ -37,7 +43,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-PI_HOST="${PI_HOST:-magic@magicpi.local}"
+# --pi is REQUIRED, never defaulted, and the PI_HOST environment variable is
+# deliberately IGNORED: deploy_cpp.sh documents PI_HOST as its own target
+# variable with a different default box, so an operator who exported it for a
+# deploy would silently image that box instead. Two Pis are usually reachable
+# at once on this bench; sync_source_box.sh states the same rule.
+PI_HOST=""
 PI_DEVICE="${PI_DEVICE:-/dev/mmcblk0}"
 OUTPUT_PATH="${HOME}/golden_image_$(date +%Y-%m-%d).img.gz"
 DRY_RUN=0
@@ -78,6 +89,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -z "$PI_HOST" ]]; then
+    echo "ERROR: --pi is required (never defaulted: the wrong box gets imaged)." >&2
+    echo "       Example: $0 --pi magic@magicpi5.local --output /Volumes/SSD/golden.img.gz" >&2
+    exit 2
+fi
+
 # ---------------------------------------------------------------------------
 # ControlMaster setup — single persistent SSH session for prepare+dd+restore
 # ---------------------------------------------------------------------------
@@ -92,6 +109,17 @@ SSH_OPTS=(-o ControlMaster=auto
 # Trap handler: always run restore + close master, even on Ctrl-C / errors
 # ---------------------------------------------------------------------------
 RESTORE_DONE=0
+# Set the moment prepare_for_cloning.sh is INVOKED. Before that, the box has
+# not been touched, so the cleanup path must not attempt a restore — and
+# above all must not print the red "SOURCE PI IS STILL STRIPPED" emergency
+# banner about a box that was never modified. A preflight failure (host
+# unreachable, no disk space) used to do exactly that, and a gate that cries
+# wolf trains the operator to ignore the one time it is real.
+PREPARE_STARTED=0
+# Set after the dd pipeline completes. If cleanup runs without it, whatever
+# partial output exists is renamed *.partial so a truncated artifact can
+# never sit on disk under a ship-looking name.
+DD_DONE=0
 # Filled in at preflight from the box's own hostname. The restore has to be
 # reachable by MORE than the address the clone was started on: a clone begun
 # over the USB gadget (10.55.0.1) dropped when the USB link went away, and
@@ -112,6 +140,17 @@ restore_on() {
 
 cleanup() {
     local rc=$?
+    # Quarantine a truncated artifact before anything else: a dd that died
+    # mid-stream leaves a file that LOOKS like a golden image and is not.
+    if [[ $DD_DONE -eq 0 && ${DRY_RUN:-0} -eq 0 && -f "${OUTPUT_PATH:-}" ]]; then
+        mv "$OUTPUT_PATH" "${OUTPUT_PATH}.partial" 2>/dev/null || true
+        echo -e "${YELLOW}    Incomplete output renamed to ${OUTPUT_PATH}.partial — delete it.${NC}"
+    fi
+    if [[ $PREPARE_STARTED -eq 0 ]]; then
+        # The box was never touched; there is nothing to restore.
+        ssh "${SSH_OPTS[@]}" -O exit "$PI_HOST" 2>/dev/null || true
+        exit $rc
+    fi
     if [[ $RESTORE_DONE -eq 0 ]]; then
         echo
         echo -e "${YELLOW}${BOLD}Running restore on source Pi (cleanup path)...${NC}"
@@ -136,7 +175,13 @@ cleanup() {
     ssh "${SSH_OPTS[@]}" -O exit "$PI_HOST" 2>/dev/null || true
     exit $rc
 }
-trap cleanup EXIT INT TERM
+# HUP is in the list on purpose: this script runs in the operator's terminal,
+# and closing that terminal (or losing the connection driving it) delivers
+# SIGHUP — which bash does NOT turn into an EXIT-trap run unless HUP is
+# trapped explicitly. The Pi-side zerofill learned this from a real dropped
+# link; the orchestrator gets the same protection so a closed laptop lid
+# mid-dd still restores the source box.
+trap cleanup EXIT INT TERM HUP
 
 # ---------------------------------------------------------------------------
 # Banner + plan
@@ -196,7 +241,22 @@ echo -e "  ${GREEN}OK${NC} SD card: ${BOLD}${SD_SIZE_GB} GB${NC} (${SD_SIZE_BYTE
 # Estimated max output size: full SD if --no-compress, ~50% if compressed.
 EST_OUTPUT_GB=$( [[ $COMPRESS -eq 1 ]] && echo $(( SD_SIZE_GB / 2 + 1 )) || echo $(( SD_SIZE_GB + 1 )) )
 OUTPUT_DIR=$(dirname "$OUTPUT_PATH")
-mkdir -p "$OUTPUT_DIR"
+# The directory must ALREADY exist — no mkdir -p. With the golden images kept
+# on an external drive, `mkdir -p /Volumes/SSD/...` on a Mac where that drive
+# is not mounted silently creates the path on the BOOT disk; df then measures
+# the boot disk, the preflight passes, and 30+ GB lands on the internal SSD.
+if [[ ! -d "$OUTPUT_DIR" ]]; then
+    echo -e "${RED}    Output directory does not exist: ${OUTPUT_DIR}${NC}"
+    echo -e "${RED}    If it lives on an external drive, is the drive mounted?${NC}"
+    exit 1
+fi
+# Never silently overwrite an existing image: the file already there may be
+# the last known-good golden master.
+if [[ -e "$OUTPUT_PATH" && $DRY_RUN -eq 0 ]]; then
+    echo -e "${RED}    Output file already exists: ${OUTPUT_PATH}${NC}"
+    echo -e "${RED}    Delete or rename it first, or pick a different --output name.${NC}"
+    exit 1
+fi
 FREE_KB=$(df -k "$OUTPUT_DIR" | awk 'NR==2 {print $4}')
 FREE_GB=$(( FREE_KB / 1024 / 1024 ))
 if [[ $FREE_GB -lt $EST_OUTPUT_GB ]]; then
@@ -210,13 +270,18 @@ echo -e "  ${GREEN}OK${NC} ${FREE_GB} GB free on $OUTPUT_DIR (need ~${EST_OUTPUT
 # ---------------------------------------------------------------------------
 echo -e "${CYAN}[3/6] Checking local tools...${NC}"
 
-for tool in ssh dd gzip; do
+# bc is used for the size summary; python3 runs the leak scanner — checked
+# HERE so a missing interpreter surfaces in one second at preflight, not
+# after a 30-90 minute dd when the ship gate tries to run.
+REQUIRED_TOOLS=(ssh gzip bc)
+[[ $SKIP_LEAK_SCAN -eq 0 ]] && REQUIRED_TOOLS+=(python3)
+for tool in "${REQUIRED_TOOLS[@]}"; do
     if ! command -v "$tool" &>/dev/null; then
         echo -e "${RED}    Missing required tool: $tool${NC}"
         exit 1
     fi
 done
-echo -e "  ${GREEN}OK${NC} ssh, dd, gzip"
+echo -e "  ${GREEN}OK${NC} ${REQUIRED_TOOLS[*]}"
 
 if command -v pv &>/dev/null; then
     HAS_PV=1
@@ -258,6 +323,7 @@ fi
 echo
 echo -e "${CYAN}[4/6] Running prepare_for_cloning.sh on source Pi...${NC}"
 
+PREPARE_STARTED=1
 ssh "${SSH_OPTS[@]}" "$PI_HOST" \
     "sudo /opt/magic_dingus_box/scripts/golden_image/prepare_for_cloning.sh" \
     2>&1 | sed 's/^/    /'
@@ -303,6 +369,7 @@ else
         fi
     fi
 
+    DD_DONE=1
     END_TS=$(date +%s)
     ELAPSED=$(( END_TS - START_TS ))
     OUTPUT_SIZE=$(stat -f %z "$OUTPUT_PATH" 2>/dev/null || stat -c %s "$OUTPUT_PATH")
@@ -358,6 +425,22 @@ if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 ]]; then
         echo -e "${RED}    ${SCANNER} --image ${OUTPUT_PATH} --pi <host>${NC}"
         exit 1
     fi
+    # The needles must come from the box that was IMAGED. The fallback is an
+    # mDNS name, and an un-first-booted clone that kept the source hostname is
+    # exactly the collision scenario this project has already lived through —
+    # harvesting from the wrong box would produce a CLEAN verdict about the
+    # wrong secrets, the one direction this gate must never fail in.
+    if [[ -n "$PI_SHORTNAME" ]]; then
+        SCAN_ID=$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$SCAN_HOST" "hostname" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$SCAN_ID" != "$PI_SHORTNAME" ]]; then
+            echo -e "${RED}  Scan host answered as '${SCAN_ID}', expected '${PI_SHORTNAME}' —${NC}"
+            echo -e "${RED}  refusing to harvest needles from a different box.${NC}"
+            echo -e "${RED}  The image has NOT been checked. Re-run by hand once the source${NC}"
+            echo -e "${RED}  box is reachable:${NC}"
+            echo -e "${RED}    ${SCANNER} --image ${OUTPUT_PATH} --pi <host>${NC}"
+            exit 1
+        fi
+    fi
 
     set +e
     "$SCANNER" --image "$OUTPUT_PATH" --pi "$SCAN_HOST" --expect-bytes "$SD_SIZE_BYTES"
@@ -376,6 +459,13 @@ if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 ]]; then
             echo -e "  Most likely cause: free-space zeroing did not cover the whole"
             echo -e "  filesystem. Check the ${BOLD}[4c/5]${NC} lines above for a WARNING about"
             echo -e "  the ext4 root reserve, and confirm ${BOLD}tune2fs${NC} exists on the Pi."
+            # Quarantine: a known-contaminated artifact must not sit on disk
+            # under a normal, ship-looking name for a tired operator (or a
+            # later session) to flash by reflex.
+            if mv "$OUTPUT_PATH" "${OUTPUT_PATH}.LEAKED" 2>/dev/null; then
+                echo
+                echo -e "  Artifact renamed to ${BOLD}${OUTPUT_PATH}.LEAKED${NC} — delete it."
+            fi
         else
             echo -e "${YELLOW}${BOLD}  IMAGE NOT CHECKED${NC}"
             echo -e "${YELLOW}${BOLD}════════════════════════════════════════════════════════════════${NC}"
@@ -384,7 +474,8 @@ if [[ $DRY_RUN -eq 0 && $SKIP_LEAK_SCAN -eq 0 ]]; then
         fi
         echo
         echo -e "  The source Pi has been fully restored — it is safe and unchanged."
-        echo -e "  Delete ${BOLD}${OUTPUT_PATH}${NC} and re-run the clone."
+        echo -e "  Remove the artifact (see above for its current name) and re-run"
+        echo -e "  the clone."
         echo
         exit 1
     fi

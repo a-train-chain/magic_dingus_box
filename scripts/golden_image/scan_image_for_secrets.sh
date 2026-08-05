@@ -113,8 +113,15 @@ if [[ -n "$PI_HOST" ]]; then
         sudo sed "s/^/flask-secret\t/" /opt/magic_dingus_box/magic_dingus_box_cpp/data/flask_secret.key 2>/dev/null
         sudo grep -h -v -e "-----" /etc/ssh/ssh_host_*_key 2>/dev/null | sed "s/^/expected:ssh-host-key\t/"
     ' 2>/dev/null \
-        | sed -e 's/[[:space:]]*$//' -e '/^$/d' -e '/\t$/d' \
+        | sed -e '/\t[[:space:]]*$/d' -e 's/[[:space:]]*$//' -e '/^$/d' \
         | sort -u > "$TMP_NEEDLES" || true
+    # Order matters in that sed: the empty-VALUE filter must run BEFORE the
+    # trailing-whitespace strip. The old order stripped the tab first, so
+    # `label<TAB>` could never match /\t$/ — the line survived as a bare
+    # label, which the Python side then treated as an UNLABELLED NEEDLE whose
+    # value is the label text itself (and an `expected:` prefix demoted into
+    # the value would report as LEAK). Noise, not a false CLEAN, but noise in
+    # the one gate whose alarms must stay meaningful.
     NEEDLES="$TMP_NEEDLES"
 fi
 

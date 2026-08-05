@@ -10,60 +10,102 @@ were once the clone completes. Only ~1 minute of total kiosk downtime.
 
 ## Quick start
 
-From your Mac, in the worktree:
+Two commands, in this order, from your Mac in the worktree.
+
+**1. Sync the source box first — every time, no exceptions.** The
+out-of-box fixes live across eight different files, and missing any one
+of them reproduces its bug on every unit sold. This pushes each file and
+verifies it landed by content hash, normalises the fstab line, and
+asserts the rebuilt kiosk binary actually contains the controller fix:
 
 ```bash
-./scripts/golden_image/clone_live_sd.sh
+./scripts/golden_image/sync_source_box.sh --pi magic@magicpi5.local
 ```
 
-Defaults to cloning `magic@magicpi.local` to `~/golden_image_YYYY-MM-DD.img.gz`.
-
-For a non-default Pi or output path:
+**2. Cut the clone.** `--pi` is required (never defaulted — two Pis are
+usually reachable at once and the wrong box gets imaged); point
+`--output` at a drive with enough free space (about half the SD size for
+a compressed image):
 
 ```bash
 ./scripts/golden_image/clone_live_sd.sh \
-    --pi magic@magicpi-abcd.local \
-    --output ~/Desktop/my-golden.img.gz
+    --pi magic@magicpi5.local \
+    --output "/Volumes/Alexander's SSD/golden_image_pi5_vX.Y.Z_$(date +%Y-%m-%d).img.gz"
 ```
+
+After the dd and restore, the script automatically scans the finished
+`.img.gz` for the source box's live credentials
+(`scan_image_for_secrets.sh`) and **refuses to report success on a hit**
+— a leaking artifact is renamed `*.LEAKED.img.gz`. That scan is the only
+credential check that counts: it reads the artifact, not the live
+filesystem, and a deleted file is absent from the filesystem while fully
+present in the image. Do not ship an image that has not passed it.
 
 To dry-run (walk through the prepare/restore steps without actually dd'ing):
 
 ```bash
-./scripts/golden_image/clone_live_sd.sh --dry-run
+./scripts/golden_image/clone_live_sd.sh --pi magic@magicpi5.local --dry-run
 ```
+
+**3. Boot-test every image on a card that is NOT the source card's
+size, with NO movie drive attached.** The credential scan says nothing
+about whether a unit boots. A same-size card skips the expansion path
+and a drive masks the automount path — both bugs that shipped were
+invisible for exactly those reasons. Acceptance: boots as
+`magicpi-XXXX` (not the source hostname), Media Browser locked, no
+saves/states, no watch history, no paired phones, factory browse
+filters, docker dormant until VPN provisioned, root partition fills the
+card.
 
 ## What happens during a clone
 
 The script runs entirely inside one persistent SSH session (ssh
-ControlMaster + ControlPersist). Six steps:
+ControlMaster + ControlPersist). Seven steps:
 
 1. **Verify SSH connectivity** + sudo NOPASSWD on the Pi.
-2. **Check SD card size + Mac free space** (need ~50% of card size for
-   compressed output, or full size if `--no-compress`).
-3. **Verify required local tools** (`ssh`, `dd`, `gzip`, optionally `pv`
-   for a nice progress bar).
+2. **Check SD card size + output-drive free space** (need ~50% of card
+   size for compressed output, or full size if `--no-compress`; the
+   output directory must already exist — an unmounted external drive
+   fails here instead of silently filling the boot disk).
+3. **Verify required local tools** (`ssh`, `gzip`, `bc`, `python3` for
+   the leak scanner, optionally `pv` for a nice progress bar).
 4. **Run `prepare_for_cloning.sh` on the Pi**, which:
-   - Stops kiosk + Content Manager + Docker stack
+   - Writes the `cloning_backup/in_progress` marker FIRST (restore is
+     armed before the first destructive step)
+   - Stops kiosk + Content Manager + Docker/containerd daemons + the
+     periodic timers and the gluetun cascade watcher
    - Snapshots `device_info.json` + `/etc/hostname` + `/etc/hosts` to
      `/var/lib/magic-dingus-box/cloning_backup/` (these need to differ
      on each clone, so we remove them from disk for the dd, then put
      them back during restore)
+   - Stashes every secret-bearing file to RAM (`/dev/shm`) and the
+     operator's non-shipping playlists/videos to the movie drive
+     (`/mnt/ssd/.mdb-content-stash`), zeroes free space on both
+     partitions, and ABORTS if its post-scrub leak check finds any
+     credential class still present
    - Re-enables `magic-first-boot.service` (so the cloned image
      fires `first_boot.sh` on its first boot)
-   - Drops a marker file at `cloning_backup/in_progress`
    - `sync; sync; drop_caches; sync`
 5. **dd the SD card over SSH**, gzip-compressed in flight, written to
    the local `.img.gz` file. Progress shown via `pv` if installed.
 6. **Run `restore_after_cloning.sh` on the Pi**, which:
    - Restores `device_info.json` + `/etc/hostname` + `/etc/hosts` from
-     backup
+     backup, and every stashed secret/content file to its exact path
    - Disables `magic-first-boot.service` (don't re-fire on source)
-   - Restarts the Docker stack, Content Manager, and kiosk service
+   - Restarts the Docker stack, Content Manager, kiosk, timers, and
+     watchers
    - Removes the marker + backup files
+7. **Scan the finished artifact** (`scan_image_for_secrets.sh`): the
+   box's live credentials are harvested as needles (never printed) and
+   the decompressed image is searched for them. LEAK → the artifact is
+   renamed `*.LEAKED.img.gz` and the script exits 1. This is the ship
+   gate; `--skip-leak-scan` exists for throwaway images only.
 
-A trap handler ensures step 6 fires even if the user `Ctrl-C`s during dd
-or the network drops mid-stream — the source Pi never gets stuck in the
-"in-progress" state.
+A trap handler (EXIT, INT, TERM, and HUP — a closed terminal counts)
+ensures step 6 fires even if the user `Ctrl-C`s during dd or the network
+drops mid-stream — the source Pi never gets stuck in the "in-progress"
+state. If the dd died partway, the truncated output is renamed
+`*.partial` so it can't be mistaken for a good image.
 
 ## What happens when the cloned image boots on a new Pi
 
@@ -75,13 +117,15 @@ That runs `first_boot.sh`, which does:
 
 | Step | What | Cloned Pi behavior |
 |------|------|-------------------|
-| 1 | Regenerate SSH host keys | (skipped — keys exist from source; see footnote) |
-| 2 | Expand root FS to fill SD | Full SD now usable |
-| 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` |
+| 1 | Regenerate SSH host keys | Old keys removed, `ssh-keygen -A`, sshd restarted — every unit gets its own |
+| 1b | Regenerate machine-id | New DHCP DUID so clones don't fight the source box for a lease |
+| 2 | Expand root FS to fill SD | `growpart` + `resize2fs` (non-fatal on failure — the wipes below always run) |
+| 3 | Generate device identity | New UUID + new hostname `magicpi-XXXX` (hostname files first, gate record last) |
 | 4 | Create required directories | (idempotent) |
 | 5 | Fix ownership | (idempotent) |
-| 6 | **Wipe Media Browser per-Pi state** | `services/.env`, `services/config/{radarr,prowlarr,qbittorrent,gluetun,flaresolverr}/*` removed |
-| 7 | Self-disable | Won't run again |
+| 6 | **Wipe every per-unit state class** | `services/.env`, all *arr/qBittorrent config + DBs, watch history, paired phones, RetroArch saves/states + history (both `data/` and `build/data/`), Wi-Fi profiles, TMDB key, browse filters, MB re-lock, logs/journal |
+| 6e | Pi 4B pruning | N64/Dreamcast ROMs + playlists deleted on a Pi 4B (runtime gate hides them anyway; this reclaims disk) |
+| 7 | Self-disable | Won't run again (a FAILED run leaves it enabled, so it retries next boot) |
 
 After ~90 seconds, the kiosk is up in default mode (RetroArch + your
 default playlists work). Media Browser is locked because there's no
@@ -100,11 +144,11 @@ different, uncaptured pad just falls back to its built-in mapping (if
 it's one of the two shipped pad models) or the legacy N64-adapter
 default, and its owner can capture it through the same wizard.
 
-> **Footnote on SSH host keys:** every cloned Pi inherits the source's
-> SSH host keys. For a kiosk on a trusted LAN this is acceptable — the
-> primary access path is the Content Manager (HTTP), not SSH. If you
-> care about per-clone host keys, run `sudo ssh-keygen -A` and
-> `sudo systemctl restart sshd` on each cloned Pi after first boot.
+> **Footnote on SSH host keys:** `prepare_for_cloning.sh` deliberately
+> leaves the source's host keys in the image (sshd is holding the live
+> clone session), and `first_boot.sh` Step 1 regenerates them on every
+> unit. The image scanner accordingly reports host keys as
+> `expected-present`, not as a leak.
 
 ## Recovery if a clone goes sideways
 
@@ -115,7 +159,7 @@ identity files missing. To recover, SSH to the Pi and run the restore
 manually:
 
 ```bash
-ssh magic@magicpi.local "sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh"
+ssh magic@<your-box>.local "sudo /opt/magic_dingus_box/scripts/golden_image/restore_after_cloning.sh"
 ```
 
 The restore script is idempotent — running it without an in-progress
@@ -128,6 +172,15 @@ whether the Pi needs restoration.
 |---|---|
 | Capture current Pi state with full library/data preserved on source | **`clone_live_sd.sh`** (live clone, source untouched) |
 | Wipe source Pi's user data + create a "fresh defaults" image | `prepare_golden_image.sh` (destructive) → `create_image.sh` |
+
+> **The legacy paths have NO credential scan.** `prepare_golden_image.sh`,
+> `create_image.sh` and `flash_image.sh` predate
+> `scan_image_for_secrets.sh`, so an image produced through them has
+> never been checked against the artifact — the only check that counts.
+> If you must use them, run the scanner by hand on the result before
+> anything ships:
+> `./scripts/golden_image/scan_image_for_secrets.sh --image <img.gz> --pi <host>`.
+> For shipping units, `clone_live_sd.sh` is the only supported path.
 
 The live-clone tooling captures whatever state the Pi is in RIGHT NOW
 (plus the per-Pi identity manipulation that lets the cloned image
@@ -220,13 +273,23 @@ the first Pi 5 golden image:
   `first_boot.sh` wipes RetroArch saves/states on new units (pristine
   policy, decided 2026-08-03 — data/media playlist content still
   ships) and resets the personal mb_* browse filters to defaults.
-- **MOVIES drive automount + library self-import**: fstab gets
-  `LABEL=MOVIES /mnt/ssd ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=5 0 2`
-  and `magic-dingus-library-import.service` (WantedBy=mnt-ssd.mount)
-  runs `import_library_movies.sh` whenever the drive mounts — so a
+- **MOVIES drive mount + library self-import**: fstab gets
+  `LABEL=MOVIES /mnt/ssd ext4 noauto,nofail 0 0` and the drive is
+  actually mounted by `udev/99-magic-movies-mount.rules` on device
+  appearance (boot or hotplug). **Never use `x-systemd.automount`
+  here** — an automount unit starts at boot even with `noauto`, and on
+  a unit with no drive attached (every unit, at first customer
+  power-on) the boot hangs until the hardware watchdog resets the
+  board, which reads as a reboot loop; `nofail` does not help because
+  it governs the mount, not the automount (measured on hardware
+  2026-08-04, table in the udev rule file and CLAUDE.md).
+  `magic-dingus-library-import.service` (WantedBy=mnt-ssd.mount) runs
+  `import_library_movies.sh` whenever the drive mounts — so a
   pre-loaded movie drive populates the kiosk Library automatically on
-  fresh provisions, replacement SDs, or swapped drives. Both are
-  installed by setup_services.sh; verify they're baked into the image.
+  fresh provisions, replacement SDs, or swapped drives. All installed
+  by setup_services.sh, re-asserted by sync_source_box.sh and
+  prepare_for_cloning.sh Step 2d so a stale blocking entry can never
+  reach a customer.
 - **Quiet, branding-free kiosk boot**: `systemctl disable getty@tty1`;
   in config.txt set `disable_splash=1` (removes the firmware rainbow);
   in cmdline.txt remove the plymouth `splash` keyword and append
