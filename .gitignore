@@ -89,6 +89,8 @@ docs/
 !CLAUDE.md
 !AGENTS.md
 !CHANGELOG.md
+# The customer-facing owner tutorial ships with the product — always tracked.
+!OWNER_GUIDE.md
 # DO track design specs + implementation plans — they're versioned
 # design history, not runtime reference docs. Specs and plans land in
 # docs/superpowers/{specs,plans}/ via the superpowers brainstorming +

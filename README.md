@@ -2,6 +2,11 @@
 
 A retro gaming and video playback kiosk for Raspberry Pi 4B and Raspberry Pi 5.
 
+> **Setting up a unit you own?** Start with **[OWNER_GUIDE.md](OWNER_GUIDE.md)** —
+> the customer-facing walkthrough for Wi-Fi, the phone remote, and the full
+> Movies setup (VPN + TMDB + movie drive). Everything below is developer
+> documentation.
+
 Magic Dingus Box has two halves:
 
 1. **Retro gaming + video playback** — always works, no internet
