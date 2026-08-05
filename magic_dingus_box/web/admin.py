@@ -233,6 +233,35 @@ def success_response(data: Any = None, message: str = None) -> tuple:
     return jsonify(response), 200
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove terminal colour codes before showing script output in the UI.
+
+    update.sh colours its progress lines for a human at a terminal. Passing
+    that straight into a JSON error made the Content Manager render
+    literal escape gibberish -- observed on a fresh unit with no network:
+        \u001b[0;32m[UPDATE]\u001b[0m Checking GitHub for updates...
+    which tells a customer nothing about what actually went wrong.
+    """
+    return _ANSI_RE.sub("", text or "").strip()
+
+
+def _has_internet(timeout: float = 3.0) -> bool:
+    """Best-effort reachability probe, used ONLY to improve an error message.
+
+    Never gates behaviour -- a false negative would just mean the operator
+    gets the raw script output instead of the friendlier hint. Costs up to
+    `timeout` seconds and only ever runs on a path that has already failed.
+    """
+    try:
+        with socket.create_connection(("api.github.com", 443), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def error_response(code: str, message: str, status: int = 400, details: Any = None) -> tuple:
     """Create a standardized error response.
 
@@ -3832,7 +3861,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 response_data = json.loads(result.stdout)
                 return jsonify(response_data), 200
             else:
-                error_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+                error_msg = strip_ansi(result.stderr) or strip_ansi(result.stdout) or "Unknown error"
+                # The overwhelmingly common cause on a fresh unit is simply
+                # that it has not joined Wi-Fi yet, so say so instead of
+                # handing back the script's progress chatter.
+                if not _has_internet():
+                    error_msg = ("No internet connection. Join Wi-Fi from the "
+                                 "kiosk's Settings screen, then check again.\n\n" + error_msg)
                 return error_response("UPDATE_CHECK_FAILED", error_msg, status=500)
 
         except subprocess.TimeoutExpired:

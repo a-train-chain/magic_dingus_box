@@ -267,7 +267,7 @@ Core location: `libretro_cores/` (app directory) or `/usr/lib/aarch64-linux-gnu/
 - `scripts/update.sh` checks GitHub API for latest release
 - Downloads tarball, backs up current installation, extracts update
 - Rollback support if update fails
-- Triggered via web admin `/api/update/*` endpoints
+- Triggered via web admin `/admin/update/*` endpoints (`version`, `check`, `install`, `status/<job_id>`, `rollback`) — NOT `/api/update/*`
 
 ## Media Browser (Movie Playback + Downloads)
 
@@ -422,7 +422,7 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
 - **magic-dingus-auto-blocklist.timer** (systemd, on Pi host) — runs every 15 minutes (OnBootSec=90s for cold-boot catch-up; TimeoutSec=300). Two failure classes, for BOTH Radarr and Sonarr: (1) `trackedDownloadStatus=warning` items whose `statusMessages` match known-bad signatures (executable extensions, "no videos in folder", "invalid video file", "unsupported extension", "sample file too large") — the scam-completion case; (2) dead-swarm stalls (2026-08-02 GoT case: TorrentDownload advertised 24 seeders on a 0-seed swarm; the stalled item then rejected all 213 live replacements with "Release in queue already meets cutoff", and neither *arr ever recovers because qBit stalls surface as WARNING, never FAILURE). Stall reap policy: errorMessage "stalled with no connections" + <=2% progress + grab >45 min old + the TWO-STRIKE rule — the same downloadId must be stall-condemned on two runs >=12 min apart with sizeleft unchanged, tracked in `/tmp/mdb_stall_candidates.json` (tmpfs — reboot resets the clock). One observation is never enough: qBit reports stalledDL during the healthy reconnection window after the kiosk's playback contention guard resumes torrents — at every game end on all boards, every movie end on Pi 4B, and on every boot (Pi 5 movie ends don't create this window: the trickle guard only rate-caps, never stops the swarm — see "Playback contention guard" above). Condemned items are DELETEd with `blocklist=true + removeFromClient=true + skipRedownload=true`, then an explicit `MoviesSearch` / per-season `SeasonSearch` fires (with an idempotence guard that skips when an equivalent Sonarr search is already in flight). Season packs are N queue rows sharing one downloadId — exactly one row is deleted per download (siblings 404 by design) while every condemned row's (series, season) is re-searched. Paused torrents are never touched (they carry no errorMessage at all). Missing SONARR_API_KEY skips the Sonarr pass (pre-Sonarr boxes).
 - **magic-dingus-missing-search.timer** (systemd, on Pi host) — runs every 4 hours (OnBootSec=3min for cold-boot catch-up). POSTs `MissingMoviesSearch` to Radarr when any monitored movie has no file yet. Plugs the add-time-miss gap: "Add to Library" sets `addOptions.searchForMovie=true` so Radarr fires exactly ONE auto-search the instant a movie is added; if that single search comes up empty (good release not posted yet, indexer in transient cooldown, Byparr mid-Cloudflare-challenge), Radarr does not retry at a useful cadence (RSS sync only catches brand-new releases going forward). The title then sits with no download until the user manually opens the release picker. Observed live with "Wolfs (2024)" — the +50-scoring x264 YTS release the user later grabbed by hand simply wasn't available at the add-time search instant. This timer retries the missing backlog so those self-heal. Note the *selection* logic was already correct (x264 +50 preferred, HEVC/AV1/foreign/remux rejected by Custom Format scores below the `minFormatScore=-200` floor); the only gap was retry-on-empty. `missing_search.py` is idempotent — a run with zero missing titles is a no-op. As of 2026-08-02 it also runs a Sonarr pass: `MissingEpisodeSearch` (the library-wide missing-episode sweep, Sonarr's mirror of `MissingMoviesSearch`) closes the identical one-shot fragility for TV — add-time `searchForMissingEpisodes` and Start-Season-N's single `SeasonSearch` otherwise have no retry. Missing SONARR_API_KEY skips the pass.
 - **Skip-when-unconfigured**: `magic-dingus-services.service` has `ConditionPathExists=/opt/magic_dingus_box/services/.env` so unprovisioned Pis cleanly skip the Docker stack instead of fail-looping. `setup_services.sh` is fully idempotent and rebuilds the entire stack from codified fixtures in `scripts/data/*.json` (Custom Formats, indexers, Byparr proxy, Apps integration, download client, quality definitions, qBit category) — fresh deploys reproduce the source Pi's exact configuration except for per-Pi secrets.
-- **Pre-ship acceptance test**: `scripts/verify_box.sh` — the single
+- **Pre-ship acceptance test**: `magic_dingus_box_cpp/scripts/verify_box.sh` — the single
   "is this box shippable?" command. Read-only, ~30s, runs on the Pi,
   exits 0/1. Covers what `verify_services.sh` does not: platform
   detection, clock/thermal/throttle state, display mode vs. the
@@ -481,6 +481,63 @@ outside Docker. Metadata only — never touches torrent indexers. See
 4. Drops in WireGuard `.conf` from ProtonVPN dashboard (NAT-PMP enabled)
 5. Backend writes `services/.env`, runs `setup_services.sh` in background, frontend polls progress
 6. ~90 seconds later: services healthy, Custom Formats + indexers + integrations all configured
+
+### Golden image — what actually breaks, and the two gates
+
+Hard-won on 2026-08-04, when the first card ever booted from a golden
+image failed to reach the kiosk. Read this before touching the clone path.
+
+**Verify the ARTIFACT, never the filesystem.** The scrub used to check
+"is the secret file gone?" on the live box and call that clean. A deleted
+file is absent from the filesystem and fully present in the image — which
+is how a `cloud-init.log` holding the operator's Wi-Fi PSK shipped in
+v1.9.3 and passed its own audit. `scan_image_for_secrets.sh` reads the
+finished `.img.gz` and is the only credential check that counts;
+`clone_live_sd.sh` runs it automatically and refuses to report success on
+a hit. Five distinct leak classes were found this way, each needing a
+different fix:
+
+| Class | Example found | Why the earlier scrub missed it |
+|---|---|---|
+| Deleted data in free space | `cloud-init.log` PSK | fill never reached ext4's root reserve (2.4 GB `df` hides) |
+| Live files not on the list | poster cache, kiosk log, phone-remote state | list was incomplete |
+| Infrastructure metadata | Docker `config.v2.json`, containerd `meta.db` | container env holds `.env` values; `/var/lib/docker` was never inspected |
+| Filename as secret | `<SSID>.nmconnection` | deleted names persist in the directory's ALLOCATED block |
+| Freed blocks in the fill margin | Prowlarr API key | a bounded fill leaves extents the allocator picks, never written |
+
+Corollaries: stop `dockerd` AND `containerd` before zeroing (a running
+daemon rewrites metadata *after* the fill, stranding stale copies in free
+space), and drop the ext4 root reserve with `tune2fs -r 0` for the fill,
+restoring it via a trap on `EXIT INT TERM HUP` — **HUP matters**, because
+the script runs under ssh and a dropped link otherwise skips the trap.
+
+**Boot-test every image on a card that is NOT the source card's size.**
+The credential gate says nothing about whether a unit boots. `first_boot.sh`
+expands the root partition only when the card has >100 MB of unused tail,
+so the source card always skips it and the step was never exercised —
+while `parted -s` PROMPTS on a mounted partition, answers *No* in script
+mode, and exits 1. Under `set -e` that killed first boot at Step 2 of 7,
+so no cloned unit ever regenerated its identity, wiped saves, re-locked
+Media Browser or disabled the first-boot service. It kept the source
+hostname and collided with the source box on mDNS/DHCP. Now uses
+`growpart`, and expansion can no longer abort the boot — a unit that
+wastes the tail of its card is an annoyance, one that skips the
+credential wipes is a defective product.
+
+`first_boot.sh` writes `/var/log/magic-first-boot.log` and traps ERR with
+the failing line number. Both exist because the original failure produced
+an EMPTY journal (Step 6c-2 wipes it by design), leaving nothing to
+diagnose from.
+
+**Inherited source-box state is its own bug class.** Anything true only
+because the source box is the source box will ship: the `LABEL=MOVIES`
+fstab entry (a unit with no drive must still boot — `nofail` +
+`x-systemd.automount`), the operator's playlists and uploaded videos
+(`SHIP_PLAYLISTS` curates these), and the clone-in-progress marker.
+Guards that skip when a key is merely *present* rather than *correct* are
+the trap: `if ! grep -q LABEL=MOVIES /etc/fstab` never repaired a stale
+line, so a box provisioned before `nofail` existed kept the blocking
+entry forever.
 
 ### Live SD cloning
 

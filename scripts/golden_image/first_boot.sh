@@ -29,14 +29,43 @@ MAGIC_USER="magic"
 MAGIC_HOME="/home/${MAGIC_USER}"
 
 # ---------------------------------------------------------------------------
-# Logging helper - stdout + syslog
+# Logging helper - stdout + syslog + a FILE that survives
 # ---------------------------------------------------------------------------
+# The file matters. When this script died at Step 2 on the first real
+# golden-image boot test, `journalctl -u magic-first-boot.service` and
+# `journalctl -t magic-first-boot` were BOTH empty -- so the single most
+# important script on a new unit failed with no diagnosable trace, and
+# finding the cause meant re-running it by hand under `bash -x`.
+#
+# Step 6c-2 wipes the journal on purpose (the unit's own history starts at
+# first boot), which makes journald the wrong place to keep the record of
+# what first boot did. This log is written before that wipe and is not
+# touched by it.
+FIRST_BOOT_LOG="/var/log/magic-first-boot.log"
+mkdir -p "$(dirname "$FIRST_BOOT_LOG")" 2>/dev/null || true
+
 log() {
     echo "$1"
-    logger -t "magic-first-boot" "$1"
+    logger -t "magic-first-boot" "$1" 2>/dev/null || true
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$FIRST_BOOT_LOG" 2>/dev/null || true
 }
 
+# Say WHERE it died, not just that it did. set -euo pipefail aborts on the
+# first failing command, and without this the operator gets an exit code and
+# nothing else.
+first_boot_failed() {
+    local rc=$? line=${1:-?}
+    log "=== FAILED at line ${line} (exit ${rc}): ${BASH_COMMAND}"
+    log "=== A partial first boot leaves SOURCE-BOX state on this unit:"
+    log "===   identity, saves, pairing and credentials may NOT be wiped."
+    log "=== Full log: ${FIRST_BOOT_LOG}"
+    log "=== Re-run by hand once fixed:"
+    log "===   sudo bash /opt/magic_dingus_box/scripts/golden_image/first_boot.sh"
+}
+trap 'first_boot_failed "$LINENO"' ERR
+
 log "=== Magic Dingus Box first-boot setup starting ==="
+log "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')"
 
 # ---------------------------------------------------------------------------
 # Step 1: Regenerate SSH host keys
@@ -143,15 +172,57 @@ else
             log "[2/7] Filesystem already fills the SD card, skipping expansion"
         else
             log "[2/7] Expanding partition ${PART_NUM} on ${ROOT_DISK}..."
-            parted -s "$ROOT_DISK" resizepart "$PART_NUM" 100%
+            # `parted -s` PROMPTS when the partition is mounted --
+            #   "Partition /dev/mmcblk0p2 is being used. Are you sure...?"
+            # -- and in script mode answers NO and exits 1. Under set -e that
+            # killed first_boot.sh right here, so NOTHING after Step 2 ever
+            # ran: no device identity, no hostname, no saves wipe, no pairing
+            # wipe, no Media Browser re-lock, no Wi-Fi wipe, and not the
+            # Step 7 self-disable either.
+            #
+            # It hid because expansion only triggers when the card has more
+            # than 100 MB of unused tail. The SOURCE card never does, so first
+            # boot looked fine on every box that had already been through it.
+            # The first customer-shaped test -- a fresh card 128 MB larger
+            # than the source -- failed instantly (2026-08-04).
+            #
+            # growpart exists for exactly this: online growth of a mounted
+            # root partition. parted with ---pretend-input-tty is the
+            # fallback, which lets the "Yes" actually be answered.
+            expand_ok=0
+            if command -v growpart >/dev/null 2>&1; then
+                if growpart "$ROOT_DISK" "$PART_NUM"; then
+                    expand_ok=1
+                else
+                    log "[2/7] WARNING: growpart failed on ${ROOT_DISK} ${PART_NUM}"
+                fi
+            elif printf 'Yes\n' | parted ---pretend-input-tty "$ROOT_DISK" \
+                     resizepart "$PART_NUM" 100%; then
+                expand_ok=1
+            else
+                log "[2/7] WARNING: parted resizepart failed on ${ROOT_DISK}"
+            fi
 
-            # Notify kernel of the updated partition table
-            partprobe "$ROOT_DISK" 2>/dev/null || true
-            udevadm settle
+            if [[ "$expand_ok" -eq 1 ]]; then
+                # Notify kernel of the updated partition table
+                partprobe "$ROOT_DISK" 2>/dev/null || true
+                udevadm settle
 
-            log "[2/7] Partition expanded, resizing filesystem on ${ROOT_PART}..."
-            resize2fs "$ROOT_PART"
-            log "[2/7] Filesystem expanded successfully"
+                log "[2/7] Partition expanded, resizing filesystem on ${ROOT_PART}..."
+                if resize2fs "$ROOT_PART"; then
+                    log "[2/7] Filesystem expanded successfully"
+                else
+                    log "[2/7] WARNING: resize2fs failed — unit keeps its current size"
+                fi
+            else
+                # NOT fatal, deliberately. A unit that wastes the unused tail
+                # of its card is a minor annoyance; a unit that skips the
+                # identity and credential wipes because a partition tool
+                # refused is a defective product. Boot continues.
+                log "[2/7] WARNING: partition NOT expanded — continuing anyway."
+                log "         The unit works but does not use the whole card."
+                log "         Fix later: sudo growpart ${ROOT_DISK} ${PART_NUM} && sudo resize2fs ${ROOT_PART}"
+            fi
         fi
     fi
 fi
