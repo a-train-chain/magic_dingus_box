@@ -3903,7 +3903,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
             for line in process.stdout:
                 line = line.strip()
                 if line:
-                    recent_lines.append(line)
+                    # Stripped at CAPTURE time: on failure this deque becomes
+                    # job['message'], which the Settings tab renders verbatim
+                    # — the same raw-ANSI-in-the-red-box leak the check
+                    # endpoint already fixed with strip_ansi. The JSON parse
+                    # below is unaffected (progress lines carry no colour).
+                    recent_lines.append(strip_ansi(line))
                     try:
                         progress_data = json.loads(line)
                         job['stage'] = progress_data.get('stage', job['stage'])
@@ -4054,7 +4059,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         pass
                 return success_response(message="Rollback completed")
             else:
-                error_msg = result.stderr.strip() or "Rollback failed"
+                error_msg = strip_ansi(result.stderr) or "Rollback failed"
                 return error_response("ROLLBACK_FAILED", error_msg, status=500)
 
         except subprocess.TimeoutExpired:
