@@ -29,12 +29,23 @@
   let ws = null;
   let backoff = 250;
   let lastStatusTs = 0;
+  let retryTimer = null;   // pending reconnect — tracked so resume can fast-forward it
+  let healthTimer = null;  // post-resume liveness probe
+
+  function scheduleReconnect(delay) {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, delay);
+  }
 
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host + '/admin/remote/ws');
     ws.onopen = () => {
       backoff = 250;
+      // Grace-stamp so the staleness watchdog below can't kill a socket
+      // that opened milliseconds ago and hasn't received its first status
+      // broadcast yet.
+      lastStatusTs = Date.now();
       ws.send(JSON.stringify({ t: 'hello', client: 'remote-v1', schema: 1 }));
       dot.dataset.state = 'green';
       // Cache-safety: if the iOS PWA is serving an OLD HTML (without the
@@ -51,11 +62,44 @@
     ws.onclose = () => {
       dot.dataset.state = 'red';
       if (textInput) textInput.disabled = true;
-      setTimeout(connect, backoff);
+      scheduleReconnect(backoff);
       backoff = Math.min(backoff * 2, 5000);
     };
     ws.onerror = () => {};
   }
+
+  // iOS — and installed home-screen apps far more aggressively than Safari
+  // tabs — freezes the page on lock/app-switch and severs the socket
+  // WITHOUT delivering a close event. On resume the object can still read
+  // OPEN: a zombie. Sends go nowhere, onclose never fires, so the backoff
+  // loop never restarts and the remote sits dead until a force-quit. This
+  // is the "phone doesn't stay connected once it's on the home screen"
+  // field report. Every resume signal funnels here:
+  //   - not OPEN  -> reconnect NOW (cancel any suspended backoff timer,
+  //                  which iOS may otherwise hold for seconds after resume)
+  //   - OPEN      -> grace-stamp, then probe: if no status broadcast lands
+  //                  within 3s, the socket is a zombie — close it, which
+  //                  fires onclose and re-enters the normal reconnect path.
+  //   - CONNECTING -> leave it; its own onopen/onclose will resolve it.
+  function ensureLive() {
+    backoff = 250;
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      scheduleReconnect(0);
+    } else if (ws.readyState === WebSocket.OPEN) {
+      lastStatusTs = Date.now();
+      clearTimeout(healthTimer);
+      healthTimer = setTimeout(() => {
+        if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastStatusTs > 2500) {
+          try { ws.close(); } catch (e) { /* already dying */ }
+        }
+      }, 3000);
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') ensureLive();
+  });
+  window.addEventListener('pageshow', ensureLive);
+  window.addEventListener('focus', ensureLive);
 
   function send(obj) {
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -279,10 +323,19 @@
   }
 
   // Connection-state dot — amber if no status update for 1–5s, red if >5s.
+  // Doubles as the always-on zombie watchdog: a socket that reads OPEN but
+  // has produced no status for 8s while the page is visible is dead in a
+  // way no event will ever report (see ensureLive) — close it ourselves so
+  // onclose re-enters the reconnect path. Never fires while hidden: a
+  // backgrounded page legitimately receives nothing, and iOS freezes this
+  // timer there anyway.
   setInterval(() => {
     if (ws && ws.readyState === 1) {
       const age = Date.now() - lastStatusTs;
       dot.dataset.state = age > 5000 ? 'red' : age > 1000 ? 'amber' : 'green';
+      if (age > 8000 && document.visibilityState === 'visible') {
+        try { ws.close(); } catch (e) { /* already dying */ }
+      }
     }
   }, 500);
 
