@@ -1088,6 +1088,69 @@ NICKNAME_PROMPT_HTML = """
 """
 
 
+CONNECT_PAGE_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131013">
+<title>Connect a Device</title>
+<style>
+  /* Standalone page — matches the dark styling of the inline pair page
+     (/admin/remote) rather than style.css, and carries its own copy of the
+     mobile overflow hygiene rules: this page never loads style.css, so a
+     long hostname or query string must not push the layout wide here
+     either. */
+  * { box-sizing: border-box; min-width: 0; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100vh;
+    background: #1F191F; color: #F2E4D9;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    overflow-wrap: anywhere; word-break: break-word;
+  }
+  .card {
+    width: min(400px, 92%); padding: 32px 24px;
+    background: #2A232A; border-radius: 16px;
+    text-align: center; margin: 24px 0;
+  }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; }
+  p.sub { margin: 0 0 26px; font-size: 14px; color: #968B85; line-height: 1.5; }
+  a.big {
+    display: block; width: 100%; padding: 18px 16px;
+    border-radius: 12px; text-decoration: none;
+    font-size: 17px; font-weight: 600; line-height: 1.3;
+  }
+  a.big span { display: block; margin-top: 4px; font-size: 13px; font-weight: 400; }
+  a.big:active { filter: brightness(0.9); }
+  .remote { background: #EA3A27; color: #FFF; margin-bottom: 14px; }
+  .remote span { color: rgba(255, 255, 255, 0.75); }
+  .manage { background: #1F191F; color: #F2E4D9; border: 2px solid #4A414A; }
+  .manage span { color: #968B85; }
+  p.hint { margin: 22px 0 0; font-size: 13px; color: #968B85; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Connect a Device</h1>
+  <p class="sub">This is your Magic Dingus Box. What would you like to do?</p>
+  <a class="big remote" href="{{ remote_href }}">Use this phone as a remote
+    <span>D-pad control, and type with your phone&rsquo;s keyboard</span></a>
+  <a class="big manage" href="/">Manage movies &amp; playlists
+    <span>Upload videos, build playlists, movie setup</span></a>
+  {% if has_code %}
+  <p class="hint">Choosing the remote pairs this phone automatically &mdash;
+     no code to type.</p>
+  {% else %}
+  <p class="hint">Pairing a remote needs the 6-digit code from
+     Settings &rarr; Connect Phone / Computer on the kiosk.</p>
+  {% endif %}
+</div>
+</body></html>
+"""
+
+
 # --- VPN provider support -------------------------------------------------
 #
 # Everything below was verified empirically against the exact image this box
@@ -5483,6 +5546,37 @@ def create_app(data_dir: Path, config=None) -> Flask:
             host = ""
         mdns = (host + ".local") if host and not host.endswith(".local") else host
         return jsonify({"hostname": host, "mdns": mdns})
+
+    @app.get("/connect")
+    def connect_landing():  # type: ignore[no-redef]
+        """Unified "Connect a Device" landing page — the kiosk QR target.
+
+        The kiosk's Settings menu used to point two different QR codes at
+        two different URLs (the Content Manager root, and the phone-remote
+        pairing flow) and customers could not tell which one they wanted.
+        Both kiosk QR codes now land HERE, and the choice is made in words.
+
+        Accepts an optional ?code=NNNNNN from the pairing screen's QR. With
+        a well-formed code the remote button submits it through the EXISTING
+        pairing flow (GET /?pair=CODE&tab=remote — handle_pair_param lives
+        on the root route; there is no /pair route). Without one, the button
+        goes to /admin/remote, which already shows the in-app 6-digit form
+        when unpaired.
+
+        This page deliberately adds NO new pairing mechanics: iOS
+        home-screen apps have a separate cookie jar from Safari and depend
+        on the in-app 6-digit form, so the /admin/remote form, the
+        handle_pair_param flow, and the HMAC cookie are all untouched — this
+        is only a signpost in front of them. A malformed code is treated as
+        absent rather than rejected: the customer still gets a working page
+        and the in-app form as the fallback path.
+        """
+        code = (request.args.get("code") or "").strip()
+        if not re.fullmatch(r"[0-9]{6}", code):
+            code = ""
+        remote_href = f"/?pair={code}&tab=remote" if code else "/admin/remote"
+        return render_template_string(
+            CONNECT_PAGE_HTML, remote_href=remote_href, has_code=bool(code))
 
     @app.get("/")
     @app.get("/admin")
