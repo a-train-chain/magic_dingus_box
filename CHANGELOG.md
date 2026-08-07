@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.6] - 2026-08-07
+
 ### Added
 - **One "Connect a Device" landing page behind every kiosk QR code.** The
   Settings menu showed customers two QR screens pointing at two different
