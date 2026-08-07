@@ -3830,6 +3830,39 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking update jobs (in-memory, cleared on restart)
     update_jobs: dict = {}
 
+    @app.get("/admin/network/doctor")
+    def network_doctor():  # type: ignore[no-redef]
+        """Run the Network Doctor ladder and return its verdict.
+
+        Deliberately NOT behind the Media Browser gate: network problems hit
+        games-only boxes and unprovisioned units too, and this endpoint is
+        most valuable precisely when nothing else works. Read-only probes,
+        bounded at ~20s by the script itself; the subprocess timeout is the
+        backstop. Runs synchronously — the UI shows a spinner for the
+        duration, and a second click just runs it again.
+        """
+        doctor = data_dir.parent / "scripts" / "network_doctor.sh"
+        if not doctor.exists():
+            return error_response("NOT_AVAILABLE", "network_doctor.sh not found", status=500)
+        try:
+            result = subprocess.run(
+                [str(doctor), "--json"],
+                capture_output=True, text=True, timeout=45
+            )
+            # The script exits 1 when any rung failed — that is a RESULT,
+            # not an error; the JSON on stdout is valid either way.
+            payload = json.loads(result.stdout)
+            return jsonify(payload), 200
+        except subprocess.TimeoutExpired:
+            return error_response("TIMEOUT", "Network test timed out", status=504)
+        except json.JSONDecodeError:
+            return error_response(
+                "PARSE_ERROR",
+                strip_ansi(result.stderr)[:300] or "Doctor produced no parseable output",
+                status=500)
+        except Exception as e:
+            return error_response("INTERNAL_ERROR", str(e), status=500)
+
     @app.get("/admin/update/version")
     def get_version():  # type: ignore[no-redef]
         """Get current installed version."""

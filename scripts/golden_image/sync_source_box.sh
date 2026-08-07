@@ -89,6 +89,28 @@ echo -e "${BOLD}[2/5] Pushing service scripts${NC}"
 push magic_dingus_box_cpp/scripts/setup_services.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_services.sh 755 \
      "setup_services.sh      (.env backfill, grep guard, Radarr root folder)"
+push magic_dingus_box_cpp/scripts/setup_network_hardening.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_network_hardening.sh 755 \
+     "setup_network_hardening.sh (IPv6 off + public-DNS-first, any-Wi-Fi posture)"
+push magic_dingus_box_cpp/scripts/network_doctor.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/network_doctor.sh 755 \
+     "network_doctor.sh      (connectivity ladder + plain-English verdict)"
+push magic_dingus_box_cpp/scripts/data/90-magic-ipv6-disable.conf \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/data/90-magic-ipv6-disable.conf 644 \
+     "90-magic-ipv6-disable.conf (NM conf.d default — repo copy)"
+push magic_dingus_box_cpp/scripts/data/90-magic-network-hardening \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/data/90-magic-network-hardening 755 \
+     "90-magic-network-hardening (NM dispatcher — repo copy)"
+# Run the installer so the LIVE config (conf.d + dispatcher + repaired
+# profiles) matches what the image must carry — pushing repo copies alone
+# leaves /etc untouched, which is exactly the present-but-not-correct trap
+# the fstab step below exists for.
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      network hardening applied live (conf.d + dispatcher + profiles)"
+else
+    echo -e "  ${RED}FAILED${NC}  network hardening installer did not complete"; FAILED=1
+fi
 push magic_dingus_box_cpp/scripts/verify_services.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_services.sh 755 \
      "verify_services.sh     (Radarr root-folder check — 15 checks)"

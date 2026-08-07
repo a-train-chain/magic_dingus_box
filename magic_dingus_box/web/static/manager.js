@@ -6935,6 +6935,54 @@ function _onSetupFailed(data) {
     if (button) button.disabled = false;
 }
 
+// ===== NETWORK DOCTOR =====
+//
+// One tap -> the box probes its own connectivity ladder (join, DHCP,
+// router, IPv6 posture, DNS via router, DNS direct, HTTPS, VPN stack)
+// and returns a single plain-English verdict. Exists because one hostile
+// home router once presented as four unrelated symptoms across four
+// screens, and diagnosing it took days of text messages instead of one
+// glance at one card.
+async function runNetworkDoctor() {
+    const btn = document.getElementById('netDoctorBtn');
+    const verdictEl = document.getElementById('netDoctorVerdict');
+    const checksEl = document.getElementById('netDoctorChecks');
+    if (!currentDevice || !verdictEl) return;
+
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing… (~15s)'; }
+    verdictEl.style.display = 'block';
+    verdictEl.classList.remove('complete', 'error');
+    verdictEl.textContent = 'Running connectivity tests…';
+    if (checksEl) { checksEl.style.display = 'none'; checksEl.innerHTML = ''; }
+
+    try {
+        const resp = await fetch(`${currentDevice.url}/admin/network/doctor`);
+        const data = await resp.json();
+        if (!data || data.ok !== true) {
+            throw new Error((data && data.error && data.error.message) || 'test failed to run');
+        }
+        const allOk = (data.checks || []).every(c => c.ok);
+        verdictEl.classList.add(allOk ? 'complete' : 'error');
+        verdictEl.innerHTML =
+            `<strong>${escapeHtml(data.verdict || 'Done')}</strong><br>` +
+            `${escapeHtml(data.advice || '')}`;
+        if (checksEl && Array.isArray(data.checks)) {
+            checksEl.style.display = 'block';
+            checksEl.innerHTML = data.checks.map(c =>
+                `<div style="padding: 0.15rem 0;">` +
+                `<span style="color: ${c.ok ? 'var(--success, #4caf50)' : 'var(--error, #f44336)'};">` +
+                `${c.ok ? '✓' : '✗'}</span> ` +
+                `${escapeHtml(c.detail)}</div>`
+            ).join('');
+        }
+    } catch (e) {
+        verdictEl.classList.add('error');
+        verdictEl.textContent = `Could not run the network test: ${e.message}`;
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Run Network Test'; }
+    }
+}
+
 function reconfigureMediaBrowser() {
     if (!confirm('Reconfigure Media Browser? Existing services will be torn down and re-created with the new VPN credentials.')) {
         return;

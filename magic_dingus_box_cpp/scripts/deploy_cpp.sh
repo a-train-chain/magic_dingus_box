@@ -373,6 +373,17 @@ EOF
 echo "  ✓ USB-gadget network unit installed + enabled (usb0 -> 10.55.0.1)"
 echo ""
 
+# Step 1.67: Network hardening (any-Wi-Fi posture). Base platform, same
+# rationale as the USB gadget above: a games-only box needs to survive a
+# hostile home router exactly as much as a Movies box, and setup_services
+# only runs when a VPN is provisioned. The script is idempotent and never
+# drops the active connection (runtime changes are reapply-in-place).
+echo "Step 1.67: Installing network hardening (IPv6 off + public-DNS-first)..."
+ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" \
+    | sed 's/^/  /'
+echo "  ✓ network hardening installed (conf.d default + dispatcher + profiles repaired)"
+echo ""
+
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz --checksum \

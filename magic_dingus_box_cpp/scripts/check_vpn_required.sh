@@ -57,11 +57,26 @@ for container in "${EXPECTED_VPN_CONTAINERS[@]}"; do
     fi
 done
 
-# 4. Host-level: IPv6 disabled
-if [ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = "1" ]; then
-    echo "  host: IPv6 disabled ✓"
+# 4. Host-level: IPv6 disabled — checked on the ACTIVE EGRESS INTERFACE,
+# not the sysctl. The old test read conf/all/disable_ipv6, which
+# setup once set to 1 and never changes — but NetworkManager re-enables
+# v6 per-interface for any ipv6.method=auto profile, so wlan0 carried a
+# live global v6 address while this check printed a green tick: a false
+# green no unit could ever fail. The address on the interface is the
+# outcome; assert that. (Posture is enforced by setup_network_hardening.sh
+# + the NM dispatcher.)
+EGRESS_IF=$(ip -4 route show default 2>/dev/null | awk '{print $5; exit}')
+if [ -n "$EGRESS_IF" ]; then
+    V6_COUNT=$(ip -6 addr show dev "$EGRESS_IF" scope global 2>/dev/null | grep -c inet6)
+    if [ "${V6_COUNT:-0}" = "0" ]; then
+        echo "  host: no global IPv6 on egress (${EGRESS_IF}) ✓"
+    else
+        echo "  host: WARNING — ${EGRESS_IF} holds ${V6_COUNT} global IPv6 address(es)."
+        echo "         Run: sudo scripts/setup_network_hardening.sh (then reconnect)"
+        LEAKS=$((LEAKS + 1))
+    fi
 else
-    echo "  host: WARNING — IPv6 still enabled. Setup Step 0 may not have run."
+    echo "  host: WARNING — no default route; cannot assess IPv6 posture"
     LEAKS=$((LEAKS + 1))
 fi
 

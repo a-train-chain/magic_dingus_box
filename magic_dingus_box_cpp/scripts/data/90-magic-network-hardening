@@ -1,0 +1,64 @@
+#!/bin/bash
+# Magic Dingus Box — NetworkManager dispatcher: self-healing network posture.
+# Installed to /etc/NetworkManager/dispatcher.d/ by setup_network_hardening.sh.
+#
+# Runs on every connection "up" for wifi/ethernet and enforces, on THAT
+# profile (including ones the customer creates at their house long after
+# the image was cut):
+#   - ipv6.method=disabled       (broken-v6 routers black-hole DNS/HTTPS;
+#                                 everything we talk to is v4-capable)
+#   - ipv4.dns 1.1.1.1 8.8.8.8   (public resolvers FIRST, router's own DNS
+#                                 kept as fallback via ignore-auto-dns=no —
+#                                 a dead or filtering router resolver then
+#                                 degrades to "slower", never to "nothing
+#                                 works")
+#
+# The persistent modify covers every future activation; the runtime device
+# modify applies the change to the CURRENT activation in place (a reapply,
+# not a reconnect — the link never drops). Idempotent: when the profile is
+# already correct, this exits without touching anything, so there is no
+# modify/reapply loop.
+#
+# The conf.d default (90-magic-ipv6-disable.conf) handles profiles that
+# leave ipv6.method unset; this script handles the ones that set it
+# explicitly — nmcli's wifi join writes an explicit "auto".
+
+IFACE="$1"
+ACTION="$2"
+
+[ "$ACTION" = "up" ] || exit 0
+[ -n "$CONNECTION_UUID" ] || exit 0
+
+TYPE=$(nmcli -g connection.type connection show "$CONNECTION_UUID" 2>/dev/null)
+case "$TYPE" in
+    802-11-wireless|802-3-ethernet) ;;
+    *) exit 0 ;;
+esac
+
+WANT_DNS="1.1.1.1 8.8.8.8"
+CUR_V6=$(nmcli -g ipv6.method connection show "$CONNECTION_UUID" 2>/dev/null)
+CUR_DNS=$(nmcli -g ipv4.dns connection show "$CONNECTION_UUID" 2>/dev/null)
+
+changed=0
+
+if [ "$CUR_V6" != "disabled" ]; then
+    nmcli connection modify "$CONNECTION_UUID" ipv6.method disabled 2>/dev/null \
+        && changed=1
+    # Apply to the live activation too — reapply in place, no reconnect.
+    nmcli device modify "$IFACE" ipv6.method disabled 2>/dev/null || true
+fi
+
+if [ "$CUR_DNS" != "1.1.1.1,8.8.8.8" ]; then
+    nmcli connection modify "$CONNECTION_UUID" \
+        ipv4.dns "$WANT_DNS" ipv4.ignore-auto-dns no 2>/dev/null \
+        && changed=1
+    nmcli device modify "$IFACE" ipv4.dns "$WANT_DNS" 2>/dev/null || true
+fi
+
+if [ "$changed" = "1" ]; then
+    logger -t magic-net-hardening \
+        "hardened connection $CONNECTION_ID on $IFACE (ipv6 off, public DNS first)" \
+        2>/dev/null || true
+fi
+
+exit 0

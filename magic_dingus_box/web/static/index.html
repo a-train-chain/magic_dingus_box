@@ -790,6 +790,25 @@
                 </div>
             </div>
 
+            <!-- Network Doctor. Deliberately its own card, NOT buried in
+                 System Health: it is most needed exactly when the box's
+                 internet is broken and every other panel is showing
+                 confusing symptoms (no posters, update check failed,
+                 "Radarr offline"). One tap -> one plain-English verdict. -->
+            <div class="settings-section-mobile">
+                <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-antenna"/></svg> Network Doctor</div>
+                <div class="section-body">
+                    <p class="settings-description">
+                        Movies missing their pictures? Updates failing? Run this —
+                        it tests the box's connection step by step and says what's
+                        wrong in plain English.
+                    </p>
+                    <button class="btn-primary" id="netDoctorBtn" onclick="runNetworkDoctor()">Run Network Test</button>
+                    <div id="netDoctorVerdict" class="restore-status" style="display: none; margin-top: 0.75rem;"></div>
+                    <div id="netDoctorChecks" style="display: none; margin-top: 0.5rem; font-size: 0.85rem;"></div>
+                </div>
+            </div>
+
             <div class="settings-section-mobile">
                 <div class="section-title"><svg class="ic" aria-hidden="true"><use href="#ic-health"/></svg> System Health</div>
                 <div class="section-body">
