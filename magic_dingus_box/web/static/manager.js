@@ -6983,9 +6983,29 @@ async function runNetworkDoctor() {
     }
 }
 
-function reconfigureMediaBrowser() {
-    if (!confirm('Reconfigure Media Browser? Existing services will be torn down and re-created with the new VPN credentials.')) {
+let _reconfArmTimer = null;
+function reconfigureMediaBrowser(ev) {
+    // Two-tap inline confirm instead of window.confirm(): iOS home-screen
+    // web apps can silently suppress native dialogs, which made this
+    // button appear completely dead in the field — on the box's one
+    // owner-accessible repair flow. First tap arms (button changes text),
+    // second tap within 6s proceeds, timeout disarms.
+    const btn = ev && ev.target ? ev.target.closest('button') : null;
+    if (btn && btn.dataset.armed !== '1') {
+        btn.dataset.armed = '1';
+        btn.dataset.origLabel = btn.innerHTML;
+        btn.innerHTML = 'Tap again to confirm — services will be rebuilt';
+        clearTimeout(_reconfArmTimer);
+        _reconfArmTimer = setTimeout(() => {
+            btn.dataset.armed = '0';
+            btn.innerHTML = btn.dataset.origLabel;
+        }, 6000);
         return;
+    }
+    if (btn) {
+        clearTimeout(_reconfArmTimer);
+        btn.dataset.armed = '0';
+        btn.innerHTML = btn.dataset.origLabel || btn.innerHTML;
     }
     mbForceSetupView = true;
     mbActiveJobId = null;

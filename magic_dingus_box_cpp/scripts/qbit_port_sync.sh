@@ -110,3 +110,28 @@ curl -sS -b "${COOKIE}" -X POST \
     --data-urlencode "json={\"listen_port\":${PORT},\"upnp\":false,\"random_port\":false}" \
     "${QBIT_API}/api/v2/app/setPreferences" >/dev/null
 echo "[qbit-port-sync] qBit listen_port set to ${PORT}"
+
+# ---------------------------------------------------------------------------
+# Drive-absent download guard (runs every 60 s with the timer).
+# ---------------------------------------------------------------------------
+# If the MOVIES drive is unplugged, /mnt/ssd silently degrades to a plain
+# directory on the SD card — and active torrents then write to the OS
+# partition until it is FULL, which kills the box. Pause everything while
+# the mount is absent; resume automatically when it returns. The marker
+# records that WE paused (an operator's own manual pauses are never
+# resumed by this guard). Runs here because this script already holds an
+# authenticated qBit session on a 60 s cadence.
+GUARD_MARKER=/tmp/mdb_drive_guard_paused
+if ! mountpoint -q /mnt/ssd; then
+    if [ ! -f "$GUARD_MARKER" ]; then
+        curl -sS -b "${COOKIE}" -X POST "${QBIT_API}/api/v2/torrents/pause" \
+            --data "hashes=all" >/dev/null 2>&1 || true
+        touch "$GUARD_MARKER"
+        echo "[qbit-port-sync] DRIVE GUARD: /mnt/ssd not mounted — all torrents paused"
+    fi
+elif [ -f "$GUARD_MARKER" ]; then
+    curl -sS -b "${COOKIE}" -X POST "${QBIT_API}/api/v2/torrents/resume" \
+        --data "hashes=all" >/dev/null 2>&1 || true
+    rm -f "$GUARD_MARKER"
+    echo "[qbit-port-sync] DRIVE GUARD: drive back — torrents resumed"
+fi

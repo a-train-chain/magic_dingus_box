@@ -118,6 +118,50 @@ else
     add "https_github" 0 "cannot reach GitHub — updates cannot download"
 fi
 
+# --- rung 6b: Wi-Fi signal strength ------------------------------------------
+if [[ -n "$EGRESS_IF" && "$EGRESS_IF" == wl* ]]; then
+    SIG=$(iw dev "$EGRESS_IF" link 2>/dev/null | awk '/signal/{print $2; exit}')
+    if [[ -n "$SIG" ]]; then
+        # dBm: > -60 great, -60..-70 fine, < -75 = trouble at video bitrates
+        if [[ "$SIG" -ge -70 ]]; then
+            add "wifi_signal" 1 "signal ${SIG} dBm (good)"
+        else
+            add "wifi_signal" 0 "signal ${SIG} dBm — weak; move the box or router closer"
+        fi
+    fi
+fi
+
+# --- rung 6c: clock sanity ----------------------------------------------------
+# No RTC on a Pi: a box unplugged for months, on a router that blocks
+# NTP, has a clock so wrong that every TLS handshake fails — which looks
+# identical to "no internet" everywhere else. Compare against a plain
+# HTTP Date header (no TLS needed to read the truth).
+NET_DATE=$(curl -4 -sI -m 6 http://connectivitycheck.gstatic.com/generate_204 2>/dev/null \
+    | awk -F': ' 'tolower($1)=="date"{print $2; exit}' | tr -d '\r')
+if [[ -n "$NET_DATE" ]]; then
+    NET_EPOCH=$(date -d "$NET_DATE" +%s 2>/dev/null)
+    LOCAL_EPOCH=$(date +%s)
+    if [[ -n "$NET_EPOCH" ]]; then
+        DRIFT=$(( LOCAL_EPOCH - NET_EPOCH )); [[ $DRIFT -lt 0 ]] && DRIFT=$(( -DRIFT ))
+        if [[ $DRIFT -le 300 ]]; then
+            add "clock" 1 "box clock correct (drift ${DRIFT}s)"
+        else
+            add "clock" 0 "box clock is off by ${DRIFT}s — secure connections will fail; the router may be blocking internet time (NTP)"
+        fi
+    fi
+fi
+
+# --- rung 6d: captive portal --------------------------------------------------
+# generate_204 must return exactly 204 with no body. A 200/redirect means
+# something is intercepting web traffic — a hotel/guest-network login
+# page, which no headless box can click through.
+CP_RC=$(curl -4 -sS -o /dev/null -w '%{http_code}' -m 6 http://connectivitycheck.gstatic.com/generate_204 2>/dev/null)
+if [[ "$CP_RC" == "204" ]]; then
+    add "captive_portal" 1 "no sign-in page intercepting traffic"
+elif [[ -n "$CP_RC" && "$CP_RC" != "000" ]]; then
+    add "captive_portal" 0 "web traffic intercepted (HTTP ${CP_RC}) — this network requires a sign-in page the box cannot complete; use a different network"
+fi
+
 # --- rung 7: VPN tunnel (only meaningful on a provisioned box) ---------------
 if [[ -f /opt/magic_dingus_box/services/.env ]]; then
     ping_rc=$(curl -sS -o /dev/null -w '%{http_code}' -m 5 http://localhost:7878/ping 2>/dev/null)
@@ -157,6 +201,12 @@ elif [[ "$(get https_tmdb)" == "1" && "$(get https_github)" == "1" ]]; then
         VERDICT="All good"
         ADVICE="Network, DNS, internet and services all check out."
     fi
+elif [[ "$(get captive_portal)" == "0" ]]; then
+    VERDICT="Sign-in page in the way"
+    ADVICE="This network shows a login page (hotel/guest style) that the box cannot complete. Use a regular home Wi-Fi network or a phone hotspot."
+elif [[ "$(get clock)" == "0" ]]; then
+    VERDICT="Box clock is wrong"
+    ADVICE="Secure connections fail while the clock is off. Leave the box online a few minutes; if it persists, check the router isn't blocking internet time (NTP)."
 elif [[ "$(get dns_system)" == "0" && "$(get dns_direct)" == "0" ]]; then
     VERDICT="Router is blocking this device's internet"
     ADVICE="Local network works but nothing reaches the internet — typical of router 'security'/parental features silently blocking an unrecognized device. In the router app, find this device (magicpi-...) and allow it; also try disabling IPv6 in the router."
