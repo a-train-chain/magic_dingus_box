@@ -613,6 +613,17 @@ if [ -f "${SYSTEMD_DIR}/magic-dingus-auto-blocklist.service" ] && \
     sudo systemctl enable magic-dingus-library-import.service
     echo "Library-import-on-mount service installed + enabled."
 
+    # Network posture (IPv6 off + public-DNS-first + dispatcher). Second
+    # activation path alongside update.sh's post-install hook: a fielded
+    # box whose RUNNING updater predates that hook still gets the posture
+    # the first time its owner (re)configures the VPN — which is exactly
+    # the repair flow a box with network trouble is walked through.
+    # Idempotent; never drops the active connection; must not fail setup.
+    if [[ -x "${SCRIPT_DIR}/setup_network_hardening.sh" ]]; then
+        sudo "${SCRIPT_DIR}/setup_network_hardening.sh" \
+            || echo "WARNING: network hardening install failed (non-fatal)" >&2
+    fi
+
     # Run it NOW, once, in addition to arming it for future mounts.
     #
     # Mount-triggered alone has a hole that every new unit falls into.

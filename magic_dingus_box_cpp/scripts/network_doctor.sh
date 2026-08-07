@@ -33,7 +33,11 @@ GATEWAY=$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')
 IPADDR=""
 if [[ -n "$EGRESS_IF" ]]; then
     IPADDR=$(ip -4 -o addr show dev "$EGRESS_IF" 2>/dev/null | awk '{print $4; exit}')
+    # Three-way fallback: `iw` is not part of the base image everywhere,
+    # and the first live run printed no network name because of it.
     SSID=$(iw dev "$EGRESS_IF" link 2>/dev/null | awk -F': ' '/SSID/{print $2; exit}')
+    [[ -z "$SSID" ]] && SSID=$(iwgetid -r 2>/dev/null)
+    [[ -z "$SSID" ]] && SSID=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')
     add "network_joined" 1 "${EGRESS_IF}${SSID:+ (\"$SSID\")} at ${IPADDR:-?}"
 else
     add "network_joined" 0 "no default route — not on any network"

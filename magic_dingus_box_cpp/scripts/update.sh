@@ -828,6 +828,19 @@ install_update() {
         log "All referenced emulator cores present"
     fi
 
+    # Activate the any-Wi-Fi network posture delivered by this update.
+    # The rsync above only lands FILES; without this call an OTA-updated
+    # field unit would carry the installer forever and never run it —
+    # the golden image gets the posture baked into /etc, but fielded
+    # boxes only ever update. Idempotent, never drops the link, and a
+    # failure must not fail the update (the dispatcher will also be
+    # installed by any future provisioning run).
+    if [ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" ]; then
+        log "Applying network hardening (IPv6 off + public-DNS-first)..."
+        bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" \
+            || log_warn "network hardening install failed (will retry on next provisioning run)"
+    fi
+
     json_progress "restarting_services" 90 "Restarting services..."
 
     # Reload systemd and start C++ app

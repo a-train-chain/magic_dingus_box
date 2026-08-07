@@ -158,6 +158,12 @@ Movies are stored on a USB drive so they never crowd the games.
 
 ## 11. If something's stuck
 
+- **Movies missing their pictures, updates failing, or things "half
+  working"?** → Content Manager → **Settings** tab → **Network Doctor**
+  → Run Network Test. It checks the box's connection step by step and
+  tells you in plain English what's wrong — often something in your
+  Wi-Fi router's settings — and what to do about it. Screenshot the
+  result if you need help.
 - **Game frozen** → press the restart button on the box. ~10 seconds,
   saves intact.
 - **Box unresponsive** → flip the power switch off, wait five seconds,
