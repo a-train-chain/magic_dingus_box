@@ -10020,3 +10020,48 @@ body.faceplate .bottom-nav {
     letter-spacing: .02em;
   }
 }
+
+/* ===== Mobile overflow hygiene (Movies + Settings cards) =====
+   Long unbroken strings are the mobile killers here: a 32-char TMDB
+   key, an API key in the credentials panel, a URL in a verdict, a log
+   line. Every value-bearing container inside a settings card wraps
+   ANYWHERE rather than pushing the page wide, and every text input
+   fills its card instead of overflowing it. Blanket rules on purpose:
+   each new panel added to these cards inherits the hygiene instead of
+   re-learning it. */
+.settings-section-mobile {
+    min-width: 0;
+    overflow-x: hidden;
+}
+.settings-section-mobile .section-body {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.settings-section-mobile code,
+.settings-section-mobile pre,
+#mbCredentialsBody,
+#mbVpnInfo,
+#netDoctorChecks,
+#netDoctorVerdict {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    max-width: 100%;
+}
+.settings-section-mobile input[type="text"],
+.settings-section-mobile input[type="password"],
+.settings-section-mobile textarea,
+.settings-section-mobile select {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    /* 16px floor: anything smaller makes iOS zoom the page on focus
+       and never zoom back out. */
+    font-size: max(16px, 1em);
+}
+/* API keys and pasted configs read better in monospace, and truncate
+   visibly with the caret at the end rather than looking cut off. */
+#mbCredentialsBody, .settings-section-mobile input[id*="Tmdb"],
+.settings-section-mobile input[id*="tmdb"] {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
