@@ -56,6 +56,66 @@ if [ -z "${QBIT_PASS}" ]; then
     exit 0
 fi
 
+# Authenticate with qBit FIRST — before the Gluetun port query — so the
+# drive-absent guard below runs on every tick that qBit is reachable at
+# all. It originally sat at the END of this script, which put it behind
+# five early `exit 0`s including the steady-state "in sync" path: the one
+# minute-by-minute case the guard exists for (drive yanked mid-seeding,
+# port long since synced) was exactly the case that never reached it.
+# Cookie file is per-run so we never carry stale session state between
+# invocations.
+COOKIE=$(mktemp /tmp/qbit-cookie-XXXX)
+trap 'rm -f "${COOKIE}"' EXIT
+
+LOGIN_RESP=$(curl -sS -c "${COOKIE}" -X POST \
+    -d "username=${QBIT_USER}" --data-urlencode "password=${QBIT_PASS}" \
+    "${QBIT_API}/api/v2/auth/login" 2>&1)
+
+if [ "${LOGIN_RESP}" != "Ok." ]; then
+    echo "[qbit-port-sync] qBit login failed (response: ${LOGIN_RESP:0:40}); skipping"
+    echo "                 likely qBit password drift — magic-dingus-sync-qbit-password should heal on next boot"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Drive-absent download guard (runs every 60 s with the timer).
+# ---------------------------------------------------------------------------
+# If the MOVIES drive is unplugged, /mnt/ssd silently degrades to a plain
+# directory on the SD card — and active torrents then write to the OS
+# partition until it is FULL, which kills the box. Pause everything while
+# the mount is absent; resume automatically when it returns. The marker
+# records that WE paused (an operator's own manual pauses are never
+# resumed by this guard). Runs here because this script already holds an
+# authenticated qBit session on a 60 s cadence — and it runs BEFORE the
+# Gluetun port fetch on purpose, so a lapsed NAT-PMP lease (its own
+# early exit) can never postpone the pause.
+qbit_torrents_op() {
+    # $1 = modern endpoint, $2 = legacy endpoint. The pinned image is
+    # qBittorrent 5.0.3, whose WebAPI (2.11) RENAMED pause/resume to
+    # stop/start — the old names return 404 (verified live on the box;
+    # the first version of this guard called only pause/resume and
+    # therefore never paused anything). Try the modern name first and
+    # fall back to the legacy one so an older 4.x image still works.
+    _rc=$(curl -sS -o /dev/null -w '%{http_code}' -b "${COOKIE}" -X POST \
+        --data "hashes=all" "${QBIT_API}/api/v2/torrents/$1" 2>/dev/null)
+    if [ "${_rc}" != "200" ]; then
+        curl -sS -b "${COOKIE}" -X POST --data "hashes=all" \
+            "${QBIT_API}/api/v2/torrents/$2" >/dev/null 2>&1 || true
+    fi
+}
+GUARD_MARKER=/tmp/mdb_drive_guard_paused
+if ! mountpoint -q /mnt/ssd; then
+    if [ ! -f "$GUARD_MARKER" ]; then
+        qbit_torrents_op stop pause
+        touch "$GUARD_MARKER"
+        echo "[qbit-port-sync] DRIVE GUARD: /mnt/ssd not mounted — all torrents paused"
+    fi
+elif [ -f "$GUARD_MARKER" ]; then
+    qbit_torrents_op start resume
+    rm -f "$GUARD_MARKER"
+    echo "[qbit-port-sync] DRIVE GUARD: drive back — torrents resumed"
+fi
+
 # Pull the forwarded port from Gluetun's control endpoint. We hit it
 # via `docker exec` because Gluetun's 8000 isn't host-published —
 # publishing it would expose the unprotected control API on the LAN,
@@ -70,21 +130,6 @@ if [ -z "${PORT}" ] || [ "${PORT}" = "0" ]; then
     # is preferable to setting it to 0 (which disables incoming
     # peer connectivity entirely).
     echo "[qbit-port-sync] no forwarded port from Gluetun; leaving qBit unchanged"
-    exit 0
-fi
-
-# Authenticate with qBit. Cookie file is per-run so we never carry
-# stale session state between invocations.
-COOKIE=$(mktemp /tmp/qbit-cookie-XXXX)
-trap 'rm -f "${COOKIE}"' EXIT
-
-LOGIN_RESP=$(curl -sS -c "${COOKIE}" -X POST \
-    -d "username=${QBIT_USER}" --data-urlencode "password=${QBIT_PASS}" \
-    "${QBIT_API}/api/v2/auth/login" 2>&1)
-
-if [ "${LOGIN_RESP}" != "Ok." ]; then
-    echo "[qbit-port-sync] qBit login failed (response: ${LOGIN_RESP:0:40}); skipping"
-    echo "                 likely qBit password drift — magic-dingus-sync-qbit-password should heal on next boot"
     exit 0
 fi
 
@@ -110,28 +155,3 @@ curl -sS -b "${COOKIE}" -X POST \
     --data-urlencode "json={\"listen_port\":${PORT},\"upnp\":false,\"random_port\":false}" \
     "${QBIT_API}/api/v2/app/setPreferences" >/dev/null
 echo "[qbit-port-sync] qBit listen_port set to ${PORT}"
-
-# ---------------------------------------------------------------------------
-# Drive-absent download guard (runs every 60 s with the timer).
-# ---------------------------------------------------------------------------
-# If the MOVIES drive is unplugged, /mnt/ssd silently degrades to a plain
-# directory on the SD card — and active torrents then write to the OS
-# partition until it is FULL, which kills the box. Pause everything while
-# the mount is absent; resume automatically when it returns. The marker
-# records that WE paused (an operator's own manual pauses are never
-# resumed by this guard). Runs here because this script already holds an
-# authenticated qBit session on a 60 s cadence.
-GUARD_MARKER=/tmp/mdb_drive_guard_paused
-if ! mountpoint -q /mnt/ssd; then
-    if [ ! -f "$GUARD_MARKER" ]; then
-        curl -sS -b "${COOKIE}" -X POST "${QBIT_API}/api/v2/torrents/pause" \
-            --data "hashes=all" >/dev/null 2>&1 || true
-        touch "$GUARD_MARKER"
-        echo "[qbit-port-sync] DRIVE GUARD: /mnt/ssd not mounted — all torrents paused"
-    fi
-elif [ -f "$GUARD_MARKER" ]; then
-    curl -sS -b "${COOKIE}" -X POST "${QBIT_API}/api/v2/torrents/resume" \
-        --data "hashes=all" >/dev/null 2>&1 || true
-    rm -f "$GUARD_MARKER"
-    echo "[qbit-port-sync] DRIVE GUARD: drive back — torrents resumed"
-fi

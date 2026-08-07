@@ -25,11 +25,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or anything else — reaches the box, and the existing port-80 redirect
   carries it on to the Content Manager. Wi-Fi/loopback DNS is untouched;
   the box's own lookups never see this server.
+- **Any-Wi-Fi network posture + Network Doctor.** Born from the first
+  customer install, whose router's broken IPv6 black-holed all host
+  DNS/HTTPS while the v4-pinned VPN tunnel kept working — four
+  misleading symptoms, days of remote guessing. Every box now disables
+  IPv6 and puts public DNS first on every wifi/ethernet profile (an NM
+  conf.d default for new connections plus a dispatcher that repairs any
+  profile on connection-up, including ones the customer creates later),
+  activated on every delivery path: deploy, provisioning/VPN
+  reconfigure, and OTA update. `check_vpn_required.sh` now asserts the
+  outcome (no global IPv6 on the egress interface) instead of a sysctl
+  no unit could ever fail. And a customer-facing **Network Doctor**
+  (Settings tab card, `GET /admin/network/doctor`,
+  `network_doctor.sh`) probes the connectivity ladder — join, DHCP,
+  gateway, IPv6 posture, DNS via system resolvers and direct to
+  1.1.1.1, HTTPS to TMDB/GitHub, Wi-Fi signal, clock drift, captive
+  portal, VPN stack — and synthesizes the failure pattern into one
+  plain-English verdict with router-specific advice.
+- **Drive-absent download guard.** If the MOVIES drive is unplugged
+  while torrents are active, downloads would silently fill the SD card
+  until the box died. The 60-second port-sync tick now pauses all
+  torrents while `/mnt/ssd` is not a real mount and resumes them when
+  the drive returns (a marker ensures the guard never resumes an
+  operator's own manual pauses).
 
 ### Changed
 - Settings menu reads as one connect system: "Phone Remote" is now
   "Connect Phone / Computer", and the Content Manager Info screen's QR now
   targets the same `/connect` page with a caption saying so.
+- Mobile overflow hygiene for the Movies + Settings cards: long unbroken
+  strings (API keys, URLs, log lines) wrap instead of pushing the page
+  wide, text inputs fill their card, and the 16px input floor stops iOS
+  zooming in on focus and never back out.
+- The Media Browser "Reconfigure" button uses a two-tap inline confirm
+  instead of `window.confirm()`, which iOS home-screen web apps can
+  silently suppress — the button looked completely dead in the field.
+
+### Fixed
+- **Phone remote reconnects after iOS suspends the home-screen app.**
+  iOS freezes an installed web app on lock/app-switch and severs the
+  WebSocket without a close event; on resume the socket still read OPEN
+  and the reconnect loop never restarted, so the remote sat dead until a
+  force-quit. Every resume signal now funnels through a liveness check
+  (immediate reconnect for dead sockets, a 3s probe for zombie-OPEN
+  ones), backed by an always-on staleness watchdog.
+- **Drag-and-drop transcode uploads now complete in the UI.** The
+  v1.9.5 smart-upload poller checked for job status `completed` while
+  the server reports `complete` — the transcoded file landed correctly,
+  but the progress bar hung at 99%, the upload queue stalled, and the
+  playlist auto-add never fired.
+- The drive-absent guard actually fires: it originally ran after the
+  port-sync's steady-state "in sync" early exit (so the minute-by-minute
+  case it exists for never reached it) and called qBittorrent 4.x's
+  `torrents/pause`/`resume`, which the pinned qBittorrent 5.0.3 has
+  renamed (404). It now runs right after authentication on every tick
+  and uses `stop`/`start` with a legacy fallback.
+- The OTA update path actually activates the network posture: the
+  post-install hook invoked the hardening installer without root, whose
+  first act is to refuse to run. It now goes through `sudo -n`, matching
+  the updater's other privileged calls (and is skipped in test mode so
+  CI never rewrites a runner's network config).
+- Remaining update-flow log paths (install-failure tail, rollback
+  stderr) strip ANSI colour codes before reaching the Settings tab —
+  the same literal-escape gibberish the check endpoint was already
+  cured of in v1.9.5.
 
 ## [1.9.5] - 2026-08-05
 

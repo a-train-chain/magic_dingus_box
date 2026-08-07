@@ -835,9 +835,22 @@ install_update() {
     # boxes only ever update. Idempotent, never drops the link, and a
     # failure must not fail the update (the dispatcher will also be
     # installed by any future provisioning run).
-    if [ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" ]; then
+    #
+    # `sudo -n` is load-bearing: this script runs as the web-service user
+    # (magic-dingus-web is User=magic — verified live), and the installer's
+    # first act is an EUID root check, so the original unprivileged `bash`
+    # call failed with "must run as root" on EVERY OTA — the one delivery
+    # path this hook exists for. The magic user has passwordless sudo (the
+    # run_systemctl wrapper above depends on the same fact); -n makes a
+    # sudo that would prompt fail instantly instead of hanging a
+    # dev-machine run. Gated on SKIP_SYSTEMCTL like every other
+    # system-touching call: CI runners have passwordless sudo too, and the
+    # BATS suite must never rewrite a runner's NetworkManager config.
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: network hardening (test mode)"
+    elif [ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" ]; then
         log "Applying network hardening (IPv6 off + public-DNS-first)..."
-        bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" \
+        sudo -n bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" \
             || log_warn "network hardening install failed (will retry on next provisioning run)"
     fi
 

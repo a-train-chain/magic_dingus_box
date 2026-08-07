@@ -2323,7 +2323,14 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
                     }
                     continue;
                 }
-                if (data.status === 'completed') {
+                // The server's terminal success status is 'complete'
+                // (run_transcode_job in admin.py; the click path at
+                // handleDirectUpload tests the same string). This poller
+                // shipped in v1.9.5 checking 'completed', which never
+                // matched — the transcode finished server-side but the bar
+                // sat at 99%, the promise never resolved, and the upload
+                // queue stalled. 'completed' is kept as a defensive alias.
+                if (data.status === 'complete' || data.status === 'completed') {
                     const finalPath = data.output_path || `data/media/${data.output_filename}`;
                     progressBar.complete();
                     autoAddFinal(finalPath);
