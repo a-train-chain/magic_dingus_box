@@ -75,8 +75,10 @@ sudo pip3 install --break-system-packages 'flask-sock>=0.7.0'
 # Config is shipped from this repo at scripts/data/dnsmasq-usb0.conf
 # and dropped into /etc/dnsmasq.d/ (additive — doesn't affect the base
 # /etc/dnsmasq.conf, which stays whatever Debian ships with). The
-# config restricts dnsmasq to listen ONLY on usb0 and disables the DNS
-# server (port=0) so it doesn't fight systemd-resolved on wlan0.
+# config restricts dnsmasq to usb0 only (interface=usb0 +
+# except-interface=lo) and serves a catch-all "any hostname →
+# 10.55.0.1" DNS there, so a cabled laptop can type http://dingus.box;
+# Wi-Fi/loopback DNS (systemd-resolved) is never touched.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USB_DNSMASQ_CONF="${SCRIPT_DIR}/data/dnsmasq-usb0.conf"
 if [[ -f "$USB_DNSMASQ_CONF" ]]; then

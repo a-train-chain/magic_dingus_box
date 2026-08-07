@@ -67,7 +67,10 @@ void Renderer::render_pairing_screen(const PairingScreen& ps,
 
     // ---- Title ---------------------------------------------------------------
     {
-        const std::string title = "Phone Remote";
+        // Matches the Settings-menu row title ("Connect Phone / Computer")
+        // — this screen and the Content Manager Info screen are one system
+        // now: both QRs land on the same /connect page.
+        const std::string title = "Connect Phone / Computer";
         int tw = title_font_manager_->get_text_width(title, theme_->font_heading_size);
         float tx = (vw - static_cast<float>(tw)) / 2.0f;
         float ty = 60.0f + title_font_manager_->get_baseline_at_size(theme_->font_heading_size);

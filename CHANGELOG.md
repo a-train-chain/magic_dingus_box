@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **One "Connect a Device" landing page behind every kiosk QR code.** The
+  Settings menu showed customers two QR screens pointing at two different
+  URLs — the Content Manager root and the phone-remote pairing flow — with
+  nothing to say which one they wanted. Both QR codes now land on a new
+  standalone `/connect` page that offers the choice in words: "Use this
+  phone as a remote" (forwards the pairing screen's `?code=` into the
+  existing `/?pair=` flow, or to the in-app 6-digit form when no code came
+  along) and "Manage movies & playlists" (the Content Manager). The pairing
+  mechanics themselves — the in-app 6-digit form, `handle_pair_param`, and
+  the HMAC cookie — are untouched: iOS home-screen apps have a separate
+  cookie jar and depend on the in-app form.
+- **USB cable: any address now works.** The usb0 dnsmasq instance serves
+  catch-all DNS (`address=/#/10.55.0.1`, pinned to usb0 via `interface=` +
+  `except-interface=lo`), so a cabled laptop typing `http://dingus.box` —
+  or anything else — reaches the box, and the existing port-80 redirect
+  carries it on to the Content Manager. Wi-Fi/loopback DNS is untouched;
+  the box's own lookups never see this server.
+
+### Changed
+- Settings menu reads as one connect system: "Phone Remote" is now
+  "Connect Phone / Computer", and the Content Manager Info screen's QR now
+  targets the same `/connect` page with a caption saying so.
+
 ## [1.9.5] - 2026-08-05
 
 Field-report release: the first unit living on someone else's network came

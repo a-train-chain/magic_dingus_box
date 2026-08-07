@@ -59,8 +59,12 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("Audio", MenuSection::AUDIO, "Volume"),
         MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
-        MenuItem("Content Manager", MenuSection::INFO, "Web UI"),
-        MenuItem("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone"),
+        // These two rows are ONE system to the customer: both screens'
+        // QR codes land on the same /connect page ("Connect a Device").
+        // Kept as two entries on purpose — merging the screens fully is
+        // future work; the titles are what unify them for now.
+        MenuItem("Content Manager", MenuSection::INFO, "Web UI / QR"),
+        MenuItem("Connect Phone / Computer", MenuSection::PHONE_REMOTE, "QR + 6-digit code"),
         MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any USB gamepad"),
         MenuItem("Back", MenuSection::BACK)
     };
@@ -431,8 +435,11 @@ void SettingsMenuManager::open() {
         menu_items_.emplace_back("Audio", MenuSection::AUDIO, "Volume");
         menu_items_.emplace_back("Wi-Fi", MenuSection::WIFI, "Network Setup");
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
-        menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI");
-        menu_items_.emplace_back("Phone Remote", MenuSection::PHONE_REMOTE, "Pair phone");
+        // Same two rows as the constructor's static list — keep titles in
+        // sync. Both screens' QR codes land on the same /connect page.
+        menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI / QR");
+        menu_items_.emplace_back("Connect Phone / Computer", MenuSection::PHONE_REMOTE,
+                                 "QR + 6-digit code");
         menu_items_.emplace_back("Controller Setup", MenuSection::CONTROLLER_SETUP,
                                  "Map any USB gamepad");
         menu_items_.emplace_back("Back", MenuSection::BACK);
@@ -979,11 +986,20 @@ std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
     // (which compares the displayed URL against state.usb_url) gets
     // a perpetually-truthy state.usb_url and mis-labels the QR as
     // "USB Connection (Preferred)" even on a Wi-Fi-only screen.
+    //
+    // The QR URLs target the /connect landing page ("Connect a Device") —
+    // the SAME page the pairing screen's QR opens, just without a pairing
+    // code. One landing page for both QR codes is the whole point: the
+    // customer picks "manage movies & playlists" or "use this phone as a
+    // remote" in words instead of guessing which of two QR screens they
+    // wanted. usb_url/wifi_url feed ONLY the renderer's QR (nothing else
+    // reads them), so the typed-fallback address text stays the plain
+    // host root — everything on the box redirects sensibly from there.
     if (app_state_) {
         app_state_->usb_url = (usb_active && !usb_ip.empty())
-            ? ("http://" + usb_ip + ":5000") : "";
+            ? ("http://" + usb_ip + ":5000/connect") : "";
         app_state_->wifi_url = (wifi_active && !wifi_status.ip.empty())
-            ? ("http://" + wifi_status.ip + ":5000") : "";
+            ? ("http://" + wifi_status.ip + ":5000/connect") : "";
         app_state_->content_manager_url = primary_url;
     }
     

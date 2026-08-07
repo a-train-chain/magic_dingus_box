@@ -23,6 +23,15 @@ namespace ui {
 //
 // Returns an empty string when neither is available — the caller must
 // then render no QR at all rather than one pointing at "http://.local".
+//
+// TARGET: the /connect landing page ("Connect a Device"), NOT the pairing
+// flow directly. The web side offers the choice — "use this phone as a
+// remote" (which forwards the code into the existing /?pair= flow) or
+// "manage movies & playlists" — so ONE QR serves both customer intents.
+// The code rides along as ?code=NNNNNN; /connect validates it and builds
+// the pair link itself. Kept as a single ":5000/connect?code=" literal on
+// purpose: the release pipeline greps `strings` of the binary for
+// "/connect?code=" to prove the retarget actually shipped.
 inline std::string build_pairing_url(const std::string& lan_ip,
                                      const std::string& hostname,
                                      const std::string& code) {
@@ -40,12 +49,13 @@ inline std::string build_pairing_url(const std::string& lan_ip,
         return "";
     }
 
-    std::string url = "http://" + host + ":5000/?";
     if (!code.empty()) {
-        url += "pair=" + code + "&";
+        return "http://" + host + ":5000/connect?code=" + code;
     }
-    url += "tab=remote";
-    return url;
+    // No code (shouldn't happen while the pairing screen is open, but the
+    // page is still useful without one — /connect then routes the remote
+    // button to the in-app 6-digit form).
+    return "http://" + host + ":5000/connect";
 }
 
 // The same address in a form worth printing under the QR, so a scan that

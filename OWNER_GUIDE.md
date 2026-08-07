@@ -55,19 +55,25 @@ and software updates.
 Your box hosts its own settings website on your home network — that's
 where the movie setup happens.
 
-1. Press **B** → **Info**. The screen shows the box's address (it looks
-   like `http://magicpi-a3f2.local:5000` — every box has its own name)
-   and a QR code.
+1. Press **B** → **Content Manager**. The screen shows the box's
+   address (it looks like `http://magicpi-a3f2.local:5000` — every box
+   has its own name) and a QR code.
 2. Scan the QR code with your phone, or type the address into any
-   browser on the same Wi-Fi. That page is the **Content Manager**.
+   browser on the same Wi-Fi. A **Connect a Device** page opens — pick
+   **Manage movies & playlists** to reach the **Content Manager**.
+
+**No Wi-Fi, or want faster uploads?** Plug a USB-C cable from the box
+into your computer, then open **`http://dingus.box`** in a browser —
+over the cable, any address you type reaches the box, with no network
+settings to configure.
 
 ## 5. Pair your phone as a remote (optional, recommended)
 
-1. Press **B** → **Phone Remote**. A QR code appears.
-2. Scan it with your phone. The remote page opens and stays paired —
-   you can use it as a D-pad, and whenever the box shows a text field
-   (like a Wi-Fi password), your phone's keyboard types straight into
-   it.
+1. Press **B** → **Connect Phone / Computer**. A QR code appears.
+2. Scan it with your phone and pick **Use this phone as a remote**. The
+   remote page opens and stays paired — you can use it as a D-pad, and
+   whenever the box shows a text field (like a Wi-Fi password), your
+   phone's keyboard types straight into it.
 
 ## 6. Unlock the Movies section
 
@@ -172,6 +178,6 @@ Movies are stored on a USB drive so they never crowd the games.
   15 minutes (the box retries stuck downloads automatically). A power
   switch off/on fixes nearly everything else.
 - **Phone remote stopped working** → re-scan the QR under Settings →
-  Phone Remote.
+  Connect Phone / Computer.
 
 Enjoy the box!

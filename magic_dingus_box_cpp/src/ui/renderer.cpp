@@ -1445,8 +1445,12 @@ void Renderer::render(app::AppState& state) {
                 float label_y = qr_y + qr_size + 25.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
                 draw_text(qr_label, label_x, label_y, theme_->font_small_size, theme_->accent, false, 1.0f);
 
-                // Draw helper text below label
-                std::string qr_hint = "Scan with phone camera";
+                // Draw helper text below label. The QR opens the same
+                // "Connect a Device" page as the Connect Phone / Computer
+                // screen's QR (just without a pairing code pre-filled) —
+                // say so, so the two Settings screens read as one system
+                // instead of two competing QR codes.
+                std::string qr_hint = "Scan to open the Connect page";
                 int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
                 float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
                 float hint_y = label_y + 20.0f;

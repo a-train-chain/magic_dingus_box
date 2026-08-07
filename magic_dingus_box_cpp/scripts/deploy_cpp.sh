@@ -346,8 +346,9 @@ echo ""
 #
 # ENABLED, unlike magic-first-boot above: it is safe on the source box and on
 # every unit. The unit is BindsTo= the usb0 device, so with no cable plugged
-# in it just sits inactive; dnsmasq's usb0.conf uses bind-dynamic and port=0,
-# so it serves DHCP on usb0 alone and never touches Wi-Fi DNS.
+# in it just sits inactive; dnsmasq's usb0.conf uses bind-dynamic with
+# interface=usb0 + except-interface=lo, so it serves DHCP and the catch-all
+# "any hostname → 10.55.0.1" DNS on usb0 alone and never touches Wi-Fi DNS.
 #
 # Why it matters commercially: measured on this hardware, Wi-Fi to the box
 # runs about 8 MB/s. USB 2.0 gadget gives roughly 25-35 MB/s, so uploading a
