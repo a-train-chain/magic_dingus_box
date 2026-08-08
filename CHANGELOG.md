@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.7] - 2026-08-07
+
+### Fixed
+- **OTA updates deleted the Media Browser's `docker-compose.yml` from every
+  fielded box.** Boxes keep that file at the flattened path
+  `/opt/magic_dingus_box/services/docker-compose.yml` — `deploy_cpp.sh` and
+  the golden image put it there — but the repo only has it at
+  `magic_dingus_box_cpp/services/`, so the release tarball never contained a
+  top-level `services/` directory. `update.sh`'s install rsync runs with
+  `--delete`, and its `services/.env` + `services/config/*` excludes kept the
+  *directory* alive while the compose file itself was removed. Nothing looked
+  broken until something actually ran `docker compose`, which then died with
+  the unhelpful `no configuration file provided: not found` — surfaced in the
+  Content Manager as **"Media Browser setup failed (exit 14)"** on
+  Reconfigure, and, on the next reboot, as a Media Browser stack that never
+  came up (`magic-dingus-services.service` runs `docker compose up -d` from
+  that directory). Found on customer box `magicpi-dc8a` after
+  1.9.3 → 1.9.5 → 1.9.6. Fixed in three independent places, none of them a
+  new rsync exclude (an exclude would have frozen a stale compose file on the
+  box forever): `release.yml` now stages a top-level `services/` mirror into
+  the source tarball at package time — which repairs affected boxes even
+  though they are still running the *old* `update.sh`, because their existing
+  rsync simply finds the file and installs it; `update.sh` re-creates the file
+  from the in-tree copy if it is ever absent after the install rsync; and
+  `setup_services.sh` self-heals the same way immediately before
+  `docker compose up`. The release workflow also gained a release-blocking
+  tarball-layout assertion so this class of packaging regression cannot ship
+  again. `OTA_UPDATE_GUARANTEES.md` documented the old behavior as working
+  and has been corrected.
+- Media Browser setup failures now name the compose file they could not use
+  instead of leaving docker's raw error as the only clue, while still exiting
+  with docker's own status code so the number shown in the Content Manager
+  keeps its meaning.
+
 ## [1.9.6] - 2026-08-07
 
 ### Added

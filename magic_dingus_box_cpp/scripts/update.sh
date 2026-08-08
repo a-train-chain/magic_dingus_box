@@ -590,6 +590,12 @@ install_update() {
     #   - Build configuration (CMakeLists.txt, etc.)
     #   - services/docker-compose.yml — operator gets new VPN
     #     firewall rules, port-sync timer changes, etc.
+    #     NOTE: only true as of v1.9.7. The repo has no top-level
+    #     services/ dir, so until release.yml started staging one at
+    #     package time this line described something that never
+    #     happened — the rsync --delete below DELETED the box's
+    #     compose file on its first OTA instead. See the delivery
+    #     guard after the rsync.
     #
     # Use --no-group --no-owner to avoid permission errors
     # Exit code 23 means "some files could not transfer attributes" which is OK
@@ -687,6 +693,41 @@ install_update() {
         log_error "Failed to install files (rsync exit code: $rsync_exit), attempting rollback..."
         rollback_internal
         return 1
+    fi
+
+    # Compose-file delivery guard.
+    #
+    # /opt/magic_dingus_box/services/docker-compose.yml is the flattened
+    # copy every consumer reads (magic-dingus-services.service's
+    # WorkingDirectory, gluetun_cascade_restart.sh, setup_services.sh).
+    # Releases before v1.9.7 shipped NO top-level services/ in the
+    # tarball, so the rsync --delete above DELETED this file on the first
+    # OTA of every fielded box — while the services/.env and
+    # services/config/* excludes kept the directory alive, so the damage
+    # stayed invisible until something ran `docker compose` and got
+    # "no configuration file provided: not found" (exit 14).
+    #
+    # release.yml now stages services/ into the tarball so the rsync
+    # delivers it. This is the belt to that suspenders: the canonical
+    # copy is ALWAYS in the tarball at magic_dingus_box_cpp/services/, so
+    # a future packaging regression can never again leave a box without
+    # a compose file. Deliberately NOT implemented as an rsync exclude —
+    # an exclude would freeze a stale compose file on the box forever and
+    # break the OTA_UPDATE_GUARANTEES.md promise that compose fixes flow
+    # through automatically.
+    if [ ! -f "$INSTALL_DIR/services/docker-compose.yml" ]; then
+        if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" ]; then
+            log_warn "services/docker-compose.yml absent after install — restoring from in-tree copy"
+            mkdir -p "$INSTALL_DIR/services"
+            cp "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" \
+               "$INSTALL_DIR/services/docker-compose.yml"
+            if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" ]; then
+                cp "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" \
+                   "$INSTALL_DIR/services/.env.example"
+            fi
+        else
+            log_error "services/docker-compose.yml is missing and no in-tree copy exists at $INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml — Media Browser stack cannot start"
+        fi
     fi
 
     # NOTE: VERSION file is written AFTER successful service start (see below)

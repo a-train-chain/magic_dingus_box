@@ -264,6 +264,54 @@ if [ "${PULL_OK}" -eq 0 ]; then
     exit 1
 fi
 
+# 4b. Compose-file self-heal — MUST run before the first `docker compose`.
+#
+# ${SERVICES_DIR}/docker-compose.yml is the FLATTENED copy of the in-tree
+# magic_dingus_box_cpp/services/docker-compose.yml. Only deploy_cpp.sh
+# (Step 1.6) and the golden image ever placed it there.
+#
+# Until v1.9.7 the release tarball carried NO top-level services/
+# directory, so update.sh's install `rsync --delete` deleted this file
+# from every fielded box on its FIRST OTA — while the `services/.env`
+# and `services/config/*` excludes kept the DIRECTORY alive, so the `cd`
+# below still succeeded and the failure surfaced only as docker's
+# opaque "no configuration file provided: not found" (exit 14). That is
+# exactly what customer box magicpi-dc8a hit on Reconfigure after
+# 1.9.3 → 1.9.5 → 1.9.6.
+#
+# The canonical copy has ALWAYS shipped in the tarball at
+# magic_dingus_box_cpp/services/, so restore from there. Idempotent:
+# a pure no-op when the file is already in place, which is the case on
+# every healthy box.
+COMPOSE_FILE="${SERVICES_DIR}/docker-compose.yml"
+COMPOSE_SRC_DIR="${SCRIPT_DIR}/../services"
+if [ ! -f "${COMPOSE_FILE}" ]; then
+    if [ -f "${COMPOSE_SRC_DIR}/docker-compose.yml" ]; then
+        echo "Compose file missing at ${COMPOSE_FILE}"
+        echo "  → restoring from ${COMPOSE_SRC_DIR}/docker-compose.yml"
+        mkdir -p "${SERVICES_DIR}"
+        cp "${COMPOSE_SRC_DIR}/docker-compose.yml" "${COMPOSE_FILE}"
+        # .env.example is collateral of the same rsync --delete. No
+        # secrets in it; restore so the tree matches a fresh deploy.
+        if [ -f "${COMPOSE_SRC_DIR}/.env.example" ] && \
+           [ ! -f "${SERVICES_DIR}/.env.example" ]; then
+            cp "${COMPOSE_SRC_DIR}/.env.example" "${SERVICES_DIR}/.env.example"
+        fi
+        chown "${TARGET_USER}:${TARGET_USER}" "${COMPOSE_FILE}" 2>/dev/null || true
+        chown "${TARGET_USER}:${TARGET_USER}" "${SERVICES_DIR}/.env.example" 2>/dev/null || true
+        echo "  → restored docker-compose.yml"
+    else
+        echo "ERROR: missing file ${COMPOSE_FILE}"
+        echo "       and no in-tree copy to restore from at"
+        echo "       ${COMPOSE_SRC_DIR}/docker-compose.yml"
+        echo "       Without it 'docker compose up' fails with"
+        echo "       'no configuration file provided: not found' (exit 14)."
+        echo "       Fix: re-run the OTA update (v1.9.7+ ships the file), or"
+        echo "       re-deploy with deploy_cpp.sh --media-browser."
+        exit 1
+    fi
+fi
+
 cd "${SERVICES_DIR}"
 echo "Starting Docker stack..."
 #
@@ -271,7 +319,23 @@ echo "Starting Docker stack..."
 # aren't anymore (e.g., the old mdb_flaresolverr from before the Byparr
 # swap). Without it, an upgrade leaves the orphan running and holding
 # its old port mapping, which blocks Gluetun from rebinding.
-docker compose up -d --remove-orphans
+#
+# Capture the exit code instead of letting `set -e` abort silently: the
+# raw docker error is not self-explanatory (see the exit-14 story above),
+# and the Content Manager only surfaces "setup failed (exit N)". Name the
+# compose file we were trying to use, then re-exit with docker's own code
+# so the number in the UI still means what it always meant.
+_compose_rc=0
+docker compose up -d --remove-orphans || _compose_rc=$?
+if [ "${_compose_rc}" -ne 0 ]; then
+    echo "ERROR: 'docker compose up -d' failed (exit ${_compose_rc}) in ${SERVICES_DIR}"
+    echo "       compose file: ${COMPOSE_FILE}"
+    if [ ! -f "${COMPOSE_FILE}" ]; then
+        echo "       → THAT FILE IS MISSING. docker reports this as"
+        echo "         'no configuration file provided: not found'."
+    fi
+    exit "${_compose_rc}"
+fi
 
 # 3.35. Hardlink-layout advisory (informational — never mutates anything).
 # The compose file provides a ${STORAGE_ROOT}:/data parent mount that lets

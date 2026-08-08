@@ -100,6 +100,35 @@ jobs:
       - name: Update VERSION file
         run: echo "${{ steps.version.outputs.VERSION }}" > VERSION
 
+      # Boxes keep the Media Browser compose file at the FLATTENED path
+      # /opt/magic_dingus_box/services/docker-compose.yml — deploy_cpp.sh
+      # rsyncs magic_dingus_box_cpp/services/ into it, and every consumer
+      # (magic-dingus-services.service's WorkingDirectory,
+      # gluetun-cascade-restart.sh, setup_services.sh) reads it there.
+      #
+      # The repo has no top-level services/ dir, so the tarball never had
+      # one either — and update.sh's install rsync runs with --delete.
+      # Net effect: the FIRST OTA of any box DELETED
+      # services/docker-compose.yml (the services/.env and
+      # services/config/* excludes kept the directory itself alive, which
+      # is why nothing looked broken until something ran docker compose).
+      # Then `docker compose up` → "no configuration file provided: not
+      # found" → exit 14. Customer box magicpi-dc8a hit exactly this on
+      # Reconfigure after 1.9.3 → 1.9.5 → 1.9.6, and every OTA'd box would
+      # also have failed to start its stack on the next reboot.
+      #
+      # Mirror the directory at PACKAGE time so the tarball layout matches
+      # the box layout. git keeps one source of truth
+      # (magic_dingus_box_cpp/services/), and — critically — this fix
+      # reaches boxes running the OLD update.sh, because their existing
+      # rsync will now simply find the file in the tarball and install it.
+      - name: Stage services/ at the on-box (flattened) layout
+        run: |
+          mkdir -p services
+          cp magic_dingus_box_cpp/services/docker-compose.yml services/
+          cp magic_dingus_box_cpp/services/.env.example services/
+          ls -la services/
+
       - name: Create source archive
         run: |
           # Create tarball in /tmp first to avoid "file changed as we read it" error
@@ -128,6 +157,23 @@ jobs:
             .
           # Move back to workspace
           mv /tmp/magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz .
+
+      # Release-blocking layout assertions, in the spirit of the ARM64
+      # job's aarch64 / READY=1 / prowlarr checks: an exclude pattern or a
+      # moved file silently dropping one of these produces a tarball that
+      # installs cleanly and breaks the box later.
+      - name: Assert tarball layout
+        run: |
+          T=magic-dingus-box-${{ steps.version.outputs.VERSION }}.tar.gz
+          tar -tzf "$T" > /tmp/listing.txt
+          for p in ./services/docker-compose.yml \
+                   ./magic_dingus_box_cpp/services/docker-compose.yml \
+                   ./VERSION; do
+            grep -qx "$p" /tmp/listing.txt || { echo "FATAL: $p missing from $T"; exit 1; }
+          done
+          # A secret must never ride along in the source tarball.
+          ! grep -qx './services/.env' /tmp/listing.txt || { echo "FATAL: services/.env in tarball"; exit 1; }
+          echo "Tarball layout assertions passed"
 
       - name: Generate SHA256 checksum
         run: |
