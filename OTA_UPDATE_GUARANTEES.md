@@ -32,9 +32,17 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 > 3. `setup_services.sh` self-heals the same way immediately before `docker compose up`, and now names the missing file instead of leaving docker's opaque error to speak for itself.
 >
 > The four rsync exclude lists are unchanged by this fix.
-| `magic_dingus_box_cpp/systemd/**` (unit files) | Reinstalled and `systemctl daemon-reload`'d after rsync. |
+| `/usr/local/bin/{playback_services_pause.sh, gluetun_cascade_restart.sh, clear_radarr_cooldowns.py, sync_qbit_password.sh, auto_blocklist_stuck_warnings.py, qbit-port-sync.sh}` and `/etc/dnsmasq.d/usb0.conf` | **Refreshed as of v1.9.8** (`refresh_out_of_tree_files` in `update.sh`). These are copies made *outside* `/opt` by `setup_services.sh` / `install_deps.sh` at provisioning time, and the install rsync only ever writes inside `INSTALL_DIR` — so before v1.9.8 they were frozen at image-cut time on every fielded box. Refresh only, never provision: each target is copied **only if it already exists**, so an OTA can never hand a box a helper it was not set up with. Skipped entirely in test mode (`MAGIC_SKIP_SYSTEMCTL=true`). |
 | `CMakeLists.txt`, top-level build configs | Used during the on-Pi rebuild. |
-| `VERSION`, `CHANGELOG.md` | Updated metadata. |
+| `CHANGELOG.md` | Updated metadata. |
+
+### What does NOT flow through OTA — read this before promising a fix reaches the field
+
+| Path | Reality |
+|---|---|
+| `/etc/systemd/system/*.service`, `*.timer` (the installed copies of `magic_dingus_box_cpp/systemd/**`) | **NOT reinstalled.** This table claimed otherwise until v1.9.8. `update.sh` rsyncs the unit *sources* into `/opt` and runs `systemctl daemon-reload`, but it never writes `/etc/systemd/system` — daemon-reload re-reads a directory the OTA never touched. Unit files on a fielded box are frozen at provisioning time. Harmless so far (the only unit changed between v1.9.3 and v1.9.7 was a comment), but **a unit-file change is not a shippable fix**: it reaches a box only via the Content Manager's Media Browser Configure/Reconfigure flow, which re-runs `setup_services.sh`. |
+| `/etc/NetworkManager/**`, `/etc/sysctl.d/**`, `/etc/resolv.conf` | Not written by any rsync. Delivered by `setup_network_hardening.sh`, which `update.sh` *does* invoke as root on every OTA — that is the one supported route for network posture. |
+| Anything else outside `/opt/magic_dingus_box` | Not touched, except the explicitly enumerated refresh row above. |
 
 ## What's PRESERVED — the contract
 
@@ -56,6 +64,8 @@ These paths are explicitly excluded from update.sh's rsync (`--exclude` list). *
 | `magic_dingus_box_cpp/build/*` | Local build artifacts. Always rebuilt fresh during install. | CMake cache, object files, the kiosk binary. |
 | `services/.env` | Per-Pi Media Browser secrets. NOT in git. | WireGuard private key, ProtonVPN credentials, auto-generated Radarr/Prowlarr/qBit API keys, qBit admin password. |
 | `services/config/*` | Per-Pi Media Browser stack runtime state. NOT in git. | Radarr library DB, Prowlarr indexer sync history, qBit fastresume + cookies, Gluetun VPN runtime state, FlareSolverr state. |
+| `magic_dingus_box_cpp/data/media_browser.db*` | Media Browser watch state. NOT in git (`prepare_for_cloning.sh` deliberately wipes it, so it can never ship in a tarball). Excluded as of **v1.9.8** — before that, every OTA of every fielded box deleted it and `WatchStore` silently re-created an empty schema, so nothing errored and nothing warned. | Resume positions, watched/unwatched flags and NEW-badge state for movies **and** TV, plus the `-wal`/`-shm` sidecars. The library itself repopulates from Radarr/Sonarr; only the per-household viewing history was lost. |
+| `VERSION` (backup + install rsyncs only) | Not operator content — a control file. Excluded from the **install** rsync so the new version is stamped only after a verified kiosk start, and from the **backup** rsync so `$BACKUP_DIR/VERSION` can be written afterwards as a completion marker. Both rollback rsyncs deliberately keep it (a rollback must restore the old number) and also `cp` it explicitly. Pinned by `tests/local/update_rsync_excludes.bats`. | The single line of text the Content Manager reports as the box's version. |
 
 ## 2026-07-30 audit (pre-golden-image) — three contract fixes
 
@@ -108,7 +118,7 @@ v1.6.2 adds an independent CRT-overlay intensity store for the Media Browser men
   - On the FIRST OTA where these keys are absent from the operator's existing `settings.json`, the kiosk's load path falls back to inheriting the corresponding home-menu values (so an operator with scanlines at 0.5 on their home menu sees scanlines at 0.5 on the Marquee menus the first frame after upgrade — no visual regression). After the operator changes any value through MovieSettings, the divergence persists.
 - **Code** — fully shipped via the standard rsync of `magic_dingus_box_cpp/src/**`. No new build dependencies. The `gst_renderer::set_render_inset()` API and the fill-width pillarbox elimination for Marquee playback are pure code; the on-Pi `cmake .. && make -j2` step inside `update.sh install` rebuilds the kiosk binary with them.
 - **Wood-frame asset replaced** — `magic_dingus_box_cpp/assets/marquee/marquee_frame.png` is updated to a polished mahogany variant. Flows through the standard `assets/**` rsync. Operators see the new frame on the next kiosk start after OTA.
-- **systemd unit gains an `EnvironmentFile=` line** — the kiosk unit (`magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service`) now declares `EnvironmentFile=-/opt/magic_dingus_box/services/.env` so the kiosk process inherits API keys from the codified Docker stack's `.env`. The `-` prefix makes the load optional, so unprovisioned Pis (no `services/.env` yet) still boot the kiosk cleanly. Propagated via the standard `systemd/**` rsync; `daemon-reload` runs as part of `update.sh install` so the new unit is in effect on the next service restart.
+- **systemd unit gains an `EnvironmentFile=` line** — the kiosk unit (`magic_dingus_box_cpp/systemd/magic-dingus-box-cpp.service`) now declares `EnvironmentFile=-/opt/magic_dingus_box/services/.env` so the kiosk process inherits API keys from the codified Docker stack's `.env`. The `-` prefix makes the load optional, so unprovisioned Pis (no `services/.env` yet) still boot the kiosk cleanly. **Correction (v1.9.8):** this bullet used to claim the change was "propagated via the standard `systemd/**` rsync" with `daemon-reload` putting it in effect. It is not — the OTA rsync writes the unit *source* into `/opt` and never installs it to `/etc/systemd/system`. Boxes that have this line got it from a provisioning run (`setup_services.sh`), not from an update. See "What does NOT flow through OTA" above.
 - **No new offscreen-state preservation needed** — the Marquee CRT effects use the existing legacy procedural overlay path (`render_crt_effects`); they don't add any new GPU resources. The wood-frame texture is lazily reloaded by the existing `load_marquee_frame()` path, idempotent across OTA-rebuilds.
 - **Reversion is a settings flip, not a downgrade** — operators who don't want the new behaviors can turn off the wood frame during playback (`MovieSettings → Library → "Wood frame during playback" = Off`) and zero out the CRT overlay intensities. No file restoration, no rebuild, no OTA rollback necessary. The `v1.6.1` git tag remains the closest revert point if a hard rollback is ever needed at the source level.
 

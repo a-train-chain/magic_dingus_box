@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.8] - 2026-08-08
+
+An OTA-pipeline audit found eight confirmed defects in how updates reach a
+box and what they take with them. All eight are fixed here. Every one of
+them was proved by replaying the real published v1.9.7 tarball against a
+simulated fielded box, and every fix was re-proved the same way.
+
+### Fixed
+- **Your watch history no longer disappears every time the box updates.**
+  Resume positions, watched/unwatched marks and NEW badges — for movies and
+  TV — live in a small database file inside the app directory that the
+  release package does not contain, so every single update deleted it. The
+  box then quietly rebuilt an empty one: nothing failed, nothing warned, you
+  just found yourself starting films from the beginning again. That file (and
+  its two sidecars) is now preserved by all four of the update script's file
+  operations, and a test pins it so it cannot be dropped again. Nothing else
+  was affected — your movies, ROMs, saves, settings, VPN credentials and
+  paired phones were always safe, and the library itself repopulates on its
+  own.
+- **The "works on any Wi-Fi" hardening from v1.9.6 had never once actually
+  run on an updated box.** Both `setup_network_hardening.sh` and
+  `network_doctor.sh` shipped in the release package without the
+  executable bit, so the update script's `[ -x ... ]` test silently skipped
+  the installer — with no `else` branch, not even a log line — and the
+  Content Manager's own "Test my network" button answered with
+  `[Errno 13] Permission denied` instead of a diagnosis. The two files are
+  now marked executable in git (which is the whole fix: the update copies the
+  source file's mode, so the next update repairs every box on its own), and
+  both call sites were changed so the mode can never be load-bearing again.
+- **Updates now also refresh the handful of helper files that live outside
+  the app directory.** The update only ever wrote inside
+  `/opt/magic_dingus_box`; six helper scripts in `/usr/local/bin` and the USB
+  cable's DNS config are copies made at setup time, and nothing re-copied
+  them — so they were frozen at whatever version the box was built with,
+  forever. The most important consequence: the v1.9.6 guard that stops
+  torrents writing to the SD card when the movie drive is unplugged mid-
+  download never reached a single fielded box. Updates now refresh those
+  files, but **only ones that are already there** — an update can never
+  install a helper a box was not set up with — and the whole step is skipped
+  in test mode.
+- **An interrupted update can no longer leave a dead box that reports itself
+  up to date.** The version stamp was among the first files copied, so an
+  update killed anywhere between the copy and the kiosk restart (a power cut,
+  or the web service being restarted out from under its own updater) left a
+  box with no kiosk program, a black TV on every boot, and a Content Manager
+  that cheerfully said "Up to date!" and hid the Install button. The version
+  file is now excluded from the install copy and written only after the kiosk
+  is verified running — which is what the code comment had promised all
+  along.
+- **A backup that runs out of space can no longer destroy the installation
+  it was meant to protect.** The version file was copied into the backup near
+  the very start, so a backup that died partway (a nearly-full SD card) still
+  looked complete: the Content Manager offered a Rollback, and that rollback
+  deleted the real installation down to whatever fragment had been captured —
+  and reported success. The version file is now written to the backup *after*
+  the copy finishes, so it works as a completion marker; a failed backup is
+  deleted rather than left behind; and both rollback paths refuse to run
+  without it. Replayed on the real script: the old one took a 630-file
+  installation down to 25, the new one leaves all 630 and says
+  "No complete backup available for rollback".
+- **Rolling back no longer re-breaks the Media Browser.** The v1.9.7 fix
+  restores the missing `docker-compose.yml` during an install, but a rollback
+  restores from a backup taken *before* that repair — so on every fielded box
+  the first rollback after updating would delete the compose file again. The
+  repair is now a shared step that both rollback paths call too.
+- **The box now keeps a working name-lookup fallback.** The network
+  hardening promised that a dead or filtering router resolver would only make
+  things slower, never break them. It did not: the box was pinned to
+  Cloudflare and nothing else, so a router that blocks outside DNS took it
+  completely offline — no posters, no updates, no downloads — with no way to
+  recover. The network dispatcher now rewrites the resolver list on every
+  connection, keeping the public resolvers first and adding one resolver the
+  network itself supplied. Verified live: on a working box the list became
+  1.1.1.1, 1.0.0.1 and the network's own server, with every lookup still
+  succeeding. The two places that documented the fallback that did not exist
+  were corrected, including a Network Doctor verdict that told owners a
+  safety net was covering them.
+- **The Media Browser recovery flow no longer fails on a bad network day.**
+  "Reconfigure" began by re-downloading a container image the box already
+  had, and a `docker pull` contacts the registry even when the image is
+  present — so a GitHub-registry hiccup aborted the entire run with
+  "cannot pull byparr after 3 attempts" before a single repair had happened.
+  This is the only recovery path an owner has without SSH, and it was the
+  exact flow customers were already in when something else had gone wrong.
+  It now checks for the image locally first and skips the download.
+
+### Changed
+- `OTA_UPDATE_GUARANTEES.md` gained a "What does NOT flow through OTA"
+  section and lost two claims that were the opposite of the truth: systemd
+  unit files are **not** reinstalled by an update (they are frozen at setup
+  time, so a unit-file change is not a shippable fix), and the version file
+  is deliberately not part of the install copy.
+
 ## [1.9.7] - 2026-08-07
 
 ### Fixed

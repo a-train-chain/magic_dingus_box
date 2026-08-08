@@ -22,13 +22,27 @@
 #                             EXCEPT build/* (rollback's whole purpose is to
 #                             restore the pre-update binary from backup).
 #
-# Invariant: (install-excludes \ {build/*}) == rollback-excludes for both
-# rollback blocks. Plus rollback-1 == rollback-2 (same restore semantics).
+# Invariant: (install-excludes \ {build/*, VERSION}) == rollback-excludes for
+# both rollback blocks. Plus rollback-1 == rollback-2 (same restore semantics).
+#
+# VERSION is the second intentional drift (added v1.9.8) and is pinned by
+# its own test below:
+#   - EXCLUDED from install, so an OTA killed between the rsync and the
+#     verified service start cannot leave a kiosk-less box self-reporting
+#     "up to date" (the stamp at the end of install_update is the sole
+#     writer).
+#   - EXCLUDED from backup, then copied in explicitly once the backup rsync
+#     succeeds, making $BACKUP_DIR/VERSION a completion marker. A backup
+#     that dies on a near-full card can then no longer advertise itself as
+#     restorable and offer a Rollback that --deletes the real install.
+#   - NOT excluded from either rollback block: a rollback must restore the
+#     old version number (both blocks also `cp` it explicitly).
 
 load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
 UPDATE_SH="$BATS_TEST_DIRNAME/../../magic_dingus_box_cpp/scripts/update.sh"
 BUILD_EXCLUDE='magic_dingus_box_cpp/build/*'
+VERSION_EXCLUDE='VERSION'
 
 # Extract the exclude list from each rsync block as a sorted, newline-separated
 # string. Returns 4 sections separated by `===BLOCK N===` markers.
@@ -84,13 +98,14 @@ parse_blocks() {
     }
 }
 
-@test "every install exclude EXCEPT build/* appears in both rollback blocks" {
+@test "every install exclude EXCEPT build/* and VERSION appears in both rollback blocks" {
     parse_blocks
     local missing_in_3=()
     local missing_in_4=()
     while IFS= read -r path; do
         [ -z "$path" ] && continue
         [ "$path" = "$BUILD_EXCLUDE" ] && continue   # intentional drift
+        [ "$path" = "$VERSION_EXCLUDE" ] && continue # intentional drift (see header)
         if ! grep -qxF "$path" <<<"$BLOCK3"; then
             missing_in_3+=("$path")
         fi
@@ -147,6 +162,41 @@ parse_blocks() {
         printf '    %s\n' "${missing[@]}"
         return 1
     fi
+}
+
+@test "VERSION is excluded from backup + install and NOT from either rollback" {
+    # Pins the v1.9.8 completion-marker / late-stamp design. Flipping any
+    # of these four re-arms a real, previously-shipped failure — see the
+    # header for which one.
+    parse_blocks
+    grep -qxF "$VERSION_EXCLUDE" <<<"$BLOCK1" || {
+        echo "Block 1 (backup) must exclude VERSION so it can be written as a completion marker after the rsync succeeds."
+        return 1
+    }
+    grep -qxF "$VERSION_EXCLUDE" <<<"$BLOCK2" || {
+        echo "Block 2 (install) must exclude VERSION so an interrupted OTA cannot stamp the new version before the kiosk starts."
+        return 1
+    }
+    if grep -qxF "$VERSION_EXCLUDE" <<<"$BLOCK3" || grep -qxF "$VERSION_EXCLUDE" <<<"$BLOCK4"; then
+        echo "Rollback blocks must NOT exclude VERSION — a rollback restores the old version number."
+        return 1
+    fi
+}
+
+@test "media_browser.db* is excluded from all four blocks (watch state survives OTA)" {
+    # Regression guard: until v1.9.8 every OTA deleted the Media Browser
+    # SQLite DB, silently wiping resume positions / watched flags / NEW
+    # badges on every fielded box. Nothing errors when it happens.
+    parse_blocks
+    local db='magic_dingus_box_cpp/data/media_browser.db*'
+    local n=1
+    for block in "$BLOCK1" "$BLOCK2" "$BLOCK3" "$BLOCK4"; do
+        grep -qxF "$db" <<<"$block" || {
+            echo "Block $n is missing the media_browser.db* exclude."
+            return 1
+        }
+        n=$((n + 1))
+    done
 }
 
 @test "all 4 blocks carry the thumbnails/systems/*** include before the blanket exclude" {

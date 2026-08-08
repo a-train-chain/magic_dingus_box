@@ -250,7 +250,18 @@ fi
 echo "Pre-pulling Byparr (ghcr.io DNS can be flaky on first boot)..."
 BYPARR_DIGEST="ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0"
 PULL_OK=0
+# A pinned digest already in the local image store needs no fetch, and
+# `docker pull` round-trips to the registry even then (verified) — so
+# without this a ghcr.io blip hard-failed the whole Reconfigure run at the
+# `exit 1` below, before ANY file-level repair (compose self-heal, the
+# /usr/local/bin helpers, the cascade watcher, every timer). That is the
+# owner's only recovery flow, and every clone ships with this image
+# already present, so the pull could only ever be a no-op with a network
+# dependency attached. Safe under `set -euo pipefail`: a failing left
+# operand of `&&` is exempt from set -e.
+docker image inspect "${BYPARR_DIGEST}" >/dev/null 2>&1 && PULL_OK=1
 for i in 1 2 3; do
+    [ "${PULL_OK}" -eq 1 ] && break
     if docker pull "${BYPARR_DIGEST}"; then
         PULL_OK=1
         break

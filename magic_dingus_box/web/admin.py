@@ -3908,8 +3908,14 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if not doctor.exists():
             return error_response("NOT_AVAILABLE", "network_doctor.sh not found", status=500)
         try:
+            # Invoked via bash rather than executed directly: the script
+            # shipped mode 0644 in the v1.9.6/v1.9.7 tarballs, which turned
+            # the owner's only network diagnostic into a 500 reading
+            # "[Errno 13] Permission denied: .../network_doctor.sh". The
+            # mode is fixed in git as of v1.9.8; this makes it stop
+            # mattering.
             result = subprocess.run(
-                [str(doctor), "--json"],
+                ["/bin/bash", str(doctor), "--json"],
                 capture_output=True, text=True, timeout=45
             )
             # The script exits 1 when any rung failed — that is a RESULT,

@@ -211,8 +211,13 @@ elif [[ "$(get dns_system)" == "0" && "$(get dns_direct)" == "0" ]]; then
     VERDICT="Router is blocking this device's internet"
     ADVICE="Local network works but nothing reaches the internet — typical of router 'security'/parental features silently blocking an unrecognized device. In the router app, find this device (magicpi-...) and allow it; also try disabling IPv6 in the router."
 elif [[ "$(get dns_system)" == "0" && "$(get dns_direct)" == "1" ]]; then
-    VERDICT="Router DNS broken (working around it)"
-    ADVICE="The router's own DNS is dead but public DNS works. The box's fallback should cover this; if things are still slow, set the router's DNS to 1.1.1.1."
+    # Rare: 1.1.1.1 answers a raw query but the system resolver path does
+    # not. The box's resolv.conf lists 1.1.1.1 first, so this is a local
+    # resolver-config problem, not a router one — do not tell the owner a
+    # fallback is covering it (until v1.9.8 this line claimed exactly that,
+    # and no such fallback existed).
+    VERDICT="Name lookups misconfigured on the box"
+    ADVICE="Public DNS is reachable but the box's own resolver settings aren't using it. Reboot the box; if it persists, re-run Media Browser setup in the Content Manager to rewrite the network config."
 else
     VERDICT="Partial internet blockage"
     ADVICE="DNS works but web traffic is blocked or IPv6 is interfering. Check router security features for this device, and disable IPv6 in the router."

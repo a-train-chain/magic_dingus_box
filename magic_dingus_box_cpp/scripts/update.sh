@@ -386,6 +386,118 @@ check_update() {
 EOF
 }
 
+# Compose-file delivery guard.
+#
+# /opt/magic_dingus_box/services/docker-compose.yml is the flattened
+# copy every consumer reads (magic-dingus-services.service's
+# WorkingDirectory, gluetun_cascade_restart.sh, setup_services.sh).
+# Releases before v1.9.7 shipped NO top-level services/ in the tarball, so
+# the install rsync's --delete DELETED this file on the first OTA of every
+# fielded box — while the services/.env and services/config/* excludes kept
+# the directory alive, so the damage stayed invisible until something ran
+# `docker compose` and got "no configuration file provided: not found"
+# (exit 14).
+#
+# release.yml now stages services/ into the tarball so the rsync delivers
+# it. This is the belt to that suspenders: the canonical copy is ALWAYS in
+# the tarball at magic_dingus_box_cpp/services/, so a future packaging
+# regression can never again leave a box without a compose file.
+# Deliberately NOT implemented as an rsync exclude — an exclude would
+# freeze a stale compose file on the box forever and break the
+# OTA_UPDATE_GUARANTEES.md promise that compose fixes flow through
+# automatically.
+#
+# Called from install AND from both rollback paths: the rollback rsyncs
+# restore from a BACKUP_DIR that was captured before this repair existed,
+# so on every fielded box the first rollback after the repairing OTA would
+# otherwise re-delete the compose file it had just been given.
+ensure_compose_file() {
+    if [ -f "$INSTALL_DIR/services/docker-compose.yml" ]; then
+        return 0
+    fi
+    if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" ]; then
+        log_warn "services/docker-compose.yml absent — restoring from in-tree copy"
+        mkdir -p "$INSTALL_DIR/services"
+        cp "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" \
+           "$INSTALL_DIR/services/docker-compose.yml"
+        if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" ]; then
+            cp "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" \
+               "$INSTALL_DIR/services/.env.example"
+        fi
+    else
+        log_error "services/docker-compose.yml is missing and no in-tree copy exists at $INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml — Media Browser stack cannot start"
+    fi
+}
+
+# Refresh the copies of shipped files that live OUTSIDE $INSTALL_DIR.
+#
+# The install rsync only ever writes inside /opt/magic_dingus_box. The six
+# helper scripts under /usr/local/bin and the usb0 dnsmasq conf are copied
+# out of the tree by setup_services.sh / install_deps.sh at PROVISIONING
+# time — and both of those only re-run from an OTA when the Phone Remote
+# markers are missing, which is never on a box cut from the golden image.
+# So every fix to those files was frozen at image-cut time on every fielded
+# unit: most importantly the drive-absent guard in qbit_port_sync.sh, which
+# is the only thing stopping torrents from writing to the OS partition when
+# the movie drive is unplugged mid-seed.
+#
+# Bounded and REFRESH-ONLY by design:
+#   - each target is copied only if it ALREADY exists, so an OTA can never
+#     provision a box with a helper it was not set up with;
+#   - gated on SKIP_SYSTEMCTL exactly like the network-hardening call
+#     below, because CI runners have passwordless sudo and the BATS suite
+#     must never write into a runner's /usr/local/bin or /etc;
+#   - `sudo -n` because this runs as the unprivileged magic-dingus-web
+#     user, and -n fails fast instead of hanging on a dev machine.
+# systemd unit files are deliberately NOT refreshed here — see
+# OTA_UPDATE_GUARANTEES.md.
+refresh_out_of_tree_files() {
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: out-of-tree helper refresh (test mode)"
+        return 0
+    fi
+
+    local script_dir="${INSTALL_DIR}/magic_dingus_box_cpp/scripts"
+    local src dest
+
+    # Same name in both places.
+    for helper in playback_services_pause.sh \
+                  gluetun_cascade_restart.sh \
+                  clear_radarr_cooldowns.py \
+                  sync_qbit_password.sh \
+                  auto_blocklist_stuck_warnings.py; do
+        src="${script_dir}/${helper}"
+        dest="/usr/local/bin/${helper}"
+        if [ -f "$dest" ] && [ -f "$src" ]; then
+            sudo -n install -m 0755 "$src" "$dest" \
+                || log_warn "could not refresh $dest"
+        fi
+    done
+
+    # The one rename: qbit_port_sync.sh -> qbit-port-sync.sh.
+    if [ -f /usr/local/bin/qbit-port-sync.sh ] && [ -f "${script_dir}/qbit_port_sync.sh" ]; then
+        sudo -n install -m 0755 "${script_dir}/qbit_port_sync.sh" \
+            /usr/local/bin/qbit-port-sync.sh \
+            || log_warn "could not refresh /usr/local/bin/qbit-port-sync.sh"
+    fi
+
+    # usb0 gadget DNS. install_deps.sh is the only writer of this file and
+    # it is invoked from exactly one place (the Phone Remote bootstrap
+    # above), so this is the ONLY delivery path it has. Reload dnsmasq only
+    # when the content actually changed.
+    src="${script_dir}/data/dnsmasq-usb0.conf"
+    dest="/etc/dnsmasq.d/usb0.conf"
+    if [ -f "$dest" ] && [ -f "$src" ] && ! cmp -s "$src" "$dest"; then
+        if sudo -n install -m 0644 "$src" "$dest"; then
+            log "usb0 dnsmasq config updated; reloading dnsmasq"
+            run_systemctl reload-or-restart dnsmasq.service 2>/dev/null \
+                || log_warn "dnsmasq reload failed (usb0 DNS applies on next restart)"
+        else
+            log_warn "could not refresh $dest"
+        fi
+    fi
+}
+
 # Install an update
 install_update() {
     local target_version="$1"
@@ -501,20 +613,44 @@ install_update() {
     # didn't change between install + rollback (preserved by the
     # install rsync below); no point round-tripping them through
     # backup. Saves significant disk space on a populated kiosk.
+    #
+    # `--exclude 'VERSION'` is a DELIBERATE divergence from the other three
+    # lists (the contract header above says they normally move together —
+    # this is the documented exception, pinned by
+    # tests/local/update_rsync_excludes.bats). VERSION is copied in
+    # explicitly AFTER rsync returns 0, which turns $BACKUP_DIR/VERSION
+    # into a completion marker: `has_backup` in check_update and both
+    # rollback entry points gate on that one file. Before this, a backup
+    # that died mid-transfer (near-full SD card, power cut) still wrote
+    # VERSION — it is transfer entry #9 of ~4,800 — so the UI offered a
+    # Rollback whose `--delete` then wiped the real installation down to
+    # whatever fragment the partial backup held, and reported success.
     rsync -a --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
+        --exclude 'VERSION' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
         --exclude 'magic_dingus_box_cpp/data/states/*' \
         --exclude 'magic_dingus_box_cpp/data/thumbnails/*' \
+        --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
         "$INSTALL_DIR/" "$BACKUP_DIR/" 2>&2 || {
         json_response "false" "Failed to create backup"
+        # Reclaim the space and leave nothing that looks like a backup.
+        # Without this the box is left with a full card AND a partial
+        # BACKUP_DIR; the update is then not cleanly retryable.
+        rm -rf "$BACKUP_DIR"
         rm -rf "$TEMP_DIR"
         return 1
     }
+
+    # Completion marker (see the VERSION exclude above). Only written once
+    # the backup rsync has fully succeeded.
+    if [ -f "$INSTALL_DIR/VERSION" ]; then
+        cp "$INSTALL_DIR/VERSION" "$BACKUP_DIR/VERSION"
+    fi
 
     json_progress "stopping_services" 55 "Stopping C++ service..."
 
@@ -580,6 +716,24 @@ install_update() {
     #                          setup.
     #   - build/*           - Local build artifacts (rebuilt fresh
     #                          from updated sources below).
+    #   - data/media_browser.db* - Media Browser watch state (resume
+    #                          positions, watched flags, NEW badges) for
+    #                          movies AND TV, plus its -wal/-shm
+    #                          sidecars. Per-box operator data, never in
+    #                          the release tarball, so without this
+    #                          exclude the --delete below wiped every
+    #                          household's watch history on EVERY OTA —
+    #                          silently, because WatchStore just
+    #                          re-creates an empty schema and nothing
+    #                          errors. (Added v1.9.8; WatchStore landed
+    #                          in v1.9.0, after the 2026-07-30 exclude
+    #                          audit that caught the same class of bug
+    #                          for the pairing files.)
+    #   - VERSION           - NOT stamped by the rsync. See below: it is
+    #                          written only after a verified service
+    #                          start, so an interrupted OTA can never
+    #                          leave a kiosk-less box self-reporting
+    #                          "up to date".
     #
     # UPDATED (system files - replaced with new version):
     #   - Source code (src/*)
@@ -599,10 +753,22 @@ install_update() {
     #
     # Use --no-group --no-owner to avoid permission errors
     # Exit code 23 means "some files could not transfer attributes" which is OK
+    # `--exclude 'VERSION'` is deliberate and applies to THIS rsync only
+    # (the two rollback rsyncs restore VERSION explicitly with `cp`, see
+    # the comments there). The tarball contains exactly one file named
+    # VERSION (./VERSION), and rsync --delete never deletes an excluded
+    # file, so the box simply keeps its current value until :919 stamps
+    # the new one after a verified service start — which is what the
+    # NOTE below has always promised. Before this, VERSION was transferred
+    # in the first handful of files, so an OTA killed anywhere between
+    # here and the service start (power cut, or magic-dingus-web being
+    # restarted out from under its own child) left a box with no kiosk
+    # binary that answered "up to date" and hid the Install button.
     log "Installing new files..."
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
+        --exclude 'VERSION' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
         --exclude 'magic_dingus_box_cpp/data/roms/*' \
         --exclude 'magic_dingus_box_cpp/data/saves/*' \
@@ -617,6 +783,7 @@ install_update() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'config/*' \
         --exclude 'magic_dingus_box_cpp/build/*' \
         --exclude 'services/.env' \
@@ -695,40 +862,12 @@ install_update() {
         return 1
     fi
 
-    # Compose-file delivery guard.
-    #
-    # /opt/magic_dingus_box/services/docker-compose.yml is the flattened
-    # copy every consumer reads (magic-dingus-services.service's
-    # WorkingDirectory, gluetun_cascade_restart.sh, setup_services.sh).
-    # Releases before v1.9.7 shipped NO top-level services/ in the
-    # tarball, so the rsync --delete above DELETED this file on the first
-    # OTA of every fielded box — while the services/.env and
-    # services/config/* excludes kept the directory alive, so the damage
-    # stayed invisible until something ran `docker compose` and got
-    # "no configuration file provided: not found" (exit 14).
-    #
-    # release.yml now stages services/ into the tarball so the rsync
-    # delivers it. This is the belt to that suspenders: the canonical
-    # copy is ALWAYS in the tarball at magic_dingus_box_cpp/services/, so
-    # a future packaging regression can never again leave a box without
-    # a compose file. Deliberately NOT implemented as an rsync exclude —
-    # an exclude would freeze a stale compose file on the box forever and
-    # break the OTA_UPDATE_GUARANTEES.md promise that compose fixes flow
-    # through automatically.
-    if [ ! -f "$INSTALL_DIR/services/docker-compose.yml" ]; then
-        if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" ]; then
-            log_warn "services/docker-compose.yml absent after install — restoring from in-tree copy"
-            mkdir -p "$INSTALL_DIR/services"
-            cp "$INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml" \
-               "$INSTALL_DIR/services/docker-compose.yml"
-            if [ -f "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" ]; then
-                cp "$INSTALL_DIR/magic_dingus_box_cpp/services/.env.example" \
-                   "$INSTALL_DIR/services/.env.example"
-            fi
-        else
-            log_error "services/docker-compose.yml is missing and no in-tree copy exists at $INSTALL_DIR/magic_dingus_box_cpp/services/docker-compose.yml — Media Browser stack cannot start"
-        fi
-    fi
+    # Compose-file delivery guard (see ensure_compose_file above).
+    ensure_compose_file
+
+    # Refresh the shipped copies that live outside $INSTALL_DIR
+    # (see refresh_out_of_tree_files above).
+    refresh_out_of_tree_files
 
     # NOTE: VERSION file is written AFTER successful service start (see below)
     # This ensures version consistency if build fails
@@ -887,12 +1026,21 @@ install_update() {
     # dev-machine run. Gated on SKIP_SYSTEMCTL like every other
     # system-touching call: CI runners have passwordless sudo too, and the
     # BATS suite must never rewrite a runner's NetworkManager config.
+    #
+    # The test is `-f`, not `-x`, and that is load-bearing: the installer
+    # shipped mode 0644 in the v1.9.6/v1.9.7 tarballs, so the old `-x` gate
+    # silently skipped it on EVERY OTA — the entire any-Wi-Fi hardening was
+    # inert on every fielded box and the elif chain had no else, so nothing
+    # was logged. The file mode is fixed in git as of v1.9.8, but line 894
+    # invokes via `sudo -n bash` anyway, so the bit was never needed here.
     if [ "$SKIP_SYSTEMCTL" = "true" ]; then
         log "SKIP: network hardening (test mode)"
-    elif [ -x "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" ]; then
+    elif [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" ]; then
         log "Applying network hardening (IPv6 off + public-DNS-first)..."
         sudo -n bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_network_hardening.sh" \
             || log_warn "network hardening install failed (will retry on next provisioning run)"
+    else
+        log_warn "setup_network_hardening.sh not found in this release; skipping network hardening"
     fi
 
     json_progress "restarting_services" 90 "Restarting services..."
@@ -944,8 +1092,12 @@ EOF
 
 # Internal rollback function (used during failed updates)
 rollback_internal() {
-    if [ ! -d "$BACKUP_DIR" ]; then
-        log_error "No backup available for rollback"
+    # Gate on the completion marker, not merely on the directory: a backup
+    # that died mid-transfer has a tree but no VERSION, and restoring from
+    # it with --delete would take the real installation down with it. Same
+    # predicate `has_backup` uses, so the UI and the script agree.
+    if [ ! -f "$BACKUP_DIR/VERSION" ]; then
+        log_error "No complete backup available for rollback"
         return 1
     fi
 
@@ -965,6 +1117,11 @@ rollback_internal() {
     #     rollback. Otherwise: install fails partway through →
     #     rollback wipes VPN credentials → operator's Media Browser
     #     dies even though the kiosk binary rolled back successfully.
+    #
+    # `VERSION` is deliberately NOT excluded here (unlike the install and
+    # backup rsyncs): a rollback MUST restore the old version number, and
+    # the explicit `cp` below does it regardless. Do not "harmonise" the
+    # lists by adding it.
     rsync -a --delete --no-group --no-owner \
         --include 'magic_dingus_box_cpp/data/thumbnails/systems/***' \
         --exclude 'magic_dingus_box_cpp/data/media/*' \
@@ -981,6 +1138,7 @@ rollback_internal() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
@@ -991,6 +1149,12 @@ rollback_internal() {
         cp "$BACKUP_DIR/VERSION" "$INSTALL_DIR/VERSION"
         log "VERSION restored from backup"
     fi
+
+    # The backup predates the v1.9.7 compose repair on every fielded box,
+    # so the rsync above can re-delete the compose file this update just
+    # delivered. Re-run the guard against the (already restored) in-tree
+    # copy.
+    ensure_compose_file
 
     # Restart C++ service (web service will be restarted at end of main function)
     run_systemctl daemon-reload
@@ -1003,8 +1167,9 @@ rollback_internal() {
 
 # User-initiated rollback
 rollback() {
-    if [ ! -d "$BACKUP_DIR" ]; then
-        json_response "false" "No backup available for rollback"
+    # Completion-marker gate — see rollback_internal.
+    if [ ! -f "$BACKUP_DIR/VERSION" ]; then
+        json_response "false" "No complete backup available for rollback"
         return 1
     fi
 
@@ -1027,6 +1192,9 @@ rollback() {
     # Restore backup (preserve user data — same exclude list as
     # install + internal rollback so user/per-Pi content is left
     # alone in either direction).
+    #
+    # As in rollback_internal: `VERSION` is deliberately NOT excluded —
+    # a rollback must restore the old version number.
     log "Restoring from backup..."
     local rsync_exit=0
     rsync -av --delete --no-group --no-owner \
@@ -1045,6 +1213,7 @@ rollback() {
         --exclude 'magic_dingus_box_cpp/data/kiosk_status.json' \
         --exclude 'magic_dingus_box_cpp/data/text_input_queue.jsonl' \
         --exclude 'magic_dingus_box_cpp/data/seek_request.json' \
+        --exclude 'magic_dingus_box_cpp/data/media_browser.db*' \
         --exclude 'config/*' \
         --exclude 'services/.env' \
         --exclude 'services/config/*' \
@@ -1060,6 +1229,9 @@ rollback() {
         cp "$BACKUP_DIR/VERSION" "$INSTALL_DIR/VERSION"
         log "VERSION restored from backup"
     fi
+
+    # See rollback_internal: the backup can predate the compose repair.
+    ensure_compose_file
 
     json_progress "restarting_services" 80 "Restarting services..."
 

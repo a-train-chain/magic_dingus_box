@@ -7,11 +7,32 @@
 # the image was cut):
 #   - ipv6.method=disabled       (broken-v6 routers black-hole DNS/HTTPS;
 #                                 everything we talk to is v4-capable)
-#   - ipv4.dns 1.1.1.1 8.8.8.8   (public resolvers FIRST, router's own DNS
-#                                 kept as fallback via ignore-auto-dns=no —
-#                                 a dead or filtering router resolver then
-#                                 degrades to "slower", never to "nothing
-#                                 works")
+#   - ipv4.dns 1.1.1.1 8.8.8.8   (public resolvers FIRST)
+#   - /etc/resolv.conf rewritten (see "the resolver fallback" below)
+#
+# THE RESOLVER FALLBACK — read this before touching the resolv.conf block.
+#
+# `ignore-auto-dns=no` alone does NOT give the box a DNS fallback, and
+# until v1.9.8 the comment here claimed it did. The image ships
+# /etc/NetworkManager/conf.d/99-dns.conf with `dns=none`, which means
+# NetworkManager computes the merged resolver list and then never writes
+# it anywhere: /etc/resolv.conf stayed frozen at the two Cloudflare
+# addresses setup_services.sh baked in at provisioning time. Verified on a
+# live box — NM's own list was 1.1.1.1 / 8.8.8.8 / 75.75.75.75 /
+# 75.75.76.76 while every actual lookup went to 1.1.1.1 and nowhere else.
+# A router that filters or drops UDP/53 to addresses other than its own
+# therefore took the box completely offline: no posters, no OTA, no docker
+# pulls, no apt, and no self-heal.
+#
+# So this dispatcher now writes resolv.conf itself, on every connection
+# up, keeping the public resolvers first (the privacy rationale in
+# setup_services.sh is preserved — the network's own resolver is only ever
+# consulted after Cloudflare fails to answer) and appending ONE server
+# from the list this network actually handed us. glibc's MAXNS is 3, hence
+# exactly one. Our own forced public entries are skipped so the appended
+# server is genuinely the network's — on a router that hands out its own
+# LAN address as DNS, that is the one resolver guaranteed to be reachable
+# when the router blocks everything else.
 #
 # The persistent modify covers every future activation; the runtime device
 # modify applies the change to the CURRENT activation in place (a reapply,
@@ -53,6 +74,54 @@ if [ "$CUR_DNS" != "1.1.1.1,8.8.8.8" ]; then
         ipv4.dns "$WANT_DNS" ipv4.ignore-auto-dns no 2>/dev/null \
         && changed=1
     nmcli device modify "$IFACE" ipv4.dns "$WANT_DNS" 2>/dev/null || true
+fi
+
+# --- resolver fallback (see the header) --------------------------------------
+#
+# NM exports the applied resolver list as IP4_NAMESERVERS (space
+# separated). Fall back to querying the device directly so this also works
+# when the script is run by hand for diagnosis; `nmcli -g` joins multi-value
+# fields with "|".
+NS_LIST="${IP4_NAMESERVERS:-}"
+if [ -z "$NS_LIST" ]; then
+    NS_LIST=$(nmcli -g IP4.DNS device show "$IFACE" 2>/dev/null | tr '|' ' ')
+fi
+
+FALLBACK_NS=""
+for ns in $NS_LIST; do
+    case "$ns" in
+        1.1.1.1|1.0.0.1|8.8.8.8|8.8.4.4|127.*|"") continue ;;
+    esac
+    FALLBACK_NS="$ns"
+    break
+done
+
+{
+    echo "nameserver 1.1.1.1"
+    echo "nameserver 1.0.0.1"
+    if [ -n "$FALLBACK_NS" ]; then
+        echo "nameserver $FALLBACK_NS"
+    fi
+    echo "options edns0 trust-ad"
+} > /etc/resolv.conf.new 2>/dev/null
+
+# Atomic swap, and only when the content actually differs — a rename over
+# a live resolv.conf is safe, but there is no reason to churn the file on
+# every reconnect. Same temp-file + mv pattern setup_services.sh uses, so
+# concurrent lookups never see a zero-length resolv.conf.
+if [ -s /etc/resolv.conf.new ]; then
+    if cmp -s /etc/resolv.conf.new /etc/resolv.conf; then
+        rm -f /etc/resolv.conf.new
+    elif mv /etc/resolv.conf.new /etc/resolv.conf 2>/dev/null; then
+        changed=1
+        logger -t magic-net-hardening \
+            "resolv.conf refreshed on $IFACE (fallback: ${FALLBACK_NS:-none})" \
+            2>/dev/null || true
+    else
+        rm -f /etc/resolv.conf.new
+    fi
+else
+    rm -f /etc/resolv.conf.new
 fi
 
 if [ "$changed" = "1" ]; then
