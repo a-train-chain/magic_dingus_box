@@ -39,6 +39,18 @@ SeasonRow season_row(int n, SeasonState st, bool monitored, int files) {
 
 }  // namespace
 
+TEST_CASE("now-playing episode subtitle shape", "[episode_logic]") {
+    // The phone remote renders this under the series title; the middle dot
+    // (U+00B7) matches the display_title separator used on the kiosk HUD.
+    CHECK(format_now_playing_episode(2, 5, "Kissed by Fire") ==
+          "S2E5 \xC2\xB7 Kissed by Fire");
+    // No episode title -> bare code, no dangling separator.
+    CHECK(format_now_playing_episode(1, 12, "") == "S1E12");
+    // Specials (S0) format like any other season.
+    CHECK(format_now_playing_episode(0, 3, "Pilot Special") ==
+          "S0E3 \xC2\xB7 Pilot Special");
+}
+
 TEST_CASE("watched/resumable thresholds", "[episode_logic]") {
     SECTION("watched: 92% of duration, zero/invalid duration never watched") {
         CHECK_FALSE(is_watched_position(55, 60));  // 0.9166 < 0.92

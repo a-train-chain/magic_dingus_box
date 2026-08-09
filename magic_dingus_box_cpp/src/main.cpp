@@ -2962,6 +2962,18 @@ int main(int /* argc */, char* /* argv */[]) {
                             state.current_item_index = -1;
                             state.is_fading = false;
                             state.ui_visible_when_playing = false;
+                            // Clear the published now-playing/playlist info
+                            // for the phone remote. Controller::update_state's
+                            // stop-clear deliberately skips MB sessions (the
+                            // MB PlaybackScreen owns these fields there), so
+                            // without this the stopped playlist item's title
+                            // would ride along in kiosk_status.json for the
+                            // whole browse session.
+                            state.now_playing_title.clear();
+                            state.now_playing_subtitle.clear();
+                            state.now_playing_kind.clear();
+                            state.current_playlist_name.clear();
+                            state.current_item_count = 0;
                             settings_menu.close();
                             state.current_screen = app::AppScreen::MediaBrowser;
                             // Always start on the Browse landing screen.
@@ -4119,7 +4131,21 @@ int main(int /* argc */, char* /* argv */[]) {
 
         // Phone Remote — drain pending tap-to-seek requests each frame.
         // Cheap (single fs::exists check) when nothing is queued.
+#ifdef MEDIA_BROWSER_ENABLED
+        if (controller.poll_seek_request()) {
+            // The seek landed on the SHARED pipeline — during MB playback
+            // that is the movie/episode. PlaybackScreen's own seek handlers
+            // pump its EOS-flicker suppression on every seek; an external
+            // phone seek must do the same or the FLUSH-seek video_active
+            // flicker reads as "movie ended" and playback bails to Detail.
+            if (state.current_screen == app::AppScreen::MediaBrowser &&
+                current_mb_screen == media_browser::ui::Screen::Playback) {
+                mb_playback.notify_external_seek();
+            }
+        }
+#else
         controller.poll_seek_request();
+#endif
         controller.poll_text_input_queue(state);
 
         // Web-admin settings restore poke. The restore endpoint replaces

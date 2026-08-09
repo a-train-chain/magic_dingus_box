@@ -152,29 +152,30 @@ void Controller::seek_absolute(double timestamp) {
     }
 }
 
-void Controller::poll_seek_request() {
+bool Controller::poll_seek_request() {
     const std::string path = config::get_data_path() + "/seek_request.json";
-    if (!fs::exists(path)) return;
+    if (!fs::exists(path)) return false;
 
     Json::Value root;
     {
         std::ifstream f(path);
-        if (!f) return;
+        if (!f) return false;
         try { f >> root; } catch (...) {
             fs::remove(path);
-            return;
+            return false;
         }
     }
     fs::remove(path);  // consume — even if invalid, don't loop on a bad file
 
-    if (!root.isMember("pos")) return;
+    if (!root.isMember("pos")) return false;
     double frac = root["pos"].asDouble();
-    if (!(frac >= 0.0 && frac <= 1.0)) return;  // also rejects NaN
+    if (!(frac >= 0.0 && frac <= 1.0)) return false;  // also rejects NaN
 
     double dur = get_duration();
-    if (!(dur > 0.0)) return;
+    if (!(dur > 0.0)) return false;
 
     seek_absolute(frac * dur);
+    return true;
 }
 
 void Controller::stop() {
@@ -375,9 +376,25 @@ void Controller::update_state(AppState& state) {
             // remote doesn't keep showing a track that has stopped.
             // Only on a real stop — the else-branch below is a playlist
             // switch, where the next item overwrites these immediately.
-            state.now_playing_title.clear();
-            state.now_playing_subtitle.clear();
-            state.now_playing_kind.clear();
+            //
+            // NOT during Media Browser sessions: there the PlaybackScreen
+            // owns these fields (publishes on enter()/episode-advance,
+            // clears in leave()). MB playback runs with
+            // current_playlist_index == -1 by design, and its pipeline
+            // stops mid-session on every TV episode end — clearing here
+            // would blank the remote's now-playing during the 8 s
+            // next-episode countdown.
+#ifdef MEDIA_BROWSER_ENABLED
+            const bool mb_owns_now_playing =
+                state.current_screen == AppScreen::MediaBrowser;
+#else
+            const bool mb_owns_now_playing = false;
+#endif
+            if (!mb_owns_now_playing) {
+                state.now_playing_title.clear();
+                state.now_playing_subtitle.clear();
+                state.now_playing_kind.clear();
+            }
         } else {
             // If we have a valid playlist index but video stopped, keep the index
             // This handles the case where we're switching playlists

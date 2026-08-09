@@ -87,8 +87,11 @@ public:
     // Polled each main-loop tick. Reads data/seek_request.json if present,
     // seeks to (pos * duration), then deletes the file. No-op if the file
     // doesn't exist or contains an invalid pos. Cheap when no file exists
-    // (single fs::exists check).
-    void poll_seek_request();
+    // (single fs::exists check). Returns true only when a seek was
+    // actually issued — main.cpp uses that to give the Media Browser's
+    // PlaybackScreen the same post-seek EOS-flicker suppression its own
+    // seek handlers get (a phone tap-to-seek is invisible to it otherwise).
+    bool poll_seek_request();
 
     // Phone Remote: drain the JSON-Lines queue at the configured path
     // and dispatch each event to state.active_text_keyboard. No-op when

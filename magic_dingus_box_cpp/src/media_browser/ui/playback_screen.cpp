@@ -51,6 +51,56 @@ void PlaybackScreen::set_movie_meta(PlaybackOverlayMovieMeta meta) {
     overlay_meta_ = std::move(meta);
 }
 
+void PlaybackScreen::publish_now_playing_status() {
+    // TV = a watch identity of kind Tv plus a series title to show. An
+    // identity-less TV file (shouldn't happen via SeriesDetail, which
+    // always sets both) degrades to the movie shape below — movie_title_
+    // is the full display_title there, so nothing is lost.
+    const bool tv = watch_identity_.has_value() &&
+                    watch_identity_->ref.kind == MediaKind::Tv &&
+                    !series_title_.empty();
+    if (tv) {
+        state_.now_playing_kind  = "tv";
+        state_.now_playing_title = series_title_;
+        // Episode title looked up from the session's episode vector; an
+        // absent match still yields the bare "SxEy" code.
+        std::string ep_title;
+        for (const auto& e : episodes_) {
+            if (e.season_number == watch_identity_->season &&
+                e.episode_number == watch_identity_->episode) {
+                ep_title = e.title;
+                break;
+            }
+        }
+        state_.now_playing_subtitle = format_now_playing_episode(
+            watch_identity_->season, watch_identity_->episode, ep_title);
+    } else {
+        state_.now_playing_kind  = "movie";
+        state_.now_playing_title = movie_title_;
+        state_.now_playing_subtitle =
+            overlay_meta_.year > 0 ? std::to_string(overlay_meta_.year)
+                                   : std::string{};
+    }
+    // MB playback has no playlist context; a stale name/count from the
+    // last main-menu playlist would otherwise ride along in the JSON.
+    // (current_item_index is already -1 — main.cpp resets it at MB entry —
+    // which is also what keeps verify_box's playlist-scoped now_playing
+    // check from firing here.)
+    state_.current_playlist_name.clear();
+    state_.current_item_count = 0;
+}
+
+void PlaybackScreen::notify_external_seek() {
+    // Mirrors the local seek handlers in handle_input(): suppress the
+    // FLUSH-seek video_active flicker so update()'s EOS edge detector
+    // doesn't bail out of playback, and flash the on-TV scrub bar so the
+    // phone tap has visible feedback.
+    eos_suppress_frames_ = kSeekSuppressFrames;
+    state_.show_seek_bar = true;
+    state_.seek_bar_timer = kSeekBarVisibleSec;
+    bump_hud_visibility();
+}
+
 void PlaybackScreen::set_episode_context(std::vector<EpisodeInfo> episodes,
                                          std::vector<std::string> host_paths,
                                          std::vector<SeasonRow> rows,
@@ -211,6 +261,12 @@ void PlaybackScreen::enter() {
     spdlog::info("[playback] playing '{}' (path='{}')",
                  movie_title_, movie_path_);
 
+    // Tell the phone remote what is actually playing. Without this the
+    // StatusWriter kept serializing the LAST main-menu playlist item's
+    // now_playing fields (only Controller::load_playlist_item ever wrote
+    // them) under the movie's live position/duration. leave() clears.
+    publish_now_playing_status();
+
     // Start pre-fetching similar films in the background so they are ready
     // by the time the user presses the rotary to open the overlay.
     // Idempotent for the same tmdb_id; no-op when tmdb_id == 0.
@@ -241,6 +297,17 @@ void PlaybackScreen::leave() {
     // main.cpp's main-UI exit path.
     state_.video_active = false;
     state_.show_seek_bar = false;
+
+    // Clear the published now-playing info (the counterpart of enter()'s
+    // publish_now_playing_status) so the phone remote doesn't keep showing
+    // the movie/episode after playback ends. Mirrors what the playlist
+    // path's stop does via Controller::update_state — which deliberately
+    // does NOT clear during Media Browser sessions (see the guard there:
+    // an episode-end countdown must keep its now_playing up). The next
+    // playlist item reclaims all of these via load_playlist_item.
+    state_.now_playing_title.clear();
+    state_.now_playing_subtitle.clear();
+    state_.now_playing_kind.clear();
 
     if (!deferred_toast_.empty()) {
         ::ui::Toast::show(deferred_toast_);
@@ -461,18 +528,10 @@ Screen PlaybackScreen::handle_input(
             continue;
         }
 
-        // Every seek bumps the EOS-suppression counter. A FLUSH seek
-        // briefly transitions the pipeline through PAUSED, which makes
-        // state.video_active flicker false — without suppression the
-        // EOS edge detector in update() would misread that as end-of-
-        // stream and bail to Detail. 30 frames = ~0.5 s at 60 fps,
-        // plenty of margin for the pipeline to resettle.
-        constexpr int kSeekSuppressFrames = 30;
-
-        // Reusable timer value. Matches the main UI's 1.5s convention so
-        // the bar's hide-after-scrub feel is identical to the playlist
-        // scrub experience the user wants to mirror.
-        constexpr double kSeekBarVisibleSec = 1.5;
+        // Every seek bumps the EOS-suppression counter (see the class
+        // constants kSeekSuppressFrames / kSeekBarVisibleSec — shared with
+        // notify_external_seek() so phone-remote tap-to-seek gets the same
+        // FLUSH-seek flicker margin and scrub-bar flash as local seeks).
 
         // ±10s with PREV/NEXT — same as main UI when video is playing.
         if (e.action == platform::InputAction::NEXT && e.pressed) {
@@ -736,6 +795,11 @@ void PlaybackScreen::advance_to_next_episode() {
         exit_pending_ = true;
         return;
     }
+
+    // Re-publish for the phone remote: watch_identity_ now names the next
+    // episode, so the subtitle advances from e.g. "S2E5 · …" to "S2E6 · …"
+    // (enter() is not re-run on an in-place advance, so its publish isn't).
+    publish_now_playing_status();
 
     spdlog::info("[playback] advanced to '{}' (path='{}')",
                  movie_title_, movie_path_);

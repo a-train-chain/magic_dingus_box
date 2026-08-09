@@ -144,6 +144,14 @@ public:
         return v;
     }
 
+    // Called by main.cpp when the phone remote's tap-to-seek lands on the
+    // shared pipeline while THIS screen owns playback. Gives the external
+    // seek the same treatment the local seek handlers give themselves:
+    // EOS-flicker suppression (a FLUSH seek briefly drops video_active,
+    // which update()'s edge detector would otherwise misread as "movie
+    // ended" and bail out of playback) plus the on-TV scrub-bar flash.
+    void notify_external_seek();
+
     void enter() override;
     void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -248,8 +256,25 @@ private:
     // the EOS edge detector in update() interprets that flicker as the
     // movie ending and bails to Detail (user perceives it as the
     // playback "crashing" out). Pumped on enter() (initial warmup) and
-    // every seek (post-seek settle).
+    // every seek (post-seek settle) — including phone-remote tap-to-seek
+    // via notify_external_seek().
     int eos_suppress_frames_ = 0;
+
+    // Post-seek settle margin (~0.5 s at 60 fps) and the scrub bar's
+    // hide-after-scrub window (matches the main UI's 1.5 s convention).
+    // Shared by the local seek handlers in handle_input() and by
+    // notify_external_seek() so the two paths can never drift.
+    static constexpr int kSeekSuppressFrames = 30;
+    static constexpr double kSeekBarVisibleSec = 1.5;
+
+    // Publishes this session's identity into the AppState fields the
+    // StatusWriter serializes for the phone remote (now_playing.title /
+    // .subtitle / .kind, and clears the playlist context — MB playback has
+    // none). Movie sessions: title + release year + kind "movie". TV
+    // sessions (watch identity kind Tv with a series title): series title +
+    // "SxEy · <episode>" + kind "tv". Called from enter() and from
+    // advance_to_next_episode() — the two session starts; leave() clears.
+    void publish_now_playing_status();
 
     std::chrono::steady_clock::time_point title_marquee_until_{};
 

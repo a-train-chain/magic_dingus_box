@@ -161,7 +161,11 @@ struct AppState {
     // current_item_count:    total items in the active playlist.
     // now_playing_title:     human-readable title of the active item.
     // now_playing_subtitle:  secondary label (artist, system name, etc.).
-    // now_playing_kind:      "video" | "game" | "media_browser_movie" | "".
+    // now_playing_kind:      "video" | "game" (playlist items, set by
+    //                        Controller::load_playlist_item) or
+    //                        "movie" | "tv" (Media Browser playback, set by
+    //                        PlaybackScreen::publish_now_playing_status);
+    //                        "" when nothing is playing.
     // retroarch_rom_name:    ROM filename (populated when ScreenMode == RetroArch).
     // retroarch_core:        libretro core name (populated when ScreenMode == RetroArch).
     // NOTE: is_paused is not added here — use the existing `paused` atomic<bool>

@@ -120,6 +120,20 @@ inline std::string format_position_hms(double position_s) {
     return buf;
 }
 
+// ---------- Phone-remote now-playing subtitle ----------
+
+// "S2E5" / "S2E5 · <episode title>" — the now_playing.subtitle shape the
+// kiosk publishes to kiosk_status.json during TV playback (the phone remote
+// renders it under the series title). Pure so the shape is pinned by
+// test_episode_logic on the Mac; the middle dot matches the display_title
+// separator SeriesDetail and advance_to_next_episode already use.
+inline std::string format_now_playing_episode(int season, int episode,
+                                              const std::string& episode_title) {
+    std::string s = "S" + std::to_string(season) + "E" + std::to_string(episode);
+    if (!episode_title.empty()) s += " \xC2\xB7 " + episode_title;
+    return s;
+}
+
 // ---------- Next up ----------
 
 // What plays after `current` — or, with current == nullptr, what a fresh
