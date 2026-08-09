@@ -443,8 +443,8 @@ private:
     int cached_uniform(uint32_t program, const char* name);
 
     // QR texture cache. render_qr_code used to re-encode the payload and
-    // draw ~500 individual module quads EVERY FRAME on the pairing and
-    // Content Manager screens. Now: one GL_NEAREST texture per payload,
+    // draw ~500 individual module quads EVERY FRAME on the "Connect a
+    // Device" pairing screen. Now: one GL_NEAREST texture per payload,
     // rebuilt only when the URL changes; freed with the other texture
     // caches in cleanup()/reset_gl().
     std::string qr_cache_url_;

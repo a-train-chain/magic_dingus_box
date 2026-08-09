@@ -1144,8 +1144,10 @@ CONNECT_PAGE_HTML = """
      no code to type.</p>
   {% else %}
   <p class="hint">Pairing a remote needs the 6-digit code from
-     Settings &rarr; Connect Phone / Computer on the kiosk.</p>
+     Settings &rarr; Connect a Device on the kiosk.</p>
   {% endif %}
+  <p class="hint">On a laptop with a USB-C cable? Any address works &mdash;
+     try <strong>http://dingus.box</strong></p>
 </div>
 </body></html>
 """
@@ -5655,7 +5657,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
 <body>
 <div class="card">
   <h1>Pair this remote</h1>
-  <p>On the kiosk, open <strong>Settings &rarr; Phone Remote</strong> and enter the 6-digit code shown there.</p>
+  <p>On the kiosk, open <strong>Settings &rarr; Connect a Device</strong> and enter the 6-digit code shown there.</p>
   <!-- A form, not just instructions. Scanning the QR opens Safari, which
        on iOS has a DIFFERENT cookie jar from an installed home-screen app
        — so a QR scan can never authenticate this app, and telling the

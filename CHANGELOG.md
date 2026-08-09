@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **One "Connect a Device" entry instead of two connection screens.** The
+  kiosk's Settings menu had two rows that were really one thing — "Content
+  Manager" (a QR + address screen) and "Connect Phone / Computer" (the same
+  QR plus a pairing code) — and both QR codes already opened the same
+  Connect page. They are now a single **Connect a Device** entry: one
+  screen with the QR code, the 6-digit pairing code, the box's typed
+  address (`http://<yourbox>.local:5000`, with the plain IP alongside in
+  case your router blocks name lookup), and a reminder that a USB-C cable
+  to a computer reaches the box at `http://dingus.box`. Nothing about
+  pairing changed — same codes, same refresh, same paired-devices list —
+  there is just one place to do it all now. The Owner's Guide and the
+  Connect web page were updated to match, and the USB connection guide was
+  rewritten around the current cable setup (`http://dingus.box` /
+  `10.55.0.1` — it previously described an address the box stopped using).
+
 ## [1.9.8] - 2026-08-08
 
 An OTA-pipeline audit found eight confirmed defects in how updates reach a

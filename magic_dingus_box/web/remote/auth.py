@@ -164,7 +164,7 @@ def handle_pair_param(submitted_code: str):
     if int(time.time()) > session["expires_at"]:
         _audit("expired", submitted_code, ip)
         session_path.unlink(missing_ok=True)
-        abort(410, "Code expired. Open Settings → Phone Remote on the kiosk.")
+        abort(410, "Code expired. Open Settings → Connect a Device on the kiosk.")
 
     if not hmac.compare_digest(session["code"], submitted_code):
         # Decrement attempts atomically; delete if 0.

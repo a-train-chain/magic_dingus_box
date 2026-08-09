@@ -59,12 +59,13 @@ SettingsMenuManager::SettingsMenuManager(app::AppState* state)
         MenuItem("Audio", MenuSection::AUDIO, "Volume"),
         MenuItem("Wi-Fi", MenuSection::WIFI, "Network Setup"),
         MenuItem("System", MenuSection::SYSTEM, "Settings"),
-        // These two rows are ONE system to the customer: both screens'
-        // QR codes land on the same /connect page ("Connect a Device").
-        // Kept as two entries on purpose — merging the screens fully is
-        // future work; the titles are what unify them for now.
-        MenuItem("Content Manager", MenuSection::INFO, "Web UI / QR"),
-        MenuItem("Connect Phone / Computer", MenuSection::PHONE_REMOTE, "QR + 6-digit code"),
+        // ONE connection surface. This replaced the two-row split
+        // ("Content Manager" Info screen + "Connect Phone / Computer"):
+        // both screens' QRs already landed on the same /connect page, so
+        // two rows were two names for one thing. The pairing screen is
+        // now the single "Connect a Device" surface — QR, 6-digit code,
+        // typed address, and the USB-C cable path.
+        MenuItem("Connect a Device", MenuSection::PHONE_REMOTE, "Phone, computer, or USB cable"),
         MenuItem("Controller Setup", MenuSection::CONTROLLER_SETUP, "Map any USB gamepad"),
         MenuItem("Back", MenuSection::BACK)
     };
@@ -100,26 +101,6 @@ void SettingsMenuManager::update() {
         }
 
         was_scanning_ = is_scanning;
-    }
-
-    // Refresh the Content Manager (INFO) submenu when its connection state
-    // could have changed. Without this, the QR + label freeze on whatever
-    // they read at the moment the user navigated INTO the submenu — so if
-    // a USB cable was plugged in then unplugged while the user was looking
-    // at the screen, the QR would keep encoding the now-unreachable
-    // 10.55.0.1 URL until the user re-enters the submenu.
-    //
-    // Refresh once per second (not per frame) is fine — build_info_submenu
-    // is cheap (a couple of getifaddrs + nmcli queries) and the QR + URL
-    // update is the only visible side effect.
-    if (current_submenu_ == MenuSection::INFO) {
-        auto now = std::chrono::steady_clock::now();
-        if (now - last_info_refresh_ >= std::chrono::seconds(1)) {
-            last_info_refresh_ = now;
-            // Just rebuild — preserves selected_index via the idempotent
-            // enter_submenu() path (commit dc0459c).
-            rebuild_current_submenu();
-        }
     }
 
     // Track connection state edges (across all submenus, not just WIFI/WIFI_NETWORKS).
@@ -410,8 +391,10 @@ void SettingsMenuManager::open() {
         if (app_state_ && app_state_->media_browser_unlocked) {
             if (!app_state_->media_browser_vpn_configured) {
                 // Layer 1 pass, Layer 2 fail: show an info-only row pointing
-                // at Content Manager. Uses MenuSection::INFO so the row is
-                // non-actionable (matches "Content Manager" row pattern below).
+                // at the Content Manager (reached via "Connect a Device"
+                // below). MenuSection::INFO rows are non-actionable — the
+                // Info screen retired with the connect-flow merge, and
+                // main.cpp no longer dispatches INFO, so SELECT is a no-op.
                 menu_items_.emplace_back("Movies (configure VPN)", MenuSection::INFO,
                                          "Drop WireGuard config in Content Manager");
             } else if (!app_state_->media_browser_storage_present) {
@@ -435,11 +418,11 @@ void SettingsMenuManager::open() {
         menu_items_.emplace_back("Audio", MenuSection::AUDIO, "Volume");
         menu_items_.emplace_back("Wi-Fi", MenuSection::WIFI, "Network Setup");
         menu_items_.emplace_back("System", MenuSection::SYSTEM, "Settings");
-        // Same two rows as the constructor's static list — keep titles in
-        // sync. Both screens' QR codes land on the same /connect page.
-        menu_items_.emplace_back("Content Manager", MenuSection::INFO, "Web UI / QR");
-        menu_items_.emplace_back("Connect Phone / Computer", MenuSection::PHONE_REMOTE,
-                                 "QR + 6-digit code");
+        // Same row as the constructor's static list — keep the title in
+        // sync. The single "Connect a Device" surface (pairing screen)
+        // covers phone remote, Content Manager, and the USB-C cable path.
+        menu_items_.emplace_back("Connect a Device", MenuSection::PHONE_REMOTE,
+                                 "Phone, computer, or USB cable");
         menu_items_.emplace_back("Controller Setup", MenuSection::CONTROLLER_SETUP,
                                  "Map any USB gamepad");
         menu_items_.emplace_back("Back", MenuSection::BACK);
@@ -624,8 +607,6 @@ void SettingsMenuManager::enter_submenu(MenuSection section) {
         submenu_items_ = build_wifi_submenu();
     } else if (section == MenuSection::WIFI_NETWORKS) {
         submenu_items_ = build_wifi_networks_submenu();
-    } else if (section == MenuSection::INFO) {
-        submenu_items_ = build_info_submenu();
     }
 
     // Restore index + scroll, clamped to the (possibly newly-rebuilt)
@@ -879,43 +860,6 @@ bool SettingsMenuManager::take_controller_profiles_dirty() {
     return dirty;
 }
 
-// Helper to check whether an interface is actually carrying traffic.
-//
-// Why both IPv4-assigned AND IFF_RUNNING checks: the `usb-gadget-network.service`
-// always assigns 10.55.0.1/24 to usb0 at boot, regardless of whether anything
-// is plugged into the USB-C port. So the previous check ("does usb0 have an
-// IPv4 address?") returned true unconditionally on every boot, making the
-// kiosk's Content Manager UI display "USB Connection (Active)" + a USB QR code
-// even with no cable connected — exactly the bug the operator hit.
-//
-// IFF_RUNNING is the right OS-level signal here: it tracks the carrier-detect
-// state, becoming true only when there's an actual link partner. For USB
-// gadget Ethernet that means a real USB cable terminating in a host that has
-// brought up its end of the connection. For wired Ethernet, an unplugged
-// cable similarly clears IFF_RUNNING.
-static bool is_interface_active(const char* iface_name) {
-    struct ifaddrs *ifap, *ifa;
-    if (getifaddrs(&ifap) == -1) return false;
-
-    bool active = false;
-    for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL) continue;
-        if (ifa->ifa_addr->sa_family == AF_INET) { // IPv4
-            if (std::string(ifa->ifa_name) == iface_name) {
-                // Must have IPv4 assigned AND IFF_RUNNING (carrier present).
-                // Without IFF_RUNNING we'd false-positive on usb0's
-                // statically-assigned 10.55.0.1 when no cable is plugged in.
-                if ((ifa->ifa_flags & IFF_RUNNING) != 0) {
-                    active = true;
-                    break;
-                }
-            }
-        }
-    }
-    freeifaddrs(ifap);
-    return active;
-}
-
 // Read the IPv4 address assigned to the named interface, or empty string.
 // Used so the QR code reflects whatever IP the gadget service actually
 // assigned (10.55.0.1, 192.168.7.1, or anything else) without hardcoding.
@@ -938,85 +882,6 @@ static std::string get_interface_ipv4(const char* iface_name) {
     }
     freeifaddrs(ifap);
     return addr_str;
-}
-
-std::vector<MenuItem> SettingsMenuManager::build_info_submenu() {
-    auto& wifi = utils::WifiManager::instance();
-
-    // Cached snapshot: this rebuild runs every second on the RENDER
-    // thread, and the synchronous getters each fork nmcli (50-300ms on a
-    // loaded Pi 4B) — the "cheap" claim in the old comment measured the
-    // happy path only. The snapshot refreshes off-thread on a 3s TTL;
-    // first-open can lag one refresh cycle.
-    const auto wifi_status = wifi.get_status_cached();
-
-    bool usb_active = is_interface_active("usb0");
-    bool wifi_active = wifi_status.connected;
-
-    // Determine primary connection (USB priority)
-    std::string primary_url = "";
-    std::string connection_label = "Not Connected";
-    std::string sub_label = "Connect via USB or Wi-Fi";
-
-    // Read the actual IP off usb0 instead of hardcoding (the address
-    // assigned by usb-gadget-network.service is 10.55.0.1, but older
-    // setups used 192.168.7.1 — we don't care which, just what's live).
-    std::string usb_ip = get_interface_ipv4("usb0");
-
-    if (usb_active && !usb_ip.empty()) {
-        primary_url = "http://" + usb_ip + ":5000";
-        connection_label = "USB Connection (Active)";
-        sub_label = "Fastest / Recommended";
-    } else if (wifi_active) {
-        const std::string& ip = wifi_status.ip;
-        if (!ip.empty()) {
-            primary_url = "http://" + ip + ":5000";
-            connection_label = "Wi-Fi Connection";
-            sub_label = wifi_status.ssid;
-        }
-    }
-
-    // Update app state.
-    //
-    // CRITICAL: gate usb_url on usb_active (carrier present), not just
-    // on usb_ip being non-empty. usb-gadget-network.service assigns
-    // 10.55.0.1/24 to usb0 unconditionally at boot, so usb_ip is
-    // ALWAYS "10.55.0.1" on this hardware, even when no cable is
-    // plugged in. Without this gate, the renderer's QR-label logic
-    // (which compares the displayed URL against state.usb_url) gets
-    // a perpetually-truthy state.usb_url and mis-labels the QR as
-    // "USB Connection (Preferred)" even on a Wi-Fi-only screen.
-    //
-    // The QR URLs target the /connect landing page ("Connect a Device") —
-    // the SAME page the pairing screen's QR opens, just without a pairing
-    // code. One landing page for both QR codes is the whole point: the
-    // customer picks "manage movies & playlists" or "use this phone as a
-    // remote" in words instead of guessing which of two QR screens they
-    // wanted. usb_url/wifi_url feed ONLY the renderer's QR (nothing else
-    // reads them), so the typed-fallback address text stays the plain
-    // host root — everything on the box redirects sensibly from there.
-    if (app_state_) {
-        app_state_->usb_url = (usb_active && !usb_ip.empty())
-            ? ("http://" + usb_ip + ":5000/connect") : "";
-        app_state_->wifi_url = (wifi_active && !wifi_status.ip.empty())
-            ? ("http://" + wifi_status.ip + ":5000/connect") : "";
-        app_state_->content_manager_url = primary_url;
-    }
-    
-    // Simplified Menu - just show the connection status
-    std::vector<MenuItem> items;
-    
-    if (!primary_url.empty()) {
-        items.emplace_back(connection_label, MenuSection::INFO, sub_label, 
-            [this, primary_url]() {
-                if (app_state_) app_state_->content_manager_url = primary_url;
-            });
-    } else {
-         items.emplace_back("No Connection", MenuSection::BACK, "Plug in USB or setup Wi-Fi");
-    }
-
-    items.emplace_back("Back", MenuSection::BACK);
-    return items;
 }
 
 std::string SettingsMenuManager::intensity_to_label(float intensity) {

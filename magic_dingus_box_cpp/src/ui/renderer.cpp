@@ -1382,114 +1382,11 @@ void Renderer::render(app::AppState& state) {
                                       state.lan_ip, state.hostname);
             }
         } else {
+        // The settings panel itself. (The Content Manager Info screen's
+        // QR used to render here when the INFO submenu was open; that
+        // screen was merged into the "Connect a Device" pairing screen,
+        // which is the one connection surface now.)
         render_settings_menu(state.settings_menu, state.game_playlists, state.video_active, state.ui_visible_when_playing);
-
-        // Render QR code when Info submenu is active
-        if (state.settings_menu->get_current_submenu() == ui::MenuSection::INFO) {
-            // Compute qr_url + qr_label from the gated usb_url/wifi_url
-            // fields directly, NOT from content_manager_url. Both are
-            // updated by build_info_submenu in the same pass, but if a
-            // stale content_manager_url is ever left over from a prior
-            // state (e.g., the user was previously plugged in via USB,
-            // unplugged, and the auto-refresh rebuild hadn't yet run
-            // when this frame rendered), reading that field could
-            // disagree with state.usb_url and produce the bug where
-            // the QR encodes one network but the label below it
-            // claims the other.
-            //
-            // build_info_submenu now sets state.usb_url to "" when no
-            // USB carrier is present, so a non-empty state.usb_url
-            // means USB is genuinely active and preferred. Otherwise
-            // fall back to state.wifi_url.
-            std::string qr_url;
-            std::string qr_label;
-            if (!state.usb_url.empty()) {
-                qr_url = state.usb_url;
-                qr_label = "USB Connection (Preferred)";
-            } else if (!state.wifi_url.empty()) {
-                qr_url = state.wifi_url;
-                qr_label = "Wi-Fi Connection";
-            }
-            
-            if (!qr_url.empty()) {
-                // Position QR code centered in the menu panel
-                uint32_t menu_width = width_ / 2;
-                float menu_x = static_cast<float>(width_) - menu_width;
-
-                // Calculate Y position: simplified menu (Header + Status + Back) takes space
-                // Start below the menu items
-                float menu_items_end = 280.0f;  // Safe distance below menu items
-                float footer_start = static_cast<float>(height_) - 70.0f;
-                float available_space = footer_start - menu_items_end;
-
-                // Center QR code + hint text in available space
-                float qr_size = 130.0f;  // Slightly optimized size
-                // Layout below the QR:
-                //   25px padding
-                //   line 1: connection-type label (accent color)
-                //   20px line gap
-                //   line 2: "Scan with phone camera"
-                //   20px line gap
-                //   line 3: "or visit magicpi.local on any device" (highlight2)
-                // Total below the QR: ~85px, so qr_with_hint_height = qr + 85.
-                float qr_with_hint_height = qr_size + 85.0f;
-
-                float qr_y = menu_items_end + (available_space - qr_with_hint_height) / 2.0f;
-                float qr_x = menu_x + (static_cast<float>(menu_width) - qr_size) / 2.0f;
-
-                render_qr_code(qr_url, qr_x, qr_y, qr_size, 1.0f);
-
-                // Draw connection type label above hint
-                int label_width = body_font_manager_->get_text_width(qr_label, theme_->font_small_size);
-                float label_x = menu_x + (static_cast<float>(menu_width) - label_width) / 2.0f;
-                float label_y = qr_y + qr_size + 25.0f + body_font_manager_->get_baseline_at_size(theme_->font_small_size);
-                draw_text(qr_label, label_x, label_y, theme_->font_small_size, theme_->accent, false, 1.0f);
-
-                // Draw helper text below label. The QR opens the same
-                // "Connect a Device" page as the Connect Phone / Computer
-                // screen's QR (just without a pairing code pre-filled) —
-                // say so, so the two Settings screens read as one system
-                // instead of two competing QR codes.
-                std::string qr_hint = "Scan to open the Connect page";
-                int hint_width = body_font_manager_->get_text_width(qr_hint, theme_->font_small_size);
-                float hint_x = menu_x + (static_cast<float>(menu_width) - hint_width) / 2.0f;
-                float hint_y = label_y + 20.0f;
-                draw_text(qr_hint, hint_x, hint_y, theme_->font_small_size, theme_->fg, false, 1.0f);
-
-                // Draw typed-URL fallback below the QR hint. The hostname
-                // magicpi.local resolves via mDNS/Bonjour from any device on
-                // the same network (Wi-Fi OR USB-Gadget) — works on macOS,
-                // iOS, Linux, and Windows 10+ natively without configuring
-                // anything. This line gives the operator a fallback for the
-                // case where:
-                //   - phone is on the same Wi-Fi as the Pi but the QR is
-                //     showing a USB-only URL (would otherwise be unreachable)
-                //   - the user prefers typing to scanning
-                //   - they want to bookmark a stable URL that works
-                //     regardless of which interface is active
-                // Distinct color (highlight2) makes the URL pop visually
-                // since it's the actionable bit — eye is drawn to it.
-                // Built from the box's REAL hostname. This read "or visit
-                // magicpi.local on any device" until 2026-07-26 — a host
-                // that resolves on no shipped unit, because first_boot.sh
-                // names every clone "magicpi-XXXX". Same bug class that
-                // made the pairing QR unreachable on every box; it was
-                // telling operators to type an address that cannot work.
-                std::string mdns_host = state.hostname.empty()
-                    ? std::string("this box")
-                    : (state.hostname.size() >= 6 &&
-                       state.hostname.compare(state.hostname.size() - 6, 6, ".local") == 0
-                           ? state.hostname
-                           : state.hostname + ".local");
-                std::string fallback_text = state.hostname.empty()
-                    ? std::string("or type the address shown above")
-                    : ("or visit " + mdns_host + " on any device");
-                int fallback_width = body_font_manager_->get_text_width(fallback_text, theme_->font_small_size);
-                float fallback_x = menu_x + (static_cast<float>(menu_width) - fallback_width) / 2.0f;
-                float fallback_y = hint_y + 20.0f;
-                draw_text(fallback_text, fallback_x, fallback_y, theme_->font_small_size, theme_->highlight2, false, 1.0f);
-            }
-        }
         } // end else (neither the wizard nor the pairing screen is active)
     }
 
@@ -2796,8 +2693,6 @@ void Renderer::render_settings_menu(ui::SettingsMenuManager* menu, const std::ve
             header_text = "Wi-Fi";
         } else if (current_submenu == ui::MenuSection::WIFI_NETWORKS) {
             header_text = "Wi-Fi Networks";
-        } else if (current_submenu == ui::MenuSection::INFO) {
-            header_text = "Content Manager";
         }
     }
     
@@ -4358,8 +4253,8 @@ void Renderer::render_qr_code(const std::string& url, float x, float y, float si
     // codes rotate every ~2 minutes; the screens calling this render at
     // 60fps). The old per-frame path re-ran the QR encoder AND issued
     // one draw_quad per black module — ~500 buffer uploads + draw calls
-    // per frame for the whole time the pairing or Content Manager
-    // screen was open.
+    // per frame for the whole time the "Connect a Device" screen was
+    // open.
     if (qr_cache_tex_ == 0 || url != qr_cache_url_) {
         try {
             qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(

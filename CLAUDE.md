@@ -616,8 +616,10 @@ The phone's OS-keyboard "Search/Enter" key only dismisses the OS keyboard via `i
 
 ### Pairing flow
 
-`Settings → Phone Remote` on the kiosk shows a QR code, a 6-digit code,
-and the box's address in plain text (so a failed scan is recoverable).
+`Settings → Connect a Device` on the kiosk (the single connection entry —
+it replaced the two-row "Content Manager" / "Connect Phone / Computer"
+split) shows a QR code, a 6-digit code, the box's typed address, and the
+USB-C cable hint in plain text (so a failed scan is recoverable).
 **The QR target is built at runtime from the box's real address**
 (`ui/pairing_url.h`), preferring the LAN IP over `<hostname>.local` —
 mDNS is the fragile link (inconsistent Android support, routers that

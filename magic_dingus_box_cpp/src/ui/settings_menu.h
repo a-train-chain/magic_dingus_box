@@ -28,8 +28,10 @@ enum class MenuSection {
     SYSTEM,
     WIFI,
     WIFI_NETWORKS,
-    INFO,
-    PHONE_REMOTE,      // NEW: drills into the pairing-screen view, not a submenu
+    INFO,              // Info-only rows (e.g. "Movies (configure VPN)"). No submenu
+                       // behind it since the connect-flow merge retired the
+                       // Content Manager Info screen; SELECT is a no-op.
+    PHONE_REMOTE,      // Drills into the "Connect a Device" pairing screen, not a submenu
     CONTROLLER_SETUP,  // Drills into the Controller Setup wizard, not a submenu
     BACK,
     BROWSE_GAMES,
@@ -191,11 +193,6 @@ private:
     // Default to 7 (CRT layout); renderer overwrites this each frame
     // once it knows the actual viewport height.
     int max_visible_items_ = 7;
-    // INFO submenu auto-refresh — the Content Manager page shows USB vs.
-    // Wi-Fi URL based on which interface has carrier. We rebuild it
-    // periodically while it's open so the QR code reflects state changes
-    // (e.g., user unplugs the USB-C cable while sitting on this screen).
-    std::chrono::steady_clock::time_point last_info_refresh_{};
     // Wi-Fi networks submenu live refresh while a scan streams in
     // partial results (2 Hz — see update()).
     std::chrono::steady_clock::time_point last_scan_refresh_{};
@@ -217,7 +214,6 @@ private:
     std::vector<MenuItem> build_system_submenu();
     std::vector<MenuItem> build_wifi_submenu();
     std::vector<MenuItem> build_wifi_networks_submenu();
-    std::vector<MenuItem> build_info_submenu();
     std::string intensity_to_label(float intensity);
 
     std::unique_ptr<PairingScreen> pairing_screen_;

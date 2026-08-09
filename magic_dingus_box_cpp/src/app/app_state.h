@@ -869,11 +869,6 @@ public:
         std::string status_message;
     } wifi_state;
     
-    // Content Manager URLs for QR code display
-    std::string wifi_url;           // WiFi URL (e.g., http://10.0.0.151:5000)
-    std::string usb_url;            // USB URL (always http://192.168.7.1:5000)
-    std::string content_manager_url; // Currently displayed URL (changes based on menu selection)
-
     // Address the Phone Remote pairing QR should point at. Refreshed when
     // the pairing screen opens, because the QR is only valid for the ~2
     // minutes the code lives and the box may have changed IP since boot.

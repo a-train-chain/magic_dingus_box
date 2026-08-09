@@ -57,9 +57,21 @@ TEST_CASE("an empty code still yields a reachable base URL") {
             == "http://10.0.0.227:5000/connect");
 }
 
-TEST_CASE("human-readable address for on-screen manual entry") {
-    // Shown under the QR so a failed scan is recoverable.
-    REQUIRE(ui::pairing_display_host("10.0.0.227", "magicpi5") == "10.0.0.227:5000");
-    REQUIRE(ui::pairing_display_host("", "magicpi5") == "magicpi5.local:5000");
-    REQUIRE(ui::pairing_display_host("", "").empty());
+TEST_CASE("typed-fallback address for the Connect a Device screen") {
+    // Shown under the QR so a failed scan is recoverable by typing.
+    // OPPOSITE preference from the QR URL: humans get the stable
+    // <hostname>.local form first (what the Owner's Guide teaches),
+    // with the raw IP in parentheses as the mDNS-is-broken rescue.
+    REQUIRE(ui::connect_typed_address("10.0.0.227", "magicpi5")
+            == "http://magicpi5.local:5000  (or 10.0.0.227:5000)");
+    REQUIRE(ui::connect_typed_address("", "magicpi5")
+            == "http://magicpi5.local:5000");
+    REQUIRE(ui::connect_typed_address("10.0.0.227", "")
+            == "http://10.0.0.227:5000");
+    REQUIRE(ui::connect_typed_address("", "").empty());
+}
+
+TEST_CASE("typed-fallback address never double-suffixes .local") {
+    REQUIRE(ui::connect_typed_address("", "magicpi5.local")
+            == "http://magicpi5.local:5000");
 }

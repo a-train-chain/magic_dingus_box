@@ -2915,8 +2915,11 @@ int main(int /* argc */, char* /* argv */[]) {
                             settings_menu.enter_submenu(ui::MenuSection::WIFI);
                         } else if (section == ui::MenuSection::WIFI_NETWORKS) {
                             settings_menu.enter_submenu(ui::MenuSection::WIFI_NETWORKS);
-                        } else if (section == ui::MenuSection::INFO) {
-                            settings_menu.enter_submenu(ui::MenuSection::INFO);
+                        // MenuSection::INFO is deliberately NOT dispatched:
+                        // info-only rows ("Movies (configure VPN)" etc.) fall
+                        // through to the silent no-op below. The Content
+                        // Manager Info screen it used to open was merged into
+                        // the "Connect a Device" pairing screen.
                         } else if (section == ui::MenuSection::PHONE_REMOTE) {
                             settings_menu.open_pairing_screen();
                         } else if (section == ui::MenuSection::CONTROLLER_SETUP) {

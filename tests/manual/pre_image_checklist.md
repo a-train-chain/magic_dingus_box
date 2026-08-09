@@ -146,15 +146,17 @@ Required if the golden image is shipping CRT mode support to clones. Skip only i
 - [ ] Open `http://10.55.0.1:5000/` in browser → content manager loads in well under 1 second
 - [ ] Connection badge in the admin header reads **"🔌 USB"**, not "📶 WiFi" (fixed from hardcoded `192.168.7.1` check)
 
-### Kiosk-side QR code
-- [ ] On TV, open Settings → Info. QR code is rendered
-- [ ] Label under QR reads "**USB Connection (Preferred)**" when USB-C is plugged in
-- [ ] Scan the QR with a phone camera — URL decodes as `http://10.55.0.1:5000` (not `http://192.168.7.1:5000`)
-- [ ] From a laptop connected via USB-C: scanned URL opens the content manager successfully
+### Kiosk-side QR code (the merged "Connect a Device" screen)
+- [ ] On TV, open Settings → **Connect a Device**. One screen shows: QR code, large 6-digit code, "Code refreshes in M:SS"
+- [ ] Typed address line reads `http://<hostname>.local:5000  (or <lan-ip>:5000)`
+- [ ] USB line reads "Or: plug a USB-C cable into a computer and open  http://dingus.box"
+- [ ] Scan the QR with a phone camera — URL decodes as `http://<lan-ip>:5000/connect?code=NNNNNN` and opens the "Connect a Device" web page
+- [ ] From a laptop connected via USB-C: `http://dingus.box` opens the content manager successfully
+- [ ] There is NO separate "Content Manager" or "Connect Phone / Computer" row in Settings — "Connect a Device" is the only connection entry
 
 ### WiFi (alternate path)
 - [ ] WiFi reconnects automatically on cold boot
-- [ ] When USB-C is unplugged and only WiFi is up: QR label shows "Wi-Fi Connection" and encodes the Pi's LAN IP
+- [ ] With USB-C unplugged and only WiFi up: the Connect a Device QR encodes the Pi's LAN IP
 - [ ] Web admin reachable from a phone on the same WiFi at `http://<pi-wifi-ip>:5000/`
 
 ### Content upload + transcoding

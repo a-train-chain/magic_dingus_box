@@ -58,19 +58,32 @@ inline std::string build_pairing_url(const std::string& lan_ip,
     return "http://" + host + ":5000/connect";
 }
 
-// The same address in a form worth printing under the QR, so a scan that
-// fails (bad lighting, cracked screen, a phone camera that won't open
-// http:// links) is still recoverable by typing it in.
-inline std::string pairing_display_host(const std::string& lan_ip,
-                                        const std::string& hostname) {
-    if (!lan_ip.empty()) return lan_ip + ":5000";
+// The typed-fallback address printed under the QR on the "Connect a
+// Device" screen, so a failed scan (bad lighting, cracked screen, a phone
+// camera that won't open http:// links) is still recoverable by typing.
+//
+// Deliberately the OPPOSITE preference from build_pairing_url: the QR
+// prefers the raw IP (phone cameras just follow it; mDNS is the fragile
+// link), but a human TYPING an address is better served by the stable,
+// bookmarkable <hostname>.local form — it's what the Owner's Guide and
+// the Content Manager teach, and it survives DHCP lease changes. The IP
+// rides along in parentheses as the rescue for networks where mDNS is
+// blocked, which is exactly the failure mode that forced the QR to
+// prefer the IP in the first place.
+inline std::string connect_typed_address(const std::string& lan_ip,
+                                         const std::string& hostname) {
+    std::string mdns;
     if (!hostname.empty()) {
-        std::string h = hostname;
-        if (h.size() < 6 || h.compare(h.size() - 6, 6, ".local") != 0) {
-            h += ".local";
+        mdns = hostname;
+        if (mdns.size() < 6 || mdns.compare(mdns.size() - 6, 6, ".local") != 0) {
+            mdns += ".local";
         }
-        return h + ":5000";
     }
+    if (!mdns.empty() && !lan_ip.empty()) {
+        return "http://" + mdns + ":5000  (or " + lan_ip + ":5000)";
+    }
+    if (!mdns.empty())   return "http://" + mdns + ":5000";
+    if (!lan_ip.empty()) return "http://" + lan_ip + ":5000";
     return "";
 }
 
