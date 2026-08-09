@@ -5601,11 +5601,80 @@ def create_app(data_dir: Path, config=None) -> Flask:
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
 
+    @app.get("/admin/remote/manifest.webmanifest")
+    def remote_manifest():  # type: ignore[no-redef]
+        """Dynamic web-app manifest for the phone remote.
+
+        iOS gives an installed home-screen app a SEPARATE cookie jar from
+        Safari, so "Add to Home Screen" on a paired /admin/remote used to
+        produce an app that opened UNPAIRED (the pairing cookie stayed in
+        Safari's jar). The bridge: iOS fetches THIS manifest at install
+        time from the paired Safari session, so a request that presents a
+        valid mdb_remote cookie gets a start_url carrying that device's
+        durable install token — the token rides inside the icon, and the
+        installed app trades it for its own cookie on first launch (the
+        redeem branch in remote_page below). An unauthenticated fetch gets
+        the same manifest with a bare start_url, which degrades to the
+        6-digit pair form.
+
+        no-store is mandatory: a cached token-bearing manifest served to
+        the wrong requester would be a credential leak.
+        """
+        cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
+        device_id = remote_auth.verify_cookie(cookie)
+        start_url = "/admin/remote"
+        if device_id is not None:
+            token = remote_auth.device_token_for(device_id)
+            if token:
+                start_url = f"/admin/remote?device_token={token}"
+        manifest = {
+            "name": "Dingus Remote",
+            "short_name": "Dingus Remote",
+            "description": "Phone remote for your Magic Dingus Box.",
+            "id": "/admin/remote",
+            "start_url": start_url,
+            "scope": "/admin/remote",
+            "display": "standalone",
+            "background_color": "#1F191F",
+            "theme_color": "#131013",
+            "icons": [
+                {"src": "/static/icons/icon-192.png", "sizes": "192x192",
+                 "type": "image/png", "purpose": "any"},
+                {"src": "/static/icons/icon-512.png", "sizes": "512x512",
+                 "type": "image/png", "purpose": "any"},
+                {"src": "/static/icons/icon-maskable-192.png",
+                 "sizes": "192x192", "type": "image/png",
+                 "purpose": "maskable"},
+                {"src": "/static/icons/icon-maskable-512.png",
+                 "sizes": "512x512", "type": "image/png",
+                 "purpose": "maskable"},
+            ],
+        }
+        resp = app.response_class(
+            json.dumps(manifest, indent=2),
+            mimetype="application/manifest+json")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
     @app.route("/admin/remote", methods=["GET"])
     def remote_page():  # type: ignore[no-redef]
         cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
         device_id = remote_auth.verify_cookie(cookie)
         if device_id is None:
+            # Installed-app first launch: no cookie in THIS jar yet, but the
+            # icon's start_url may carry the durable install token the
+            # manifest embedded at install time. Trade it for a cookie and
+            # 303 to the clean URL (keeps the token out of the visible
+            # URL/history). This GET is the ONLY place the token redeems.
+            # An invalid/revoked token deliberately falls through to the
+            # ordinary pair form — no signal about token validity.
+            submitted_token = request.args.get("device_token", "")
+            if submitted_token:
+                redeemed = remote_auth.redeem_device_token(submitted_token)
+                if redeemed is not None:
+                    resp = redirect("/admin/remote", code=303)
+                    remote_auth.issue_cookie(resp, redeemed)
+                    return resp
             return render_template_string("""
 <!doctype html>
 <html lang="en">
@@ -5619,14 +5688,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
      viewport; content and borders are clipped), so matching the colour the
      faceplate ends on is the only way to hide the seam. -->
 <meta name="theme-color" content="#131013">
-<!-- Same installable-app tags as the other pages. Without these, adding
-     to the home screen from THIS page (a real possibility, since it is
-     where an expired pairing lands you) produces a generic Safari
-     bookmark with a screenshot icon instead of the app. -->
-<link rel="manifest" href="/static/manifest.webmanifest">
+<!-- Same installable-app tags as the paired remote shell — this page is
+     served at the SAME URL (/admin/remote), so it must reference the same
+     remote-scoped manifest or install behavior would depend on pairing
+     state. Unauthenticated manifest fetches carry no token, so an install
+     made from here opens on this pair form — the correct degradation.
+     Without these tags, adding to the home screen from THIS page (a real
+     possibility, since it is where an expired pairing lands you) produces
+     a generic Safari bookmark with a screenshot icon instead of the app. -->
+<link rel="manifest" href="/admin/remote/manifest.webmanifest">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Magic Dingus Box">
+<meta name="apple-mobile-web-app-title" content="Dingus Remote">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 <title>Remote not paired</title>

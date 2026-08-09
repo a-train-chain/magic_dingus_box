@@ -528,6 +528,10 @@ a { text-decoration: none; color: inherit; }
   animation: toast-in 220ms ease-out;
 }
 .install-toast strong { color: var(--accent); }
+/* mDNS steering link inside the toast (remote.js's install-address hint) —
+   must read as tappable against the lifted background. */
+.install-toast a { color: var(--accent); text-decoration: underline;
+                   word-break: break-all; }
 @keyframes toast-in {
   from { transform: translateY(20px); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }

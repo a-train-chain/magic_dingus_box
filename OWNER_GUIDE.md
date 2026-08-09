@@ -73,7 +73,9 @@ settings to configure.
 2. Scan the QR code with your phone and pick **Use this phone as a
    remote**. The remote page opens and stays paired — you can use it as
    a D-pad, and whenever the box shows a text field (like a Wi-Fi
-   password), your phone's keyboard types straight into it.
+   password), your phone's keyboard types straight into it. Once paired,
+   tap **Share → Add to Home Screen** to get a one-tap remote icon that
+   opens already paired.
 
 ## 6. Unlock the Movies section
 

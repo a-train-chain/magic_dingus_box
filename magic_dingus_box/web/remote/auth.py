@@ -69,6 +69,82 @@ def verify_cookie(cookie_value: str) -> Optional[str]:
     return device_id
 
 
+# ---------------------------------------------------------------------------
+# Durable install tokens (iOS home-screen install pairing).
+#
+# An installed home-screen web app gets a SEPARATE cookie jar from Safari,
+# so the pairing cookie Safari holds never reaches the installed app. The
+# bridge: the dynamic manifest (served only to a validly-paired Safari
+# session) embeds a per-device token in start_url; the installed app
+# presents it on first launch and trades it for its own mdb_remote cookie.
+#
+# The token is DERIVED, not stored: HMAC(flask_secret, device_id|salt),
+# where the salt is a random per-device value in paired_remotes.json.
+# Consequences, each load-bearing:
+#   - Nothing usable as a bearer credential sits at rest (the salt alone
+#     is useless without flask_secret.key) — stronger than "hashed at
+#     rest", and paired_remotes.json in isolation discloses nothing.
+#   - The SAME plaintext is reproducible on every manifest fetch. iOS may
+#     fetch the manifest again between install and first launch; a
+#     rotate-on-fetch scheme would strand the installed icon with a dead
+#     token — the exact failure this feature exists to remove.
+#   - Revocation needs no extra bookkeeping: redemption resolves against
+#     live records only, so reap_revocations / revoke_device killing the
+#     record kills the token, and first_boot.sh wiping paired_remotes.json
+#     + flask_secret.key on clones kills every token with the pairings.
+#
+# NEVER log or return token values in errors. Prove presence by length
+# or count only.
+# ---------------------------------------------------------------------------
+
+def _derive_device_token(device_id: str, salt: str) -> str:
+    secret = current_app.config["SECRET_KEY"].encode("utf-8")
+    msg = f"device_token|{device_id}|{salt}".encode("utf-8")
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+def device_token_for(device_id: str) -> Optional[str]:
+    """The durable install token for a paired device (lazily minting the
+    salt for records paired before this feature). None if no such device."""
+    salt = devices_mod.ensure_token_salt(_devices_path(), device_id)
+    if salt is None:
+        return None
+    return _derive_device_token(device_id, salt)
+
+
+def redeem_device_token(submitted: str) -> Optional[str]:
+    """Return the device_id whose install token matches, else None.
+
+    Only the GET /admin/remote redeem path may call this — the token
+    authenticates exactly one action (re-issuing the pairing cookie to
+    the installed app's jar), never any other endpoint.
+    """
+    if not submitted or len(submitted) > 256:
+        return None
+    # Drain any kiosk-issued revocations first so a just-revoked device
+    # cannot redeem inside the broadcaster's 200 ms reap window.
+    try:
+        reap_revocations(_data_dir())
+    except Exception:
+        pass
+    matched: Optional[str] = None
+    for d in devices_mod.list_devices(_devices_path()):
+        device_id = d.get("id")
+        salt = d.get("token_salt")
+        if not device_id or not salt:
+            continue
+        expected = _derive_device_token(device_id, salt)
+        # Constant-time per candidate; keep scanning all records rather
+        # than early-exiting so match position is not observable.
+        if hmac.compare_digest(expected, submitted):
+            matched = device_id
+    ip = request.remote_addr or "?"
+    # Audit outcome only — the empty code_attempt masks to "****" so no
+    # fragment of the token ever reaches pairing_audit.log.
+    _audit("token_redeemed" if matched else "token_rejected", "", ip)
+    return matched
+
+
 # Cap on pairing_audit.log. Nothing ever pruned it, so on an appliance
 # with years of uptime (or a hostile LAN device hammering /pair) it grew
 # without bound on the SD card. 512 KB holds ~5000 recent entries — far

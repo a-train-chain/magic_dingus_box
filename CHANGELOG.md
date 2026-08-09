@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Home-screen install of the phone remote stays paired.** iOS gives an
+  installed home-screen web app a separate cookie jar from Safari, so
+  "Add to Home Screen" on a paired remote used to open unpaired at the
+  6-digit form. `/admin/remote` now serves a dynamic manifest
+  ("Dingus Remote", scoped to `/admin/remote`, `no-store`): when the
+  request carries a valid pairing cookie, the manifest's `start_url`
+  embeds a durable per-device install token — iOS fetches the manifest at
+  install time from the paired Safari session, so the token rides inside
+  the icon, and the installed app trades it for its own cookie on first
+  launch (303 to the clean URL). The token is HMAC-derived from a
+  per-device salt in `paired_remotes.json` plus the Flask secret — never
+  stored or logged in plaintext, redeemable only on GET `/admin/remote`,
+  and it dies with the device record on unpair/revocation (and with the
+  first-boot wipe on clones). Unauthenticated manifest fetches get a bare
+  `start_url` that degrades to the 6-digit form. The remote page also
+  coaches iPhones standing on a bare DHCP IP (the QR is deliberately
+  IP-first) to install from `http://<box>.local:5000/admin/remote`
+  instead, so the icon survives a router re-lease — a dismissible hint,
+  never a redirect.
+
 ### Changed
 - **One "Connect a Device" entry instead of two connection screens.** The
   kiosk's Settings menu had two rows that were really one thing — "Content

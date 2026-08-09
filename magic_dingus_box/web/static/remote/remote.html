@@ -11,18 +11,22 @@
      hide the seam is to make iOS paint it the same colour the faceplate ends
      on. The bottom radial gradient darkens #1F191F to #131013 there. -->
 <meta name="theme-color" content="#131013">
-<link rel="stylesheet" href="/static/remote/remote.css?v=29">
-<!-- Shared app manifest, scoped to "/" so the Content Manager and the
-     remote install as ONE app rather than two. The old
-     /static/remote/manifest.json declared start_url "/admin/remote" while
-     being served from /static/remote/, putting start_url outside its own
-     implicit scope — a spec violation Chrome flags. -->
-<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="stylesheet" href="/static/remote/remote.css?v=30">
+<!-- DYNAMIC manifest, scoped to /admin/remote so the remote installs as
+     its own "Dingus Remote" app. Served by Flask, not a static file: for
+     a request carrying a valid pairing cookie, start_url embeds that
+     device's durable install token — iOS fetches the manifest at install
+     time from the paired Safari session, so the token rides inside the
+     home-screen icon and the installed app (which has a SEPARATE cookie
+     jar) trades it for its own cookie on first launch. This replaced the
+     shared "/"-scoped static manifest, under which an installed remote
+     opened unpaired at the 6-digit form every time. -->
+<link rel="manifest" href="/admin/remote/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Magic Dingus Box">
+<meta name="apple-mobile-web-app-title" content="Dingus Remote">
 <title>Magic Dingus Remote</title>
 </head>
 <body class="remote">
@@ -73,8 +77,10 @@
   <header class="hd">
     <!-- Way out of the app. An installed PWA has no address bar and no back
          button, so without this the remote is a one-way trip and the only
-         escape is force-quitting. Same-origin and inside the manifest scope,
-         so it navigates within the app.
+         escape is force-quitting. "/" is same-origin but OUTSIDE the
+         manifest scope (/admin/remote), so an installed app opens it with
+         iOS's in-app browser chrome — a visible Done control back to the
+         remote, which is the right affordance for a side trip.
 
          It lives INSIDE .mark, absolutely positioned to the left and centred
          on the wordmark. That is what keeps it clear of the top-left faceplate
@@ -182,5 +188,5 @@
     <button class="ra-quit" data-btn="QUIT_GAME">Quit Game</button>
   </div>
 </div>
-<script src="/static/remote/remote.js?v=29"></script>
+<script src="/static/remote/remote.js?v=30"></script>
 </body></html>

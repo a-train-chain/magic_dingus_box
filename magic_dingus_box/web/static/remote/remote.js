@@ -413,16 +413,45 @@
     if (isStandalone) return;
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     if (!isIOS) return;
-    if (localStorage.getItem('mdb_remote_install_hint_shown') === '1') return;
-    const t = document.createElement('div');
-    t.className = 'install-toast';
-    t.innerHTML = '<strong>Add to Home Screen</strong> for full-screen remote.<br>' +
-                  'Tap the Share button → Add to Home Screen.';
-    t.addEventListener('click', () => {
-      t.remove();
-      localStorage.setItem('mdb_remote_install_hint_shown', '1');
-    });
-    document.body.appendChild(t);
+
+    const showToast = (key, html) => {
+      if (localStorage.getItem(key) === '1') return;
+      const t = document.createElement('div');
+      t.className = 'install-toast';
+      t.innerHTML = html;
+      t.addEventListener('click', (e) => {
+        // Let the mDNS link navigate; any other tap dismisses.
+        if (e.target.tagName !== 'A') t.remove();
+        localStorage.setItem(key, '1');
+      });
+      document.body.appendChild(t);
+    };
+    const genericHint = () => showToast('mdb_remote_install_hint_shown',
+      '<strong>Add to Home Screen</strong> for full-screen remote.<br>' +
+      'Tap the Share button → Add to Home Screen.');
+
+    // Install-address steering. The pairing QR is deliberately IP-first
+    // (Android mDNS is unreliable), but a home-screen icon is pinned to
+    // its install origin FOREVER — installed on a bare DHCP IP, it goes
+    // stale when the router re-leases. If we're standing on an IP and the
+    // box knows its .local name, coach (never redirect) toward the
+    // durable address before the user installs.
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname)) {
+      fetch('/api/host-info')
+        .then((r) => r.json())
+        .then((info) => {
+          const mdns = info && info.mdns;
+          if (!mdns) { genericHint(); return; }
+          const port = location.port ? (':' + location.port) : '';
+          const url = 'http://' + mdns + port + '/admin/remote';
+          showToast('mdb_remote_mdns_hint_shown',
+            '<strong>Adding to your Home Screen?</strong> Open <a href="' + url + '">' +
+            url + '</a> first so the icon keeps working if your Wi-Fi changes.');
+        })
+        .catch(genericHint);
+      return;
+    }
+    genericHint();
   }
   maybeShowInstallHint();
 

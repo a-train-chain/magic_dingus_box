@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import tempfile
 import time
 import uuid
@@ -54,9 +55,35 @@ def add_device(path: Path, nickname: str, user_agent_hint: str = "") -> str:
         "user_agent_hint": user_agent_hint,
         "paired_at": int(time.time()),
         "last_seen": int(time.time()),
+        # Seed for the durable install token (see auth.device_token_for).
+        # The bearer token itself is HMAC-derived from this + the Flask
+        # secret at request time, so nothing usable-as-a-credential sits
+        # in this file. Re-pairing creates a new record → new salt → new
+        # token; revocation deletes the record → the token dies with it.
+        "token_salt": secrets.token_urlsafe(32),
     })
     _save_atomic(path, data)
     return device_id
+
+
+def list_devices(path: Path) -> list:
+    """All device records (read-only snapshot)."""
+    return list(_load(path).get("devices", []))
+
+
+def ensure_token_salt(path: Path, device_id: str) -> Optional[str]:
+    """Return the device's token salt, lazily minting one for records
+    paired before durable install tokens existed. None if no such device."""
+    data = _load(path)
+    for d in data.get("devices", []):
+        if d.get("id") == device_id:
+            salt = d.get("token_salt")
+            if not salt:
+                salt = secrets.token_urlsafe(32)
+                d["token_salt"] = salt
+                _save_atomic(path, data)
+            return salt
+    return None
 
 
 def find_device(path: Path, device_id: str) -> Optional[dict]:
