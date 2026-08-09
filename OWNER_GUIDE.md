@@ -155,6 +155,9 @@ Movies are stored on a USB drive so they never crowd the games.
   appears in your Library, usually within the hour for popular titles.
 - TV shows work the same way, season by season and episode by episode,
   with resume, next-episode countdowns, and a watched/unwatched filter.
+- After a few episodes without input, the box asks whether to keep
+  going — a fresh press keeps it rolling; otherwise it stops and saves
+  your place.
 
 **What the messages mean:**
 

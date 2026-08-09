@@ -265,8 +265,13 @@ inline std::string season_end_button_label(const SeasonEndCard& card) {
 
 // What PlaybackScreen shows when a TV episode reaches EOS. None is the
 // screen's idle state; Countdown is the 8-second next-episode overlay;
-// Card is the season-end card (offer / downloading / series done).
-enum class EndOverlayKind { None, Countdown, Card };
+// Card is the season-end card (offer / downloading / series done);
+// StillWatching is the auto-advance guard prompt (still_watching.h) that
+// replaces the Countdown once too many episodes have started without any
+// user input. decide_end_overlay never produces StillWatching — the
+// screen swaps a Countdown for it via make_still_watching_overlay when
+// the streak guard says to ask.
+enum class EndOverlayKind { None, Countdown, Card, StillWatching };
 
 // Fully-resolved overlay content: every pinned string the screen renders
 // is composed HERE (Mac-tested), never inline in the kiosk TU. next_index

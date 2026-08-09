@@ -11,6 +11,7 @@
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
 #include "media_browser/ui/playback_overlay.h"
+#include "media_browser/ui/still_watching.h"
 
 // Forward declarations to keep this header light.
 namespace app {
@@ -217,6 +218,19 @@ private:
     EndOverlayModel end_overlay_;
     std::chrono::steady_clock::time_point countdown_started_at_{};
     std::optional<int> pending_next_season_;  // see take_pending_next_season()
+
+    // "Still watching?" streak guard (still_watching.h — pure, Mac-tested).
+    // Counts episodes started without user interaction in the CURRENT
+    // continuous playback session: enter() zeroes it (manual start), the
+    // countdown-expiry auto-advance increments it, and every input this
+    // screen handles during an episode — pause, seek, rotary, phone remote
+    // (same InputActions / notify_external_seek path) — zeroes it again.
+    // At kAutoAdvanceStreakLimit, begin_end_overlay() swaps the Countdown
+    // for the StillWatching prompt; its 60 s expiry stops playback via the
+    // NORMAL exit path (exit_pending_ -> origin_), never a bypass of
+    // leave(). countdown_started_at_ doubles as the prompt's frame clock
+    // (only one end overlay exists at a time).
+    StillWatchingGuard still_watching_;
 
     // Arms end_overlay_ at a TV EOS edge: locates the finished episode
     // (identity-validated), syncs the in-memory watch map, and resolves

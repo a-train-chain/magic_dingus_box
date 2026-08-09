@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **"Still watching?" guard on TV auto-advance.** The next-episode
+  countdown kept a sleeping viewer's box playing all night (field
+  report: Game of Thrones until sunrise). Auto-advance stays, but after
+  three consecutive episodes started by the countdown with no user input
+  — any press, seek, rotary twist, or phone-remote touch during an
+  episode resets the count, and pressing "Play now" on the countdown
+  counts as presence too — the next episode end swaps the 8 s countdown
+  for a "Still watching <series>?" card: focused **Continue** button
+  (rotary press keeps the binge rolling and resets the count), red
+  button/Back stops, and 60 s of silence stops playback through the
+  normal exit path (watch state flushed, download trickle restored,
+  now-playing cleared) back to the series screen. The finished episode
+  is already marked watched at that point, so the next session resumes
+  exactly where the binge stopped. Movies and the season-end cards are
+  untouched; the streak, prompt decision, and pinned copy live in the
+  pure `still_watching.h` unit with Catch2 coverage
+  (`test_still_watching.cpp`).
 - **Home-screen install stays paired.** iOS gives an installed
   home-screen web app a separate cookie jar from Safari, so "Add to Home
   Screen" after pairing used to produce an app whose remote opened

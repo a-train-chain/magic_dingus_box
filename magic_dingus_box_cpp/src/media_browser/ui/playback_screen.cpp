@@ -99,6 +99,9 @@ void PlaybackScreen::notify_external_seek() {
     state_.show_seek_bar = true;
     state_.seek_bar_timer = kSeekBarVisibleSec;
     bump_hud_visibility();
+    // A phone tap-to-seek is a human at the other end — presence proven,
+    // same as the local seek handlers.
+    still_watching_.note_user_interaction();
 }
 
 void PlaybackScreen::set_episode_context(std::vector<EpisodeInfo> episodes,
@@ -132,6 +135,11 @@ void PlaybackScreen::enter() {
     // Playback->SeriesDetail transition, possibly after leave()).
     end_overlay_ = {};
     pending_next_season_.reset();
+    // enter() == a MANUAL start (picker / detail / Start-Season flow) — the
+    // still-watching streak restarts at zero. Leaving playback and coming
+    // back is presence by definition, so the streak is per continuous
+    // session and can never leak across sessions.
+    still_watching_.note_session_start();
     // Tracks state.video_active across update() ticks for end-of-stream
     // edge detection. Starts false; update() needs to see false→true (play
     // started) before a later true→false transition reads as natural EOS.
@@ -395,9 +403,26 @@ Screen PlaybackScreen::handle_input(
             // card -> dismiss back to where we came from.
             if (e.action == platform::InputAction::SELECT) {
                 if (end_overlay_.kind == EndOverlayKind::Countdown) {
+                    // "Play now" is a PRESS, not a countdown expiry — the
+                    // user just proved presence, so the still-watching
+                    // streak restarts (only the silent expiry in update()
+                    // increments it).
+                    still_watching_.note_user_interaction();
                     advance_to_next_episode();
                     // On failure the advance armed exit_pending_ + deferred
                     // toast; the fast-return above exits next frame.
+                    return Screen::Playback;
+                }
+                if (end_overlay_.kind == EndOverlayKind::StillWatching) {
+                    // "Continue" — they're awake. Streak restarts at zero
+                    // and the stored next_index plays, exactly what the
+                    // countdown's expiry would have started. MUST be
+                    // handled before the has_primary branch below: this
+                    // model carries has_primary for the button chrome, and
+                    // falling through would misread Continue as a season
+                    // intent.
+                    still_watching_.note_user_interaction();
+                    advance_to_next_episode();
                     return Screen::Playback;
                 }
                 if (end_overlay_.has_primary) {
@@ -428,8 +453,15 @@ Screen PlaybackScreen::handle_input(
         // The dispatcher's long-press handler (held >500ms) intercepts before
         // we see it, so reaching here means it's a short press. We don't call
         // controller_.stop() because leave() will (idempotently).
+        // Every branch below is user input handled DURING an episode —
+        // local buttons, rotary, or the phone remote's D-pad (which arrives
+        // as the same InputActions through the uinput gamepad). Each one
+        // proves presence, so each resets the still-watching streak
+        // alongside its HUD bump. (Phone tap-to-seek resets via
+        // notify_external_seek() — the one input that bypasses this loop.)
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             if (overlay_.is_open()) {
                 overlay_.close();
                 return Screen::Playback;
@@ -445,6 +477,7 @@ Screen PlaybackScreen::handle_input(
         // Note: only on key-down (pressed == true); ignore key-up.
         if (e.action == platform::InputAction::SELECT && e.pressed) {
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             if (!overlay_.is_open()) {
                 overlay_.open();
                 return Screen::Playback;
@@ -525,6 +558,7 @@ Screen PlaybackScreen::handle_input(
         if (e.action == platform::InputAction::PLAY_PAUSE && e.pressed) {
             controller_.toggle_pause();
             bump_hud_visibility();  // Pause/resume always shows HUD.
+            still_watching_.note_user_interaction();
             continue;
         }
 
@@ -540,6 +574,7 @@ Screen PlaybackScreen::handle_input(
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             continue;
         }
         if (e.action == platform::InputAction::PREV && e.pressed) {
@@ -548,6 +583,7 @@ Screen PlaybackScreen::handle_input(
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             continue;
         }
 
@@ -558,6 +594,7 @@ Screen PlaybackScreen::handle_input(
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             continue;
         }
         if (e.action == platform::InputAction::SEEK_LEFT) {
@@ -566,6 +603,7 @@ Screen PlaybackScreen::handle_input(
             state_.seek_bar_timer = kSeekBarVisibleSec;
             eos_suppress_frames_ = kSeekSuppressFrames;
             bump_hud_visibility();
+            still_watching_.note_user_interaction();
             continue;
         }
 
@@ -585,6 +623,7 @@ Screen PlaybackScreen::handle_input(
         // (the velocity² factor means low-velocity ticks still produce
         // ~5-10s seeks, same as the playlist).
         if (e.action == platform::InputAction::ROTATE && e.delta != 0) {
+            still_watching_.note_user_interaction();
             if (overlay_.is_open()) {
                 overlay_.on_rotate(e.delta);
                 continue;
@@ -658,7 +697,32 @@ void PlaybackScreen::update() {
         const auto elapsed = std::chrono::steady_clock::now()
                            - countdown_started_at_;
         if (elapsed >= std::chrono::seconds(kNextUpCountdownSeconds)) {
+            // Countdown EXPIRY is the one auto-start in the system — the
+            // only still-watching streak increment. Pressing "Play now"
+            // instead resets it (handle_input), so the streak counts
+            // exactly the episodes nobody asked for.
+            still_watching_.note_auto_advance();
             advance_to_next_episode();
+        }
+    }
+
+    // Still-watching prompt expiry -> STOP, via the normal exit path.
+    // Nobody pressed anything for kStillWatchingTimeoutSeconds, so arm
+    // exit_pending_ and let handle_input's fast-return hand origin_ to the
+    // dispatcher next frame — which flushes watch state and runs leave()
+    // (qBit trickle restore, now_playing clear) exactly as any other exit.
+    // The finished episode was already marked watched when the EOS edge
+    // latched (main.cpp drains take_eos_watched the same frame the overlay
+    // armed), so tomorrow's resume is the NEXT episode.
+    if (end_overlay_.kind == EndOverlayKind::StillWatching && !exit_pending_) {
+        const double shown_s =
+            std::chrono::duration<double>(std::chrono::steady_clock::now()
+                                          - countdown_started_at_).count();
+        if (StillWatchingGuard::prompt_timed_out(shown_s)) {
+            spdlog::info("[playback] still-watching prompt unanswered for "
+                         "{}s — stopping playback", kStillWatchingTimeoutSeconds);
+            end_overlay_ = {};
+            exit_pending_ = true;
         }
     }
 }
@@ -712,11 +776,28 @@ void PlaybackScreen::begin_end_overlay() {
 
     end_overlay_ = decide_end_overlay(season_rows_, episodes_, watch_,
                                       episodes_[idx], series_title_);
-    if (end_overlay_.kind == EndOverlayKind::Countdown) {
+    // Still-watching guard: once kAutoAdvanceStreakLimit episodes have
+    // auto-started with no interaction, the NEXT auto-advance becomes a
+    // question. Only the Countdown consults the guard — the season-end
+    // cards already stop on their own, and movies never reach here.
+    // While the prompt idles, now_playing deliberately keeps reporting the
+    // just-ended episode (publish_now_playing_status only runs at enter()
+    // and on the advance) — identical to how the countdown window reports
+    // itself; leave() clears it on every exit.
+    if (end_overlay_.kind == EndOverlayKind::Countdown &&
+        still_watching_.decide() == EosAdvance::Prompt) {
+        end_overlay_ = make_still_watching_overlay(end_overlay_, series_title_);
+    }
+    if (end_overlay_.kind == EndOverlayKind::Countdown ||
+        end_overlay_.kind == EndOverlayKind::StillWatching) {
+        // One timer serves both: only one end overlay exists at a time,
+        // and each arms exactly once per EOS.
         countdown_started_at_ = std::chrono::steady_clock::now();
     }
-    spdlog::info("[playback] end overlay armed (kind={}, next_index={})",
-                 static_cast<int>(end_overlay_.kind), end_overlay_.next_index);
+    spdlog::info("[playback] end overlay armed (kind={}, next_index={}, "
+                 "auto_streak={})",
+                 static_cast<int>(end_overlay_.kind), end_overlay_.next_index,
+                 still_watching_.streak);
 }
 
 // In-place advance to episodes_[end_overlay_.next_index]. enter() is NOT
@@ -931,14 +1012,23 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     // Centered card — same chrome as the exit modal / overlay panels:
     // bg_lift fill, 2 px gold border on all four sides.
     const bool is_card = (end_overlay_.kind == EndOverlayKind::Card);
+    const bool is_prompt = (end_overlay_.kind == EndOverlayKind::StillWatching);
     const bool has_body = !end_overlay_.body_line.empty();
     constexpr int kCardW = 640;
     constexpr int kPadX = 32;
     constexpr int kPadY = 26;
     // Rows: title (~30), body/countdown line (~28 when present), action
-    // area (button ~44 for cards, hint row ~24 for the countdown).
-    const int card_h = kPadY + 30 + (is_card ? (has_body ? 28 : 0) + 16 + 44
-                                             : 28 + 16 + 24) + kPadY;
+    // area (button ~44 for cards, hint row ~24 for the countdown). The
+    // still-watching prompt stacks body ("Next: …"), its own "Stopping
+    // in N…" line, AND the Continue button.
+    int card_h;
+    if (is_card) {
+        card_h = kPadY + 30 + (has_body ? 28 : 0) + 16 + 44 + kPadY;
+    } else if (is_prompt) {
+        card_h = kPadY + 30 + (has_body ? 28 : 0) + 28 + 16 + 44 + kPadY;
+    } else {
+        card_h = kPadY + 30 + 28 + 16 + 24 + kPadY;
+    }
     const int cx = (screen_w - kCardW) / 2;
     const int cy = (screen_h - card_h) / 2;
     const float fcx = static_cast<float>(cx);
@@ -982,6 +1072,54 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
                           cy + card_h - kPadY,
                           {
                               {mc::HintIcon::RotaryPress, "Play now"},
+                              {mc::HintIcon::Btn2Red, "Stop"},
+                          });
+        return;
+    }
+
+    if (end_overlay_.kind == EndOverlayKind::StillWatching) {
+        // "Still watching <series>?" — body font like the countdown title
+        // (series titles are unbounded; the title font has no truncation
+        // helper), gold accent.
+        const std::string title =
+            truncate_to_width(r, end_overlay_.title_line, 20, max_text_w);
+        r.mb_draw_text(title, text_x, y, 20, th.accent, 1.0f);
+
+        // Body: what a Continue press starts ("Next: SxEy · <title>" —
+        // the countdown's own line, preserved by the model conversion).
+        if (has_body) {
+            y += 28.0f + 8.0f;
+            const std::string body =
+                truncate_to_width(r, end_overlay_.body_line, 16, max_text_w);
+            r.mb_draw_text(body, text_x, y, 16, th.fg, 1.0f);
+        }
+
+        // "Stopping in N…" — same frame-clock derivation as the
+        // countdown's "Starting in N…", against the 60 s prompt window;
+        // update() stops playback at the shared expiry.
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - countdown_started_at_)
+                .count();
+        int remaining = kStillWatchingTimeoutSeconds
+                      - static_cast<int>(elapsed_ms / 1000);
+        if (remaining < 1) remaining = 1;  // update() stops at expiry
+        y += 28.0f + 8.0f;
+        r.mb_draw_text("Stopping in " + std::to_string(remaining)
+                           + "\xE2\x80\xA6",
+                       text_x, y, 16, th.fg, 1.0f);
+
+        // Focused "Continue" button — the affirmative default (rotary
+        // press commits it) — with the stop hint alongside, hint-row
+        // baseline tuned to the button's label line.
+        const int btn_y = cy + card_h - kPadY - 44;
+        const auto btn = mc::draw_button(r, cx + kPadX, btn_y,
+                                         end_overlay_.primary_label,
+                                         mc::ButtonKind::Ok,
+                                         /*focused=*/true);
+        mc::draw_hint_row(r, btn.x + btn.w + 28, btn_y + 30,
+                          {
+                              {mc::HintIcon::RotaryPress, "Continue"},
                               {mc::HintIcon::Btn2Red, "Stop"},
                           });
         return;
