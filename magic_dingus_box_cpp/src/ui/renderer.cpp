@@ -1619,21 +1619,32 @@ void Renderer::render_virtual_keyboard(const VirtualKeyboard& keyboard) {
     draw_line(start_x - 20, start_y - 80, start_x + kb_width + 20, start_y - 80, 2.0f, theme_->accent2);
     draw_line(start_x - 20, start_y + kb_height + 20, start_x + kb_width + 20, start_y + kb_height + 20, 2.0f, theme_->accent2);
     
-    // Title
-    draw_text(keyboard.get_title(), start_x, start_y - 50, 24, theme_->fg, true);
-    
+    // Title — baseline derived from the panel's top border plus the
+    // shared minimum inset (padding audit: the old fixed start_y-50
+    // baseline left the title's cap height ~8 px off the border line).
+    const float title_baseline =
+        (start_y - 80.0f) + ui::overlay::kMinTextInset
+        + static_cast<float>(title_font_manager_->get_baseline_at_size(24));
+    draw_text(keyboard.get_title(), start_x, title_baseline, 24, theme_->fg, true);
+
     // Text buffer (Input box)
     float input_box_height = 40.0f;
     draw_quad(start_x, start_y - 20, kb_width, input_box_height, theme_->bg, 1.0f);
     draw_line(start_x, start_y - 20 + input_box_height, start_x + kb_width, start_y - 20 + input_box_height, 2.0f, theme_->accent);
-    
+
     // Text cursor blinking
     std::string display_text = keyboard.get_text();
     // Simple cursor visualization
     if (static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 500) % 2 == 0) {
         display_text += "_";
     }
-    draw_text(display_text, start_x + 10, start_y - 12, 20, theme_->fg);
+    // Centered on real metrics inside the input box (the old start_y-12
+    // baseline put the glyph tops 8 px ABOVE the box's top edge and left
+    // a 30 px void above the underline).
+    const float input_baseline =
+        (start_y - 20.0f) + (input_box_height - 20.0f) / 2.0f
+        + static_cast<float>(body_font_manager_->get_baseline_at_size(20));
+    draw_text(display_text, start_x + 10, input_baseline, 20, theme_->fg);
     
     // Keys
     const auto& layout = keyboard.get_layout();
@@ -2068,21 +2079,50 @@ std::string Renderer::format_time(double seconds) {
 void Renderer::render_error_overlay(const app::AppState& state) {
     if (!state.has_error_message()) return;
 
+    // Padding audit 2026-08-09: the banner was a fixed 60%-width box with
+    // the text merely centered over it — a message wider than the box ran
+    // past both borders. The banner now GROWS to the measured text plus
+    // the shared banner insets (clamped to the canvas edge margin), and
+    // anything still wider is ellipsis-truncated to the interior.
+    namespace ov = ui::overlay;
     std::string msg = state.error_message;
-    float banner_h = 40.0f;
-    float banner_y = static_cast<float>(height_) - banner_h - 20.0f;
-    float banner_w = static_cast<float>(width_) * 0.6f;
-    float banner_x = (static_cast<float>(width_) - banner_w) / 2.0f;
+    const int font_size = 18;
+
+    const float max_banner_w =
+        static_cast<float>(width_) - 2.0f * ov::kScreenEdgeMargin;
+    float text_w = static_cast<float>(
+        body_font_manager_->get_text_width(msg, font_size));
+    float banner_w = std::max(static_cast<float>(width_) * 0.6f,
+                              text_w + 2.0f * ov::kBannerPadX);
+    banner_w = std::min(banner_w, max_banner_w);
+
+    const float max_text_w = banner_w - 2.0f * ov::kBannerPadX;
+    if (text_w > max_text_w) {
+        while (!msg.empty() &&
+               body_font_manager_->get_text_width(msg + "...", font_size) >
+                   max_text_w) {
+            ::ui::utf8_pop_back(msg);
+        }
+        if (!msg.empty()) msg += "...";
+        text_w = static_cast<float>(
+            body_font_manager_->get_text_width(msg, font_size));
+    }
+
+    const float banner_h = static_cast<float>(font_size) + 2.0f * ov::kBannerPadY;
+    const float banner_y = static_cast<float>(height_) - banner_h - 20.0f;
+    const float banner_x = (static_cast<float>(width_) - banner_w) / 2.0f;
 
     // Semi-transparent dark background
     ui::Color bg = {0, 0, 0, 180};
     draw_quad(banner_x, banner_y, banner_w, banner_h, bg);
 
-    // Error text in red, centered
-    int font_size = 18;
-    float text_w = static_cast<float>(body_font_manager_->get_text_width(msg, font_size));
+    // Error text in red, centered on real font metrics (the old
+    // font_size*0.3 baseline guess sat the line visibly high).
+    const int baseline = body_font_manager_->get_baseline_at_size(font_size);
     float text_x = banner_x + (banner_w - text_w) / 2.0f;
-    float text_y = banner_y + banner_h / 2.0f + font_size * 0.3f;
+    float text_y = banner_y
+                 + (banner_h - static_cast<float>(font_size)) / 2.0f
+                 + static_cast<float>(baseline);
     draw_text(msg, text_x, text_y, font_size, {255, 100, 100, 255});
 }
 
@@ -2171,7 +2211,12 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
     // cartridge-era idiom, and it also makes a stopped bar look like a
     // finished count rather than an interrupted animation.
     const float bar_h = std::max(10.0f, panel_h * 0.10f);
-    const float bar_y = panel_y + panel_h * 0.74f;
+    // 0.72 (was 0.74): the padding audit found the phase line below the
+    // bar rendering ~3 px off the plate's bottom border on both canvases
+    // (0.74 + 0.10 bar + 0.13 gap puts the baseline at 0.97·panel_h).
+    // Nudging the bar up plus clamping the phase baseline below restores
+    // a real bottom margin without touching the rows above.
+    const float bar_y = panel_y + panel_h * 0.72f;
     draw_quad(inner_x, bar_y, inner_w, bar_h, theme_->bg, a);
 
     const int kSegments = 20;
@@ -2187,7 +2232,14 @@ void Renderer::render_loading_overlay(const app::AppState& state) {
 
     // --- Phase line ------------------------------------------------------
     if (!state.loading_phase.empty()) {
-        draw_text(state.loading_phase, inner_x, bar_y + bar_h + panel_h * 0.13f,
+        // Clamp the baseline so the text (baseline + ~4 px descent) keeps
+        // overlay::kMinTextInset from the plate's bottom border — the
+        // proportional 0.13 gap alone parked the descenders ~3 px off the
+        // border at every canvas height.
+        const float phase_baseline = std::min(
+            bar_y + bar_h + panel_h * 0.13f,
+            panel_y + panel_h - (ui::overlay::kMinTextInset + 4.0f));
+        draw_text(state.loading_phase, inner_x, phase_baseline,
                   theme_->font_small_size, theme_->dim, false, a);
     }
 }
@@ -2833,12 +2885,16 @@ void Renderer::render_volume_overlay(const app::AppState& state) {
     draw_line(x, y, x, y + overlay_height, 2.0f, theme_->accent);
     draw_line(x + overlay_width, y, x + overlay_width, y + overlay_height, 2.0f, theme_->accent);
     
-    // Label
+    // Label — top margin balanced against the bar's bottom margin
+    // (padding audit: the old fixed baseline of y+25 left ~11 px above
+    // the text vs 20 px under the bar). Content block = label + 12 px
+    // gap + 10 px bar = 40 px, so 20 px insets top and bottom.
     std::string label = "MASTER VOLUME: " + std::to_string(state.master_volume) + "%";
     int font_size = theme_->font_medium_size;
     int label_width = body_font_manager_->get_text_width(label, font_size);
     float label_x = x + (overlay_width - label_width) / 2.0f;
-    float label_y = y + 25.0f;
+    float label_y = y + 20.0f
+                  + static_cast<float>(body_font_manager_->get_baseline_at_size(font_size));
     draw_text(label, label_x, label_y, font_size, theme_->fg, false);
     
     // Slider bar background

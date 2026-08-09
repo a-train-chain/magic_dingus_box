@@ -1398,7 +1398,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
-        const float banner_h = static_cast<float>(sz) + 18.0f;
+        const float banner_h = static_cast<float>(sz)
+                             + 2.0f * ::ui::overlay::kBannerPadY;
 
         std::string label = "AVAILABILITY";
         ::ui::Color border_col = th.dim;
@@ -1452,8 +1453,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // Label on the left in dim cream — same pattern Detail uses for
         // small-caps section labels.
         std::string drawn = truncate_to_width(r, label + "  " + body,
-                                              sz, col_w - 24.0f);
-        r.mb_draw_text(drawn, col_x + 12.0f,
+                                              sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
+        r.mb_draw_text(drawn, col_x + static_cast<float>(::ui::overlay::kBannerPadX),
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
                        sz, text_col, text_alpha);
@@ -1471,14 +1472,15 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
-        const float banner_h = static_cast<float>(sz) + 18.0f;
+        const float banner_h = static_cast<float>(sz)
+                             + 2.0f * ::ui::overlay::kBannerPadY;
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, th.highlight2, 0.95f);
         std::string txt =
             "VPN TUNNEL DOWN  \xE2\x80\xA2  Adds will queue but torrents "
             "won't transfer until the tunnel comes back";
-        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
-        r.mb_draw_text(drawn, col_x + 12.0f,
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
+        r.mb_draw_text(drawn, col_x + static_cast<float>(::ui::overlay::kBannerPadX),
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
                        sz, th.highlight2, 0.95f);
@@ -1494,7 +1496,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
-        const float banner_h = static_cast<float>(sz) + 18.0f;
+        const float banner_h = static_cast<float>(sz)
+                             + 2.0f * ::ui::overlay::kBannerPadY;
         // Three sub-states share this slot:
         //   import_in_progress_ : the download FINISHED and Radarr is
         //     copying the file into the library right now — ready in
@@ -1527,8 +1530,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                           "seeders appear");
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, state_col, 0.9f);
-        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
-        r.mb_draw_text(drawn, col_x + 12.0f,
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
+        r.mb_draw_text(drawn, col_x + static_cast<float>(::ui::overlay::kBannerPadX),
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
                        sz, state_col, 0.95f);
@@ -1544,15 +1547,16 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         int sz = th.font_small_size;
         int baseline = r.mb_text_baseline(sz);
         cursor_y += 12.0f;
-        const float banner_h = static_cast<float>(sz) + 18.0f;
+        const float banner_h = static_cast<float>(sz)
+                             + 2.0f * ::ui::overlay::kBannerPadY;
         std::string txt = "FILE LOOKS WRONG  \xE2\x80\xA2  " +
             std::to_string(movie_->file_runtime_minutes) + " min file vs " +
             std::to_string(movie_->runtime_minutes) + " min expected — "
             "probably not the real movie (use Remove, then re-add)";
         r.mb_stroke_rect(col_x, cursor_y, col_w, banner_h,
                          2.0f, th.highlight2, 0.9f);
-        std::string drawn = truncate_to_width(r, txt, sz, col_w - 24.0f);
-        r.mb_draw_text(drawn, col_x + 12.0f,
+        std::string drawn = truncate_to_width(r, txt, sz, col_w - 2.0f * ::ui::overlay::kBannerPadX);
+        r.mb_draw_text(drawn, col_x + static_cast<float>(::ui::overlay::kBannerPadX),
                        cursor_y + (banner_h - static_cast<float>(sz)) / 2.0f
                                 + static_cast<float>(baseline),
                        sz, th.highlight2, 0.95f);
@@ -1802,13 +1806,20 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Transient banner --------------------------------------------
+    // Insets from the shared overlay contract (padding audit 2026-08-09:
+    // the old 16/8 pads left the text 8 px off the top/bottom borders,
+    // and this banner and MBSettingsScreen's copy of it had drifted to
+    // different pad values — both now draw from ui::overlay).
     if (!banner_.empty()) {
+        namespace ov = ::ui::overlay;
         int sz = th.font_medium_size;
         int baseline = r.mb_text_baseline(sz);
-        int bw = r.mb_text_width(banner_, sz);
-        float pad = 16.0f;
-        float box_w = static_cast<float>(bw) + 2.0f * pad;
-        float box_h = static_cast<float>(sz) + 2.0f * pad * 0.5f;
+        const float max_text_w =
+            w - 2.0f * (ov::kScreenEdgeMargin + ov::kBannerPadX);
+        const std::string drawn = truncate_to_width(r, banner_, sz, max_text_w);
+        int bw = r.mb_text_width(drawn, sz);
+        float box_w = static_cast<float>(bw) + 2.0f * ov::kBannerPadX;
+        float box_h = static_cast<float>(sz) + 2.0f * ov::kBannerPadY;
         float box_x = (w - box_w) / 2.0f;
         float box_y = kSectionRuleY - box_h - 12.0f;
         // Clamp upper bound to just below the chrome header band
@@ -1818,10 +1829,10 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         if (box_y < kBannerMinY) box_y = kBannerMinY;
         r.mb_fill_rect(box_x, box_y, box_w, box_h, th.bg, 0.92f);
         r.mb_stroke_rect(box_x, box_y, box_w, box_h, 2.0f, th.accent, 1.0f);
-        float tx = box_x + pad;
+        float tx = box_x + static_cast<float>(ov::kBannerPadX);
         float ty = box_y + (box_h / 2.0f) - static_cast<float>(sz) / 2.0f
                  + static_cast<float>(baseline);
-        r.mb_draw_text(banner_, tx, ty, sz, th.fg, 1.0f);
+        r.mb_draw_text(drawn, tx, ty, sz, th.fg, 1.0f);
     }
 }
 

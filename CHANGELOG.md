@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Overlay text padding normalized across every dialog, card, toast, and
+  banner** (field report: some overlays looked cramped — text tight to or
+  crossing card borders). A shared spacing contract now lives in
+  `ui/theme.h` (`ui::overlay`: card insets 32/26, banner insets 18/12, a
+  12 px glyph-to-border floor, and a 24 px card-to-screen-edge margin)
+  and every card draws from it instead of per-site magic numbers. The
+  real bugs it fixes: toasts never measured their text, so long messages
+  ("Media Browser unavailable — VPN tunnel down") rendered straight
+  through both borders of the fixed 480 px panel — the panel now grows,
+  wraps, and clamps to the canvas (short toasts render pixel-identically);
+  the game-launch loading plate drew its phase line ~3 px off the bottom
+  border ("STARTING" touching the gold frame); the stall-prompt modal
+  drew unbounded movie titles with no truncation; the error banner
+  centered unmeasured text over a fixed 60 %-width box; the Wi-Fi
+  keyboard's input text rendered 8 px above its box and the volume
+  overlay's label sat high. Detail's status pills (AVAILABILITY /
+  MONITORED / VPN DOWN / FILE LOOKS WRONG) and both transient banners
+  gained real vertical insets (was 8-9 px around the text) and now share
+  one pad vocabulary; the exit and stall modals grew 8 px each way to
+  meet the card standard; the playback end-overlay cards (next-episode
+  countdown, "Still watching?", season end) clamp to the screen-edge
+  margin so they no longer sit flush against the CRT canvas edges. All
+  sizing math is pure and unit-tested (`tests/ui/test_overlay_layout.cpp`).
+
 ### Added
 - **"Still watching?" guard on TV auto-advance.** The next-episode
   countdown kept a sleeping viewer's box playing all night (field

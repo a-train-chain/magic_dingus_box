@@ -10,13 +10,16 @@ namespace media_browser::ui {
 namespace {
 // Layout — slightly wider/taller than ExitModal because we display a
 // movie title and a reason line in addition to the headline.
-constexpr int   kCardW        = 560;
-constexpr int   kCardH        = 240;
+// Interior insets from the shared overlay contract (ui/theme.h, padding
+// audit 2026-08-09) — was 28/22 local magic numbers. Card grows by the
+// pad delta (560x240 -> 568x248) so the interior layout is unchanged.
+constexpr int   kPaddingX     = ::ui::overlay::kCardPadX;
+constexpr int   kPaddingY     = ::ui::overlay::kCardPadY;
+constexpr int   kCardW        = 504 + 2 * kPaddingX;  // 568
+constexpr int   kCardH        = 196 + 2 * kPaddingY;  // 248
 constexpr float kBgDimAlpha   = 0.50f;
 constexpr int   kBtnW         = 200;
 constexpr int   kBtnH         = 44;
-constexpr int   kPaddingX     = 28;
-constexpr int   kPaddingY     = 22;
 constexpr int   kBtnGap       = 16;
 }  // namespace
 
@@ -129,9 +132,17 @@ void StallPromptModal::render(::ui::Renderer& r, int screen_w, int screen_h) {
                          fcy + static_cast<float>(kPaddingY) + 24.0f,
                          24, th.accent);
 
+    // Interior text width — everything drawn inside the card truncates to
+    // this so no string can cross the right border (padding audit: movie
+    // titles are unbounded and were drawn unmeasured, so a long title ran
+    // straight through the gold border).
+    const float max_text_w = static_cast<float>(kCardW - 2 * kPaddingX);
+
     // Movie title — body font, foreground colour, 18 px.
     if (!pending_.title.empty()) {
-        r.mb_draw_text(pending_.title,
+        const std::string title =
+            truncate_to_width(r, pending_.title, 18, max_text_w);
+        r.mb_draw_text(title,
                        fcx + static_cast<float>(kPaddingX),
                        fcy + static_cast<float>(kPaddingY) + 24.0f + 32.0f,
                        18, th.fg, 1.0f);
@@ -139,7 +150,9 @@ void StallPromptModal::render(::ui::Renderer& r, int screen_w, int screen_h) {
 
     // Reason line — dim 16 px subtitle (mirrors ExitModal's subtitle slot).
     if (!pending_.reason_label.empty()) {
-        r.mb_draw_text(pending_.reason_label,
+        const std::string reason =
+            truncate_to_width(r, pending_.reason_label, 16, max_text_w);
+        r.mb_draw_text(reason,
                        fcx + static_cast<float>(kPaddingX),
                        fcy + static_cast<float>(kPaddingY) + 24.0f + 32.0f + 26.0f,
                        16, th.dim, 1.0f);

@@ -1567,20 +1567,26 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // gold-outline frame + cream text. Sits centered above the footer.
     auto now = std::chrono::steady_clock::now();
     if (!banner_text_.empty() && now < banner_until_) {
+        // Insets from the shared overlay contract (padding audit
+        // 2026-08-09) — this banner and DetailScreen's had drifted to
+        // different local pad values; both now draw from ui::overlay.
+        namespace ov = ::ui::overlay;
         int b_size = th.font_medium_size;
         int b_baseline = r.mb_text_baseline(b_size);
-        int tw = r.mb_text_width(banner_text_, b_size);
-        float pad_x = 18.0f;
-        float pad_y = 10.0f;
-        float bw = static_cast<float>(tw) + 2.0f * pad_x;
-        float bh = static_cast<float>(b_size) + 2.0f * pad_y;
+        const float max_text_w =
+            w - 2.0f * (ov::kScreenEdgeMargin + ov::kBannerPadX);
+        const std::string drawn =
+            truncate_to_width(r, banner_text_, b_size, max_text_w);
+        int tw = r.mb_text_width(drawn, b_size);
+        float bw = static_cast<float>(tw) + 2.0f * ov::kBannerPadX;
+        float bh = static_cast<float>(b_size) + 2.0f * ov::kBannerPadY;
         float bx = (w - bw) / 2.0f;
         float by = h - 32.0f - bh - 16.0f;
         r.mb_fill_rect(bx, by, bw, bh, th.bg, 0.92f);
         r.mb_stroke_rect(bx, by, bw, bh, 2.0f, th.accent, 1.0f);
-        float tx = bx + pad_x;
-        float ty = by + pad_y + static_cast<float>(b_baseline);
-        r.mb_draw_text(banner_text_, tx, ty, b_size, th.fg, 1.0f);
+        float tx = bx + static_cast<float>(ov::kBannerPadX);
+        float ty = by + ov::kBannerPadY + static_cast<float>(b_baseline);
+        r.mb_draw_text(drawn, tx, ty, b_size, th.fg, 1.0f);
     }
 }
 

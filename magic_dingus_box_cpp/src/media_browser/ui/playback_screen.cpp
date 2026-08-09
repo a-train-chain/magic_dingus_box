@@ -1014,9 +1014,15 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     const bool is_card = (end_overlay_.kind == EndOverlayKind::Card);
     const bool is_prompt = (end_overlay_.kind == EndOverlayKind::StillWatching);
     const bool has_body = !end_overlay_.body_line.empty();
-    constexpr int kCardW = 640;
-    constexpr int kPadX = 32;
-    constexpr int kPadY = 26;
+    // Interior insets come from the shared overlay contract (theme.h) —
+    // these were the card's own 32/26 magic numbers, now named. The
+    // authored 640 width is clamped so the card keeps the standard edge
+    // margin on the CRT 640-wide canvas instead of sitting flush against
+    // both screen borders (no-op at 1280).
+    namespace ov = ::ui::overlay;
+    const int card_w = ov::clamped_card_w(640, screen_w);
+    constexpr int kPadX = ov::kCardPadX;
+    constexpr int kPadY = ov::kCardPadY;
     // Rows: title (~30), body/countdown line (~28 when present), action
     // area (button ~44 for cards, hint row ~24 for the countdown). The
     // still-watching prompt stacks body ("Next: …"), its own "Stopping
@@ -1029,11 +1035,11 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     } else {
         card_h = kPadY + 30 + 28 + 16 + 24 + kPadY;
     }
-    const int cx = (screen_w - kCardW) / 2;
+    const int cx = (screen_w - card_w) / 2;
     const int cy = (screen_h - card_h) / 2;
     const float fcx = static_cast<float>(cx);
     const float fcy = static_cast<float>(cy);
-    const float fcw = static_cast<float>(kCardW);
+    const float fcw = static_cast<float>(card_w);
     const float fch = static_cast<float>(card_h);
     r.mb_fill_rect(fcx, fcy, fcw, fch, th.bg_lift, 1.0f);
     r.mb_fill_rect(fcx, fcy, fcw, 2.0f, th.accent, 1.0f);
@@ -1042,7 +1048,7 @@ void PlaybackScreen::render_end_overlay(::ui::Renderer& r,
     r.mb_fill_rect(fcx + fcw - 2.0f, fcy, 2.0f, fch, th.accent, 1.0f);
 
     const float text_x = fcx + static_cast<float>(kPadX);
-    const float max_text_w = static_cast<float>(kCardW - 2 * kPadX);
+    const float max_text_w = static_cast<float>(card_w - 2 * kPadX);
     float y = fcy + static_cast<float>(kPadY) + 22.0f;  // title baseline
 
     if (end_overlay_.kind == EndOverlayKind::Countdown) {

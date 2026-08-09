@@ -6,13 +6,17 @@
 namespace media_browser::ui {
 
 namespace {
-constexpr int kCardW = 440;
-constexpr int kCardH = 190;    // extra 10px to breathe around taller buttons
+// Interior insets from the shared overlay contract (ui/theme.h, padding
+// audit 2026-08-09) — was 28/22 local magic numbers. The card grows by
+// the pad delta (440x190 -> 448x198) so the interior layout is unchanged
+// while the text gains the standard breathing room from the borders.
+constexpr int kPaddingX = ::ui::overlay::kCardPadX;
+constexpr int kPaddingY = ::ui::overlay::kCardPadY;
+constexpr int kCardW = 384 + 2 * kPaddingX;   // 448: interior width preserved
+constexpr int kCardH = 146 + 2 * kPaddingY;   // 198: interior height preserved
 constexpr float kBgDimAlpha = 0.50f;
 constexpr int kBtnW = 160;
 constexpr int kBtnH = 44;      // chrome::draw_button auto-sizes, but kept for layout anchor
-constexpr int kPaddingX = 28;
-constexpr int kPaddingY = 22;
 }  // namespace
 
 void ExitModal::open() {
