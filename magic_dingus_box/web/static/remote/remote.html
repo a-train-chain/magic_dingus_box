@@ -20,8 +20,12 @@
      home-screen icon and the installed app (which has a SEPARATE cookie
      jar) trades it for its own cookie on first launch. This replaced the
      shared "/"-scoped static manifest, under which an installed remote
-     opened unpaired at the 6-digit form every time. -->
-<link rel="manifest" href="/admin/remote/manifest.webmanifest">
+     opened unpaired at the 6-digit form every time.
+     crossorigin="use-credentials" is LOAD-BEARING: browsers fetch
+     <link rel="manifest"> WITHOUT cookies — even same-origin — unless
+     this attribute is present, and a cookieless fetch gets a tokenless
+     manifest. -->
+<link rel="manifest" href="/admin/remote/manifest.webmanifest" crossorigin="use-credentials">
 <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -188,5 +192,5 @@
     <button class="ra-quit" data-btn="QUIT_GAME">Quit Game</button>
   </div>
 </div>
-<script src="/static/remote/remote.js?v=30"></script>
+<script src="/static/remote/remote.js?v=31"></script>
 </body></html>

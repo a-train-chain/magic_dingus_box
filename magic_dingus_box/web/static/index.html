@@ -22,8 +22,14 @@
          installed app (a SEPARATE cookie jar on iOS) opens with its
          Remote tab already paired. The old /static/manifest.webmanifest
          URL is served by the same route, so stale caches can't fetch a
-         tokenless manifest. -->
-    <link rel="manifest" href="/manifest.webmanifest">
+         tokenless manifest.
+
+         crossorigin="use-credentials" is LOAD-BEARING: browsers fetch
+         <link rel="manifest"> WITHOUT cookies — even same-origin —
+         unless this attribute is present. Without it the install-time
+         fetch never shows the pairing cookie and no icon ever gets a
+         token. -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
     <meta name="theme-color" content="#1F191F">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -926,7 +932,7 @@
         </div>
     </div>
 
-    <script src="/static/manager.js?v=121"></script>
+    <script src="/static/manager.js?v=122"></script>
 
 </body>
 

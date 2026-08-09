@@ -436,16 +436,30 @@
     // stale when the router re-leases. If we're standing on an IP and the
     // box knows its .local name, coach (never redirect) toward the
     // durable address before the user installs.
+    //
+    // The manifest fetch is the token source: same-origin fetch sends the
+    // pairing cookie, so a PAIRED session gets a start_url carrying this
+    // device's install token — and the steering link MUST carry it too,
+    // because cookies are per-origin and a bare link to the .local origin
+    // would demand the 6-digit code all over again. Token rides only in
+    // the href (visible text stays the clean address); the destination's
+    // redeem 303 strips it. Unpaired session → tokenless start_url →
+    // plain link, exactly as before.
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname)) {
-      fetch('/api/host-info')
-        .then((r) => r.json())
-        .then((info) => {
+      Promise.all([
+        fetch('/api/host-info').then((r) => r.json()).catch(() => null),
+        fetch('/admin/remote/manifest.webmanifest').then((r) => r.json()).catch(() => null),
+      ])
+        .then(([info, man]) => {
           const mdns = info && info.mdns;
           if (!mdns) { genericHint(); return; }
           const port = location.port ? (':' + location.port) : '';
           const url = 'http://' + mdns + port + '/admin/remote';
+          const su = (man && man.start_url) || '';
+          const q = su.indexOf('?device_token=');
+          const href = q === -1 ? url : url + su.slice(q);
           showToast('mdb_remote_mdns_hint_shown',
-            '<strong>Adding to your Home Screen?</strong> Open <a href="' + url + '">' +
+            '<strong>Adding to your Home Screen?</strong> Open <a href="' + href + '">' +
             url + '</a> first so the icon keeps working if your Wi-Fi changes.');
         })
         .catch(genericHint);

@@ -33,7 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   standing on a bare DHCP IP (the QR is deliberately IP-first) to install
   from `http://<box>.local:5000/admin/remote` instead, so the icon
   survives a router re-lease — a dismissible hint, never a redirect (the
-  Content Manager already had this coaching).
+  Content Manager already had this coaching). For a PAIRED phone those
+  steering links now carry the install token in the href (sourced
+  client-side from the dynamic manifest, clean address as the visible
+  text), so following one pairs the `.local` origin automatically —
+  cookies are per-origin, and a bare link used to demand the 6-digit
+  code all over again. All manifest `<link>` tags gained
+  `crossorigin="use-credentials"`, without which browsers fetch
+  manifests cookieless (even same-origin) and no icon would ever have
+  received a token.
 
 ### Changed
 - **One "Connect a Device" entry instead of two connection screens.** The

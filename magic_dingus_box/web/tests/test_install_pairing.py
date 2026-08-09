@@ -322,3 +322,45 @@ def test_root_revoked_token_serves_spa_without_cookie(app, client, tmp_path):
     assert rv.status_code == 200
     assert b"Content Manager" in rv.data
     assert "mdb_remote" not in rv.headers.get("Set-Cookie", "")
+
+
+# ===========================================================================
+# Cross-origin steering (QR pairs on the IP origin; the .local origin has
+# its own cookie jar). The steering toasts append ?device_token= to their
+# links client-side, sourced from the dynamic manifest; server-side, the
+# contract is: manifest link tags fetch WITH credentials, and the token
+# alone pairs a foreign jar at both destinations.
+# ===========================================================================
+
+def test_manifest_link_tags_fetch_with_credentials(app, client, tmp_path):
+    """Browsers fetch <link rel="manifest"> WITHOUT cookies — even
+    same-origin — unless the tag carries crossorigin="use-credentials".
+    Without it the install-time fetch never presents the pairing cookie,
+    no manifest ever embeds a token, and the whole install-pairing scheme
+    silently degrades. Guard every page that can be installed from."""
+    assert b'crossorigin="use-credentials"' in client.get("/").data
+    # Unpaired /admin/remote (the inline pair page)...
+    assert b'crossorigin="use-credentials"' in client.get("/admin/remote").data
+    # ...and the paired remote shell.
+    pair(client, tmp_path)
+    assert b'crossorigin="use-credentials"' in client.get("/admin/remote").data
+
+
+def test_steering_token_pairs_a_foreign_origin_jar(app, client, tmp_path):
+    """Alex's field case: paired on the IP origin, typed the .local
+    address, got asked for the code again. The steering link now carries
+    the manifest's token; a fresh cookie jar (stand-in for the .local
+    origin) presenting only that token must come out paired at BOTH
+    destinations, with the 303 stripping the token from the URL."""
+    pair(client, tmp_path)
+    _, manifest = fetch_manifest(client, "/manifest.webmanifest")
+    token = token_from_start_url(manifest["start_url"], base="/")
+
+    for dest, clean in ((f"/?device_token={token}", "/"),
+                        (f"/admin/remote?device_token={token}", "/admin/remote")):
+        other_origin = app.test_client()  # fresh jar = the .local origin
+        rv = other_origin.get(dest, follow_redirects=False)
+        assert rv.status_code == 303
+        assert token not in rv.headers["Location"]
+        assert rv.headers["Location"].endswith(clean)
+        assert "mdb_remote=" in rv.headers.get("Set-Cookie", "")

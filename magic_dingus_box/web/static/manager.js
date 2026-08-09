@@ -697,13 +697,28 @@ const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 function maybeShowInstallHint() {
     // Fetch the box's stable .local name first, so that if we are on a
     // bare IP the toast can offer a working alternative rather than
-    // telling the user to go find one. Failure is fine — the toast just
-    // falls back to generic wording.
-    fetch('/api/host-info')
-        .then(r => r.ok ? r.json() : null)
-        .then(info => { if (info && info.mdns) window.MDB_MDNS_HOST = info.mdns; })
-        .catch(() => {})
-        .finally(() => renderInstallHint());
+    // telling the user to go find one. Also fetch the dynamic manifest:
+    // for a PAIRED session its start_url carries this device's install
+    // token, and any cross-origin steering link must carry it too —
+    // cookies are per-origin, so a bare link to the .local origin would
+    // demand the 6-digit code all over again even though this phone is
+    // already paired. (Same-origin fetch sends the pairing cookie; an
+    // unpaired session just gets a tokenless start_url.) Failure is fine
+    // — the toast falls back to generic wording / a plain link.
+    Promise.all([
+        fetch('/api/host-info')
+            .then(r => r.ok ? r.json() : null)
+            .then(info => { if (info && info.mdns) window.MDB_MDNS_HOST = info.mdns; })
+            .catch(() => {}),
+        fetch('/manifest.webmanifest')
+            .then(r => r.ok ? r.json() : null)
+            .then(man => {
+                const su = (man && man.start_url) || '';
+                const q = su.indexOf('?device_token=');
+                if (q !== -1) window.MDB_INSTALL_TOKEN_QS = su.slice(q);
+            })
+            .catch(() => {}),
+    ]).finally(() => renderInstallHint());
 }
 
 function renderInstallHint() {
@@ -725,23 +740,34 @@ function renderInstallHint() {
         const el = document.createElement('div');
         el.className = 'install-toast';
 
+        // Set when the manifest fetch found a paired session's install
+        // token (maybeShowInstallHint). Rides ONLY in the link href —
+        // the visible text stays the clean address — and the destination
+        // origin's redeem 303 strips it from the URL on arrival.
+        const tokenQs = window.MDB_INSTALL_TOKEN_QS || '';
+
         if (onBareIp) {
             // Don't encourage an install that will break. Offer the stable
-            // address instead — same page, resolvable name.
+            // address instead — same page, resolvable name. For a paired
+            // phone the link carries the install token so the .local origin
+            // pairs itself on arrival (cookies are per-origin; a bare link
+            // would demand the 6-digit code all over again).
             const stable = window.MDB_MDNS_HOST || '';
             el.innerHTML =
                 '<strong>Before installing</strong><br>' +
                 'This address (' + host + ') can change when your router ' +
                 'reassigns it, which would break a saved icon.' +
                 (stable
-                    ? ' Open <a href="http://' + stable + ':5000/">' + stable + ':5000</a> and install from there.'
+                    ? ' Open <a href="http://' + stable + ':5000/' + tokenQs + '">' + stable + ':5000</a> and install from there.'
                     : ' Use the box&rsquo;s <em>.local</em> name shown on the kiosk instead.');
         } else {
             el.innerHTML =
                 '<strong>Add to Home Screen</strong> to use this as an app.<br>' +
                 'Tap ' + (isIOS ? 'the Share button' : 'the menu') + ' &rarr; Add to Home Screen.' +
-                '<br><span class="install-toast__sub">The remote pairs separately &mdash; ' +
-                'open it in the app and enter the code from the kiosk.</span>';
+                (tokenQs
+                    ? '<br><span class="install-toast__sub">Your remote pairing comes along automatically.</span>'
+                    : '<br><span class="install-toast__sub">The remote pairs separately &mdash; ' +
+                      'open it in the app and enter the code from the kiosk.</span>');
         }
 
         // Clicking anywhere on the toast dismisses it for good, except on

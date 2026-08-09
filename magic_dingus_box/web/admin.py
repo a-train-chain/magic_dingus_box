@@ -5764,7 +5764,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
      Without these tags, adding to the home screen from THIS page (a real
      possibility, since it is where an expired pairing lands you) produces
      a generic Safari bookmark with a screenshot icon instead of the app. -->
-<link rel="manifest" href="/admin/remote/manifest.webmanifest">
+<link rel="manifest" href="/admin/remote/manifest.webmanifest" crossorigin="use-credentials">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Dingus Remote">
