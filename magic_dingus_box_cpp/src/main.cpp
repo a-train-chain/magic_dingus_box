@@ -46,6 +46,7 @@
 #include "media_browser/health/vpn_health_monitor.h"
 #include "media_browser/artwork/artwork_cache.h"
 #include "media_browser/library/watch_store.h"
+#include "media_browser/mb_entry_gate.h"
 #include "media_browser/ui/episode_logic.h"
 #endif
 #include "app/app_state.h"
@@ -2143,25 +2144,61 @@ int main(int /* argc */, char* /* argv */[]) {
         // Input events are NOT forwarded to the main input-handling loop
         // below, which prevents stray Menu / DPad / Select events from
         // leaking into the main UI while the Media Browser is active.
-        if (state.current_screen == app::AppScreen::MediaBrowser) {
-            // Restore the main menu's renderable state on ANY exit from
-            // the Media Browser (used by all three exit paths below:
-            // exit modal, BTN4 long-press, Screen::Exit). Belt-and-braces
-            // companion to the same reset done at MB entry: if playing-item
-            // indexes or a stale UI fade survive into MainMenu, the
-            // Renderer either early-returns (is_transitioning: indexes set
-            // + no video) or draws at alpha 0 — both look like a
-            // permanently blank main menu. Idempotent; matches the
-            // RetroArch return path's "CRITICAL: Reset playback state".
-            auto reset_main_ui_state = [&state]() {
-                state.video_active = false;
-                state.is_switching_playlist = false;
-                state.current_playlist_index = -1;
-                state.current_item_index = -1;
-                state.is_fading = false;
-                state.ui_visible_when_playing = false;
-            };
+        // Restore the main menu's renderable state on ANY exit from
+        // the Media Browser (used by the display-mode eviction just
+        // below and all three in-band exit paths: exit modal, BTN4
+        // long-press, Screen::Exit). Belt-and-braces
+        // companion to the same reset done at MB entry: if playing-item
+        // indexes or a stale UI fade survive into MainMenu, the
+        // Renderer either early-returns (is_transitioning: indexes set
+        // + no video) or draws at alpha 0 — both look like a
+        // permanently blank main menu. Idempotent; matches the
+        // RetroArch return path's "CRITICAL: Reset playback state".
+        auto reset_main_ui_state = [&state]() {
+            state.video_active = false;
+            state.is_switching_playlist = false;
+            state.current_playlist_index = -1;
+            state.current_item_index = -1;
+            state.is_fading = false;
+            state.ui_visible_when_playing = false;
+        };
 
+        // ── Display-mode gate (per-frame invariant): no live MB surface
+        // on a canvas that can't host it. The MB screens are authored
+        // for the 720p logical canvas; CRT_NATIVE runs 640x480, where
+        // the Library/filter panels (x=740..1220) sit entirely off the
+        // canvas. Entry is gated in the settings menu, but the mode can
+        // still flip WHILE the Media Browser is open: the web-admin
+        // backup-restore poke reloads settings.json mid-session
+        // (main.cpp's settings_reload_request handler), and the
+        // mode-change block above then resizes the logical canvas to
+        // 640x480 the same frame. Evicting here — before this frame's
+        // MB input handling and render — means not a single MB frame is
+        // ever drawn on the small canvas. Teardown mirrors the BTN4
+        // long-press exit path below (flush-before-leave contract), plus
+        // an explicit exit-modal close so a modal open at eviction can't
+        // linger into the next MB session.
+        if (state.current_screen == app::AppScreen::MediaBrowser &&
+            !media_browser::display_supports_media_browser(
+                state.display_settings.mode == app::DisplayMode::CRT_NATIVE)) {
+            if (current_mb_screen == media_browser::ui::Screen::Playback) {
+                flush_watch_state(mb_playback, watch_store, state);
+            }
+            ui_renderer.artwork_cache().resume();  // un-stick if evicting Playback
+            active_mb_screen->leave();
+            mb_exit_modal.close();
+            mb_exit_modal.clear_result();
+            reset_main_ui_state();
+            state.current_screen = app::AppScreen::MainMenu;
+            current_mb_screen = media_browser::ui::Screen::Browse;
+            active_mb_screen = &mb_browse;
+            input_events.clear();
+            ui::Toast::show(media_browser::kMoviesClosedByDisplaySwitchToast);
+            LOG_INFO("Media Browser: evicted to MainMenu — display mode no "
+                     "longer provides the 720p logical canvas");
+        }
+
+        if (state.current_screen == app::AppScreen::MediaBrowser) {
             // ONE SEMANTIC PER PHYSICAL INPUT. BTN1/BTN3 arrive here as
             // PREV/NEXT and every MB surface consumes them: the five tab
             // screens use them for Marquee tab navigation, the exit and
@@ -2928,6 +2965,30 @@ int main(int /* argc */, char* /* argv */[]) {
                             // Enter game browser
                             settings_menu.enter_game_browser();
 #ifdef MEDIA_BROWSER_ENABLED
+                        } else if (section == ui::MenuSection::MEDIA_BROWSER_NEEDS_DISPLAY) {
+                            // The "Movies (needs Modern TV display)" row.
+                            // Non-actionable by design, but unlike the INFO
+                            // rows SELECT explains itself instead of
+                            // silently doing nothing.
+                            ui::Toast::show(media_browser::kMoviesNeedsModernTvToast);
+                        } else if (section == ui::MenuSection::MEDIA_BROWSER &&
+                                   !media_browser::display_supports_media_browser(
+                                       state.display_settings.mode ==
+                                       app::DisplayMode::CRT_NATIVE)) {
+                            // Stale-row race, checked at the moment of entry:
+                            // the actionable "Movies" row is built by open()
+                            // when the mode was MB-capable, but the mode can
+                            // change while the menu is still open — the
+                            // Display submenu's mode toggle followed by
+                            // exit_submenu() (which does NOT rebuild the
+                            // top-level rows), or the web-admin settings
+                            // restore poke. The logical canvas is already
+                            // 640x480 by the time SELECT lands (the
+                            // mode-change block applies it immediately), so
+                            // entering would open the MB screens with their
+                            // panels off the canvas. Same toast as the
+                            // blocked row.
+                            ui::Toast::show(media_browser::kMoviesNeedsModernTvToast);
                         } else if (section == ui::MenuSection::MEDIA_BROWSER) {
                             // Close settings menu and transition to the
                             // Media Browser screen.

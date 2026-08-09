@@ -21,6 +21,9 @@
 
 #include "../app/app_state.h"
 #include "../app/settings_persistence.h"
+#ifdef MEDIA_BROWSER_ENABLED
+#include "../media_browser/mb_entry_gate.h"
+#endif
 
 namespace ui {
 
@@ -389,7 +392,27 @@ void SettingsMenuManager::open() {
         menu_items_.clear();
         menu_items_.emplace_back("Video Games", MenuSection::VIDEO_GAMES, "Emulated games");
         if (app_state_ && app_state_->media_browser_unlocked) {
-            if (!app_state_->media_browser_vpn_configured) {
+            // Precedence lives in movies_row_state() (pure logic,
+            // unit-tested on the Mac) — this switch is only the mapping
+            // from decision to row. Display mode is checked first: the
+            // MB screens are authored for the 720p logical canvas and
+            // CRT_NATIVE runs 640x480, so no amount of VPN/drive fixing
+            // makes the feature usable there.
+            const auto row = media_browser::movies_row_state(
+                app_state_->display_settings.mode == app::DisplayMode::CRT_NATIVE,
+                app_state_->media_browser_vpn_configured,
+                app_state_->media_browser_storage_present,
+                app_state_->media_browser_vpn_healthy);
+            switch (row) {
+            case media_browser::MoviesRowState::NeedsModernTv:
+                // Non-actionable like the INFO rows below, but with its
+                // own section so SELECT can toast the reason instead of
+                // silently no-opping (dispatched in main.cpp).
+                menu_items_.emplace_back(media_browser::kMoviesNeedsModernTvLabel,
+                                         MenuSection::MEDIA_BROWSER_NEEDS_DISPLAY,
+                                         media_browser::kMoviesNeedsModernTvSublabel);
+                break;
+            case media_browser::MoviesRowState::NeedsVpnConfig:
                 // Layer 1 pass, Layer 2 fail: show an info-only row pointing
                 // at the Content Manager (reached via "Connect a Device"
                 // below). MenuSection::INFO rows are non-actionable — the
@@ -397,21 +420,25 @@ void SettingsMenuManager::open() {
                 // main.cpp no longer dispatches INFO, so SELECT is a no-op.
                 menu_items_.emplace_back("Movies (configure VPN)", MenuSection::INFO,
                                          "Drop WireGuard config in Content Manager");
-            } else if (!app_state_->media_browser_storage_present) {
+                break;
+            case media_browser::MoviesRowState::NeedsDrive:
                 // Movie drive unplugged. Checked BEFORE vpn_healthy: a
                 // missing drive also takes Radarr down, so both flags trip
                 // — but "connect the drive" is the specific, actionable
                 // cause and the one the owner can actually fix.
                 menu_items_.emplace_back("Movies (drive not connected)", MenuSection::INFO,
                                          "Connect the movie drive, then restart");
-            } else if (!app_state_->media_browser_vpn_healthy) {
+                break;
+            case media_browser::MoviesRowState::HiddenTunnelDown:
                 // Layer 1+2 pass, Layer 3 fail: hide entirely. Toast (fired
                 // in main.cpp) is the user-visible signal; no row rendered
                 // here so operators can immediately see the feature has
                 // degraded rather than a misleading "click here" entry.
-            } else {
-                // All three layers pass — render Media Browser entry.
+                break;
+            case media_browser::MoviesRowState::Ready:
+                // All layers pass — render Media Browser entry.
                 menu_items_.emplace_back("Movies", MenuSection::MEDIA_BROWSER, "Media Browser");
+                break;
             }
         }
         menu_items_.emplace_back("Display", MenuSection::DISPLAY, "Screen settings");

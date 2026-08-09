@@ -54,7 +54,13 @@ enum class MenuSection {
 #ifdef MEDIA_BROWSER_ENABLED
     ,
     MEDIA_BROWSER,   // Opens Media Browser screen (only shown when unlocked via secret sequence)
-    HIDE_MEDIA_BROWSER   // Re-locks the Media Browser (only shown when unlocked)
+    HIDE_MEDIA_BROWSER,   // Re-locks the Media Browser (only shown when unlocked)
+    MEDIA_BROWSER_NEEDS_DISPLAY   // "Movies (needs Modern TV display)" — the MB
+                                  // layout is authored for the 720p logical canvas
+                                  // and CRT_NATIVE runs 640x480, so the row is
+                                  // non-actionable there. Unlike INFO, SELECT
+                                  // shows a toast explaining the blocker instead
+                                  // of a silent no-op (main.cpp dispatch).
 #endif
 };
 

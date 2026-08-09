@@ -163,6 +163,7 @@ Movies are stored on a USB drive so they never crowd the games.
 
 | On screen | Meaning |
 |---|---|
+| "Movies (needs Modern TV display)" | Movies only runs in the Modern TV display mode — switch it in Settings → Display (the CRT Native screen is too small for the movie menus) |
 | "Movies (configure VPN)" | The VPN step (section 7) hasn't been done yet |
 | "Movies (drive not connected)" | Plug the movie drive back in |
 | "Media Browser unavailable — VPN tunnel down" | The VPN dropped; the box reconnects on its own, usually within a couple of minutes |

@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Movies gated on the Modern TV display mode** (deferred defect from
+  the 1080p-canvas audit). The Media Browser's screens are authored for
+  the fixed 1280×720 logical canvas; CRT Native runs a 640×480 canvas,
+  where the Library/filter slide-in panels (x = 740–1220) sit entirely
+  off-screen. Rather than re-authoring the layouts, entry is now gated
+  on the display mode providing the 720p canvas
+  (`media_browser/mb_entry_gate.h`, derived from
+  `config::display::logical_canvas()` — no duplicated constants). In CRT
+  mode the Settings row reads "Movies (needs Modern TV display)" with a
+  "Switch to Modern TV in Display settings" sub-line, and SELECT toasts
+  the reason instead of entering. Three gate layers: the row itself, a
+  re-check at the SELECT dispatch (covers the stale-row race — toggling
+  the mode in the Display submenu and backing out never rebuilt the
+  top-level rows, so the old actionable "Movies" row could still be
+  selected on a 640 canvas), and a per-frame eviction: if the mode flips
+  while the Media Browser is open (web-admin backup-restore poke reloads
+  settings.json mid-session), the kiosk flushes watch state, exits to
+  the main menu, and toasts — not a single MB frame renders on the small
+  canvas. Decision logic is pure and unit-tested
+  (`tests/media_browser/test_mb_entry_gate.cpp`).
 - **Overlay text padding normalized across every dialog, card, toast, and
   banner** (field report: some overlays looked cramped — text tight to or
   crossing card borders). A shared spacing contract now lives in
