@@ -5,7 +5,7 @@ import io
 import ipaddress
 import json
 import posixpath
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 import socket
 import os
 import re
@@ -5594,67 +5594,135 @@ def create_app(data_dir: Path, config=None) -> Flask:
         If ?pair=<code> is present, delegate to the phone-remote pairing flow
         before serving the static SPA so that the kiosk QR-code link is handled
         transparently.
+
+        If ?device_token= is present (an installed Content Manager app's
+        start_url, planted there by the dynamic root manifest), redeem it
+        into the mdb_remote cookie so the SPA's Remote tab — a same-origin
+        iframe of /admin/remote, or a same-origin navigation on phones —
+        opens already paired. Redeeming on EVERY launch (even with a live
+        cookie) is deliberate: it rolls the cookie's issue time forward and
+        heals a jar that iOS evicted. The 303 re-serves the same path with
+        device_token stripped but every other query param preserved. An
+        invalid or revoked token just proceeds to the SPA unauthenticated —
+        no error, no signal about token validity.
         """
         pair_code = request.args.get("pair")
         if pair_code:
             return remote_auth.handle_pair_param(pair_code)
+        submitted_token = request.args.get("device_token")
+        if submitted_token:
+            redeemed = remote_auth.redeem_device_token(submitted_token)
+            if redeemed is not None:
+                remaining = [(k, v)
+                             for k, vals in request.args.lists()
+                             for v in vals if k != "device_token"]
+                qs = urlencode(remaining)
+                resp = redirect(request.path + (f"?{qs}" if qs else ""),
+                                code=303)
+                remote_auth.issue_cookie(resp, redeemed)
+                return resp
         static_dir = Path(__file__).parent / "static"
         return send_file(static_dir / "index.html")
 
-    @app.get("/admin/remote/manifest.webmanifest")
-    def remote_manifest():  # type: ignore[no-redef]
-        """Dynamic web-app manifest for the phone remote.
+    # ------------------------------------------------------------------
+    # Dynamic web-app manifests (iOS home-screen install pairing).
+    #
+    # iOS gives an installed home-screen app a SEPARATE cookie jar from
+    # Safari, so "Add to Home Screen" on a paired page used to produce an
+    # app that opened UNPAIRED (the pairing cookie stayed in Safari's
+    # jar). The bridge: iOS fetches the manifest at install time FROM THE
+    # PAIRED SAFARI SESSION, so a request presenting a valid mdb_remote
+    # cookie gets a start_url carrying that device's durable install
+    # token — the token rides inside the icon, and the installed app
+    # trades it for its own cookie on first launch (the redeem branches
+    # in admin_interface and remote_page). An unauthenticated fetch gets
+    # the same manifest with a bare start_url, which degrades to the
+    # 6-digit pair form.
+    #
+    # TWO manifests because there are two install surfaces: the pairing
+    # flow lands people on the root Content Manager SPA — where field
+    # testing showed installs actually happen — and /admin/remote is the
+    # standalone remote. Each embeds the SAME per-device token; only the
+    # start_url/scope/identity differ.
+    #
+    # no-store is mandatory on both: a cached token-bearing manifest
+    # served to the wrong requester would be a credential leak.
+    # ------------------------------------------------------------------
 
-        iOS gives an installed home-screen app a SEPARATE cookie jar from
-        Safari, so "Add to Home Screen" on a paired /admin/remote used to
-        produce an app that opened UNPAIRED (the pairing cookie stayed in
-        Safari's jar). The bridge: iOS fetches THIS manifest at install
-        time from the paired Safari session, so a request that presents a
-        valid mdb_remote cookie gets a start_url carrying that device's
-        durable install token — the token rides inside the icon, and the
-        installed app trades it for its own cookie on first launch (the
-        redeem branch in remote_page below). An unauthenticated fetch gets
-        the same manifest with a bare start_url, which degrades to the
-        6-digit pair form.
+    _MANIFEST_ICONS = [
+        {"src": "/static/icons/icon-192.png", "sizes": "192x192",
+         "type": "image/png", "purpose": "any"},
+        {"src": "/static/icons/icon-512.png", "sizes": "512x512",
+         "type": "image/png", "purpose": "any"},
+        {"src": "/static/icons/icon-maskable-192.png", "sizes": "192x192",
+         "type": "image/png", "purpose": "maskable"},
+        {"src": "/static/icons/icon-maskable-512.png", "sizes": "512x512",
+         "type": "image/png", "purpose": "maskable"},
+    ]
 
-        no-store is mandatory: a cached token-bearing manifest served to
-        the wrong requester would be a credential leak.
-        """
+    def _tokened_start_url(base: str) -> str:
+        """base, plus this requester's install token when (and only when)
+        the request presents a valid pairing cookie."""
         cookie = request.cookies.get(remote_auth.COOKIE_NAME, "")
         device_id = remote_auth.verify_cookie(cookie)
-        start_url = "/admin/remote"
         if device_id is not None:
             token = remote_auth.device_token_for(device_id)
             if token:
-                start_url = f"/admin/remote?device_token={token}"
-        manifest = {
+                return f"{base}?device_token={token}"
+        return base
+
+    def _manifest_response(payload: dict):
+        resp = app.response_class(
+            json.dumps(payload, indent=2),
+            mimetype="application/manifest+json")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    # The /static/manifest.webmanifest alias is deliberate, not legacy
+    # convenience: the exact rule outranks the /static/<path:filename>
+    # converter rule in werkzeug's ordering, so it SHADOWS the old static
+    # file's URL. Any cached page still referencing the old address gets
+    # this dynamic manifest — a stale tokenless manifest cannot be served
+    # by accident. The static file itself is deleted from the repo.
+    @app.get("/manifest.webmanifest")
+    @app.get("/static/manifest.webmanifest")
+    def root_manifest():  # type: ignore[no-redef]
+        """Dynamic manifest for the root Content Manager app (see the
+        install-pairing comment block above). Identity preserved from the
+        old static manifest — only start_url became dynamic. No forced
+        tab= in start_url: someone installing the CM for management should
+        land on the default tab; the token pairs the Remote tab silently."""
+        return _manifest_response({
+            "name": "Magic Dingus Box",
+            "short_name": "Magic Dingus Box",
+            "description": "Content Manager and phone remote for your "
+                           "Magic Dingus Box.",
+            "id": "/",
+            "start_url": _tokened_start_url("/"),
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "any",
+            "background_color": "#1F191F",
+            "theme_color": "#131013",
+            "icons": _MANIFEST_ICONS,
+        })
+
+    @app.get("/admin/remote/manifest.webmanifest")
+    def remote_manifest():  # type: ignore[no-redef]
+        """Dynamic manifest for the standalone phone remote (see the
+        install-pairing comment block above)."""
+        return _manifest_response({
             "name": "Dingus Remote",
             "short_name": "Dingus Remote",
             "description": "Phone remote for your Magic Dingus Box.",
             "id": "/admin/remote",
-            "start_url": start_url,
+            "start_url": _tokened_start_url("/admin/remote"),
             "scope": "/admin/remote",
             "display": "standalone",
             "background_color": "#1F191F",
             "theme_color": "#131013",
-            "icons": [
-                {"src": "/static/icons/icon-192.png", "sizes": "192x192",
-                 "type": "image/png", "purpose": "any"},
-                {"src": "/static/icons/icon-512.png", "sizes": "512x512",
-                 "type": "image/png", "purpose": "any"},
-                {"src": "/static/icons/icon-maskable-192.png",
-                 "sizes": "192x192", "type": "image/png",
-                 "purpose": "maskable"},
-                {"src": "/static/icons/icon-maskable-512.png",
-                 "sizes": "512x512", "type": "image/png",
-                 "purpose": "maskable"},
-            ],
-        }
-        resp = app.response_class(
-            json.dumps(manifest, indent=2),
-            mimetype="application/manifest+json")
-        resp.headers["Cache-Control"] = "no-store"
-        return resp
+            "icons": _MANIFEST_ICONS,
+        })
 
     @app.route("/admin/remote", methods=["GET"])
     def remote_page():  # type: ignore[no-redef]

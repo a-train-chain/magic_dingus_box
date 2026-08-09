@@ -60,14 +60,14 @@ def pair(client, tmp_path, code="847291"):
     return paired["devices"][0]["id"], value
 
 
-def fetch_manifest(client):
-    rv = client.get("/admin/remote/manifest.webmanifest")
+def fetch_manifest(client, path="/admin/remote/manifest.webmanifest"):
+    rv = client.get(path)
     assert rv.status_code == 200
     return rv, json.loads(rv.data)
 
 
-def token_from_start_url(start_url: str) -> str:
-    assert start_url.startswith("/admin/remote?device_token=")
+def token_from_start_url(start_url: str, base="/admin/remote") -> str:
+    assert start_url.startswith(f"{base}?device_token=")
     return start_url.split("device_token=", 1)[1]
 
 
@@ -172,6 +172,11 @@ def test_token_absent_from_logs_and_rest(app, client, tmp_path, caplog):
     rv = installed.get(f"/admin/remote?device_token={token}",
                        follow_redirects=False)
     assert rv.status_code == 303
+    # Root-route redemption (the installed Content Manager app path).
+    installed_cm = app.test_client()
+    rv_root = installed_cm.get(f"/?device_token={token}",
+                               follow_redirects=False)
+    assert rv_root.status_code == 303
     # A failed attempt must not echo it either.
     installed2 = app.test_client()
     installed2.get(f"/admin/remote?device_token={token[:-4]}XXXX",
@@ -223,3 +228,97 @@ def test_token_salt_lazily_minted_for_pre_token_devices(client, tmp_path):
     assert len(token) >= 32
     data2 = json.loads(paired_path.read_text())
     assert data2["devices"][0].get("token_salt")
+
+
+# ===========================================================================
+# Root Content Manager app — the surface people ACTUALLY install from (the
+# pairing flow lands on /?tab=remote, and field testing showed Share → Add
+# to Home Screen happens there, not on /admin/remote). Same token, second
+# manifest + redeem path.
+# ===========================================================================
+
+def test_root_manifest_unauthenticated_has_no_token(client):
+    for path in ("/manifest.webmanifest", "/static/manifest.webmanifest"):
+        rv, manifest = fetch_manifest(client, path)
+        assert rv.mimetype == "application/manifest+json"
+        assert rv.headers.get("Cache-Control") == "no-store"
+        assert manifest["start_url"] == "/"
+        assert manifest["scope"] == "/"
+        assert manifest["display"] == "standalone"
+        assert manifest["name"] == "Magic Dingus Box"
+        assert len(manifest["icons"]) == 4
+
+
+def test_old_static_manifest_url_is_shadowed_by_dynamic_route(client, tmp_path):
+    """A phone with a cached index.html still references
+    /static/manifest.webmanifest. That URL must serve the DYNAMIC manifest
+    (exact rule outranks the /static/<path:filename> converter rule) so a
+    stale tokenless manifest can never be fetched by accident."""
+    pair(client, tmp_path)
+    _, manifest = fetch_manifest(client, "/static/manifest.webmanifest")
+    assert manifest["start_url"].startswith("/?device_token=")
+
+
+def test_root_manifest_with_cookie_carries_same_token_as_remote(client, tmp_path):
+    pair(client, tmp_path)
+    _, root_m = fetch_manifest(client, "/manifest.webmanifest")
+    root_token = token_from_start_url(root_m["start_url"], base="/")
+    _, remote_m = fetch_manifest(client)
+    remote_token = token_from_start_url(remote_m["start_url"])
+    # One durable token per device, embedded by BOTH manifests.
+    assert root_token == remote_token
+    assert len(root_token) >= 32
+
+
+def test_root_redeem_sets_cookie_and_preserves_other_params(app, client, tmp_path):
+    device_id, _ = pair(client, tmp_path)
+    _, manifest = fetch_manifest(client, "/manifest.webmanifest")
+    token = token_from_start_url(manifest["start_url"], base="/")
+
+    installed = app.test_client()
+    rv = installed.get(f"/?device_token={token}&tab=remote",
+                       follow_redirects=False)
+    assert rv.status_code == 303
+    assert rv.headers["Location"].endswith("/?tab=remote")
+    assert "device_token" not in rv.headers["Location"]
+    set_cookie = rv.headers.get("Set-Cookie", "")
+    assert "mdb_remote=" in set_cookie
+
+    # The cookie authenticates the same device — which is what pairs the
+    # SPA's Remote tab (a same-origin iframe of /admin/remote, or a
+    # same-origin navigation on phones: one jar per install, shared).
+    cookie = set_cookie.split(";")[0]
+    name, value = cookie.split("=", 1)
+    installed.set_cookie(domain="localhost", key=name, value=value)
+    rv2 = installed.get("/admin/remote")
+    assert rv2.status_code == 200
+    assert b"remote.js" in rv2.data
+    rv3 = installed.get("/admin/remote/protected_check")
+    assert rv3.status_code == 200
+    assert json.loads(rv3.data)["data"]["device_id"] == device_id
+
+    # No leftover params → bare redirect target, on either route alias.
+    installed4 = app.test_client()
+    rv4 = installed4.get(f"/admin?device_token={token}", follow_redirects=False)
+    assert rv4.status_code == 303
+    assert rv4.headers["Location"].endswith("/admin")
+
+
+def test_root_garbage_token_serves_spa_without_cookie(client):
+    rv = client.get("/?device_token=not-a-real-token", follow_redirects=False)
+    assert rv.status_code == 200
+    assert b"Content Manager" in rv.data  # the SPA, not an error page
+    assert "mdb_remote" not in rv.headers.get("Set-Cookie", "")
+
+
+def test_root_revoked_token_serves_spa_without_cookie(app, client, tmp_path):
+    device_id, _ = pair(client, tmp_path)
+    _, manifest = fetch_manifest(client, "/manifest.webmanifest")
+    token = token_from_start_url(manifest["start_url"], base="/")
+    (tmp_path / "pending_revocations.txt").write_text(device_id + "\n")
+
+    installed = app.test_client()
+    rv = installed.get(f"/?device_token={token}", follow_redirects=False)
+    assert rv.status_code == 200
+    assert b"Content Manager" in rv.data
+    assert "mdb_remote" not in rv.headers.get("Set-Cookie", "")

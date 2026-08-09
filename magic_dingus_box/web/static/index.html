@@ -13,8 +13,17 @@
          Add to Home Screen and uses apple-touch-icon, so BOTH are needed:
          apple-touch-icon for iPhone/iPad, manifest icons for Android and
          desktop Chrome. The icon must not have rounded corners baked in —
-         iOS applies its own squircle mask over it. -->
-    <link rel="manifest" href="/static/manifest.webmanifest">
+         iOS applies its own squircle mask over it.
+
+         The manifest is DYNAMIC (Flask route, not a static file): iOS
+         fetches it at Add-to-Home-Screen time from the paired Safari
+         session, and for a request carrying a valid pairing cookie the
+         start_url embeds that device's durable install token — so the
+         installed app (a SEPARATE cookie jar on iOS) opens with its
+         Remote tab already paired. The old /static/manifest.webmanifest
+         URL is served by the same route, so stale caches can't fetch a
+         tokenless manifest. -->
+    <link rel="manifest" href="/manifest.webmanifest">
     <meta name="theme-color" content="#1F191F">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
