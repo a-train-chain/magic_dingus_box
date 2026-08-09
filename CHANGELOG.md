@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.9] - 2026-08-09
+
 ### Fixed
 - **Movies gated on the Modern TV display mode** (deferred defect from
   the 1080p-canvas audit). The Media Browser's screens are authored for
