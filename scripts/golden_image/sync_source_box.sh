@@ -111,6 +111,22 @@ if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
 else
     echo -e "  ${RED}FAILED${NC}  network hardening installer did not complete"; FAILED=1
 fi
+push magic_dingus_box_cpp/scripts/setup_memory_tuning.sh \
+     /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh 755 \
+     "setup_memory_tuning.sh (kiosk MemoryLow + zram tune + cgroup cmdline)"
+# Same present-but-not-correct trap as network hardening above: the repo
+# copy alone leaves /etc and cmdline.txt untouched, and the image must
+# carry the LIVE posture (the cmdline flags especially — a clone whose
+# donor never ran this ships with the memory controller disabled and the
+# whole playback protection silently inert; that is the 2026-08-11
+# stutter bug shipping again). REBOOT_REQUIRED here means clone AFTER
+# the source box's next reboot, never before.
+if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
+    "sudo /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" 2>&1 | sed 's/^/          /'; then
+    echo -e "  ${GREEN}OK${NC}      memory posture applied live (MemoryLow + zram + cmdline)"
+else
+    echo -e "  ${RED}FAILED${NC}  memory tuning installer did not complete"; FAILED=1
+fi
 push magic_dingus_box_cpp/scripts/verify_services.sh \
      /opt/magic_dingus_box/magic_dingus_box_cpp/scripts/verify_services.sh 755 \
      "verify_services.sh     (Radarr root-folder check — 15 checks)"

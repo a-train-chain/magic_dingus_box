@@ -227,6 +227,24 @@ FAILED_UNITS=$(systemctl --failed --no-legend | wc -l | tr -d ' ')
 [[ "$FAILED_UNITS" == 0 ]] && pass "no failed systemd units" \
   || { fail "${FAILED_UNITS} failed unit(s)"; systemctl --failed --no-legend | sed 's/^/         /'; }
 
+# Playback memory posture (2026-08-11 stutter fix, box-side half).
+# Without the cgroup memory controller + kiosk memory.low, service
+# memory pressure swaps the video pipeline mid-movie — the freeze-then-
+# silent-fast-forward bug ships again with nothing else looking wrong.
+# Every piece is installed by setup_memory_tuning.sh; the controller
+# additionally needs the reboot after its cmdline append.
+if grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null; then
+  pass "cgroup memory controller enabled"
+  KIOSK_MEMLOW=$(cat "/sys/fs/cgroup/system.slice/${UNIT}/memory.low" 2>/dev/null || echo 0)
+  [[ "$KIOSK_MEMLOW" == "536870912" ]] && pass "kiosk memory.low protection active (512M)" \
+    || fail "kiosk memory.low is '${KIOSK_MEMLOW}', want 536870912 (run setup_memory_tuning.sh; needs slice companion too)"
+else
+  fail "cgroup memory controller DISABLED (cmdline missing cgroup_enable=memory — run setup_memory_tuning.sh, then reboot)"
+fi
+[[ "$(cat /proc/sys/vm/page-cluster 2>/dev/null)" == "0" ]] \
+  && pass "zram page-cluster tuned (0)" \
+  || warn "vm.page-cluster != 0 (zram swap-ins decompress 8x more than needed)"
+
 # Status file must be FRESH: it survives a restart, so a stale read looks
 # healthy when the kiosk is actually down.
 python3 - <<'PY' && pass "status file fresh + on a real screen" || fail "kiosk status stale or missing"

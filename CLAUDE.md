@@ -305,39 +305,58 @@ episode totals.
 - AV1 has no hardware decoder; software-decode at 1080p+ is unwatchable
 - Required system package: `gstreamer1.0-libav` (codified in `scripts/install_deps.sh`)
 
-### Playback contention guard (torrents vs. the video pipeline) — per-board split
+### Playback contention guard (torrents vs. the video pipeline) — memory-gated
 
-Torrent piece-writes contend with GStreamer's reads on the library
-medium, so playback quiets qBittorrent — but HOW is per-board
-(`PlatformProfile::trickle_torrents_during_video`, branch in
-`PlaybackScreen::enter()/leave()`):
+Torrent traffic and the resident service stack contend with the video
+pipeline, so playback quiets them — and since 2026-08-11 the HOW is
+decided **per session from measured memory**, not statically per board:
+`platform::service_quiet_mode(profile, read_mem_available_kib())`,
+consumed in `PlaybackScreen::enter()/leave()`. History: the old static
+"Pi 5 trickles" split shipped a stutter regression when the stack
+outgrew the July measurement behind it (768 MB in zram swap, 300k major
+faults in the kiosk mid-movie — freeze, then silent fast-forward
+catch-up).
 
-- **Pi 5 movies: trickle, not pause.** Playback engages qBit's
-  *alternative speed limits* (~2 MiB/s (bytes-unit field — see qbittorrent_client.h) down / 256 KiB/s up) instead of
-  `pause_all()` — the SSD library and spare CPU absorb a trickle, so
-  downloads keep progressing through a 2-hour film instead of the swarm
-  being stopped. qBit 5.x has no explicit-set endpoint for the mode
-  (verified live on 5.0.3: GET `/transfer/speedLimitsMode` returns
-  "0"/"1", POST `/transfer/toggleSpeedLimitsMode` flips), so
-  `QbittorrentClient::set_alt_speed_limits_enabled()` reads first and
-  toggles only on mismatch (idempotent), and only reports success when
-  the re-read final state matches the request.
-- **Pi 4B (and Unknown boards) movies: full `pause_all()`**, unchanged —
-  USB-flash media has no random-IO headroom to trickle into.
+- **FullPause** (Pi 4B/Unknown always; ANY trickle-profile board whose
+  MemAvailable at play start is under `kServiceQuietMemFloorKiB` =
+  1.5 GiB): qBit `pause_all()` + `playback_services_pause.sh pause`
+  stops the arr/Byparr containers. The floor is deliberately above a
+  2 GB board's reachable ceiling (~1.3 GiB fresh-boot): Trickle was
+  HARDWARE-DISPROVEN there — with upload choked, cgroup MemoryLow
+  protecting the kiosk, and zero active downloads at 940 MiB available,
+  resident service ticks alone still froze the pipeline ≥3 s about once
+  a minute; only the full pause ran clean. Do not lower the floor
+  without an equivalent hardware session behind you.
+- **Trickle** (trickle-profile boards with ≥1.5 GiB available — i.e.
+  4 GB+ units): qBit's *alternative speed limits* engage instead, and
+  downloads keep progressing through the movie. Rates are converged at
+  every kiosk startup via `configure_alt_speed_limits(2 MiB/s down,
+  8 KiB/s up)` (bytes-unit fields — see qbittorrent_client.h). Upload
+  is near-zero by design: seeding is the expensive direction (8x read
+  amplification measured with no page cache — 122 GB read to upload
+  18 GB off the same SSD the movie streams from). Near-zero, not zero:
+  0 means UNLIMITED to qBit. qBit 5.x has no explicit-set endpoint for
+  the mode, so `set_alt_speed_limits_enabled()` reads first, toggles
+  only on mismatch, and re-verifies.
 - **Games: full `pause_all()` on EVERY board** (`GameQuietMode` in
-  main.cpp) — games need the CPU/RAM back, not just disk quiet. The
-  trickle flag is movie-scoped by design.
+  main.cpp) — games need the CPU/RAM back, not just disk quiet.
 - **Startup clears the cap (crash recovery):** main.cpp's MB init calls
-  `set_alt_speed_limits_enabled(false)` unconditionally and re-applies
-  the trickle rates via `configure_alt_speed_limits(1536, 256)`
-  (preferences `alt_dl_limit`/`alt_up_limit`, KiB/s) — a kiosk crash
-  mid-movie must never leave downloads silently capped, and shipped
-  boxes converge on retuned rates via OTA. Both best-effort: qBit may
-  still be down at kiosk start; failures log and never block startup.
+  `set_alt_speed_limits_enabled(false)` unconditionally — a kiosk crash
+  mid-movie must never leave downloads silently capped. Best-effort:
+  qBit may still be down at kiosk start; failures log, never block.
 - `PlaybackScreen::leave()` clears only what enter() set
   (`qbit_alt_limited_by_us_` / `qbit_was_paused_by_us_` are the consent
   records) — an operator's own alt-limits or manual pauses are never
   flipped.
+- **Box-side half of the same fix** (`setup_memory_tuning.sh`, run by
+  deploy_cpp.sh, update.sh OTA hook, first_boot.sh, and
+  sync_source_box.sh): kiosk `MemoryLow=512M` drop-in + system.slice
+  companion (slice-level protection is REQUIRED or the service-level
+  one is silently inert), `vm.page-cluster=0` for zram, and
+  `cgroup_enable=memory cgroup_memory=1` appended to cmdline.txt (the
+  Pi firmware disables the memory controller by default; reboot
+  required to arm). `verify_box.sh` fails a box whose controller or
+  kiosk memory.low is missing.
 
 ### Quality configuration (3-layer enforcement)
 

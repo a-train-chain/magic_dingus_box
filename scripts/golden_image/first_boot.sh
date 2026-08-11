@@ -848,6 +848,27 @@ fi
 # content are the shipped product, same as ROMs, cores, and thumbnails.
 
 # ---------------------------------------------------------------------------
+# Step 6f: Converge the playback memory posture
+# ---------------------------------------------------------------------------
+# Clones cut from a current donor image inherit all four artifacts (the
+# drop-ins and cmdline flags live on the image), making this a no-op.
+# It exists for clones cut from OLDER donor images: they get the
+# MemoryLow drop-ins, the zram tune, and the cmdline append here. A
+# cmdline change on that path logs REBOOT_REQUIRED and simply arms on
+# the box's next natural power cycle — first_boot must not add another
+# reboot to the sequence (Step 2's expand may already have done one),
+# and the posture is inert-but-harmless until then. Best-effort like
+# every other converge step: a failure must not stop first boot.
+MEMTUNE="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
+if [[ -f "$MEMTUNE" ]]; then
+    log "[6f/7] Converging playback memory posture..."
+    bash "$MEMTUNE" 2>&1 | while IFS= read -r line; do log "[6f/7] $line"; done \
+        || log "[6f/7] WARNING: memory tuning failed (next OTA will retry)"
+else
+    log "[6f/7] setup_memory_tuning.sh not on this image; skipping"
+fi
+
+# ---------------------------------------------------------------------------
 # Step 7: Disable this service (run once only)
 # ---------------------------------------------------------------------------
 log "[7/7] Disabling first-boot service..."

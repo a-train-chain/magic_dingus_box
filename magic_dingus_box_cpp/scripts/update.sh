@@ -1043,6 +1043,26 @@ install_update() {
         log_warn "setup_network_hardening.sh not found in this release; skipping network hardening"
     fi
 
+    # Converge the playback memory posture delivered by this update
+    # (kiosk MemoryLow protection + zram tune + cgroup controller on the
+    # kernel cmdline — the box-side half of the 2026-08-11 playback
+    # stutter fix; the kiosk-side half ships in the binary). Same
+    # delivery rationale, gating, and failure posture as the network
+    # hardening hook above: fielded boxes only ever update, so this hook
+    # is their one delivery path. The script's cmdline append logs
+    # REBOOT_REQUIRED rather than rebooting — an OTA must never
+    # power-cycle the box, and the posture simply arms on the next
+    # natural restart (inert-but-harmless until then).
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: memory tuning (test mode)"
+    elif [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" ]; then
+        log "Converging playback memory posture (MemoryLow + zram + cgroup cmdline)..."
+        sudo -n bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" \
+            || log_warn "memory tuning failed (will retry on next OTA or provisioning run)"
+    else
+        log_warn "setup_memory_tuning.sh not found in this release; skipping memory tuning"
+    fi
+
     json_progress "restarting_services" 90 "Restarting services..."
 
     # Reload systemd and start C++ app

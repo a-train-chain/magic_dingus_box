@@ -385,6 +385,16 @@ ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_network_hard
 echo "  ✓ network hardening installed (conf.d default + dispatcher + profiles repaired)"
 echo ""
 
+# Step 1.68: playback memory posture (2026-08-11 stutter fix, box-side
+# half). Idempotent; on a box whose cmdline gains the cgroup flags here
+# the script prints REBOOT_REQUIRED and the posture arms on the next
+# reboot — deploys never power-cycle the box themselves.
+echo "Step 1.68: Converging playback memory posture (MemoryLow + zram + cgroup cmdline)..."
+ssh "${PI_HOST}" "sudo ${PI_DIR}/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh" \
+    | sed 's/^/  /'
+echo "  ✓ memory posture converged"
+echo ""
+
 # Step 1.7: Install C++ App Service
 echo "Step 1.7: Installing C++ App Service..."
 rsync -avz --checksum \
