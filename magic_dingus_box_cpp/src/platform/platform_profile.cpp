@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -74,8 +75,10 @@ PlatformProfile profile_for(PiModel model) {
             p.has_analog_audio = false;
             p.gpiochip_labels = {"pinctrl-rp1"};
             p.rotary_events_per_detent = 1;  // measured on hardware
-            // 1122MB free during 1080p playback with the stack running
-            // — pausing buys nothing and causes the post-movie flicker.
+            // Profile DEFAULT only — service_quiet_mode() overrides this
+            // per session when MemAvailable is under the floor. The
+            // static skip trusted a 2026-07-26 measurement (1122MB free
+            // during playback) that the stack outgrew within two weeks.
             p.pause_services_during_movie = false;
             // Movie playback trickles torrents at the qBit alternative
             // speed limits instead of pausing the swarm — the Pi 5 has
@@ -185,6 +188,43 @@ int pick_gpiochip(const std::vector<std::string>& chip_labels,
         }
     }
     return -1;
+}
+
+ServiceQuietMode service_quiet_mode(const PlatformProfile& profile,
+                                    long mem_available_kib) {
+    if (profile.pause_services_during_movie) {
+        return ServiceQuietMode::FullPause;
+    }
+    // Negative (unreadable) falls below any positive floor and lands on
+    // FullPause — the conservative side.
+    if (mem_available_kib < kServiceQuietMemFloorKiB) {
+        return ServiceQuietMode::FullPause;
+    }
+    return ServiceQuietMode::Trickle;
+}
+
+long parse_mem_available_kib(const std::string& meminfo_text) {
+    static const std::string kKey = "MemAvailable:";
+    std::istringstream in(meminfo_text);
+    std::string line;
+    while (std::getline(in, line)) {
+        // Line-anchored: /proc/meminfo keys start in column 0.
+        if (line.rfind(kKey, 0) != 0) continue;
+        const char* p = line.c_str() + kKey.size();
+        char* end = nullptr;
+        long v = std::strtol(p, &end, 10);
+        if (end == p) return -1;  // "MemAvailable:" with no number
+        return v;
+    }
+    return -1;
+}
+
+long read_mem_available_kib(const std::string& meminfo_path) {
+    std::ifstream f(meminfo_path);
+    if (!f) return -1;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return parse_mem_available_kib(ss.str());
 }
 
 } // namespace platform

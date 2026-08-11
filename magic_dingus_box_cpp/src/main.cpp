@@ -904,9 +904,15 @@ int main(int /* argc */, char* /* argv */[]) {
     // in boot (the Docker stack races kiosk startup), so a failure is
     // informational only and must never block the kiosk coming up.
     //
-    // (a) Converge the alternative-limit rates: 1536 KiB/s down
-    //     (~1.5 MB/s — leaves the swarm progressing through a 2h movie
-    //     without contending with GStreamer's reads), 256 KiB/s up.
+    // (a) Converge the alternative-limit rates: 2 MiB/s down (leaves the
+    //     swarm progressing through a 2h movie without contending with
+    //     GStreamer's reads), 8 KiB/s up — effectively OFF. Seeding is
+    //     the expensive direction during playback: serving strangers'
+    //     piece requests is random reads over the whole library, and
+    //     with no free RAM for page cache it measured 8x amplified
+    //     (122 GB read to upload 18 GB, 2026-08-11) on the same SSD the
+    //     movie streams from. Downloads the user is waiting on are
+    //     cheap sequential writes; those stay at 2 MiB/s.
     //     Written every boot so shipped boxes converge on retuned rates
     //     via OTA without anyone touching the qBit WebUI.
     // (b) CRASH RECOVERY: unconditionally clear the alt-limits cap. Only
@@ -921,13 +927,15 @@ int main(int /* argc */, char* /* argv */[]) {
     // unconditionally — board-agnostic, since a leftover cap is
     // qBit-side state that can travel with a cloned image or SSD.
     if (std::filesystem::exists("/opt/magic_dingus_box/services/.env")) {
-        // 2 MiB/s down / 1 MiB/s up, IN BYTES (see the client header:
+        // 2 MiB/s down / 8 KiB/s up, IN BYTES (see the client header:
         // qBit 5's preference field is bytes/s despite docs claiming
         // KiB — the KiB assumption strangled downloads to 1.5 KB/s).
-        // Retuned live 2026-08-03 with zero stutter at these rates.
+        // Upload deliberately near-zero, not zero: 0 means UNLIMITED to
+        // qBit, and a token allowance keeps peer connections from
+        // erroring out mid-handshake.
         if (!qbit_owned->configure_alt_speed_limits(
                 /*dl_bytes_s=*/2 * 1024 * 1024,
-                /*up_bytes_s=*/1024 * 1024)) {
+                /*up_bytes_s=*/8 * 1024)) {
             std::cout << "[media_browser] qbit alt-limit rate config failed "
                          "(best-effort; qBit may not be up yet)" << std::endl;
         }

@@ -57,9 +57,12 @@ struct PlatformProfile {
     // restart on exit, which surfaces as a false "tunnel down" toast
     // and a blank library grid.
     //   Pi 4: true  — genuinely needed, fielded behavior preserved.
-    //   Pi 5: false — MEASURED 2026-07-26: 1122MB of 2006MB still free
-    //                 during 1080p playback with the full stack up, so
-    //                 the pause buys nothing and only causes the bug.
+    //   Pi 5: false — but this is only the profile DEFAULT: PlaybackScreen
+    //                 asks service_quiet_mode() (below), which forces a
+    //                 FullPause session anyway when MemAvailable at play
+    //                 start is under kServiceQuietMemFloorKiB. The 2026-07
+    //                 static skip caused the 2026-08-11 stutter regression
+    //                 when the stack outgrew the measurement behind it.
     // NOTE: this governs MOVIE playback only. Game launches keep their
     // pause unconditionally (GameQuietMode in main.cpp) — that one also
     // frees CPU, which CPU-bound emulators genuinely benefit from.
@@ -168,5 +171,43 @@ bool is_storage_mounted(const std::string& mount_point = "/mnt/ssd",
 // the header chip, or -1 if none matches.
 int pick_gpiochip(const std::vector<std::string>& chip_labels,
                   const std::vector<std::string>& wanted_labels);
+
+// How PlaybackScreen quiets the download stack for one video session:
+// FullPause stops the service containers AND pause_all()s qBittorrent;
+// Trickle leaves services up and caps qBittorrent to its alternative
+// speed limits.
+enum class ServiceQuietMode { FullPause, Trickle };
+
+// MemAvailable floor for the Trickle path. A trickle-profile board whose
+// MemAvailable at session start is below this falls back to FullPause
+// for that session. 1.5 GiB — deliberately above anything a 2 GB board
+// can report (~1.3 GiB fresh-boot ceiling), because Trickle was
+// HARDWARE-DISPROVEN there 2026-08-11: with 940 MiB available, upload
+// choked to 8 KiB/s, cgroup MemoryLow protecting the kiosk, and zero
+// active downloads, resident service ticks alone still froze the
+// pipeline >=3 s about once a minute (stall watchdog counts), and the
+// full pause immediately ran clean through an episode boundary. Only a
+// board where the whole stack fits WITH >=1.5 GiB to spare (4 GB+) may
+// keep downloads moving during a movie.
+inline constexpr long kServiceQuietMemFloorKiB = 1536L * 1024;
+
+// Decide FullPause vs Trickle for one session. The board profile alone
+// is NOT authoritative — the Pi 5's static skip was written against a
+// 2026-07-26 measurement ("1122 MB free during playback") that the
+// growing service stack later invalidated (768 MB in zram swap, 300k
+// major faults in the kiosk mid-movie). mem_available_kib is
+// /proc/meminfo MemAvailable at session start; pass a negative value
+// when unreadable (treated as scarce — protecting playback beats
+// keeping downloads warm).
+ServiceQuietMode service_quiet_mode(const PlatformProfile& profile,
+                                    long mem_available_kib);
+
+// Parse MemAvailable (KiB) out of /proc/meminfo-format text; -1 when
+// the line is absent or carries no number.
+long parse_mem_available_kib(const std::string& meminfo_text);
+
+// Read + parse MemAvailable; -1 on any failure. Path injectable for
+// tests only.
+long read_mem_available_kib(const std::string& meminfo_path = "/proc/meminfo");
 
 } // namespace platform

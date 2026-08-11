@@ -153,24 +153,33 @@ void PlaybackScreen::enter() {
 
     // Quiet the torrent stack BEFORE loading the movie so the GStreamer
     // demuxer's initial reads don't have to fight qBit's piece-write
-    // bursts for disk bandwidth. Per-board (platform profile):
+    // bursts for disk bandwidth. One decision covers this block AND the
+    // container pause below:
     //
-    //   Trickle (Pi 5): engage qBit's alternative speed limits
-    //   (~1.5 MB/s, configured at kiosk startup) instead of stopping the
-    //   swarm — the SSD library and spare CPU absorb a trickle without
-    //   playback impact, so downloads keep progressing through a movie.
+    //   Trickle: engage qBit's alternative speed limits (configured at
+    //   kiosk startup; upload ~zero so seeding's random reads stop)
+    //   instead of stopping the swarm — downloads keep progressing
+    //   through a movie and couch-queueing keeps working.
     //
-    //   Full pause (Pi 4B / Unknown): on USB-flash media (the typical
-    //   Pi 4 setup), concurrent random read+write tanks throughput to
-    //   single-digit MB/s and makes scrubbing feel frozen. Pausing
-    //   gives the playback reader exclusive disk access.
+    //   FullPause: pause_all() torrents and stop the service containers.
+    //   On USB-flash media (the typical Pi 4 setup), concurrent random
+    //   read+write tanks throughput to single-digit MB/s; on ANY board
+    //   short on MemAvailable, the resident stack swap-thrashes the
+    //   video pipeline (the 2026-08-11 freeze-then-catch-up stutter).
+    //
+    // The profile alone no longer decides — service_quiet_mode() gates
+    // the trickle on the MemAvailable actually measured right now (see
+    // platform_profile.h for the stale-measurement history).
     //
     // Best-effort either way: a qBit failure here doesn't abort playback
     // — we just log and continue with whatever performance the disk can
     // give us. Same rationale as the controller_.load_file fallback
     // path below.
+    const long mem_avail_kib = platform::read_mem_available_kib();
+    const auto quiet_mode = platform::service_quiet_mode(
+        state_.platform_profile, mem_avail_kib);
     if (qbit_ != nullptr) {
-        if (state_.platform_profile.trickle_torrents_during_video) {
+        if (quiet_mode == platform::ServiceQuietMode::Trickle) {
             if (qbit_->set_alt_speed_limits_enabled(true)) {
                 qbit_alt_limited_by_us_ = true;
             } else {
@@ -201,18 +210,30 @@ void PlaybackScreen::enter() {
     // user-controllable input, (b) we don't care about the exit code
     // beyond a debug log line, (c) the script itself is idempotent.
     //
-    // Platform-gated: only boards that actually need the memory pay the
-    // cost. On Pi 5 there is 1122MB free of 2006MB during 1080p playback
-    // with the whole stack running (measured 2026-07-26), so pausing
-    // reclaims memory we don't need while the 20-40s restart on exit
-    // shows the user a false "tunnel down" toast and a blank library
-    // grid. Pi 4B still pauses — it genuinely needed it.
-    if (state_.platform_profile.pause_services_during_movie) {
+    // Session-gated via quiet_mode (computed above): boards that pause by
+    // profile (Pi 4B) always pay the cost, and a trickle-profile board
+    // pays it only when MemAvailable at this instant is below the floor.
+    // The old static skip trusted a 2026-07-26 measurement ("1122MB
+    // free") that the stack outgrew — by 2026-08-11 the same board sat
+    // 768MB into zram swap and the kiosk took 300k major faults during
+    // one movie. The 20-40s container restart on exit (the false "tunnel
+    // down" toast, the blank grid) is the known cost of a FullPause
+    // session; the marker-aware cascade keeps it merely cosmetic.
+    if (quiet_mode == platform::ServiceQuietMode::FullPause) {
+        if (state_.platform_profile.pause_services_during_movie) {
+            spdlog::info("[playback] full service pause (profile)");
+        } else {
+            spdlog::info("[playback] full service pause (low memory: "
+                         "{} MiB available < {} MiB floor)",
+                         mem_avail_kib / 1024,
+                         platform::kServiceQuietMemFloorKiB / 1024);
+        }
         (void)std::system(
             "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
     } else {
         spdlog::info("[playback] skipping service pause "
-                     "(platform has memory headroom)");
+                     "(memory headroom: {} MiB available)",
+                     mem_avail_kib / 1024);
     }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution

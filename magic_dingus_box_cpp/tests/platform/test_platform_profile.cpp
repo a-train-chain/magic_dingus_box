@@ -351,3 +351,81 @@ TEST_CASE("Pi 5 and Unknown profiles hide nothing") {
     REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "N64"));
     REQUIRE(supports_game_system(profile_for(PiModel::Pi5), "Dreamcast"));
 }
+
+// ---------------------------------------------------------------
+// service_quiet_mode — memory-gated pause-vs-trickle decision
+// ---------------------------------------------------------------
+// Regression coverage for the 2026-08-11 playback-stutter diagnosis:
+// the Pi 5 profile's static "skip the pause" call was made against a
+// July memory measurement that the growing service stack invalidated
+// (768 MB in zram swap, 300k major faults in the kiosk during a movie).
+// The decision must consult the ACTUAL MemAvailable at session start,
+// not just the board model.
+
+TEST_CASE("service_quiet_mode: pause-profile boards full-pause even with plenty of memory") {
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi4), 2'000'000L) ==
+            ServiceQuietMode::FullPause);
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Unknown), 2'000'000L) ==
+            ServiceQuietMode::FullPause);
+}
+
+TEST_CASE("service_quiet_mode: trickle board with headroom trickles") {
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5),
+                               kServiceQuietMemFloorKiB) ==
+            ServiceQuietMode::Trickle);
+    // A 4 GB board with the stack resident sits ~2.5 GiB available.
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5), 2'500'000L) ==
+            ServiceQuietMode::Trickle);
+}
+
+TEST_CASE("service_quiet_mode: trickle board below the memory floor falls back to full pause") {
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5),
+                               kServiceQuietMemFloorKiB - 1) ==
+            ServiceQuietMode::FullPause);
+    // A 2 GB board tops out ~1.3 GiB available even freshly booted — it
+    // must ALWAYS land here. Hardware-measured 2026-08-11: at 940 MiB
+    // available, Trickle still froze playback ~1/min from resident
+    // service ticks alone; only the full pause ran clean.
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5), 1'300'000L) ==
+            ServiceQuietMode::FullPause);
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5), 940L * 1024) ==
+            ServiceQuietMode::FullPause);
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5), 100'000L) ==
+            ServiceQuietMode::FullPause);
+}
+
+TEST_CASE("service_quiet_mode: unreadable MemAvailable is conservative (full pause)") {
+    REQUIRE(service_quiet_mode(profile_for(PiModel::Pi5), -1L) ==
+            ServiceQuietMode::FullPause);
+}
+
+// ---------------------------------------------------------------
+// parse_mem_available_kib / read_mem_available_kib
+// ---------------------------------------------------------------
+
+TEST_CASE("parse_mem_available_kib extracts the MemAvailable line") {
+    const std::string meminfo =
+        "MemTotal:        2054256 kB\n"
+        "MemFree:           54388 kB\n"
+        "MemAvailable:     715968 kB\n"
+        "Buffers:            5980 kB\n";
+    REQUIRE(parse_mem_available_kib(meminfo) == 715968L);
+}
+
+TEST_CASE("parse_mem_available_kib: missing or malformed line yields -1") {
+    REQUIRE(parse_mem_available_kib("") == -1);
+    REQUIRE(parse_mem_available_kib("MemTotal: 2054256 kB\n") == -1);
+    REQUIRE(parse_mem_available_kib("MemAvailable: soon kB\n") == -1);
+}
+
+TEST_CASE("read_mem_available_kib reads a meminfo-format file; missing file yields -1") {
+    auto path = std::filesystem::temp_directory_path() /
+                "mdb_test_meminfo.txt";
+    {
+        std::ofstream f(path);
+        f << "MemTotal:  2054256 kB\nMemAvailable:  432100 kB\n";
+    }
+    REQUIRE(read_mem_available_kib(path.string()) == 432100L);
+    std::remove(path.string().c_str());
+    REQUIRE(read_mem_available_kib("/nonexistent/meminfo") == -1);
+}
