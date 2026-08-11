@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.10] - 2026-08-11
+
+### Fixed
+- **Playback freeze / silent fast-forward stutter on 2 GB boards**
+  (reported live on magicpi5: video froze, then raced to catch up with
+  muted audio). Root cause: the Pi 5 profile statically skipped the
+  playback service pause on a stale July measurement; the grown service
+  stack then swap-thrashed the kiosk mid-movie (768 MB in zram swap,
+  300k major faults). The pause-vs-trickle decision is now made per
+  session from measured MemAvailable (`service_quiet_mode`, floor
+  1.5 GiB) — 2 GB boards always take the proven full pause, and
+  trickle-during-playback (which hardware testing disproved on 2 GB:
+  resident service ticks alone froze the pipeline ~1/min even with
+  zero active downloads) is reserved for boards that can afford it.
+  Verified on hardware: zero stall-watchdog hits across 9 minutes of
+  1080p bluray plus an episode boundary, kiosk major faults 978 vs
+  300k. Alternative speed limits retuned dl=2 MiB/s up=8 KiB/s —
+  seeding was the expensive direction (8x read amplification with no
+  page cache: 122 GB read to upload 18 GB from the playback SSD).
+
+### Added
+- **`setup_memory_tuning.sh`** — box-side memory posture (kiosk
+  `MemoryLow=512M` + system.slice companion, `vm.page-cluster=0`,
+  `cgroup_enable=memory` on the kernel cmdline; the Pi firmware
+  disables the memory controller by default). Delivered on every path:
+  fresh deploys, the OTA post-install hook (arms on the box's next
+  natural reboot — an update never power-cycles the box), clone first
+  boot, and the pre-clone source-box sync. `verify_box.sh` now gates
+  shippability on the posture being live. 6 new BATS cases.
+
 ## [1.9.9] - 2026-08-09
 
 ### Fixed
