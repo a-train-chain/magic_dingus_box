@@ -208,7 +208,11 @@ test_version_lt() {
     run "$UPDATE_SCRIPT" rollback
 
     [ "$status" -ne 0 ]
-    [[ "$output" == *"No backup"* ]] || [[ "$output" == *"no backup"* ]]
+    # "No COMPLETE backup": since cdfedcd the guard gates on the backup's
+    # completion marker ($BACKUP_DIR/VERSION), not the directory — a
+    # backup that died mid-transfer must not be restorable (--delete
+    # would take the live install down with it).
+    [[ "$output" == *"No complete backup"* ]]
 }
 
 @test "rollback outputs JSON error when no backup" {
