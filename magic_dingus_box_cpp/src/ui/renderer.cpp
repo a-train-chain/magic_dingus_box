@@ -1463,7 +1463,10 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
         glUniform1i(u_use_texture_loc_, 1);
     }
 
-    std::vector<float> verts;
+    // Reused scratch buffer (member) — clear() keeps its capacity so this
+    // is allocation-free after warmup; reserve() only ever grows it.
+    std::vector<float>& verts = text_scratch_verts_;
+    verts.clear();
     verts.reserve(text.size() * 24);  // 6 verts x 4 floats per glyph
     uint32_t run_texture = 0;
 
@@ -1538,41 +1541,6 @@ void Renderer::draw_text(const std::string& text, float x, float y, int font_siz
     }
 
     flush();
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
-void Renderer::draw_glyph(char32_t codepoint, float x, float baseline_y, int font_size, const ui::Color& color, float alpha_multiplier) {
-    ui::Glyph glyph = body_font_manager_->get_glyph_at_size(codepoint, font_size);
-    if (glyph.texture_id == 0) return;
-
-    float glyph_x = x + glyph.bearing_x;
-    float glyph_y = baseline_y - glyph.bearing_y;
-
-    glBindTexture(GL_TEXTURE_2D, glyph.texture_id);
-    // Filtering params live on the texture object (set at glyph creation);
-    // no per-draw re-set needed — see the matching note in draw_text().
-
-    GLint colorLoc = u_color_loc_;
-    if (colorLoc >= 0) {
-        glUniform4f(colorLoc, color.r / 255.0f, color.g / 255.0f, color.b / 255.0f, (color.a / 255.0f) * alpha_multiplier);
-    }
-    GLint useTextureLoc = u_use_texture_loc_;
-    if (useTextureLoc >= 0) glUniform1i(useTextureLoc, 1);
-
-    // Atlas UVs — the glyph's rect within its shared page. Full 0..1
-    // coordinates here would draw the entire atlas.
-    float vertices[] = {
-        glyph_x, glyph_y,                                     glyph.u0, glyph.v0,
-        glyph_x + glyph.width, glyph_y,                       glyph.u1, glyph.v0,
-        glyph_x, glyph_y + glyph.height,                      glyph.u0, glyph.v1,
-        glyph_x + glyph.width, glyph_y + glyph.height,        glyph.u1, glyph.v1
-    };
-
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
-    glBindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
@@ -2274,60 +2242,6 @@ void Renderer::draw_textured_quad(uint32_t tex_id, float x, float y,
 }
 
 #ifdef MEDIA_BROWSER_ENABLED
-void Renderer::render_media_browser_placeholder() {
-    // Solid near-black background covering the full screen.
-    draw_quad(0.0f, 0.0f,
-              static_cast<float>(width_), static_cast<float>(height_),
-              ui::Color(0, 0, 0, 240));
-
-    if (!body_font_manager_) return;
-
-    // Title line
-    const std::string title_text = "Movies - Media Browser";
-    int title_size = theme_->font_large_size;
-    float title_w = body_font_manager_->get_text_width(title_text, title_size);
-    float title_baseline = body_font_manager_->get_baseline_at_size(title_size);
-    float title_x = (static_cast<float>(width_) - title_w) / 2.0f;
-    float title_y = (static_cast<float>(height_) / 2.0f) - (title_size / 2.0f) + title_baseline;
-    draw_text(title_text, title_x, title_y, title_size, theme_->accent, false, 1.0f);
-
-    // Hint line below
-    const std::string hint_text = "[Menu to return]";
-    int hint_size = theme_->font_small_size;
-    float hint_w = body_font_manager_->get_text_width(hint_text, hint_size);
-    float hint_baseline = body_font_manager_->get_baseline_at_size(hint_size);
-    float hint_x = (static_cast<float>(width_) - hint_w) / 2.0f;
-    float hint_y = title_y + static_cast<float>(title_size) + hint_baseline;
-    draw_text(hint_text, hint_x, hint_y, hint_size, theme_->fg, false, 0.8f);
-}
-
-void Renderer::render_media_browser_screen_stub(const std::string& label) {
-    // Solid near-black background covering the full screen. Matches the
-    // placeholder's look so navigating between stub screens feels consistent.
-    draw_quad(0.0f, 0.0f,
-              static_cast<float>(width_), static_cast<float>(height_),
-              ui::Color(0, 0, 0, 240));
-
-    if (!body_font_manager_) return;
-
-    // Centered screen label (large, accent color).
-    int title_size = theme_->font_title_size;
-    float title_w = body_font_manager_->get_text_width(label, title_size);
-    float title_baseline = body_font_manager_->get_baseline_at_size(title_size);
-    float title_x = (static_cast<float>(width_) - title_w) / 2.0f;
-    float title_y = (static_cast<float>(height_) / 2.0f) - (title_size / 2.0f) + title_baseline;
-    draw_text(label, title_x, title_y, title_size, theme_->accent, false, 1.0f);
-
-    // "[Menu to return]" hint below.
-    const std::string hint_text = "[Menu to return]";
-    int hint_size = theme_->font_small_size;
-    float hint_w = body_font_manager_->get_text_width(hint_text, hint_size);
-    float hint_baseline = body_font_manager_->get_baseline_at_size(hint_size);
-    float hint_x = (static_cast<float>(width_) - hint_w) / 2.0f;
-    float hint_y = title_y + static_cast<float>(title_size) + hint_baseline;
-    draw_text(hint_text, hint_x, hint_y, hint_size, theme_->fg, false, 0.8f);
-}
-
 // ---- Task 18 public drawing primitives for Media Browser screens ----
 
 void Renderer::mb_fill_background() {

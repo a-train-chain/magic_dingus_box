@@ -135,16 +135,6 @@ bool starts_with_ci(const std::string& s, const char* prefix) {
 // Static helpers
 // ---------------------------------------------------------------------------
 
-const char* LibraryScreen::label_for_filter(Filter f) {
-    switch (f) {
-        case Filter::All:             return "All";
-        case Filter::Unwatched:       return "Unwatched";
-        case Filter::MissingUpgrades: return "Missing Upgrades";
-        case Filter::Recent:          return "Recent";
-    }
-    return "";
-}
-
 bool LibraryScreen::is_1080p_quality(const std::string& q) {
     // Treat "Bluray-*", "Bluray", and "WEBDL-1080p" / "WEB-DL-1080p" as
     // "good enough, no upgrade needed". Anything else (SDTV, DVD,

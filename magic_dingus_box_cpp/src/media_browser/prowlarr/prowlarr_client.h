@@ -120,7 +120,6 @@ public:
     static std::vector<IndexerInfo>   parse_indexer_list(const std::string& json_body);
 
     // Live accessors (populated after search_async completes).
-    std::vector<ReleaseRecord> get_last_releases() const;
     std::vector<IndexerStats>  get_last_indexer_stats() const;
 
     // Live GET /api/v1/indexer. Synchronous — called once on Settings

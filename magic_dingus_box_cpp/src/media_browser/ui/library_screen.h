@@ -124,7 +124,6 @@ private:
     void run_refresh();                   // worker body (off render thread)
     void apply_pending();                 // drain on render thread
     void rebuild_view();                  // Apply current filter + sort to library_.
-    static const char* label_for_filter(Filter f);
     static FileState classify(const Movie& m);
     static bool is_1080p_quality(const std::string& q);
 

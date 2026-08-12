@@ -143,11 +143,6 @@ private:
     static std::string http_get(const std::string& url,
                                 const std::string& header = "");
 
-    // Format bytes as a human-readable "12.3 GB free / 500 GB"-style
-    // string for the Storage row.
-    static std::string format_free_space(int64_t free_bytes,
-                                         int64_t total_bytes);
-
     RadarrClient& radarr_;
     ProwlarrClient* prowlarr_;   // Nullable — see constructor doc.
     ::app::AppState& state_;     // For mb_playback_show_frame + persistence.

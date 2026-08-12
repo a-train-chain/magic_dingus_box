@@ -137,9 +137,6 @@ public:
     int get_game_browser_selected() const { return game_browser_selected_; }
     int get_current_game_playlist_index() const { return current_game_playlist_index_; }
     int get_selected_game_in_playlist() const { return selected_game_in_playlist_; }
-    
-    // Helper to check if "Back" is selected in game browser
-    bool is_game_browser_back_selected() const;
 
     // Label of whatever row is currently highlighted, across menu levels
     // (top menu, submenu). Used to mirror cursor state into AppState /

@@ -134,12 +134,6 @@ void Controller::toggle_pause() {
     }
 }
 
-void Controller::check_audio_recovery() {
-    // GStreamer player doesn't implement this yet
-}
-
-
-
 void Controller::seek(double seconds) {
     if (player_) {
         player_->seek(seconds);
@@ -153,7 +147,15 @@ void Controller::seek_absolute(double timestamp) {
 }
 
 bool Controller::poll_seek_request() {
-    const std::string path = config::get_data_path() + "/seek_request.json";
+    // Path is process-stable, so resolve it once and cache it — this runs
+    // every main-loop tick and the old inline `get_data_path() + "..."`
+    // did a getenv plus 2-3 std::string allocations 60×/s for a file that
+    // is almost never present. Same idle-fast-path intent as
+    // poll_text_input_queue's cached text_input_queue_path_.
+    if (seek_request_path_.empty()) {
+        seek_request_path_ = config::get_data_path() + "/seek_request.json";
+    }
+    const std::string& path = seek_request_path_;
     if (!fs::exists(path)) return false;
 
     Json::Value root;

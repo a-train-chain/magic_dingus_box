@@ -933,11 +933,6 @@ std::string SettingsMenuManager::intensity_to_label(float intensity) {
     }
 }
 
-bool SettingsMenuManager::is_game_browser_back_selected() const {
-    if (!game_browser_active_) return false;
-    return false;
-}
-
 std::string SettingsMenuManager::get_current_highlighted_label() const {
     // Top menu vs submenu. Game-browser levels are reported separately via
     // the game_browser cursor indices (the harness maps those to names via

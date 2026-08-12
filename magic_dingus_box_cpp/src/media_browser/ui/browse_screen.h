@@ -201,8 +201,6 @@ private:
     void apply_pending();
     // Lazily fetches /genre/movie/list on first entry to the Filter category.
     void ensure_genres_loaded();
-    // Cycle the current filter_row_'s value by `delta` (+1 / -1 typical).
-    void cycle_filter_value(int delta);
     // Retired in v1.6.x — was the BTN2 quick-add shortcut, replaced by
     // the back-grammar remap. Preserved intentionally in case a future
     // overlay or shortcut wants the same library-add flow without going

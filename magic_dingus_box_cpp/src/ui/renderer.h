@@ -80,18 +80,6 @@ public:
     void render_loading_overlay(const app::AppState& state);
 
 #ifdef MEDIA_BROWSER_ENABLED
-    // Placeholder full-screen overlay for the Media Browser screen. Replaced
-    // by real screens (search / library / queue) in Task 17+. Draws a dark
-    // background with centered "Movies — Media Browser" text + a hint to
-    // press the Menu button to return to the main UI.
-    void render_media_browser_placeholder();
-
-    // Task 17 stub helper: draws a dark full-screen overlay with a centered
-    // screen label (e.g. "Browse", "Search") and a "[Menu to return]" hint.
-    // Used by the stub MbScreen implementations until Tasks 18-23 replace
-    // each screen's render() with real UI.
-    void render_media_browser_screen_stub(const std::string& label);
-
     // Task 18: minimal public drawing primitives that Media Browser screens
     // use to compose their own layouts (poster grids, category strips,
     // outlines, etc.). These are thin wrappers over the private draw_*
@@ -320,6 +308,12 @@ private:
     uint32_t vao_;
     uint32_t vbo_;
 
+    // Reused vertex scratch for draw_text — cleared (never freed) each
+    // call. draw_text is on the hottest render path (100+ calls per
+    // populated frame at 60 Hz); a per-call std::vector here was a
+    // malloc/free every call. Not re-entrant, so one buffer is safe.
+    std::vector<float> text_scratch_verts_;
+
     // Enhanced CRT pipeline — offscreen scene FBO state.
     //   scene_fbo_: GL framebuffer object name (0 when not yet created)
     //   scene_color_tex_: RGBA8 color attachment texture
@@ -464,7 +458,6 @@ private:
     // Helper methods
     void draw_quad(float x, float y, float w, float h, const ui::Color& color, float alpha_multiplier = 1.0f);
     void draw_text(const std::string& text, float x, float y, int font_size, const ui::Color& color, bool use_title_font = false, float alpha_multiplier = 1.0f);
-    void draw_glyph(char32_t codepoint, float x, float baseline_y, int font_size, const ui::Color& color, float alpha_multiplier = 1.0f);
     void draw_line(float x1, float y1, float x2, float y2, float width, const ui::Color& color, float alpha_multiplier = 1.0f);
     
     // Component renderers

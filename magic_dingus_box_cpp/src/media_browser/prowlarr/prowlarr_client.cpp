@@ -367,12 +367,6 @@ ProwlarrClient::aggregate_indexer_stats(
     return out;
 }
 
-std::vector<ProwlarrClient::ReleaseRecord>
-ProwlarrClient::get_last_releases() const {
-    std::lock_guard<std::mutex> lk(last_results_mu_);
-    return last_releases_;
-}
-
 std::vector<ProwlarrClient::IndexerStats>
 ProwlarrClient::get_last_indexer_stats() const {
     std::lock_guard<std::mutex> lk(last_results_mu_);

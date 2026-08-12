@@ -193,18 +193,6 @@ std::string MbSettingsScreen::http_get(const std::string& url,
     return body;
 }
 
-std::string MbSettingsScreen::format_free_space(int64_t free_bytes,
-                                                int64_t total_bytes) {
-    auto fmt = [](int64_t b) {
-        double gb = static_cast<double>(b) / (1024.0 * 1024.0 * 1024.0);
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.1f GB", gb);
-        return std::string(buf);
-    };
-    if (total_bytes <= 0) return fmt(free_bytes) + " free";
-    return fmt(free_bytes) + " free / " + fmt(total_bytes);
-}
-
 // ---------------------------------------------------------------------------
 // Construction / lifecycle
 // ---------------------------------------------------------------------------

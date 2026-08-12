@@ -126,14 +126,6 @@ constexpr std::array<SortOption, 3> kSortOptions = {{
     {"Release date", "primary_release_date.desc"},
 }};
 
-// Current calendar year — used as the upper bound of the Year cycle.
-int current_year_now() {
-    std::time_t now = std::time(nullptr);
-    std::tm* lt = std::localtime(&now);
-    if (!lt) return 2026;
-    return 1900 + lt->tm_year;
-}
-
 // ---------------------------------------------------------------------------
 // Filter overlay helpers (Task 4 of v1.6.4: hybrid endpoint switching)
 // ---------------------------------------------------------------------------
@@ -1354,64 +1346,6 @@ BrowseScreen::~BrowseScreen() {
     // outlive the screen and publish into freed members. Bounded by
     // RadarrClient's per-attempt curl timeout.
     if (lib_refresh_worker_.joinable()) lib_refresh_worker_.join();
-}
-
-void BrowseScreen::cycle_filter_value(int delta) {
-    if (delta == 0) return;
-    switch (filter_row_) {
-        case FilterRow::Genre: {
-            // Ordering: "Any" (no selection) then genres_ in order.
-            // Build a flat cycle list of size 1 + genres_.size().
-            int n = 1 + static_cast<int>(genres_.size());
-            if (n <= 0) return;
-            // Find current index — single-select: use first genre_id if any.
-            int idx = 0;
-            if (!current_filter_.genre_ids.empty()) {
-                int gid = current_filter_.genre_ids[0];
-                for (size_t i = 0; i < genres_.size(); ++i) {
-                    if (genres_[i].id == gid) { idx = 1 + static_cast<int>(i); break; }
-                }
-            }
-            idx = ((idx + delta) % n + n) % n;
-            if (idx == 0) current_filter_.genre_ids.clear();
-            else current_filter_.genre_ids = { genres_[idx - 1].id };
-            break;
-        }
-        case FilterRow::Year: {
-            // Cycle: Any -> 1970..current_year -> Any.
-            const int lo = 1970;
-            const int hi = current_year_now();
-            int n = 1 + (hi - lo + 1);
-            if (n <= 0) return;
-            // Use gte as the representative value; lte tracks it identically
-            // (exact-year filter: gte == lte).
-            int idx = 0;
-            if (current_filter_.primary_release_year_gte.has_value()) {
-                int y = *current_filter_.primary_release_year_gte;
-                if (y >= lo && y <= hi) idx = 1 + (y - lo);
-            }
-            idx = ((idx + delta) % n + n) % n;
-            if (idx == 0) {
-                current_filter_.primary_release_year_gte.reset();
-                current_filter_.primary_release_year_lte.reset();
-            } else {
-                int y = lo + (idx - 1);
-                current_filter_.primary_release_year_gte = y;
-                current_filter_.primary_release_year_lte = y;
-            }
-            break;
-        }
-        case FilterRow::SortBy: {
-            int n = static_cast<int>(kSortOptions.size());
-            if (n <= 0) return;
-            current_sort_index_ =
-                ((current_sort_index_ + delta) % n + n) % n;
-            current_filter_.sort_by = kSortOptions[current_sort_index_].value;
-            break;
-        }
-        default: return;
-    }
-    reload_filter_results();
 }
 
 Screen BrowseScreen::handle_input(const std::vector<platform::InputEvent>& events) {

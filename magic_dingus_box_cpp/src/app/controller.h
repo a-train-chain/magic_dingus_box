@@ -82,8 +82,6 @@ public:
     void play_random_global_video(AppState& state, const std::string& playlist_directory, int depth = 0);
     
     // Audio recovery
-    void check_audio_recovery();
-
     // Polled each main-loop tick. Reads data/seek_request.json if present,
     // seeks to (pos * duration), then deletes the file. No-op if the file
     // doesn't exist or contains an invalid pos. Cheap when no file exists
@@ -149,6 +147,7 @@ private:
     int pending_system_volume_ = -1;
     int last_applied_system_volume_ = -1;
     std::string text_input_queue_path_;
+    std::string seek_request_path_;  // cached in poll_seek_request (per-tick)
     platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
     platform::InputManager* input_manager_;  // For controller release before RetroArch launch
     int current_system_volume_ = 100;
