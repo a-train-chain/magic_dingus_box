@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "app/app_state.h"
@@ -49,7 +51,10 @@ public:
                      ::app::AppState& state,
                      std::function<void()> on_hide_feature);
 
+    ~MbSettingsScreen() override;
+
     void enter() override;
+    void update() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
     void render(::ui::Renderer& r, int screen_w, int screen_h) override;
 
@@ -126,10 +131,19 @@ private:
     };
 
     void build_rows();
-    void refresh_service_health();
-    void refresh_quality_profiles();
-    void refresh_root_folders();
-    void refresh_indexers();
+
+    // Async service/profile/indexer load. enter() and the Services-row
+    // re-ping kick off a worker thread instead of blocking the render
+    // thread: a synchronous load here can stall ~24s with a service down
+    // (radarr is_reachable 5s + two pings + three 5s list fetches), past
+    // systemd's WatchdogSec=10 → the kiosk gets SIGABRTed mid-open. This
+    // is the same failure the ReleasePicker async rewrite fixed. The worker
+    // writes staging members; update() applies them on the main thread and
+    // rebuilds the rows. `full` = also reload profiles/root-folders/indexers
+    // (screen entry); false = health-only (re-entry + manual re-ping).
+    void start_async_load(bool full);
+    void apply_load_results();
+    std::vector<IndexerRow> compute_indexer_rows() const;
     void trigger_hide_feature();
 
     // Banner helpers — the screen renders a transient one-line toast when
@@ -190,6 +204,19 @@ private:
     std::chrono::steady_clock::time_point banner_until_{};
 
     bool loaded_once_ = false;
+
+    // --- Async load plumbing (see start_async_load / apply_load_results) ---
+    // The worker thread writes ONLY the staged_* members; the main thread
+    // reads them in apply_load_results() after joining, so render()'s live
+    // members are never touched from two threads at once.
+    std::thread       load_thread_;
+    std::atomic<bool> load_in_flight_{false};
+    std::atomic<bool> load_done_{false};
+    bool              load_was_full_ = false;  // set by worker before load_done_
+    ServiceHealth               staged_health_;
+    std::vector<QualityProfile> staged_profiles_;
+    std::vector<RootFolder>     staged_root_folders_;
+    std::vector<IndexerRow>     staged_indexer_rows_;
 };
 
 }  // namespace media_browser::ui
