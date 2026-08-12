@@ -914,6 +914,79 @@ def _is_within(child, parent) -> bool:
         return False
 
 
+def _require_nopasswd_sudo():
+    """Fail-fast NOPASSWD-sudo precheck for routes that shell out via `sudo -n`.
+
+    Returns an error_response() tuple when the magic user lacks NOPASSWD sudo
+    (so the caller can `if (resp := _require_nopasswd_sudo()): return resp`),
+    or None when sudo is available. Extracted from three byte-identical copies
+    (WireGuard setup, MB restart, MB reset) — the point is to fail with a clear
+    error rather than spawn a process that hangs on a password prompt.
+    """
+    try:
+        sudo_check = subprocess.run(
+            ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
+        )
+        if sudo_check.returncode != 0:
+            return error_response(
+                "sudo_required",
+                "magic user must have NOPASSWD sudo configured",
+                status=500,
+            )
+    except Exception:
+        return error_response(
+            "sudo_required",
+            "magic user must have NOPASSWD sudo configured",
+            status=500,
+        )
+    return None
+
+
+def _qbit_get(env: dict, path: str):
+    """Authenticated GET against the local qBittorrent WebUI.
+
+    Returns the response body text, or None on any failure (missing/placeholder
+    credentials, login failure, curl error, or an empty body). Each caller
+    parses the body it expects. Credentials are passed via stdin (`-d @-`),
+    never argv, so the password never lands in /proc/<pid>/cmdline. Extracted
+    from the identical login + cookie-jar + finally-unlink preamble that
+    _qbit_torrent_summary and _qbit_listen_port each carried.
+    """
+    username = env.get("QBITTORRENT_ADMIN_USERNAME", "admin")
+    password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
+    if not password or password.startswith("__"):
+        return None
+    cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
+    cookie_jar.close()
+    try:
+        login = subprocess.run(
+            ["curl", "-sS", "--max-time", "5",
+             "-c", cookie_jar.name,
+             "-d", "@-",
+             "http://localhost:8080/api/v2/auth/login"],
+            input=f"username={username}&password={password}",
+            capture_output=True, text=True, timeout=6,
+        )
+        if login.returncode != 0 or "Ok." not in (login.stdout or ""):
+            return None
+        resp = subprocess.run(
+            ["curl", "-sS", "--max-time", "5",
+             "-b", cookie_jar.name,
+             f"http://localhost:8080/api/v2/{path}"],
+            capture_output=True, text=True, timeout=6,
+        )
+        if resp.returncode != 0 or not resp.stdout.strip():
+            return None
+        return resp.stdout
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(cookie_jar.name)
+        except Exception:
+            pass
+
+
 def format_playlist_yaml(data: dict) -> str:
     """Format playlist data as clean YAML matching the expected format.
     
@@ -4685,24 +4758,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 return error_response("invalid_wireguard_config", str(e),
                                       status=400)
 
-        # Quick NOPASSWD sudo precheck so we fail fast with a clear error
-        # rather than silently spawning a process that hangs on a password prompt.
-        try:
-            sudo_check = subprocess.run(
-                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
-            )
-            if sudo_check.returncode != 0:
-                return error_response(
-                    "sudo_required",
-                    "magic user must have NOPASSWD sudo configured",
-                    status=500,
-                )
-        except Exception:
-            return error_response(
-                "sudo_required",
-                "magic user must have NOPASSWD sudo configured",
-                status=500,
-            )
+        # Fail fast if the magic user lacks NOPASSWD sudo (rather than hang on
+        # a password prompt) — this route shells out via `sudo -n` below.
+        if (resp := _require_nopasswd_sudo()):
+            return resp
 
         # Merge WG vars + sensible defaults into existing .env
         env = _read_env_file(SERVICES_ENV)
@@ -4971,35 +5030,11 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     def _qbit_torrent_summary(env: dict) -> dict:
         """Return {active, seeding} torrent counts. Returns {-1, -1} on failure."""
-        username = env.get("QBITTORRENT_ADMIN_USERNAME", "admin")
-        password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
-        if not password or password.startswith("__"):
+        body = _qbit_get(env, "torrents/info")
+        if body is None:
             return {"active": -1, "seeding": -1}
-        cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
-        cookie_jar.close()
         try:
-            # Pass credentials via stdin (-d @-) instead of argv to avoid
-            # leaking the password into /proc/<pid>/cmdline, where any local
-            # process can read it.
-            login = subprocess.run(
-                ["curl", "-sS", "--max-time", "5",
-                 "-c", cookie_jar.name,
-                 "-d", "@-",
-                 "http://localhost:8080/api/v2/auth/login"],
-                input=f"username={username}&password={password}",
-                capture_output=True, text=True, timeout=6,
-            )
-            if login.returncode != 0 or "Ok." not in (login.stdout or ""):
-                return {"active": -1, "seeding": -1}
-            info = subprocess.run(
-                ["curl", "-sS", "--max-time", "5",
-                 "-b", cookie_jar.name,
-                 "http://localhost:8080/api/v2/torrents/info"],
-                capture_output=True, text=True, timeout=6,
-            )
-            if info.returncode != 0 or not info.stdout.strip():
-                return {"active": -1, "seeding": -1}
-            torrents = json.loads(info.stdout)
+            torrents = json.loads(body)
             if not isinstance(torrents, list):
                 return {"active": -1, "seeding": -1}
             seeding_states = {"uploading", "stalledUP", "queuedUP", "forcedUP", "checkingUP"}
@@ -5007,49 +5042,17 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return {"active": len(torrents), "seeding": seeding}
         except Exception:
             return {"active": -1, "seeding": -1}
-        finally:
-            try:
-                os.unlink(cookie_jar.name)
-            except Exception:
-                pass
 
     def _qbit_listen_port(env: dict) -> int:
         """Return qBit's currently-configured listen_port, or -1 on failure."""
-        username = env.get("QBITTORRENT_ADMIN_USERNAME", "admin")
-        password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
-        if not password or password.startswith("__"):
+        body = _qbit_get(env, "app/preferences")
+        if body is None:
             return -1
-        cookie_jar = tempfile.NamedTemporaryFile(suffix=".cookies", delete=False)
-        cookie_jar.close()
         try:
-            # Credentials via stdin — see _qbit_torrent_summary for rationale.
-            login = subprocess.run(
-                ["curl", "-sS", "--max-time", "5",
-                 "-c", cookie_jar.name,
-                 "-d", "@-",
-                 "http://localhost:8080/api/v2/auth/login"],
-                input=f"username={username}&password={password}",
-                capture_output=True, text=True, timeout=6,
-            )
-            if login.returncode != 0 or "Ok." not in (login.stdout or ""):
-                return -1
-            prefs = subprocess.run(
-                ["curl", "-sS", "--max-time", "5",
-                 "-b", cookie_jar.name,
-                 "http://localhost:8080/api/v2/app/preferences"],
-                capture_output=True, text=True, timeout=6,
-            )
-            if prefs.returncode != 0 or not prefs.stdout.strip():
-                return -1
-            payload = json.loads(prefs.stdout)
+            payload = json.loads(body)
             return int(payload.get("listen_port", -1))
         except Exception:
             return -1
-        finally:
-            try:
-                os.unlink(cookie_jar.name)
-            except Exception:
-                pass
 
     def _gluetun_forwarded_port() -> int:
         """Return Gluetun's NAT-PMP forwarded port, 0 if unavailable, -1 on failure."""
@@ -5344,22 +5347,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _check_media_browser_gates()):
             return resp
 
-        try:
-            sudo_check = subprocess.run(
-                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
-            )
-            if sudo_check.returncode != 0:
-                return error_response(
-                    "sudo_required",
-                    "magic user must have NOPASSWD sudo configured",
-                    status=500,
-                )
-        except Exception:
-            return error_response(
-                "sudo_required",
-                "magic user must have NOPASSWD sudo configured",
-                status=500,
-            )
+        if (resp := _require_nopasswd_sudo()):
+            return resp
 
         try:
             result = subprocess.run(
@@ -5399,22 +5388,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 status=400,
             )
 
-        try:
-            sudo_check = subprocess.run(
-                ["sudo", "-n", "true"], capture_output=True, text=True, timeout=5
-            )
-            if sudo_check.returncode != 0:
-                return error_response(
-                    "sudo_required",
-                    "magic user must have NOPASSWD sudo configured",
-                    status=500,
-                )
-        except Exception:
-            return error_response(
-                "sudo_required",
-                "magic user must have NOPASSWD sudo configured",
-                status=500,
-            )
+        if (resp := _require_nopasswd_sudo()):
+            return resp
 
         steps_completed = []
 
