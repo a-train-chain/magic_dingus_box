@@ -3,19 +3,21 @@ name: OTA Update Tests
 on:
   push:
     paths:
-      - 'magic_dingus_box_cpp/scripts/update.sh'
-      - 'magic_dingus_box_cpp/scripts/setup_memory_tuning.sh'
+      # The whole scripts tree, not an enumeration of individual files:
+      # the old hand-maintained list (update.sh, setup_memory_tuning.sh,
+      # tests/**) meant a script whose test lived here could be EDITED
+      # without its test ever running — setup_memory_tuning.sh itself had
+      # to be appended after being missed, and the scripts under
+      # missing_search/ + emulator_smoke_test.py were never listed at all.
+      - 'magic_dingus_box_cpp/scripts/**'
       - 'magic_dingus_box/web/admin.py'
       - 'magic_dingus_box/web/tests/**'
-      - 'magic_dingus_box_cpp/scripts/tests/**'
       - '.github/workflows/test-ota.yml'
   pull_request:
     paths:
-      - 'magic_dingus_box_cpp/scripts/update.sh'
-      - 'magic_dingus_box_cpp/scripts/setup_memory_tuning.sh'
+      - 'magic_dingus_box_cpp/scripts/**'
       - 'magic_dingus_box/web/admin.py'
       - 'magic_dingus_box/web/tests/**'
-      - 'magic_dingus_box_cpp/scripts/tests/**'
       - '.github/workflows/test-ota.yml'
   workflow_dispatch:  # Allow manual trigger
 
@@ -43,6 +45,31 @@ jobs:
         env:
           MAGIC_SKIP_SYSTEMCTL: "true"
           MAGIC_SKIP_BUILD: "true"
+
+  scripts-python-tests:
+    name: Scripts Python Tests (unittest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run scripts unit tests
+        # unittest discover auto-enrolls any new test_*.py in this dir —
+        # same philosophy as the bats ./*.bats glob above: a test file
+        # must never exist while executing nowhere. The three files here
+        # (gluetun cascade, emulator smoke, missing search) had exactly
+        # that gap, and two rotted against renamed module APIs before
+        # being enrolled (repaired 2026-08-12). Stdlib-only: no pip
+        # install step, and keep it that way.
+        run: |
+          cd magic_dingus_box_cpp/scripts/tests
+          python -m unittest discover -s . -p 'test_*.py' -v
 
   python-tests:
     name: Python API Tests
@@ -132,7 +159,7 @@ jobs:
   all-tests-passed:
     name: All OTA Tests Passed
     runs-on: ubuntu-latest
-    needs: [shell-tests, python-tests, integration-tests, script-syntax]
+    needs: [shell-tests, scripts-python-tests, python-tests, integration-tests, script-syntax]
     if: always()
 
     steps:
@@ -140,6 +167,10 @@ jobs:
         run: |
           if [ "${{ needs.shell-tests.result }}" != "success" ]; then
             echo "Shell tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.scripts-python-tests.result }}" != "success" ]; then
+            echo "Scripts Python tests failed"
             exit 1
           fi
           if [ "${{ needs.python-tests.result }}" != "success" ]; then

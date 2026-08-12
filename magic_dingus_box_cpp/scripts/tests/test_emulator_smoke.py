@@ -1,10 +1,15 @@
 import os
+import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
 
-import emulator_smoke_test as smoke
+# The module under test lives one directory up (scripts/), same pattern as
+# test_missing_search.py. Without this the import only works if the caller
+# happens to have scripts/ on PYTHONPATH — which no runner does.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import emulator_smoke_test as smoke  # noqa: E402
 
 
 class ReadinessTests(unittest.TestCase):

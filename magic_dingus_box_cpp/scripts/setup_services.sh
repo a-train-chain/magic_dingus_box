@@ -151,7 +151,7 @@ TARGET_USER="${SUDO_USER:-magic}"
 
 if ! command -v docker &>/dev/null; then
     echo "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
+    curl -fsSL --connect-timeout 15 --max-time 120 https://get.docker.com | sh
     echo "Docker installed."
 fi
 
@@ -963,7 +963,7 @@ else
     QBIT_COOKIE=$(mktemp)
     LOGIN_OK=0
     # Try the .env password first (idempotent re-run path)
-    if curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+    if curl -fsS --max-time 15 -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
         -d "username=admin" --data-urlencode "password=${QBIT_PW}" 2>/dev/null \
         | grep -q "Ok."; then
         LOGIN_OK=1
@@ -971,7 +971,7 @@ else
     fi
     # Fall back to docker default
     if [ "${LOGIN_OK}" -eq 0 ]; then
-        if curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+        if curl -fsS --max-time 15 -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
             -d "username=admin&password=adminadmin" 2>/dev/null | grep -q "Ok."; then
             LOGIN_OK=1
             echo "  qBit was on default credentials — applying random password..."
@@ -985,7 +985,7 @@ else
     # dead-end here.
     if [ "${LOGIN_OK}" -eq 0 ]; then
         QBIT_TMP_PW=$(docker logs mdb_qbittorrent 2>&1 | grep "temporary password" | tail -1 | awk '{print $NF}')
-        if [ -n "${QBIT_TMP_PW}" ] && curl -fsS -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
+        if [ -n "${QBIT_TMP_PW}" ] && curl -fsS --max-time 15 -c "${QBIT_COOKIE}" -X POST "http://localhost:8080/api/v2/auth/login" \
             -d "username=admin" --data-urlencode "password=${QBIT_TMP_PW}" 2>/dev/null | grep -q "Ok."; then
             LOGIN_OK=1
             echo "  qBit was on a session temporary password — applying random password..."
@@ -1011,7 +1011,7 @@ print(json.dumps({
     'queueing_enabled': True,
     'max_active_downloads': 3,
 }))" "${QBIT_PW}")
-        if curl -fsS -b "${QBIT_COOKIE}" -X POST \
+        if curl -fsS --max-time 15 -b "${QBIT_COOKIE}" -X POST \
             "http://localhost:8080/api/v2/app/setPreferences" \
             --data-urlencode "json=${PREFS_JSON}" >/dev/null 2>&1; then
             echo "  ✓ qBit WebUI password set + localhost-auth-bypass disabled"
@@ -1048,7 +1048,7 @@ fi
 # than seeding a custom one — avoids schema-drift issues across Radarr versions
 # (minUpgradeFormatScore requirement changed in 5.14+).
 echo "Verifying Radarr built-in HD-1080p profile..."
-PROFILE_JSON=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" http://localhost:7878/api/v3/qualityprofile || echo "[]")
+PROFILE_JSON=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_KEY}" http://localhost:7878/api/v3/qualityprofile || echo "[]")
 if echo "${PROFILE_JSON}" | grep -q '"name":"HD-1080p"'; then
     echo "  ✓ HD-1080p profile present"
 else
@@ -1082,7 +1082,7 @@ echo "Setting 'Any' quality profile language to 'Original' (auto-adapts per movi
 # truncated/HTML body, and the isinstance() check covers Radarr answering 200
 # with an error OBJECT instead of the expected list (iterating a dict yields
 # str keys, and `p['name']` on a str raises TypeError — same fatal path).
-QUALITY_PROFILE_LIST=$(curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
+QUALITY_PROFILE_LIST=$(curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_KEY}" \
     http://localhost:7878/api/v3/qualityprofile 2>/dev/null || echo "[]")
 ANY_PROFILE=$(printf '%s' "${QUALITY_PROFILE_LIST}" | python3 -c "import sys,json
 try:
@@ -1097,7 +1097,7 @@ else:
     print('')")
 if [[ -n "${ANY_PROFILE}" ]]; then
     PROFILE_ID=$(printf '%s' "${ANY_PROFILE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-    curl -fsS -X PUT -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+    curl -fsS --max-time 15 -X PUT -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
         -d "${ANY_PROFILE}" \
         "http://localhost:7878/api/v3/qualityprofile/${PROFILE_ID}" >/dev/null \
         && echo "  ✓ 'Any' profile language set to Original" \
@@ -2604,7 +2604,7 @@ echo "Configuring Radarr root folder /data/library..."
 if [ "${RADARR_READY:-0}" -ne 1 ]; then
     echo "  WARN: Radarr not reachable — later runs will apply it."
 else
-    RADARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${RADARR_KEY}" \
+    RADARR_RF_PRESENT=$( (curl -fsS --max-time 15 -H "X-Api-Key: ${RADARR_KEY}" \
         http://localhost:7878/api/v3/rootfolder 2>/dev/null || echo "[]") \
         | python3 -c "import sys,json
 try: print(any(r.get('path')=='/data/library' for r in json.load(sys.stdin)))
@@ -2612,7 +2612,7 @@ except Exception: print(False)")
     if [[ "${RADARR_RF_PRESENT}" == "True" ]]; then
         echo "  ✓ Radarr root folder /data/library already present"
     else
-        if curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+        if curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
             -d '{"path":"/data/library"}' \
             http://localhost:7878/api/v3/rootfolder >/dev/null 2>&1; then
             echo "  ✓ Radarr root folder /data/library created"
@@ -2636,7 +2636,7 @@ else
     # set -euo pipefail, a bare failing curl in a $(pipeline) aborts the whole
     # run before the tolerant python path ever executes (same convention as
     # PROFILE_JSON at Step 8: `curl ... || echo "[]"`).
-    SONARR_RF_PRESENT=$( (curl -fsS -H "X-Api-Key: ${SONARR_KEY}" \
+    SONARR_RF_PRESENT=$( (curl -fsS --max-time 15 -H "X-Api-Key: ${SONARR_KEY}" \
         http://localhost:8989/api/v3/rootfolder 2>/dev/null || echo "[]") \
         | python3 -c "import sys,json
 try: print(any(r.get('path')=='/data/library/tv' for r in json.load(sys.stdin)))
@@ -2644,7 +2644,7 @@ except Exception: print(False)")
     if [[ "${SONARR_RF_PRESENT}" == "True" ]]; then
         echo "  ✓ Sonarr root folder /data/library/tv already present"
     else
-        if curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+        if curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
             -d '{"path":"/data/library/tv"}' \
             http://localhost:8989/api/v3/rootfolder >/dev/null 2>&1; then
             echo "  ✓ Sonarr root folder /data/library/tv created"
@@ -2995,7 +2995,7 @@ else
         QBIT_COOKIE="/tmp/qbit-setup-$$.cookie"
         # Login. SID cookie lives in $QBIT_COOKIE for downstream calls.
         # qBit returns plain "Ok." on success, "Fails." on bad creds.
-        LOGIN_RESP=$(curl -fsS --connect-timeout 10 \
+        LOGIN_RESP=$(curl -fsS --connect-timeout 10 --max-time 15 \
             -X POST -d "username=admin&password=${QBIT_PW}" \
             -c "${QBIT_COOKIE}" \
             http://localhost:8080/api/v2/auth/login || echo "fail")
@@ -3103,12 +3103,12 @@ fi
 # orphaned downloads.
 echo "Reconciling Radarr import state (catches completed-but-orphaned torrents)..."
 RECONCILE_OK="✓"
-curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
     -d '{"name":"RefreshMonitoredDownloads"}' \
     "http://localhost:7878/api/v3/command" >/dev/null \
     || RECONCILE_OK="WARN"
 sleep 5
-curl -fsS -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
+curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${RADARR_KEY}" -H "Content-Type: application/json" \
     -d '{"name":"DownloadedMoviesScan","path":"/downloads/complete","importMode":"Auto"}' \
     "http://localhost:7878/api/v3/command" >/dev/null \
     || RECONCILE_OK="WARN"
@@ -3132,12 +3132,12 @@ if [ "${SONARR_READY:-0}" -ne 1 ]; then
     echo "  WARN: Sonarr not reachable — later runs will apply it."
 else
     SONARR_RECONCILE_OK="✓"
-    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+    curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
         -d '{"name":"RefreshMonitoredDownloads"}' \
         "http://localhost:8989/api/v3/command" >/dev/null \
         || SONARR_RECONCILE_OK="WARN"
     sleep 5
-    curl -fsS -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
+    curl -fsS --max-time 15 -X POST -H "X-Api-Key: ${SONARR_KEY}" -H "Content-Type: application/json" \
         -d '{"name":"DownloadedEpisodesScan","path":"/downloads/complete","importMode":"Auto"}' \
         "http://localhost:8989/api/v3/command" >/dev/null \
         || SONARR_RECONCILE_OK="WARN"
