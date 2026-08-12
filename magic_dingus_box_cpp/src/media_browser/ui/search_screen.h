@@ -178,7 +178,6 @@ private:
     LibFetchResult            lib_pending_;
     std::atomic<bool>         lib_result_ready_{false};
     bool                      lib_loading_ = false;
-    WorkerPool lib_workers_;      // reaped each update() tick
 
     // --- Async lookup_ pipeline ---------------------------------------
     // The Radarr /movie/lookup call runs through Radarr's TMDB proxy and
@@ -193,6 +192,15 @@ private:
     std::vector<MovieSearchHit>      lookup_pending_;
     std::atomic<bool>                lookup_result_ready_{false};
     bool                             lookup_loading_ = false;
+
+    // MUST be the last members: members destruct in reverse declaration
+    // order, and ~WorkerPool joins any in-flight worker — declared last,
+    // those joins run BEFORE the pending buffers/mutexes the workers
+    // write (above) are destroyed. ~SearchScreen already joins both
+    // pools explicitly; this ordering keeps the class safe even if that
+    // destructor is ever simplified away. Same rule as
+    // mb_settings_screen.h.
+    WorkerPool lib_workers_;      // reaped each update() tick
     WorkerPool lookup_workers_;   // reaped each update() tick
 };
 

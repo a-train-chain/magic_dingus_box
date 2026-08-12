@@ -283,13 +283,6 @@ private:
     // result_ready_ is the fast atomic check update() uses to skip
     // the lock on every frame when no new result is in flight.
     std::atomic<bool>          tmdb_result_ready_{false};
-    // All worker threads spawned during this screen's lifetime.
-    // Joined in the destructor so a worker mid-CURL doesn't outlive
-    // the BrowseScreen and segfault on result publication.
-    // Reaped each update() tick — finished workers no longer pin their
-    // thread objects for the process lifetime (see worker_pool.h).
-    WorkerPool tmdb_workers_;
-
     // --- Pagination state (per-category) ---------------------------
     // The active category accumulates pages as the user scrolls. State
     // resets on category switch. TMDB returns 20 results per page; with
@@ -445,7 +438,24 @@ private:
     PendingLibrary    lib_pending_;
     std::atomic<bool> lib_result_ready_{false};
     std::atomic<bool> lib_refresh_in_flight_{false};
-    std::thread       lib_refresh_worker_;
+
+    // MUST be the last members: members destruct in reverse declaration
+    // order, and ~WorkerPool joins any in-flight worker — declared last,
+    // that join runs BEFORE the members the workers write (pending
+    // buffers, mutexes, generation counters above) are destroyed.
+    // ~BrowseScreen already joins everything explicitly; this ordering
+    // keeps the class safe even if that destructor is ever simplified
+    // away. Same rule as mb_settings_screen.h.
+    //
+    // tmdb_workers_: all TMDB page/genre workers, reaped each update()
+    // tick — finished workers no longer pin their thread objects for
+    // the process lifetime (see worker_pool.h).
+    // lib_refresh_worker_: raw std::thread (single-flight via the CAS on
+    // lib_refresh_in_flight_). Position alone does NOT protect it —
+    // ~std::thread terminates rather than joins — its joins live in
+    // refresh_library_async() (handle reuse) and ~BrowseScreen.
+    WorkerPool  tmdb_workers_;
+    std::thread lib_refresh_worker_;
 };
 
 }  // namespace media_browser::ui
