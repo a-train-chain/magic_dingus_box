@@ -30,6 +30,7 @@ one start event and exits, which ends the watcher loop via pipe EOF.
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -163,6 +164,38 @@ class UnpauseFallbackTests(StubDockerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.compose_lines(), [])
         self.assertTrue(MARKER.exists())
+
+
+class CascadeBlindStartTests(StubDockerTestCase):
+    # `docker events` reports transitions only. A gluetun ALREADY
+    # unhealthy when the watcher starts emits no event — hit live
+    # 2026-08-12 (boot-time unhealthy landed moments before the unit
+    # started; no restart ever came). The watcher now probes current
+    # health once at startup, in the background, with the same
+    # confirm-then-restart contract as the event branch.
+    def test_already_unhealthy_at_startup_restarts_gluetun(self):
+        result = self.run_script(
+            CASCADE,
+            extra_env={"INSPECT_RUNNING": "unhealthy",
+                       "UNHEALTHY_CONFIRM_S": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The startup check runs in a background subshell that may
+        # outlive the script (its stdout log write races script exit) —
+        # poll briefly instead of asserting immediately.
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            if "restart mdb_gluetun" in self.log_lines():
+                break
+            time.sleep(0.05)
+        self.assertIn("restart mdb_gluetun", self.log_lines())
+
+    def test_healthy_at_startup_never_restarts_gluetun(self):
+        result = self.run_script(CASCADE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        time.sleep(0.2)  # let the background startup check finish
+        self.assertFalse(
+            [l for l in self.log_lines() if l.startswith("restart ")],
+            self.log_lines())
 
 
 if __name__ == "__main__":

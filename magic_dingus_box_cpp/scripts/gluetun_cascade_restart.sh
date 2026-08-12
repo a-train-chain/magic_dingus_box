@@ -56,6 +56,40 @@ if ! [ -f "${COMPOSE_DIR}/docker-compose.yml" ]; then
 fi
 
 echo "[gluetun-cascade] watching docker events for mdb_gluetun start + health_status..."
+
+# Blind-start guard: `docker events` reports TRANSITIONS only, so a
+# gluetun that is ALREADY unhealthy when this watcher starts emits no
+# event and sits broken forever. Hit live 2026-08-12: boot-time
+# `compose up` marked gluetun unhealthy (NAT-PMP lease lost right after
+# acquisition — the port-forward ratchet) moments BEFORE this unit
+# started, the transition fired into the void, and no restart ever came
+# (gluetun sat unhealthy 30+ min until manual intervention). Check the
+# CURRENT state once at startup — in the background, because a
+# synchronous 5-minute confirm before the `docker events` subscription
+# below would MISS events outright, not merely delay them. Same
+# confirm-then-restart contract as the health_status:unhealthy branch:
+# the restart fires a fresh `start` event that the main loop's cascade
+# branch picks up.
+(
+    startup_state=$(docker inspect mdb_gluetun \
+        --format '{{.State.Health.Status}}' 2>/dev/null || echo absent)
+    if [ "${startup_state}" = "unhealthy" ]; then
+        echo "[gluetun-cascade] gluetun ALREADY unhealthy at watcher start, waiting ${UNHEALTHY_CONFIRM_S}s to confirm..."
+        sleep "${UNHEALTHY_CONFIRM_S}"
+        current=$(docker inspect mdb_gluetun \
+            --format '{{.State.Health.Status}}' 2>/dev/null || echo unknown)
+        if [ "${current}" = "unhealthy" ]; then
+            echo "[gluetun-cascade] still unhealthy after ${UNHEALTHY_CONFIRM_S}s (startup check), restarting tunnel..."
+            if docker restart mdb_gluetun; then
+                echo "[gluetun-cascade] gluetun restart issued (startup check); cascade will follow start event"
+            else
+                echo "[gluetun-cascade] gluetun restart FAILED (startup check) — manual intervention required"
+            fi
+        else
+            echo "[gluetun-cascade] recovered to '${current}' during startup confirm — no action needed"
+        fi
+    fi
+) &
 # Subscribe to two event types from the same stream:
 #   - start:         existing behavior — cascade-restart dependents so
 #                    they re-bind to the new netns. Triggered whenever
