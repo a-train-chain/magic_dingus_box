@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.11] - 2026-08-12
+
+### Fixed
+- **Movies Settings async load hardened** (review follow-ups to the
+  953b1a6 async rewrite, before it ever shipped):
+  - The thread-spawn-failure fallback ran the full load synchronously
+    on the render thread — reinstating the exact >WatchdogSec stall
+    the rewrite removed, under precisely the memory pressure that makes
+    `std::thread` construction fail on a 2 GB board. Now it keeps the
+    cached rows, shows a banner, and retries on the next entry.
+  - A load that finished while another screen was active stranded the
+    coalescing flag: re-entering Settings silently dropped its health
+    re-ping and rendered arbitrarily stale service dots as current
+    (`update()` only ticks the active screen). `enter()` now applies
+    stranded results as the cache they are and always fires a fresh
+    ping.
+  - SELECT on Sources during the first load window falsely diagnosed
+    "No indexers reachable — check Prowlarr" when the list simply
+    hadn't arrived; it now says "Sources still loading...".
+  - The "checking services..." indicator shows during every in-flight
+    health fetch, not only before the first one — cached dots are
+    visibly provisional until the fresh result lands.
+- **Provisioning can no longer hang forever on a wedged service**:
+  every curl in `setup_services.sh` now carries `--max-time` (17 call
+  sites; only 3 probe loops were bounded before — the same
+  accepts-the-socket-but-never-answers state v1.9.10 fixed for ONE
+  Sonarr probe could stall first boot or an OTA reconfigure at any of
+  the other 16). New `tests/local/curl_time_bounds.bats` fails CI if
+  an unbounded curl is ever reintroduced.
+- **The scripts-tests Python suites actually run now**:
+  `test_gluetun_cascade` / `test_emulator_smoke` / `test_missing_search`
+  executed in NO workflow, and two had silently rotted (a missing
+  sys.path insert; assertions against the API from before the
+  `wait_for_radarr` → `wait_for_ping(base)` Sonarr generalization).
+  Repaired and enrolled via a stdlib-only unittest-discover CI job,
+  and `test-ota.yml` now triggers on `magic_dingus_box_cpp/scripts/**`
+  instead of a hand-enumerated file list (19 tests green).
+
+### Changed
+- Movies Settings drives its load worker through the shared
+  `WorkerPool` (it was the ninth bespoke thread-lifecycle copy in
+  `media_browser/ui/`), deleting the three hand-maintained join sites;
+  the pool is deliberately the class's last member so its
+  destructor-join runs before anything the worker touches is
+  destroyed.
+- `config::` base-path getters are memoized — the per-call getenv +
+  string allocations are gone from per-frame callers (pairing-screen
+  renderer, input-event status writers).
+  `get_controller_profiles_file()` deliberately stays dynamic (tests
+  re-point it per test).
+
+### Removed
+- Dead state stranded by the v1.9.10-era cleanups: the browse screen's
+  unused sort/filter cluster (`kSortOptions`, `FilterRow`,
+  `filter_row_`, `current_sort_index_`) and
+  `ProwlarrClient::last_releases_`, which was still written on every
+  search but readable by nothing once `get_last_releases()` was
+  removed.
+
 ## [1.9.10] - 2026-08-11
 
 ### Fixed
