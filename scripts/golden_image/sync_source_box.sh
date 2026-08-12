@@ -195,9 +195,19 @@ push magic_dingus_box_cpp/src/retroarch/controller_detector.cpp \
      "controller_detector.cpp (skips the phone remote — REQUIRES REBUILD)"
 
 if [[ $DO_BUILD -eq 1 ]]; then
-    echo "  building on the Pi (-j2 per the build contract; several minutes)..."
+    # CLEAN configure, never a cache reuse. Two real failures live here:
+    # (1) 2026-08-12 — the cache still pinned FETCHCONTENT_SOURCE_DIR_SPDLOG
+    #     at /opt/magic_dingus_box/.spdlog-vendored (the internet-down
+    #     workaround, since deleted), so configure failed; only deploy_cpp.sh
+    #     self-healed with rm -rf build, this script did not.
+    # (2) A stale cache can carry ENABLE_MEDIA_BROWSER=OFF invisibly — the
+    #     flag defaults OFF, and a golden image built from such a cache ships
+    #     every unit without the movie kiosk (the v1.7.2 CI trap, on-box
+    #     edition). The image build must pin its flags explicitly, matching
+    #     update.sh's run_build.
+    echo "  building on the Pi (clean configure + -j2 per the build contract; ~20-30 min)..."
     if ssh "${SSH_OPTS[@]}" "$PI_HOST" \
-        "cd /opt/magic_dingus_box/magic_dingus_box_cpp/build && make -j2" 2>&1 | tail -4 | sed 's/^/    /'; then
+        "cd /opt/magic_dingus_box/magic_dingus_box_cpp && rm -rf build && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF .. && make -j2" 2>&1 | tail -4 | sed 's/^/    /'; then
         # A zero exit from make is not proof the change is IN the binary --
         # a stale object or a skipped rebuild both exit 0. Assert on content.
         # `|| true` INSIDE the remote command, not `|| echo 0` outside it:
