@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.12] - 2026-08-12
+
+### Fixed
+- **Gluetun auto-recovery now engages when the box boots into an
+  unhealthy tunnel.** `docker events` reports transitions only, so a
+  gluetun that was ALREADY unhealthy when the cascade watcher started
+  emitted no event — the entire confirm-then-restart recovery path
+  silently never engaged. Hit live on a fresh switch-on boot: the
+  NAT-PMP lease dropped right after acquisition, the services unit
+  failed its dependency wait, and gluetun sat unhealthy for 30+
+  minutes with a dead Movies section until manual intervention. The
+  watcher now probes gluetun's current health once at startup (in the
+  background, so the event subscription can't miss transitions during
+  the 5-minute confirm) and applies the same confirm-then-restart
+  contract. Two new stub-docker tests cover both startup paths.
+
+### Changed
+- Browse and Search screens enforce the WorkerPool-last member
+  ordering structurally (same rule as the Settings screen in v1.9.11);
+  both were safe via explicit destructor joins, this makes the safety
+  independent of them. Compile-verified on Pi 5 hardware.
+- `sync_source_box.sh` builds from a clean CMake configure with the
+  production flags pinned — a stale build cache could poison the
+  configure (hit live: the internet-outage vendored-spdlog pin) or,
+  quieter, carry `ENABLE_MEDIA_BROWSER=OFF` into a golden image build.
+
 ## [1.9.11] - 2026-08-12
 
 ### Fixed
