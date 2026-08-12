@@ -4,12 +4,12 @@
 #include <chrono>
 #include <functional>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "app/app_state.h"
 #include "media_browser/radarr/radarr_types.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/worker_pool.h"
 
 namespace media_browser {
 class RadarrClient;
@@ -50,8 +50,6 @@ public:
                      ProwlarrClient* prowlarr,
                      ::app::AppState& state,
                      std::function<void()> on_hide_feature);
-
-    ~MbSettingsScreen() override;
 
     void enter() override;
     void update() override;
@@ -206,17 +204,28 @@ private:
     bool loaded_once_ = false;
 
     // --- Async load plumbing (see start_async_load / apply_load_results) ---
-    // The worker thread writes ONLY the staged_* members; the main thread
-    // reads them in apply_load_results() after joining, so render()'s live
-    // members are never touched from two threads at once.
-    std::thread       load_thread_;
+    // The worker thread writes ONLY the staged_* members, then flips
+    // load_done_ (release) as its last act; the main thread's acquire-load
+    // in update()/enter() publishes those writes before apply_load_results()
+    // reads them, so render()'s live members are never touched from two
+    // threads at once. Thread lifecycle (join-on-finish, join-at-destruct)
+    // is WorkerPool's job — reaped each update() tick like Browse/Search.
     std::atomic<bool> load_in_flight_{false};
     std::atomic<bool> load_done_{false};
-    bool              load_was_full_ = false;  // set by worker before load_done_
+    // Main-thread only: written in start_async_load() BEFORE the worker
+    // spawns, read in apply_load_results(). The worker never touches it.
+    bool              load_was_full_ = false;
     ServiceHealth               staged_health_;
     std::vector<QualityProfile> staged_profiles_;
     std::vector<RootFolder>     staged_root_folders_;
     std::vector<IndexerRow>     staged_indexer_rows_;
+
+    // MUST be the last member: members destruct in reverse declaration
+    // order, and ~WorkerPool joins any in-flight worker — declaring the
+    // pool last means that join happens BEFORE the staged_* members (and
+    // everything else the worker lambda touches) are destroyed. Moving
+    // this up reintroduces a use-after-destruct on shutdown.
+    WorkerPool        load_worker_;
 };
 
 }  // namespace media_browser::ui

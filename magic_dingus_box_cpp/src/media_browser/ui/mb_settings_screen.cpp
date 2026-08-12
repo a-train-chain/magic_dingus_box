@@ -211,13 +211,6 @@ MbSettingsScreen::MbSettingsScreen(RadarrClient& radarr,
     // equivalent and one is enough.
 }
 
-MbSettingsScreen::~MbSettingsScreen() {
-    // Join any in-flight load worker so it can't outlive `this` and touch
-    // freed clients. On a kiosk this screen lives for the whole process, so
-    // the join only ever runs at shutdown (where a brief wait is fine).
-    if (load_thread_.joinable()) load_thread_.join();
-}
-
 void MbSettingsScreen::enter() {
     // NEVER block here — a synchronous load can take ~24s with a service
     // down, past systemd's WatchdogSec=10 (the kiosk gets SIGABRTed). Kick
@@ -226,6 +219,18 @@ void MbSettingsScreen::enter() {
     // the render path already tolerates empty profile/folder/indexer lists,
     // which was always possible when a fetch failed). update() applies the
     // results and rebuilds the rows when the worker finishes.
+    //
+    // A load that finished while ANOTHER screen was active is stranded:
+    // update() only ticks the active screen, so load_done_ stayed set and
+    // load_in_flight_ stayed true. Apply it now — as the stale cache it is,
+    // not as fresh data — which also releases the coalescing flag so the
+    // start_async_load below always fires a FRESH health ping on re-entry.
+    // (Before this, the stranded flag swallowed the re-ping and hour-old
+    // dots rendered as current.)
+    load_worker_.reap();
+    if (load_done_.load(std::memory_order_acquire)) {
+        apply_load_results();
+    }
     //   full load on first entry; health-only re-ping on re-entry (the
     //   profile / root-folder / indexer lists rarely change on a kiosk, so
     //   the cached copies stand).
@@ -235,6 +240,9 @@ void MbSettingsScreen::enter() {
 
 void MbSettingsScreen::update() {
     // Poll the async loader each frame; apply on the main thread when done.
+    // reap() joins any finished worker (instant — the done flag is the
+    // worker's last act), so thread objects never accumulate.
+    load_worker_.reap();
     if (load_done_.load(std::memory_order_acquire)) {
         apply_load_results();
     }
@@ -338,17 +346,12 @@ void MbSettingsScreen::start_async_load(bool full) {
     // superset when it is the first full load) will apply on the next tick.
     if (load_in_flight_.load(std::memory_order_acquire)) return;
 
-    // Invariant: when not in-flight the thread is never joinable (apply_
-    // load_results() joined it). Guard defensively so a std::thread move-
-    // assign onto a joinable handle can never call std::terminate().
-    if (load_thread_.joinable()) load_thread_.join();
-
     load_done_.store(false, std::memory_order_relaxed);
     load_was_full_ = full;
     load_in_flight_.store(true, std::memory_order_release);
 
     try {
-        load_thread_ = std::thread([this, full]() {
+        load_worker_.spawn([this, full]() {
             // Health is always refreshed. Radarr goes through the client
             // (correct API-key header); Prowlarr /ping and qBit version are
             // plain GETs — any HTTP response proves the daemon is up.
@@ -369,29 +372,22 @@ void MbSettingsScreen::start_async_load(bool full) {
             load_done_.store(true, std::memory_order_release);
         });
     } catch (...) {
-        // std::thread construction failed (resource exhaustion — never seen
-        // on this kiosk). Fall back to a synchronous load so the screen is
-        // not left permanently blank; the watchdog risk only bites when a
-        // service is DOWN, and a healthy box returns in well under 10s.
+        // std::thread construction failed (resource exhaustion). Do NOT
+        // load synchronously here: inline fetches block the render thread
+        // ~24s with a service down — past WatchdogSec=10, the exact stall
+        // this screen's async rewrite removed — and spawn failure means
+        // memory pressure, precisely when a service is also most likely
+        // wedged. Keep the cached rows (render tolerates empty lists) and
+        // let the next enter()/re-ping retry.
         load_in_flight_.store(false, std::memory_order_release);
-        staged_health_.radarr = radarr_.is_reachable();
-        staged_health_.prowlarr = ping_http("http://localhost:9696/ping");
-        staged_health_.qbittorrent =
-            ping_http("http://localhost:8080/api/v2/app/version");
-        staged_health_.fetched_at = std::chrono::steady_clock::now();
-        if (full) {
-            staged_profiles_ = radarr_.get_quality_profiles();
-            staged_root_folders_ = radarr_.get_root_folders();
-            staged_indexer_rows_ = compute_indexer_rows();
-        }
-        apply_load_results();
+        show_banner("Load skipped — box is low on memory; reopen to retry");
     }
 }
 
 void MbSettingsScreen::apply_load_results() {
-    // Main thread. Join the worker (it has already stored load_done_, so
-    // this returns immediately) before touching any staged_* member.
-    if (load_thread_.joinable()) load_thread_.join();
+    // Main thread. The load_done_ acquire-load that gated this call
+    // published every staged_* write, so they are safe to read even if
+    // WorkerPool hasn't reaped the (finished) thread object yet.
     load_done_.store(false, std::memory_order_relaxed);
     load_in_flight_.store(false, std::memory_order_release);
 
@@ -714,9 +710,17 @@ Screen MbSettingsScreen::handle_input(
                             "Prowlarr not configured — "
                             "set PROWLARR_API_KEY in services/.env");
                     } else if (indexer_rows_.empty()) {
-                        show_banner(
-                            "No indexers reachable — check Prowlarr "
-                            "is running on :9696");
+                        // Empty means EITHER Prowlarr is down OR the async
+                        // load simply hasn't landed yet — don't diagnose an
+                        // outage while the fetch is still in flight (that
+                        // state was unreachable under the old sync load).
+                        if (load_in_flight_.load(std::memory_order_acquire)) {
+                            show_banner("Sources still loading...");
+                        } else {
+                            show_banner(
+                                "No indexers reachable — check Prowlarr "
+                                "is running on :9696");
+                        }
                     } else if (indexer_cursor_ >= 0 &&
                                indexer_cursor_ < static_cast<int>(
                                    indexer_rows_.size())) {
@@ -882,13 +886,16 @@ void MbSettingsScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     }
 
     // --- Loading / health-fetch indicator ----------------------------
-    // If the service ping hasn't completed yet (fetched_at unset means
-    // a brand-new screen), show "checking services..." near the header
-    // so the user understands the dots are still resolving. Drawn in
-    // accent (gold) on the right side, mirroring DetailScreen's banner
-    // accent treatment but as inline status rather than a modal box.
+    // Show "checking services..." near the header whenever a health
+    // fetch is pending: on a brand-new screen (fetched_at unset) AND
+    // during any in-flight async load — re-entry re-pings and manual
+    // re-checks included, so cached dots are visibly provisional until
+    // the fresh result lands. Drawn in accent (gold) on the right side,
+    // mirroring DetailScreen's banner accent treatment but as inline
+    // status rather than a modal box.
     {
         bool services_unfetched =
+            load_in_flight_.load(std::memory_order_acquire) ||
             health_.fetched_at.time_since_epoch().count() == 0;
         if (services_unfetched) {
             const std::string msg = "checking services...";
