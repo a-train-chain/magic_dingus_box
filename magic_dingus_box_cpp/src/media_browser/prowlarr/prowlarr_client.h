@@ -218,13 +218,13 @@ private:
         last_error_ = std::move(msg);
     }
 
-    // Per-release records + per-indexer stats from the most recent
-    // search. Populated alongside `result_` on search completion. Kept
-    // under a separate mutex from `result_mtx_` so the larger Sources
-    // panel reads don't contend with the lightweight Detail-screen
+    // Per-indexer stats from the most recent search. Populated alongside
+    // `result_` on search completion (derived from the parsed release
+    // records, which are not retained — get_last_indexer_stats() is the
+    // only reader). Kept under a separate mutex from `result_mtx_` so the
+    // Sources panel reads don't contend with the lightweight Detail-screen
     // ReleaseSummary peek that runs every render frame.
     mutable std::mutex                    last_results_mu_;
-    std::vector<ReleaseRecord>            last_releases_;       // guarded by last_results_mu_
     std::vector<IndexerStats>             last_indexer_stats_;  // guarded by last_results_mu_
 
     // All worker threads spawned during this client's lifetime, in

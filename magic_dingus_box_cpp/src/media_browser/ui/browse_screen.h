@@ -104,9 +104,6 @@ private:
         PosterGrid,
     };
 
-    // Filter panel row / control identifiers.
-    enum class FilterRow { Genre = 0, Year = 1, SortBy = 2, Count = 3 };
-
     static constexpr int kNumContentCategories = 6;  // Popular..ForYou
     // 9-column grid: at 1280×720 this fits TWO full rows of 2:3 posters
     // (~119×178 px each) inside the available grid height of 532 px, with
@@ -355,11 +352,6 @@ private:
     std::atomic<bool> genres_ready_{false};
     std::mutex genres_mtx_;
     std::vector<Genre> pending_genres_;
-    FilterRow filter_row_ = FilterRow::Genre;  // Focused row in the panel.
-
-    // Available sort-by strings (paired with display labels in the .cpp).
-    // current_sort_index_ is the index into a static array in the .cpp.
-    int current_sort_index_ = 0;
 
     // --- Quick-add caches (preserved post-v1.6.x, see comment above) ---
     // Quick-add cache: in-library tmdb_id set + quality profile cache.

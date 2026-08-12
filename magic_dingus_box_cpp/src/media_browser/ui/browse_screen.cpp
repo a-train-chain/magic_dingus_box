@@ -2,7 +2,6 @@
 #include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -112,19 +111,6 @@ constexpr float kPosterAspect     = 1.5f;     // 2:3 portrait — TMDB poster as
 // dominating each cell.
 constexpr float kLabelAreaH       = 42.0f;    // title + year area below poster
 constexpr float kPosterBorderW    = 2.0f;
-
-// Hard-coded sort-by options. Keep small — TMDB supports more sorts but
-// these three cover >99% of actual user intent for a movie browser and
-// keep the UI legible.
-struct SortOption {
-    const char* label;   // Human-readable.
-    const char* value;   // TMDB sort_by value.
-};
-constexpr std::array<SortOption, 3> kSortOptions = {{
-    {"Popularity",   "popularity.desc"},
-    {"Rating",       "vote_average.desc"},
-    {"Release date", "primary_release_date.desc"},
-}};
 
 // ---------------------------------------------------------------------------
 // Filter overlay helpers (Task 4 of v1.6.4: hybrid endpoint switching)

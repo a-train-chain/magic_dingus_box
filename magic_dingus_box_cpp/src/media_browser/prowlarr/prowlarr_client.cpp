@@ -261,15 +261,15 @@ void ProwlarrClient::run_search(uint64_t gen, std::string title, int year) {
         return;
     }
 
-    // Populate the per-release records + per-indexer stats for the
-    // upcoming Sources panel + release-picker UI. This is additive: the
-    // existing aggregate ReleaseSummary below remains the source of
-    // truth for the Detail screen's AVAILABILITY readout.
+    // Populate the per-indexer stats for the Sources panel. The parsed
+    // release records exist only transiently to derive the stats — nothing
+    // reads a retained copy. This is additive: the existing aggregate
+    // ReleaseSummary below remains the source of truth for the Detail
+    // screen's AVAILABILITY readout.
     {
         auto records = parse_search_response(body);
         auto stats   = aggregate_indexer_stats(records, /*seed_threshold=*/10);
         std::lock_guard<std::mutex> lk(last_results_mu_);
-        last_releases_      = std::move(records);
         last_indexer_stats_ = std::move(stats);
     }
 
