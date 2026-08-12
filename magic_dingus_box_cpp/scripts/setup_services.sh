@@ -1490,7 +1490,12 @@ else
     # dooming unrelated steps is not, so we WARN-and-skip instead.
     SONARR_READY=0
     for i in {1..30}; do
-        if curl -fsS -o /dev/null -H "X-Api-Key: ${SONARR_KEY}" \
+        # --max-time 5 bounds the probe in WALL CLOCK, mirroring the two
+        # Radarr probes (Steps 9.5 / post-restart). A container that is up
+        # with its port bound but the app wedged mid-init accepts the
+        # socket and never answers — an untimed curl blocks there forever
+        # and the "60s" loop becomes unbounded during first-boot provision.
+        if curl -fsS --max-time 5 -o /dev/null -H "X-Api-Key: ${SONARR_KEY}" \
             http://localhost:8989/api/v3/system/status 2>/dev/null; then
             SONARR_READY=1
             break

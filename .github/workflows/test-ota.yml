@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'magic_dingus_box_cpp/scripts/update.sh'
+      - 'magic_dingus_box_cpp/scripts/setup_memory_tuning.sh'
       - 'magic_dingus_box/web/admin.py'
       - 'magic_dingus_box/web/tests/**'
       - 'magic_dingus_box_cpp/scripts/tests/**'
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - 'magic_dingus_box_cpp/scripts/update.sh'
+      - 'magic_dingus_box_cpp/scripts/setup_memory_tuning.sh'
       - 'magic_dingus_box/web/admin.py'
       - 'magic_dingus_box/web/tests/**'
       - 'magic_dingus_box_cpp/scripts/tests/**'
@@ -34,7 +36,10 @@ jobs:
       - name: Run BATS tests
         run: |
           cd magic_dingus_box_cpp/scripts/tests
-          bats test_update.bats --tap
+          # Every *.bats in this dir — so a new test file (e.g.
+          # test_memory_tuning.bats) is picked up automatically instead of
+          # silently executing nowhere until someone edits this workflow.
+          bats ./*.bats --tap
         env:
           MAGIC_SKIP_SYSTEMCTL: "true"
           MAGIC_SKIP_BUILD: "true"

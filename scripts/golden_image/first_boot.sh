@@ -848,7 +848,7 @@ fi
 # content are the shipped product, same as ROMs, cores, and thumbnails.
 
 # ---------------------------------------------------------------------------
-# Step 6f: Converge the playback memory posture
+# Step 6g: Converge the playback memory posture
 # ---------------------------------------------------------------------------
 # Clones cut from a current donor image inherit all four artifacts (the
 # drop-ins and cmdline flags live on the image), making this a no-op.
@@ -861,11 +861,11 @@ fi
 # every other converge step: a failure must not stop first boot.
 MEMTUNE="/opt/magic_dingus_box/magic_dingus_box_cpp/scripts/setup_memory_tuning.sh"
 if [[ -f "$MEMTUNE" ]]; then
-    log "[6f/7] Converging playback memory posture..."
-    bash "$MEMTUNE" 2>&1 | while IFS= read -r line; do log "[6f/7] $line"; done \
-        || log "[6f/7] WARNING: memory tuning failed (next OTA will retry)"
+    log "[6g/7] Converging playback memory posture..."
+    bash "$MEMTUNE" 2>&1 | while IFS= read -r line; do log "[6g/7] $line"; done \
+        || log "[6g/7] WARNING: memory tuning failed (next OTA will retry)"
 else
-    log "[6f/7] setup_memory_tuning.sh not on this image; skipping"
+    log "[6g/7] setup_memory_tuning.sh not on this image; skipping"
 fi
 
 # ---------------------------------------------------------------------------
