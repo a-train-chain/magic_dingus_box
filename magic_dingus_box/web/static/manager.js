@@ -378,13 +378,6 @@ async function apiPost(url, body) {
  * @param {string} url - The API endpoint URL
  * @returns {Promise<any>} - The response data
  */
-async function apiDelete(url) {
-    return apiRequest(url, {
-        method: 'DELETE',
-        headers: getCsrfHeaders()
-    });
-}
-
 // ===== UPLOAD CONFIGURATION =====
 // Screen Wake Lock — kept while an upload is in progress so the phone
 // doesn't lock its screen (which suspends the tab's JS and can stall/kill a
@@ -638,18 +631,6 @@ const MEDIA_CONFIG = {
         libraryTabText: 'ROM Library',
         libraryViewId: 'romLibraryView'
     }
-};
-
-// Emulator core mapping for ROMs
-const CORE_MAP = {
-    nes: 'fceumm',
-    snes: 'snes9x',
-    gb: 'gambatte',
-    gbc: 'gambatte',
-    gba: 'mgba',
-    genesis: 'genesis_plus_gx',
-    n64: 'mupen64plus_next',
-    psx: 'pcsx_rearmed'
 };
 
 // Separate playlist builders for videos and games
@@ -1383,17 +1364,6 @@ function createNewPlaylist(type) {
  * Filter available items in the library
  * @param {string} type - 'video' or 'game'
  */
-function filterLibrary(type) {
-    const config = MEDIA_CONFIG[type];
-    const query = document.getElementById(config.searchInputId).value.toLowerCase();
-    const items = document.querySelectorAll(`#${config.playlistAvailableId} .draggable-item, #${config.playlistAvailableId} .content-item`);
-
-    items.forEach(item => {
-        const text = item.textContent.toLowerCase();
-        item.style.display = text.includes(query) ? 'flex' : 'none';
-    });
-}
-
 /**
  * Render playlist items in the editor
  * @param {string} type - 'video' or 'game'
@@ -1499,87 +1469,6 @@ function renderPlaylistItems(type) {
  * Render available items that can be added to a playlist
  * @param {string} type - 'video' or 'game'
  */
-function renderPlaylistAvailable(type) {
-    const config = MEDIA_CONFIG[type];
-    const container = document.getElementById(config.playlistAvailableId);
-    const items = config.getItems();
-    const addedPaths = new Set(items.map(item => item.path));
-
-    if (type === 'video') {
-        // Video rendering
-        const available = config.getAvailable();
-        if (available.length === 0) {
-            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.emptyMessage}</p>`;
-            return;
-        }
-
-        const filteredVideos = available.filter(video => {
-            const videoPath = video.path || `media/${video.filename}`;
-            return !addedPaths.has(videoPath);
-        });
-
-        if (filteredVideos.length === 0) {
-            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.allAddedMessage}</p>`;
-            return;
-        }
-
-        container.innerHTML = filteredVideos.map((video, index) => {
-            const originalIndex = available.indexOf(video);
-            return `
-                <div class="content-item" draggable="true"
-                    data-type="video" data-index="${originalIndex}" data-target="video"
-                    ondragstart="handleDragStart(event, 'video')" ondragend="handleDragEnd(event)">
-                    ${config.icon} ${escapeHtml(video.filename)}
-                </div>
-            `;
-        }).join('');
-    } else {
-        // Game/ROM rendering - organized by system
-        const availableROMs = config.getAvailable();
-        const systems = Object.keys(availableROMs);
-
-        if (systems.length === 0) {
-            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.emptyMessage}</p>`;
-            return;
-        }
-
-        let html = '';
-        let totalAvailable = 0;
-
-        systems.forEach(system => {
-            const roms = availableROMs[system];
-            const filteredRoms = roms.filter(rom => !addedPaths.has(rom.path));
-
-            if (filteredRoms.length > 0) {
-                html += `<div style="margin-bottom: 1rem;"><strong style="color: var(--accent2);">${escapeHtml(system.toUpperCase())}</strong></div>`;
-                filteredRoms.forEach((rom) => {
-                    const originalIndex = roms.indexOf(rom);
-                    totalAvailable++;
-                    html += `
-                        <div class="content-item" draggable="true"
-                            data-type="rom" data-system="${escapeHtml(system)}" data-index="${originalIndex}" data-target="game"
-                            ondragstart="handleDragStart(event, 'game')" ondragend="handleDragEnd(event)">
-                            ${config.icon} ${escapeHtml(rom.filename)}
-                        </div>
-                    `;
-                });
-            }
-        });
-
-        if (totalAvailable === 0) {
-            container.innerHTML = `<p style="color: var(--text-secondary); padding: 1rem;">${config.allAddedMessage}</p>`;
-            return;
-        }
-
-        container.innerHTML = html;
-    }
-
-    // Add touch event handlers for mobile
-    if (hasTouch) {
-        setupTouchHandlers(type);
-    }
-}
-
 // ===== UI NAVIGATION =====
 // Legacy wrapper functions for backward compatibility
 
@@ -2001,157 +1890,6 @@ async function handleDirectUpload(input) {
  * @param {string} resolution - Target resolution key ('crt' or 'modern')
  * @param {boolean} autoAddToPlaylist - Whether to add to current playlist
  */
-async function processVideoFile(file, resolution, autoAddToPlaylist) {
-    const statusEl = document.getElementById('transcodeStatus');
-    const labelEl = statusEl?.querySelector('.transcode-label');
-    const progressEl = statusEl?.querySelector('.transcode-progress-fill');
-    const detailsEl = statusEl?.querySelector('.transcode-details');
-    const iconEl = statusEl?.querySelector('.transcode-icon');
-
-    // Helper to update status UI
-    const updateStatus = (label, details, progress = null, state = '') => {
-        if (statusEl) statusEl.style.display = 'block';
-        if (labelEl) labelEl.textContent = label;
-        if (detailsEl) detailsEl.textContent = details;
-        if (progress !== null && progressEl) progressEl.style.width = `${progress}%`;
-        if (statusEl) {
-            statusEl.classList.remove('loading', 'complete', 'error');
-            if (state) statusEl.classList.add(state);
-        }
-        if (iconEl) {
-            iconEl.innerHTML = spriteIcon(state === 'error' ? 'ic-warning'
-                                        : state === 'complete' ? 'ic-check'
-                                        : 'ic-hourglass');
-        }
-    };
-
-    // Helper to hide status
-    const hideStatus = () => {
-        if (statusEl) statusEl.style.display = 'none';
-    };
-
-    try {
-        const truncatedName = file.name.length > 30 ? file.name.substring(0, 27) + '...' : file.name;
-
-        // Step 1: Upload file to Pi for transcoding
-        updateStatus(`Sending to Pi`, truncatedName, 0, 'loading');
-        console.log(`[Transcode] Uploading ${file.name} for server-side transcoding`);
-
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('resolution', resolution);
-
-        // Upload with progress tracking
-        const uploadResponse = await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', `${currentDevice.url}/admin/upload-and-transcode`);
-
-            // Add CSRF token (use global csrfToken variable)
-            if (csrfToken) {
-                xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-            }
-
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    const pct = Math.round((e.loaded / e.total) * 50); // Upload is 0-50%
-                    if (progressEl) progressEl.style.width = `${pct}%`;
-                    if (detailsEl) {
-                        const mbLoaded = (e.loaded / 1024 / 1024).toFixed(1);
-                        const mbTotal = (e.total / 1024 / 1024).toFixed(1);
-                        detailsEl.textContent = `Uploading ${mbLoaded}/${mbTotal} MB`;
-                    }
-                }
-            };
-
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    try {
-                        resolve(JSON.parse(xhr.responseText));
-                    } catch (e) {
-                        reject(new Error('Invalid server response'));
-                    }
-                } else {
-                    reject(new Error(`Upload failed: ${xhr.status}`));
-                }
-            };
-
-            xhr.onerror = () => reject(new Error('Network error'));
-            xhr.send(formData);
-        });
-
-        if (!uploadResponse.data?.job_id) {
-            throw new Error('No job ID returned from server');
-        }
-
-        const jobId = uploadResponse.data.job_id;
-        console.log(`[Transcode] Job started: ${jobId}`);
-
-        // Step 2: Poll for transcoding progress
-        updateStatus('Converting on Pi', truncatedName, 50);
-
-        let complete = false;
-        let lastProgress = 0;
-        while (!complete) {
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Poll every second
-
-            const statusResponse = await fetch(`${currentDevice.url}/admin/transcode-status/${jobId}`);
-            const statusData = await statusResponse.json();
-
-            if (!statusData.data) {
-                console.warn('[Transcode] No status data received');
-                continue;
-            }
-
-            const { status, progress, message } = statusData.data;
-
-            // Map transcoding progress to 50-100% range (upload was 0-50%)
-            const displayProgress = 50 + Math.round(progress / 2);
-            if (progressEl) progressEl.style.width = `${displayProgress}%`;
-            if (detailsEl) detailsEl.textContent = message;
-            lastProgress = displayProgress;
-
-            if (status === 'complete') {
-                complete = true;
-                console.log(`[Transcode] Complete! Output: ${statusData.data.output_filename}`);
-            } else if (status === 'error') {
-                throw new Error(message || 'Transcoding failed');
-            }
-        }
-
-        // Success!
-        updateStatus('Complete!', 'Video is ready', 100, 'complete');
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        hideStatus();
-    } catch (error) {
-        console.error('[Transcode] Error:', error);
-
-        // Show error state
-        updateStatus('Conversion failed', error.message, 0, 'error');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        hideStatus();
-
-        // Ask user if they want to upload original without transcoding
-        const uploadOriginal = confirm(
-            `Video conversion failed: ${error.message}\n\n` +
-            `Would you like to upload the original file without conversion?\n` +
-            `Note: It may not play correctly on the Magic Dingus Box.`
-        );
-
-        if (uploadOriginal) {
-            await uploadVideos([file], autoAddToPlaylist);
-        }
-        return; // Exit early on error
-    }
-
-    // Refresh media list AFTER successful transcoding (in separate try/catch)
-    try {
-        await loadAllContentFromDevice();
-    } catch (refreshError) {
-        console.warn('[Transcode] Media refresh failed:', refreshError);
-        // Don't trigger fallback for refresh errors
-    }
-}
-
 
 async function uploadVideos(fileList = null, autoAddToPlaylist = false) {
     if (!currentDevice) {
@@ -2457,10 +2195,6 @@ function uploadSingleFile(file, progressBar, autoAddToPlaylist) {
     });
 }
 
-function filterVideoLibrary() {
-    filterLibrary('video');
-}
-
 function filterMainLibrary(input) {
     const query = input.value.toLowerCase();
     // Scoped to the input's own tab, NOT the whole document. Both the video
@@ -2506,10 +2240,6 @@ function switchGameSourceTab(tabName) {
 
 function createNewGamePlaylist() {
     createNewPlaylist('game');
-}
-
-function filterGameLibrary() {
-    filterLibrary('game');
 }
 
 // ===== ROM MANAGEMENT =====
@@ -2586,19 +2316,6 @@ async function loadROMs() {
 }
 
 
-
-function toggleAccordion(header) {
-    const content = header.nextElementSibling;
-    const isActive = content.classList.contains('active');
-
-    // Close all accordions
-    document.querySelectorAll('.accordion-content').forEach(c => c.classList.remove('active'));
-
-    // Toggle this one
-    if (!isActive) {
-        content.classList.add('active');
-    }
-}
 
 async function handleDirectROMUpload(input) {
     if (input.files.length > 0) {
@@ -3236,144 +2953,6 @@ function cancelEdit(type) {
 
 // ===== PLAYLIST IMPORT =====
 
-function importPlaylist(type) {
-    // Create a hidden file input
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.yaml,.yml';
-    input.style.display = 'none';
-    document.body.appendChild(input);
-
-    input.onchange = async () => {
-        if (input.files.length > 0) {
-            await uploadPlaylist(input.files[0], type);
-        }
-        document.body.removeChild(input);
-    };
-
-    input.click();
-}
-
-async function uploadPlaylist(file, type) {
-    if (!currentDevice) {
-        alert('Please select a device first');
-        return;
-    }
-
-    // Show loading state
-    const overlay = document.createElement('div');
-    overlay.className = 'loading-overlay';
-    overlay.innerHTML = `
-        <div class="loading-spinner"></div>
-        <div style="margin-top: 1rem; color: white;">Importing playlist...</div>
-    `;
-    document.body.appendChild(overlay);
-
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${currentDevice.url}/admin/playlists/import?overwrite=false`);
-
-        // Add CSRF token
-        if (csrfToken) {
-            xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-        } else {
-            // Try to get token if missing
-            await fetchCsrfToken();
-            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-        }
-
-        xhr.onload = async () => {
-            document.body.removeChild(overlay);
-
-            if (xhr.status === 200) {
-                const response = JSON.parse(xhr.responseText);
-                // Success
-                // Show notification
-                showNotification(`Imported "${response.data.title}" successfully`, 'success');
-
-                // Refresh playlists
-                await loadExistingPlaylists();
-            } else if (xhr.status === 409) {
-                // Already exists - ask to overwrite
-                if (confirm(`Playlist ${file.name} already exists. Overwrite it?`)) {
-                    // Retry with overwrite=true
-                    await uploadPlaylistOverwriting(file);
-                }
-            } else {
-                try {
-                    const err = JSON.parse(xhr.responseText);
-                    alert(`Import failed: ${err.error?.message || xhr.statusText}`);
-                } catch {
-                    alert(`Import failed: ${xhr.statusText}`);
-                }
-            }
-        };
-
-        xhr.onerror = () => {
-            document.body.removeChild(overlay);
-            alert('Network error handling import');
-        };
-
-        xhr.send(formData);
-
-    } catch (e) {
-        document.body.removeChild(overlay);
-        console.error('Import error:', e);
-        alert('Failed to start import');
-    }
-}
-
-async function uploadPlaylistOverwriting(file) {
-    // Show loading state
-    const overlay = document.createElement('div');
-    overlay.className = 'loading-overlay';
-    overlay.innerHTML = `
-        <div class="loading-spinner"></div>
-        <div style="margin-top: 1rem; color: white;">Overwriting playlist...</div>
-    `;
-    document.body.appendChild(overlay);
-
-    try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        await new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open('POST', `${currentDevice.url}/admin/playlists/import?overwrite=true`);
-
-            if (csrfToken) xhr.setRequestHeader('X-CSRF-Token', csrfToken);
-
-            xhr.onload = async () => {
-                document.body.removeChild(overlay);
-                if (xhr.status === 200) {
-                    const response = JSON.parse(xhr.responseText);
-                    showNotification(`Imported "${response.data.title}" successfully`, 'success');
-                    await loadExistingPlaylists();
-                    resolve();
-                } else {
-                    alert(`Overwrite failed: ${xhr.statusText}`);
-                    reject();
-                }
-            };
-
-            xhr.onerror = () => {
-                document.body.removeChild(overlay);
-                alert('Network error');
-                reject();
-            };
-
-            xhr.send(formData);
-        });
-
-    } catch (e) {
-        if (document.body.contains(overlay)) document.body.removeChild(overlay);
-        console.error('Overwrite error:', e);
-    }
-}
-
 // TEMPORARY COPY — an import writes the playlist to disk, but the kiosk only
 // re-reads playlists at startup, so nothing shows up on the TV until the box
 // restarts. Nothing in this UI said so. Once a box ships the kiosk change that
@@ -3931,40 +3510,8 @@ function renderVideoPlaylistAvailable() {
 // won, so this was dead code that would silently resurrect the broken ROM
 // panel if the two were ever reordered. Removed to kill that footgun.
 
-function handleDragStart(event, playlistType) {
-    const type = event.target.dataset.type;
-    const index = parseInt(event.target.dataset.index);
-
-    if (type === 'video') {
-        draggedItem = {
-            type: 'local',
-            data: availableVideos[index],
-            playlistType: playlistType
-        };
-    } else if (type === 'rom') {
-        const system = event.target.dataset.system;
-        const rom = availableROMs[system][index];
-        draggedItem = {
-            type: 'emulated_game',
-            data: rom,
-            system: system,
-            playlistType: playlistType
-        };
-    }
-
-    event.target.classList.add('dragging');
-}
-
 function handleDragEnd(event) {
     event.target.classList.remove('dragging');
-}
-
-function renderVideoPlaylistItems() {
-    renderPlaylistItems('video');
-}
-
-function renderGamePlaylistItems() {
-    renderPlaylistItems('game');
 }
 
 function removePlaylistItem(index, type) {
@@ -3983,107 +3530,6 @@ function removePlaylistItem(index, type) {
     } else {
         renderGamePlaylistAvailable();
     }
-}
-
-function editPlaylistItem(index, type) {
-    const config = MEDIA_CONFIG[type];
-    const items = config.getItems();
-    const item = items[index];
-
-    // Instead of prompt, make the fields inline-editable
-    // Find the playlist item element
-    const container = document.getElementById(config.playlistItemsId);
-    const playlistItems = container.querySelectorAll('.playlist-item');
-    const itemElement = playlistItems[index];
-
-    if (!itemElement) return;
-
-    // Find the title and artist spans
-    const titleSpan = itemElement.querySelector('.item-title');
-    const artistSpan = itemElement.querySelector('.item-artist');
-
-    if (!titleSpan) return;
-
-    // Get current values
-    const currentTitle = item.title || item.path?.split('/').pop() || '';
-    const currentArtist = item.artist || '';
-
-    // Replace with input fields
-    const titleInput = document.createElement('input');
-    titleInput.type = 'text';
-    titleInput.value = currentTitle;
-    titleInput.className = 'edit-input';
-    titleInput.style.cssText = 'background: var(--bg-dark); border: 1px solid var(--accent); color: var(--text-primary); padding: 0.25rem; border-radius: 4px; font-size: 0.9rem; width: 200px;';
-
-    const artistInput = document.createElement('input');
-    artistInput.type = 'text';
-    artistInput.value = currentArtist;
-    artistInput.placeholder = 'Artist (optional)';
-    artistInput.className = 'edit-input';
-    artistInput.style.cssText = 'background: var(--bg-dark); border: 1px solid var(--accent2); color: var(--text-secondary); padding: 0.25rem; border-radius: 4px; font-size: 0.85rem; margin-left: 0.5rem; width: 150px;';
-
-    // Create save/cancel buttons
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = '✓ Save';
-    saveBtn.className = 'btn-edit';
-    saveBtn.style.cssText = 'margin-left: 0.5rem; background: var(--success); padding: 0.25rem 0.5rem;';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.textContent = '✕';
-    cancelBtn.className = 'btn-remove';
-    cancelBtn.style.cssText = 'margin-left: 0.25rem; padding: 0.25rem 0.5rem;';
-
-    // Save handler
-    const saveEdit = () => {
-        const newTitle = titleInput.value.trim();
-        const newArtist = artistInput.value.trim();
-
-        if (newTitle) {
-            items[index].title = newTitle;
-        }
-        items[index].artist = newArtist;
-
-        // Re-render
-        if (type === 'game') {
-            renderGamePlaylistItems();
-            renderGamePlaylistAvailable();
-        } else {
-            renderVideoPlaylistItems();
-            renderVideoPlaylistAvailable();
-        }
-    };
-
-    // Cancel handler
-    const cancelEdit = () => {
-        if (type === 'game') {
-            renderGamePlaylistItems();
-        } else {
-            renderVideoPlaylistItems();
-        }
-    };
-
-    saveBtn.addEventListener('click', saveEdit);
-    cancelBtn.addEventListener('click', cancelEdit);
-
-    // Allow Enter to save, Escape to cancel
-    const handleKey = (e) => {
-        if (e.key === 'Enter') saveEdit();
-        if (e.key === 'Escape') cancelEdit();
-    };
-    titleInput.addEventListener('keydown', handleKey);
-    artistInput.addEventListener('keydown', handleKey);
-
-    // Replace the spans with inputs
-    const infoDiv = itemElement.querySelector('.playlist-item-info');
-    infoDiv.innerHTML = '';
-    infoDiv.appendChild(titleInput);
-    infoDiv.appendChild(artistInput);
-    infoDiv.appendChild(saveBtn);
-    infoDiv.appendChild(cancelBtn);
-
-    // Focus the title input
-    titleInput.focus();
-    titleInput.select();
 }
 
 // Setup drop zones for both playlist panels
@@ -4741,174 +4187,6 @@ async function deletePlaylist(filename, type) {
 
 // ===== TOUCH DRAG-AND-DROP SUPPORT =====
 
-function setupTouchHandlers(type) {
-    // Add touch handlers to content items in the specific panel
-    const containerId = type === 'game' ? 'gamePlaylistAvailable' : 'videoPlaylistAvailable';
-    const container = document.getElementById(containerId);
-    if (!container) return;
-
-    const contentItems = container.querySelectorAll('.content-item');
-
-    contentItems.forEach(item => {
-        item.addEventListener('touchstart', (e) => handleContentTouchStart(e, type), { passive: false });
-        item.addEventListener('touchmove', (e) => handleContentTouchMove(e, type), { passive: false });
-        item.addEventListener('touchend', (e) => handleContentTouchEnd(e, type), { passive: false });
-    });
-}
-
-function handleContentTouchStart(e, playlistType) {
-    const item = e.currentTarget;
-
-    // Start long press timer
-    longPressTimer = setTimeout(() => {
-        // Long press detected - start drag
-        isDragging = true;
-        touchDragElement = item;
-
-        // Store the dragged item data
-        const type = item.dataset.type;
-        const index = parseInt(item.dataset.index);
-
-        if (type === 'video') {
-            draggedItem = {
-                type: 'local',
-                data: availableVideos[index],
-                playlistType: playlistType
-            };
-        } else if (type === 'rom') {
-            const system = item.dataset.system;
-            const rom = availableROMs[system][index];
-            draggedItem = {
-                type: 'emulated_game',
-                data: rom,
-                system: system,
-                playlistType: playlistType
-            };
-        }
-
-        // Visual feedback
-        item.style.opacity = '0.5';
-        item.style.transform = 'scale(1.05)';
-
-        // Haptic feedback if available
-        if (navigator.vibrate) {
-            navigator.vibrate(50);
-        }
-
-        // Create a floating clone
-        touchDragClone = item.cloneNode(true);
-        touchDragClone.style.position = 'fixed';
-        touchDragClone.style.pointerEvents = 'none';
-        touchDragClone.style.zIndex = '10000';
-        touchDragClone.style.opacity = '0.8';
-        touchDragClone.style.transform = 'scale(1.1)';
-        touchDragClone.style.boxShadow = '0 10px 30px rgba(255, 64, 160, 0.5)';
-
-        const touch = e.touches[0];
-        touchDragClone.style.left = (touch.pageX - 50) + 'px';
-        touchDragClone.style.top = (touch.pageY - 20) + 'px';
-        touchDragClone.style.width = item.offsetWidth + 'px';
-
-        document.body.appendChild(touchDragClone);
-
-    }, 300); // 300ms long press
-
-    const touch = e.touches[0];
-    touchStartX = touch.pageX;
-    touchStartY = touch.pageY;
-}
-
-function handleContentTouchMove(e, playlistType) {
-    if (longPressTimer && !isDragging) {
-        // Check if user moved too much - cancel long press
-        const touch = e.touches[0];
-        const deltaX = Math.abs(touch.pageX - touchStartX);
-        const deltaY = Math.abs(touch.pageY - touchStartY);
-
-        if (deltaX > 10 || deltaY > 10) {
-            clearTimeout(longPressTimer);
-            longPressTimer = null;
-        }
-        return;
-    }
-
-    if (isDragging && touchDragClone) {
-        e.preventDefault();
-
-        const touch = e.touches[0];
-        touchDragClone.style.left = (touch.pageX - 50) + 'px';
-        touchDragClone.style.top = (touch.pageY - 20) + 'px';
-
-        // Check if over the correct playlist panel
-        const panelId = MEDIA_CONFIG[playlistType].playlistItemsId;
-        const playlistPanel = document.getElementById(panelId);
-        if (!playlistPanel) return;
-
-        const rect = playlistPanel.getBoundingClientRect();
-
-        if (touch.pageX >= rect.left && touch.pageX <= rect.right &&
-            touch.pageY >= rect.top && touch.pageY <= rect.bottom) {
-            playlistPanel.style.background = 'var(--bg-mid)';
-            playlistPanel.style.borderColor = 'var(--accent2)';
-        } else {
-            playlistPanel.style.background = '';
-            playlistPanel.style.borderColor = '';
-        }
-    }
-}
-
-function handleContentTouchEnd(e, playlistType) {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
-
-    if (isDragging && touchDragElement) {
-        e.preventDefault();
-
-        // Reset visual state
-        touchDragElement.style.opacity = '';
-        touchDragElement.style.transform = '';
-
-        // Check if dropped on correct playlist panel
-        const touch = e.changedTouches[0];
-        const panelId = MEDIA_CONFIG[playlistType].playlistItemsId;
-        const playlistPanel = document.getElementById(panelId);
-
-        if (playlistPanel) {
-            const rect = playlistPanel.getBoundingClientRect();
-
-            if (touch.pageX >= rect.left && touch.pageX <= rect.right &&
-                touch.pageY >= rect.top && touch.pageY <= rect.bottom) {
-                // Add to playlist!
-                if (draggedItem && draggedItem.playlistType === playlistType) {
-                    addItemToPlaylist(draggedItem, playlistType);
-
-                    // Haptic feedback
-                    if (navigator.vibrate) {
-                        navigator.vibrate([50, 50, 50]);
-                    }
-                }
-            }
-
-            // Reset panel style
-            playlistPanel.style.background = '';
-            playlistPanel.style.borderColor = '';
-        }
-
-        // Remove clone
-        if (touchDragClone) {
-            touchDragClone.remove();
-            touchDragClone = null;
-        }
-
-        // Reset state
-        isDragging = false;
-        touchDragElement = null;
-        draggedItem = null;
-    }
-}
-
 /**
  * Wire touch reordering for a playlist editor.
  *
@@ -5354,19 +4632,6 @@ function updatePlaylistItem(index, property, value, type) {
 /**
  * Move a playlist item up or down
  */
-function movePlaylistItem(index, direction, type) {
-    const config = MEDIA_CONFIG[type];
-    const items = config.getItems();
-    const newIndex = index + direction;
-
-    if (newIndex < 0 || newIndex >= items.length) return;
-
-    // Swap items
-    [items[index], items[newIndex]] = [items[newIndex], items[index]];
-    config.setItems(items);
-    renderPlaylistItems(type);
-}
-
 /**
  * Add an empty slot to the playlist
  */
@@ -5500,7 +4765,10 @@ function addVideoToPlaylist(index) {
 }
 
 /**
- * Filter library based on search and checkbox
+ * Filter library based on search and checkbox. Bound to the search input's
+ * 'input' event and the hide-used checkbox's 'change' event (see the
+ * addEventListener calls in setup) — referenced by name, not called with (),
+ * so a paren-grep will not show its callers.
  */
 function filterLibrary() {
     renderLibraryPanel();
@@ -6146,7 +5414,6 @@ async function rollbackUpdate() {
 // Mirrors the OTA-update job pattern: POST returns a job_id, frontend polls
 // /admin/media-browser/setup-status/<job_id> every 2 sec.
 
-let mbPollHandle = null;        // setInterval id for status polling
 let mbSetupPollHandle = null;   // setInterval id for setup-status polling
 let mbForceSetupView = false;   // true when user clicked Reconfigure
 let mbConfigPayload = null;     // {file: File} or {text: string}
