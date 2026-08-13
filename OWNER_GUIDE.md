@@ -158,6 +158,12 @@ Movies are stored on a USB drive so they never crowd the games.
 - After a few episodes without input, the box asks whether to keep
   going — a fresh press keeps it rolling; otherwise it stops and saves
   your place.
+- Don't want a season anymore — wrong language, wrong cut, whatever?
+  Open that show's episode list, scroll past the last episode, and
+  select **Delete Season…** twice to confirm. It clears that season's
+  downloads without touching the rest of the series or anything you've
+  already watched; **Download Season N** brings it back later if you
+  change your mind.
 
 **What the messages mean:**
 

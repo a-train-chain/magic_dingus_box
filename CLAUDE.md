@@ -403,6 +403,44 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
 3. `Radarr.remove_movie(deleteFiles=true)` — removes movie record + library file
 4. Return to Library
 
+### Confirm delete Season N flow (per-season orphan-proof cleanup)
+
+TV's episode picker offers a trailing "Delete Season N…" row (arm on
+first press, confirm on second — `series_detail_logic.h`) that runs
+the same orphan-proof shape as Confirm Remove above, scoped to one
+season instead of the whole series, on a background worker so the
+render thread never blocks:
+
+1. Unmonitor the season AND its episodes individually — Sonarr's
+   `autoRedownloadFailed` keys off the episode flag, so season-only
+   unmonitoring would let step 4 fire a search and re-grab the very
+   release being deleted
+2. Read the season's Sonarr history (authoritative; a failed read
+   aborts here, before anything destructive)
+3. Cancel the season's live queue rows with `blocklist=true`
+4. Mark the season's grabbed + imported history records failed, which
+   blocklists the release(s) so the same bad copy can't be the answer
+   to the next search
+5. Purge the season's torrents from qBittorrent with their downloaded
+   data (warn-and-continue — a torrent already gone doesn't block the
+   rest)
+6. Delete the season's episode files, from a fresh listing taken at
+   this point — the only destructive step, and always last
+7. Return to the season list; toast confirms the season was removed
+
+**Abort rule**: any read or mutation in steps 1-4 that can't get an
+authoritative answer aborts before step 6 runs and says why in a
+toast — retry is always safe, since nothing destructive has happened
+yet. From step 5 on the torrents are already gone with their data, so
+a later abort reports that qBit cleanup already happened rather than
+implying nothing did. "Download Season N" (the season-detail action
+row, `decide_action_row` in `series_detail_logic.h`) re-monitors the
+season's episodes before searching, so a deleted season can be
+re-downloaded on demand. Whole-series Remove and `WatchStore` history
+are untouched by this flow — origin: a Game of Thrones season grabbed
+in the wrong language had no smaller unit to remove than the whole
+series, which would have destroyed already-watched seasons too.
+
 ### Service operations
 
 - **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged.
