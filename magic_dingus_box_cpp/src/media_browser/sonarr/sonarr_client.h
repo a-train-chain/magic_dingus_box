@@ -267,7 +267,13 @@ public:
 
     // Removes the download from the client. NOTE: this acts on the WHOLE
     // download, not one episode — every sibling queue id 404s afterwards.
+    // blocklist=false: a user-initiated cancel must not poison the release
+    // for a later retry. Forwards to the 2-arg overload below.
     virtual bool cancel_queue_item(int queue_id);
+    // blocklist=true carries the stall-reaper's full semantics: blocklist
+    // the release AND skip Sonarr's immediate auto-redownload, via
+    // removeFromClient + blocklist + skipRedownload all set true.
+    virtual bool cancel_queue_item(int queue_id, bool blocklist);
 
     // Distinct downloadIds from this series' history, lowercased for direct
     // comparison with QbittorrentClient (which stores hashes lowercase).
@@ -293,6 +299,50 @@ public:
     // get_library() has to get_library_checked(). Do NOT use this to decide
     // whether a failure occurred; see get_series_download_hashes_checked.
     virtual std::vector<std::string> get_series_download_hashes(int sonarr_id);
+
+    // --- season-delete surface --------------------------------------------
+    //
+    // GET /api/v3/history/series?seriesId=<id>&seasonNumber=<n>. The
+    // seasonNumber param is REQUIRED server-side scoping, not an optional
+    // refinement: individual history records carry no season field at all
+    // (probe P1), so there is no client-side way to filter a whole-series
+    // fetch down to one season. CHECKED shape, same discipline as
+    // get_series_download_hashes_checked: nullopt is transport/HTTP
+    // failure, an engaged-but-empty SeasonHistory is Sonarr genuinely
+    // answering "no history for this season".
+    virtual std::optional<SeasonHistory> get_season_history_checked(
+        int sonarr_id, int season_number);
+
+    // POST /api/v3/history/failed/{id}, empty body. Marks one history
+    // (grab) record as failed, which blocklists its release (probe P2,
+    // live-verified). Sonarr answers this endpoint with HTTP 200 and a
+    // genuinely EMPTY body on success — see the .cpp for why that makes
+    // http_post's body-only return insufficient here.
+    virtual bool mark_history_failed(int history_id);
+
+    // GET /api/v3/episodefile?seriesId=<id>. CHECKED shape, same discipline
+    // as get_episodes_checked: nullopt is transport/HTTP failure, an
+    // engaged-but-empty vector is "this series has no episode files".
+    virtual std::optional<std::vector<EpisodeFileInfo>>
+    get_episode_files_checked(int sonarr_id);
+
+    // DELETE /api/v3/episodefile/bulk, body {"episodeFileIds":[...]}.
+    // Sonarr 500s on an empty/null id list rather than no-op'ing (probe-
+    // verified: task-1-report.md), so an empty `ids` short-circuits to
+    // true with NO HTTP call — "nothing to delete" is success, not a
+    // request the server would reject.
+    virtual bool delete_episode_files(const std::vector<int>& ids);
+
+    // PUT /api/v3/episode/monitor, body {"episodeIds":[...],"monitored":b}.
+    // episode.monitored is INDEPENDENT of the season container's monitored
+    // flag, and Sonarr's autoRedownloadFailed config keys off the
+    // per-EPISODE flag (probe P3, live-verified) — so unmonitoring a
+    // season alone does NOT stop an auto re-search after
+    // mark_history_failed. Same empty-list short-circuit as
+    // delete_episode_files, and for the same reason: nothing to change is
+    // success, not a request worth a round-trip.
+    virtual bool set_episodes_monitored(const std::vector<int>& ids,
+                                        bool monitored);
 
     // Profiles / storage. Resolve the quality profile BY NAME at the call
     // site ("Any" on this box, id 1 — the id is not portable).
@@ -340,6 +390,12 @@ protected:
     // last_error side effects are unchanged: still set on transport failure
     // and on HTTP >= 400, so the UI keeps its message.
     virtual long http_delete(const std::string& path);
+    // Body-carrying DELETE — http_delete above takes no body, and
+    // /api/v3/episodefile/bulk requires one (its id list). Same status-code
+    // contract as http_delete (0 = transport failure, callers branch on
+    // `code > 0 && code < 400`), same curl setup plus
+    // CURLOPT_CUSTOMREQUEST "DELETE" + POSTFIELDS.
+    virtual long http_delete_body(const std::string& path, const std::string& body);
 
     Config cfg_;
 

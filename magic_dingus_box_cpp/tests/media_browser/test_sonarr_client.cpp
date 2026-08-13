@@ -1163,3 +1163,217 @@ TEST_CASE("SonarrMockClient's get_episodes_checked reports unreachable, "
     mb::SonarrMockClient m;
     CHECK_FALSE(m.get_episodes_checked(1).has_value());
 }
+
+// --- season-delete surface (Task 3) ---------------------------------------
+
+namespace {
+// Records every path/body the client hits and replies from single canned
+// values (next_*), mirroring PutSonarr/QueueSonarr's record-and-can pattern
+// above but widened to cover this surface's extra verb: the new body-
+// carrying DELETE. http_delete and http_delete_body share last_delete_path/
+// next_delete_code since no single test in this section drives both.
+class SeasonDeleteSonarr : public mb::SonarrClient {
+public:
+    SeasonDeleteSonarr() : SonarrClient(Config{}) {}
+    std::string last_get_path;
+    std::string next_get_response;
+    std::string last_post_path;
+    std::string next_post_response;
+    long next_delete_code = 200;
+    std::string last_delete_path;
+    std::string last_delete_body;
+
+    std::string http_get(const std::string& path) override {
+        last_get_path = path;
+        return next_get_response;
+    }
+    std::string http_post(const std::string& path, const std::string&) override {
+        last_post_path = path;
+        return next_post_response;
+    }
+    std::string http_put(const std::string&, const std::string&) override { return ""; }
+    long http_delete(const std::string& path) override {
+        last_delete_path = path;
+        return next_delete_code;
+    }
+    long http_delete_body(const std::string& path, const std::string& body) override {
+        last_delete_path = path;
+        last_delete_body = body;
+        return next_delete_code;
+    }
+};
+}  // namespace
+
+TEST_CASE("get_season_history_checked: transport failure is nullopt, answer "
+          "is engaged", "[sonarr][history]") {
+    // The server-side seasonNumber filter is REQUIRED (probe P1: individual
+    // history records carry no season field at all), so the exact path is
+    // pinned here, not just the parse.
+    SeasonDeleteSonarr c;
+    c.next_get_response = "";                 // transport failure
+    REQUIRE_FALSE(c.get_season_history_checked(7, 3).has_value());
+    c.next_get_response = "[]";               // Sonarr answered: no history
+    auto h = c.get_season_history_checked(7, 3);
+    REQUIRE(h.has_value());
+    CHECK(h->download_hashes.empty());
+    CHECK(c.last_get_path == "/api/v3/history/series?seriesId=7&seasonNumber=3");
+}
+
+TEST_CASE("get_season_history_checked parses a populated season history",
+          "[sonarr][history]") {
+    SeasonDeleteSonarr c;
+    c.next_get_response = R"([
+      {"id": 501, "eventType": "grabbed", "downloadId": "ABCDEF123456"},
+      {"id": 502, "eventType": "downloadFolderImported", "downloadId": "ABCDEF123456"}
+    ])";
+    auto h = c.get_season_history_checked(7, 1);
+    REQUIRE(h.has_value());
+    CHECK(h->grabbed_history_ids == std::vector<int>{501});
+    CHECK(h->imported_history_ids == std::vector<int>{502});
+    CHECK(h->download_hashes == std::vector<std::string>{"abcdef123456"});
+}
+
+TEST_CASE("mark_history_failed posts to /history/failed/{id}",
+          "[sonarr][history]") {
+    SeasonDeleteSonarr c;
+    c.next_post_response = "{}";
+    REQUIRE(c.mark_history_failed(501));
+    CHECK(c.last_post_path == "/api/v3/history/failed/501");
+}
+
+TEST_CASE("mark_history_failed succeeds on Sonarr's real 200-empty-body "
+          "shape (probe P2) and fails on a genuine transport error",
+          "[sonarr][history]") {
+    // Live-verified (task-1-report.md P2): POST /history/failed/{id}
+    // answers HTTP 200 with a genuinely EMPTY body. http_post's body-only
+    // return cannot distinguish that shape from its own "" return on a
+    // transport/HTTP failure — the SAME ambiguity http_delete already
+    // solves for DELETE by returning a status code instead of a body. This
+    // pins that the implementation does not collapse the two the way the
+    // `!http_post(...).empty()` pattern used elsewhere in this file would
+    // (that pattern is safe for those callers only because their endpoints
+    // never answer success with an empty body).
+    class RealShapePost : public mb::SonarrClient {
+    public:
+        RealShapePost() : SonarrClient(Config{}) {}
+        bool fail = false;
+        std::string http_post(const std::string&, const std::string&) override {
+            if (fail) { set_error("HTTP 500"); return ""; }
+            return "";  // 200, empty body: success, no set_error call
+        }
+    };
+    RealShapePost c;
+    CHECK(c.mark_history_failed(501));        // 200 + empty body -> true
+    c.fail = true;
+    CHECK_FALSE(c.mark_history_failed(501));  // real failure -> false
+}
+
+TEST_CASE("get_episode_files_checked distinguishes transport failure from "
+          "empty", "[sonarr][episodefiles]") {
+    SECTION("transport failure -> nullopt") {
+        SeasonDeleteSonarr c;  // next_get_response defaults to "" (failure)
+        CHECK_FALSE(c.get_episode_files_checked(7).has_value());
+        CHECK(c.last_get_path == "/api/v3/episodefile?seriesId=7");
+    }
+    SECTION("genuinely empty -> engaged optional, empty vector") {
+        SeasonDeleteSonarr c;
+        c.next_get_response = "[]";
+        auto files = c.get_episode_files_checked(7);
+        REQUIRE(files.has_value());
+        CHECK(files->empty());
+    }
+    SECTION("populated") {
+        SeasonDeleteSonarr c;
+        c.next_get_response = R"([{"id": 41, "seasonNumber": 1}])";
+        auto files = c.get_episode_files_checked(7);
+        REQUIRE(files.has_value());
+        REQUIRE(files->size() == 1);
+        CHECK((*files)[0].id == 41);
+        CHECK((*files)[0].season_number == 1);
+    }
+}
+
+TEST_CASE("delete_episode_files bulk body carries every id, and an empty "
+          "list short-circuits with no HTTP call", "[sonarr][episodefiles]") {
+    // Probe-verified (task-1-report.md): DELETE .../episodefile/bulk 500s
+    // on both {} and {"episodeFileIds":[]} — Sonarr never no-ops on an
+    // empty list, so the client must guard before ever making the call.
+    SeasonDeleteSonarr c;
+    c.next_delete_code = 200;
+    REQUIRE(c.delete_episode_files({31, 32, 33}));
+    CHECK(c.last_delete_path == "/api/v3/episodefile/bulk");
+    CHECK(c.last_delete_body.find("31") != std::string::npos);
+    CHECK(c.last_delete_body.find("32") != std::string::npos);
+    CHECK(c.last_delete_body.find("33") != std::string::npos);
+
+    c.last_delete_path.clear();
+    c.last_delete_body.clear();
+    CHECK(c.delete_episode_files({}) == true);   // vacuous success
+    CHECK(c.last_delete_path.empty());           // ...and genuinely no call
+}
+
+TEST_CASE("cancel_queue_item blocklist variant carries stall-reaper params, "
+          "legacy 1-arg call unchanged", "[sonarr][queue]") {
+    SeasonDeleteSonarr c;
+    c.next_delete_code = 200;
+    REQUIRE(c.cancel_queue_item(42, /*blocklist=*/true));
+    CHECK(c.last_delete_path ==
+        "/api/v3/queue/42?removeFromClient=true&blocklist=true&skipRedownload=true");
+    REQUIRE(c.cancel_queue_item(42));  // legacy call unchanged
+    CHECK(c.last_delete_path ==
+        "/api/v3/queue/42?removeFromClient=true&blocklist=false");
+}
+
+TEST_CASE("set_episodes_monitored PUTs episode ids and the monitored flag; "
+          "an empty list short-circuits with no HTTP call",
+          "[sonarr][episodes]") {
+    // Probe P3 (task-1-report.md): Sonarr's autoRedownloadFailed keys off
+    // per-EPISODE monitored, independent of the season container's flag —
+    // stage (a) and the Start-Season re-monitor both need this call.
+    class PutRecorder : public mb::SonarrClient {
+    public:
+        PutRecorder() : SonarrClient(Config{}) {}
+        std::string last_put_path, last_put_body;
+        bool put_called = false;
+        std::string http_put(const std::string& path, const std::string& body) override {
+            put_called = true;
+            last_put_path = path;
+            last_put_body = body;
+            return body;
+        }
+    };
+    PutRecorder c;
+    REQUIRE(c.set_episodes_monitored({4, 5}, false));
+    CHECK(c.last_put_path == "/api/v3/episode/monitor");
+    Json::Value sent;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(c.last_put_body);
+        REQUIRE(Json::parseFromStream(rb, is, &sent, &err));
+    }
+    REQUIRE(sent["episodeIds"].isArray());
+    REQUIRE(sent["episodeIds"].size() == 2);
+    CHECK(sent["episodeIds"][0].asInt() == 4);
+    CHECK(sent["episodeIds"][1].asInt() == 5);
+    CHECK_FALSE(sent["monitored"].asBool());
+
+    c.put_called = false;
+    CHECK(c.set_episodes_monitored({}, true) == true);  // vacuous success
+    CHECK_FALSE(c.put_called);                          // ...no HTTP call
+}
+
+TEST_CASE("SonarrMockClient mirrors the season-delete surface with engaged, "
+          "canned answers", "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    CHECK(m.get_season_history_checked(1, 1).has_value());  // engaged
+    CHECK(m.mark_history_failed(1));
+    CHECK(m.get_episode_files_checked(1).has_value());      // engaged
+    CHECK(m.delete_episode_files({1, 2}));
+    CHECK(m.delete_episode_files({}));
+    CHECK(m.set_episodes_monitored({1, 2}, false));
+
+    auto q = m.get_queue();
+    REQUIRE_FALSE(q.empty());
+    CHECK(m.cancel_queue_item(q[0].id, /*blocklist=*/true));
+}
