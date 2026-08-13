@@ -730,7 +730,7 @@ void SeriesDetailScreen::expire_confirms() {
     if (changed) rebuild_buttons();
 }
 
-bool SeriesDetailScreen::monitor_episodes_for_seasons(
+std::optional<int> SeriesDetailScreen::monitor_episodes_for_seasons(
         int sonarr_id, const std::vector<int>& seasons) {
     // WORKER-THREAD helper: one get_episodes_checked + one bulk PUT for
     // every season being (re-)monitored. Touches nothing but sonarr_ and
@@ -747,13 +747,22 @@ bool SeriesDetailScreen::monitor_episodes_for_seasons(
     // such paths: "Whole series…" silently downloaded nothing for a deleted
     // season while reporting success.
     //
+    // Split contract on the return value — nullopt is a REAL failure (the
+    // read failed transport-wise, or the PUT was refused); otherwise the
+    // count of episode ids actually monitored, which may legitimately be
+    // zero. Whether zero is fine is the CALLER's call, not this helper's:
+    //   - whole-series worker: zero is tolerated — an ANNOUNCED season
+    //     legitimately has no episode records yet.
+    //   - start_season_download: zero is suspicious. get_episodes_checked
+    //     can read engaged-but-empty on a malformed body or a series id
+    //     Sonarr no longer knows (see its doc comment) — collapsing that
+    //     into a bare "success" would let the caller fire a search that
+    //     can never find anything, under a toast that says it started.
+    //
     // Idempotent (and one wasted GET) for seasons that were never deleted.
-    // An empty id list is vacuous success by set_episodes_monitored's own
-    // contract — the caller decides whether "no episodes" is suspicious;
-    // here it is not, since an ANNOUNCED season legitimately has none.
-    if (seasons.empty()) return true;
+    if (seasons.empty()) return 0;
     const auto eps = sonarr_.get_episodes_checked(sonarr_id);
-    if (!eps.has_value()) return false;
+    if (!eps.has_value()) return std::nullopt;
     std::vector<int> ids;
     for (const auto& e : *eps) {
         // id <= 0 is an unusable record — never PUT a guess
@@ -764,7 +773,8 @@ bool SeriesDetailScreen::monitor_episodes_for_seasons(
             continue;
         ids.push_back(e.id);
     }
-    return sonarr_.set_episodes_monitored(ids, true);
+    if (!sonarr_.set_episodes_monitored(ids, true)) return std::nullopt;
+    return static_cast<int>(ids.size());
 }
 
 void SeriesDetailScreen::start_season_download(int season) {
@@ -803,8 +813,23 @@ void SeriesDetailScreen::start_season_download(int season) {
             return;
         }
         // Episodes before the search — see monitor_episodes_for_seasons.
-        const bool eps_monitored = monitor_episodes_for_seasons(sid, {season});
-        const bool searched = sonarr_.trigger_season_search(sid, season);
+        const std::optional<int> eps_monitored =
+            monitor_episodes_for_seasons(sid, {season});
+        // Zero is suspicious HERE (unlike the whole-series worker): this
+        // season came from a row the user can see in rows_, so an
+        // engaged-but-empty read is more likely get_episodes_checked's
+        // documented misclassification (malformed body, or a series id
+        // Sonarr no longer knows) than a real absence of episodes. Firing
+        // the search anyway would run it against still-unmonitored
+        // episodes under a "search started" toast — the exact silent dead
+        // end this helper exists to close, reached through this call site
+        // instead. A genuine read/PUT failure (nullopt) still fires the
+        // search exactly as before — it costs nothing and it is correct
+        // for every season that was never deleted.
+        const bool suspiciously_empty = eps_monitored.value_or(-1) == 0;
+        const bool searched = suspiciously_empty
+            ? false
+            : sonarr_.trigger_season_search(sid, season);
         // Quick Start: fast E1 single alongside the season pack. Only when
         // the season search actually started, and strictly best-effort —
         // see fire_episode1_search.
@@ -812,13 +837,12 @@ void SeriesDetailScreen::start_season_download(int season) {
             fire_episode1_search(sonarr_, sid, season, title);
         auto fresh = sonarr_.get_series(sid);
         std::lock_guard<std::mutex> lk(mut_mtx_);
-        // The episode re-monitor is reported FIRST when it failed: for a
-        // previously deleted season it is the step that decides whether
-        // anything can arrive at all, so "search started" would be the
-        // silent dead end this amendment exists to close. The search still
-        // fired either way — it costs nothing and it is correct for every
-        // season that was never deleted.
-        mut_toast_ = !eps_monitored
+        // The episode re-monitor is reported FIRST when it failed OR came
+        // back suspiciously empty: for a previously deleted season it is
+        // the step that decides whether anything can arrive at all, so
+        // "search started" would be the silent dead end this amendment
+        // exists to close.
+        mut_toast_ = (!eps_monitored.has_value() || suspiciously_empty)
             ? title + ": Season " + std::to_string(season) +
                   " monitored, but its episodes couldn't be re-enabled "
                   "\xE2\x80\x94 a previously deleted season may not "
@@ -1123,8 +1147,11 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // episode does NOT cascade) while reporting success.
                     // Scoped to the seasons whose PUT actually took — a season
                     // Sonarr refused to monitor is not one we are searching
-                    // for.
-                    const bool eps_monitored =
+                    // for. Unlike start_season_download, a ZERO count here is
+                    // tolerated, not suspicious — an announced-but-unaired
+                    // season legitimately has no episode records — so only
+                    // nullopt (a real read/PUT failure) counts against it.
+                    const std::optional<int> eps_monitored =
                         monitor_episodes_for_seasons(series_id,
                                                      monitored_seasons);
                     const bool searched = sonarr_.trigger_series_search(series_id);
@@ -1146,12 +1173,14 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     if (total > 0 && failed == total) {
                         mut_toast_ = title + ": couldn't monitor seasons "
                                      "\xE2\x80\x94 is Sonarr running?";
-                    } else if (!eps_monitored) {
+                    } else if (!eps_monitored.has_value()) {
                         // Reported ahead of the search outcome, exactly as the
                         // single-season path reports it: for a previously
                         // deleted season this is the step that decides whether
                         // anything can arrive at all, so "search started"
-                        // would be the silent dead end.
+                        // would be the silent dead end. A zero count is NOT
+                        // routed here — see the split contract in
+                        // monitor_episodes_for_seasons's doc comment.
                         mut_toast_ = title + ": seasons monitored, but their "
                                      "episodes couldn't be re-enabled "
                                      "\xE2\x80\x94 a previously deleted season "

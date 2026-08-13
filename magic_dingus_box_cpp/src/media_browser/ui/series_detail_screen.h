@@ -180,14 +180,26 @@ private:
     // the season list, and neither may be a silent no-op.
     void start_season_download(int season);
     // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
-    // every episode of `seasons`. False = the read failed or the PUT was
-    // refused. Probe P3: season->episode monitoring does NOT cascade and
-    // SeasonSearch skips unmonitored episodes, so EVERY path that monitors
-    // a season in order to download it needs this — it is a shared helper
-    // because it once lived inline in only one of the two, and "Whole
-    // series…" silently downloaded nothing for a previously deleted season.
-    bool monitor_episodes_for_seasons(int sonarr_id,
-                                      const std::vector<int>& seasons);
+    // every episode of `seasons`. Probe P3: season->episode monitoring does
+    // NOT cascade and SeasonSearch skips unmonitored episodes, so EVERY
+    // path that monitors a season in order to download it needs this — it
+    // is a shared helper because it once lived inline in only one of the
+    // two, and "Whole series…" silently downloaded nothing for a
+    // previously deleted season.
+    //
+    // Returns nullopt for a real failure (the read failed or the PUT was
+    // refused); otherwise the number of episode ids actually monitored,
+    // which callers use to distinguish "nothing to do" from "suspiciously
+    // nothing" — the split contract, by call site:
+    //   - whole-series worker: 0 is tolerated (an announced-but-unaired
+    //     season legitimately has no episode records).
+    //   - start_season_download: 0 is suspicious. The season came from a
+    //     row the user can see, so an empty read is more likely
+    //     get_episodes_checked's documented engaged-but-empty
+    //     misclassification (malformed body, or a series id Sonarr no
+    //     longer knows) than a real absence of episodes.
+    std::optional<int> monitor_episodes_for_seasons(
+        int sonarr_id, const std::vector<int>& seasons);
 
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).
