@@ -254,6 +254,33 @@ private:
                                int list_top, int list_bottom,
                                bool& ep_overflow);
 
+    // ---- trailing "Delete Season N…" row (Tasks 5-7) ----
+    // Whether the picker shows the delete row for episodes_season_. Task 4's
+    // pure season_delete_row_exists, fed from THIS season's merged row, and
+    // additionally false on every frame render_episode_region bails to a
+    // placeholder (loading / outage / no episodes) — a row nobody can see
+    // must never be armable.
+    bool season_delete_row_present() const;
+    // The delete row is focused iff episode_focus_ is one past the last
+    // episode index. That equality IS the mechanic; everything else counts
+    // with episode_nav_count().
+    bool season_delete_focused() const;
+    // Episodes in episodes_season_ + the delete row when present. EVERY
+    // Episodes-region clamp, page count and page range counts with this,
+    // never with the raw episode count.
+    int episode_nav_count() const;
+
+    // Arm/confirm state — render-thread ONLY, exactly like whole_armed_ /
+    // remove_pending_ above: no worker ever writes it, so the countdown
+    // starts when the LABEL appears.
+    bool season_del_armed_ = false;
+    std::chrono::steady_clock::time_point season_del_armed_at_{};
+    static constexpr int kSeasonDelConfirmMs = 4000;  // matches kWholeConfirmMs
+    // Task 6 sets this at spawn and clears it at drain; Task 5 only READS it
+    // (the row's Removing paint), so the row is already honest the moment the
+    // worker lands.
+    bool season_del_inflight_ = false;
+
     DetailRegion region_ = DetailRegion::Seasons;
     std::vector<EpisodeInfo> episodes_;   // full series, fetch order
     watch_map episode_watch_;             // joined from watch_ on the render thread

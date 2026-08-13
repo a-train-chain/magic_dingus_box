@@ -230,6 +230,10 @@ void SeriesDetailScreen::fetch() {
     season_focus_ = -1;
     pending_play_index_ = -1;
     navigate_playback_ = false;
+    // The delete row's confirm belonged to the OLD series' season list. A
+    // latched arm would make the first press on the new page a confirm.
+    season_del_armed_ = false;
+    season_del_inflight_ = false;
     pending_intent_next_season_.reset();
     const int id = tmdb_id_;
     if (id <= 0) {
@@ -666,6 +670,20 @@ void SeriesDetailScreen::expire_confirms() {
         remove_pending_ = false;
         changed = true;
     }
+    // The episode picker's delete row: its 4 s window, PLUS every structural
+    // disarm in one sweep. Focus moved off the row, BTN4 took the region back
+    // to Seasons, or a poll landed with the season's files gone — all three
+    // read as "not focused" here, and this runs before render() every frame
+    // (main.cpp: input, then update, then render), so the armed label can
+    // never be painted on a row that no longer owns the ring. Deliberately
+    // NOT part of `changed`: the row is not an action-row button, so there is
+    // nothing for rebuild_buttons() to do.
+    if (season_del_armed_ &&
+        (std::chrono::duration_cast<std::chrono::milliseconds>(
+             now - season_del_armed_at_).count() > kSeasonDelConfirmMs ||
+         !season_delete_focused())) {
+        season_del_armed_ = false;
+    }
     if (changed) rebuild_buttons();
 }
 
@@ -673,6 +691,11 @@ void SeriesDetailScreen::dispatch_action(Action a) {
     // Pressing anything OTHER than the armed control disarms it first.
     if (a != Action::WholeSeries) whole_armed_ = false;
     if (a != Action::Remove && a != Action::ConfirmRemove) remove_pending_ = false;
+    // Same rule for the episode picker's delete row. It lives in the OTHER
+    // region, so it can never BE the control being pressed here — an action
+    // row press is unconditionally "something else", and two armed
+    // destructive confirms at once is the state to avoid.
+    season_del_armed_ = false;
     switch (a) {
         case Action::PlayNextUp: {
             // Re-derive at press time — the button's label was decided on an
@@ -1276,6 +1299,42 @@ std::vector<int> SeriesDetailScreen::season_episode_indices(int season) const {
     return idxs;
 }
 
+bool SeriesDetailScreen::season_delete_row_present() const {
+    // Only inside the drill-down, and only on the frames the picker actually
+    // paints episode rows: render_episode_region returns early on loading /
+    // outage / "No episodes", and an armable row that was never drawn is the
+    // invisible-affordance bug class both SELECT paths already guard. These
+    // three predicates are exactly that function's bail conditions, so the
+    // two can never disagree about whether the row is on screen.
+    if (region_ != DetailRegion::Episodes) return false;
+    if (!episodes_done_ || !episodes_ok_) return false;
+    if (season_episode_indices(episodes_season_).empty()) return false;
+    // Eligibility itself is Task 4's pure helper, fed from THIS season's
+    // merged row — the same row the no-file suffix below reads, so the
+    // "downloading" the row offers to cancel is the one the list shows.
+    int files = 0;
+    bool downloading = false;
+    for (const auto& row : rows_) {
+        if (row.season_number == episodes_season_) {
+            files = row.episode_file_count;
+            downloading = row.state == SeasonState::Downloading;
+            break;
+        }
+    }
+    return season_delete_row_exists(files, downloading);
+}
+
+bool SeriesDetailScreen::season_delete_focused() const {
+    return season_delete_row_present() &&
+           episode_focus_ ==
+               static_cast<int>(season_episode_indices(episodes_season_).size());
+}
+
+int SeriesDetailScreen::episode_nav_count() const {
+    return static_cast<int>(season_episode_indices(episodes_season_).size()) +
+           (season_delete_row_present() ? 1 : 0);
+}
+
 SeriesDetailScreen::SeriesPlayTarget SeriesDetailScreen::get_play_target() {
     SeriesPlayTarget pt;
     const std::string series_title =
@@ -1352,10 +1411,15 @@ Screen SeriesDetailScreen::handle_input(
             // episode list is a drill-down inside this screen.
             if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
                 region_ = DetailRegion::Seasons;
+                // Leaving the region disarms the delete row: its confirm
+                // belongs to a list that is no longer on screen.
+                season_del_armed_ = false;
                 continue;
             }
-            const int n = static_cast<int>(
-                season_episode_indices(episodes_season_).size());
+            // The trailing delete row is part of the SAME chain as the
+            // episodes, so every clamp and page below counts with
+            // episode_nav_count(), never with the raw episode count.
+            const int n = episode_nav_count();
             if ((e.action == platform::InputAction::ROTATE ||
                  e.action == platform::InputAction::ROTATE_VERTICAL) &&
                 e.delta != 0) {
@@ -1365,6 +1429,10 @@ Screen SeriesDetailScreen::handle_input(
                 // the indicator honest within the same frame's input burst).
                 if (episode_per_page_ > 0)
                     episode_page_ = episode_focus_ / episode_per_page_;
+                // Navigating OFF the delete row disarms it — the action
+                // row's rule, so nobody can press-move-press their way into
+                // a delete they were not looking at.
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             // BTN1 / BTN3 page by moving FOCUS a page at a time — page and
@@ -1373,12 +1441,14 @@ Screen SeriesDetailScreen::handle_input(
                 if (n > 0 && episode_per_page_ > 0)
                     episode_focus_ =
                         std::max(0, episode_focus_ - episode_per_page_);
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             if (e.action == platform::InputAction::NEXT && e.pressed) {
                 if (n > 0 && episode_per_page_ > 0)
                     episode_focus_ = std::min(
                         n - 1, episode_focus_ + episode_per_page_);
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             if (e.action == platform::InputAction::SELECT && e.pressed) {
@@ -1393,6 +1463,29 @@ Screen SeriesDetailScreen::handle_input(
                 if (mut_in_flight_.load()) {
                     ::ui::Toast::show(
                         "Still finishing the last action\xE2\x80\xA6");
+                    continue;
+                }
+                // ---- the trailing "Delete Season N…" row ----
+                // Focus one past the last episode index IS the delete row;
+                // the episode branch below never sees that index.
+                if (season_delete_focused()) {
+                    // Inert while the whole-series Remove confirm is armed or
+                    // a season remove is already running. This is about not
+                    // ARMING two destructive confirms at once (the mutation
+                    // lane already serializes the workers themselves), and
+                    // about the second press of the OTHER confirm never
+                    // landing here.
+                    if (remove_pending_ || season_del_inflight_) continue;
+                    if (!season_del_armed_) {
+                        // Press 1: arm. Stamped HERE, on the render thread,
+                        // so the 4 s window starts when the label changes.
+                        season_del_armed_ = true;
+                        season_del_armed_at_ = std::chrono::steady_clock::now();
+                        continue;
+                    }
+                    // Press 2 inside the window: confirmed.
+                    // Task 6: spawn the season-remove worker here.
+                    season_del_armed_ = false;
                     continue;
                 }
                 const auto idxs = season_episode_indices(episodes_season_);
@@ -1655,22 +1748,29 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
                        static_cast<float>(rows_top + 22), kRowFontPx, pcol);
         return;
     }
+    // The trailing "Delete Season N…" row rides the SAME list: it is one more
+    // navigable row after the last episode, so every clamp, page count and
+    // range below counts with nav_total. season_delete_row_present() is false
+    // on exactly the frames this function returned above, so the row can only
+    // appear on a frame that draws rows.
+    const int nav_total = episode_nav_count();
+    const bool del_row = nav_total > total;
     // The season-paging idiom: geometry decides per_page each frame, zero is
     // legal (CRT_NATIVE's 640x480 canvas), and EVERY division is guarded.
     const int list_avail = list_bottom - kIndicatorRowH - rows_top;
     const int per_page = std::max(0, list_avail / kRowH);
     episode_per_page_ = per_page;
     episode_page_count_ =
-        per_page > 0 ? std::max(1, (total + per_page - 1) / per_page) : 1;
-    if (episode_focus_ >= total) episode_focus_ = total - 1;
+        per_page > 0 ? std::max(1, (nav_total + per_page - 1) / per_page) : 1;
+    if (episode_focus_ >= nav_total) episode_focus_ = nav_total - 1;
     if (episode_focus_ < 0) episode_focus_ = 0;
     // Page follows focus, so SELECT can only ever fire a visible row.
     episode_page_ = per_page > 0 ? episode_focus_ / per_page : 0;
     if (episode_page_ >= episode_page_count_)
         episode_page_ = episode_page_count_ - 1;
-    ep_overflow = per_page > 0 && total > per_page;
+    ep_overflow = per_page > 0 && nav_total > per_page;
     const int first = episode_page_ * per_page;
-    const int last = per_page > 0 ? std::min(total, first + per_page) : 0;
+    const int last = per_page > 0 ? std::min(nav_total, first + per_page) : 0;
     // The no-file rows' suffix rides on THIS season's live state.
     bool season_downloading = false;
     for (const auto& row : rows_) {
@@ -1686,9 +1786,50 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
         static_cast<float>(screen_w - text_x - chrome::kSafeInset_px);
     int list_y = rows_top;
     for (int i = first; i < last; ++i) {
+        const float row_baseline = static_cast<float>(list_y + 22);
+        // The trailing delete row. Its armed fill goes down FIRST so it sits
+        // behind everything; the focus marker is then the same glyph, at the
+        // same body_x column, as an episode row's ring.
+        if (del_row && i == total) {
+            const SeasonDeleteState ds =
+                season_del_inflight_  ? SeasonDeleteState::Removing
+                : season_del_armed_   ? SeasonDeleteState::Armed
+                                      : SeasonDeleteState::Idle;
+            // The Remove button's own paint: chrome::ButtonKind::Warn is
+            // th.highlight2, and the whole-series confirm keeps that same red
+            // when armed — the LABEL carries the state change there, and
+            // season_delete_label carries it here. Armed additionally lifts
+            // the row onto th.bg_lift (the theme's one sanctioned off-bg
+            // fill, the focused-row precedent from pairing_screen_renderer)
+            // so the confirm reads brighter without leaving the danger color.
+            // Removing dims: the press already landed, nothing to press.
+            if (ds == SeasonDeleteState::Armed) {
+                r.mb_fill_rect(static_cast<float>(body_x),
+                               static_cast<float>(list_y),
+                               static_cast<float>(screen_w - body_x -
+                                                  chrome::kSafeInset_px),
+                               static_cast<float>(kRowH), th.bg_lift);
+            }
+            if (i == episode_focus_) {
+                r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
+                               row_baseline, kBodyFontPx, th.accent);
+            }
+            // Label starts at the glyph column, not the episode-title column:
+            // the row carries no state glyph, and body_x + 18 is the season
+            // list's own row-label inset (render()'s "Season N").
+            const std::string dlabel =
+                season_delete_label(ds, episodes_season_);
+            r.mb_draw_text(
+                truncate_to_width(r, dlabel, kBodyFontPx,
+                                  static_cast<float>(screen_w - glyph_x -
+                                                     chrome::kSafeInset_px)),
+                static_cast<float>(glyph_x), row_baseline, kBodyFontPx,
+                ds == SeasonDeleteState::Removing ? th.dim : th.highlight2);
+            list_y += kRowH;
+            continue;
+        }
         const auto& ep =
             episodes_[static_cast<size_t>(idxs[static_cast<size_t>(i)])];
-        const float row_baseline = static_cast<float>(list_y + 22);
         if (i == episode_focus_) {
             r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
                            row_baseline, kBodyFontPx, th.accent);
@@ -1733,9 +1874,15 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
         list_y += kRowH;
     }
     if (ep_overflow) {
+        // Paging counts the delete row (nav_total above); the INDICATOR does
+        // not — it names episodes, and the delete row is not one. Clamping
+        // both ends into the episode range is what keeps a last page that
+        // holds only the delete row from reading "Episodes 11-10 of 10".
+        const int ind_first = std::min(first + 1, total);
+        const int ind_last = std::min(last, total);
         const std::string ind =
-            "Episodes " + std::to_string(first + 1) + "\xE2\x80\x93" +
-            std::to_string(last) + " of " + std::to_string(total) +
+            "Episodes " + std::to_string(ind_first) + "\xE2\x80\x93" +
+            std::to_string(ind_last) + " of " + std::to_string(total) +
             " \xC2\xB7 [BTN1/BTN3]";
         r.mb_draw_text(ind, static_cast<float>(body_x),
                        static_cast<float>(list_bottom - 8), kBodyFontPx,
@@ -2005,6 +2152,10 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // ALWAYS LAST on every path. The Toast is NOT drawn here: main.cpp owns
     // the single app-wide Toast::render in the correct projection.
     const bool in_episodes = region_ == DetailRegion::Episodes;
+    // The trailing delete row does not play anything — read the same
+    // "Select" the action row uses while the ring sits on it. Evaluated
+    // AFTER render_episode_region so it sees this frame's clamped focus.
+    const bool on_delete_row = in_episodes && season_delete_focused();
     const bool nothing_focusable = buttons_.empty() && rows_.empty();
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,
@@ -2021,7 +2172,7 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
          in_episodes ? "Choose"
                      : (nothing_focusable ? "\xE2\x80\x94" : "Choose")},
         {chrome::HintIcon::RotaryPress,
-         in_episodes ? "Play"
+         in_episodes ? (on_delete_row ? "Select" : "Play")
                      : (nothing_focusable ? "\xE2\x80\x94" : "Select")},
     });
 }
