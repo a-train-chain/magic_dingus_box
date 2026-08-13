@@ -162,8 +162,9 @@ Movies are stored on a USB drive so they never crowd the games.
   Open that show's episode list, scroll past the last episode, and
   select **Delete Season…** twice to confirm. It clears that season's
   downloads without touching the rest of the series or anything you've
-  already watched; **Download Season N** brings it back later if you
-  change your mind.
+  already watched. Changed your mind later? Pick that season in the
+  show's season list — a season with nothing downloaded starts
+  downloading when you select it.
 
 **What the messages mean:**
 

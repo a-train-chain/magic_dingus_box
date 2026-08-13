@@ -21,9 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy can't come back, purges its torrents and their data from
   qBittorrent, and only then deletes its episode files — in that
   order, so a failure at any earlier step leaves the files untouched
-  and the action safe to retry. "Download Season N" re-downloads it on
-  demand once you want it back. Whole-series Remove and watch history
-  are both unchanged.
+  and the action safe to retry. Want it back later? Select that season
+  in the show's season list — any season with nothing downloaded and
+  nothing in flight starts downloading when you pick it. Whole-series
+  Remove and watch history are both unchanged.
+- **Open a season that's still downloading.** Selecting a season with
+  a download in flight now opens its episode list (it used to say
+  "Not downloaded yet" and refuse), which is where the "Delete
+  Season N…" row lives — so a season grabbed in the wrong language can
+  be stopped and cleaned up while it is still coming down, which was
+  the whole point of the feature.
 
 ## [1.9.12] - 2026-08-12
 

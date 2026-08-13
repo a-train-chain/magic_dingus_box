@@ -10,8 +10,15 @@ not be deleted, blocklisted, or replaced without destroying seasons 1–2.
 
 1. **Delete + blocklist, re-download manually.** Deleting a season
    removes its files, blocklists the release(s) that produced them, and
-   leaves the season unmonitored. Re-download is the EXISTING
-   "Start Season N" button — season delete never searches.
+   leaves the season unmonitored. Re-download is manual — season delete
+   never searches. AMENDED 2026-08-13: the re-download affordance is
+   SELECT on the season's own row in the season list (a row with no
+   files and no live download starts that season's download). The
+   action row's "Download Season N" — the button this decision called
+   "Start Season N" — targets `next_unmonitored_season(rows_)`, i.e.
+   the LOWEST unmonitored season and only that one, so it cannot reach
+   a deleted season 3 above a never-downloaded season 2, nor any season
+   left unmonitored by an abort after stage (a).
 2. **UI lives inside the episode picker.** The season being deleted is
    whichever season's episode list is open — unambiguous, and the user
    is looking at the episodes they are about to remove.
@@ -22,7 +29,13 @@ not be deleted, blocklisted, or replaced without destroying seasons 1–2.
 ## UX (kiosk, SeriesDetailScreen Episodes region)
 
 - Eligibility: the open season has `episode_file_count > 0` OR live
-  queue rows. Otherwise the delete row does not exist.
+  queue rows. Otherwise the delete row does not exist. AMENDED
+  2026-08-13: the same rule gates OPENING the picker
+  (`season_row_opens_picker`, series_detail_logic.h). It first shipped
+  as `episode_file_count > 0` on the drill-down, which made a
+  downloading-with-no-files season impossible to open — and therefore
+  its delete row impossible to reach, in exactly the case this feature
+  was built for.
 - Mechanism: a trailing focusable ACTION ROW at the end of the episode
   list, labeled `Delete Season N…`. No new button needed — the
   Episodes region has no reliably free button (BTN1/BTN3 page when the
@@ -38,10 +51,21 @@ not be deleted, blocklisted, or replaced without destroying seasons 1–2.
   remains allowed — the worker is background and gen-checked, leaving
   the screen does not corrupt it).
 - Completion: return region to Seasons, `fetch()` refresh, toast
-  `Season N removed — Start Season N re-downloads it.`
+  `Season N removed — pick Season N in the list to download it again`
+  (AMENDED 2026-08-13: the toast must name the affordance the user will
+  actually SEE; neither "Start Season N" nor the action row's "Download
+  Season N" is guaranteed to be on screen — see decision 1), plus a
+  `(no release found to blocklist …)` clause when stages (d) and (e)
+  had no history to act on and a `(a torrent needs manual cleanup …)`
+  clause when qBit refused a delete.
 - Failure: stage-named toast (e.g. `Season delete aborted — Sonarr
-  history unavailable`); nothing destructive has run before the abort
-  point; pressing delete again retries safely.
+  history unavailable`); the SEASON's files are always intact at the
+  abort point, and pressing delete again retries safely. AMENDED
+  2026-08-13: "nothing destructive has run" was too strong from stage
+  (d) on — stage (c)'s cancels carry `removeFromClient=true` and take
+  their partial downloads, and stage (e) purges torrents with their
+  copies. ONE abort lambda composes every message from both counters
+  so no stage can understate what already happened.
 - Mutual exclusion: arming season-delete is blocked while whole-series
   Remove is pending/in-flight, and vice versa.
 
@@ -52,10 +76,10 @@ remove worker (generation-checked, render thread applies results).
 
 | # | Stage | On failure |
 |---|-------|-----------|
-| a | Unmonitor the season AND its episodes: `set_season_monitored(id, N, false)` + bulk `set_episodes_monitored(season's episode ids, false)`. PROBED 2026-08-13: `season.monitored` and `episode.monitored` are INDEPENDENT, and Sonarr's auto-redownload-on-failed keys off the EPISODE flag — season-only unmonitoring lets stage (d) fire searches behind our back. Corollary: the Start-Season-N flow must explicitly re-monitor the season's episodes before its SeasonSearch (idempotent; removes all dependence on cascade semantics) | abort (nothing changed) |
+| a | Unmonitor the season AND its episodes: `set_season_monitored(id, N, false)` + bulk `set_episodes_monitored(season's episode ids, false)`. PROBED 2026-08-13: `season.monitored` and `episode.monitored` are INDEPENDENT, and Sonarr's auto-redownload-on-failed keys off the EPISODE flag — season-only unmonitoring lets stage (d) fire searches behind our back. Corollary: the Start-Season-N flow must explicitly re-monitor the season's episodes before its SeasonSearch (idempotent; removes all dependence on cascade semantics). AMENDED 2026-08-13: EVERY flow that monitors a season in order to download it owes that re-monitor, not just Start-Season-N — the whole-series worker shipped without it and silently downloaded nothing for a previously deleted season while reporting success. It is now one shared helper (`monitor_episodes_for_seasons`) called by both | abort (nothing changed) |
 | b | `get_season_history_checked(id, N)` — grab records, import records, download hashes (lowercased) | nullopt → abort |
 | c | Cancel this season's queue rows with `blocklist=true, removeFromClient=true` (stall-reaper semantics) | abort |
-| d | `mark_history_failed(history_id)` for the season's imported grab(s) — Sonarr's supported blocklist for an already-imported release | abort (blocklist incomplete = the bad release could return; retry is safe) |
+| d | `mark_history_failed(history_id)` for the season's GRABBED records, with the imported records as a FALLBACK when there is no grab record at all. AMENDED 2026-08-13 (commit 766eac6), inverting this row's original "imported grab(s)": probe P2 verified `POST /history/failed/{id}` against a GRABBED record only — whether Sonarr accepts an IMPORTED record's id is UNVERIFIED. Imported ids therefore cover just the manually-imported release (added without ever going through a grab); trying them FIRST would put the one scenario the fallback exists for — Sonarr refusing an imported id — in front of the grabbed ids, which the abort-on-first-refusal rule would then never reach. The two id lists never share a record (`parse_season_history` buckets by eventType), and neither requires a `downloadId`: an import with no downloadId is exactly the manual case, and dropping it left the fallback with nothing to fall back to | abort (blocklist incomplete = the bad release could return; retry is safe). When BOTH lists are empty nothing is blocklisted and nothing is purged — not an abort, but the success toast must SAY so |
 | e | qBit: delete the season's torrents by hash, with data. Skipped when `qbit_` is null (Task 7 contract). Library files of OTHER seasons survive deletion of a multi-season pack (imports are separate copies/hardlinks); such a pack merely stops seeding | warn-and-continue (torrent may already be gone) |
 | f | `get_episode_files_checked(id)` → filter `season_number == N` → `delete_episode_files(bulk ids)` — the destructive step, last | abort with stage toast |
 | g | Publish → refresh rows, toast | — |
@@ -82,8 +106,12 @@ All `virtual`, mirrored in `SonarrMockClient`, checked shapes
   embed a live Prowlarr API key in `data.downloadUrl` — fixtures must
   redact it, and no code may log raw history JSON.)
 - `set_episodes_monitored(const std::vector<int>& ids, bool monitored)` →
-  bool. Endpoint: `PUT /api/v3/episode/monitor`. Used by stage (a) and
-  by the Start-Season-N re-monitor.
+  bool. Endpoint: `PUT /api/v3/episode/monitor`. Used by stage (a), by
+  the single-season re-monitor, and by the whole-series worker.
+  AMENDED 2026-08-13: the verdict is the HTTP STATUS (new
+  `http_put_status`, mirroring `http_post_status`), not whether a body
+  came back — this endpoint's success-body shape is UNVERIFIED, and a
+  2xx with an empty body would have failed stage (a) of EVERY delete.
 - `mark_history_failed(int history_id)` → bool.
   Endpoint: `POST /api/v3/history/failed/{id}`.
 - `get_episode_files_checked(int sonarr_id)` →

@@ -418,9 +418,15 @@ render thread never blocks:
 2. Read the season's Sonarr history (authoritative; a failed read
    aborts here, before anything destructive)
 3. Cancel the season's live queue rows with `blocklist=true`
-4. Mark the season's grabbed + imported history records failed, which
-   blocklists the release(s) so the same bad copy can't be the answer
-   to the next search
+4. Mark the season's history records failed, which blocklists the
+   release(s) so the same bad copy can't be the answer to the next
+   search. **Grabbed records, with imported as a FALLBACK** — not
+   both: probe P2 verified `POST /history/failed/{id}` against a
+   GRABBED record only, so imported ids are used solely when there is
+   no grab record at all (a manually imported release). Trying
+   imported first would put the one scenario the fallback exists for
+   — Sonarr refusing an imported id — in front of the grabbed ids the
+   abort-on-refusal rule would then never reach
 5. Purge the season's torrents from qBittorrent with their downloaded
    data (warn-and-continue — a torrent already gone doesn't block the
    rest)
@@ -431,12 +437,27 @@ render thread never blocks:
 **Abort rule**: any read or mutation in steps 1-4 that can't get an
 authoritative answer aborts before step 6 runs and says why in a
 toast — retry is always safe, since nothing destructive has happened
-yet. From step 5 on the torrents are already gone with their data, so
-a later abort reports that qBit cleanup already happened rather than
-implying nothing did. "Download Season N" (the season-detail action
-row, `decide_action_row` in `series_detail_logic.h`) re-monitors the
-season's episodes before searching, so a deleted season can be
-re-downloaded on demand. Whole-series Remove and `WatchStore` history
+yet. Every abort message is composed by ONE lambda that reads both
+cleanup counters, so a step-4 abort still discloses that step 3's
+cancels (`removeFromClient=true`) already took their partial data,
+and a step-6 abort still discloses step 5's torrent purge. The
+success toast likewise names what did NOT happen: with no grabbed and
+no imported history record, nothing was blocklisted and the same copy
+can come back.
+
+**Re-downloading a deleted season**: SELECT on a season row with
+nothing on disk and nothing in flight starts that season's download
+(`start_season_download`, which monitors the season, re-monitors its
+EPISODES — probe P3: season→episode does NOT cascade and SeasonSearch
+skips unmonitored episodes — then searches). The season LIST is the
+path that matters, because the action row's "Download Season N"
+(`decide_action_row`) targets `next_unmonitored_season(rows_)` — the
+LOWEST unmonitored season and nothing else, so it cannot reach a
+deleted season 3 sitting above a never-downloaded season 2. The same
+episode re-monitor runs in the whole-series worker
+(`monitor_episodes_for_seasons` is shared by both); without it "Whole
+series…" downloaded nothing for a previously deleted season while
+reporting success. Whole-series Remove and `WatchStore` history
 are untouched by this flow — origin: a Game of Thrones season grabbed
 in the wrong language had no smaller unit to remove than the whole
 series, which would have destroyed already-watched seasons too.
@@ -702,4 +723,3 @@ Extensive docs in `magic_dingus_box_cpp/docs/`. (A `.gitignore` rule matches thi
 - `PLAYLIST_FORMAT.md` - Playlist YAML schema
 - `GAME_CONTROLS.md` - Input mapping details
 - `USB_CONNECTION_GUIDE.md` - USB Ethernet Gadget setup
-- `MEDIA_BROWSER_PLAYBACK_AND_DOWNLOADS.md` - Deep dive on the Media Browser pipeline (full architecture, scoring tables, quality definitions, network topology, migration notes)
