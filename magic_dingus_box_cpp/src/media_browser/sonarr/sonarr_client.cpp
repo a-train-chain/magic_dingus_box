@@ -213,6 +213,38 @@ std::string SonarrClient::http_put(const std::string& path, const std::string& b
     return req.body;
 }
 
+long SonarrClient::http_put_status(const std::string& path,
+                                   const std::string& body) {
+    // Same shape as http_post_status (status code, not body — see
+    // http_delete's comment for why), PUT verb for endpoints like
+    // /api/v3/episode/monitor whose success-body shape is unverified.
+    CurlRequest req;
+    req.curl = curl_easy_init();
+    if (!req.curl) { set_error("curl init failed"); return 0; }
+    const std::string url = cfg_.base_url + path;
+    req.headers = curl_slist_append(req.headers,
+                                    ("X-Api-Key: " + cfg_.api_key).c_str());
+    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
+    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
+    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+        set_error(os.str());
+    }
+    return http_code;
+}
+
 long SonarrClient::http_delete(const std::string& path) {
     CurlRequest req;
     req.curl = curl_easy_init();
@@ -937,6 +969,16 @@ bool SonarrClient::set_episodes_monitored(const std::vector<int>& ids,
                                           bool monitored) {
     // Same empty-list short-circuit as delete_episode_files, for the same
     // reason: nothing to change is success, not a round-trip worth making.
+    //
+    // The verdict is the HTTP STATUS, not the response body: this endpoint's
+    // success-body shape is UNVERIFIED (unlike set_season_monitored, whose
+    // PUT /series answers with the updated series record), and http_put
+    // returns "" for BOTH a transport/HTTP failure and a 2xx with an empty
+    // body. Reading a body-emptiness as failure here would abort stage (a)
+    // of every season delete and warn on every "Download Season N" — the
+    // feature would be 100% dead against a Sonarr build that answers this
+    // PUT with 200 and no body. Same in-band discipline as
+    // mark_history_failed (probe P2's lesson, applied before it bites).
     if (ids.empty()) return true;
     set_error({});
     Json::Value body(Json::objectValue);
@@ -946,7 +988,9 @@ bool SonarrClient::set_episodes_monitored(const std::vector<int>& ids,
     body["monitored"] = monitored;
     Json::StreamWriterBuilder wb;
     wb["indentation"] = "";
-    return !http_put("/api/v3/episode/monitor", Json::writeString(wb, body)).empty();
+    const long code = http_put_status("/api/v3/episode/monitor",
+                                      Json::writeString(wb, body));
+    return code > 0 && code < 400;
 }
 
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {

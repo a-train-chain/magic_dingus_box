@@ -350,6 +350,13 @@ public:
     // mark_history_failed. Same empty-list short-circuit as
     // delete_episode_files, and for the same reason: nothing to change is
     // success, not a request worth a round-trip.
+    //
+    // Verdict comes from http_put_status (the HTTP status code), NOT from
+    // whether a body came back: this endpoint's success-body shape is
+    // UNVERIFIED, and a 2xx with an empty body would read as failure under
+    // http_put's body-only return — aborting stage (a) of every season
+    // delete and warning on every "Download Season N". Same in-band
+    // discipline as mark_history_failed.
     virtual bool set_episodes_monitored(const std::vector<int>& ids,
                                         bool monitored);
 
@@ -398,6 +405,14 @@ protected:
     // on `code > 0 && code < 400`; last_error side effects unchanged.
     virtual long http_post_status(const std::string& path, const std::string& body);
     virtual std::string http_put(const std::string& path, const std::string& body);
+    // Status-code-returning PUT — http_post_status' reason, PUT verb.
+    // set_episodes_monitored is the caller: PUT /api/v3/episode/monitor's
+    // success-body shape is UNVERIFIED, and http_put's body-only return
+    // reads a 2xx-with-empty-body as failure — which would abort stage (a)
+    // of EVERY season delete and make "Download Season N" warn every time.
+    // Same contract as http_post_status: 0 = transport failure, callers
+    // branch on `code > 0 && code < 400`; last_error side effects unchanged.
+    virtual long http_put_status(const std::string& path, const std::string& body);
     // Returns the HTTP STATUS CODE, not the body — 0 means the request never
     // got an answer (transport failure). DELETE endpoints answer with an empty
     // body on success, so the body cannot distinguish success from failure and

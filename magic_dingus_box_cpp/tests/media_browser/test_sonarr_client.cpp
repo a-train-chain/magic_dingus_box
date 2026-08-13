@@ -1192,6 +1192,14 @@ public:
         return next_post_status;
     }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
+    // set_episodes_monitored reads the STATUS, not the body — see its own
+    // test below; the fake must answer the same way the client asks.
+    std::string last_put_path;
+    long next_put_status = 200;
+    long http_put_status(const std::string& path, const std::string&) override {
+        last_put_path = path;
+        return next_put_status;
+    }
     long http_delete(const std::string& path) override {
         last_delete_path = path;
         return next_delete_code;
@@ -1332,11 +1340,18 @@ TEST_CASE("set_episodes_monitored PUTs episode ids and the monitored flag; "
         PutRecorder() : SonarrClient(Config{}) {}
         std::string last_put_path, last_put_body;
         bool put_called = false;
-        std::string http_put(const std::string& path, const std::string& body) override {
+        long next_put_status = 200;
+        // Overrides http_put_STATUS, not http_put. The old fake returned the
+        // request body from http_put, which is non-empty BY CONSTRUCTION —
+        // so a body-emptiness verdict could never fail in a test, and the
+        // 2xx-with-empty-body case (which would abort stage (a) of every
+        // season delete on a live box) was invisible here.
+        long http_put_status(const std::string& path,
+                             const std::string& body) override {
             put_called = true;
             last_put_path = path;
             last_put_body = body;
-            return body;
+            return next_put_status;
         }
     };
     PutRecorder c;
@@ -1358,6 +1373,28 @@ TEST_CASE("set_episodes_monitored PUTs episode ids and the monitored flag; "
     c.put_called = false;
     CHECK(c.set_episodes_monitored({}, true) == true);  // vacuous success
     CHECK_FALSE(c.put_called);                          // ...no HTTP call
+}
+
+TEST_CASE("set_episodes_monitored reads the in-band HTTP status, not a "
+          "response body", "[sonarr][episodes]") {
+    // PUT /api/v3/episode/monitor's success-body shape is UNVERIFIED, and
+    // http_put returns "" for BOTH a transport/HTTP failure and a 2xx with
+    // an empty body. Under the old body-emptiness verdict, a Sonarr build
+    // that answers 200-with-no-body would fail stage (a) of EVERY season
+    // delete and warn on every "Download Season N" — a 100%-dead feature
+    // with no false-success to catch it. Same in-band discipline (and same
+    // status table) as mark_history_failed: 200 -> true, 404/500 -> false,
+    // 0 (http_put_status' reserved "no answer") -> false.
+    SeasonDeleteSonarr c;
+    c.next_put_status = 200;
+    CHECK(c.set_episodes_monitored({4, 5}, false));
+    CHECK(c.last_put_path == "/api/v3/episode/monitor");
+    c.next_put_status = 404;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
+    c.next_put_status = 500;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
+    c.next_put_status = 0;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
 }
 
 TEST_CASE("SonarrMockClient mirrors the season-delete surface with engaged, "

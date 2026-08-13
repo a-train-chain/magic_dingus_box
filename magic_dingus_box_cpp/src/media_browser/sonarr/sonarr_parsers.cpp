@@ -261,20 +261,35 @@ SeasonHistory SonarrParsers::parse_season_history(const std::string& json) {
     // live Prowlarr API key in data.downloadUrl.
     SeasonHistory out;
     Json::Value root;
-    if (!parse_json(json, root) || !root.isArray()) return out;
+    if (!parse_json(json, root)) return out;
+    // records_of, not a bare isArray() gate: parse_history_download_ids (this
+    // file, the sibling history parser) already accepts BOTH the bare-array
+    // and the paged {"records":[...]} shapes, and a reshaped body reaching
+    // this one would degrade to "authoritative: no history" — after which the
+    // season-delete worker deletes files with nothing blocklisted and no
+    // torrent purged. Same body, two parsers, one shape rule.
+    const Json::Value* records = records_of(root);
+    if (!records) return out;
     std::set<std::string> seen_hashes;
-    for (const auto& r : root) {
+    for (const auto& r : *records) {
         if (!r.isObject()) continue;
         const int id = r.get("id", 0).asInt();
         const std::string ev = r.get("eventType", "").asString();
         std::string dl = r.get("downloadId", "").asString();
         dl = to_lower(dl);
-        // Only track records that have both a valid id and a downloadId
-        if (id > 0 && !dl.empty()) {
+        // The history IDs need only a usable record id. A downloadId is NOT
+        // required for them: a manually-imported release has a
+        // downloadFolderImported record with no downloadId at all, and that
+        // is exactly the case the worker's imported-ids fallback exists to
+        // blocklist — requiring dl here dropped the record and left the
+        // fallback unreachable. The HASH set still requires it, since an
+        // empty string is not a torrent qBittorrent can be asked about.
+        if (id > 0) {
             if (ev == "grabbed") out.grabbed_history_ids.push_back(id);
             if (ev == "downloadFolderImported") out.imported_history_ids.push_back(id);
-            if (seen_hashes.insert(dl).second) out.download_hashes.push_back(dl);
         }
+        if (!dl.empty() && seen_hashes.insert(dl).second)
+            out.download_hashes.push_back(dl);
     }
     return out;
 }
