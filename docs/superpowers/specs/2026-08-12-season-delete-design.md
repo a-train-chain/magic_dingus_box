@@ -81,8 +81,8 @@ remove worker (generation-checked, render thread applies results).
 | # | Stage | On failure |
 |---|-------|-----------|
 | a | Unmonitor the season AND its episodes: `set_season_monitored(id, N, false)` + bulk `set_episodes_monitored(season's episode ids, false)`. PROBED 2026-08-13: `season.monitored` and `episode.monitored` are INDEPENDENT, and SeasonSearch skips unmonitored episodes — so a season-only unmonitor leaves the episodes armed and makes the re-monitor on the way back in meaningless. **CORRECTED 2026-08-13 (hardware): P3's other conclusion — that auto-redownload-on-failed keys off the EPISODE flag, so this stage stops stage (d) firing searches — is DISPROVEN. See "Auto-redownload suppression" below. Stage (a) stays, for the SeasonSearch reason above; it is no longer what makes stage (d) safe.** Corollary: the Start-Season-N flow must explicitly re-monitor the season's episodes before its SeasonSearch (idempotent; removes all dependence on cascade semantics). AMENDED 2026-08-13: EVERY flow that monitors a season in order to download it owes that re-monitor, not just Start-Season-N — the whole-series worker shipped without it and silently downloaded nothing for a previously deleted season while reporting success. It is now one shared helper (`monitor_episodes_for_seasons`) called by both | abort (nothing changed) |
-| c-f | **Held under an `AutoRedownloadGuard`** (see below). Not armed ⇒ abort before anything destructive | abort (nothing destructive has run) |
 | b | `get_season_history_checked(id, N)` — grab records, import records, download hashes (lowercased) | nullopt → abort |
+| c-f | **Held under an `AutoRedownloadGuard`** (see below), armed AFTER (b). Not armed ⇒ abort before anything destructive | abort (nothing destructive has run) |
 | c | Cancel this season's queue rows with `blocklist=true, removeFromClient=true` (stall-reaper semantics) | abort |
 | d | `mark_history_failed(history_id)` for the season's GRABBED records, with the imported records as a FALLBACK when there is no grab record at all. AMENDED 2026-08-13 (commit 766eac6), inverting this row's original "imported grab(s)": probe P2 verified `POST /history/failed/{id}` against a GRABBED record only — whether Sonarr accepts an IMPORTED record's id is UNVERIFIED. Imported ids therefore cover just the manually-imported release (added without ever going through a grab); trying them FIRST would put the one scenario the fallback exists for — Sonarr refusing an imported id — in front of the grabbed ids, which the abort-on-first-refusal rule would then never reach. The two id lists never share a record (`parse_season_history` buckets by eventType), and neither requires a `downloadId`: an import with no downloadId is exactly the manual case, and dropping it left the fallback with nothing to fall back to | abort (blocklist incomplete = the bad release could return; retry is safe). When BOTH lists are empty nothing is blocklisted and nothing is purged — not an abort, but the success toast must SAY so |
 | e | qBit: delete the season's torrents by hash, with data. Skipped when `qbit_` is null (Task 7 contract). Library files of OTHER seasons survive deletion of a multi-season pack (imports are separate copies/hardlinks); such a pack merely stops seeding | warn-and-continue (torrent may already be gone) |
@@ -146,7 +146,9 @@ flag, held across stages (c)–(f):
   WARNING clause to the toast naming Sonarr → Settings → Download
   Clients. Nothing else in the kiosk surfaces this flag, and a
   permanently-off `autoRedownloadFailed` is a global regression (no
-  failed download of any movie or series would auto-retry).
+  failed download of any SERIES would auto-retry — the flag is Sonarr's
+  own config field, so Radarr/movies are a separate config and
+  unaffected).
 - Accepted cost: the flag is global, so for the few seconds a delete
   runs, no failed download anywhere gets an automatic retry. That is
   the price of the owner's manual-redownload contract, and the window

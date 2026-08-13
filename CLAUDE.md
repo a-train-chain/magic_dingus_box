@@ -432,8 +432,10 @@ render thread never blocks:
    the global flag is the only lever. If the guard cannot arm, ABORT:
    deleting without suppression is the defect. If the restore is
    defeated after 3 retries, the toast must SAY so — a stuck-off flag
-   stops auto-retry of failed downloads box-wide, for movies too, and
-   no kiosk screen shows it
+   stops auto-retry of failed downloads for every SERIES on the box
+   (Sonarr's `autoRedownloadFailed` is a Sonarr-only config field;
+   Radarr has its own separate config and is unaffected), and no
+   kiosk screen shows it
 4. Mark the season's history records failed, which blocklists the
    release(s) so the same bad copy can't be the answer to the next
    search. **Grabbed records, with imported as a FALLBACK** — not

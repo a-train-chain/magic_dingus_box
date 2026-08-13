@@ -504,8 +504,9 @@ private:
 // again with it monitored — it is the master switch, and it takes effect on
 // the very next request (no config cache to wait out).
 //
-// THE COST, AND THE OBLIGATION. The flag is global to the box: while a guard
-// is held, NO failed download anywhere gets an automatic retry. That window
+// THE COST, AND THE OBLIGATION. The flag is global to SONARR (a separate
+// config from Radarr's — movies are unaffected): while a guard is held, NO
+// failed SERIES download gets an automatic retry. That window
 // is a few seconds and is the price of the owner's manual-redownload
 // contract. Leaving the flag off, however, is a SILENT GLOBAL REGRESSION
 // with no UI anywhere in the kiosk to reveal it — so restore is not

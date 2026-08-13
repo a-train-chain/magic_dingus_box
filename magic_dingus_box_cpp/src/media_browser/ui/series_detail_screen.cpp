@@ -1774,9 +1774,9 @@ Screen SeriesDetailScreen::handle_input(
                             // Nothing else in the kiosk surfaces this Sonarr
                             // flag, so if the restore lost, saying so here is
                             // the owner's only warning that their box has
-                            // stopped auto-retrying FAILED downloads
-                            // globally — for every movie and series, not
-                            // just this one.
+                            // stopped auto-retrying FAILED downloads for
+                            // every SERIES, not just this one (the flag is
+                            // Sonarr-only; Radarr/movies are unaffected).
                             return " (WARNING: Sonarr's automatic re-download "
                                    "is still switched OFF \xE2\x80\x94 turn it "
                                    "back on in Sonarr under Settings > "
@@ -1877,8 +1877,9 @@ Screen SeriesDetailScreen::handle_input(
                         // season whose row already read `downloading`.
                         //
                         // Armed here rather than at (a): (a) and (b) cannot
-                        // trigger a redownload, and this flag is GLOBAL to the
-                        // box — no failed download of any movie or series gets
+                        // trigger a redownload, and this flag is GLOBAL to
+                        // SONARR (a separate config from Radarr's — movies
+                        // are unaffected) — no failed SERIES download gets
                         // an automatic retry while it is held, so the window
                         // stays as short as the work allows.
                         //
