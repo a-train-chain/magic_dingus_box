@@ -377,13 +377,25 @@ SonarrClient::get_season_history_checked(int sonarr_id, int season_number) {
     return SonarrParsers::parse_season_history(resp, season_number);
 }
 
+// CORRECTED 2026-08-13 (this snippet originally read `return
+// last_error().empty();`). That splits the verdict across two calls,
+// which the plan's own Global Constraints forbid — last_error_ is ONE
+// member shared with the ~9s background series re-poll, and
+// series_detail_screen already runs poll_worker_ and mut_worker_
+// concurrently against this client, so the window is a full HTTP
+// round-trip wide in BOTH directions (a poll's error failing a real
+// success; a poll's entry-clear making a real failure look like
+// success — Task 6 would then believe a release was blocklisted when
+// it was not). The snippet's justifying comment was also factually
+// wrong: probe P2 showed this endpoint answers 200 with an EMPTY body,
+// so http_post's body-only return cannot distinguish success from
+// failure at all. Fix mirrors how this same commit solved the
+// identical ambiguity for DELETE (http_delete_body ← http_delete):
 bool SonarrClient::mark_history_failed(int history_id) {
     set_error({});
-    auto resp = http_post("/api/v3/history/failed/"
-                          + std::to_string(history_id), "");
-    // POST returns 200 with an empty-ish body; http_post returns "" only
-    // on transport/HTTP failure (it set_error'd). Probe P2 verified shape.
-    return last_error().empty();
+    const long code = http_post_status(
+        "/api/v3/history/failed/" + std::to_string(history_id), "");
+    return code > 0 && code < 400;
 }
 
 std::optional<std::vector<EpisodeFileInfo>>
