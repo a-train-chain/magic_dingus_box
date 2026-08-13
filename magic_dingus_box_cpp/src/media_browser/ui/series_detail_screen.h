@@ -230,6 +230,12 @@ private:
     std::optional<Series> mut_series_;               // guarded
     bool mut_settled_ = true;                        // guarded
     bool mut_removed_ = false;                       // guarded
+    // Per-season remove (Task 6). Deliberately SEPARATE from mut_removed_:
+    // that one means "the whole Sonarr record is gone" and navigates back,
+    // while this one keeps the user on the page and reloads it. Collapsing
+    // the two would send the user to Browse after deleting one season.
+    bool mut_season_removed_ = false;                // guarded
+    int mut_season_number_ = 0;                      // guarded
     bool mut_have_verdict_ = false;                  // guarded
     DiskVerdict mut_verdict_ = DiskVerdict::Block;   // guarded
     int64_t mut_estimate_ = 0;                       // guarded
