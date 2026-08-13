@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.13] - 2026-08-13
+
 ### Added
 - **Delete one season without touching the rest of the series.** Until
   now the only way to get rid of a season you didn't want — wrong
@@ -31,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Season N…" row lives — so a season grabbed in the wrong language can
   be stopped and cleaned up while it is still coming down, which was
   the whole point of the feature.
+
+- **A season delete no longer triggers an instant re-download.**
+  Marking a release failed makes Sonarr fire an explicit search that
+  ignores whether the season is monitored, so the first builds of this
+  feature blocklisted a bad release and then grabbed a replacement
+  about five seconds later — while the on-screen message was still
+  telling you to pick the season yourself when you wanted it back.
+  Found on hardware, not in review. The delete now switches Sonarr's
+  automatic re-download off for the few seconds it needs and puts it
+  back exactly as it was, on every exit path including a crash; if it
+  ever cannot put it back, it says so and names the setting. A season
+  delete interrupted by a power cut leaves a marker that
+  `verify_box.sh` fails on, so the box can't quietly sit with the
+  setting off.
 
 ## [1.9.12] - 2026-08-12
 
