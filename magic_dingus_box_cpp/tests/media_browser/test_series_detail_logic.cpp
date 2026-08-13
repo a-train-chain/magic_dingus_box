@@ -604,3 +604,28 @@ TEST_CASE("action row: the armed whole-series label carries the GiB estimate",
     REQUIRE(row.buttons.size() == 2);
     CHECK(row.buttons[1].label == "Confirm ~7 GB (est)");
 }
+
+TEST_CASE("cancel_ids_for_season: only this series+season, one id per download") {
+    using media_browser::SonarrQueueItem;
+    SonarrQueueItem a; a.id=1; a.series_id=7; a.season_number=3; a.download_id="x";
+    SonarrQueueItem b; b.id=2; b.series_id=7; b.season_number=3; b.download_id="x";  // same pack
+    SonarrQueueItem c; c.id=3; c.series_id=7; c.season_number=1; c.download_id="y";  // other season
+    SonarrQueueItem d; d.id=4; d.series_id=9; d.season_number=3; d.download_id="z";  // other series
+    auto ids = media_browser::ui::cancel_ids_for_season({a,b,c,d}, 7, 3);
+    REQUIRE(ids == std::vector<int>{1});
+}
+
+TEST_CASE("season_delete_row_exists: files OR live downloads") {
+    using media_browser::ui::season_delete_row_exists;
+    REQUIRE(season_delete_row_exists(5, false));
+    REQUIRE(season_delete_row_exists(0, true));
+    REQUIRE_FALSE(season_delete_row_exists(0, false));
+}
+
+TEST_CASE("season_delete_label three states") {
+    using media_browser::ui::SeasonDeleteState;
+    using media_browser::ui::season_delete_label;
+    REQUIRE(season_delete_label(SeasonDeleteState::Idle, 3)    == "Delete Season 3\xE2\x80\xA6");
+    REQUIRE(season_delete_label(SeasonDeleteState::Armed, 3)   == "Confirm delete Season 3");
+    REQUIRE(season_delete_label(SeasonDeleteState::Removing, 3)== "Removing season\xE2\x80\xA6");
+}

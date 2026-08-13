@@ -207,6 +207,48 @@ inline std::vector<int> cancel_ids_for_series(
     return ids;
 }
 
+// Queue rows to cancel for ONE season — same one-per-download dedupe as
+// cancel_ids_for_series (a season pack is N rows sharing one downloadId),
+// with the additional season_number filter.
+inline std::vector<int> cancel_ids_for_season(
+        const std::vector<SonarrQueueItem>& queue, int series_id, int season_number) {
+    std::vector<int> ids;
+    std::unordered_set<std::string> seen;
+    for (const auto& q : queue) {
+        if (q.series_id != series_id) continue;
+        if (q.season_number != season_number) continue;
+        const std::string& key = q.download_id.empty() ? q.title : q.download_id;
+        if (key.empty()) {
+            ids.push_back(q.id);  // nothing to dedupe on
+            continue;
+        }
+        if (seen.insert(key).second) ids.push_back(q.id);
+    }
+    return ids;
+}
+
+// Whether the trailing "Delete Season N…" row exists in the picker: either
+// files are already on disk, or a download for the season is live (nothing
+// to delete yet, but the row still offers to cancel it).
+inline bool season_delete_row_exists(int episode_file_count, bool season_downloading) {
+    return episode_file_count > 0 || season_downloading;
+}
+
+// The season-delete row's label in its three states.
+enum class SeasonDeleteState { Idle, Armed, Removing };
+
+inline std::string season_delete_label(SeasonDeleteState s, int season_number) {
+    switch (s) {
+        case SeasonDeleteState::Idle:
+            return "Delete Season " + std::to_string(season_number) + "\xE2\x80\xA6";
+        case SeasonDeleteState::Armed:
+            return "Confirm delete Season " + std::to_string(season_number);
+        case SeasonDeleteState::Removing:
+            return "Removing season\xE2\x80\xA6";
+    }
+    return "";  // unreachable; keeps -Wreturn-type quiet without a default:
+}
+
 // ---------- Screen state ----------
 
 enum class SeriesDetailState {
