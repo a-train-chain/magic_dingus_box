@@ -62,6 +62,19 @@ struct EpisodeInfo {
     std::string file_quality;        // episodeFile.quality.quality.name
 };
 
+// Season history aggregation for per-season delete operations.
+struct SeasonHistory {
+    std::vector<int> grabbed_history_ids;     // eventType == "grabbed"
+    std::vector<int> imported_history_ids;    // eventType == "downloadFolderImported"
+    std::vector<std::string> download_hashes; // distinct, lowercased
+};
+
+// Episode file metadata for download tracking.
+struct EpisodeFileInfo {
+    int id = 0;
+    int season_number = 0;
+};
+
 // A series as returned by /api/v3/series/lookup — not yet in the library, so
 // no Sonarr id and no path.
 struct SeriesSearchHit {

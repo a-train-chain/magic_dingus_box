@@ -27,6 +27,12 @@ public:
     // {records:[...]} form is also accepted). Returns distinct downloadIds,
     // lowercased for qBittorrent comparison, in first-seen order.
     static std::vector<std::string> parse_history_download_ids(const std::string& json);
+    // GET /api/v3/history/series?seriesId=X&seasonNumber=N (season-scoped).
+    // Input is already filtered by season on the server side.
+    static SeasonHistory parse_season_history(const std::string& json);
+    // GET /api/v3/episodefile?seriesId= — array of episode files with id and
+    // seasonNumber for download tracking.
+    static std::vector<EpisodeFileInfo> parse_episode_files(const std::string& json);
     // Servarr-identical shapes — these delegate to RadarrParsers so there is
     // exactly one implementation of each.
     static std::vector<QualityProfile> parse_quality_profiles(const std::string& json);

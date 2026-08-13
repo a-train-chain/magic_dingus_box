@@ -252,4 +252,45 @@ std::vector<QualityDefinition> SonarrParsers::parse_quality_definitions(
     return out;
 }
 
+SeasonHistory SonarrParsers::parse_season_history(const std::string& json) {
+    // Input is ALREADY season-scoped: the client queries
+    // /history/series?seriesId=X&seasonNumber=N (probe-verified — the
+    // records themselves carry no season field, so scoping cannot be
+    // re-done here). Never log record contents: grabbed records embed a
+    // live Prowlarr API key in data.downloadUrl.
+    SeasonHistory out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    std::set<std::string> seen_hashes;
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
+        const int id = r.get("id", 0).asInt();
+        const std::string ev = r.get("eventType", "").asString();
+        std::string dl = r.get("downloadId", "").asString();
+        dl = to_lower(dl);
+        // Only track records that have both a valid id and a downloadId
+        if (id > 0 && !dl.empty()) {
+            if (ev == "grabbed") out.grabbed_history_ids.push_back(id);
+            if (ev == "downloadFolderImported") out.imported_history_ids.push_back(id);
+            if (seen_hashes.insert(dl).second) out.download_hashes.push_back(dl);
+        }
+    }
+    return out;
+}
+
+std::vector<EpisodeFileInfo> SonarrParsers::parse_episode_files(
+        const std::string& json) {
+    std::vector<EpisodeFileInfo> out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
+        EpisodeFileInfo f;
+        f.id = r.get("id", 0).asInt();
+        f.season_number = r.get("seasonNumber", 0).asInt();
+        if (f.id > 0) out.push_back(f);
+    }
+    return out;
+}
+
 }  // namespace media_browser
