@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -1035,6 +1037,55 @@ bool SonarrClient::set_auto_redownload_failed(const DownloadClientConfig& cfg,
 
 // --- AutoRedownloadGuard ---------------------------------------------------
 
+namespace {
+
+// tmpfs marker naming an in-progress disable, so a run that never reaches
+// restore() — the disable PUT succeeds on Sonarr but the client-side curl
+// call times out first, or the process is SIGKILLed/loses power inside the
+// held window — leaves evidence behind instead of a silently-stuck-off
+// flag. Contents are the ORIGINAL value being overwritten, for a human
+// reading the file; verify_box.sh only checks existence (see FIX 3 there).
+// Deliberately NOT read or acted on at startup: an unconditional "turn it
+// back on" would override an owner who disabled the setting on purpose
+// between the interrupted run and now, and by then this code has no way to
+// tell the two apart. /tmp is tmpfs, so a reboot clears the marker — that
+// is correct too: after a reboot nobody can tell an interrupted run from a
+// deliberate owner setting either, so a stale-after-reboot false negative
+// beats a false alarm.
+constexpr const char* kAutoRedownloadHeldMarkerPath =
+    "/tmp/mdb_sonarr_autoredownload_held";
+
+// Best-effort by design: a marker write failing must never abort a delete
+// that is otherwise safe to proceed with. Log and move on.
+void write_autoredownload_held_marker(bool original_value) {
+    std::ofstream f(kAutoRedownloadHeldMarkerPath, std::ios::trunc);
+    if (!f) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not write held "
+                     "marker '{}' (best-effort, continuing)",
+                     kAutoRedownloadHeldMarkerPath);
+        return;
+    }
+    f << (original_value ? "true" : "false");
+    if (!f) {
+        spdlog::warn("[Sonarr] auto-redownload guard: held marker write to "
+                     "'{}' failed mid-write (best-effort, continuing)",
+                     kAutoRedownloadHeldMarkerPath);
+    }
+}
+
+void remove_autoredownload_held_marker() {
+    std::error_code ec;
+    std::filesystem::remove(kAutoRedownloadHeldMarkerPath, ec);
+    if (ec) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not remove held "
+                     "marker '{}' ({}) — verify_box.sh will flag this box "
+                     "until it is deleted or the box reboots",
+                     kAutoRedownloadHeldMarkerPath, ec.message());
+    }
+}
+
+}  // namespace
+
 AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
     : client_(client) {
     auto cfg = client_.get_download_client_config();
@@ -1050,15 +1101,28 @@ AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
         // Already off — the owner's own setting. Suppression is in force
         // without us touching anything, and there is nothing to undo. Mark
         // restored_ so neither restore() nor the destructor ever PUTs a
-        // value this box did not already have.
+        // value this box did not already have. No marker either: we are
+        // not about to change anything, so there is nothing an interruption
+        // could leave stuck.
         armed_ = true;
         restored_ = true;
         return;
     }
+    // Marker goes down BEFORE the PUT, not after: the failure mode this
+    // guards against is exactly the PUT call not returning cleanly (client
+    // timeout after Sonarr already applied it, or the process dying mid
+    // call), so the marker must exist for the whole duration the flag could
+    // plausibly already be off on Sonarr's side.
+    write_autoredownload_held_marker(original_.auto_redownload_failed);
     if (!client_.set_auto_redownload_failed(original_, false)) {
         spdlog::warn("[Sonarr] auto-redownload guard: could not disable "
                      "autoRedownloadFailed");
-        return;  // unarmed; nothing was changed, so nothing to restore
+        // Unarmed; the caller aborts before anything destructive. Do NOT
+        // remove the marker here: "could not disable" is exactly the
+        // ambiguous case (client-side failure after a server-side success)
+        // the marker exists to catch, so it must survive this guard's own
+        // lifetime and wait for verify_box.sh or a reboot.
+        return;
     }
     changed_ = true;
     armed_ = true;
@@ -1080,11 +1144,27 @@ bool AutoRedownloadGuard::restore() {
                 original_, original_.auto_redownload_failed)) {
             restored_ = true;
             restore_failed_ = false;
+            // The flag is confirmed back to its original value on Sonarr's
+            // side — the held marker's job is done.
+            remove_autoredownload_held_marker();
             return true;
         }
         spdlog::warn("[Sonarr] auto-redownload restore attempt {}/3 failed",
                      attempt);
     }
+    // Latch the terminal state alongside restore_failed_. Without this,
+    // restored_ stays false after a defeated restore, so the destructor
+    // (which runs on EVERY scope exit, not just exceptions — restore_clause()
+    // in series_detail_screen.cpp is on the stack, not a member, so its
+    // optional<AutoRedownloadGuard> is destroyed right after this explicit
+    // call returns) sees "not yet restored" and burns 3 more retries against
+    // a flag we already told the owner is stuck off. Worse, if one of those
+    // extra attempts succeeds, the owner is sent to Sonarr to fix a setting
+    // that is actually fine, and mut_done_ (set after the destructor
+    // returns) is delayed by however long that second round takes. restore()
+    // is already defeated at this point — a second round cannot make the
+    // TOAST any more honest, only the timing worse.
+    restored_ = true;
     restore_failed_ = true;
     spdlog::error("[Sonarr] COULD NOT restore autoRedownloadFailed=true — "
                   "Sonarr will not automatically retry failed downloads "
@@ -1094,9 +1174,11 @@ bool AutoRedownloadGuard::restore() {
 }
 
 AutoRedownloadGuard::~AutoRedownloadGuard() {
-    // Backstop for aborts and exceptions. restore() is idempotent, so the
-    // worker's explicit call (which it makes to learn the verdict in time to
-    // put it in the toast) does not cause a second PUT here.
+    // Backstop for aborts, exceptions, AND the ordinary case where the
+    // worker already called restore() explicitly (restore_clause() in
+    // series_detail_screen.cpp) — restore() is idempotent via restored_, so
+    // this never causes a second PUT once the explicit call has settled,
+    // win or lose.
     try {
         restore();
     } catch (...) {

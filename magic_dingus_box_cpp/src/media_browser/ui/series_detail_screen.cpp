@@ -122,6 +122,17 @@ SeriesDetailScreen::~SeriesDetailScreen() {
     // only at kiosk shutdown, where nothing is watchdogged. Detaching
     // instead would be strictly worse — a detached worker writes into freed
     // members.
+    //
+    // Season delete (2026-08-13) raised this ceiling further: its
+    // AutoRedownloadGuard adds one config GET plus, on a defeated restore,
+    // up to 4 more PUTs (the disable + 3 retry attempts inside
+    // AutoRedownloadGuard::restore) — up to ~25 s beyond the calls the
+    // stage itself already makes, each still bounded by timeout_secs. The
+    // guard's destructor is a same-object backstop, not a second retry
+    // round: once the worker's own restore_clause() call has resolved
+    // (succeeded or exhausted its retries), restore()'s restored_ latch
+    // makes the destructor's call a no-op, so this worker cannot spend two
+    // full retry rounds back to back.
 }
 
 void SeriesDetailScreen::set_tmdb_id(int tmdb_id) {

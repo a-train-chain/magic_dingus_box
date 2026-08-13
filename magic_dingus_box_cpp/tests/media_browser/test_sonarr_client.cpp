@@ -1677,6 +1677,87 @@ TEST_CASE("AutoRedownloadGuard retries a failing restore and reports defeat",
     }
 }
 
+TEST_CASE("AutoRedownloadGuard latches after a defeated restore — the "
+          "destructor does not pile a second retry round on top of a "
+          "verdict already given",
+          "[sonarr][redownload]") {
+    // This is the FIX-2 regression test: before the restored_ latch, a
+    // defeated explicit restore() (3 failed attempts, composed into the
+    // toast's WARNING clause) left restored_ false, so the destructor
+    // — which runs at the end of THIS scope regardless of the explicit
+    // call's outcome, not just on exceptions — retried 3 MORE times
+    // against a flag already reported stuck off.
+    RedownloadCfgSonarr c;
+    c.put_statuses = {202, 500};  // disable OK, every restore attempt refused
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK_FALSE(g.restore());
+        CHECK(g.restore_failed());
+        REQUIRE(c.puts.size() == 4);  // 1 disable + 3 defeated retries
+    }
+    // The destructor just ran. Before the fix this would be 7 (4 + 3 more
+    // retries); the latch keeps it at 4 — restore_failed() was already
+    // final when the toast was composed, and a later attempt quietly
+    // succeeding here would have told the owner their box was stuck when
+    // it was not, on top of delaying mut_done_ for nothing.
+    CHECK(c.puts.size() == 4);
+}
+
+namespace {
+// Must match kAutoRedownloadHeldMarkerPath in sonarr_client.cpp. Not
+// exposed via the header — these tests exercise the real filesystem
+// side effect, same as the codebase's existing /tmp marker conventions
+// (mdb_playback_services_paused, mdb_stall_candidates.json).
+const std::string kHeldMarkerPath = "/tmp/mdb_sonarr_autoredownload_held";
+
+std::string read_marker() {
+    std::ifstream f(kHeldMarkerPath);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+}  // namespace
+
+TEST_CASE("AutoRedownloadGuard writes a held marker before the disable PUT "
+          "and removes it on a confirmed restore",
+          "[sonarr][redownload][marker]") {
+    fs::remove(kHeldMarkerPath);  // hermetic regardless of prior test state
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        // Marker must exist WHILE suppression is held, naming the ORIGINAL
+        // value (true) — the disable PUT is what it guards against not
+        // completing cleanly.
+        REQUIRE(fs::exists(kHeldMarkerPath));
+        CHECK(read_marker() == "true");
+        CHECK(g.restore());
+    }
+    // Restore confirmed the flag is back — nothing left to catch.
+    CHECK_FALSE(fs::exists(kHeldMarkerPath));
+    fs::remove(kHeldMarkerPath);  // leave no residue for other tests/runs
+}
+
+TEST_CASE("AutoRedownloadGuard leaves the held marker behind when restore "
+          "never confirms success — the exact case verify_box.sh must "
+          "catch", "[sonarr][redownload][marker]") {
+    fs::remove(kHeldMarkerPath);
+    RedownloadCfgSonarr c;
+    c.put_statuses = {202, 500};  // disable OK, every restore attempt refused
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        REQUIRE(fs::exists(kHeldMarkerPath));
+        CHECK_FALSE(g.restore());
+    }
+    // A defeated restore means Sonarr may still have the flag off — the
+    // marker must survive so verify_box.sh's assertion has something to
+    // find. This is the leaked-flag scenario FIX 3 exists for.
+    CHECK(fs::exists(kHeldMarkerPath));
+    fs::remove(kHeldMarkerPath);  // leave no residue for other tests/runs
+}
+
 TEST_CASE("SonarrMockClient mirrors the auto-redownload surface",
           "[sonarr][mock]") {
     mb::SonarrMockClient m;

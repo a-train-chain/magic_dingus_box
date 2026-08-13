@@ -556,7 +556,11 @@ private:
     DownloadClientConfig original_{};
     bool armed_ = false;
     bool changed_ = false;        // we PUT a change, so there is one to undo
-    bool restored_ = false;       // restore() already completed
+    bool restored_ = false;       // restore() already completed — set on
+                                   // BOTH success and defeat (terminal), so
+                                   // a later call (e.g. the destructor, after
+                                   // an explicit call already lost) never
+                                   // retries a verdict already given
     bool restore_failed_ = false;
 };
 
