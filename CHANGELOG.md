@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.14] - 2026-08-13
+
 ### Changed
 - **No foreign audio on English shows and movies.** A Game of Thrones
   season arrived with French audio: the release was labelled `MULTi`,
