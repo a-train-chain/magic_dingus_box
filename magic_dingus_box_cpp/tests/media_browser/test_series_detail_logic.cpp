@@ -604,3 +604,85 @@ TEST_CASE("action row: the armed whole-series label carries the GiB estimate",
     REQUIRE(row.buttons.size() == 2);
     CHECK(row.buttons[1].label == "Confirm ~7 GB (est)");
 }
+
+TEST_CASE("cancel_ids_for_season: only this series+season, one id per download") {
+    using media_browser::SonarrQueueItem;
+    SonarrQueueItem a; a.id=1; a.series_id=7; a.season_number=3; a.download_id="x";
+    SonarrQueueItem b; b.id=2; b.series_id=7; b.season_number=3; b.download_id="x";  // same pack
+    SonarrQueueItem c; c.id=3; c.series_id=7; c.season_number=1; c.download_id="y";  // other season
+    SonarrQueueItem d; d.id=4; d.series_id=9; d.season_number=3; d.download_id="z";  // other series
+    auto ids = media_browser::ui::cancel_ids_for_season({a,b,c,d}, 7, 3);
+    REQUIRE(ids == std::vector<int>{1});
+}
+
+TEST_CASE("season_delete_row_exists: files OR live downloads") {
+    using media_browser::ui::season_delete_row_exists;
+    REQUIRE(season_delete_row_exists(5, false));
+    REQUIRE(season_delete_row_exists(0, true));
+    REQUIRE_FALSE(season_delete_row_exists(0, false));
+}
+
+TEST_CASE("season_row_opens_picker: files OR a live download, never files alone") {
+    // The drill-down gate used to be episode_file_count > 0 alone, so an
+    // actively-downloading season with nothing on disk yet could not be
+    // opened — and the picker is the ONLY place the "Delete Season N…" row
+    // lives, i.e. the feature's origin case ("I can see the wrong-language
+    // pack downloading; stop it") was unreachable from the kiosk. The gate
+    // is now the same predicate the delete row itself uses.
+    using media_browser::ui::SeasonRow;
+    using media_browser::ui::SeasonState;
+    using media_browser::ui::season_row_opens_picker;
+    SeasonRow files;  files.episode_file_count = 4; files.state = SeasonState::Partial;
+    SeasonRow dling;  dling.episode_file_count = 0; dling.state = SeasonState::Downloading;
+    SeasonRow both;   both.episode_file_count = 2;  both.state = SeasonState::Downloading;
+    SeasonRow empty;  empty.episode_file_count = 0; empty.state = SeasonState::None;
+    CHECK(season_row_opens_picker(files));
+    CHECK(season_row_opens_picker(dling));
+    CHECK(season_row_opens_picker(both));
+    // The one that does NOT open is the one that offers "download this
+    // season" instead — the season list's half of the re-download loop.
+    CHECK_FALSE(season_row_opens_picker(empty));
+}
+
+TEST_CASE("a deleted season above an un-downloaded one is NOT the action row's "
+          "target — the season list has to carry it") {
+    // Pins the reason the season list's SELECT starts a download. Delete
+    // season 3 of a series whose season 2 was never downloaded and the
+    // action row still reads "Download Season 2": next_unmonitored_season
+    // answers with the LOWEST unmonitored season and decide_action_row
+    // builds exactly ONE such button, so season 3 has no action-row path
+    // back at all. Both rows fail season_row_opens_picker, so both are
+    // reachable through the list.
+    using namespace media_browser::ui;
+    std::vector<SeasonRow> rows;
+    SeasonRow s1; s1.season_number = 1; s1.monitored = true;
+    s1.episode_count = 10; s1.episode_file_count = 10; s1.state = SeasonState::Complete;
+    SeasonRow s2; s2.season_number = 2; s2.monitored = false; s2.episode_count = 10;
+    SeasonRow s3; s3.season_number = 3; s3.monitored = false; s3.episode_count = 10;
+    rows = {s1, s2, s3};  // s3: just deleted — unmonitored, no files
+    const auto next = next_unmonitored_season(rows);
+    REQUIRE(next.has_value());
+    CHECK(*next == 2);
+    ActionRowInputs in;
+    in.state = SeriesDetailState::InLibrary;
+    in.next_unmonitored = next;
+    const auto row = decide_action_row(in);
+    int download_buttons = 0;
+    for (const auto& b : row.buttons) {
+        if (b.action == Action::NextSeason) {
+            ++download_buttons;
+            CHECK(b.label == "Download Season 2");   // never "Download Season 3"
+        }
+    }
+    CHECK(download_buttons == 1);
+    CHECK_FALSE(season_row_opens_picker(s3));        // ...so the LIST offers it
+    CHECK_FALSE(season_row_opens_picker(s2));
+}
+
+TEST_CASE("season_delete_label three states") {
+    using media_browser::ui::SeasonDeleteState;
+    using media_browser::ui::season_delete_label;
+    REQUIRE(season_delete_label(SeasonDeleteState::Idle, 3)    == "Delete Season 3\xE2\x80\xA6");
+    REQUIRE(season_delete_label(SeasonDeleteState::Armed, 3)   == "Confirm delete Season 3");
+    REQUIRE(season_delete_label(SeasonDeleteState::Removing, 3)== "Removing season\xE2\x80\xA6");
+}

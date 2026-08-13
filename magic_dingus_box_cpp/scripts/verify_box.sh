@@ -306,6 +306,26 @@ else
   warn "services/.env absent — Media Browser unprovisioned (expected on a fresh box)"
 fi
 
+# Season-delete's AutoRedownloadGuard writes this marker to tmpfs
+# immediately before disabling Sonarr's autoRedownloadFailed, and removes it
+# on a confirmed restore. Its presence means a delete was interrupted before
+# restore could confirm the flag went back — the disabling PUT may have
+# landed on Sonarr while the client-side call timed out or died, or the
+# process was SIGKILLed/lost power inside the held window. Neither
+# verify_services.sh nor anything else checks this: both only touch
+# /api/v3/downloadclient (the download CLIENT list), never
+# /api/v3/config/downloadclient (this flag). Nothing on the box self-heals
+# it — the next delete GETs the flag, sees it already false, and assumes the
+# owner set it that way on purpose. Reboots clear the marker (tmpfs), which
+# is intentional: after a reboot there is no way to tell an interrupted run
+# from a deliberate owner setting either, so this check can only catch it
+# within the same boot.
+if [[ -f /tmp/mdb_sonarr_autoredownload_held ]]; then
+  fail "found /tmp/mdb_sonarr_autoredownload_held — a season delete was interrupted before Sonarr's autoRedownloadFailed was confirmed restored; check Settings > Download Clients in Sonarr and turn autoRedownloadFailed back ON if it is off, then remove the marker file"
+else
+  pass "no interrupted auto-redownload-guard marker"
+fi
+
 # ---------------------------------------------------------------------
 if (( RUN_SERVICES )); then
   header "Service stack (verify_services.sh)"

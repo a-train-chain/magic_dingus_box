@@ -169,6 +169,38 @@ private:
     void dispatch_action(Action a);
     void expire_confirms();
 
+    // RENDER thread. The ONE entry point for "download this one season":
+    // monitor the season, re-monitor its EPISODES, search. Both callers go
+    // through it — the action row's "Download Season N" (whose target is
+    // next_unmonitored_season, i.e. the LOWEST unmonitored season) and the
+    // season list's SELECT on a season with nothing on disk and nothing in
+    // flight (which is what closes the re-download loop for every OTHER
+    // season, the just-deleted one included). Owns its own guards and
+    // toasts: not-in-library and not-yet-settled are both reachable from
+    // the season list, and neither may be a silent no-op.
+    void start_season_download(int season);
+    // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
+    // every episode of `seasons`. Probe P3: season->episode monitoring does
+    // NOT cascade and SeasonSearch skips unmonitored episodes, so EVERY
+    // path that monitors a season in order to download it needs this — it
+    // is a shared helper because it once lived inline in only one of the
+    // two, and "Whole series…" silently downloaded nothing for a
+    // previously deleted season.
+    //
+    // Returns nullopt for a real failure (the read failed or the PUT was
+    // refused); otherwise the number of episode ids actually monitored,
+    // which callers use to distinguish "nothing to do" from "suspiciously
+    // nothing" — the split contract, by call site:
+    //   - whole-series worker: 0 is tolerated (an announced-but-unaired
+    //     season legitimately has no episode records).
+    //   - start_season_download: 0 is suspicious. The season came from a
+    //     row the user can see, so an empty read is more likely
+    //     get_episodes_checked's documented engaged-but-empty
+    //     misclassification (malformed body, or a series id Sonarr no
+    //     longer knows) than a real absence of episodes.
+    std::optional<int> monitor_episodes_for_seasons(
+        int sonarr_id, const std::vector<int>& seasons);
+
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).
     // spawn_mutation joins the previous worker, wraps the body so mut_done_
@@ -230,6 +262,12 @@ private:
     std::optional<Series> mut_series_;               // guarded
     bool mut_settled_ = true;                        // guarded
     bool mut_removed_ = false;                       // guarded
+    // Per-season remove (Task 6). Deliberately SEPARATE from mut_removed_:
+    // that one means "the whole Sonarr record is gone" and navigates back,
+    // while this one keeps the user on the page and reloads it. Collapsing
+    // the two would send the user to Browse after deleting one season.
+    bool mut_season_removed_ = false;                // guarded
+    int mut_season_number_ = 0;                      // guarded
     bool mut_have_verdict_ = false;                  // guarded
     DiskVerdict mut_verdict_ = DiskVerdict::Block;   // guarded
     int64_t mut_estimate_ = 0;                       // guarded
@@ -253,6 +291,33 @@ private:
     void render_episode_region(::ui::Renderer& r, int screen_w, int body_x,
                                int list_top, int list_bottom,
                                bool& ep_overflow);
+
+    // ---- trailing "Delete Season N…" row (Tasks 5-7) ----
+    // Whether the picker shows the delete row for episodes_season_. Task 4's
+    // pure season_delete_row_exists, fed from THIS season's merged row, and
+    // additionally false on every frame render_episode_region bails to a
+    // placeholder (loading / outage / no episodes) — a row nobody can see
+    // must never be armable.
+    bool season_delete_row_present() const;
+    // The delete row is focused iff episode_focus_ is one past the last
+    // episode index. That equality IS the mechanic; everything else counts
+    // with episode_nav_count().
+    bool season_delete_focused() const;
+    // Episodes in episodes_season_ + the delete row when present. EVERY
+    // Episodes-region clamp, page count and page range counts with this,
+    // never with the raw episode count.
+    int episode_nav_count() const;
+
+    // Arm/confirm state — render-thread ONLY, exactly like whole_armed_ /
+    // remove_pending_ above: no worker ever writes it, so the countdown
+    // starts when the LABEL appears.
+    bool season_del_armed_ = false;
+    std::chrono::steady_clock::time_point season_del_armed_at_{};
+    static constexpr int kSeasonDelConfirmMs = 4000;  // matches kWholeConfirmMs
+    // Task 6 sets this at spawn and clears it at drain; Task 5 only READS it
+    // (the row's Removing paint), so the row is already honest the moment the
+    // worker lands.
+    bool season_del_inflight_ = false;
 
     DetailRegion region_ = DetailRegion::Seasons;
     std::vector<EpisodeInfo> episodes_;   // full series, fetch order

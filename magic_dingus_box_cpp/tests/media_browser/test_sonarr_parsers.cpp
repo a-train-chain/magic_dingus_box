@@ -229,3 +229,86 @@ TEST_CASE("parse_quality_definitions: non-array and garbage bodies parse to empt
     // Rows missing the quality object are skipped, not fatal.
     CHECK(mb::SonarrParsers::parse_quality_definitions(R"([{"minSize": 1.0}])").empty());
 }
+
+TEST_CASE("parse_season_history buckets by eventType (input is season-scoped)") {
+    // Shape from the live capture (fixtures/sonarr_history_series.json —
+    // captured WITH &seasonNumber, so records carry no season field).
+    // downloadId deliberately mixed-case — parser lowercases. NOTE the
+    // grabbed record's data.downloadUrl carries a REDACTED token in the
+    // fixture (live Prowlarr key in the real response — never log these).
+    const std::string json = R"([
+      {"id": 501, "eventType": "grabbed", "downloadId": "ABCDEF123456",
+       "data": {"downloadUrl": "http://localhost:9696/2/download?apikey=REDACTED"}},
+      {"id": 502, "eventType": "downloadFolderImported", "downloadId": "ABCDEF123456"}
+    ])";
+    auto h = mb::SonarrParsers::parse_season_history(json);
+    REQUIRE(h.grabbed_history_ids == std::vector<int>{501});
+    REQUIRE(h.imported_history_ids == std::vector<int>{502});
+    REQUIRE(h.download_hashes == std::vector<std::string>{"abcdef123456"});
+}
+
+TEST_CASE("parse_season_history dedupes hashes and tolerates junk") {
+    const std::string json = R"([
+      {"id": 1, "eventType": "grabbed", "downloadId": "AAAA"},
+      {"id": 2, "eventType": "grabbed", "downloadId": "AAAA"},
+      {"id": 3, "eventType": "grabbed"},
+      "not-an-object"
+    ])";
+    auto h = mb::SonarrParsers::parse_season_history(json);
+    // Record 3 has no downloadId and is STILL bucketed: the id is what
+    // POST /history/failed/{id} needs, and requiring a downloadId for the
+    // buckets dropped exactly the manually-imported records the worker's
+    // imported-ids fallback exists to blocklist. The HASH set still needs
+    // one — "" is not a torrent qBit can be asked about.
+    REQUIRE(h.grabbed_history_ids == std::vector<int>{1, 2, 3});
+    REQUIRE(h.download_hashes == std::vector<std::string>{"aaaa"});
+}
+
+TEST_CASE("parse_season_history keeps a downloadId-less imported record") {
+    // The manually-imported case named in the season-delete worker's
+    // stage-(d) fallback comment: no grab record at all, and the import
+    // record carries no downloadId. Dropping it left the fallback with
+    // nothing to fall back TO, so the delete proceeded with nothing
+    // blocklisted.
+    const std::string json = R"([
+      {"id": 77, "eventType": "downloadFolderImported"}
+    ])";
+    auto h = mb::SonarrParsers::parse_season_history(json);
+    REQUIRE(h.grabbed_history_ids.empty());
+    REQUIRE(h.imported_history_ids == std::vector<int>{77});
+    REQUIRE(h.download_hashes.empty());
+}
+
+TEST_CASE("parse_season_history accepts the paged {\"records\":[...]} shape") {
+    // Its sibling parse_history_download_ids has always accepted both
+    // shapes via records_of(). A reshaped body reaching the bare-array-only
+    // form degraded to "authoritative: no history" — and the worker then
+    // deletes files with no blocklist and no torrent purge.
+    const std::string json = R"({"page":1,"totalRecords":1,"records":[
+      {"id": 9, "eventType": "grabbed", "downloadId": "BEEF"}
+    ]})";
+    auto h = mb::SonarrParsers::parse_season_history(json);
+    REQUIRE(h.grabbed_history_ids == std::vector<int>{9});
+    REQUIRE(h.download_hashes == std::vector<std::string>{"beef"});
+}
+
+TEST_CASE("parse_season_history on malformed json yields empty") {
+    auto h = mb::SonarrParsers::parse_season_history("{nope");
+    REQUIRE(h.grabbed_history_ids.empty());
+    REQUIRE(h.imported_history_ids.empty());
+    REQUIRE(h.download_hashes.empty());
+}
+
+TEST_CASE("parse_episode_files extracts id + seasonNumber") {
+    const std::string json = R"([
+      {"id": 11, "seasonNumber": 1, "path": "/data/library/tv/x/S01E01.mkv"},
+      {"id": 33, "seasonNumber": 3},
+      {"noid": true}
+    ])";
+    auto files = mb::SonarrParsers::parse_episode_files(json);
+    REQUIRE(files.size() == 2);
+    REQUIRE(files[0].id == 11);
+    REQUIRE(files[0].season_number == 1);
+    REQUIRE(files[1].id == 33);
+    REQUIRE(files[1].season_number == 3);
+}

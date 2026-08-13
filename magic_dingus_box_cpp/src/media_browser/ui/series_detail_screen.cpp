@@ -122,6 +122,17 @@ SeriesDetailScreen::~SeriesDetailScreen() {
     // only at kiosk shutdown, where nothing is watchdogged. Detaching
     // instead would be strictly worse — a detached worker writes into freed
     // members.
+    //
+    // Season delete (2026-08-13) raised this ceiling further: its
+    // AutoRedownloadGuard adds one config GET plus, on a defeated restore,
+    // up to 4 more PUTs (the disable + 3 retry attempts inside
+    // AutoRedownloadGuard::restore) — up to ~25 s beyond the calls the
+    // stage itself already makes, each still bounded by timeout_secs. The
+    // guard's destructor is a same-object backstop, not a second retry
+    // round: once the worker's own restore_clause() call has resolved
+    // (succeeded or exhausted its retries), restore()'s restored_ latch
+    // makes the destructor's call a no-op, so this worker cannot spend two
+    // full retry rounds back to back.
 }
 
 void SeriesDetailScreen::set_tmdb_id(int tmdb_id) {
@@ -230,6 +241,10 @@ void SeriesDetailScreen::fetch() {
     season_focus_ = -1;
     pending_play_index_ = -1;
     navigate_playback_ = false;
+    // The delete row's confirm belonged to the OLD series' season list. A
+    // latched arm would make the first press on the new page a confirm.
+    season_del_armed_ = false;
+    season_del_inflight_ = false;
     pending_intent_next_season_.reset();
     const int id = tmdb_id_;
     if (id <= 0) {
@@ -561,11 +576,19 @@ void SeriesDetailScreen::drain_mutation() {
     // mismatch used to leave mut_in_flight_ latched forever.
     mut_done_.store(false);
     mut_in_flight_.store(false);
+    // The picker's delete row leaves "Removing season…" on EVERY verdict —
+    // success, abort or throw — and whichever page is on screen now, for the
+    // same reason mut_in_flight_ is cleared unconditionally above. (A page
+    // change already cleared it in fetch(); this covers the stay-put case,
+    // which is the common one.)
+    season_del_inflight_ = false;
 
     std::string toast;
     std::optional<Series> fresh;
     bool fresh_settled = true;
     bool removed = false;
+    bool season_removed = false;
+    int season_number = 0;
     bool have_verdict = false;
     DiskVerdict verdict = DiskVerdict::Block;
     int64_t estimate = 0;
@@ -579,6 +602,10 @@ void SeriesDetailScreen::drain_mutation() {
         mut_settled_ = true;
         removed = mut_removed_;
         mut_removed_ = false;
+        season_removed = mut_season_removed_;
+        mut_season_removed_ = false;
+        season_number = mut_season_number_;
+        mut_season_number_ = 0;
         have_verdict = mut_have_verdict_;
         mut_have_verdict_ = false;
         verdict = mut_verdict_;
@@ -605,14 +632,20 @@ void SeriesDetailScreen::drain_mutation() {
                      "(gen {}) — page now tmdb:{} (gen {})",
                      mut_tmdb_id_, mut_fetch_gen_, tmdb_id_,
                      fetch_gen_.load());
-        // A dropped `removed` is the ONE outcome that outlives the page it
-        // was started from: the Sonarr record is gone for good. Without this
+        // A dropped `removed` is an outcome that outlives the page it was
+        // started from: the Sonarr record is gone for good. Without this
         // flag, re-entering that same tmdb_id hits set_tmdb_id's same-id
         // no-op and enter()'s short-circuit, and the page repaints its cached
         // pre-remove snapshot — a "Remove" button aimed at a record Sonarr no
         // longer knows about. DetailScreen's drain_remove_result sets exactly
         // this for exactly this reason.
-        if (removed) needs_refresh_ = true;
+        //
+        // A dropped `season_removed` is the SAME class of fact — that season's
+        // files are gone on disk — reachable through the A→B→A gen mismatch
+        // (id equal, load different). Cached pre-delete rows would otherwise
+        // paint file counts and ✓ glyphs for episodes that no longer exist,
+        // and offer to play them.
+        if (removed || season_removed) needs_refresh_ = true;
         rebuild_buttons();
         return;
     }
@@ -642,6 +675,31 @@ void SeriesDetailScreen::drain_mutation() {
         rebuild_rows();
         navigate_back_ = true;
     }
+    if (season_removed) {
+        // ONE season is gone; the series record is not. The user stays on this
+        // page — but the episode picker they are standing in was listing a
+        // season whose files no longer exist, so hand navigation back to the
+        // season list and reload the page from Sonarr.
+        //
+        // A full fetch() rather than a patched row: the season's file counts,
+        // the episode list, and every clamp/page in the picker are all stale
+        // at once, and fetch() is exactly the reset for those (it is what
+        // enter() calls for needs_refresh_). needs_refresh_ is cleared, not
+        // set, because the reload happens HERE — leaving it armed would make
+        // the next enter() (a return from Playback) reload a second time and
+        // blink the page back to Loading for no reason.
+        //
+        // RETURNS rather than falling through: fetch() has already cleared
+        // buttons_ (a SELECT during Loading must be a structural no-op) and
+        // reset last_poll_at_, and the rebuild_buttons() below would undo the
+        // first of those.
+        spdlog::info("[SeriesDetail] season {} removed for tmdb:{} — reloading "
+                     "the page", season_number, tmdb_id_);
+        region_ = DetailRegion::Seasons;
+        needs_refresh_ = false;
+        fetch();
+        return;
+    }
     last_poll_at_ = {};  // Task 8: refresh badges next frame, not in 9 s
     rebuild_buttons();
     // Deliberately NO focus_on(WholeSeries) here: the identity-preserving
@@ -666,13 +724,161 @@ void SeriesDetailScreen::expire_confirms() {
         remove_pending_ = false;
         changed = true;
     }
+    // The episode picker's delete row: its 4 s window, PLUS every structural
+    // disarm in one sweep. Focus moved off the row, BTN4 took the region back
+    // to Seasons, or a poll landed with the season's files gone — all three
+    // read as "not focused" here, and this runs before render() every frame
+    // (main.cpp: input, then update, then render), so the armed label can
+    // never be painted on a row that no longer owns the ring. Deliberately
+    // NOT part of `changed`: the row is not an action-row button, so there is
+    // nothing for rebuild_buttons() to do.
+    if (season_del_armed_ &&
+        (std::chrono::duration_cast<std::chrono::milliseconds>(
+             now - season_del_armed_at_).count() > kSeasonDelConfirmMs ||
+         !season_delete_focused())) {
+        season_del_armed_ = false;
+    }
     if (changed) rebuild_buttons();
+}
+
+std::optional<int> SeriesDetailScreen::monitor_episodes_for_seasons(
+        int sonarr_id, const std::vector<int>& seasons) {
+    // WORKER-THREAD helper: one get_episodes_checked + one bulk PUT for
+    // every season being (re-)monitored. Touches nothing but sonarr_ and
+    // its arguments, so it is safe off the render thread.
+    //
+    // Probe P3 (live-verified): season->episode monitoring does NOT cascade,
+    // and Sonarr's SeasonSearch skips unmonitored episodes. A season that
+    // went through the per-season delete has its episodes INDIVIDUALLY
+    // unmonitored — that is precisely what stops autoRedownloadFailed from
+    // re-grabbing behind the delete — so ANY path that re-monitors a season
+    // in order to download it must re-monitor its episodes too, or the
+    // search fires, finds nothing to want, and says nothing. It exists as a
+    // shared helper because it originally lived inline in ONE of the two
+    // such paths: "Whole series…" silently downloaded nothing for a deleted
+    // season while reporting success.
+    //
+    // Split contract on the return value — nullopt is a REAL failure (the
+    // read failed transport-wise, or the PUT was refused); otherwise the
+    // count of episode ids actually monitored, which may legitimately be
+    // zero. Whether zero is fine is the CALLER's call, not this helper's:
+    //   - whole-series worker: zero is tolerated — an ANNOUNCED season
+    //     legitimately has no episode records yet.
+    //   - start_season_download: zero is suspicious. get_episodes_checked
+    //     can read engaged-but-empty on a malformed body or a series id
+    //     Sonarr no longer knows (see its doc comment) — collapsing that
+    //     into a bare "success" would let the caller fire a search that
+    //     can never find anything, under a toast that says it started.
+    //
+    // Idempotent (and one wasted GET) for seasons that were never deleted.
+    if (seasons.empty()) return 0;
+    const auto eps = sonarr_.get_episodes_checked(sonarr_id);
+    if (!eps.has_value()) return std::nullopt;
+    std::vector<int> ids;
+    for (const auto& e : *eps) {
+        // id <= 0 is an unusable record — never PUT a guess
+        // (fire_episode1_search's rule).
+        if (e.id <= 0) continue;
+        if (std::find(seasons.begin(), seasons.end(), e.season_number) ==
+            seasons.end())
+            continue;
+        ids.push_back(e.id);
+    }
+    if (!sonarr_.set_episodes_monitored(ids, true)) return std::nullopt;
+    return static_cast<int>(ids.size());
+}
+
+void SeriesDetailScreen::start_season_download(int season) {
+    // RENDER thread. The one entry point for "download this one season":
+    // the action row's "Download Season N" and the season list's SELECT on
+    // a season with nothing on disk both land here.
+    const std::string title =
+        detail_.has_value() ? detail_->title : std::string("This series");
+    if (!in_library_ || !series_.has_value() || series_->sonarr_id <= 0) {
+        // Reachable from the season list on a series that is not in the
+        // library (rows_ are TMDB's there). Never a silent no-op — that
+        // reads as a dead row.
+        ::ui::Toast::show(title + ": not in your TV library yet \xE2\x80\x94 "
+                          "use Add Season 1 or Whole series\xE2\x80\xA6");
+        return;
+    }
+    if (!series_settled_) {
+        // The same race decide_action_row hides the add controls for, and
+        // that the whole-series worker refuses to PUT seasons across: until
+        // Sonarr has applied firstSeason, a season PUT can be overwritten
+        // behind us and we would have promised a search for nothing.
+        ::ui::Toast::show(title + ": still syncing \xE2\x80\x94 try again in "
+                          "a moment");
+        return;
+    }
+    const int sid = series_->sonarr_id;
+    // Same immediate-feedback rule as AddSeason1.
+    ::ui::Toast::show(title + ": starting Season " + std::to_string(season) +
+                      "\xE2\x80\xA6");
+    spawn_mutation([this, sid, season, title]() {
+        if (!sonarr_.set_season_monitored(sid, season, true)) {
+            const std::string err = sonarr_.last_error();
+            std::lock_guard<std::mutex> lk(mut_mtx_);
+            mut_toast_ = title + ": couldn't monitor season " +
+                         std::to_string(season) + " \xE2\x80\x94 " + err;
+            return;
+        }
+        // Episodes before the search — see monitor_episodes_for_seasons.
+        const std::optional<int> eps_monitored =
+            monitor_episodes_for_seasons(sid, {season});
+        // Zero is suspicious HERE (unlike the whole-series worker): this
+        // season came from a row the user can see in rows_, so an
+        // engaged-but-empty read is more likely get_episodes_checked's
+        // documented misclassification (malformed body, or a series id
+        // Sonarr no longer knows) than a real absence of episodes. Firing
+        // the search anyway would run it against still-unmonitored
+        // episodes under a "search started" toast — the exact silent dead
+        // end this helper exists to close, reached through this call site
+        // instead. A genuine read/PUT failure (nullopt) still fires the
+        // search exactly as before — it costs nothing and it is correct
+        // for every season that was never deleted.
+        const bool suspiciously_empty = eps_monitored.value_or(-1) == 0;
+        const bool searched = suspiciously_empty
+            ? false
+            : sonarr_.trigger_season_search(sid, season);
+        // Quick Start: fast E1 single alongside the season pack. Only when
+        // the season search actually started, and strictly best-effort —
+        // see fire_episode1_search.
+        if (searched)
+            fire_episode1_search(sonarr_, sid, season, title);
+        auto fresh = sonarr_.get_series(sid);
+        std::lock_guard<std::mutex> lk(mut_mtx_);
+        // The episode re-monitor is reported FIRST when it failed OR came
+        // back suspiciously empty: for a previously deleted season it is
+        // the step that decides whether anything can arrive at all, so
+        // "search started" would be the silent dead end this amendment
+        // exists to close.
+        mut_toast_ = (!eps_monitored.has_value() || suspiciously_empty)
+            ? title + ": Season " + std::to_string(season) +
+                  " monitored, but its episodes couldn't be re-enabled "
+                  "\xE2\x80\x94 a previously deleted season may not "
+                  "re-download; try again"
+            : searched
+            ? title + ": Season " + std::to_string(season) + " search started"
+            : title + ": Season " + std::to_string(season) +
+                  " monitored, but the search didn't start "
+                  "\xE2\x80\x94 Sonarr will pick it up on RSS";
+        if (fresh.has_value()) {
+            mut_settled_ = record_refreshed(*fresh);
+            mut_series_ = std::move(fresh);
+        }
+    });
 }
 
 void SeriesDetailScreen::dispatch_action(Action a) {
     // Pressing anything OTHER than the armed control disarms it first.
     if (a != Action::WholeSeries) whole_armed_ = false;
     if (a != Action::Remove && a != Action::ConfirmRemove) remove_pending_ = false;
+    // Same rule for the episode picker's delete row. It lives in the OTHER
+    // region, so it can never BE the control being pressed here — an action
+    // row press is unconditionally "something else", and two armed
+    // destructive confirms at once is the state to avoid.
+    season_del_armed_ = false;
     switch (a) {
         case Action::PlayNextUp: {
             // Re-derive at press time — the button's label was decided on an
@@ -698,7 +904,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             // but the outcome toast can be ~13.5 s away (add_series' settle
             // ceiling) and a dim alone reads as "nothing happened". Same
             // precedent as whole-series press-1's "checking free space".
-            ::ui::Toast::show(title + ": addingâ¦");
+            ::ui::Toast::show(title + ": adding\xE2\x80\xA6");
             spawn_mutation([this, id, title]() {
                 // Quality profile BY NAME ("Any" is this box's profile; the
                 // id is not portable) — DetailScreen::pick_quality_profile_id's
@@ -831,43 +1037,13 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             break;
         }
         case Action::NextSeason: {
-            if (!series_.has_value() || series_->sonarr_id <= 0) break;
             const auto next = next_unmonitored_season(rows_);
             if (!next.has_value()) break;
-            const int sid = series_->sonarr_id;
-            const int season = *next;
-            const std::string title =
-                detail_.has_value() ? detail_->title : std::string("This series");
-            // Same immediate-feedback rule as AddSeason1.
-            ::ui::Toast::show(title + ": starting Season " +
-                              std::to_string(season) + "â¦");
-            spawn_mutation([this, sid, season, title]() {
-                if (!sonarr_.set_season_monitored(sid, season, true)) {
-                    const std::string err = sonarr_.last_error();
-                    std::lock_guard<std::mutex> lk(mut_mtx_);
-                    mut_toast_ = title + ": couldn't monitor season " +
-                                 std::to_string(season) + " \xE2\x80\x94 " + err;
-                    return;
-                }
-                const bool searched = sonarr_.trigger_season_search(sid, season);
-                // Quick Start: fast E1 single alongside the season pack.
-                // Only when the season search actually started, and strictly
-                // best-effort — see fire_episode1_search.
-                if (searched)
-                    fire_episode1_search(sonarr_, sid, season, title);
-                auto fresh = sonarr_.get_series(sid);
-                std::lock_guard<std::mutex> lk(mut_mtx_);
-                mut_toast_ = searched
-                    ? title + ": Season " + std::to_string(season) +
-                          " search started"
-                    : title + ": Season " + std::to_string(season) +
-                          " monitored, but the search didn't start "
-                          "\xE2\x80\x94 Sonarr will pick it up on RSS";
-                if (fresh.has_value()) {
-                    mut_settled_ = record_refreshed(*fresh);
-                    mut_series_ = std::move(fresh);
-                }
-            });
+            // Every guard, the toast and the worker live in the shared helper:
+            // the season list's SELECT starts the SAME flow for a season with
+            // nothing on disk, and two copies of a monitor+re-monitor+search
+            // sequence is how one of them silently loses the re-monitor.
+            start_season_download(*next);
             break;
         }
         case Action::WholeSeries: {
@@ -967,10 +1143,28 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     // They are counted, not hidden, and the toast below is
                     // composed from the real count.
                     int failed = 0;
+                    std::vector<int> monitored_seasons;
                     for (int season : to_monitor) {
                         if (!sonarr_.set_season_monitored(series_id, season, true))
                             ++failed;
+                        else
+                            monitored_seasons.push_back(season);
                     }
+                    // The SAME probe-P3 re-monitor "Download Season N" does,
+                    // for every season this press just monitored. Without it
+                    // "Whole series…" silently downloaded nothing for a season
+                    // that had been through the per-season delete (its
+                    // episodes stay individually unmonitored, and season->
+                    // episode does NOT cascade) while reporting success.
+                    // Scoped to the seasons whose PUT actually took — a season
+                    // Sonarr refused to monitor is not one we are searching
+                    // for. Unlike start_season_download, a ZERO count here is
+                    // tolerated, not suspicious — an announced-but-unaired
+                    // season legitimately has no episode records — so only
+                    // nullopt (a real read/PUT failure) counts against it.
+                    const std::optional<int> eps_monitored =
+                        monitor_episodes_for_seasons(series_id,
+                                                     monitored_seasons);
                     const bool searched = sonarr_.trigger_series_search(series_id);
                     auto fresh = sonarr_.get_series(series_id);
                     const int total = static_cast<int>(to_monitor.size());
@@ -990,6 +1184,18 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                     if (total > 0 && failed == total) {
                         mut_toast_ = title + ": couldn't monitor seasons "
                                      "\xE2\x80\x94 is Sonarr running?";
+                    } else if (!eps_monitored.has_value()) {
+                        // Reported ahead of the search outcome, exactly as the
+                        // single-season path reports it: for a previously
+                        // deleted season this is the step that decides whether
+                        // anything can arrive at all, so "search started"
+                        // would be the silent dead end. A zero count is NOT
+                        // routed here — see the split contract in
+                        // monitor_episodes_for_seasons's doc comment.
+                        mut_toast_ = title + ": seasons monitored, but their "
+                                     "episodes couldn't be re-enabled "
+                                     "\xE2\x80\x94 a previously deleted season "
+                                     "may not re-download; try again";
                     } else if (!searched) {
                         mut_toast_ = title + ": seasons monitored, but the search "
                                      "didn't start \xE2\x80\x94 Sonarr will pick "
@@ -1137,8 +1343,25 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                 //     (catches finished+seeding ones step 1 misses).
                 //  3. remove_series(delete_files=true).
                 //  4. Back to origin (drained on the render thread).
+                // get_queue_CHECKED, not the bare wrapper — the same rule the
+                // per-season worker's stage (c) follows, and it matters MORE
+                // here: get_queue() collapses a Sonarr outage to an empty
+                // vector, which reads as "nothing in flight", fires no cancels
+                // at all, and walks straight into remove_series(deleteFiles=
+                // true) with a download still live in qBittorrent. That is the
+                // orphaned-torrent failure this whole flow exists to prevent,
+                // reached through the one answer the bare form cannot give.
+                // Aborting here is retry-safe: nothing destructive has run.
+                const auto queue = sonarr_.get_queue_checked();
+                if (!queue.has_value()) {
+                    std::lock_guard<std::mutex> lk(mut_mtx_);
+                    mut_toast_ = title + ": couldn't check for in-flight "
+                                 "downloads \xE2\x80\x94 series NOT removed; "
+                                 "retry is safe";
+                    return;
+                }
                 const std::vector<int> cancel_ids =
-                    cancel_ids_for_series(sonarr_.get_queue(), sid);
+                    cancel_ids_for_series(*queue, sid);
                 int cancel_failed = 0;
                 int cancel_ok = 0;
                 std::string cancel_err;
@@ -1276,6 +1499,42 @@ std::vector<int> SeriesDetailScreen::season_episode_indices(int season) const {
     return idxs;
 }
 
+bool SeriesDetailScreen::season_delete_row_present() const {
+    // Only inside the drill-down, and only on the frames the picker actually
+    // paints episode rows: render_episode_region returns early on loading /
+    // outage / "No episodes", and an armable row that was never drawn is the
+    // invisible-affordance bug class both SELECT paths already guard. These
+    // three predicates are exactly that function's bail conditions, so the
+    // two can never disagree about whether the row is on screen.
+    if (region_ != DetailRegion::Episodes) return false;
+    if (!episodes_done_ || !episodes_ok_) return false;
+    if (season_episode_indices(episodes_season_).empty()) return false;
+    // Eligibility itself is Task 4's pure helper, fed from THIS season's
+    // merged row — the same row the no-file suffix below reads, so the
+    // "downloading" the row offers to cancel is the one the list shows.
+    int files = 0;
+    bool downloading = false;
+    for (const auto& row : rows_) {
+        if (row.season_number == episodes_season_) {
+            files = row.episode_file_count;
+            downloading = row.state == SeasonState::Downloading;
+            break;
+        }
+    }
+    return season_delete_row_exists(files, downloading);
+}
+
+bool SeriesDetailScreen::season_delete_focused() const {
+    return season_delete_row_present() &&
+           episode_focus_ ==
+               static_cast<int>(season_episode_indices(episodes_season_).size());
+}
+
+int SeriesDetailScreen::episode_nav_count() const {
+    return static_cast<int>(season_episode_indices(episodes_season_).size()) +
+           (season_delete_row_present() ? 1 : 0);
+}
+
 SeriesDetailScreen::SeriesPlayTarget SeriesDetailScreen::get_play_target() {
     SeriesPlayTarget pt;
     const std::string series_title =
@@ -1352,10 +1611,15 @@ Screen SeriesDetailScreen::handle_input(
             // episode list is a drill-down inside this screen.
             if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
                 region_ = DetailRegion::Seasons;
+                // Leaving the region disarms the delete row: its confirm
+                // belongs to a list that is no longer on screen.
+                season_del_armed_ = false;
                 continue;
             }
-            const int n = static_cast<int>(
-                season_episode_indices(episodes_season_).size());
+            // The trailing delete row is part of the SAME chain as the
+            // episodes, so every clamp and page below counts with
+            // episode_nav_count(), never with the raw episode count.
+            const int n = episode_nav_count();
             if ((e.action == platform::InputAction::ROTATE ||
                  e.action == platform::InputAction::ROTATE_VERTICAL) &&
                 e.delta != 0) {
@@ -1365,6 +1629,10 @@ Screen SeriesDetailScreen::handle_input(
                 // the indicator honest within the same frame's input burst).
                 if (episode_per_page_ > 0)
                     episode_page_ = episode_focus_ / episode_per_page_;
+                // Navigating OFF the delete row disarms it — the action
+                // row's rule, so nobody can press-move-press their way into
+                // a delete they were not looking at.
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             // BTN1 / BTN3 page by moving FOCUS a page at a time — page and
@@ -1373,12 +1641,14 @@ Screen SeriesDetailScreen::handle_input(
                 if (n > 0 && episode_per_page_ > 0)
                     episode_focus_ =
                         std::max(0, episode_focus_ - episode_per_page_);
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             if (e.action == platform::InputAction::NEXT && e.pressed) {
                 if (n > 0 && episode_per_page_ > 0)
                     episode_focus_ = std::min(
                         n - 1, episode_focus_ + episode_per_page_);
+                if (!season_delete_focused()) season_del_armed_ = false;
                 continue;
             }
             if (e.action == platform::InputAction::SELECT && e.pressed) {
@@ -1393,6 +1663,403 @@ Screen SeriesDetailScreen::handle_input(
                 if (mut_in_flight_.load()) {
                     ::ui::Toast::show(
                         "Still finishing the last action\xE2\x80\xA6");
+                    continue;
+                }
+                // ---- the trailing "Delete Season N…" row ----
+                // Focus one past the last episode index IS the delete row;
+                // the episode branch below never sees that index.
+                if (season_delete_focused()) {
+                    // Inert while the whole-series Remove confirm is armed or
+                    // a season remove is already running. This is about not
+                    // ARMING two destructive confirms at once (the mutation
+                    // lane already serializes the workers themselves), and
+                    // about the second press of the OTHER confirm never
+                    // landing here.
+                    //
+                    // Both used to be one SILENT `continue`, against this
+                    // block's own rule ("a silent no-op reads as a dead
+                    // button", the mut_in_flight_ gate three lines up).
+                    // Defence in depth, and no longer mute: with the spawn
+                    // guard below, season_del_inflight_ implies
+                    // mut_in_flight_, so that gate answers first — but the
+                    // day the two ever come apart, a confirmed destructive
+                    // press must still say something.
+                    if (season_del_inflight_) {
+                        ::ui::Toast::show(
+                            "Still finishing the last action\xE2\x80\xA6");
+                        continue;
+                    }
+                    if (remove_pending_) {
+                        ::ui::Toast::show(
+                            "Finish or cancel Remove first\xE2\x80\xA6");
+                        continue;
+                    }
+                    if (!season_del_armed_) {
+                        // Press 1: arm. Stamped HERE, on the render thread,
+                        // so the 4 s window starts when the label changes.
+                        season_del_armed_ = true;
+                        season_del_armed_at_ = std::chrono::steady_clock::now();
+                        continue;
+                    }
+                    // ---- Press 2 inside the window: confirmed ----
+                    season_del_armed_ = false;
+                    const std::string title = detail_.has_value()
+                        ? detail_->title : std::string("This series");
+                    if (!series_.has_value() || series_->sonarr_id <= 0) {
+                        // Structurally unreachable (the row only exists when a
+                        // merged Sonarr row reports files or a live download),
+                        // but ConfirmRemove's precedent applies: never fall
+                        // out of a confirmed destructive press in silence.
+                        ::ui::Toast::show(title + ": series id unknown "
+                                          "\xE2\x80\x94 try again once syncing "
+                                          "finishes");
+                        continue;
+                    }
+                    const int sid = series_->sonarr_id;
+                    const int season = episodes_season_;
+                    // How many files this season is KNOWN to have, read here
+                    // on the render thread that owns rows_ — the same merged
+                    // row season_delete_row_present() gates the row's very
+                    // existence on. Stage (f) needs it to tell "Sonarr listed
+                    // no files" (a contradiction: the row would not exist)
+                    // apart from "this season genuinely has none" (legitimate
+                    // — the row is also offered for a download-only season,
+                    // where episode_file_count is 0).
+                    int expected_files = 0;
+                    for (const auto& row : rows_) {
+                        if (row.season_number == season) {
+                            expected_files = row.episode_file_count;
+                            break;
+                        }
+                    }
+                    // Set BEFORE the spawn so the row reads "Removing season…"
+                    // on this very frame; cleared by drain_mutation on every
+                    // verdict, and below if the spawn never took.
+                    season_del_inflight_ = true;
+                    spawn_mutation([this, sid, season, title,
+                                    expected_files]() {
+                        // Two DIFFERENT stages can already have destroyed data
+                        // by the time any abort fires, so both counters live
+                        // out here and ONE lambda reads them:
+                        //   (c) cancels carry removeFromClient=true, so every
+                        //       cancel that took has taken its partial
+                        //       download with it;
+                        //   (e) purges torrents WITH their downloaded copies.
+                        // These used to be two lambdas — a plain `fail` that
+                        // named neither, and a `fail_after_purge` that named
+                        // only the second — and stage (d), which runs AFTER
+                        // (c) has already cancelled downloads, aborted through
+                        // the plain one saying "season NOT deleted; retry is
+                        // safe" while the user's partial data was gone.
+                        // Composing from both counters means no stage can pick
+                        // the wrong message.
+                        //
+                        // cancel_ok is EXACT — a Sonarr queue DELETE only
+                        // succeeds on a row that was really there.
+                        // torrents_purged is a GATE, never a number: qBit's
+                        // delete_torrent returns TRUE for a hash it doesn't
+                        // have (no-op — see qbittorrent_client.h and its impl
+                        // comment), so a torrent the user already removed by
+                        // hand still increments it and a count built from it
+                        // would claim credit for a removal this run never made.
+                        int cancel_ok = 0;        // exact; data already gone
+                        int torrents_left = 0;    // qBit refused; needs manual
+                        int torrents_purged = 0;  // returned true; gate only
+                        // Engaged at stage (c) and held across every
+                        // destructive stage. Declared HERE, above fail, so
+                        // both exit paths can put the flag back BEFORE they
+                        // word their toast — see restore_clause.
+                        std::optional<AutoRedownloadGuard> no_redownload;
+                        // Restores the flag and returns the clause the user
+                        // needs if that failed. MUST be called before taking
+                        // mut_mtx_: it can spend up to ~15 s retrying an
+                        // HTTP PUT, and the render thread blocks on that
+                        // same mutex in drain_mutation. Idempotent via
+                        // AutoRedownloadGuard::restore, so calling it on one
+                        // path and letting the destructor cover another
+                        // never double-PUTs.
+                        auto restore_clause = [&]() -> std::string {
+                            if (!no_redownload.has_value()) return {};
+                            no_redownload->restore();
+                            if (!no_redownload->restore_failed()) return {};
+                            // Nothing else in the kiosk surfaces this Sonarr
+                            // flag, so if the restore lost, saying so here is
+                            // the owner's only warning that their box has
+                            // stopped auto-retrying FAILED downloads for
+                            // every SERIES, not just this one (the flag is
+                            // Sonarr-only; Radarr/movies are unaffected).
+                            return " (WARNING: Sonarr's automatic re-download "
+                                   "is still switched OFF \xE2\x80\x94 turn it "
+                                   "back on in Sonarr under Settings > "
+                                   "Download Clients)";
+                        };
+                        auto fail = [&](const std::string& msg) {
+                            // Flag back FIRST, lock second.
+                            const std::string warn = restore_clause();
+                            std::string done;
+                            if (cancel_ok > 0) {
+                                done = " \xE2\x80\x94 " +
+                                       std::to_string(cancel_ok) +
+                                       " in-flight download(s) were already "
+                                       "cancelled and their partial data "
+                                       "removed";
+                            }
+                            if (torrents_purged > 0) {
+                                done += (done.empty()
+                                             ? std::string(" \xE2\x80\x94 any")
+                                             : std::string("; any")) +
+                                        " torrents for this season and their "
+                                        "downloaded copies have already been "
+                                        "removed";
+                            }
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_toast_ = title + ": " + msg + done +
+                                " \xE2\x80\x94 season NOT deleted; retry is safe"
+                                + warn;
+                        };
+                        // (a) Unmonitor FIRST — season AND episodes.
+                        // Probe-verified (P3): the two flags are INDEPENDENT
+                        // and SeasonSearch skips unmonitored episodes, so a
+                        // season-only unmonitor would leave the season's
+                        // episodes armed and make the "Download Season N"
+                        // re-monitor meaningless.
+                        //
+                        // This is NOT what stops the re-grab. P3 also
+                        // concluded that autoRedownloadFailed keys off the
+                        // episode flag; hardware disproved that on
+                        // 2026-08-13 — Sonarr's redownload fires an EXPLICIT
+                        // EpisodeSearch by id, which ignores monitoring
+                        // entirely, and it was measured firing within 5 s
+                        // with episode, season and series ALL unmonitored.
+                        // Suppression is the AutoRedownloadGuard below;
+                        // stage (a) is still required, just for the reason
+                        // above rather than that one.
+                        if (!sonarr_.set_season_monitored(sid, season, false))
+                            return fail("couldn't unmonitor Season " +
+                                        std::to_string(season));
+                        const auto eps = sonarr_.get_episodes_checked(sid);
+                        if (!eps.has_value())
+                            return fail("couldn't list episodes");
+                        std::vector<int> season_ep_ids;
+                        for (const auto& e : *eps) {
+                            // id <= 0 is an unusable record — never PUT a
+                            // guess (fire_episode1_search's rule).
+                            if (e.season_number == season && e.id > 0)
+                                season_ep_ids.push_back(e.id);
+                        }
+                        // get_episodes_checked returns engaged-but-EMPTY for an
+                        // unparseable body or an unknown series id (documented
+                        // misclassification, sonarr_client.h) — and an empty
+                        // id list makes set_episodes_monitored short-circuit to
+                        // true with NO HTTP, so the worker would sail on with
+                        // every episode still MONITORED. That is precisely the
+                        // probe-P3 state stage (a) exists to prevent: the
+                        // season's episodes stay armed, so the later
+                        // "Download Season N" re-monitor has nothing to
+                        // mean and a SeasonSearch could act on them. The
+                        // delete row is only
+                        // reachable when the picker just listed this season's
+                        // episodes, so empty here contradicts the row's own
+                        // gate. Abort with only the SEASON flag flipped —
+                        // nothing destructive has run, and re-arming the season
+                        // is one press of "Download Season N".
+                        if (season_ep_ids.empty())
+                            return fail("couldn't list the season's episodes");
+                        if (!sonarr_.set_episodes_monitored(season_ep_ids,
+                                                            false))
+                            return fail("couldn't unmonitor the season's "
+                                        "episodes");
+                        // (b) Season history — authoritative; nullopt aborts
+                        // before anything destructive.
+                        const auto hist =
+                            sonarr_.get_season_history_checked(sid, season);
+                        if (!hist.has_value())
+                            return fail("Sonarr history unavailable");
+                        // SUPPRESS Sonarr's auto-redownload for the whole
+                        // destructive window (c)-(f). The owner's contract is
+                        // "delete blocklists the release, re-download is
+                        // MANUAL"; stage (d)'s mark-failed breaks that on its
+                        // own, because Sonarr answers a DownloadFailedEvent
+                        // with an EXPLICIT EpisodeSearch by id that ignores
+                        // every monitored flag stage (a) just cleared.
+                        // Observed live twice on 2026-08-13: a replacement
+                        // grabbed 5 s and 4 s after the delete, while the
+                        // toast told the user to press a button to download a
+                        // season whose row already read `downloading`.
+                        //
+                        // Armed here rather than at (a): (a) and (b) cannot
+                        // trigger a redownload, and this flag is GLOBAL to
+                        // SONARR (a separate config from Radarr's — movies
+                        // are unaffected) — no failed SERIES download gets
+                        // an automatic retry while it is held, so the window
+                        // stays as short as the work allows.
+                        //
+                        // Not armed = abort. Deleting the files without
+                        // suppression IS the shipped defect, so a guard that
+                        // could not establish itself must stop us here, with
+                        // the season still on disk.
+                        no_redownload.emplace(sonarr_);
+                        if (!no_redownload->armed())
+                            return fail("couldn't pause Sonarr's automatic "
+                                        "re-download");
+                        // (c) Cancel this season's live queue rows WITH
+                        // blocklist. get_queue_CHECKED, not the bare wrapper:
+                        // get_queue() collapses a Sonarr outage to an empty
+                        // vector, which reads as "nothing in flight" and would
+                        // walk straight into the file delete with a download
+                        // still running — the one answer that must abort is
+                        // exactly the one the bare form cannot give.
+                        const auto queue = sonarr_.get_queue_checked();
+                        if (!queue.has_value())
+                            return fail("couldn't check for in-flight "
+                                        "downloads");
+                        for (int qid : cancel_ids_for_season(*queue, sid,
+                                                             season)) {
+                            if (sonarr_.cancel_queue_item(qid,
+                                                          /*blocklist=*/true)) {
+                                ++cancel_ok;
+                                continue;
+                            }
+                            // The "N already cancelled, their data gone"
+                            // clause is fail's job now (it reads cancel_ok
+                            // itself) — every LATER stage owes the user the
+                            // same disclosure, and duplicating it here is how
+                            // the two drifted apart in the first place.
+                            return fail("couldn't cancel an in-flight "
+                                        "download");
+                        }
+                        // (d) Blocklist the release (mark-as-failed) so the
+                        // same download is not the answer to the next
+                        // search. Safe here only because (a) unmonitored the
+                        // EPISODES.
+                        //
+                        // GRABBED ids are the target, not imported. Probe P2
+                        // verified POST /history/failed/{id} against a
+                        // GRABBED record; whether Sonarr accepts an IMPORTED
+                        // record's id is UNVERIFIED. imported_history_ids is
+                        // used only as a fallback when there is no grab
+                        // record at all (a manually-imported release, added
+                        // without ever going through a grab). Trying
+                        // imported first — and aborting the loop on its
+                        // first refusal, as the abort-on-refusal rule below
+                        // requires — would mean the one scenario this
+                        // fallback exists for (Sonarr rejecting an imported
+                        // id) is exactly the scenario where the loop never
+                        // reaches the grabbed ids at all. Grabbed first
+                        // avoids that.
+                        //
+                        // The two vectors never share an id: parse_season_history
+                        // (sonarr_parsers.cpp) assigns each history record to
+                        // exactly one of them by eventType, and history ids are
+                        // unique DB keys — no dedup needed. Abort semantics
+                        // unchanged: any refusal stops us before the file
+                        // delete.
+                        const std::vector<int>& to_fail =
+                            !hist->grabbed_history_ids.empty()
+                                ? hist->grabbed_history_ids
+                                : hist->imported_history_ids;
+                        for (int hid : to_fail) {
+                            if (!sonarr_.mark_history_failed(hid))
+                                return fail("couldn't blocklist the downloaded "
+                                            "release");
+                        }
+                        // (e) Purge the season's torrents. Warn-and-continue:
+                        // the torrent may already be gone, and the destructive
+                        // file delete below is still correct without it. Null
+                        // qbit_ = the whole-series remove's contract, skip.
+                        if (qbit_ != nullptr) {
+                            for (const auto& h : hist->download_hashes) {
+                                if (!qbit_->delete_torrent(h,
+                                                           /*delete_files=*/true)) {
+                                    ++torrents_left;
+                                    spdlog::warn("[SeriesDetail] qbit delete "
+                                                 "failed for {}", h);
+                                    continue;
+                                }
+                                ++torrents_purged;
+                            }
+                        }
+                        // From here on the torrents above are gone WITH their
+                        // downloaded data — fail says so on its own, from
+                        // torrents_purged.
+                        // (f) THE destructive step, LAST: this season's files,
+                        // from a FRESH authoritative listing (files can land
+                        // between the picker's load and now).
+                        const auto files =
+                            sonarr_.get_episode_files_checked(sid);
+                        if (!files.has_value())
+                            return fail("couldn't list episode files");
+                        std::vector<int> ids;
+                        for (const auto& f : *files) {
+                            if (f.season_number == season) ids.push_back(f.id);
+                        }
+                        // Same misclassification as stage (a), one step from
+                        // the finish line: an unparseable body reads as
+                        // engaged-but-empty, delete_episode_files({}) returns
+                        // true with no HTTP by design, and (g) would toast
+                        // "Season N removed" while every file is still on
+                        // disk — after (e) has already destroyed the torrents
+                        // and their copies, so the user is told the season is
+                        // gone AND has lost the seeding data. The row requires
+                        // files or a live download, so zero ids against a
+                        // known-nonzero count is a contradiction; zero against
+                        // zero is the legitimate download-only season and must
+                        // still pass through to (g).
+                        if (expected_files > 0 && ids.empty())
+                            return fail("couldn't list the season's files");
+                        if (!sonarr_.delete_episode_files(ids))
+                            return fail("couldn't delete the season's files");
+                        // Destructive work is done — put Sonarr's
+                        // auto-redownload back BEFORE taking mut_mtx_ below.
+                        // Restoring under that lock would hold it across a
+                        // retrying HTTP PUT (~15 s worst case) while the
+                        // render thread waits on it in drain_mutation.
+                        const std::string redownload_warn = restore_clause();
+                        // (g) Publish.
+                        std::lock_guard<std::mutex> lk(mut_mtx_);
+                        mut_season_removed_ = true;
+                        mut_season_number_ = season;
+                        mut_toast_ = title + ": Season " +
+                            std::to_string(season) +
+                            // Name the affordance the user is about to SEE.
+                            // The action row's "Download Season N" targets
+                            // next_unmonitored_season(rows_) — ONE season, the
+                            // lowest — so after deleting season 3 of a series
+                            // whose season 2 was never downloaded, that button
+                            // reads "Download Season 2" and naming it here
+                            // would send the user to the wrong control. The
+                            // season list's own row works for EVERY season
+                            // (selecting a season with nothing on disk starts
+                            // its download — see start_season_download), and
+                            // the season list is exactly where this drain
+                            // returns them.
+                            " removed \xE2\x80\x94 pick Season " +
+                            std::to_string(season) +
+                            " in the list to download it again" +
+                            // Both stage (d) and stage (e) had nothing to work
+                            // with: no grabbed record and no imported one
+                            // means no release was blocklisted and no torrent
+                            // hash was known, so the same copy can be the
+                            // answer to the next search. Same treatment as the
+                            // torrents_left clause below — never imply a
+                            // cleanup that did not happen.
+                            (to_fail.empty()
+                                 ? " (no release found to blocklist \xE2\x80\x94 "
+                                   "the same copy could come back)"
+                                 : "") +
+                            (torrents_left
+                                 ? " (a torrent needs manual cleanup in "
+                                   "qBittorrent)"
+                                 : "") +
+                            redownload_warn;
+                    });
+                    // spawn_mutation can decline (one at a time) or fail to
+                    // start the thread, and NEITHER path ever sets mut_done_ —
+                    // so the drain would never run and the row would sit on
+                    // "Removing season…", inert, for the rest of the session.
+                    // mut_in_flight_ is the one signal that says the worker
+                    // actually took.
+                    if (!mut_in_flight_.load()) season_del_inflight_ = false;
                     continue;
                 }
                 const auto idxs = season_episode_indices(episodes_season_);
@@ -1510,7 +2177,18 @@ Screen SeriesDetailScreen::handle_input(
                     continue;
                 }
                 const auto& row = rows_[static_cast<size_t>(season_focus_)];
-                if (row.episode_file_count > 0) {
+                // Openable when there is something to SEE or something to
+                // STOP. The spec's eligibility rule has always been
+                // "episode_file_count > 0 OR live queue rows"
+                // (season_delete_row_exists encodes exactly that), but this
+                // gate implemented only the first half — so the case the
+                // delete row was BUILT for ("I can see the wrong-language pack
+                // downloading; stop it") could not be reached at all: a
+                // season with a download in flight and no files yet answered
+                // "Not downloaded yet". The picker already renders fileless
+                // episodes (dim, with a "· downloading" suffix), and the
+                // delete worker already handles expected_files == 0.
+                if (season_row_opens_picker(row)) {
                     // Open the drill-down. The episode fetch covers ALL
                     // seasons and ran at load; loading/outage/empty states
                     // render inside the region.
@@ -1519,7 +2197,17 @@ Screen SeriesDetailScreen::handle_input(
                     episode_focus_ = 0;
                     episode_page_ = 0;
                 } else {
-                    ::ui::Toast::show("Not downloaded yet");
+                    // Nothing on disk and nothing in flight. Offering the
+                    // download is the useful answer — and it is the ONLY
+                    // thing that closes the re-download loop for a season
+                    // that is not the lowest unmonitored one: the action
+                    // row's "Download Season N" targets
+                    // next_unmonitored_season(rows_) and nothing else, so a
+                    // season 3 deleted above a never-downloaded season 2 (or
+                    // any season left unmonitored by an abort after stage
+                    // (a)) had NO kiosk path back. Every guard and the
+                    // re-monitor live in the shared helper.
+                    start_season_download(row.season_number);
                 }
                 continue;
             }
@@ -1655,22 +2343,29 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
                        static_cast<float>(rows_top + 22), kRowFontPx, pcol);
         return;
     }
+    // The trailing "Delete Season N…" row rides the SAME list: it is one more
+    // navigable row after the last episode, so every clamp, page count and
+    // range below counts with nav_total. season_delete_row_present() is false
+    // on exactly the frames this function returned above, so the row can only
+    // appear on a frame that draws rows.
+    const int nav_total = episode_nav_count();
+    const bool del_row = nav_total > total;
     // The season-paging idiom: geometry decides per_page each frame, zero is
     // legal (CRT_NATIVE's 640x480 canvas), and EVERY division is guarded.
     const int list_avail = list_bottom - kIndicatorRowH - rows_top;
     const int per_page = std::max(0, list_avail / kRowH);
     episode_per_page_ = per_page;
     episode_page_count_ =
-        per_page > 0 ? std::max(1, (total + per_page - 1) / per_page) : 1;
-    if (episode_focus_ >= total) episode_focus_ = total - 1;
+        per_page > 0 ? std::max(1, (nav_total + per_page - 1) / per_page) : 1;
+    if (episode_focus_ >= nav_total) episode_focus_ = nav_total - 1;
     if (episode_focus_ < 0) episode_focus_ = 0;
     // Page follows focus, so SELECT can only ever fire a visible row.
     episode_page_ = per_page > 0 ? episode_focus_ / per_page : 0;
     if (episode_page_ >= episode_page_count_)
         episode_page_ = episode_page_count_ - 1;
-    ep_overflow = per_page > 0 && total > per_page;
+    ep_overflow = per_page > 0 && nav_total > per_page;
     const int first = episode_page_ * per_page;
-    const int last = per_page > 0 ? std::min(total, first + per_page) : 0;
+    const int last = per_page > 0 ? std::min(nav_total, first + per_page) : 0;
     // The no-file rows' suffix rides on THIS season's live state.
     bool season_downloading = false;
     for (const auto& row : rows_) {
@@ -1686,9 +2381,50 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
         static_cast<float>(screen_w - text_x - chrome::kSafeInset_px);
     int list_y = rows_top;
     for (int i = first; i < last; ++i) {
+        const float row_baseline = static_cast<float>(list_y + 22);
+        // The trailing delete row. Its armed fill goes down FIRST so it sits
+        // behind everything; the focus marker is then the same glyph, at the
+        // same body_x column, as an episode row's ring.
+        if (del_row && i == total) {
+            const SeasonDeleteState ds =
+                season_del_inflight_  ? SeasonDeleteState::Removing
+                : season_del_armed_   ? SeasonDeleteState::Armed
+                                      : SeasonDeleteState::Idle;
+            // The Remove button's own paint: chrome::ButtonKind::Warn is
+            // th.highlight2, and the whole-series confirm keeps that same red
+            // when armed — the LABEL carries the state change there, and
+            // season_delete_label carries it here. Armed additionally lifts
+            // the row onto th.bg_lift (the theme's one sanctioned off-bg
+            // fill, the focused-row precedent from pairing_screen_renderer)
+            // so the confirm reads brighter without leaving the danger color.
+            // Removing dims: the press already landed, nothing to press.
+            if (ds == SeasonDeleteState::Armed) {
+                r.mb_fill_rect(static_cast<float>(body_x),
+                               static_cast<float>(list_y),
+                               static_cast<float>(screen_w - body_x -
+                                                  chrome::kSafeInset_px),
+                               static_cast<float>(kRowH), th.bg_lift);
+            }
+            if (i == episode_focus_) {
+                r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
+                               row_baseline, kBodyFontPx, th.accent);
+            }
+            // Label starts at the glyph column, not the episode-title column:
+            // the row carries no state glyph, and body_x + 18 is the season
+            // list's own row-label inset (render()'s "Season N").
+            const std::string dlabel =
+                season_delete_label(ds, episodes_season_);
+            r.mb_draw_text(
+                truncate_to_width(r, dlabel, kBodyFontPx,
+                                  static_cast<float>(screen_w - glyph_x -
+                                                     chrome::kSafeInset_px)),
+                static_cast<float>(glyph_x), row_baseline, kBodyFontPx,
+                ds == SeasonDeleteState::Removing ? th.dim : th.highlight2);
+            list_y += kRowH;
+            continue;
+        }
         const auto& ep =
             episodes_[static_cast<size_t>(idxs[static_cast<size_t>(i)])];
-        const float row_baseline = static_cast<float>(list_y + 22);
         if (i == episode_focus_) {
             r.mb_draw_text("\xE2\x96\xB8", static_cast<float>(body_x),
                            row_baseline, kBodyFontPx, th.accent);
@@ -1733,9 +2469,15 @@ void SeriesDetailScreen::render_episode_region(::ui::Renderer& r, int screen_w,
         list_y += kRowH;
     }
     if (ep_overflow) {
+        // Paging counts the delete row (nav_total above); the INDICATOR does
+        // not — it names episodes, and the delete row is not one. Clamping
+        // both ends into the episode range is what keeps a last page that
+        // holds only the delete row from reading "Episodes 11-10 of 10".
+        const int ind_first = std::min(first + 1, total);
+        const int ind_last = std::min(last, total);
         const std::string ind =
-            "Episodes " + std::to_string(first + 1) + "\xE2\x80\x93" +
-            std::to_string(last) + " of " + std::to_string(total) +
+            "Episodes " + std::to_string(ind_first) + "\xE2\x80\x93" +
+            std::to_string(ind_last) + " of " + std::to_string(total) +
             " \xC2\xB7 [BTN1/BTN3]";
         r.mb_draw_text(ind, static_cast<float>(body_x),
                        static_cast<float>(list_bottom - 8), kBodyFontPx,
@@ -2005,6 +2747,10 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // ALWAYS LAST on every path. The Toast is NOT drawn here: main.cpp owns
     // the single app-wide Toast::render in the correct projection.
     const bool in_episodes = region_ == DetailRegion::Episodes;
+    // The trailing delete row does not play anything — read the same
+    // "Select" the action row uses while the ring sits on it. Evaluated
+    // AFTER render_episode_region so it sees this frame's clamped focus.
+    const bool on_delete_row = in_episodes && season_delete_focused();
     const bool nothing_focusable = buttons_.empty() && rows_.empty();
     chrome::draw_footer_hints(r, screen_w, screen_h, {
         {chrome::HintIcon::Btn1Yellow,
@@ -2021,7 +2767,7 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
          in_episodes ? "Choose"
                      : (nothing_focusable ? "\xE2\x80\x94" : "Choose")},
         {chrome::HintIcon::RotaryPress,
-         in_episodes ? "Play"
+         in_episodes ? (on_delete_row ? "Select" : "Play")
                      : (nothing_focusable ? "\xE2\x80\x94" : "Select")},
     });
 }

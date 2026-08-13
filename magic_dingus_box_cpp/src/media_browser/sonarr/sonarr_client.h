@@ -267,7 +267,13 @@ public:
 
     // Removes the download from the client. NOTE: this acts on the WHOLE
     // download, not one episode — every sibling queue id 404s afterwards.
+    // blocklist=false: a user-initiated cancel must not poison the release
+    // for a later retry. Forwards to the 2-arg overload below.
     virtual bool cancel_queue_item(int queue_id);
+    // blocklist=true carries the stall-reaper's full semantics: blocklist
+    // the release AND skip Sonarr's immediate auto-redownload, via
+    // removeFromClient + blocklist + skipRedownload all set true.
+    virtual bool cancel_queue_item(int queue_id, bool blocklist);
 
     // Distinct downloadIds from this series' history, lowercased for direct
     // comparison with QbittorrentClient (which stores hashes lowercase).
@@ -293,6 +299,110 @@ public:
     // get_library() has to get_library_checked(). Do NOT use this to decide
     // whether a failure occurred; see get_series_download_hashes_checked.
     virtual std::vector<std::string> get_series_download_hashes(int sonarr_id);
+
+    // --- season-delete surface --------------------------------------------
+    //
+    // GET /api/v3/history/series?seriesId=<id>&seasonNumber=<n>. The
+    // seasonNumber param is REQUIRED server-side scoping, not an optional
+    // refinement: individual history records carry no season field at all
+    // (probe P1), so there is no client-side way to filter a whole-series
+    // fetch down to one season. CHECKED shape, same discipline as
+    // get_series_download_hashes_checked: nullopt is transport/HTTP
+    // failure, an engaged-but-empty SeasonHistory is Sonarr genuinely
+    // answering "no history for this season".
+    virtual std::optional<SeasonHistory> get_season_history_checked(
+        int sonarr_id, int season_number);
+
+    // POST /api/v3/history/failed/{id}, empty body. Marks one history
+    // (grab) record as failed, which blocklists its release (probe P2,
+    // live-verified).
+    //
+    // THIS CALL RE-GRABS unless suppression is in force. Hardware, twice
+    // (2026-08-13, magicpi5, Sonarr 4.0.19.2979): the mark-failed publishes
+    // Sonarr's DownloadFailedEvent, whose redownload handler pushes an
+    // EXPLICIT EpisodeSearch by episode id — and an explicit search does
+    // not consult monitored flags at all. Measured with the episode, the
+    // season AND the series all monitored=false: `EpisodeSearch` appeared
+    // in /api/v3/command within 5 s every time. There is NO per-request
+    // opt-out: `?skipRedownload=true` binds on the queue DELETE endpoint
+    // (a bad value there 400s with a named validation error) but is
+    // silently IGNORED here — the action body ran and returned its own
+    // 404, proving the parameter was never bound. Callers that must not
+    // re-grab have to hold an AutoRedownloadGuard (below) across the call.
+    //
+    // Sonarr answers this endpoint with HTTP 200 and a
+    // genuinely EMPTY body on success, so http_post's body-only return
+    // cannot tell that apart from its own "" on transport/HTTP failure.
+    // Uses http_post_status (in-band verdict via HTTP status code) instead
+    // of reading last_error() — last_error_ is ONE member shared with the
+    // ~9s background series re-poll (SeriesDetailScreen runs poll_worker_
+    // concurrently with mut_worker_ against the same client instance, and
+    // spawn_mutation does not wait on poll_inflight_), so a poll's error
+    // landing mid-window could fail a real success, or a poll's entry-clear
+    // could make a real failure read as success — the latter would make
+    // Task 6 believe a release was blocklisted when it wasn't and proceed
+    // to delete files.
+    virtual bool mark_history_failed(int history_id);
+
+    // GET /api/v3/episodefile?seriesId=<id>. CHECKED shape, same discipline
+    // as get_episodes_checked: nullopt is transport/HTTP failure, an
+    // engaged-but-empty vector is "this series has no episode files".
+    virtual std::optional<std::vector<EpisodeFileInfo>>
+    get_episode_files_checked(int sonarr_id);
+
+    // DELETE /api/v3/episodefile/bulk, body {"episodeFileIds":[...]}.
+    // Sonarr 500s on an empty/null id list rather than no-op'ing (probe-
+    // verified: task-1-report.md), so an empty `ids` short-circuits to
+    // true with NO HTTP call — "nothing to delete" is success, not a
+    // request the server would reject.
+    virtual bool delete_episode_files(const std::vector<int>& ids);
+
+    // PUT /api/v3/episode/monitor, body {"episodeIds":[...],"monitored":b}.
+    // episode.monitored is INDEPENDENT of the season container's monitored
+    // flag (probe P3, live-verified), and SeasonSearch skips unmonitored
+    // episodes — which is why every flow that monitors a season in order to
+    // download it must re-monitor the season's EPISODES first, and why
+    // stage (a) of the season delete unmonitors them.
+    //
+    // CORRECTION 2026-08-13 (hardware): P3 also concluded that
+    // autoRedownloadFailed keys off this per-episode flag, so unmonitoring
+    // the episodes would stop the auto re-search after mark_history_failed.
+    // That half is DISPROVEN — see mark_history_failed's comment above. The
+    // redownload is an EXPLICIT EpisodeSearch by id, which bypasses
+    // monitoring entirely; suppression needs AutoRedownloadGuard. This call
+    // is still required, just not for that reason.
+    //
+    // Same empty-list short-circuit as
+    // delete_episode_files, and for the same reason: nothing to change is
+    // success, not a request worth a round-trip.
+    //
+    // Verdict comes from http_put_status (the HTTP status code), NOT from
+    // whether a body came back: this endpoint's success-body shape is
+    // UNVERIFIED, and a 2xx with an empty body would read as failure under
+    // http_put's body-only return — aborting stage (a) of every season
+    // delete and warning on every "Download Season N". Same in-band
+    // discipline as mark_history_failed.
+    virtual bool set_episodes_monitored(const std::vector<int>& ids,
+                                        bool monitored);
+
+    // GET /api/v3/config/downloadclient. CHECKED, and STRICTLY so: nullopt
+    // covers transport/HTTP failure AND an unparseable-or-incomplete body,
+    // because the only consumer needs a faithful document to restore from
+    // and a guess would be worse than an abort (see
+    // SonarrParsers::parse_download_client_config).
+    virtual std::optional<DownloadClientConfig> get_download_client_config();
+
+    // PUT /api/v3/config/downloadclient/{cfg.id} with `cfg.raw` round-tripped
+    // and autoRedownloadFailed overwritten by `enabled` — the whole document,
+    // because this PUT REPLACES the resource rather than patching it.
+    //
+    // Verdict is the HTTP STATUS via http_put_status, and the accept band is
+    // any 2xx, NOT 200: the live box answers this endpoint **202 Accepted**
+    // (measured 2026-08-13). A `code == 200` check would have failed every
+    // real call while passing every test written against a 200-returning
+    // fake — so the 202 case is pinned in test_sonarr_client.cpp.
+    virtual bool set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                            bool enabled);
 
     // Profiles / storage. Resolve the quality profile BY NAME at the call
     // site ("Any" on this box, id 1 — the id is not portable).
@@ -330,7 +440,23 @@ protected:
     // Virtual for stubbing in tests (see test_sonarr_client.cpp).
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path, const std::string& body);
+    // Status-code-returning POST — same reason http_delete_body exists
+    // beside http_delete: some endpoints answer success with an empty body,
+    // which collides with http_post's own "" return on transport/HTTP
+    // failure. mark_history_failed is the current caller (POST
+    // /history/failed/{id} answers HTTP 200 with a genuinely empty body).
+    // Same contract as http_delete: 0 = transport failure, callers branch
+    // on `code > 0 && code < 400`; last_error side effects unchanged.
+    virtual long http_post_status(const std::string& path, const std::string& body);
     virtual std::string http_put(const std::string& path, const std::string& body);
+    // Status-code-returning PUT — http_post_status' reason, PUT verb.
+    // set_episodes_monitored is the caller: PUT /api/v3/episode/monitor's
+    // success-body shape is UNVERIFIED, and http_put's body-only return
+    // reads a 2xx-with-empty-body as failure — which would abort stage (a)
+    // of EVERY season delete and make "Download Season N" warn every time.
+    // Same contract as http_post_status: 0 = transport failure, callers
+    // branch on `code > 0 && code < 400`; last_error side effects unchanged.
+    virtual long http_put_status(const std::string& path, const std::string& body);
     // Returns the HTTP STATUS CODE, not the body — 0 means the request never
     // got an answer (transport failure). DELETE endpoints answer with an empty
     // body on success, so the body cannot distinguish success from failure and
@@ -340,12 +466,102 @@ protected:
     // last_error side effects are unchanged: still set on transport failure
     // and on HTTP >= 400, so the UI keeps its message.
     virtual long http_delete(const std::string& path);
+    // Body-carrying DELETE — http_delete above takes no body, and
+    // /api/v3/episodefile/bulk requires one (its id list). Same status-code
+    // contract as http_delete (0 = transport failure, callers branch on
+    // `code > 0 && code < 400`), same curl setup plus
+    // CURLOPT_CUSTOMREQUEST "DELETE" + POSTFIELDS.
+    virtual long http_delete_body(const std::string& path, const std::string& body);
 
     Config cfg_;
 
 private:
     mutable std::mutex err_mtx_;
     std::string last_error_;  // guarded by err_mtx_
+};
+
+// RAII suppression of Sonarr's auto-redownload-on-failed, for the duration of
+// a destructive operation that marks history records failed.
+//
+// WHY THIS EXISTS. Deleting a season blocklists its release and leaves
+// re-download MANUAL — the owner presses a button when they want it back.
+// The original design met that contract by unmonitoring the season and its
+// episodes (probe P3). Hardware disproved it on 2026-08-13: Sonarr's
+// redownload handler pushes an EXPLICIT EpisodeSearch by episode id, and an
+// explicit search bypasses monitored=false. Live, the delete completed and
+// Sonarr grabbed a replacement 5 s and 4 s later; the user was told to press
+// a button to download a season whose row already read `downloading`. It
+// converged only after 3 deletes and 8 blocklist rows, once picking a
+// 24.65 GB pack for a 7-minute-per-episode show.
+//
+// WHY A GLOBAL FLAG AND NOT A PARAMETER. The per-request opt-out was probed
+// first and does not exist for this endpoint: `skipRedownload` binds on the
+// queue DELETE (a non-boolean value 400s with a named validation error) but
+// is silently ignored on POST /history/failed/{id} (the action body ran and
+// returned its own 404). The only working lever is the GLOBAL config field
+// `autoRedownloadFailed`, verified live: with it false, marking a record
+// failed produced NO EpisodeSearch in 20 s, with the episode unmonitored and
+// again with it monitored — it is the master switch, and it takes effect on
+// the very next request (no config cache to wait out).
+//
+// THE COST, AND THE OBLIGATION. The flag is global to SONARR (a separate
+// config from Radarr's — movies are unaffected): while a guard is held, NO
+// failed SERIES download gets an automatic retry. That window
+// is a few seconds and is the price of the owner's manual-redownload
+// contract. Leaving the flag off, however, is a SILENT GLOBAL REGRESSION
+// with no UI anywhere in the kiosk to reveal it — so restore is not
+// best-effort. It runs on every exit path (explicit call, abort, exception),
+// retries, logs at error, and reports failure so the caller can tell the
+// owner in words.
+class AutoRedownloadGuard {
+public:
+    // Reads the current config and, if auto-redownload is ON, switches it
+    // off. Never throws for a Sonarr failure — check armed().
+    explicit AutoRedownloadGuard(SonarrClient& client);
+    // Backstop only: calls restore() and swallows everything. A destructor
+    // that throws during stack unwinding is std::terminate, and this one
+    // runs inside a mutation worker thread.
+    ~AutoRedownloadGuard();
+
+    AutoRedownloadGuard(const AutoRedownloadGuard&) = delete;
+    AutoRedownloadGuard& operator=(const AutoRedownloadGuard&) = delete;
+    AutoRedownloadGuard(AutoRedownloadGuard&&) = delete;
+    AutoRedownloadGuard& operator=(AutoRedownloadGuard&&) = delete;
+
+    // TRUE = suppression is in force and it is safe to proceed. FALSE = we
+    // could not read the config, or the PUT that disables the flag was
+    // refused. A false here MUST abort the caller before anything
+    // destructive: proceeding would delete the files AND re-grab, which is
+    // exactly the shipped defect.
+    //
+    // NOTE armed() is also true when the owner already had the flag off. In
+    // that case the guard PUTs nothing at all and has nothing to undo —
+    // deliberately, so a crash mid-operation cannot leave the box in a state
+    // this code invented.
+    [[nodiscard]] bool armed() const { return armed_; }
+
+    // Puts the ORIGINAL value back. Idempotent — the destructor calls it
+    // too, and a second call is a no-op rather than a second PUT. Call it
+    // explicitly when you need the verdict in time to put it in a message;
+    // otherwise let the destructor do it.
+    bool restore();
+
+    // TRUE only after restore() has run and exhausted its retries. The
+    // caller owes the owner a visible warning when this is set: nothing
+    // else in the kiosk surfaces the state of this Sonarr flag.
+    [[nodiscard]] bool restore_failed() const { return restore_failed_; }
+
+private:
+    SonarrClient& client_;
+    DownloadClientConfig original_{};
+    bool armed_ = false;
+    bool changed_ = false;        // we PUT a change, so there is one to undo
+    bool restored_ = false;       // restore() already completed — set on
+                                   // BOTH success and defeat (terminal), so
+                                   // a later call (e.g. the destructor, after
+                                   // an explicit call already lost) never
+                                   // retries a verdict already given
+    bool restore_failed_ = false;
 };
 
 }  // namespace media_browser

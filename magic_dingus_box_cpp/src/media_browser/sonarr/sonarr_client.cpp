@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <thread>
 
@@ -153,6 +155,37 @@ std::string SonarrClient::http_post(const std::string& path, const std::string& 
     return req.body;
 }
 
+long SonarrClient::http_post_status(const std::string& path, const std::string& body) {
+    // Same shape as http_delete_body (status code, not body — see
+    // http_delete's comment for why), POST verb instead of DELETE for
+    // endpoints like /api/v3/history/failed/{id} that answer success with
+    // an empty body.
+    CurlRequest req;
+    req.curl = curl_easy_init();
+    if (!req.curl) { set_error("curl init failed"); return 0; }
+    const std::string url = cfg_.base_url + path;
+    req.headers = curl_slist_append(req.headers,
+                                    ("X-Api-Key: " + cfg_.api_key).c_str());
+    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
+    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
+    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+        set_error(os.str());
+    }
+    return http_code;
+}
+
 std::string SonarrClient::http_put(const std::string& path, const std::string& body) {
     CurlRequest req;
     req.curl = curl_easy_init();
@@ -182,6 +215,38 @@ std::string SonarrClient::http_put(const std::string& path, const std::string& b
     return req.body;
 }
 
+long SonarrClient::http_put_status(const std::string& path,
+                                   const std::string& body) {
+    // Same shape as http_post_status (status code, not body — see
+    // http_delete's comment for why), PUT verb for endpoints like
+    // /api/v3/episode/monitor whose success-body shape is unverified.
+    CurlRequest req;
+    req.curl = curl_easy_init();
+    if (!req.curl) { set_error("curl init failed"); return 0; }
+    const std::string url = cfg_.base_url + path;
+    req.headers = curl_slist_append(req.headers,
+                                    ("X-Api-Key: " + cfg_.api_key).c_str());
+    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
+    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
+    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+        set_error(os.str());
+    }
+    return http_code;
+}
+
 long SonarrClient::http_delete(const std::string& path) {
     CurlRequest req;
     req.curl = curl_easy_init();
@@ -206,6 +271,37 @@ long SonarrClient::http_delete(const std::string& path) {
     if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
+        set_error(os.str());
+    }
+    return http_code;
+}
+
+long SonarrClient::http_delete_body(const std::string& path, const std::string& body) {
+    // Same shape as http_delete (status code, not body — see that
+    // function's comment for why), with a POSTFIELDS body attached to the
+    // DELETE verb for /api/v3/episodefile/bulk's id list.
+    CurlRequest req;
+    req.curl = curl_easy_init();
+    if (!req.curl) { set_error("curl init failed"); return 0; }
+    const std::string url = cfg_.base_url + path;
+    req.headers = curl_slist_append(req.headers,
+                                    ("X-Api-Key: " + cfg_.api_key).c_str());
+    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
+    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
+    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
         set_error(os.str());
     }
     return http_code;
@@ -750,15 +846,30 @@ std::vector<SonarrQueueItem> SonarrClient::get_queue() {
     return get_queue_checked().value_or(std::vector<SonarrQueueItem>{});
 }
 
-bool SonarrClient::cancel_queue_item(int queue_id) {
+bool SonarrClient::cancel_queue_item(int queue_id, bool blocklist) {
     set_error({});
     // In-band verdict, same reason as remove_series: last_error() is shared
     // with the background re-poll, and the other direction of that race is
     // just as live — a poll's Sonarr failure landing mid-window would fail a
     // cancel that actually succeeded, aborting the remove with a lying toast.
-    const long code = http_delete("/api/v3/queue/" + std::to_string(queue_id)
-                                  + "?removeFromClient=true&blocklist=false");
+    //
+    // blocklist=true carries the stall-reaper's full semantics: blocklist
+    // the release AND skip Sonarr's immediate auto-redownload, so a
+    // condemned dead-swarm release cannot be re-grabbed the instant it's
+    // removed.
+    const std::string path = blocklist
+        ? "/api/v3/queue/" + std::to_string(queue_id)
+              + "?removeFromClient=true&blocklist=true&skipRedownload=true"
+        : "/api/v3/queue/" + std::to_string(queue_id)
+              + "?removeFromClient=true&blocklist=false";
+    const long code = http_delete(path);
     return code > 0 && code < 400;
+}
+
+bool SonarrClient::cancel_queue_item(int queue_id) {
+    // A user-initiated cancel must not poison the release for a later
+    // retry — blocklist=false.
+    return cancel_queue_item(queue_id, /*blocklist=*/false);
 }
 
 std::optional<std::vector<std::string>>
@@ -785,6 +896,295 @@ SonarrClient::get_series_download_hashes_checked(int sonarr_id) {
 std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id) {
     return get_series_download_hashes_checked(sonarr_id)
         .value_or(std::vector<std::string>{});
+}
+
+// --- season-delete surface -------------------------------------------------
+
+std::optional<SeasonHistory>
+SonarrClient::get_season_history_checked(int sonarr_id, int season_number) {
+    // Same doctrine as get_series_download_hashes_checked: entry clear,
+    // nullopt = transport/HTTP failure, engaged-empty = real "no history
+    // for this season". The seasonNumber param is REQUIRED, not optional
+    // filtering — probe P1 found individual history records carry no
+    // season field at all, so this is the only way to scope the fetch.
+    // parse_season_history is single-arg because of that same fact: the
+    // filtering already happened server-side by the time the body arrives.
+    set_error({});
+    auto resp = http_get("/api/v3/history/series?seriesId="
+                         + std::to_string(sonarr_id)
+                         + "&seasonNumber=" + std::to_string(season_number));
+    if (resp.empty()) return std::nullopt;
+    return SonarrParsers::parse_season_history(resp);
+}
+
+bool SonarrClient::mark_history_failed(int history_id) {
+    // Probe P2 (live-verified): this endpoint answers HTTP 200 with a
+    // genuinely EMPTY body on success, so http_post's body-only return
+    // cannot tell that success apart from its own "" on transport/HTTP
+    // failure. The old fix read last_error() instead — but last_error_ is
+    // ONE member shared with the ~9s background series re-poll
+    // (SeriesDetailScreen runs poll_worker_ concurrently with mut_worker_
+    // against the same client instance, and spawn_mutation does not wait
+    // on poll_inflight_), so that split-call read raced a full HTTP
+    // round-trip wide in BOTH directions: a poll's error landing mid-window
+    // could fail a real success, and a poll's entry-clear could make a real
+    // failure read as success — the latter would make Task 6 believe a
+    // release was blocklisted when it wasn't and proceed to delete files.
+    // http_post_status gives an in-band verdict (HTTP status code) instead,
+    // same discipline as every other mutation in this file.
+    set_error({});
+    const long code = http_post_status(
+        "/api/v3/history/failed/" + std::to_string(history_id), "");
+    return code > 0 && code < 400;
+}
+
+std::optional<std::vector<EpisodeFileInfo>>
+SonarrClient::get_episode_files_checked(int sonarr_id) {
+    // Same discipline as get_episodes_checked: nullopt only on transport
+    // failure (empty body); a malformed/unparseable non-empty body still
+    // goes through the parser and reads as engaged-empty.
+    set_error({});
+    auto resp = http_get("/api/v3/episodefile?seriesId="
+                         + std::to_string(sonarr_id));
+    if (resp.empty()) return std::nullopt;
+    return SonarrParsers::parse_episode_files(resp);
+}
+
+bool SonarrClient::delete_episode_files(const std::vector<int>& ids) {
+    // Sonarr 500s on both {} and {"episodeFileIds":[]} rather than
+    // no-op'ing (probe-verified) — nothing to delete is success, not a
+    // request the server would even accept.
+    if (ids.empty()) return true;
+    set_error({});
+    Json::Value body(Json::objectValue);
+    Json::Value arr(Json::arrayValue);
+    for (int id : ids) arr.append(id);
+    body["episodeFileIds"] = arr;
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    const long code = http_delete_body("/api/v3/episodefile/bulk",
+                                       Json::writeString(wb, body));
+    return code > 0 && code < 400;
+}
+
+bool SonarrClient::set_episodes_monitored(const std::vector<int>& ids,
+                                          bool monitored) {
+    // Same empty-list short-circuit as delete_episode_files, for the same
+    // reason: nothing to change is success, not a round-trip worth making.
+    //
+    // The verdict is the HTTP STATUS, not the response body: this endpoint's
+    // success-body shape is UNVERIFIED (unlike set_season_monitored, whose
+    // PUT /series answers with the updated series record), and http_put
+    // returns "" for BOTH a transport/HTTP failure and a 2xx with an empty
+    // body. Reading a body-emptiness as failure here would abort stage (a)
+    // of every season delete and warn on every "Download Season N" — the
+    // feature would be 100% dead against a Sonarr build that answers this
+    // PUT with 200 and no body. Same in-band discipline as
+    // mark_history_failed (probe P2's lesson, applied before it bites).
+    if (ids.empty()) return true;
+    set_error({});
+    Json::Value body(Json::objectValue);
+    Json::Value arr(Json::arrayValue);
+    for (int id : ids) arr.append(id);
+    body["episodeIds"] = arr;
+    body["monitored"] = monitored;
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    const long code = http_put_status("/api/v3/episode/monitor",
+                                      Json::writeString(wb, body));
+    return code > 0 && code < 400;
+}
+
+std::optional<DownloadClientConfig>
+SonarrClient::get_download_client_config() {
+    set_error({});
+    auto resp = http_get("/api/v3/config/downloadclient");
+    if (resp.empty()) return std::nullopt;
+    // Unlike the other *_checked getters, a non-empty-but-unusable body is
+    // ALSO nullopt here — parse_download_client_config is strict on purpose.
+    // See its comment: a defaulted struct would make the guard think
+    // suppression was unnecessary and re-introduce the re-grab it exists to
+    // prevent.
+    return SonarrParsers::parse_download_client_config(resp);
+}
+
+bool SonarrClient::set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                              bool enabled) {
+    if (cfg.id <= 0) return false;  // no usable PUT path; never guess "1"
+    set_error({});
+    // Round-trip the ORIGINAL document with exactly one key overwritten.
+    // Rebuilding the body from modelled fields would drop every field this
+    // struct does not know about, and this PUT replaces the resource.
+    Json::Value doc;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(cfg.raw);
+        if (!Json::parseFromStream(rb, is, &doc, &err) || !doc.isObject()) {
+            set_error("download-client config body unparseable");
+            return false;
+        }
+    }
+    doc["autoRedownloadFailed"] = enabled;
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    // 2xx, not ==200: the live box answers this PUT with 202 Accepted.
+    const long code = http_put_status(
+        "/api/v3/config/downloadclient/" + std::to_string(cfg.id),
+        Json::writeString(wb, doc));
+    return code > 0 && code < 400;
+}
+
+// --- AutoRedownloadGuard ---------------------------------------------------
+
+namespace {
+
+// tmpfs marker naming an in-progress disable, so a run that never reaches
+// restore() — the disable PUT succeeds on Sonarr but the client-side curl
+// call times out first, or the process is SIGKILLed/loses power inside the
+// held window — leaves evidence behind instead of a silently-stuck-off
+// flag. Contents are the ORIGINAL value being overwritten, for a human
+// reading the file; verify_box.sh only checks existence (see FIX 3 there).
+// Deliberately NOT read or acted on at startup: an unconditional "turn it
+// back on" would override an owner who disabled the setting on purpose
+// between the interrupted run and now, and by then this code has no way to
+// tell the two apart. /tmp is tmpfs, so a reboot clears the marker — that
+// is correct too: after a reboot nobody can tell an interrupted run from a
+// deliberate owner setting either, so a stale-after-reboot false negative
+// beats a false alarm.
+constexpr const char* kAutoRedownloadHeldMarkerPath =
+    "/tmp/mdb_sonarr_autoredownload_held";
+
+// Best-effort by design: a marker write failing must never abort a delete
+// that is otherwise safe to proceed with. Log and move on.
+void write_autoredownload_held_marker(bool original_value) {
+    std::ofstream f(kAutoRedownloadHeldMarkerPath, std::ios::trunc);
+    if (!f) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not write held "
+                     "marker '{}' (best-effort, continuing)",
+                     kAutoRedownloadHeldMarkerPath);
+        return;
+    }
+    f << (original_value ? "true" : "false");
+    if (!f) {
+        spdlog::warn("[Sonarr] auto-redownload guard: held marker write to "
+                     "'{}' failed mid-write (best-effort, continuing)",
+                     kAutoRedownloadHeldMarkerPath);
+    }
+}
+
+void remove_autoredownload_held_marker() {
+    std::error_code ec;
+    std::filesystem::remove(kAutoRedownloadHeldMarkerPath, ec);
+    if (ec) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not remove held "
+                     "marker '{}' ({}) — verify_box.sh will flag this box "
+                     "until it is deleted or the box reboots",
+                     kAutoRedownloadHeldMarkerPath, ec.message());
+    }
+}
+
+}  // namespace
+
+AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
+    : client_(client) {
+    auto cfg = client_.get_download_client_config();
+    if (!cfg.has_value()) {
+        // Unreadable config = we cannot promise suppression AND cannot
+        // promise a faithful restore. Stay unarmed; the caller aborts with
+        // the season still on disk.
+        spdlog::warn("[Sonarr] auto-redownload guard: config unreadable");
+        return;
+    }
+    original_ = *cfg;
+    if (!original_.auto_redownload_failed) {
+        // Already off — the owner's own setting. Suppression is in force
+        // without us touching anything, and there is nothing to undo. Mark
+        // restored_ so neither restore() nor the destructor ever PUTs a
+        // value this box did not already have. No marker either: we are
+        // not about to change anything, so there is nothing an interruption
+        // could leave stuck.
+        armed_ = true;
+        restored_ = true;
+        return;
+    }
+    // Marker goes down BEFORE the PUT, not after: the failure mode this
+    // guards against is exactly the PUT call not returning cleanly (client
+    // timeout after Sonarr already applied it, or the process dying mid
+    // call), so the marker must exist for the whole duration the flag could
+    // plausibly already be off on Sonarr's side.
+    write_autoredownload_held_marker(original_.auto_redownload_failed);
+    if (!client_.set_auto_redownload_failed(original_, false)) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not disable "
+                     "autoRedownloadFailed");
+        // Unarmed; the caller aborts before anything destructive. Do NOT
+        // remove the marker here: "could not disable" is exactly the
+        // ambiguous case (client-side failure after a server-side success)
+        // the marker exists to catch, so it must survive this guard's own
+        // lifetime and wait for verify_box.sh or a reboot.
+        return;
+    }
+    changed_ = true;
+    armed_ = true;
+}
+
+bool AutoRedownloadGuard::restore() {
+    if (restored_) return true;   // idempotent: explicit call, then ~guard
+    if (!changed_) {              // never armed, or nothing to undo
+        restored_ = true;
+        return true;
+    }
+    // Retry rather than accept the first refusal. A stuck-off flag is
+    // invisible: no kiosk screen shows it, and the owner would only notice
+    // weeks later as "failed downloads stopped retrying". Three attempts
+    // against cfg_.timeout_secs (5 s) bounds the worst case at ~15 s on a
+    // background worker thread, which is cheap next to that.
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        if (client_.set_auto_redownload_failed(
+                original_, original_.auto_redownload_failed)) {
+            restored_ = true;
+            restore_failed_ = false;
+            // The flag is confirmed back to its original value on Sonarr's
+            // side — the held marker's job is done.
+            remove_autoredownload_held_marker();
+            return true;
+        }
+        spdlog::warn("[Sonarr] auto-redownload restore attempt {}/3 failed",
+                     attempt);
+    }
+    // Latch the terminal state alongside restore_failed_. Without this,
+    // restored_ stays false after a defeated restore, so the destructor
+    // (which runs on EVERY scope exit, not just exceptions — restore_clause()
+    // in series_detail_screen.cpp is on the stack, not a member, so its
+    // optional<AutoRedownloadGuard> is destroyed right after this explicit
+    // call returns) sees "not yet restored" and burns 3 more retries against
+    // a flag we already told the owner is stuck off. Worse, if one of those
+    // extra attempts succeeds, the owner is sent to Sonarr to fix a setting
+    // that is actually fine, and mut_done_ (set after the destructor
+    // returns) is delayed by however long that second round takes. restore()
+    // is already defeated at this point — a second round cannot make the
+    // TOAST any more honest, only the timing worse.
+    restored_ = true;
+    restore_failed_ = true;
+    spdlog::error("[Sonarr] COULD NOT restore autoRedownloadFailed=true — "
+                  "Sonarr will not automatically retry failed downloads "
+                  "until this is turned back on in its Download Clients "
+                  "settings");
+    return false;
+}
+
+AutoRedownloadGuard::~AutoRedownloadGuard() {
+    // Backstop for aborts, exceptions, AND the ordinary case where the
+    // worker already called restore() explicitly (restore_clause() in
+    // series_detail_screen.cpp) — restore() is idempotent via restored_, so
+    // this never causes a second PUT once the explicit call has settled,
+    // win or lose.
+    try {
+        restore();
+    } catch (...) {
+        // A destructor that throws mid-unwind is std::terminate, and this
+        // one runs on the mutation worker thread.
+    }
 }
 
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {

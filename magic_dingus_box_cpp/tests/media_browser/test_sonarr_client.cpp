@@ -1163,3 +1163,610 @@ TEST_CASE("SonarrMockClient's get_episodes_checked reports unreachable, "
     mb::SonarrMockClient m;
     CHECK_FALSE(m.get_episodes_checked(1).has_value());
 }
+
+// --- season-delete surface (Task 3) ---------------------------------------
+
+namespace {
+// Records every path/body the client hits and replies from single canned
+// values (next_*), mirroring PutSonarr/QueueSonarr's record-and-can pattern
+// above but widened to cover this surface's extra verb: the new body-
+// carrying DELETE. http_delete and http_delete_body share last_delete_path/
+// next_delete_code since no single test in this section drives both.
+class SeasonDeleteSonarr : public mb::SonarrClient {
+public:
+    SeasonDeleteSonarr() : SonarrClient(Config{}) {}
+    std::string last_get_path;
+    std::string next_get_response;
+    std::string last_post_path;
+    long next_post_status = 200;
+    long next_delete_code = 200;
+    std::string last_delete_path;
+    std::string last_delete_body;
+
+    std::string http_get(const std::string& path) override {
+        last_get_path = path;
+        return next_get_response;
+    }
+    long http_post_status(const std::string& path, const std::string&) override {
+        last_post_path = path;
+        return next_post_status;
+    }
+    std::string http_put(const std::string&, const std::string&) override { return ""; }
+    // set_episodes_monitored reads the STATUS, not the body — see its own
+    // test below; the fake must answer the same way the client asks.
+    std::string last_put_path;
+    long next_put_status = 200;
+    long http_put_status(const std::string& path, const std::string&) override {
+        last_put_path = path;
+        return next_put_status;
+    }
+    long http_delete(const std::string& path) override {
+        last_delete_path = path;
+        return next_delete_code;
+    }
+    long http_delete_body(const std::string& path, const std::string& body) override {
+        last_delete_path = path;
+        last_delete_body = body;
+        return next_delete_code;
+    }
+};
+}  // namespace
+
+TEST_CASE("get_season_history_checked: transport failure is nullopt, answer "
+          "is engaged", "[sonarr][history]") {
+    // The server-side seasonNumber filter is REQUIRED (probe P1: individual
+    // history records carry no season field at all), so the exact path is
+    // pinned here, not just the parse.
+    SeasonDeleteSonarr c;
+    c.next_get_response = "";                 // transport failure
+    REQUIRE_FALSE(c.get_season_history_checked(7, 3).has_value());
+    c.next_get_response = "[]";               // Sonarr answered: no history
+    auto h = c.get_season_history_checked(7, 3);
+    REQUIRE(h.has_value());
+    CHECK(h->download_hashes.empty());
+    CHECK(c.last_get_path == "/api/v3/history/series?seriesId=7&seasonNumber=3");
+}
+
+TEST_CASE("get_season_history_checked parses a populated season history",
+          "[sonarr][history]") {
+    SeasonDeleteSonarr c;
+    c.next_get_response = R"([
+      {"id": 501, "eventType": "grabbed", "downloadId": "ABCDEF123456"},
+      {"id": 502, "eventType": "downloadFolderImported", "downloadId": "ABCDEF123456"}
+    ])";
+    auto h = c.get_season_history_checked(7, 1);
+    REQUIRE(h.has_value());
+    CHECK(h->grabbed_history_ids == std::vector<int>{501});
+    CHECK(h->imported_history_ids == std::vector<int>{502});
+    CHECK(h->download_hashes == std::vector<std::string>{"abcdef123456"});
+}
+
+TEST_CASE("mark_history_failed posts to /history/failed/{id}",
+          "[sonarr][history]") {
+    SeasonDeleteSonarr c;
+    c.next_post_status = 200;
+    REQUIRE(c.mark_history_failed(501));
+    CHECK(c.last_post_path == "/api/v3/history/failed/501");
+}
+
+TEST_CASE("mark_history_failed reads the in-band HTTP status, not a "
+          "body or last_error()", "[sonarr][history]") {
+    // Live-verified (task-1-report.md P2): POST /history/failed/{id}
+    // answers HTTP 200 with a genuinely EMPTY body on success — the SAME
+    // ambiguity http_delete already solves for DELETE by returning a
+    // status code instead of a body. mark_history_failed uses
+    // http_post_status (mirroring http_delete_body) instead of reading
+    // last_error(), which the project's binding doctrine forbids here:
+    // last_error_ is ONE member shared with the background series re-poll
+    // that SeriesDetailScreen runs concurrently against the same client
+    // instance. 200 -> true; 404/500 (client and server errors) -> false;
+    // 0 (transport failure, http_post_status's reserved "no answer"
+    // value) -> false.
+    SeasonDeleteSonarr c;
+    c.next_post_status = 200;
+    CHECK(c.mark_history_failed(501));
+    c.next_post_status = 404;
+    CHECK_FALSE(c.mark_history_failed(501));
+    c.next_post_status = 500;
+    CHECK_FALSE(c.mark_history_failed(501));
+    c.next_post_status = 0;
+    CHECK_FALSE(c.mark_history_failed(501));
+}
+
+TEST_CASE("get_episode_files_checked distinguishes transport failure from "
+          "empty", "[sonarr][episodefiles]") {
+    SECTION("transport failure -> nullopt") {
+        SeasonDeleteSonarr c;  // next_get_response defaults to "" (failure)
+        CHECK_FALSE(c.get_episode_files_checked(7).has_value());
+        CHECK(c.last_get_path == "/api/v3/episodefile?seriesId=7");
+    }
+    SECTION("genuinely empty -> engaged optional, empty vector") {
+        SeasonDeleteSonarr c;
+        c.next_get_response = "[]";
+        auto files = c.get_episode_files_checked(7);
+        REQUIRE(files.has_value());
+        CHECK(files->empty());
+    }
+    SECTION("populated") {
+        SeasonDeleteSonarr c;
+        c.next_get_response = R"([{"id": 41, "seasonNumber": 1}])";
+        auto files = c.get_episode_files_checked(7);
+        REQUIRE(files.has_value());
+        REQUIRE(files->size() == 1);
+        CHECK((*files)[0].id == 41);
+        CHECK((*files)[0].season_number == 1);
+    }
+}
+
+TEST_CASE("delete_episode_files bulk body carries every id, and an empty "
+          "list short-circuits with no HTTP call", "[sonarr][episodefiles]") {
+    // Probe-verified (task-1-report.md): DELETE .../episodefile/bulk 500s
+    // on both {} and {"episodeFileIds":[]} — Sonarr never no-ops on an
+    // empty list, so the client must guard before ever making the call.
+    SeasonDeleteSonarr c;
+    c.next_delete_code = 200;
+    REQUIRE(c.delete_episode_files({31, 32, 33}));
+    CHECK(c.last_delete_path == "/api/v3/episodefile/bulk");
+    CHECK(c.last_delete_body.find("31") != std::string::npos);
+    CHECK(c.last_delete_body.find("32") != std::string::npos);
+    CHECK(c.last_delete_body.find("33") != std::string::npos);
+
+    c.last_delete_path.clear();
+    c.last_delete_body.clear();
+    CHECK(c.delete_episode_files({}) == true);   // vacuous success
+    CHECK(c.last_delete_path.empty());           // ...and genuinely no call
+}
+
+TEST_CASE("cancel_queue_item blocklist variant carries stall-reaper params, "
+          "legacy 1-arg call unchanged", "[sonarr][queue]") {
+    SeasonDeleteSonarr c;
+    c.next_delete_code = 200;
+    REQUIRE(c.cancel_queue_item(42, /*blocklist=*/true));
+    CHECK(c.last_delete_path ==
+        "/api/v3/queue/42?removeFromClient=true&blocklist=true&skipRedownload=true");
+    REQUIRE(c.cancel_queue_item(42));  // legacy call unchanged
+    CHECK(c.last_delete_path ==
+        "/api/v3/queue/42?removeFromClient=true&blocklist=false");
+}
+
+TEST_CASE("set_episodes_monitored PUTs episode ids and the monitored flag; "
+          "an empty list short-circuits with no HTTP call",
+          "[sonarr][episodes]") {
+    // Probe P3 (task-1-report.md): Sonarr's autoRedownloadFailed keys off
+    // per-EPISODE monitored, independent of the season container's flag —
+    // stage (a) and the Start-Season re-monitor both need this call.
+    class PutRecorder : public mb::SonarrClient {
+    public:
+        PutRecorder() : SonarrClient(Config{}) {}
+        std::string last_put_path, last_put_body;
+        bool put_called = false;
+        long next_put_status = 200;
+        // Overrides http_put_STATUS, not http_put. The old fake returned the
+        // request body from http_put, which is non-empty BY CONSTRUCTION —
+        // so a body-emptiness verdict could never fail in a test, and the
+        // 2xx-with-empty-body case (which would abort stage (a) of every
+        // season delete on a live box) was invisible here.
+        long http_put_status(const std::string& path,
+                             const std::string& body) override {
+            put_called = true;
+            last_put_path = path;
+            last_put_body = body;
+            return next_put_status;
+        }
+    };
+    PutRecorder c;
+    REQUIRE(c.set_episodes_monitored({4, 5}, false));
+    CHECK(c.last_put_path == "/api/v3/episode/monitor");
+    Json::Value sent;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(c.last_put_body);
+        REQUIRE(Json::parseFromStream(rb, is, &sent, &err));
+    }
+    REQUIRE(sent["episodeIds"].isArray());
+    REQUIRE(sent["episodeIds"].size() == 2);
+    CHECK(sent["episodeIds"][0].asInt() == 4);
+    CHECK(sent["episodeIds"][1].asInt() == 5);
+    CHECK_FALSE(sent["monitored"].asBool());
+
+    c.put_called = false;
+    CHECK(c.set_episodes_monitored({}, true) == true);  // vacuous success
+    CHECK_FALSE(c.put_called);                          // ...no HTTP call
+}
+
+TEST_CASE("set_episodes_monitored reads the in-band HTTP status, not a "
+          "response body", "[sonarr][episodes]") {
+    // PUT /api/v3/episode/monitor's success-body shape is UNVERIFIED, and
+    // http_put returns "" for BOTH a transport/HTTP failure and a 2xx with
+    // an empty body. Under the old body-emptiness verdict, a Sonarr build
+    // that answers 200-with-no-body would fail stage (a) of EVERY season
+    // delete and warn on every "Download Season N" — a 100%-dead feature
+    // with no false-success to catch it. Same in-band discipline (and same
+    // status table) as mark_history_failed: 200 -> true, 404/500 -> false,
+    // 0 (http_put_status' reserved "no answer") -> false.
+    SeasonDeleteSonarr c;
+    c.next_put_status = 200;
+    CHECK(c.set_episodes_monitored({4, 5}, false));
+    CHECK(c.last_put_path == "/api/v3/episode/monitor");
+    c.next_put_status = 404;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
+    c.next_put_status = 500;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
+    c.next_put_status = 0;
+    CHECK_FALSE(c.set_episodes_monitored({4, 5}, false));
+}
+
+TEST_CASE("SonarrMockClient mirrors the season-delete surface with engaged, "
+          "canned answers", "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    CHECK(m.get_season_history_checked(1, 1).has_value());  // engaged
+    CHECK(m.mark_history_failed(1));
+    CHECK(m.get_episode_files_checked(1).has_value());      // engaged
+    CHECK(m.delete_episode_files({1, 2}));
+    CHECK(m.delete_episode_files({}));
+    CHECK(m.set_episodes_monitored({1, 2}, false));
+
+    auto q = m.get_queue();
+    REQUIRE_FALSE(q.empty());
+    CHECK(m.cancel_queue_item(q[0].id, /*blocklist=*/true));
+}
+
+// --- auto-redownload suppression -----------------------------------------
+//
+// Hardware, magicpi5, Sonarr 4.0.19.2979, 2026-08-13. The season-delete
+// contract is "blocklist the release, leave re-download MANUAL". Stage (a)'s
+// unmonitoring was supposed to enforce it (probe P3) and does NOT: Sonarr
+// answers a mark-as-failed with an EXPLICIT EpisodeSearch by episode id,
+// which bypasses monitored=false. Measured with the episode, season AND
+// series all unmonitored, `EpisodeSearch` appeared in /api/v3/command within
+// 5 s. The per-request escape hatch does not exist for this endpoint either:
+// `?skipRedownload=notabool` 400s with a named binding error on the queue
+// DELETE but is silently ignored on POST /history/failed/{id} (the action
+// body ran and returned its own 404). Only the GLOBAL config field works —
+// with autoRedownloadFailed=false, NO search fired in 20 s.
+
+namespace {
+// Records every PUT so the tests can assert not just the verdict but the
+// exact number of writes — "restored exactly once" and "never wrote at all"
+// are both load-bearing properties here.
+class RedownloadCfgSonarr : public mb::SonarrClient {
+public:
+    RedownloadCfgSonarr() : SonarrClient(Config{}) {}
+    // Shaped like the live box's real answer, unmodelled fields included.
+    std::string next_get_response =
+        R"({"downloadClientWorkingFolders":"_UNPACK_|_FAILED_",)"
+        R"("enableCompletedDownloadHandling":true,"autoRedownloadFailed":true,)"
+        R"("autoRedownloadFailedFromInteractiveSearch":true,"id":1})";
+    std::string last_get_path;
+    std::vector<std::pair<std::string, std::string>> puts;  // (path, body)
+    // Consumed in order; the final entry repeats for any further calls.
+    std::vector<long> put_statuses{202};
+
+    std::string http_get(const std::string& path) override {
+        last_get_path = path;
+        return next_get_response;
+    }
+    long http_put_status(const std::string& path,
+                         const std::string& body) override {
+        const size_t i = puts.size() < put_statuses.size()
+                             ? puts.size() : put_statuses.size() - 1;
+        puts.emplace_back(path, body);
+        return put_statuses[i];
+    }
+};
+
+Json::Value parse_body(const std::string& body) {
+    Json::Value v;
+    Json::CharReaderBuilder rb;
+    std::string err;
+    std::istringstream is(body);
+    REQUIRE(Json::parseFromStream(rb, is, &v, &err));
+    return v;
+}
+}  // namespace
+
+TEST_CASE("get_download_client_config is STRICT: anything short of both "
+          "fields is nullopt, never a defaulted struct",
+          "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    SECTION("transport failure -> nullopt") {
+        c.next_get_response = "";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("missing autoRedownloadFailed -> nullopt, NOT false") {
+        // The dangerous default. A defaulted `false` reads as "the owner
+        // already has auto-redownload off", so the guard would arm, suppress
+        // NOTHING, and hand back the exact re-grab defect it exists to fix.
+        c.next_get_response = R"({"id":1})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("wrong-typed autoRedownloadFailed -> nullopt") {
+        c.next_get_response = R"({"id":1,"autoRedownloadFailed":"true"})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("missing or unusable id -> nullopt (no PUT path to guess)") {
+        c.next_get_response = R"({"autoRedownloadFailed":true})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+        c.next_get_response = R"({"id":0,"autoRedownloadFailed":true})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("a real body parses, and keeps the raw document verbatim") {
+        auto cfg = c.get_download_client_config();
+        REQUIRE(cfg.has_value());
+        CHECK(c.last_get_path == "/api/v3/config/downloadclient");
+        CHECK(cfg->id == 1);
+        CHECK(cfg->auto_redownload_failed);
+        CHECK(cfg->raw == c.next_get_response);
+    }
+}
+
+TEST_CASE("set_auto_redownload_failed round-trips the WHOLE document with "
+          "one key flipped", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    auto cfg = c.get_download_client_config();
+    REQUIRE(cfg.has_value());
+    REQUIRE(c.set_auto_redownload_failed(*cfg, false));
+    REQUIRE(c.puts.size() == 1);
+    CHECK(c.puts[0].first == "/api/v3/config/downloadclient/1");
+    const Json::Value sent = parse_body(c.puts[0].second);
+    CHECK_FALSE(sent["autoRedownloadFailed"].asBool());  // the one edit
+    // Every unmodelled field survives. This PUT REPLACES the resource, so a
+    // body rebuilt from the two fields the struct models would silently
+    // reset the owner's completed-download handling and their
+    // interactive-search retry setting.
+    CHECK(sent["downloadClientWorkingFolders"].asString() == "_UNPACK_|_FAILED_");
+    CHECK(sent["enableCompletedDownloadHandling"].asBool());
+    CHECK(sent["autoRedownloadFailedFromInteractiveSearch"].asBool());
+    CHECK(sent["id"].asInt() == 1);
+}
+
+TEST_CASE("set_auto_redownload_failed accepts the live box's 202, and any "
+          "other 2xx", "[sonarr][redownload]") {
+    // Measured on magicpi5: this endpoint answers 202 Accepted, not 200. A
+    // `code == 200` verdict would have failed every real call while passing
+    // every test written against a 200-returning fake — so the guard would
+    // never arm and the season delete would abort 100% of the time on
+    // hardware.
+    RedownloadCfgSonarr c;
+    auto cfg = c.get_download_client_config();
+    REQUIRE(cfg.has_value());
+    c.put_statuses = {202};
+    CHECK(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {200};
+    CHECK(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {400};
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {500};
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {0};  // http_put_status' reserved "no answer"
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+}
+
+TEST_CASE("set_auto_redownload_failed refuses an unusable id with NO HTTP "
+          "call", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    mb::DownloadClientConfig bad;  // id 0, raw ""
+    CHECK_FALSE(c.set_auto_redownload_failed(bad, false));
+    CHECK(c.puts.empty());
+}
+
+TEST_CASE("AutoRedownloadGuard disables on arm and restores the ORIGINAL "
+          "document on scope exit", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        REQUIRE(c.puts.size() == 1);
+        CHECK_FALSE(parse_body(c.puts[0].second)["autoRedownloadFailed"].asBool());
+        // Still suppressed while the guard is alive — the destructive stages
+        // run in here.
+        CHECK(c.puts.size() == 1);
+    }
+    // ...and put back by the DESTRUCTOR alone, with no explicit call.
+    REQUIRE(c.puts.size() == 2);
+    CHECK(c.puts[1].first == "/api/v3/config/downloadclient/1");
+    CHECK(parse_body(c.puts[1].second)["autoRedownloadFailed"].asBool());
+}
+
+TEST_CASE("AutoRedownloadGuard restores while an exception unwinds",
+          "[sonarr][redownload]") {
+    // spawn_mutation catches exceptions out of the worker body. A guard that
+    // only restored on the normal path would leave the owner's box with
+    // auto-redownload permanently off after one throw, with nothing in the
+    // UI to reveal it.
+    RedownloadCfgSonarr c;
+    try {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        throw std::runtime_error("stage (f) blew up");
+    } catch (const std::exception&) {
+    }
+    REQUIRE(c.puts.size() == 2);
+    CHECK(parse_body(c.puts[1].second)["autoRedownloadFailed"].asBool());
+}
+
+TEST_CASE("AutoRedownloadGuard::restore is idempotent — explicit call plus "
+          "destructor is ONE restore", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK(g.restore());
+        CHECK_FALSE(g.restore_failed());
+        CHECK(c.puts.size() == 2);
+        CHECK(g.restore());  // second explicit call: still a no-op
+        CHECK(c.puts.size() == 2);
+    }
+    CHECK(c.puts.size() == 2);  // destructor did not PUT a third time
+}
+
+TEST_CASE("AutoRedownloadGuard writes NOTHING when the owner already has "
+          "auto-redownload off", "[sonarr][redownload]") {
+    // Armed (suppression IS in force) but with nothing to undo. The guard
+    // must not invent a value: if the process dies mid-delete, the box is
+    // left exactly as its owner configured it.
+    RedownloadCfgSonarr c;
+    c.next_get_response =
+        R"({"autoRedownloadFailed":false,"enableCompletedDownloadHandling":true,"id":1})";
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK(g.armed());
+        CHECK(c.puts.empty());
+    }
+    CHECK(c.puts.empty());
+    // Critically, it never PUTs `true` on the way out — that would ENABLE a
+    // setting the owner had deliberately disabled.
+}
+
+TEST_CASE("AutoRedownloadGuard does not arm when the config is unreadable, "
+          "and leaves no write behind", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    c.next_get_response = "";  // transport failure
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK_FALSE(g.armed());  // caller MUST abort before deleting files
+    }
+    CHECK(c.puts.empty());
+    CHECK_FALSE(mb::AutoRedownloadGuard(c).restore_failed());  // nothing to fail
+}
+
+TEST_CASE("AutoRedownloadGuard does not arm when the disabling PUT is "
+          "refused", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    c.put_statuses = {500};
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK_FALSE(g.armed());
+        CHECK(c.puts.size() == 1);  // the attempt
+    }
+    // The attempt failed, so the flag was never changed and there is nothing
+    // to undo — the destructor must NOT PUT a restore on top of a state it
+    // never established.
+    CHECK(c.puts.size() == 1);
+}
+
+TEST_CASE("AutoRedownloadGuard retries a failing restore and reports defeat",
+          "[sonarr][redownload]") {
+    SECTION("a later attempt succeeds -> restored, no warning owed") {
+        RedownloadCfgSonarr c;
+        // disable OK, restore fails twice, then succeeds.
+        c.put_statuses = {202, 500, 500, 202};
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK(g.restore());
+        CHECK_FALSE(g.restore_failed());
+        CHECK(c.puts.size() == 4);
+        CHECK(parse_body(c.puts[3].second)["autoRedownloadFailed"].asBool());
+    }
+    SECTION("all attempts fail -> restore_failed, so the UI can say so") {
+        // The one outcome the owner must be TOLD about: their box has
+        // stopped auto-retrying failed downloads globally and no kiosk
+        // screen shows this flag.
+        RedownloadCfgSonarr c;
+        c.put_statuses = {202, 500};  // disable OK, every restore refused
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK_FALSE(g.restore());
+        CHECK(g.restore_failed());
+        CHECK(c.puts.size() == 4);  // 1 disable + 3 restore attempts
+    }
+}
+
+TEST_CASE("AutoRedownloadGuard latches after a defeated restore — the "
+          "destructor does not pile a second retry round on top of a "
+          "verdict already given",
+          "[sonarr][redownload]") {
+    // This is the FIX-2 regression test: before the restored_ latch, a
+    // defeated explicit restore() (3 failed attempts, composed into the
+    // toast's WARNING clause) left restored_ false, so the destructor
+    // — which runs at the end of THIS scope regardless of the explicit
+    // call's outcome, not just on exceptions — retried 3 MORE times
+    // against a flag already reported stuck off.
+    RedownloadCfgSonarr c;
+    c.put_statuses = {202, 500};  // disable OK, every restore attempt refused
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK_FALSE(g.restore());
+        CHECK(g.restore_failed());
+        REQUIRE(c.puts.size() == 4);  // 1 disable + 3 defeated retries
+    }
+    // The destructor just ran. Before the fix this would be 7 (4 + 3 more
+    // retries); the latch keeps it at 4 — restore_failed() was already
+    // final when the toast was composed, and a later attempt quietly
+    // succeeding here would have told the owner their box was stuck when
+    // it was not, on top of delaying mut_done_ for nothing.
+    CHECK(c.puts.size() == 4);
+}
+
+namespace {
+// Must match kAutoRedownloadHeldMarkerPath in sonarr_client.cpp. Not
+// exposed via the header — these tests exercise the real filesystem
+// side effect, same as the codebase's existing /tmp marker conventions
+// (mdb_playback_services_paused, mdb_stall_candidates.json).
+const std::string kHeldMarkerPath = "/tmp/mdb_sonarr_autoredownload_held";
+
+std::string read_marker() {
+    std::ifstream f(kHeldMarkerPath);
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+}  // namespace
+
+TEST_CASE("AutoRedownloadGuard writes a held marker before the disable PUT "
+          "and removes it on a confirmed restore",
+          "[sonarr][redownload][marker]") {
+    fs::remove(kHeldMarkerPath);  // hermetic regardless of prior test state
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        // Marker must exist WHILE suppression is held, naming the ORIGINAL
+        // value (true) — the disable PUT is what it guards against not
+        // completing cleanly.
+        REQUIRE(fs::exists(kHeldMarkerPath));
+        CHECK(read_marker() == "true");
+        CHECK(g.restore());
+    }
+    // Restore confirmed the flag is back — nothing left to catch.
+    CHECK_FALSE(fs::exists(kHeldMarkerPath));
+    fs::remove(kHeldMarkerPath);  // leave no residue for other tests/runs
+}
+
+TEST_CASE("AutoRedownloadGuard leaves the held marker behind when restore "
+          "never confirms success — the exact case verify_box.sh must "
+          "catch", "[sonarr][redownload][marker]") {
+    fs::remove(kHeldMarkerPath);
+    RedownloadCfgSonarr c;
+    c.put_statuses = {202, 500};  // disable OK, every restore attempt refused
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        REQUIRE(fs::exists(kHeldMarkerPath));
+        CHECK_FALSE(g.restore());
+    }
+    // A defeated restore means Sonarr may still have the flag off — the
+    // marker must survive so verify_box.sh's assertion has something to
+    // find. This is the leaked-flag scenario FIX 3 exists for.
+    CHECK(fs::exists(kHeldMarkerPath));
+    fs::remove(kHeldMarkerPath);  // leave no residue for other tests/runs
+}
+
+TEST_CASE("SonarrMockClient mirrors the auto-redownload surface",
+          "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    auto cfg = m.get_download_client_config();
+    REQUIRE(cfg.has_value());          // engaged, so a guard over the mock arms
+    CHECK(cfg->id == 1);
+    CHECK(cfg->auto_redownload_failed);
+    CHECK_FALSE(cfg->raw.empty());     // round-trippable, not a stub
+    CHECK(m.set_auto_redownload_failed(*cfg, false));
+    mb::AutoRedownloadGuard g(m);
+    CHECK(g.armed());
+}

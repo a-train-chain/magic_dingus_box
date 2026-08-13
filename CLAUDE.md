@@ -403,6 +403,83 @@ Net effect: every grab is x264 H.264 in the 720p-1080p range, 1-3 GB typical, ha
 3. `Radarr.remove_movie(deleteFiles=true)` — removes movie record + library file
 4. Return to Library
 
+### Confirm delete Season N flow (per-season orphan-proof cleanup)
+
+TV's episode picker offers a trailing "Delete Season N…" row (arm on
+first press, confirm on second — `series_detail_logic.h`) that runs
+the same orphan-proof shape as Confirm Remove above, scoped to one
+season instead of the whole series, on a background worker so the
+render thread never blocks:
+
+1. Unmonitor the season AND its episodes individually — the two flags
+   are independent and `SeasonSearch` skips unmonitored episodes, so a
+   season-only unmonitor would leave the episodes armed and make the
+   re-monitor on the way back in meaningless. **This does NOT stop the
+   re-grab** — see the guard in step 3b
+2. Read the season's Sonarr history (authoritative; a failed read
+   aborts here, before anything destructive)
+3. Cancel the season's live queue rows with `blocklist=true`
+   (which already carries `skipRedownload=true`)
+3b. **Hold an `AutoRedownloadGuard` across steps 3-6**: switch Sonarr's
+   global `autoRedownloadFailed` off, and restore the original value on
+   EVERY exit path — normal, abort, and exception. Hardware, 2026-08-13:
+   step 4's mark-as-failed makes Sonarr fire an **explicit
+   `EpisodeSearch` by episode id**, which bypasses `monitored=false`
+   entirely; live deletes re-grabbed 5 s and 4 s later, telling the user
+   to press a button to download a season already reading `downloading`.
+   There is no per-request opt-out — `skipRedownload` binds on the queue
+   DELETE but is silently ignored on `POST /history/failed/{id}` — so
+   the global flag is the only lever. If the guard cannot arm, ABORT:
+   deleting without suppression is the defect. If the restore is
+   defeated after 3 retries, the toast must SAY so — a stuck-off flag
+   stops auto-retry of failed downloads for every SERIES on the box
+   (Sonarr's `autoRedownloadFailed` is a Sonarr-only config field;
+   Radarr has its own separate config and is unaffected), and no
+   kiosk screen shows it
+4. Mark the season's history records failed, which blocklists the
+   release(s) so the same bad copy can't be the answer to the next
+   search. **Grabbed records, with imported as a FALLBACK** — not
+   both: probe P2 verified `POST /history/failed/{id}` against a
+   GRABBED record only, so imported ids are used solely when there is
+   no grab record at all (a manually imported release). Trying
+   imported first would put the one scenario the fallback exists for
+   — Sonarr refusing an imported id — in front of the grabbed ids the
+   abort-on-refusal rule would then never reach
+5. Purge the season's torrents from qBittorrent with their downloaded
+   data (warn-and-continue — a torrent already gone doesn't block the
+   rest)
+6. Delete the season's episode files, from a fresh listing taken at
+   this point — the only destructive step, and always last
+7. Return to the season list; toast confirms the season was removed
+
+**Abort rule**: any read or mutation in steps 1-4 that can't get an
+authoritative answer aborts before step 6 runs and says why in a
+toast — retry is always safe, since nothing destructive has happened
+yet. Every abort message is composed by ONE lambda that reads both
+cleanup counters, so a step-4 abort still discloses that step 3's
+cancels (`removeFromClient=true`) already took their partial data,
+and a step-6 abort still discloses step 5's torrent purge. The
+success toast likewise names what did NOT happen: with no grabbed and
+no imported history record, nothing was blocklisted and the same copy
+can come back.
+
+**Re-downloading a deleted season**: SELECT on a season row with
+nothing on disk and nothing in flight starts that season's download
+(`start_season_download`, which monitors the season, re-monitors its
+EPISODES — probe P3: season→episode does NOT cascade and SeasonSearch
+skips unmonitored episodes — then searches). The season LIST is the
+path that matters, because the action row's "Download Season N"
+(`decide_action_row`) targets `next_unmonitored_season(rows_)` — the
+LOWEST unmonitored season and nothing else, so it cannot reach a
+deleted season 3 sitting above a never-downloaded season 2. The same
+episode re-monitor runs in the whole-series worker
+(`monitor_episodes_for_seasons` is shared by both); without it "Whole
+series…" downloaded nothing for a previously deleted season while
+reporting success. Whole-series Remove and `WatchStore` history
+are untouched by this flow — origin: a Game of Thrones season grabbed
+in the wrong language had no smaller unit to remove than the whole
+series, which would have destroyed already-watched seasons too.
+
 ### Service operations
 
 - **qbit-port-sync.timer** (systemd, on Pi host) — runs every 60s, syncs qBit's listen_port to Gluetun's NAT-PMP forwarded port. Without this, incoming peer connections fail when Gluetun reconnects. Tolerates `port=0` (NAT-PMP not currently leased) by leaving qBit unchanged.
@@ -664,4 +741,3 @@ Extensive docs in `magic_dingus_box_cpp/docs/`. (A `.gitignore` rule matches thi
 - `PLAYLIST_FORMAT.md` - Playlist YAML schema
 - `GAME_CONTROLS.md` - Input mapping details
 - `USB_CONNECTION_GUIDE.md` - USB Ethernet Gadget setup
-- `MEDIA_BROWSER_PLAYBACK_AND_DOWNLOADS.md` - Deep dive on the Media Browser pipeline (full architecture, scoring tables, quality definitions, network topology, migration notes)

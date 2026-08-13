@@ -266,4 +266,56 @@ SonarrMockClient::get_series_download_hashes(int sonarr_id) {
         .value_or(std::vector<std::string>{});
 }
 
+bool SonarrMockClient::cancel_queue_item(int queue_id, bool /*blocklist*/) {
+    // The mock has no blocklist/skip-redownload state to distinguish —
+    // reuse the 1-arg override's real removal logic so both forms of a
+    // mock cancel agree with each other exactly like the live client's do.
+    return cancel_queue_item(queue_id);
+}
+
+std::optional<SeasonHistory>
+SonarrMockClient::get_season_history_checked(int /*sonarr_id*/,
+                                             int /*season_number*/) {
+    // Engaged, always — the mock has no transport to fail and no seeded
+    // history to reflect (contract completeness only: main.cpp never
+    // drives a real season-delete flow through this mock).
+    return SeasonHistory{};
+}
+
+bool SonarrMockClient::mark_history_failed(int /*history_id*/) { return true; }
+
+std::optional<std::vector<EpisodeFileInfo>>
+SonarrMockClient::get_episode_files_checked(int /*sonarr_id*/) {
+    return std::vector<EpisodeFileInfo>{};
+}
+
+bool SonarrMockClient::delete_episode_files(const std::vector<int>& /*ids*/) {
+    return true;
+}
+
+bool SonarrMockClient::set_episodes_monitored(const std::vector<int>& /*ids*/,
+                                              bool /*monitored*/) {
+    return true;
+}
+
+std::optional<DownloadClientConfig>
+SonarrMockClient::get_download_client_config() {
+    // Shaped like the live box's answer (measured 2026-08-13), including
+    // `raw`, so a guard over this mock exercises the round-trip PUT path
+    // rather than a degenerate one.
+    DownloadClientConfig c;
+    c.id = 1;
+    c.auto_redownload_failed = true;
+    c.raw = R"({"downloadClientWorkingFolders":"_UNPACK_|_FAILED_",)"
+            R"("enableCompletedDownloadHandling":true,)"
+            R"("autoRedownloadFailed":true,)"
+            R"("autoRedownloadFailedFromInteractiveSearch":true,"id":1})";
+    return c;
+}
+
+bool SonarrMockClient::set_auto_redownload_failed(
+        const DownloadClientConfig& /*cfg*/, bool /*enabled*/) {
+    return true;
+}
+
 }  // namespace media_browser

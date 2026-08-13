@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Delete one season without touching the rest of the series.** Until
+  now the only way to get rid of a season you didn't want — wrong
+  language, wrong cut, whatever — was Remove, which takes the entire
+  series with it, including seasons you'd already watched. (This is
+  exactly what happened with a Game of Thrones season downloaded in the
+  wrong language: removing it meant losing every season already
+  watched, because Remove had no smaller unit to act on.) The episode
+  picker now has a trailing "Delete Season N…" row (two presses to
+  confirm) that unmonitors just that season, cancels its live
+  downloads, blocklists the release that produced it so the same bad
+  copy can't come back, purges its torrents and their data from
+  qBittorrent, and only then deletes its episode files — in that
+  order, so a failure at any earlier step leaves the files untouched
+  and the action safe to retry. Want it back later? Select that season
+  in the show's season list — any season with nothing downloaded and
+  nothing in flight starts downloading when you pick it. Whole-series
+  Remove and watch history are both unchanged.
+- **Open a season that's still downloading.** Selecting a season with
+  a download in flight now opens its episode list (it used to say
+  "Not downloaded yet" and refuse), which is where the "Delete
+  Season N…" row lives — so a season grabbed in the wrong language can
+  be stopped and cleaned up while it is still coming down, which was
+  the whole point of the feature.
+
 ## [1.9.12] - 2026-08-12
 
 ### Fixed

@@ -64,12 +64,34 @@ public:
     std::optional<std::vector<SonarrQueueItem>> get_queue_checked() override;
     std::vector<SonarrQueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
+    bool cancel_queue_item(int queue_id, bool blocklist) override;
     // Engaged, not nullopt: unlike get_library_checked, this mock has no
     // specific reason to answer "unreachable" here, and it delegates to the
     // same fixture-consistent computation as the raw variant just below.
     std::optional<std::vector<std::string>>
     get_series_download_hashes_checked(int sonarr_id) override;
     std::vector<std::string> get_series_download_hashes(int sonarr_id) override;
+
+    // Season-delete surface. Engaged/canned throughout — same reasoning as
+    // get_series_download_hashes_checked above: no field-observed
+    // reachability lie to defend against here, so these stay honest about
+    // having "answered" rather than mimicking get_library_checked's
+    // deliberate nullopt.
+    std::optional<SeasonHistory> get_season_history_checked(
+        int sonarr_id, int season_number) override;
+    bool mark_history_failed(int history_id) override;
+    std::optional<std::vector<EpisodeFileInfo>>
+    get_episode_files_checked(int sonarr_id) override;
+    bool delete_episode_files(const std::vector<int>& ids) override;
+    bool set_episodes_monitored(const std::vector<int>& ids,
+                                bool monitored) override;
+    // Auto-redownload suppression. Canned as "readable, currently ON" so an
+    // AutoRedownloadGuard built over this mock ARMS and takes the
+    // changed_/restore path — the interesting one. A nullopt here would
+    // leave every mock-backed season delete aborting before it started.
+    std::optional<DownloadClientConfig> get_download_client_config() override;
+    bool set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                    bool enabled) override;
 
 protected:
     std::vector<Series> library_;

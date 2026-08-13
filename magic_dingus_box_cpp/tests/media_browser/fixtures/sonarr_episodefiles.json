@@ -1,0 +1,58 @@
+[
+  {
+    "seriesId": 8,
+    "seasonNumber": 1,
+    "relativePath": "Season 1/绝命毒师.Breaking.Bad.S01E01.中英字幕.BDrip.1080p-人人影视.mp4",
+    "path": "/data/library/tv/Breaking Bad/Season 1/绝命毒师.Breaking.Bad.S01E01.中英字幕.BDrip.1080p-人人影视.mp4",
+    "size": 870205240,
+    "dateAdded": "2026-08-13T10:03:20Z",
+    "sceneName": "绝命毒师.Breaking.Bad.S01E01.中英字幕.BDrip.1080p-人人影视",
+    "languages": [
+      {
+        "id": 10,
+        "name": "Chinese"
+      }
+    ],
+    "quality": {
+      "quality": {
+        "id": 7,
+        "name": "Bluray-1080p",
+        "source": "bluray",
+        "resolution": 1080
+      },
+      "revision": {
+        "version": 1,
+        "real": 0,
+        "isRepack": false
+      }
+    },
+    "customFormats": [
+      {
+        "id": 10,
+        "name": "Non-English title signals"
+      }
+    ],
+    "customFormatScore": -10000,
+    "indexerFlags": 1,
+    "releaseType": "singleEpisode",
+    "mediaInfo": {
+      "audioBitrate": 192000,
+      "audioChannels": 5.1,
+      "audioCodec": "AAC",
+      "audioLanguages": "und",
+      "audioStreamCount": 1,
+      "videoBitDepth": 8,
+      "videoBitrate": 1799274,
+      "videoCodec": "x264",
+      "videoFps": 23.976,
+      "videoDynamicRange": "",
+      "videoDynamicRangeType": "",
+      "resolution": "1916x1080",
+      "runTime": "58:06",
+      "scanType": "Progressive",
+      "subtitles": ""
+    },
+    "qualityCutoffNotMet": false,
+    "id": 41
+  }
+]

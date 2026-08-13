@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -250,6 +251,84 @@ std::vector<QualityDefinition> SonarrParsers::parse_quality_definitions(
         out.push_back(std::move(d));
     }
     return out;
+}
+
+SeasonHistory SonarrParsers::parse_season_history(const std::string& json) {
+    // Input is ALREADY season-scoped: the client queries
+    // /history/series?seriesId=X&seasonNumber=N (probe-verified — the
+    // records themselves carry no season field, so scoping cannot be
+    // re-done here). Never log record contents: grabbed records embed a
+    // live Prowlarr API key in data.downloadUrl.
+    SeasonHistory out;
+    Json::Value root;
+    if (!parse_json(json, root)) return out;
+    // records_of, not a bare isArray() gate: parse_history_download_ids (this
+    // file, the sibling history parser) already accepts BOTH the bare-array
+    // and the paged {"records":[...]} shapes, and a reshaped body reaching
+    // this one would degrade to "authoritative: no history" — after which the
+    // season-delete worker deletes files with nothing blocklisted and no
+    // torrent purged. Same body, two parsers, one shape rule.
+    const Json::Value* records = records_of(root);
+    if (!records) return out;
+    std::set<std::string> seen_hashes;
+    for (const auto& r : *records) {
+        if (!r.isObject()) continue;
+        const int id = r.get("id", 0).asInt();
+        const std::string ev = r.get("eventType", "").asString();
+        std::string dl = r.get("downloadId", "").asString();
+        dl = to_lower(dl);
+        // The history IDs need only a usable record id. A downloadId is NOT
+        // required for them: a manually-imported release has a
+        // downloadFolderImported record with no downloadId at all, and that
+        // is exactly the case the worker's imported-ids fallback exists to
+        // blocklist — requiring dl here dropped the record and left the
+        // fallback unreachable. The HASH set still requires it, since an
+        // empty string is not a torrent qBittorrent can be asked about.
+        if (id > 0) {
+            if (ev == "grabbed") out.grabbed_history_ids.push_back(id);
+            if (ev == "downloadFolderImported") out.imported_history_ids.push_back(id);
+        }
+        if (!dl.empty() && seen_hashes.insert(dl).second)
+            out.download_hashes.push_back(dl);
+    }
+    return out;
+}
+
+std::vector<EpisodeFileInfo> SonarrParsers::parse_episode_files(
+        const std::string& json) {
+    std::vector<EpisodeFileInfo> out;
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isArray()) return out;
+    for (const auto& r : root) {
+        if (!r.isObject()) continue;
+        EpisodeFileInfo f;
+        f.id = r.get("id", 0).asInt();
+        f.season_number = r.get("seasonNumber", 0).asInt();
+        if (f.id > 0) out.push_back(f);
+    }
+    return out;
+}
+
+std::optional<DownloadClientConfig>
+SonarrParsers::parse_download_client_config(const std::string& json) {
+    // STRICT on purpose — see the header. Every other parser here degrades
+    // to a defaulted value because its consumer treats empty as a benign
+    // "none"; this one's consumer (AutoRedownloadGuard) would read a
+    // defaulted `auto_redownload_failed == false` as "the owner already has
+    // auto-redownload switched off, nothing to suppress" and then run the
+    // whole destructive delete with Sonarr free to re-grab. Absent or
+    // wrong-typed is UNKNOWN, and unknown must not look like off.
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isObject()) return std::nullopt;
+    if (!root.isMember("id") || !root["id"].isIntegral()) return std::nullopt;
+    if (!root.isMember("autoRedownloadFailed") ||
+        !root["autoRedownloadFailed"].isBool()) return std::nullopt;
+    DownloadClientConfig c;
+    c.id = root["id"].asInt();
+    if (c.id <= 0) return std::nullopt;  // no usable PUT path
+    c.auto_redownload_failed = root["autoRedownloadFailed"].asBool();
+    c.raw = json;  // verbatim: the restore PUT replaces the whole resource
+    return c;
 }
 
 }  // namespace media_browser
