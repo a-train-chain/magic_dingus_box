@@ -13,7 +13,7 @@
 - Repo root: `/Users/alexanderchaney/Documents/🧠 Projects/📺 MDB/magic_dingus_box ` — the directory name has a TRAILING SPACE; always quote paths.
 - Board differences resolve at runtime; never `#ifdef` a board (CLAUDE.md dual-board contract). This feature is board-agnostic.
 - MB screens compile ONLY into the kiosk binary — Mac suites cannot compile `series_detail_screen.cpp`. UI logic that needs Mac tests goes in `series_detail_logic.h` (pure, Renderer-free).
-- Mac test build dirs: `magic_dingus_box_cpp/build-mb` (MB=ON, has `test_media_browser_unit` + `test_sonarr_*`). Run binaries directly — ctest skips the MB suite.
+- Mac test build dir: `magic_dingus_box_cpp/build-mb` (MB=ON). CORRECTED 2026-08-13: there is NO per-file test binary — `test_sonarr_parsers.cpp`, `test_sonarr_client.cpp`, and `test_series_detail_logic.cpp` all compile into the single `test_media_browser_unit`. Run it directly (ctest skips it). Baseline before this feature: 6358 assertions / 392 cases.
 - In-band verdicts: client methods clear `set_error({})` on entry and callers read the RETURN, never `last_error()` (shared with the ~9s background re-poll — the 2c-3 contract).
 - Checked shapes: `nullopt` = transport/HTTP failure; engaged-but-empty = authoritative "none".
 - ONE mutation at a time via `spawn_mutation` (WatchdogSec=10 — nothing blocking on the render thread).
@@ -263,7 +263,7 @@ std::vector<EpisodeFileInfo> SonarrParsers::parse_episode_files(
 - [ ] **Step 4: Build + run**
 
 ```bash
-cd "/Users/alexanderchaney/Documents/🧠 Projects/📺 MDB/magic_dingus_box /magic_dingus_box_cpp/build-mb" && cmake --build . -j8 2>&1 | tail -2 && ./test_sonarr_parsers 2>&1 | tail -2
+cd "/Users/alexanderchaney/Documents/🧠 Projects/📺 MDB/magic_dingus_box /magic_dingus_box_cpp/build-mb" && cmake --build . -j8 2>&1 | tail -2 && ./test_media_browser_unit 2>&1 | tail -2
 ```
 Expected: `All tests passed`.
 
@@ -425,7 +425,7 @@ bool SonarrClient::cancel_queue_item(int queue_id) {
 ```
 Header: declare all five (the 2-arg cancel beside the existing 1-arg), plus `http_delete_body` if needed. Mirror every new virtual in `SonarrMockClient` (simple recorded-call + canned-return members, matching its existing style). If `mark_history_failed`'s empty-body POST returns a body the existing `http_post` treats as failure, adjust per what probe P2 recorded.
 
-- [ ] **Step 4: Build + run** `./test_sonarr_client` → `All tests passed`, and `./test_media_browser_unit` still green (mock signature change).
+- [ ] **Step 4: Build + run** `./test_media_browser_unit` → `All tests passed`, and `./test_media_browser_unit` still green (mock signature change).
 
 - [ ] **Step 5: Commit**
 
@@ -491,7 +491,7 @@ TEST_CASE("season_delete_label three states") {
 ```
 (If `SonarrQueueItem` has no `download_id` member, look at what `cancel_ids_for_series` dedupes on — release `title` per the struct comment "identical across a pack's rows" — and dedupe on the same field; adjust the test accordingly.)
 
-- [ ] **Step 2: Build → fail. Step 3: Implement** (mirror `cancel_ids_for_series`'s body with the season filter added; label/exists helpers are 3-liners). **Step 4: Build + `./test_series_detail_logic` green. Step 5: Commit** `feat(tv): pure season-delete logic — cancel ids, row eligibility, labels`.
+- [ ] **Step 2: Build → fail. Step 3: Implement** (mirror `cancel_ids_for_series`'s body with the season filter added; label/exists helpers are 3-liners). **Step 4: Build + `./test_media_browser_unit` green. Step 5: Commit** `feat(tv): pure season-delete logic — cancel ids, row eligibility, labels`.
 
 ---
 
@@ -641,7 +641,7 @@ spawn_mutation([this, sid, season, title]() {
 
 **Files:** none (verification only; fixes fold back into the task that owns them).
 
-- [ ] **Step 1: Mac suites** — `build-mb`: full build + run `test_media_browser_unit`, `test_sonarr_client`, `test_sonarr_parsers`, `test_series_detail_logic` directly. Then the MB=OFF dir (`build`): full build + all 8 suites (guards the flag-off path). Expected: all green.
+- [ ] **Step 1: Mac suites** — `build-mb`: full build + run `test_media_browser_unit` directly (it contains every media-browser test file). Then the MB=OFF dir (`build`): full build + all 8 suites (guards the flag-off path). Expected: all green.
 - [ ] **Step 2: Deploy to magicpi5 for real** — `./magic_dingus_box_cpp/scripts/deploy_cpp.sh --build` with `PI_HOST=magic@10.0.0.227` explicitly (never the default host). Kiosk restarts onto the new binary.
 - [ ] **Step 3: Hardware acceptance — against a DISPOSABLE test series.**
   PROBE AMENDMENT: the original GoT case was resolved manually on
