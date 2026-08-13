@@ -1,0 +1,105 @@
+[
+    {
+        "episodeId": 654,
+        "seriesId": 8,
+        "sourceTitle": "\u7edd\u547d\u6bd2\u5e08.Breaking.Bad.S01E01.\u4e2d\u82f1\u5b57\u5e55.BDrip.1080p-\u4eba\u4eba\u5f71\u89c6",
+        "languages": [
+            {
+                "id": 10,
+                "name": "Chinese"
+            }
+        ],
+        "quality": {
+            "quality": {
+                "id": 7,
+                "name": "Bluray-1080p",
+                "source": "bluray",
+                "resolution": 1080
+            },
+            "revision": {
+                "version": 1,
+                "real": 0,
+                "isRepack": false
+            }
+        },
+        "customFormats": [
+            {
+                "id": 10,
+                "name": "Non-English title signals"
+            }
+        ],
+        "customFormatScore": -10000,
+        "qualityCutoffNotMet": false,
+        "date": "2026-08-13T10:03:20Z",
+        "downloadId": "C1F8F37C7C583B1D68D2FB828E32CD973CF404F7",
+        "eventType": "downloadFolderImported",
+        "data": {
+            "fileId": "41",
+            "droppedPath": "/data/downloads/complete/\u7edd\u547d\u6bd2\u5e08.Breaking.Bad.S01E01.\u4e2d\u82f1\u5b57\u5e55.BDrip.1080p-\u4eba\u4eba\u5f71\u89c6.mp4",
+            "importedPath": "/data/library/tv/Breaking Bad/Season 1/\u7edd\u547d\u6bd2\u5e08.Breaking.Bad.S01E01.\u4e2d\u82f1\u5b57\u5e55.BDrip.1080p-\u4eba\u4eba\u5f71\u89c6.mp4",
+            "downloadClient": "qBittorrent",
+            "downloadClientName": "qBittorrent",
+            "releaseGroup": null,
+            "customFormatScore": "-10000",
+            "size": "870205240",
+            "indexerFlags": "Freeleech",
+            "releaseType": "SingleEpisode"
+        },
+        "id": 185
+    },
+    {
+        "episodeId": 654,
+        "seriesId": 8,
+        "sourceTitle": "Breaking Bad S01E01      BDrip 1080p",
+        "languages": [
+            {
+                "id": 1,
+                "name": "English"
+            }
+        ],
+        "quality": {
+            "quality": {
+                "id": 7,
+                "name": "Bluray-1080p",
+                "source": "bluray",
+                "resolution": 1080
+            },
+            "revision": {
+                "version": 1,
+                "real": 0,
+                "isRepack": false
+            }
+        },
+        "customFormats": [],
+        "customFormatScore": 0,
+        "qualityCutoffNotMet": false,
+        "date": "2026-08-13T09:54:27Z",
+        "downloadId": "C1F8F37C7C583B1D68D2FB828E32CD973CF404F7",
+        "eventType": "grabbed",
+        "data": {
+            "indexer": "TorrentDownload (Prowlarr)",
+            "nzbInfoUrl": "https://www.torrentdownload.info/C1F8F37C7C583B1D68D2FB828E32CD973CF404F7/---Breaking-Bad-S01E01---BDrip-1080p---",
+            "releaseGroup": null,
+            "age": "365",
+            "ageHours": "8760.003253712528",
+            "ageMinutes": "525600.1952228966",
+            "publishedDate": "2025-08-13T09:54:16Z",
+            "downloadClient": "qBittorrent",
+            "downloadClientName": "qBittorrent",
+            "size": "870202752",
+            "downloadUrl": "http://localhost:9696/6/download?apikey=REDACTED&link=REDACTED&file=Breaking+Bad+S01E01++++++BDrip+1080p",
+            "guid": "https://www.torrentdownload.info/C1F8F37C7C583B1D68D2FB828E32CD973CF404F7/---Breaking-Bad-S01E01---BDrip-1080p---",
+            "tvdbId": "0",
+            "tvRageId": "0",
+            "imdbId": null,
+            "protocol": "2",
+            "customFormatScore": "0",
+            "seriesMatchType": "Title",
+            "releaseSource": "UserInvokedSearch",
+            "indexerFlags": "Freeleech",
+            "releaseType": "SingleEpisode",
+            "torrentInfoHash": "C1F8F37C7C583B1D68D2FB828E32CD973CF404F7"
+        },
+        "id": 164
+    }
+]
