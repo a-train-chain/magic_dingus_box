@@ -309,4 +309,26 @@ std::vector<EpisodeFileInfo> SonarrParsers::parse_episode_files(
     return out;
 }
 
+std::optional<DownloadClientConfig>
+SonarrParsers::parse_download_client_config(const std::string& json) {
+    // STRICT on purpose — see the header. Every other parser here degrades
+    // to a defaulted value because its consumer treats empty as a benign
+    // "none"; this one's consumer (AutoRedownloadGuard) would read a
+    // defaulted `auto_redownload_failed == false` as "the owner already has
+    // auto-redownload switched off, nothing to suppress" and then run the
+    // whole destructive delete with Sonarr free to re-grab. Absent or
+    // wrong-typed is UNKNOWN, and unknown must not look like off.
+    Json::Value root;
+    if (!parse_json(json, root) || !root.isObject()) return std::nullopt;
+    if (!root.isMember("id") || !root["id"].isIntegral()) return std::nullopt;
+    if (!root.isMember("autoRedownloadFailed") ||
+        !root["autoRedownloadFailed"].isBool()) return std::nullopt;
+    DownloadClientConfig c;
+    c.id = root["id"].asInt();
+    if (c.id <= 0) return std::nullopt;  // no usable PUT path
+    c.auto_redownload_failed = root["autoRedownloadFailed"].asBool();
+    c.raw = json;  // verbatim: the restore PUT replaces the whole resource
+    return c;
+}
+
 }  // namespace media_browser

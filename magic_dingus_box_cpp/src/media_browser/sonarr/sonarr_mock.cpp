@@ -298,4 +298,24 @@ bool SonarrMockClient::set_episodes_monitored(const std::vector<int>& /*ids*/,
     return true;
 }
 
+std::optional<DownloadClientConfig>
+SonarrMockClient::get_download_client_config() {
+    // Shaped like the live box's answer (measured 2026-08-13), including
+    // `raw`, so a guard over this mock exercises the round-trip PUT path
+    // rather than a degenerate one.
+    DownloadClientConfig c;
+    c.id = 1;
+    c.auto_redownload_failed = true;
+    c.raw = R"({"downloadClientWorkingFolders":"_UNPACK_|_FAILED_",)"
+            R"("enableCompletedDownloadHandling":true,)"
+            R"("autoRedownloadFailed":true,)"
+            R"("autoRedownloadFailedFromInteractiveSearch":true,"id":1})";
+    return c;
+}
+
+bool SonarrMockClient::set_auto_redownload_failed(
+        const DownloadClientConfig& /*cfg*/, bool /*enabled*/) {
+    return true;
+}
+
 }  // namespace media_browser

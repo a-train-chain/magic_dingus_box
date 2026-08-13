@@ -1754,7 +1754,37 @@ Screen SeriesDetailScreen::handle_input(
                         int cancel_ok = 0;        // exact; data already gone
                         int torrents_left = 0;    // qBit refused; needs manual
                         int torrents_purged = 0;  // returned true; gate only
+                        // Engaged at stage (c) and held across every
+                        // destructive stage. Declared HERE, above fail, so
+                        // both exit paths can put the flag back BEFORE they
+                        // word their toast — see restore_clause.
+                        std::optional<AutoRedownloadGuard> no_redownload;
+                        // Restores the flag and returns the clause the user
+                        // needs if that failed. MUST be called before taking
+                        // mut_mtx_: it can spend up to ~15 s retrying an
+                        // HTTP PUT, and the render thread blocks on that
+                        // same mutex in drain_mutation. Idempotent via
+                        // AutoRedownloadGuard::restore, so calling it on one
+                        // path and letting the destructor cover another
+                        // never double-PUTs.
+                        auto restore_clause = [&]() -> std::string {
+                            if (!no_redownload.has_value()) return {};
+                            no_redownload->restore();
+                            if (!no_redownload->restore_failed()) return {};
+                            // Nothing else in the kiosk surfaces this Sonarr
+                            // flag, so if the restore lost, saying so here is
+                            // the owner's only warning that their box has
+                            // stopped auto-retrying FAILED downloads
+                            // globally — for every movie and series, not
+                            // just this one.
+                            return " (WARNING: Sonarr's automatic re-download "
+                                   "is still switched OFF \xE2\x80\x94 turn it "
+                                   "back on in Sonarr under Settings > "
+                                   "Download Clients)";
+                        };
                         auto fail = [&](const std::string& msg) {
+                            // Flag back FIRST, lock second.
+                            const std::string warn = restore_clause();
                             std::string done;
                             if (cancel_ok > 0) {
                                 done = " \xE2\x80\x94 " +
@@ -1773,14 +1803,26 @@ Screen SeriesDetailScreen::handle_input(
                             }
                             std::lock_guard<std::mutex> lk(mut_mtx_);
                             mut_toast_ = title + ": " + msg + done +
-                                " \xE2\x80\x94 season NOT deleted; retry is safe";
+                                " \xE2\x80\x94 season NOT deleted; retry is safe"
+                                + warn;
                         };
                         // (a) Unmonitor FIRST — season AND episodes.
                         // Probe-verified (P3): the two flags are INDEPENDENT
-                        // and Sonarr's autoRedownloadFailed keys off the
-                        // EPISODE flag, so season-only unmonitoring lets stage
-                        // (d) fire searches behind our back and re-grab the
-                        // very release we are deleting.
+                        // and SeasonSearch skips unmonitored episodes, so a
+                        // season-only unmonitor would leave the season's
+                        // episodes armed and make the "Download Season N"
+                        // re-monitor meaningless.
+                        //
+                        // This is NOT what stops the re-grab. P3 also
+                        // concluded that autoRedownloadFailed keys off the
+                        // episode flag; hardware disproved that on
+                        // 2026-08-13 — Sonarr's redownload fires an EXPLICIT
+                        // EpisodeSearch by id, which ignores monitoring
+                        // entirely, and it was measured firing within 5 s
+                        // with episode, season and series ALL unmonitored.
+                        // Suppression is the AutoRedownloadGuard below;
+                        // stage (a) is still required, just for the reason
+                        // above rather than that one.
                         if (!sonarr_.set_season_monitored(sid, season, false))
                             return fail("couldn't unmonitor Season " +
                                         std::to_string(season));
@@ -1800,9 +1842,11 @@ Screen SeriesDetailScreen::handle_input(
                         // id list makes set_episodes_monitored short-circuit to
                         // true with NO HTTP, so the worker would sail on with
                         // every episode still MONITORED. That is precisely the
-                        // probe-P3 state stage (a) exists to prevent: stage (d)
-                        // then fires searches behind us and we delete files
-                        // under a live auto-search. The delete row is only
+                        // probe-P3 state stage (a) exists to prevent: the
+                        // season's episodes stay armed, so the later
+                        // "Download Season N" re-monitor has nothing to
+                        // mean and a SeasonSearch could act on them. The
+                        // delete row is only
                         // reachable when the picker just listed this season's
                         // episodes, so empty here contradicts the row's own
                         // gate. Abort with only the SEASON flag flipped —
@@ -1820,6 +1864,32 @@ Screen SeriesDetailScreen::handle_input(
                             sonarr_.get_season_history_checked(sid, season);
                         if (!hist.has_value())
                             return fail("Sonarr history unavailable");
+                        // SUPPRESS Sonarr's auto-redownload for the whole
+                        // destructive window (c)-(f). The owner's contract is
+                        // "delete blocklists the release, re-download is
+                        // MANUAL"; stage (d)'s mark-failed breaks that on its
+                        // own, because Sonarr answers a DownloadFailedEvent
+                        // with an EXPLICIT EpisodeSearch by id that ignores
+                        // every monitored flag stage (a) just cleared.
+                        // Observed live twice on 2026-08-13: a replacement
+                        // grabbed 5 s and 4 s after the delete, while the
+                        // toast told the user to press a button to download a
+                        // season whose row already read `downloading`.
+                        //
+                        // Armed here rather than at (a): (a) and (b) cannot
+                        // trigger a redownload, and this flag is GLOBAL to the
+                        // box — no failed download of any movie or series gets
+                        // an automatic retry while it is held, so the window
+                        // stays as short as the work allows.
+                        //
+                        // Not armed = abort. Deleting the files without
+                        // suppression IS the shipped defect, so a guard that
+                        // could not establish itself must stop us here, with
+                        // the season still on disk.
+                        no_redownload.emplace(sonarr_);
+                        if (!no_redownload->armed())
+                            return fail("couldn't pause Sonarr's automatic "
+                                        "re-download");
                         // (c) Cancel this season's live queue rows WITH
                         // blocklist. get_queue_CHECKED, not the bare wrapper:
                         // get_queue() collapses a Sonarr outage to an empty
@@ -1927,6 +1997,12 @@ Screen SeriesDetailScreen::handle_input(
                             return fail("couldn't list the season's files");
                         if (!sonarr_.delete_episode_files(ids))
                             return fail("couldn't delete the season's files");
+                        // Destructive work is done — put Sonarr's
+                        // auto-redownload back BEFORE taking mut_mtx_ below.
+                        // Restoring under that lock would hold it across a
+                        // retrying HTTP PUT (~15 s worst case) while the
+                        // render thread waits on it in drain_mutation.
+                        const std::string redownload_warn = restore_clause();
                         // (g) Publish.
                         std::lock_guard<std::mutex> lk(mut_mtx_);
                         mut_season_removed_ = true;
@@ -1962,7 +2038,8 @@ Screen SeriesDetailScreen::handle_input(
                             (torrents_left
                                  ? " (a torrent needs manual cleanup in "
                                    "qBittorrent)"
-                                 : "");
+                                 : "") +
+                            redownload_warn;
                     });
                     // spawn_mutation can decline (one at a time) or fail to
                     // start the thread, and NEITHER path ever sets mut_done_ —

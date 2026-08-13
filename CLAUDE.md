@@ -411,13 +411,29 @@ the same orphan-proof shape as Confirm Remove above, scoped to one
 season instead of the whole series, on a background worker so the
 render thread never blocks:
 
-1. Unmonitor the season AND its episodes individually — Sonarr's
-   `autoRedownloadFailed` keys off the episode flag, so season-only
-   unmonitoring would let step 4 fire a search and re-grab the very
-   release being deleted
+1. Unmonitor the season AND its episodes individually — the two flags
+   are independent and `SeasonSearch` skips unmonitored episodes, so a
+   season-only unmonitor would leave the episodes armed and make the
+   re-monitor on the way back in meaningless. **This does NOT stop the
+   re-grab** — see the guard in step 3b
 2. Read the season's Sonarr history (authoritative; a failed read
    aborts here, before anything destructive)
 3. Cancel the season's live queue rows with `blocklist=true`
+   (which already carries `skipRedownload=true`)
+3b. **Hold an `AutoRedownloadGuard` across steps 3-6**: switch Sonarr's
+   global `autoRedownloadFailed` off, and restore the original value on
+   EVERY exit path — normal, abort, and exception. Hardware, 2026-08-13:
+   step 4's mark-as-failed makes Sonarr fire an **explicit
+   `EpisodeSearch` by episode id**, which bypasses `monitored=false`
+   entirely; live deletes re-grabbed 5 s and 4 s later, telling the user
+   to press a button to download a season already reading `downloading`.
+   There is no per-request opt-out — `skipRedownload` binds on the queue
+   DELETE but is silently ignored on `POST /history/failed/{id}` — so
+   the global flag is the only lever. If the guard cannot arm, ABORT:
+   deleting without suppression is the defect. If the restore is
+   defeated after 3 retries, the toast must SAY so — a stuck-off flag
+   stops auto-retry of failed downloads box-wide, for movies too, and
+   no kiosk screen shows it
 4. Mark the season's history records failed, which blocklists the
    release(s) so the same bad copy can't be the answer to the next
    search. **Grabbed records, with imported as a FALLBACK** — not

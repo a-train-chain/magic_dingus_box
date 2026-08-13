@@ -75,6 +75,23 @@ struct EpisodeFileInfo {
     int season_number = 0;
 };
 
+// GET /api/v3/config/downloadclient — Sonarr's GLOBAL download-client config.
+// Carried only so the season-delete worker can switch autoRedownloadFailed
+// off across its destructive window and put it back exactly as it found it.
+struct DownloadClientConfig {
+    int id = 0;                            // path id for the PUT ("1" on this box)
+    bool auto_redownload_failed = false;   // the field the guard flips
+    // The VERBATIM response body. Load-bearing, not a debugging aid: this
+    // endpoint's PUT REPLACES the whole resource, so a restore built from
+    // the two modelled fields above would silently reset every field we do
+    // not model (downloadClientWorkingFolders, enableCompletedDownloadHandling,
+    // autoRedownloadFailedFromInteractiveSearch — and whatever a future
+    // Sonarr adds). Round-tripping the original document with ONE key
+    // overwritten is the only edit that cannot lose a setting we never
+    // knew about.
+    std::string raw;
+};
+
 // A series as returned by /api/v3/series/lookup — not yet in the library, so
 // no Sonarr id and no path.
 struct SeriesSearchHit {

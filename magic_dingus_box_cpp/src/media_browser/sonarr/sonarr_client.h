@@ -315,7 +315,22 @@ public:
 
     // POST /api/v3/history/failed/{id}, empty body. Marks one history
     // (grab) record as failed, which blocklists its release (probe P2,
-    // live-verified). Sonarr answers this endpoint with HTTP 200 and a
+    // live-verified).
+    //
+    // THIS CALL RE-GRABS unless suppression is in force. Hardware, twice
+    // (2026-08-13, magicpi5, Sonarr 4.0.19.2979): the mark-failed publishes
+    // Sonarr's DownloadFailedEvent, whose redownload handler pushes an
+    // EXPLICIT EpisodeSearch by episode id — and an explicit search does
+    // not consult monitored flags at all. Measured with the episode, the
+    // season AND the series all monitored=false: `EpisodeSearch` appeared
+    // in /api/v3/command within 5 s every time. There is NO per-request
+    // opt-out: `?skipRedownload=true` binds on the queue DELETE endpoint
+    // (a bad value there 400s with a named validation error) but is
+    // silently IGNORED here — the action body ran and returned its own
+    // 404, proving the parameter was never bound. Callers that must not
+    // re-grab have to hold an AutoRedownloadGuard (below) across the call.
+    //
+    // Sonarr answers this endpoint with HTTP 200 and a
     // genuinely EMPTY body on success, so http_post's body-only return
     // cannot tell that apart from its own "" on transport/HTTP failure.
     // Uses http_post_status (in-band verdict via HTTP status code) instead
@@ -344,10 +359,20 @@ public:
 
     // PUT /api/v3/episode/monitor, body {"episodeIds":[...],"monitored":b}.
     // episode.monitored is INDEPENDENT of the season container's monitored
-    // flag, and Sonarr's autoRedownloadFailed config keys off the
-    // per-EPISODE flag (probe P3, live-verified) — so unmonitoring a
-    // season alone does NOT stop an auto re-search after
-    // mark_history_failed. Same empty-list short-circuit as
+    // flag (probe P3, live-verified), and SeasonSearch skips unmonitored
+    // episodes — which is why every flow that monitors a season in order to
+    // download it must re-monitor the season's EPISODES first, and why
+    // stage (a) of the season delete unmonitors them.
+    //
+    // CORRECTION 2026-08-13 (hardware): P3 also concluded that
+    // autoRedownloadFailed keys off this per-episode flag, so unmonitoring
+    // the episodes would stop the auto re-search after mark_history_failed.
+    // That half is DISPROVEN — see mark_history_failed's comment above. The
+    // redownload is an EXPLICIT EpisodeSearch by id, which bypasses
+    // monitoring entirely; suppression needs AutoRedownloadGuard. This call
+    // is still required, just not for that reason.
+    //
+    // Same empty-list short-circuit as
     // delete_episode_files, and for the same reason: nothing to change is
     // success, not a request worth a round-trip.
     //
@@ -359,6 +384,25 @@ public:
     // discipline as mark_history_failed.
     virtual bool set_episodes_monitored(const std::vector<int>& ids,
                                         bool monitored);
+
+    // GET /api/v3/config/downloadclient. CHECKED, and STRICTLY so: nullopt
+    // covers transport/HTTP failure AND an unparseable-or-incomplete body,
+    // because the only consumer needs a faithful document to restore from
+    // and a guess would be worse than an abort (see
+    // SonarrParsers::parse_download_client_config).
+    virtual std::optional<DownloadClientConfig> get_download_client_config();
+
+    // PUT /api/v3/config/downloadclient/{cfg.id} with `cfg.raw` round-tripped
+    // and autoRedownloadFailed overwritten by `enabled` — the whole document,
+    // because this PUT REPLACES the resource rather than patching it.
+    //
+    // Verdict is the HTTP STATUS via http_put_status, and the accept band is
+    // any 2xx, NOT 200: the live box answers this endpoint **202 Accepted**
+    // (measured 2026-08-13). A `code == 200` check would have failed every
+    // real call while passing every test written against a 200-returning
+    // fake — so the 202 case is pinned in test_sonarr_client.cpp.
+    virtual bool set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                            bool enabled);
 
     // Profiles / storage. Resolve the quality profile BY NAME at the call
     // site ("Any" on this box, id 1 — the id is not portable).
@@ -434,6 +478,85 @@ protected:
 private:
     mutable std::mutex err_mtx_;
     std::string last_error_;  // guarded by err_mtx_
+};
+
+// RAII suppression of Sonarr's auto-redownload-on-failed, for the duration of
+// a destructive operation that marks history records failed.
+//
+// WHY THIS EXISTS. Deleting a season blocklists its release and leaves
+// re-download MANUAL — the owner presses a button when they want it back.
+// The original design met that contract by unmonitoring the season and its
+// episodes (probe P3). Hardware disproved it on 2026-08-13: Sonarr's
+// redownload handler pushes an EXPLICIT EpisodeSearch by episode id, and an
+// explicit search bypasses monitored=false. Live, the delete completed and
+// Sonarr grabbed a replacement 5 s and 4 s later; the user was told to press
+// a button to download a season whose row already read `downloading`. It
+// converged only after 3 deletes and 8 blocklist rows, once picking a
+// 24.65 GB pack for a 7-minute-per-episode show.
+//
+// WHY A GLOBAL FLAG AND NOT A PARAMETER. The per-request opt-out was probed
+// first and does not exist for this endpoint: `skipRedownload` binds on the
+// queue DELETE (a non-boolean value 400s with a named validation error) but
+// is silently ignored on POST /history/failed/{id} (the action body ran and
+// returned its own 404). The only working lever is the GLOBAL config field
+// `autoRedownloadFailed`, verified live: with it false, marking a record
+// failed produced NO EpisodeSearch in 20 s, with the episode unmonitored and
+// again with it monitored — it is the master switch, and it takes effect on
+// the very next request (no config cache to wait out).
+//
+// THE COST, AND THE OBLIGATION. The flag is global to the box: while a guard
+// is held, NO failed download anywhere gets an automatic retry. That window
+// is a few seconds and is the price of the owner's manual-redownload
+// contract. Leaving the flag off, however, is a SILENT GLOBAL REGRESSION
+// with no UI anywhere in the kiosk to reveal it — so restore is not
+// best-effort. It runs on every exit path (explicit call, abort, exception),
+// retries, logs at error, and reports failure so the caller can tell the
+// owner in words.
+class AutoRedownloadGuard {
+public:
+    // Reads the current config and, if auto-redownload is ON, switches it
+    // off. Never throws for a Sonarr failure — check armed().
+    explicit AutoRedownloadGuard(SonarrClient& client);
+    // Backstop only: calls restore() and swallows everything. A destructor
+    // that throws during stack unwinding is std::terminate, and this one
+    // runs inside a mutation worker thread.
+    ~AutoRedownloadGuard();
+
+    AutoRedownloadGuard(const AutoRedownloadGuard&) = delete;
+    AutoRedownloadGuard& operator=(const AutoRedownloadGuard&) = delete;
+    AutoRedownloadGuard(AutoRedownloadGuard&&) = delete;
+    AutoRedownloadGuard& operator=(AutoRedownloadGuard&&) = delete;
+
+    // TRUE = suppression is in force and it is safe to proceed. FALSE = we
+    // could not read the config, or the PUT that disables the flag was
+    // refused. A false here MUST abort the caller before anything
+    // destructive: proceeding would delete the files AND re-grab, which is
+    // exactly the shipped defect.
+    //
+    // NOTE armed() is also true when the owner already had the flag off. In
+    // that case the guard PUTs nothing at all and has nothing to undo —
+    // deliberately, so a crash mid-operation cannot leave the box in a state
+    // this code invented.
+    [[nodiscard]] bool armed() const { return armed_; }
+
+    // Puts the ORIGINAL value back. Idempotent — the destructor calls it
+    // too, and a second call is a no-op rather than a second PUT. Call it
+    // explicitly when you need the verdict in time to put it in a message;
+    // otherwise let the destructor do it.
+    bool restore();
+
+    // TRUE only after restore() has run and exhausted its retries. The
+    // caller owes the owner a visible warning when this is set: nothing
+    // else in the kiosk surfaces the state of this Sonarr flag.
+    [[nodiscard]] bool restore_failed() const { return restore_failed_; }
+
+private:
+    SonarrClient& client_;
+    DownloadClientConfig original_{};
+    bool armed_ = false;
+    bool changed_ = false;        // we PUT a change, so there is one to undo
+    bool restored_ = false;       // restore() already completed
+    bool restore_failed_ = false;
 };
 
 }  // namespace media_browser

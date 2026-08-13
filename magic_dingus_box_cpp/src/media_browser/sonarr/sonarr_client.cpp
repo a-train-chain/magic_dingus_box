@@ -993,6 +993,118 @@ bool SonarrClient::set_episodes_monitored(const std::vector<int>& ids,
     return code > 0 && code < 400;
 }
 
+std::optional<DownloadClientConfig>
+SonarrClient::get_download_client_config() {
+    set_error({});
+    auto resp = http_get("/api/v3/config/downloadclient");
+    if (resp.empty()) return std::nullopt;
+    // Unlike the other *_checked getters, a non-empty-but-unusable body is
+    // ALSO nullopt here — parse_download_client_config is strict on purpose.
+    // See its comment: a defaulted struct would make the guard think
+    // suppression was unnecessary and re-introduce the re-grab it exists to
+    // prevent.
+    return SonarrParsers::parse_download_client_config(resp);
+}
+
+bool SonarrClient::set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                              bool enabled) {
+    if (cfg.id <= 0) return false;  // no usable PUT path; never guess "1"
+    set_error({});
+    // Round-trip the ORIGINAL document with exactly one key overwritten.
+    // Rebuilding the body from modelled fields would drop every field this
+    // struct does not know about, and this PUT replaces the resource.
+    Json::Value doc;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(cfg.raw);
+        if (!Json::parseFromStream(rb, is, &doc, &err) || !doc.isObject()) {
+            set_error("download-client config body unparseable");
+            return false;
+        }
+    }
+    doc["autoRedownloadFailed"] = enabled;
+    Json::StreamWriterBuilder wb;
+    wb["indentation"] = "";
+    // 2xx, not ==200: the live box answers this PUT with 202 Accepted.
+    const long code = http_put_status(
+        "/api/v3/config/downloadclient/" + std::to_string(cfg.id),
+        Json::writeString(wb, doc));
+    return code > 0 && code < 400;
+}
+
+// --- AutoRedownloadGuard ---------------------------------------------------
+
+AutoRedownloadGuard::AutoRedownloadGuard(SonarrClient& client)
+    : client_(client) {
+    auto cfg = client_.get_download_client_config();
+    if (!cfg.has_value()) {
+        // Unreadable config = we cannot promise suppression AND cannot
+        // promise a faithful restore. Stay unarmed; the caller aborts with
+        // the season still on disk.
+        spdlog::warn("[Sonarr] auto-redownload guard: config unreadable");
+        return;
+    }
+    original_ = *cfg;
+    if (!original_.auto_redownload_failed) {
+        // Already off — the owner's own setting. Suppression is in force
+        // without us touching anything, and there is nothing to undo. Mark
+        // restored_ so neither restore() nor the destructor ever PUTs a
+        // value this box did not already have.
+        armed_ = true;
+        restored_ = true;
+        return;
+    }
+    if (!client_.set_auto_redownload_failed(original_, false)) {
+        spdlog::warn("[Sonarr] auto-redownload guard: could not disable "
+                     "autoRedownloadFailed");
+        return;  // unarmed; nothing was changed, so nothing to restore
+    }
+    changed_ = true;
+    armed_ = true;
+}
+
+bool AutoRedownloadGuard::restore() {
+    if (restored_) return true;   // idempotent: explicit call, then ~guard
+    if (!changed_) {              // never armed, or nothing to undo
+        restored_ = true;
+        return true;
+    }
+    // Retry rather than accept the first refusal. A stuck-off flag is
+    // invisible: no kiosk screen shows it, and the owner would only notice
+    // weeks later as "failed downloads stopped retrying". Three attempts
+    // against cfg_.timeout_secs (5 s) bounds the worst case at ~15 s on a
+    // background worker thread, which is cheap next to that.
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        if (client_.set_auto_redownload_failed(
+                original_, original_.auto_redownload_failed)) {
+            restored_ = true;
+            restore_failed_ = false;
+            return true;
+        }
+        spdlog::warn("[Sonarr] auto-redownload restore attempt {}/3 failed",
+                     attempt);
+    }
+    restore_failed_ = true;
+    spdlog::error("[Sonarr] COULD NOT restore autoRedownloadFailed=true — "
+                  "Sonarr will not automatically retry failed downloads "
+                  "until this is turned back on in its Download Clients "
+                  "settings");
+    return false;
+}
+
+AutoRedownloadGuard::~AutoRedownloadGuard() {
+    // Backstop for aborts and exceptions. restore() is idempotent, so the
+    // worker's explicit call (which it makes to learn the verdict in time to
+    // put it in the toast) does not cause a second PUT here.
+    try {
+        restore();
+    } catch (...) {
+        // A destructor that throws mid-unwind is std::terminate, and this
+        // one runs on the mutation worker thread.
+    }
+}
+
 std::vector<QualityProfile> SonarrClient::get_quality_profiles() {
     // Without clearing first, an empty result here is ambiguous to callers
     // that read last_error() to tell "Sonarr answered, no profiles" from "we

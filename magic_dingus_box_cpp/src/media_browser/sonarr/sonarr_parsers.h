@@ -33,6 +33,19 @@ public:
     // GET /api/v3/episodefile?seriesId= — array of episode files with id and
     // seasonNumber for download tracking.
     static std::vector<EpisodeFileInfo> parse_episode_files(const std::string& json);
+    // GET /api/v3/config/downloadclient — a single config object.
+    //
+    // Deliberately NOT tolerant, unlike every other parser in this file: a
+    // missing/!int `id` or a missing/!bool `autoRedownloadFailed` yields
+    // nullopt rather than a defaulted struct. The one consumer is
+    // AutoRedownloadGuard, and both fields are load-bearing in the
+    // dangerous direction — a defaulted id would PUT to the wrong path,
+    // and a defaulted `false` would read as "the owner already has
+    // auto-redownload off", so the guard would suppress NOTHING and
+    // silently hand back the exact defect it exists to fix. nullopt makes
+    // the worker abort loudly with the season still intact.
+    static std::optional<DownloadClientConfig> parse_download_client_config(
+        const std::string& json);
     // Servarr-identical shapes — these delegate to RadarrParsers so there is
     // exactly one implementation of each.
     static std::vector<QualityProfile> parse_quality_profiles(const std::string& json);

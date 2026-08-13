@@ -85,6 +85,13 @@ public:
     bool delete_episode_files(const std::vector<int>& ids) override;
     bool set_episodes_monitored(const std::vector<int>& ids,
                                 bool monitored) override;
+    // Auto-redownload suppression. Canned as "readable, currently ON" so an
+    // AutoRedownloadGuard built over this mock ARMS and takes the
+    // changed_/restore path — the interesting one. A nullopt here would
+    // leave every mock-backed season delete aborting before it started.
+    std::optional<DownloadClientConfig> get_download_client_config() override;
+    bool set_auto_redownload_failed(const DownloadClientConfig& cfg,
+                                    bool enabled) override;
 
 protected:
     std::vector<Series> library_;

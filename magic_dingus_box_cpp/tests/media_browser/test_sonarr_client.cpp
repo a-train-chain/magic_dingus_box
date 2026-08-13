@@ -1411,3 +1411,281 @@ TEST_CASE("SonarrMockClient mirrors the season-delete surface with engaged, "
     REQUIRE_FALSE(q.empty());
     CHECK(m.cancel_queue_item(q[0].id, /*blocklist=*/true));
 }
+
+// --- auto-redownload suppression -----------------------------------------
+//
+// Hardware, magicpi5, Sonarr 4.0.19.2979, 2026-08-13. The season-delete
+// contract is "blocklist the release, leave re-download MANUAL". Stage (a)'s
+// unmonitoring was supposed to enforce it (probe P3) and does NOT: Sonarr
+// answers a mark-as-failed with an EXPLICIT EpisodeSearch by episode id,
+// which bypasses monitored=false. Measured with the episode, season AND
+// series all unmonitored, `EpisodeSearch` appeared in /api/v3/command within
+// 5 s. The per-request escape hatch does not exist for this endpoint either:
+// `?skipRedownload=notabool` 400s with a named binding error on the queue
+// DELETE but is silently ignored on POST /history/failed/{id} (the action
+// body ran and returned its own 404). Only the GLOBAL config field works —
+// with autoRedownloadFailed=false, NO search fired in 20 s.
+
+namespace {
+// Records every PUT so the tests can assert not just the verdict but the
+// exact number of writes — "restored exactly once" and "never wrote at all"
+// are both load-bearing properties here.
+class RedownloadCfgSonarr : public mb::SonarrClient {
+public:
+    RedownloadCfgSonarr() : SonarrClient(Config{}) {}
+    // Shaped like the live box's real answer, unmodelled fields included.
+    std::string next_get_response =
+        R"({"downloadClientWorkingFolders":"_UNPACK_|_FAILED_",)"
+        R"("enableCompletedDownloadHandling":true,"autoRedownloadFailed":true,)"
+        R"("autoRedownloadFailedFromInteractiveSearch":true,"id":1})";
+    std::string last_get_path;
+    std::vector<std::pair<std::string, std::string>> puts;  // (path, body)
+    // Consumed in order; the final entry repeats for any further calls.
+    std::vector<long> put_statuses{202};
+
+    std::string http_get(const std::string& path) override {
+        last_get_path = path;
+        return next_get_response;
+    }
+    long http_put_status(const std::string& path,
+                         const std::string& body) override {
+        const size_t i = puts.size() < put_statuses.size()
+                             ? puts.size() : put_statuses.size() - 1;
+        puts.emplace_back(path, body);
+        return put_statuses[i];
+    }
+};
+
+Json::Value parse_body(const std::string& body) {
+    Json::Value v;
+    Json::CharReaderBuilder rb;
+    std::string err;
+    std::istringstream is(body);
+    REQUIRE(Json::parseFromStream(rb, is, &v, &err));
+    return v;
+}
+}  // namespace
+
+TEST_CASE("get_download_client_config is STRICT: anything short of both "
+          "fields is nullopt, never a defaulted struct",
+          "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    SECTION("transport failure -> nullopt") {
+        c.next_get_response = "";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("missing autoRedownloadFailed -> nullopt, NOT false") {
+        // The dangerous default. A defaulted `false` reads as "the owner
+        // already has auto-redownload off", so the guard would arm, suppress
+        // NOTHING, and hand back the exact re-grab defect it exists to fix.
+        c.next_get_response = R"({"id":1})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("wrong-typed autoRedownloadFailed -> nullopt") {
+        c.next_get_response = R"({"id":1,"autoRedownloadFailed":"true"})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("missing or unusable id -> nullopt (no PUT path to guess)") {
+        c.next_get_response = R"({"autoRedownloadFailed":true})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+        c.next_get_response = R"({"id":0,"autoRedownloadFailed":true})";
+        CHECK_FALSE(c.get_download_client_config().has_value());
+    }
+    SECTION("a real body parses, and keeps the raw document verbatim") {
+        auto cfg = c.get_download_client_config();
+        REQUIRE(cfg.has_value());
+        CHECK(c.last_get_path == "/api/v3/config/downloadclient");
+        CHECK(cfg->id == 1);
+        CHECK(cfg->auto_redownload_failed);
+        CHECK(cfg->raw == c.next_get_response);
+    }
+}
+
+TEST_CASE("set_auto_redownload_failed round-trips the WHOLE document with "
+          "one key flipped", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    auto cfg = c.get_download_client_config();
+    REQUIRE(cfg.has_value());
+    REQUIRE(c.set_auto_redownload_failed(*cfg, false));
+    REQUIRE(c.puts.size() == 1);
+    CHECK(c.puts[0].first == "/api/v3/config/downloadclient/1");
+    const Json::Value sent = parse_body(c.puts[0].second);
+    CHECK_FALSE(sent["autoRedownloadFailed"].asBool());  // the one edit
+    // Every unmodelled field survives. This PUT REPLACES the resource, so a
+    // body rebuilt from the two fields the struct models would silently
+    // reset the owner's completed-download handling and their
+    // interactive-search retry setting.
+    CHECK(sent["downloadClientWorkingFolders"].asString() == "_UNPACK_|_FAILED_");
+    CHECK(sent["enableCompletedDownloadHandling"].asBool());
+    CHECK(sent["autoRedownloadFailedFromInteractiveSearch"].asBool());
+    CHECK(sent["id"].asInt() == 1);
+}
+
+TEST_CASE("set_auto_redownload_failed accepts the live box's 202, and any "
+          "other 2xx", "[sonarr][redownload]") {
+    // Measured on magicpi5: this endpoint answers 202 Accepted, not 200. A
+    // `code == 200` verdict would have failed every real call while passing
+    // every test written against a 200-returning fake — so the guard would
+    // never arm and the season delete would abort 100% of the time on
+    // hardware.
+    RedownloadCfgSonarr c;
+    auto cfg = c.get_download_client_config();
+    REQUIRE(cfg.has_value());
+    c.put_statuses = {202};
+    CHECK(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {200};
+    CHECK(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {400};
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {500};
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+    c.puts.clear();
+    c.put_statuses = {0};  // http_put_status' reserved "no answer"
+    CHECK_FALSE(c.set_auto_redownload_failed(*cfg, false));
+}
+
+TEST_CASE("set_auto_redownload_failed refuses an unusable id with NO HTTP "
+          "call", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    mb::DownloadClientConfig bad;  // id 0, raw ""
+    CHECK_FALSE(c.set_auto_redownload_failed(bad, false));
+    CHECK(c.puts.empty());
+}
+
+TEST_CASE("AutoRedownloadGuard disables on arm and restores the ORIGINAL "
+          "document on scope exit", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        REQUIRE(c.puts.size() == 1);
+        CHECK_FALSE(parse_body(c.puts[0].second)["autoRedownloadFailed"].asBool());
+        // Still suppressed while the guard is alive — the destructive stages
+        // run in here.
+        CHECK(c.puts.size() == 1);
+    }
+    // ...and put back by the DESTRUCTOR alone, with no explicit call.
+    REQUIRE(c.puts.size() == 2);
+    CHECK(c.puts[1].first == "/api/v3/config/downloadclient/1");
+    CHECK(parse_body(c.puts[1].second)["autoRedownloadFailed"].asBool());
+}
+
+TEST_CASE("AutoRedownloadGuard restores while an exception unwinds",
+          "[sonarr][redownload]") {
+    // spawn_mutation catches exceptions out of the worker body. A guard that
+    // only restored on the normal path would leave the owner's box with
+    // auto-redownload permanently off after one throw, with nothing in the
+    // UI to reveal it.
+    RedownloadCfgSonarr c;
+    try {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        throw std::runtime_error("stage (f) blew up");
+    } catch (const std::exception&) {
+    }
+    REQUIRE(c.puts.size() == 2);
+    CHECK(parse_body(c.puts[1].second)["autoRedownloadFailed"].asBool());
+}
+
+TEST_CASE("AutoRedownloadGuard::restore is idempotent — explicit call plus "
+          "destructor is ONE restore", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    {
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK(g.restore());
+        CHECK_FALSE(g.restore_failed());
+        CHECK(c.puts.size() == 2);
+        CHECK(g.restore());  // second explicit call: still a no-op
+        CHECK(c.puts.size() == 2);
+    }
+    CHECK(c.puts.size() == 2);  // destructor did not PUT a third time
+}
+
+TEST_CASE("AutoRedownloadGuard writes NOTHING when the owner already has "
+          "auto-redownload off", "[sonarr][redownload]") {
+    // Armed (suppression IS in force) but with nothing to undo. The guard
+    // must not invent a value: if the process dies mid-delete, the box is
+    // left exactly as its owner configured it.
+    RedownloadCfgSonarr c;
+    c.next_get_response =
+        R"({"autoRedownloadFailed":false,"enableCompletedDownloadHandling":true,"id":1})";
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK(g.armed());
+        CHECK(c.puts.empty());
+    }
+    CHECK(c.puts.empty());
+    // Critically, it never PUTs `true` on the way out — that would ENABLE a
+    // setting the owner had deliberately disabled.
+}
+
+TEST_CASE("AutoRedownloadGuard does not arm when the config is unreadable, "
+          "and leaves no write behind", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    c.next_get_response = "";  // transport failure
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK_FALSE(g.armed());  // caller MUST abort before deleting files
+    }
+    CHECK(c.puts.empty());
+    CHECK_FALSE(mb::AutoRedownloadGuard(c).restore_failed());  // nothing to fail
+}
+
+TEST_CASE("AutoRedownloadGuard does not arm when the disabling PUT is "
+          "refused", "[sonarr][redownload]") {
+    RedownloadCfgSonarr c;
+    c.put_statuses = {500};
+    {
+        mb::AutoRedownloadGuard g(c);
+        CHECK_FALSE(g.armed());
+        CHECK(c.puts.size() == 1);  // the attempt
+    }
+    // The attempt failed, so the flag was never changed and there is nothing
+    // to undo — the destructor must NOT PUT a restore on top of a state it
+    // never established.
+    CHECK(c.puts.size() == 1);
+}
+
+TEST_CASE("AutoRedownloadGuard retries a failing restore and reports defeat",
+          "[sonarr][redownload]") {
+    SECTION("a later attempt succeeds -> restored, no warning owed") {
+        RedownloadCfgSonarr c;
+        // disable OK, restore fails twice, then succeeds.
+        c.put_statuses = {202, 500, 500, 202};
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK(g.restore());
+        CHECK_FALSE(g.restore_failed());
+        CHECK(c.puts.size() == 4);
+        CHECK(parse_body(c.puts[3].second)["autoRedownloadFailed"].asBool());
+    }
+    SECTION("all attempts fail -> restore_failed, so the UI can say so") {
+        // The one outcome the owner must be TOLD about: their box has
+        // stopped auto-retrying failed downloads globally and no kiosk
+        // screen shows this flag.
+        RedownloadCfgSonarr c;
+        c.put_statuses = {202, 500};  // disable OK, every restore refused
+        mb::AutoRedownloadGuard g(c);
+        REQUIRE(g.armed());
+        CHECK_FALSE(g.restore());
+        CHECK(g.restore_failed());
+        CHECK(c.puts.size() == 4);  // 1 disable + 3 restore attempts
+    }
+}
+
+TEST_CASE("SonarrMockClient mirrors the auto-redownload surface",
+          "[sonarr][mock]") {
+    mb::SonarrMockClient m;
+    auto cfg = m.get_download_client_config();
+    REQUIRE(cfg.has_value());          // engaged, so a guard over the mock arms
+    CHECK(cfg->id == 1);
+    CHECK(cfg->auto_redownload_failed);
+    CHECK_FALSE(cfg->raw.empty());     // round-trippable, not a stub
+    CHECK(m.set_auto_redownload_failed(*cfg, false));
+    mb::AutoRedownloadGuard g(m);
+    CHECK(g.armed());
+}
