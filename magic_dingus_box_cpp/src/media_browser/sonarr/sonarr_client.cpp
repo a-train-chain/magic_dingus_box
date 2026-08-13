@@ -153,6 +153,37 @@ std::string SonarrClient::http_post(const std::string& path, const std::string& 
     return req.body;
 }
 
+long SonarrClient::http_post_status(const std::string& path, const std::string& body) {
+    // Same shape as http_delete_body (status code, not body — see
+    // http_delete's comment for why), POST verb instead of DELETE for
+    // endpoints like /api/v3/history/failed/{id} that answer success with
+    // an empty body.
+    CurlRequest req;
+    req.curl = curl_easy_init();
+    if (!req.curl) { set_error("curl init failed"); return 0; }
+    const std::string url = cfg_.base_url + path;
+    req.headers = curl_slist_append(req.headers,
+                                    ("X-Api-Key: " + cfg_.api_key).c_str());
+    req.headers = curl_slist_append(req.headers, "Content-Type: application/json");
+    curl_easy_setopt(req.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(req.curl, CURLOPT_HTTPHEADER, req.headers);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(req.curl, CURLOPT_WRITEDATA, &req.body);
+    curl_easy_setopt(req.curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(cfg_.timeout_secs));
+    curl_easy_setopt(req.curl, CURLOPT_NOSIGNAL, 1L);
+    CURLcode rc = curl_easy_perform(req.curl);
+    long http_code = 0;
+    curl_easy_getinfo(req.curl, CURLINFO_RESPONSE_CODE, &http_code);
+    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return 0; }
+    if (http_code >= 400) {
+        std::ostringstream os; os << "HTTP " << http_code << ": " << req.body;
+        set_error(os.str());
+    }
+    return http_code;
+}
+
 std::string SonarrClient::http_put(const std::string& path, const std::string& body) {
     CurlRequest req;
     req.curl = curl_easy_init();
@@ -853,20 +884,24 @@ SonarrClient::get_season_history_checked(int sonarr_id, int season_number) {
 }
 
 bool SonarrClient::mark_history_failed(int history_id) {
-    set_error({});
-    auto resp = http_post("/api/v3/history/failed/"
-                          + std::to_string(history_id), "");
     // Probe P2 (live-verified): this endpoint answers HTTP 200 with a
-    // genuinely EMPTY body on success. http_post returns "" both on that
-    // success and on a transport/HTTP failure (it set_error'd in the
-    // latter case only), so `resp.empty()` cannot tell the two apart the
-    // way it safely can for every other http_post caller in this file.
-    // last_error() is the only signal left to read: this call's own
-    // set_error({}) just above clears it, and http_post's success path
-    // never touches it, so it stays empty here unless THIS call's http_post
-    // set it. Narrower than the checked shapes' in-band discipline, but the
-    // endpoint's own shape leaves no in-band success/failure signal to read.
-    return last_error().empty();
+    // genuinely EMPTY body on success, so http_post's body-only return
+    // cannot tell that success apart from its own "" on transport/HTTP
+    // failure. The old fix read last_error() instead — but last_error_ is
+    // ONE member shared with the ~9s background series re-poll
+    // (SeriesDetailScreen runs poll_worker_ concurrently with mut_worker_
+    // against the same client instance, and spawn_mutation does not wait
+    // on poll_inflight_), so that split-call read raced a full HTTP
+    // round-trip wide in BOTH directions: a poll's error landing mid-window
+    // could fail a real success, and a poll's entry-clear could make a real
+    // failure read as success — the latter would make Task 6 believe a
+    // release was blocklisted when it wasn't and proceed to delete files.
+    // http_post_status gives an in-band verdict (HTTP status code) instead,
+    // same discipline as every other mutation in this file.
+    set_error({});
+    const long code = http_post_status(
+        "/api/v3/history/failed/" + std::to_string(history_id), "");
+    return code > 0 && code < 400;
 }
 
 std::optional<std::vector<EpisodeFileInfo>>

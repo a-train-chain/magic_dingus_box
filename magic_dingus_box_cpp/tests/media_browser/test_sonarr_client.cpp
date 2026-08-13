@@ -1178,7 +1178,7 @@ public:
     std::string last_get_path;
     std::string next_get_response;
     std::string last_post_path;
-    std::string next_post_response;
+    long next_post_status = 200;
     long next_delete_code = 200;
     std::string last_delete_path;
     std::string last_delete_body;
@@ -1187,9 +1187,9 @@ public:
         last_get_path = path;
         return next_get_response;
     }
-    std::string http_post(const std::string& path, const std::string&) override {
+    long http_post_status(const std::string& path, const std::string&) override {
         last_post_path = path;
-        return next_post_response;
+        return next_post_status;
     }
     std::string http_put(const std::string&, const std::string&) override { return ""; }
     long http_delete(const std::string& path) override {
@@ -1236,36 +1236,33 @@ TEST_CASE("get_season_history_checked parses a populated season history",
 TEST_CASE("mark_history_failed posts to /history/failed/{id}",
           "[sonarr][history]") {
     SeasonDeleteSonarr c;
-    c.next_post_response = "{}";
+    c.next_post_status = 200;
     REQUIRE(c.mark_history_failed(501));
     CHECK(c.last_post_path == "/api/v3/history/failed/501");
 }
 
-TEST_CASE("mark_history_failed succeeds on Sonarr's real 200-empty-body "
-          "shape (probe P2) and fails on a genuine transport error",
-          "[sonarr][history]") {
+TEST_CASE("mark_history_failed reads the in-band HTTP status, not a "
+          "body or last_error()", "[sonarr][history]") {
     // Live-verified (task-1-report.md P2): POST /history/failed/{id}
-    // answers HTTP 200 with a genuinely EMPTY body. http_post's body-only
-    // return cannot distinguish that shape from its own "" return on a
-    // transport/HTTP failure — the SAME ambiguity http_delete already
-    // solves for DELETE by returning a status code instead of a body. This
-    // pins that the implementation does not collapse the two the way the
-    // `!http_post(...).empty()` pattern used elsewhere in this file would
-    // (that pattern is safe for those callers only because their endpoints
-    // never answer success with an empty body).
-    class RealShapePost : public mb::SonarrClient {
-    public:
-        RealShapePost() : SonarrClient(Config{}) {}
-        bool fail = false;
-        std::string http_post(const std::string&, const std::string&) override {
-            if (fail) { set_error("HTTP 500"); return ""; }
-            return "";  // 200, empty body: success, no set_error call
-        }
-    };
-    RealShapePost c;
-    CHECK(c.mark_history_failed(501));        // 200 + empty body -> true
-    c.fail = true;
-    CHECK_FALSE(c.mark_history_failed(501));  // real failure -> false
+    // answers HTTP 200 with a genuinely EMPTY body on success — the SAME
+    // ambiguity http_delete already solves for DELETE by returning a
+    // status code instead of a body. mark_history_failed uses
+    // http_post_status (mirroring http_delete_body) instead of reading
+    // last_error(), which the project's binding doctrine forbids here:
+    // last_error_ is ONE member shared with the background series re-poll
+    // that SeriesDetailScreen runs concurrently against the same client
+    // instance. 200 -> true; 404/500 (client and server errors) -> false;
+    // 0 (transport failure, http_post_status's reserved "no answer"
+    // value) -> false.
+    SeasonDeleteSonarr c;
+    c.next_post_status = 200;
+    CHECK(c.mark_history_failed(501));
+    c.next_post_status = 404;
+    CHECK_FALSE(c.mark_history_failed(501));
+    c.next_post_status = 500;
+    CHECK_FALSE(c.mark_history_failed(501));
+    c.next_post_status = 0;
+    CHECK_FALSE(c.mark_history_failed(501));
 }
 
 TEST_CASE("get_episode_files_checked distinguishes transport failure from "

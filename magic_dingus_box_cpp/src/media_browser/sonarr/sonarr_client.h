@@ -316,8 +316,17 @@ public:
     // POST /api/v3/history/failed/{id}, empty body. Marks one history
     // (grab) record as failed, which blocklists its release (probe P2,
     // live-verified). Sonarr answers this endpoint with HTTP 200 and a
-    // genuinely EMPTY body on success — see the .cpp for why that makes
-    // http_post's body-only return insufficient here.
+    // genuinely EMPTY body on success, so http_post's body-only return
+    // cannot tell that apart from its own "" on transport/HTTP failure.
+    // Uses http_post_status (in-band verdict via HTTP status code) instead
+    // of reading last_error() — last_error_ is ONE member shared with the
+    // ~9s background series re-poll (SeriesDetailScreen runs poll_worker_
+    // concurrently with mut_worker_ against the same client instance, and
+    // spawn_mutation does not wait on poll_inflight_), so a poll's error
+    // landing mid-window could fail a real success, or a poll's entry-clear
+    // could make a real failure read as success — the latter would make
+    // Task 6 believe a release was blocklisted when it wasn't and proceed
+    // to delete files.
     virtual bool mark_history_failed(int history_id);
 
     // GET /api/v3/episodefile?seriesId=<id>. CHECKED shape, same discipline
@@ -380,6 +389,14 @@ protected:
     // Virtual for stubbing in tests (see test_sonarr_client.cpp).
     virtual std::string http_get(const std::string& path);
     virtual std::string http_post(const std::string& path, const std::string& body);
+    // Status-code-returning POST — same reason http_delete_body exists
+    // beside http_delete: some endpoints answer success with an empty body,
+    // which collides with http_post's own "" return on transport/HTTP
+    // failure. mark_history_failed is the current caller (POST
+    // /history/failed/{id} answers HTTP 200 with a genuinely empty body).
+    // Same contract as http_delete: 0 = transport failure, callers branch
+    // on `code > 0 && code < 400`; last_error side effects unchanged.
+    virtual long http_post_status(const std::string& path, const std::string& body);
     virtual std::string http_put(const std::string& path, const std::string& body);
     // Returns the HTTP STATUS CODE, not the body — 0 means the request never
     // got an answer (transport failure). DELETE endpoints answer with an empty
