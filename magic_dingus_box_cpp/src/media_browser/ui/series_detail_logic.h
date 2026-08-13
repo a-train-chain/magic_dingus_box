@@ -234,6 +234,21 @@ inline bool season_delete_row_exists(int episode_file_count, bool season_downloa
     return episode_file_count > 0 || season_downloading;
 }
 
+// SELECT on a season row: is there an episode picker worth opening? The
+// spec's eligibility rule is "episode_file_count > 0 OR live queue rows",
+// and this is DELIBERATELY the same predicate as season_delete_row_exists
+// above — the picker is where the delete row lives, so a gate that opened
+// on files alone made that row unreachable in the exact case it was built
+// for (a wrong-language pack still downloading, nothing on disk yet).
+// A row that fails this offers to DOWNLOAD the season instead, which is
+// what closes the re-download loop for every season the action row's
+// single "Download Season N" (next_unmonitored_season — the LOWEST
+// unmonitored season, and only that one) cannot reach.
+inline bool season_row_opens_picker(const SeasonRow& row) {
+    return season_delete_row_exists(row.episode_file_count,
+                                    row.state == SeasonState::Downloading);
+}
+
 // The season-delete row's label in its three states.
 enum class SeasonDeleteState { Idle, Armed, Removing };
 

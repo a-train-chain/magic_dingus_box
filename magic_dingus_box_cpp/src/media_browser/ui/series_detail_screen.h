@@ -169,6 +169,26 @@ private:
     void dispatch_action(Action a);
     void expire_confirms();
 
+    // RENDER thread. The ONE entry point for "download this one season":
+    // monitor the season, re-monitor its EPISODES, search. Both callers go
+    // through it — the action row's "Download Season N" (whose target is
+    // next_unmonitored_season, i.e. the LOWEST unmonitored season) and the
+    // season list's SELECT on a season with nothing on disk and nothing in
+    // flight (which is what closes the re-download loop for every OTHER
+    // season, the just-deleted one included). Owns its own guards and
+    // toasts: not-in-library and not-yet-settled are both reachable from
+    // the season list, and neither may be a silent no-op.
+    void start_season_download(int season);
+    // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
+    // every episode of `seasons`. False = the read failed or the PUT was
+    // refused. Probe P3: season->episode monitoring does NOT cascade and
+    // SeasonSearch skips unmonitored episodes, so EVERY path that monitors
+    // a season in order to download it needs this — it is a shared helper
+    // because it once lived inline in only one of the two, and "Whole
+    // series…" silently downloaded nothing for a previously deleted season.
+    bool monitor_episodes_for_seasons(int sonarr_id,
+                                      const std::vector<int>& seasons);
+
     // ONE mutation at a time, on ONE reused worker thread (WatchdogSec=10:
     // add_series alone can take ~13.5 s — never on the render thread).
     // spawn_mutation joins the previous worker, wraps the body so mut_done_
