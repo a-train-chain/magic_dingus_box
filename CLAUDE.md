@@ -380,6 +380,27 @@ catch-up).
      leave those boxes on the old +30 bias forever).
    - **Scam executables: -10000** (regex matches `.exe/.bat/.scr/.cmd/.com/.vbs/.lnk/.msi/.ps1/.app/.jar/.hta` in title — observed live: malware .exe payloads posted by trash indexers for new theatrical releases)
    - **Scam aggregator branding: -10000** (regex matches `uindex.org`, `fxnow`, `123movies`, `fmovies`, `gomovies`, `putlocker` in title — these prefix patterns reliably correlate with content-is-garbage releases)
+   - **English-audio rule: TWO formats at -10000 each** (owner decision
+     2026-08-13, "no foreign audio on English content"), in Radarr AND
+     Sonarr — Sonarr had no language gate of any kind before this.
+     `Release language is not the original` is a **LanguageSpecification**
+     with `value: -2` (Original) + `exceptLanguage: true` — it fires when
+     any language other than the title's own original language is present,
+     so an English show rejects a French release while *Parasite* still
+     accepts its Korean one (verified live: 118 Korean-tagged Oldboy
+     releases, zero language-rejected; the English-dubbed ones all -10000).
+     `Non-English title signals` is the title-regex backstop: non-Latin
+     script plus foreign-dub and **multi-audio** markers (`MULTi`,
+     `TRUEFRENCH`, `VOSTFR`, `SUBFRENCH`, `VFF/VFQ/VFI/VFB`, `DUAL AUDIO`,
+     `GERMAN.DL`, `iTA.ENG`-style language pairs). Both are load-bearing:
+     `Game Of Thrones S03 MULTi (1080p) BluRay x264 PopHD` (French audio)
+     was parsed as **English** — i.e. as the Original — so the language
+     spec passes it and only the regex catches it; conversely
+     `Game of Thrones S03 FRENCH LD HDTV` matches no marker the regex
+     dares carry (a bare language name marks the ORIGINAL on a foreign
+     film, so blanket-rejecting it would make world cinema unobtainable)
+     and only the language spec catches it. Both verified against live
+     indexer searches on 2026-08-13.
    - x264: +50 / Trusted groups (YIFY/GalaxyRG/RARBG/SURGE): +30 (preferred)
 3. **Quality definition size limits**: 720p ≤60 MB/min, 1080p ≤100 MB/min.
    *Preferred* sizes raised 2026-07-26 for Pi 5 (720p 25→40, 1080p

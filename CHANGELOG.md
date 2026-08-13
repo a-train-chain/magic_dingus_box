@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.9.13] - 2026-08-13
+### Changed
+- **No foreign audio on English shows and movies.** A Game of Thrones
+  season arrived with French audio: the release was labelled `MULTi`,
+  which the downloader read as "English plus extras" and accepted.
+  Downloads are now filtered two ways instead of one. First, a release
+  whose audio isn't the title's *own* original language is refused — an
+  English show won't take a French copy. Second, releases that advertise
+  a dub or a multi-language audio pack in their name (`MULTi`,
+  `TRUEFRENCH`, `VOSTFR`, `VFF/VFQ`, `Dual Audio`, `GERMAN.DL`,
+  `iTA.ENG`…) are refused outright, because the first check can only
+  trust what the release *claims* — and the Game of Thrones one lied.
+  Foreign films are deliberately still available in their own language:
+  *Parasite* in Korean, *Amélie* in French and *Spirited Away* in
+  Japanese all still download normally — it is the dubs and the mixed
+  audio packs that are turned away. Applies to both movies and TV, and
+  is re-applied on every provisioning run so it can't drift.
 
 ### Added
 - **Delete one season without touching the rest of the series.** Until

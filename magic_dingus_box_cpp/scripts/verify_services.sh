@@ -75,6 +75,12 @@ EXPECTED_CUSTOM_FORMATS=(
     # lingers, scored 0, on boxes provisioned before the split.
     "Quality release groups"
     "Low-bitrate size-optimized groups"
+    # English-audio rule (owner decision 2026-08-13). Both layers are
+    # asserted because either one alone leaves a hole: the language spec
+    # trusts the release parser (which tagged a French MULTi season pack
+    # as English), and the title regex only sees what the title admits.
+    "Non-English title signals"
+    "Release language is not the original"
 )
 
 # Catalog title used for live-search smoke test. "The Matrix" is
@@ -551,6 +557,7 @@ check_sonarr_custom_formats() {
         "Malware/scam executable in title"
         "Known scam aggregator branding"
         "Non-English title signals"
+        "Release language is not the original"
     )
     local result
     result=$(python3 - "${response}" "${expected[@]}" <<'PYEOF'

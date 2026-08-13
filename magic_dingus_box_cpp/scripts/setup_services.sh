@@ -1244,10 +1244,25 @@ SCORE_MAP = {
     # "Дьявол носит Prada 2 / The Devil Wears Prada 2" — parser saw the
     # English half and the cyrillic Russian audio slipped past). This
     # CF catches that via title regex: any cyrillic/CJK/korean char OR
-    # an explicit foreign-dub keyword in the title scores -10000, well
-    # below minFormatScore=-200 so the release is uneligible regardless
-    # of other bonuses.
+    # an explicit foreign-dub / multi-audio keyword in the title scores
+    # -10000, well below minFormatScore=-200 so the release is uneligible
+    # regardless of other bonuses. Broadened 2026-08-13 with the bare
+    # scene markers (MULTi, TRUEFRENCH, VOSTFR, VFF/VFQ, DUAL AUDIO,
+    # GERMAN.DL, "iTA.ENG"-style language pairs) after
+    # "Game Of Thrones S03 MULTi (1080p) BluRay x264 PopHD" — French
+    # audio — matched NONE of the original alternatives and was grabbed.
     "Non-English title signals":        -10000,
+    # LANGUAGE layer of the same rule (owner decision 2026-08-13: "no
+    # foreign audio on English content"). LanguageSpecification with
+    # value=-2 ("Original") + exceptLanguage=true matches when ANY
+    # language other than the title's own original language is present,
+    # so an English show rejects a French release while a Korean film
+    # still accepts its Korean release — world cinema stays obtainable.
+    # Both layers are needed: this one is precise but trusts the
+    # parser, and the parser is exactly what failed on the MULTi grab
+    # (it tagged the release English, i.e. as the Original, so this
+    # spec would have passed it). The title regex above is the backstop.
+    "Release language is not the original": -10000,
 }
 MIN_FORMAT_SCORE = -200
 
@@ -1259,8 +1274,11 @@ def http(method, path, body=None):
         raw = r.read()
         return json.loads(raw) if raw else None
 
+def spec_field_values(spec):
+    return {f.get("name"): f.get("value") for f in spec.get("fields", [])}
+
 def cf_specs_match(live, desired):
-    # We compare only the fields we care about (name, regex value,
+    # We compare the fields we care about (name, EVERY spec field value,
     # negate, required, includeCustomFormatWhenRenaming). Radarr adds
     # server-side fields like "id" we must ignore.
     if live.get("name") != desired.get("name"): return False
@@ -1272,10 +1290,20 @@ def cf_specs_match(live, desired):
         if a.get("implementation") != b.get("implementation"): return False
         if bool(a.get("negate")) != bool(b.get("negate")): return False
         if bool(a.get("required")) != bool(b.get("required")): return False
-        # Compare regex value (the only field that ever drifts).
-        av = next((f.get("value") for f in a.get("fields", []) if f.get("name") == "value"), None)
-        bv = next((f.get("value") for f in b.get("fields", []) if f.get("name") == "value"), None)
-        if av != bv: return False
+        # Compare EVERY field the fixture declares, by name — not just
+        # the regex. A ReleaseTitleSpecification has only "value", but a
+        # LanguageSpecification also carries "exceptLanguage", and that
+        # boolean is the entire meaning of the "Release language is not
+        # the original" format: comparing "value" alone would call a
+        # live CF with exceptLanguage=false a match for a fixture with
+        # exceptLanguage=true and leave the box permanently unprotected
+        # — the exact silent-drift class this reconciler exists to kill.
+        # Extra server-side fields are ignored (we iterate the DESIRED
+        # side), so a Radarr version that adds a field can't cause a
+        # rewrite loop.
+        av, bv = spec_field_values(a), spec_field_values(b)
+        for fname, want in bv.items():
+            if av.get(fname) != want: return False
     return True
 
 with open(cf_data_path) as f:
@@ -1521,7 +1549,12 @@ SCORE_MAP = {
     "Low-bitrate size-optimized groups": -30,
     "Malware/scam executable in title": -10000,
     "Known scam aggregator branding":   -10000,
+    # English-audio rule, both layers — see the Radarr block above for the
+    # full rationale. Sonarr needs them at least as much: it has NO
+    # profile-level language gate at all, so before 2026-08-13 a French
+    # MULTi season pack had nothing standing in its way.
     "Non-English title signals":        -10000,
+    "Release language is not the original": -10000,
 }
 MIN_FORMAT_SCORE = -200
 
@@ -1533,6 +1566,9 @@ def http(method, path, body=None):
         raw = r.read()
         return json.loads(raw) if raw else None
 
+def spec_field_values(spec):
+    return {f.get("name"): f.get("value") for f in spec.get("fields", [])}
+
 def cf_specs_match(live, desired):
     if live.get("name") != desired.get("name"): return False
     if live.get("includeCustomFormatWhenRenaming") != desired.get("includeCustomFormatWhenRenaming"): return False
@@ -1543,9 +1579,11 @@ def cf_specs_match(live, desired):
         if a.get("implementation") != b.get("implementation"): return False
         if bool(a.get("negate")) != bool(b.get("negate")): return False
         if bool(a.get("required")) != bool(b.get("required")): return False
-        av = next((f.get("value") for f in a.get("fields", []) if f.get("name") == "value"), None)
-        bv = next((f.get("value") for f in b.get("fields", []) if f.get("name") == "value"), None)
-        if av != bv: return False
+        # Every declared field, by name — "exceptLanguage" carries the
+        # whole meaning of the language format. See the Radarr twin.
+        av, bv = spec_field_values(a), spec_field_values(b)
+        for fname, want in bv.items():
+            if av.get(fname) != want: return False
     return True
 
 with open(cf_data_path) as f:

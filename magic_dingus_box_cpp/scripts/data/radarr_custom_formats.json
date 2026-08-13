@@ -268,9 +268,47 @@
             "order": 0,
             "name": "value",
             "label": "Regular Expression",
-            "helpText": "Custom Format RegEx is Case Insensitive \u2014 rejects releases with non-Latin script in the title (Cyrillic, CJK, Korean) or explicit foreign-dub keywords. Catches the title-parser-fooled case observed live with '\u0414\u044c\u044f\u0432\u043e\u043b \u043d\u043e\u0441\u0438\u0442 Prada 2 / The Devil Wears Prada 2' \u2014 the English text in the cyrillic-titled torrent fooled Radarr's language parser into tagging it as English, so the quality-profile language gate let it through.",
-            "value": "[\u0400-\u04ff\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|\\b(dublado|doblado|castellano|latino|latam|brazilian[. ]?dub|french[. ]?dub|german[. ]?dub|italian[. ]?dub|russian[. ]?dub|spanish[. ]?dub|chinese[. ]?dub|japanese[. ]?dub|korean[. ]?dub)\\b",
+            "helpText": "Custom Format RegEx is Case Insensitive \u2014 rejects releases whose TITLE advertises a foreign dub or a multi-audio/dual-audio pack, plus any title carrying non-Latin script (Cyrillic, CJK, Korean). This is layer 2 of the English-audio rule; layer 1 is \"Release language is not the original\". Layer 2 is required because the parser can tag a MULTi release as English \u2014 i.e. as the Original \u2014 and sail through layer 1: observed live with 'Game Of Thrones S03 MULTi (1080p) BluRay x264 PopHD' (French audio) and with '\u0414\u044c\u044f\u0432\u043e\u043b \u043d\u043e\u0441\u0438\u0442 Prada 2 / The Devil Wears Prada 2'. Bare single-language tokens (FRENCH, ITA, GERMAN) are deliberately NOT listed: on a foreign film they mark the ORIGINAL audio, which must stay downloadable, and layer 1 already rejects them on English-original content.",
+            "value": "[\u0400-\u04ff\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]|\\b(dublado|doblado|castellano|latino|latam|dubbed|brazilian[. ]?dub|french[. ]?dub|german[. ]?dub|italian[. ]?dub|russian[. ]?dub|spanish[. ]?dub|chinese[. ]?dub|japanese[. ]?dub|korean[. ]?dub|dual[. _-]?audio|multi[. _-]?(audio|lang|langs|language|languages)|truefrench|vostfr|subfrench|vf[fqib]|german[. _-]?dl)\\b|\\bmulti\\b(?![. _-]?subs?\\b)|\\b(ita|eng|fre|fra|ger|deu|spa|rus|jpn|kor|hin|tam|tel)[. _+/-](ita|eng|fre|fra|ger|deu|spa|rus|jpn|kor|hin|tam|tel)\\b",
             "type": "textbox",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "name": "Release language is not the original",
+    "includeCustomFormatWhenRenaming": false,
+    "specifications": [
+      {
+        "name": "Any language other than the original",
+        "implementation": "LanguageSpecification",
+        "implementationName": "Language",
+        "infoLink": "https://wiki.servarr.com/radarr/settings#custom-formats-2",
+        "negate": false,
+        "required": true,
+        "fields": [
+          {
+            "order": 0,
+            "name": "value",
+            "label": "Language",
+            "value": -2,
+            "type": "select",
+            "advanced": false,
+            "privacy": "normal",
+            "isFloat": false
+          },
+          {
+            "order": 1,
+            "name": "exceptLanguage",
+            "label": "Except Language",
+            "helpText": "Matches if any language other than the selected language is present",
+            "value": true,
+            "type": "checkbox",
             "advanced": false,
             "privacy": "normal",
             "isFloat": false
