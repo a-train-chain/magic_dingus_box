@@ -3,9 +3,10 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
 # Radarr and Sonarr get the SAME custom-format definitions (rejections for
 # AV1/Remux/HEVC-1080p+/HDR/scam-executables/porn, x264 preference, release-
-# group tiers). The scoring divergence documented in setup_services.sh
-# (Sonarr is greenfield and omits the legacy "Trusted small-release groups"
-# neutralizer entry) is applied SHELL-SIDE via SCORE_MAP, not in these
+# group tiers). The scoring divergence documented in
+# converge_custom_formats.sh (Sonarr is greenfield and omits the legacy
+# "Trusted small-release groups" neutralizer entry) is applied SHELL-SIDE
+# via SCORE_MAP, not in these
 # fixtures — so the two JSON files are meant to define the same SET OF
 # FORMATS. They were byte-identical when this test was written (md5
 # b89d8a99…); nothing else asserted it, so a Radarr-only retune (one already

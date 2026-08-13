@@ -1063,6 +1063,34 @@ install_update() {
         log_warn "setup_memory_tuning.sh not found in this release; skipping memory tuning"
     fi
 
+    # Converge the Radarr/Sonarr Custom Formats delivered by this update.
+    #
+    # The rsync above ships scripts/data/{radarr,sonarr}_custom_formats.json
+    # to every box, but nothing reconciled them into the live services:
+    # setup_services.sh owns that work and only runs at provisioning time or
+    # from the Content Manager's Media Browser Configure/Reconfigure flow.
+    # So a release that added a Custom Format (e.g. the 2026-08-13
+    # English-audio rule) left every fielded box downloading against the OLD
+    # scoring rules with the NEW fixtures sitting on disk beside them — an
+    # update that does not change behaviour. This hook is the delivery path.
+    #
+    # Same gating and failure posture as the two hooks above: skipped in test
+    # mode, only run if the script exists in this release, `sudo -n` because
+    # the OTA runs as the unprivileged web-service user and the script reads
+    # root-owned service config, and a failure is a WARNING that never aborts
+    # the OTA. The script itself exits 0 for every "nothing to converge"
+    # condition (no services/.env, no API key, service unreachable), so a box
+    # with no Media Browser costs one file check.
+    if [ "$SKIP_SYSTEMCTL" = "true" ]; then
+        log "SKIP: Custom Format convergence (test mode)"
+    elif [ -f "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_custom_formats.sh" ]; then
+        log "Converging Radarr/Sonarr Custom Formats..."
+        sudo -n bash "${INSTALL_DIR}/magic_dingus_box_cpp/scripts/converge_custom_formats.sh" \
+            || log_warn "Custom Format convergence failed (will retry on next OTA or provisioning run)"
+    else
+        log_warn "converge_custom_formats.sh not found in this release; skipping Custom Format convergence"
+    fi
+
     json_progress "restarting_services" 90 "Restarting services..."
 
     # Reload systemd and start C++ app

@@ -42,3 +42,9 @@ setup() {
     run shellcheck -S error "$SCRIPTS_DIR/install_deps.sh"
     [ "$status" -eq 0 ]
 }
+
+@test "shellcheck clean: converge_custom_formats.sh" {
+    [ -f "$SCRIPTS_DIR/converge_custom_formats.sh" ] || skip "converge_custom_formats.sh not present"
+    run shellcheck -S error "$SCRIPTS_DIR/converge_custom_formats.sh"
+    [ "$status" -eq 0 ]
+}

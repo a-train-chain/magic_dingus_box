@@ -22,7 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *Parasite* in Korean, *Amélie* in French and *Spirited Away* in
   Japanese all still download normally — it is the dubs and the mixed
   audio packs that are turned away. Applies to both movies and TV, and
-  is re-applied on every provisioning run so it can't drift.
+  is re-applied on every provisioning run *and* every update so it
+  can't drift — see the next entry.
+- **Download-filter changes now actually reach boxes that are already
+  out in the world.** Updating a box shipped the new filter rules to
+  its disk but never loaded them into the downloader, which only ever
+  read them during first-time setup — so a box that had already been
+  set up went on downloading against the old rules, and the
+  English-audio fix above would have reached nobody. Every update now
+  re-applies the movie and TV download rules as part of the install.
+  A box with no Movies section set up skips the step silently, and the
+  step can never fail an update.
 
 ### Added
 - **Delete one season without touching the rest of the series.** Until

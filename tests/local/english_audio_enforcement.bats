@@ -24,7 +24,11 @@ load "$BATS_TEST_DIRNAME/../lib/helpers.bash"
 
 RADARR_CF="$CPP_DIR/scripts/data/radarr_custom_formats.json"
 SONARR_CF="$CPP_DIR/scripts/data/sonarr_custom_formats.json"
-SETUP_SH="$CPP_DIR/scripts/setup_services.sh"
+# Both SCORE_MAPs live in the converge script as of 2026-08-13 — they moved
+# out of setup_services.sh so update.sh can reconcile Custom Formats on every
+# OTA (setup_services.sh now calls the same file, so there is still exactly
+# one copy of each map).
+SCORE_MAP_SH="$CPP_DIR/scripts/converge_custom_formats.sh"
 
 @test "layer 2 regex: rejects the GoT MULTi release, keeps clean English + world cinema" {
     run python3 - "$RADARR_CF" <<'PY'
@@ -153,18 +157,18 @@ PY
     [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "every fixture format is scored in BOTH setup_services.sh SCORE_MAPs" {
+@test "every fixture format is scored in BOTH converge_custom_formats.sh SCORE_MAPs" {
     # The profile reconciler only rescores formats NAMED in its SCORE_MAP.
     # A format that ships in the fixture but is missing from a score map is
     # created on the box at score 0 — present, visible in the UI, and doing
     # nothing. That is the silent-unprotected-box failure mode.
-    run python3 - "$SETUP_SH" "$RADARR_CF" "$SONARR_CF" <<'PY'
+    run python3 - "$SCORE_MAP_SH" "$RADARR_CF" "$SONARR_CF" <<'PY'
 import json, re, sys
 
 setup = open(sys.argv[1]).read()
 blocks = re.findall(r"^SCORE_MAP = \{(.*?)^\}", setup, re.S | re.M)
 if len(blocks) != 2:
-    print("expected exactly 2 SCORE_MAP blocks in setup_services.sh, found %d" % len(blocks))
+    print("expected exactly 2 SCORE_MAP blocks in %s, found %d" % (sys.argv[1], len(blocks)))
     sys.exit(1)
 
 def names_in(block):
