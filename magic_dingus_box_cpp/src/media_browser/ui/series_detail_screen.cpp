@@ -1627,21 +1627,27 @@ Screen SeriesDetailScreen::handle_input(
                         };
                         // Stage (e) purges torrents WITH their downloaded
                         // copies, and it runs BEFORE the file delete — so an
-                        // abort after it must say that data is already gone,
-                        // exactly as the (c) cancel abort says how many
-                        // downloads it took with it. Both counters live up
-                        // here so fail_after_purge() can read them.
+                        // abort after it must say that data is already gone.
+                        // Unlike (c)'s cancel abort, this can't report an
+                        // exact count: qBit's delete_torrent returns TRUE
+                        // for a hash it doesn't have (no-op — see
+                        // qbittorrent_client.h and its impl comment), so a
+                        // torrent the user already removed by hand still
+                        // increments a "purged" counter and a count built
+                        // from it would claim credit for a removal this run
+                        // never did. torrents_purged is kept only as a
+                        // gate — was there anything to warn about at all —
+                        // never as a number in the message.
                         int torrents_left = 0;    // qBit refused; needs manual
-                        int torrents_purged = 0;  // gone, with their files
+                        int torrents_purged = 0;  // returned true; gate only
                         auto fail_after_purge = [&](const std::string& msg) {
                             std::lock_guard<std::mutex> lk(mut_mtx_);
                             mut_toast_ = title + ": " + msg +
                                 (torrents_purged > 0
-                                     ? " \xE2\x80\x94 already removed " +
-                                           std::to_string(torrents_purged) +
-                                           " torrent(s) and their downloaded "
-                                           "copies; season NOT deleted; retry "
-                                           "is safe"
+                                     ? " \xE2\x80\x94 any torrents for this "
+                                       "season and their downloaded copies "
+                                       "have already been removed; season "
+                                       "NOT deleted; retry is safe"
                                      : std::string(" \xE2\x80\x94 season NOT "
                                                    "deleted; retry is safe"));
                         };
@@ -1721,30 +1727,36 @@ Screen SeriesDetailScreen::handle_input(
                                 : std::string("couldn't cancel an in-flight "
                                               "download"));
                         }
-                        // (d) Blocklist the imported grabs (mark-as-failed) so
-                        // the same release is not the answer to the next
+                        // (d) Blocklist the release (mark-as-failed) so the
+                        // same download is not the answer to the next
                         // search. Safe here only because (a) unmonitored the
                         // EPISODES.
                         //
-                        // BOTH id sets, not just imported. Probe P2 verified
-                        // POST /history/failed/{id} against a GRABBED record;
-                        // Sonarr resolves MarkAsFailed by downloadId so an
-                        // imported id SHOULD resolve to the same release, but
-                        // if it 4xxes instead the feature aborts here 100% of
-                        // the time. Marking the grabs as well costs one extra
-                        // POST per release and removes that single point of
-                        // failure — the operation is idempotent, an
-                        // already-failed record answers 200. Deduped because
-                        // the two vectors can name the same record and a
-                        // second POST would be wasted work, not a second
-                        // blocklist. Abort semantics unchanged: any refusal
-                        // stops us before the file delete.
-                        std::vector<int> to_fail = hist->imported_history_ids;
-                        for (int hid : hist->grabbed_history_ids) {
-                            if (std::find(to_fail.begin(), to_fail.end(), hid) ==
-                                to_fail.end())
-                                to_fail.push_back(hid);
-                        }
+                        // GRABBED ids are the target, not imported. Probe P2
+                        // verified POST /history/failed/{id} against a
+                        // GRABBED record; whether Sonarr accepts an IMPORTED
+                        // record's id is UNVERIFIED. imported_history_ids is
+                        // used only as a fallback when there is no grab
+                        // record at all (a manually-imported release, added
+                        // without ever going through a grab). Trying
+                        // imported first — and aborting the loop on its
+                        // first refusal, as the abort-on-refusal rule below
+                        // requires — would mean the one scenario this
+                        // fallback exists for (Sonarr rejecting an imported
+                        // id) is exactly the scenario where the loop never
+                        // reaches the grabbed ids at all. Grabbed first
+                        // avoids that.
+                        //
+                        // The two vectors never share an id: parse_season_history
+                        // (sonarr_parsers.cpp) assigns each history record to
+                        // exactly one of them by eventType, and history ids are
+                        // unique DB keys — no dedup needed. Abort semantics
+                        // unchanged: any refusal stops us before the file
+                        // delete.
+                        const std::vector<int>& to_fail =
+                            !hist->grabbed_history_ids.empty()
+                                ? hist->grabbed_history_ids
+                                : hist->imported_history_ids;
                         for (int hid : to_fail) {
                             if (!sonarr_.mark_history_failed(hid))
                                 return fail("couldn't blocklist the downloaded "
