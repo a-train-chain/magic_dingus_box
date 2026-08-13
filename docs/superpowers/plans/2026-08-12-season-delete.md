@@ -146,26 +146,29 @@ struct EpisodeFileInfo {
     int season_number = 0;
 };
 // sonarr_parsers.h (static members of SonarrParsers)
-static SeasonHistory parse_season_history(const std::string& json, int season_number);
+// PROBE AMENDMENT (2026-08-13): /history/series records carry NO season
+// field — season scoping happens SERVER-SIDE via &seasonNumber=N (probe
+// P1 confirmed it filters correctly). The parser therefore takes the
+// response as already season-scoped and does NOT filter:
+static SeasonHistory parse_season_history(const std::string& json);
 static std::vector<EpisodeFileInfo> parse_episode_files(const std::string& json);
 ```
 
 - [ ] **Step 1: Write the failing tests** (append to `test_sonarr_parsers.cpp`; adjust field paths to what Task 1's fixtures actually showed — the excerpts below assume `episode.seasonNumber` fallback to top-level `seasonNumber`, which is what the probe must confirm)
 
 ```cpp
-TEST_CASE("parse_season_history filters by season and buckets by eventType") {
-    // Trimmed from the live capture (fixtures/sonarr_history_series.json):
-    // one season-3 grab, its import, and a season-1 import that must be
-    // EXCLUDED. downloadId deliberately mixed-case — parser lowercases.
+TEST_CASE("parse_season_history buckets by eventType (input is season-scoped)") {
+    // Shape from the live capture (fixtures/sonarr_history_series.json —
+    // captured WITH &seasonNumber, so records carry no season field).
+    // downloadId deliberately mixed-case — parser lowercases. NOTE the
+    // grabbed record's data.downloadUrl carries a REDACTED token in the
+    // fixture (live Prowlarr key in the real response — never log these).
     const std::string json = R"([
       {"id": 501, "eventType": "grabbed", "downloadId": "ABCDEF123456",
-       "seasonNumber": 3, "episode": {"seasonNumber": 3}},
-      {"id": 502, "eventType": "downloadFolderImported", "downloadId": "ABCDEF123456",
-       "seasonNumber": 3, "episode": {"seasonNumber": 3}},
-      {"id": 401, "eventType": "downloadFolderImported", "downloadId": "FFFF00001111",
-       "seasonNumber": 1, "episode": {"seasonNumber": 1}}
+       "data": {"downloadUrl": "http://localhost:9696/2/download?apikey=REDACTED"}},
+      {"id": 502, "eventType": "downloadFolderImported", "downloadId": "ABCDEF123456"}
     ])";
-    auto h = media_browser::SonarrParsers::parse_season_history(json, 3);
+    auto h = media_browser::SonarrParsers::parse_season_history(json);
     REQUIRE(h.grabbed_history_ids == std::vector<int>{501});
     REQUIRE(h.imported_history_ids == std::vector<int>{502});
     REQUIRE(h.download_hashes == std::vector<std::string>{"abcdef123456"});
@@ -173,18 +176,18 @@ TEST_CASE("parse_season_history filters by season and buckets by eventType") {
 
 TEST_CASE("parse_season_history dedupes hashes and tolerates junk") {
     const std::string json = R"([
-      {"id": 1, "eventType": "grabbed", "downloadId": "AAAA", "seasonNumber": 3},
-      {"id": 2, "eventType": "grabbed", "downloadId": "AAAA", "seasonNumber": 3},
-      {"id": 3, "eventType": "grabbed", "seasonNumber": 3},
+      {"id": 1, "eventType": "grabbed", "downloadId": "AAAA"},
+      {"id": 2, "eventType": "grabbed", "downloadId": "AAAA"},
+      {"id": 3, "eventType": "grabbed"},
       "not-an-object"
     ])";
-    auto h = media_browser::SonarrParsers::parse_season_history(json, 3);
+    auto h = media_browser::SonarrParsers::parse_season_history(json);
     REQUIRE(h.grabbed_history_ids == std::vector<int>{1, 2});
     REQUIRE(h.download_hashes == std::vector<std::string>{"aaaa"});
 }
 
 TEST_CASE("parse_season_history on malformed json yields empty") {
-    auto h = media_browser::SonarrParsers::parse_season_history("{nope", 3);
+    auto h = media_browser::SonarrParsers::parse_season_history("{nope");
     REQUIRE(h.grabbed_history_ids.empty());
     REQUIRE(h.imported_history_ids.empty());
     REQUIRE(h.download_hashes.empty());
@@ -215,20 +218,18 @@ Expected: compile errors — `SeasonHistory`/`parse_season_history` not declared
 - [ ] **Step 3: Implement** (`sonarr_parsers.cpp`, following the file's existing jsoncpp reader idiom; season read prefers the field Task 1 confirmed, with the other as fallback)
 
 ```cpp
-SeasonHistory SonarrParsers::parse_season_history(const std::string& json,
-                                                  int season_number) {
+SeasonHistory SonarrParsers::parse_season_history(const std::string& json) {
+    // Input is ALREADY season-scoped: the client queries
+    // /history/series?seriesId=X&seasonNumber=N (probe-verified — the
+    // records themselves carry no season field, so scoping cannot be
+    // re-done here). Never log record contents: grabbed records embed a
+    // live Prowlarr API key in data.downloadUrl.
     SeasonHistory out;
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;  // house helper
     std::set<std::string> seen_hashes;
     for (const auto& r : root) {
         if (!r.isObject()) continue;
-        // Season lives top-level on /history/series records; the nested
-        // episode.seasonNumber form is the fallback (probe-verified).
-        int season = r.get("seasonNumber", -1).asInt();
-        if (season < 0 && r.isMember("episode"))
-            season = r["episode"].get("seasonNumber", -1).asInt();
-        if (season != season_number) continue;
         const int id = r.get("id", 0).asInt();
         const std::string ev = r.get("eventType", "").asString();
         if (id > 0 && ev == "grabbed") out.grabbed_history_ids.push_back(id);
@@ -298,7 +299,21 @@ virtual bool mark_history_failed(int history_id);          // POST /api/v3/histo
 virtual std::optional<std::vector<EpisodeFileInfo>> get_episode_files_checked(int sonarr_id);
 virtual bool delete_episode_files(const std::vector<int>& ids);  // DELETE /api/v3/episodefile/bulk
 virtual bool cancel_queue_item(int queue_id, bool blocklist);    // NEW overload; existing 1-arg forwards with false
+virtual bool set_episodes_monitored(const std::vector<int>& ids, bool monitored);
+    // PUT /api/v3/episode/monitor {"episodeIds":[...],"monitored":bool}
+    // PROBE AMENDMENT: episode.monitored is INDEPENDENT of
+    // season.monitored, and auto-redownload-on-failed keys off the
+    // EPISODE flag — stage (a) and the Start-Season re-monitor need this.
+    // Empty ids = vacuous true, no HTTP call (same rule as
+    // delete_episode_files).
 ```
+`get_season_history_checked` builds the path
+`"/api/v3/history/series?seriesId=" + id + "&seasonNumber=" + season` —
+the server-side filter is REQUIRED (records carry no season field), and
+its test asserts that exact path. Add a test that
+`set_episodes_monitored({4,5}, false)` PUTs to `/api/v3/episode/monitor`
+with both ids and `"monitored":false` in the body, and `{}` → true with
+no HTTP call.
 
 - [ ] **Step 1: Failing tests** (append; mirror the file's existing transport-stub subclass — it overrides the protected `http_get`/`http_post`/`http_delete` and records paths)
 
@@ -311,7 +326,7 @@ TEST_CASE("get_season_history_checked: transport failure is nullopt, answer is e
     auto h = c.get_season_history_checked(7, 3);
     REQUIRE(h.has_value());
     REQUIRE(h->download_hashes.empty());
-    REQUIRE(c.last_get_path == "/api/v3/history/series?seriesId=7");
+    REQUIRE(c.last_get_path == "/api/v3/history/series?seriesId=7&seasonNumber=3");
 }
 
 TEST_CASE("mark_history_failed posts to /history/failed/{id}") {
@@ -549,9 +564,19 @@ spawn_mutation([this, sid, season, title]() {
         std::lock_guard<std::mutex> lk(mut_mtx_);
         mut_toast_ = title + ": " + msg + " \xE2\x80\x94 season NOT deleted; retry is safe";
     };
-    // (a) Unmonitor FIRST — kills any auto-redownload-on-failed behind us.
+    // (a) Unmonitor FIRST — season AND episodes. Probe-verified: the two
+    //     flags are independent and auto-redownload-on-failed keys off
+    //     the EPISODE flag, so season-only unmonitoring lets stage (d)
+    //     fire searches behind our back.
     if (!sonarr_.set_season_monitored(sid, season, false))
         return fail("couldn't unmonitor Season " + std::to_string(season));
+    auto eps = sonarr_.get_episodes_checked(sid);
+    if (!eps) return fail("couldn't list episodes");
+    std::vector<int> season_ep_ids;
+    for (const auto& e : *eps)
+        if (e.season_number == season) season_ep_ids.push_back(e.id);
+    if (!sonarr_.set_episodes_monitored(season_ep_ids, false))
+        return fail("couldn't unmonitor the season's episodes");
     // (b) Season history — authoritative; nullopt aborts before anything destructive.
     auto hist = sonarr_.get_season_history_checked(sid, season);
     if (!hist) return fail("Sonarr history unavailable");
@@ -593,6 +618,19 @@ spawn_mutation([this, sid, season, title]() {
 });
 ```
 
+- [ ] **Step 1b: Start-Season re-monitor (probe amendment)** — in the
+  existing `Action::NextSeason` dispatch (the "Start Season N" button),
+  BEFORE its `trigger_season_search`, add the same episode-id collection
+  as stage (a) and call `sonarr_.set_episodes_monitored(ids, true)`.
+  Idempotent for seasons that never went through a delete; REQUIRED for
+  re-downloading a deleted season (its episodes are individually
+  unmonitored and Sonarr's SeasonSearch skips unmonitored episodes —
+  cascade semantics are NOT to be relied on, probe-verified). This runs
+  inside whatever worker the NextSeason flow already uses — if its
+  current path is render-thread-only client calls, keep the addition in
+  the same place those calls already happen (do not invent a new worker
+  for it).
+
 - [ ] **Step 2: Drain** — in `drain_mutation()` (same `mut_tmdb_id_`/`mut_fetch_gen_` gates as every outcome): on any verdict clear `season_del_inflight_`; if `mut_season_removed_` (consume + reset it and `mut_season_number_`): `region_ = DetailRegion::Seasons;` then the existing full-refresh path (`needs_refresh_ = true; fetch();` — copy whatever the whole-series remove's non-navigating siblings do to refresh rows), and show `mut_toast_` via `::ui::Toast::show` exactly where the existing drain shows toasts. On a fail-toast (no `mut_season_removed_`), the row returns to Idle — retry is the same two presses.
 - [ ] **Step 3: Pi scratch compile** (same commands as Task 5 Step 2). Expected: links clean.
 - [ ] **Step 4: Commit** `feat(tv): orphan-proof per-season delete — unmonitor, blocklist, purge, remove files`.
@@ -605,13 +643,19 @@ spawn_mutation([this, sid, season, title]() {
 
 - [ ] **Step 1: Mac suites** — `build-mb`: full build + run `test_media_browser_unit`, `test_sonarr_client`, `test_sonarr_parsers`, `test_series_detail_logic` directly. Then the MB=OFF dir (`build`): full build + all 8 suites (guards the flag-off path). Expected: all green.
 - [ ] **Step 2: Deploy to magicpi5 for real** — `./magic_dingus_box_cpp/scripts/deploy_cpp.sh --build` with `PI_HOST=magic@10.0.0.227` explicitly (never the default host). Kiosk restarts onto the new binary.
-- [ ] **Step 3: Hardware acceptance, driven from the couch or via the phone remote:**
-  1. Open GoT → season 3 episode picker → scroll past the last episode → `Delete Season 3…` row present. Season 1's picker also shows its own row (files exist); a season with nothing shows none.
-  2. Press SELECT → label becomes `Confirm delete Season 3`; wait 5 s → disarms back to Idle.
-  3. Arm + confirm → "Removing season…" → lands on Seasons view, toast, season 3 shows not-downloaded.
-  4. Verify on the box: `episodefile?seriesId` has no season-3 entries; `GET /api/v3/blocklist` contains the wrong-language release; season 3 `monitored=false`; qBit no longer has the season-3 torrent; seasons 1–2 files UNTOUCHED (count them before and after).
-  5. Press `Start Season 3` → verify the new grab is a DIFFERENT release (English). This closes Alex's original bug.
-  6. Regression: whole-series Remove on a throwaway series still works; episode playback from the picker unchanged; paging with the extra row correct on an overflowing season.
+- [ ] **Step 3: Hardware acceptance — against a DISPOSABLE test series.**
+  PROBE AMENDMENT: the original GoT case was resolved manually on
+  2026-08-13 (MULTi pack blocklisted, "Non-English release markers" CF
+  live at -10000, English S03E01-E10 re-grabbed) — GoT is now the
+  user's good data and must NOT be deleted. Instead: add a throwaway
+  series via the kiosk, grab ONE episode of one season (monitor just
+  that episode, EpisodeSearch, wait for import), then:
+  1. That season's episode picker → trailing `Delete Season N…` row present; a season with no files/queue shows none. GoT's pickers show the row too (files exist) — LOOK, don't press.
+  2. Press SELECT on the row → `Confirm delete Season N`; wait 5 s → disarms.
+  3. Arm + confirm → "Removing season…" → Seasons view, toast, season shows not-downloaded.
+  4. Verify via API: no episodefiles for that season; blocklist carries the test release; season AND its episodes `monitored=false`; qBit torrent gone; ALL GoT files untouched (count before/after).
+  5. Press `Start Season N` on the test series → verify its episodes re-monitor (`GET /episode?seriesId` shows monitored=true for that season) and a SeasonSearch fires that does NOT re-grab the blocklisted release.
+  6. Cleanup: whole-series Remove on the test series (also the regression check for that flow); episode playback from a GoT picker unchanged; paging with the extra row correct on an overflowing season (GoT S3 has 10 episodes — page it, don't press).
 - [ ] **Step 4: Commit any fixes, re-run the failing tier, then run the full local bats** (`./tests/run_local_tests.sh`) to make sure nothing else moved.
 
 ---

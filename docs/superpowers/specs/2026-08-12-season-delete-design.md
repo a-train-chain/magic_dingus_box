@@ -52,7 +52,7 @@ remove worker (generation-checked, render thread applies results).
 
 | # | Stage | On failure |
 |---|-------|-----------|
-| a | `set_season_monitored(id, N, false)` — FIRST, so Sonarr's optional auto-redownload-failed can never re-search behind our back | abort (nothing changed) |
+| a | Unmonitor the season AND its episodes: `set_season_monitored(id, N, false)` + bulk `set_episodes_monitored(season's episode ids, false)`. PROBED 2026-08-13: `season.monitored` and `episode.monitored` are INDEPENDENT, and Sonarr's auto-redownload-on-failed keys off the EPISODE flag — season-only unmonitoring lets stage (d) fire searches behind our back. Corollary: the Start-Season-N flow must explicitly re-monitor the season's episodes before its SeasonSearch (idempotent; removes all dependence on cascade semantics) | abort (nothing changed) |
 | b | `get_season_history_checked(id, N)` — grab records, import records, download hashes (lowercased) | nullopt → abort |
 | c | Cancel this season's queue rows with `blocklist=true, removeFromClient=true` (stall-reaper semantics) | abort |
 | d | `mark_history_failed(history_id)` for the season's imported grab(s) — Sonarr's supported blocklist for an already-imported release | abort (blocklist incomplete = the bad release could return; retry is safe) |
@@ -75,6 +75,15 @@ All `virtual`, mirrored in `SonarrMockClient`, checked shapes
   `optional<SeasonHistory>` where SeasonHistory carries
   `imported_history_ids`, `grabbed_history_ids`, `download_hashes`.
   Endpoint: `GET /api/v3/history/series?seriesId=X&seasonNumber=N`.
+  PROBED 2026-08-13: the server-side seasonNumber filter WORKS and is
+  REQUIRED — history records carry no per-record season field, so
+  client-side filtering is impossible. The parser takes the response
+  as already season-scoped. (Probe also confirmed: `grabbed` records
+  embed a live Prowlarr API key in `data.downloadUrl` — fixtures must
+  redact it, and no code may log raw history JSON.)
+- `set_episodes_monitored(const std::vector<int>& ids, bool monitored)` →
+  bool. Endpoint: `PUT /api/v3/episode/monitor`. Used by stage (a) and
+  by the Start-Season-N re-monitor.
 - `mark_history_failed(int history_id)` → bool.
   Endpoint: `POST /api/v3/history/failed/{id}`.
 - `get_episode_files_checked(int sonarr_id)` →
@@ -112,6 +121,12 @@ JSON as fixtures for the mock tests.
 - **Mock client (Mac):** the four new calls against captured fixtures;
   worker stage-ordering tests asserting no destructive call precedes an
   abort (mock records call order); idempotent-retry test.
-- **Hardware acceptance (the actual bug):** on magicpi5, delete GoT
-  season 3 for real; verify the blocklist entry in Sonarr; press
-  Start Season 3; verify the replacement grab is a different release.
+- **Hardware acceptance:** on magicpi5, against a DISPOSABLE test
+  series (add one, grab one episode) — the original GoT case was
+  resolved manually on 2026-08-13 (wrong-language pack blocklisted, a
+  "Non-English release markers" CF added at -10000, English replacement
+  re-grabbed), so GoT's season 3 is now good data and must NOT be the
+  test subject. Delete the test season via the UI; verify blocklist
+  entry, files gone, season+episodes unmonitored; press Start Season N
+  and verify episodes re-monitor and the search fires (skipping the
+  blocklisted release); then whole-series-remove the test series.
