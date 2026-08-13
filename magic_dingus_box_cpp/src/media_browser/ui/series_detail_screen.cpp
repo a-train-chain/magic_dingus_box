@@ -764,7 +764,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             // but the outcome toast can be ~13.5 s away (add_series' settle
             // ceiling) and a dim alone reads as "nothing happened". Same
             // precedent as whole-series press-1's "checking free space".
-            ::ui::Toast::show(title + ": addingâ¦");
+            ::ui::Toast::show(title + ": adding\xE2\x80\xA6");
             spawn_mutation([this, id, title]() {
                 // Quality profile BY NAME ("Any" is this box's profile; the
                 // id is not portable) — DetailScreen::pick_quality_profile_id's
@@ -906,7 +906,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                 detail_.has_value() ? detail_->title : std::string("This series");
             // Same immediate-feedback rule as AddSeason1.
             ::ui::Toast::show(title + ": starting Season " +
-                              std::to_string(season) + "â¦");
+                              std::to_string(season) + "\xE2\x80\xA6");
             spawn_mutation([this, sid, season, title]() {
                 if (!sonarr_.set_season_monitored(sid, season, true)) {
                     const std::string err = sonarr_.last_error();
@@ -1595,11 +1595,27 @@ Screen SeriesDetailScreen::handle_input(
                     }
                     const int sid = series_->sonarr_id;
                     const int season = episodes_season_;
+                    // How many files this season is KNOWN to have, read here
+                    // on the render thread that owns rows_ — the same merged
+                    // row season_delete_row_present() gates the row's very
+                    // existence on. Stage (f) needs it to tell "Sonarr listed
+                    // no files" (a contradiction: the row would not exist)
+                    // apart from "this season genuinely has none" (legitimate
+                    // — the row is also offered for a download-only season,
+                    // where episode_file_count is 0).
+                    int expected_files = 0;
+                    for (const auto& row : rows_) {
+                        if (row.season_number == season) {
+                            expected_files = row.episode_file_count;
+                            break;
+                        }
+                    }
                     // Set BEFORE the spawn so the row reads "Removing season…"
                     // on this very frame; cleared by drain_mutation on every
                     // verdict, and below if the spawn never took.
                     season_del_inflight_ = true;
-                    spawn_mutation([this, sid, season, title]() {
+                    spawn_mutation([this, sid, season, title,
+                                    expected_files]() {
                         // Every abort names its stage, says the season was NOT
                         // deleted, and is reached only from a point where
                         // nothing destructive has run yet OR where what ran is
@@ -1608,6 +1624,26 @@ Screen SeriesDetailScreen::handle_input(
                             std::lock_guard<std::mutex> lk(mut_mtx_);
                             mut_toast_ = title + ": " + msg +
                                 " \xE2\x80\x94 season NOT deleted; retry is safe";
+                        };
+                        // Stage (e) purges torrents WITH their downloaded
+                        // copies, and it runs BEFORE the file delete — so an
+                        // abort after it must say that data is already gone,
+                        // exactly as the (c) cancel abort says how many
+                        // downloads it took with it. Both counters live up
+                        // here so fail_after_purge() can read them.
+                        int torrents_left = 0;    // qBit refused; needs manual
+                        int torrents_purged = 0;  // gone, with their files
+                        auto fail_after_purge = [&](const std::string& msg) {
+                            std::lock_guard<std::mutex> lk(mut_mtx_);
+                            mut_toast_ = title + ": " + msg +
+                                (torrents_purged > 0
+                                     ? " \xE2\x80\x94 already removed " +
+                                           std::to_string(torrents_purged) +
+                                           " torrent(s) and their downloaded "
+                                           "copies; season NOT deleted; retry "
+                                           "is safe"
+                                     : std::string(" \xE2\x80\x94 season NOT "
+                                                   "deleted; retry is safe"));
                         };
                         // (a) Unmonitor FIRST — season AND episodes.
                         // Probe-verified (P3): the two flags are INDEPENDENT
@@ -1628,6 +1664,22 @@ Screen SeriesDetailScreen::handle_input(
                             if (e.season_number == season && e.id > 0)
                                 season_ep_ids.push_back(e.id);
                         }
+                        // get_episodes_checked returns engaged-but-EMPTY for an
+                        // unparseable body or an unknown series id (documented
+                        // misclassification, sonarr_client.h) — and an empty
+                        // id list makes set_episodes_monitored short-circuit to
+                        // true with NO HTTP, so the worker would sail on with
+                        // every episode still MONITORED. That is precisely the
+                        // probe-P3 state stage (a) exists to prevent: stage (d)
+                        // then fires searches behind us and we delete files
+                        // under a live auto-search. The delete row is only
+                        // reachable when the picker just listed this season's
+                        // episodes, so empty here contradicts the row's own
+                        // gate. Abort with only the SEASON flag flipped —
+                        // nothing destructive has run, and re-arming the season
+                        // is one press of "Download Season N".
+                        if (season_ep_ids.empty())
+                            return fail("couldn't list the season's episodes");
                         if (!sonarr_.set_episodes_monitored(season_ep_ids,
                                                             false))
                             return fail("couldn't unmonitor the season's "
@@ -1673,7 +1725,27 @@ Screen SeriesDetailScreen::handle_input(
                         // the same release is not the answer to the next
                         // search. Safe here only because (a) unmonitored the
                         // EPISODES.
-                        for (int hid : hist->imported_history_ids) {
+                        //
+                        // BOTH id sets, not just imported. Probe P2 verified
+                        // POST /history/failed/{id} against a GRABBED record;
+                        // Sonarr resolves MarkAsFailed by downloadId so an
+                        // imported id SHOULD resolve to the same release, but
+                        // if it 4xxes instead the feature aborts here 100% of
+                        // the time. Marking the grabs as well costs one extra
+                        // POST per release and removes that single point of
+                        // failure — the operation is idempotent, an
+                        // already-failed record answers 200. Deduped because
+                        // the two vectors can name the same record and a
+                        // second POST would be wasted work, not a second
+                        // blocklist. Abort semantics unchanged: any refusal
+                        // stops us before the file delete.
+                        std::vector<int> to_fail = hist->imported_history_ids;
+                        for (int hid : hist->grabbed_history_ids) {
+                            if (std::find(to_fail.begin(), to_fail.end(), hid) ==
+                                to_fail.end())
+                                to_fail.push_back(hid);
+                        }
+                        for (int hid : to_fail) {
                             if (!sonarr_.mark_history_failed(hid))
                                 return fail("couldn't blocklist the downloaded "
                                             "release");
@@ -1682,7 +1754,6 @@ Screen SeriesDetailScreen::handle_input(
                         // the torrent may already be gone, and the destructive
                         // file delete below is still correct without it. Null
                         // qbit_ = the whole-series remove's contract, skip.
-                        int torrents_left = 0;
                         if (qbit_ != nullptr) {
                             for (const auto& h : hist->download_hashes) {
                                 if (!qbit_->delete_torrent(h,
@@ -1690,29 +1761,57 @@ Screen SeriesDetailScreen::handle_input(
                                     ++torrents_left;
                                     spdlog::warn("[SeriesDetail] qbit delete "
                                                  "failed for {}", h);
+                                    continue;
                                 }
+                                ++torrents_purged;
                             }
                         }
+                        // From here on every abort uses fail_after_purge: the
+                        // torrents above are gone WITH their downloaded data.
                         // (f) THE destructive step, LAST: this season's files,
                         // from a FRESH authoritative listing (files can land
                         // between the picker's load and now).
                         const auto files =
                             sonarr_.get_episode_files_checked(sid);
                         if (!files.has_value())
-                            return fail("couldn't list episode files");
+                            return fail_after_purge("couldn't list episode "
+                                                    "files");
                         std::vector<int> ids;
                         for (const auto& f : *files) {
                             if (f.season_number == season) ids.push_back(f.id);
                         }
+                        // Same misclassification as stage (a), one step from
+                        // the finish line: an unparseable body reads as
+                        // engaged-but-empty, delete_episode_files({}) returns
+                        // true with no HTTP by design, and (g) would toast
+                        // "Season N removed" while every file is still on
+                        // disk — after (e) has already destroyed the torrents
+                        // and their copies, so the user is told the season is
+                        // gone AND has lost the seeding data. The row requires
+                        // files or a live download, so zero ids against a
+                        // known-nonzero count is a contradiction; zero against
+                        // zero is the legitimate download-only season and must
+                        // still pass through to (g).
+                        if (expected_files > 0 && ids.empty())
+                            return fail_after_purge("couldn't list the "
+                                                    "season's files");
                         if (!sonarr_.delete_episode_files(ids))
-                            return fail("couldn't delete the season's files");
+                            return fail_after_purge("couldn't delete the "
+                                                    "season's files");
                         // (g) Publish.
                         std::lock_guard<std::mutex> lk(mut_mtx_);
                         mut_season_removed_ = true;
                         mut_season_number_ = season;
                         mut_toast_ = title + ": Season " +
                             std::to_string(season) +
-                            " removed \xE2\x80\x94 Start Season " +
+                            // Name the button the user is about to SEE. The
+                            // page we return to builds its primary from
+                            // decide_action_row, which labels it "Download
+                            // Season N" (series_detail_logic.h); "Start
+                            // Season N" is the Playback season-end card's
+                            // label (episode_logic.h) and appears nowhere
+                            // here.
+                            " removed \xE2\x80\x94 Download Season " +
                             std::to_string(season) + " re-downloads it" +
                             (torrents_left
                                  ? " (a torrent needs manual cleanup in "
