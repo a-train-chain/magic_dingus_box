@@ -253,7 +253,9 @@ void QueueScreen::refresh_async() {
 
 void QueueScreen::run_refresh() {
     PendingResult r;
-    r.queue = radarr_.get_queue();
+    auto queue_checked = radarr_.get_queue_checked();
+    r.error = radarr_queue_error(queue_checked);
+    if (queue_checked) r.queue = std::move(*queue_checked);
 
     // TV downloads. Worker thread only (WatchdogSec budget) — same rule
     // the Radarr calls above follow. Sonarr's queue is per EPISODE, so a
@@ -532,14 +534,9 @@ void QueueScreen::run_refresh() {
         }
     }
 
-    // Radarr's error banner is still keyed on Radarr's OWN queue being
-    // empty — a TV download in flight says nothing about whether Radarr
-    // is reachable. render() shows this both as the centered
-    // "Radarr service offline" state (when both sections are empty) and
-    // as a small stacked warning line when TV rows keep the combined
-    // list non-empty (review Fix 2 — this signal used to be suppressed
-    // whenever a TV pack was in flight).
-    r.error = r.queue.empty() ? radarr_.last_error() : std::string{};
+    // r.error was captured in-band with the queue request above. Reading
+    // RadarrClient::last_error() here would pair this result with whichever
+    // unrelated worker happened to write that shared diagnostic most recently.
 
     // Publish under the mutex; result_ready_ is the atomic flag the
     // main thread polls each frame. Cleared by apply_pending() when
@@ -861,9 +858,10 @@ void QueueScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         // last_error_ set), independent of tv_ — restores the signal a TV
         // pack used to suppress when the combined row list stopped being
         // empty (review Fix 2). Skipped here when the centered "Radarr
-        // service offline" state below is ALSO about to render (both
-        // queue_ and tv_ empty) so the message doesn't appear twice.
-        if (!last_error_.empty() && !(queue_.empty() && tv_.empty())) {
+        // service offline" state below is ALSO about to render (movie queue,
+        // TV queue, and awaiting list all empty) so it isn't drawn twice.
+        if (show_inline_radarr_warning(!last_error_.empty(), queue_.empty(),
+                                       tv_.empty(), awaiting_.empty())) {
             std::string warn_text = "Radarr offline \xE2\x80\x94 " + last_error_;
             warn_text = truncate_to_width(r, warn_text, sub_size,
                                           w - 2.0f * kPaddingX);

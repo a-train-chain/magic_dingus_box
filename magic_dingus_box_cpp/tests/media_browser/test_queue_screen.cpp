@@ -67,3 +67,20 @@ TEST_CASE("step_cursor consumes navigation on an empty list without moving",
     REQUIRE(r.is_nav);
     REQUIRE(r.cursor == 0);
 }
+
+TEST_CASE("successful empty Radarr queue never renders an offline error",
+          "[queue][health]") {
+    std::optional<std::vector<media_browser::QueueItem>> empty_queue{
+        std::vector<media_browser::QueueItem>{}};
+
+    CHECK(mbu::QueueScreen::radarr_queue_error(empty_queue).empty());
+    CHECK(mbu::QueueScreen::radarr_queue_error(std::nullopt) ==
+          "Queue request failed");
+
+    CHECK_FALSE(mbu::QueueScreen::show_inline_radarr_warning(
+        /*has_error=*/true, /*movie_queue_empty=*/true,
+        /*tv_queue_empty=*/true, /*awaiting_empty=*/true));
+    CHECK(mbu::QueueScreen::show_inline_radarr_warning(
+        /*has_error=*/true, /*movie_queue_empty=*/true,
+        /*tv_queue_empty=*/true, /*awaiting_empty=*/false));
+}

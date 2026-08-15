@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -18,6 +19,11 @@ public:
         // Radarr instance doesn't freeze the kiosk main render thread while
         // get_queue() / is_reachable() are in-flight.
         int timeout_secs = 5;
+        // Movie adds begin with a safe metadata GET through Gluetun. Let that
+        // GET span one normal healthcheck/reconnect cycle without retrying the
+        // POST that mutates the Radarr library. Tests set the delay to zero.
+        int metadata_lookup_retry_window_ms = 45000;
+        int metadata_lookup_retry_delay_ms = 1000;
         // Path translation for movie files: Radarr returns container-internal
         // paths and the kiosk runs on the host. The docker-compose repoints
         // Radarr's root folder to /data/library (with /downloads hardlink
@@ -57,7 +63,10 @@ public:
     virtual bool remove_movie(int radarr_id, bool delete_files = false);
     virtual bool trigger_search(int radarr_id);
 
-    // Queue / downloads
+    // Queue / downloads. The checked shape distinguishes a successful empty
+    // queue from an HTTP/transport failure; reachability-sensitive callers
+    // must use it instead of consulting the shared last_error() afterward.
+    virtual std::optional<std::vector<QueueItem>> get_queue_checked();
     virtual std::vector<QueueItem> get_queue();
     virtual bool cancel_queue_item(int queue_id);
 
@@ -124,12 +133,21 @@ public:
     }
 
 protected:
+    struct HttpGetResult {
+        std::string body;
+        std::string error;
+    };
+
     void set_error(std::string msg) {
         std::lock_guard<std::mutex> lk(err_mtx_);
         last_error_ = std::move(msg);
     }
     // Virtual for mocking (see radarr_mock.h)
     virtual std::string http_get(const std::string& path);
+    // Body and failure cause travel together so a concurrent Radarr call
+    // cannot overwrite the cause between the request and its caller's read.
+    virtual HttpGetResult http_get_result(const std::string& path,
+                                          int timeout_secs);
     virtual std::string http_post(const std::string& path, const std::string& body);
     // Returns the HTTP status code; 0 is the ONE reserved "no answer" value
     // (transport failure — no status line). Callers branch on the code
@@ -147,6 +165,11 @@ protected:
     // Other endpoints use http_get() with the default cfg_.timeout_secs
     // (5s) so a stalled Radarr doesn't freeze the UI on routine calls.
     virtual std::string http_get_long(const std::string& path, int timeout_secs);
+
+    // Time boundary for the safe metadata-GET retry loop. Virtualizing the
+    // clock and wait keeps the production deadline deterministic in tests.
+    virtual std::chrono::steady_clock::time_point metadata_retry_now() const;
+    virtual void wait_for_metadata_retry(std::chrono::milliseconds delay);
 
     Config cfg_;
 
