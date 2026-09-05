@@ -446,7 +446,7 @@ void Controller::wait_for_playback_start(int max_ms, std::function<void()> progr
         // Tick the player state machine so is_playing_ can flip: drains the
         // GStreamer bus and does a 0-timeout state poll (which counts
         // ASYNC+pending==PLAYING as playing — see the backend's update_state()).
-        player_->update_state();
+        if (player_) player_->update_state();
         if (is_playing()) return;  // started — no reason to keep waiting
         if (progress_callback) progress_callback();
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
