@@ -161,6 +161,7 @@ set(APP_SOURCES
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
+    src/app/status_snapshot.cpp
     src/app/playback_stall_watchdog.cpp
 )
 
@@ -613,6 +614,7 @@ set(MDB_CORE_SOURCES
     src/app/settings_persistence.cpp
     src/app/mb_filter_persistence.cpp
     src/app/status_writer.cpp
+    src/app/status_snapshot.cpp
     src/app/playback_stall_watchdog.cpp
     src/utils/config.cpp
     src/utils/path_resolver.cpp
@@ -764,10 +766,15 @@ if(APP_TEST_SOURCES AND YAMLCPP_FOUND)
         # platform_profile backs filter_for_platform (the Pi 4 game-system
         # gate) — pure logic, no Linux-only deps.
         src/platform/platform_profile.cpp
+        # status_snapshot backs build_status_json (test_status_snapshot.cpp);
+        # it needs virtual_keyboard.cpp for the text-input field and jsoncpp
+        # for Json::Value, hence the extra include/link directories below.
+        src/app/status_snapshot.cpp
+        src/ui/virtual_keyboard.cpp
     )
-    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS})
-    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS})
-    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES})
+    target_include_directories(test_app_unit PRIVATE src ${YAMLCPP_INCLUDE_DIRS} ${JSONCPP_INCLUDE_DIRS})
+    target_link_directories(test_app_unit PRIVATE ${YAMLCPP_LIBRARY_DIRS} ${JSONCPP_LIBRARY_DIRS})
+    target_link_libraries(test_app_unit PRIVATE Catch2::Catch2WithMain ${YAMLCPP_LIBRARIES} ${JSONCPP_LIBRARIES})
     target_compile_options(test_app_unit PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME AppUnit COMMAND test_app_unit)
 endif()
@@ -837,6 +844,7 @@ if(PHONE_REMOTE_TEST_SOURCES)
     add_executable(test_phone_remote_unit
         ${PHONE_REMOTE_TEST_SOURCES}
         src/app/status_writer.cpp
+        src/app/status_snapshot.cpp
         src/ui/pairing_screen.cpp
         src/ui/virtual_keyboard.cpp
         src/app/controller_text_input.cpp
