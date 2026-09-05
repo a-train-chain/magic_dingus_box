@@ -22,8 +22,12 @@ namespace platform {
 enum class PiModel {
     Pi4,
     Pi5,
+    Mac,      // mdb_headless: an Apple-silicon host; nothing gated, no GPIO
     Unknown
 };
+// The enum predates the Mac port; HostModel is the name new code should use.
+using HostModel = PiModel;
+const char* host_model_name(PiModel model);
 
 struct PlatformProfile {
     PiModel model = PiModel::Unknown;

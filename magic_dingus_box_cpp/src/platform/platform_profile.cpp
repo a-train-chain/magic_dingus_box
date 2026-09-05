@@ -86,6 +86,13 @@ PlatformProfile profile_for(PiModel model) {
             // Pi 4 / Unknown keep the full pause (struct default false).
             p.trickle_torrents_during_video = true;
             break;
+        case PiModel::Mac:
+            p.has_analog_audio = true;         // CoreAudio always has an output
+            p.gpiochip_labels = {};            // no header; the panel is USB HID
+            p.rotary_events_per_detent = 2;
+            p.pause_services_during_movie = false;
+            p.trickle_torrents_during_video = false;
+            break;
         case PiModel::Unknown:
             // Conservative: no analog jack assumed (HDMI always exists on
             // supported boards), but try every known header-chip label so
@@ -99,6 +106,10 @@ PlatformProfile profile_for(PiModel model) {
 }
 
 PlatformProfile detect_platform(const std::string& model_path) {
+#ifdef __APPLE__
+    (void)model_path;
+    return profile_for(PiModel::Mac);
+#endif
     std::ifstream f(model_path, std::ios::binary);
     if (!f.is_open()) {
         return profile_for(PiModel::Unknown);
@@ -225,6 +236,16 @@ long read_mem_available_kib(const std::string& meminfo_path) {
     std::stringstream ss;
     ss << f.rdbuf();
     return parse_mem_available_kib(ss.str());
+}
+
+const char* host_model_name(PiModel model) {
+    switch (model) {
+        case PiModel::Pi4: return "pi4";
+        case PiModel::Pi5: return "pi5";
+        case PiModel::Mac: return "mac";
+        case PiModel::Unknown: break;
+    }
+    return "unknown";
 }
 
 } // namespace platform
