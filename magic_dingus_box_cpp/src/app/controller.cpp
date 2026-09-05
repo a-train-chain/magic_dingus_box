@@ -715,8 +715,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
-        if (hooks_) hooks_->wake_controllers();
-        if (progress_callback) progress_callback();
+        if (hooks_) hooks_->wake_controllers([&] { if (progress_callback) progress_callback(); });
         state.loading_progress.store(0.75f);
         state.loading_phase = "WAKING CONTROLLER";
         wait_with_callback(200, progress_callback);
@@ -799,9 +798,8 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         // implementation retries internally — see
         // platform::PiGameSessionHooks::reacquire_display).
         {
-            const bool mode_restored = hooks_ ? hooks_->reacquire_display(kiosk_mode_w_, kiosk_mode_h_) : true;
-            state.display_mode_restored.store(mode_restored);
-            const bool acquired = true;  // the hook already retried; the dissolve below only needs a progress callback
+            const app::DisplayReacquire re = hooks_ ? hooks_->reacquire_display(kiosk_mode_w_, kiosk_mode_h_) : app::DisplayReacquire{};
+            if (re.attempted) state.display_mode_restored.store(re.mode_restored);
 
             // First frames we may draw since the handover. MUST stay after
             // set_mode() — painting before it blocks on a page-flip event
@@ -826,7 +824,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             // Skipped when DRM master was never re-acquired: present_frame
             // cannot vblank-pace the loop then, and the box is already in a
             // degraded state where a transition is the least of its problems.
-            if (acquired && progress_callback) {
+            if (re.acquired && progress_callback) {
                 constexpr std::chrono::milliseconds kReturnDissolveHold{120};
                 constexpr std::chrono::milliseconds kReturnDissolveRamp{250};
                 const auto dissolve_t0 = std::chrono::steady_clock::now();

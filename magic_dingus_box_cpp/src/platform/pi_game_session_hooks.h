@@ -1,5 +1,6 @@
 #pragma once
 #include "app/game_session_hooks.h"
+#include <functional>
 
 namespace platform {
 class DrmDisplay;
@@ -10,9 +11,9 @@ public:
     PiGameSessionHooks(DrmDisplay* display, InputManager* input)
         : display_(display), input_(input) {}
     void release_input() override;
-    void wake_controllers() override;
+    void wake_controllers(const std::function<void()>& between) override;
     void release_display() override;
-    bool reacquire_display(uint32_t kiosk_w, uint32_t kiosk_h) override;
+    app::DisplayReacquire reacquire_display(uint32_t kiosk_w, uint32_t kiosk_h) override;
     bool reinit_input() override;
 private:
     DrmDisplay* display_;
