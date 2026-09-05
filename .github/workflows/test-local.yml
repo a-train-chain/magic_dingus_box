@@ -70,3 +70,22 @@ jobs:
 
       - name: Run web suite
         run: python -m pytest magic_dingus_box/web/tests/ -q
+
+  kiosk-compile:
+    name: Kiosk binary compiles (BUILD_KIOSK=ON, x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kiosk build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config git \
+            libdrm-dev libgbm-dev libegl-dev libgles2-mesa-dev \
+            libevdev-dev libgpiod-dev libsystemd-dev \
+            libyaml-cpp-dev libjsoncpp-dev libcurl4-openssl-dev \
+            libtorrent-rasterbar-dev libsqlite3-dev libboost-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - name: Configure kiosk (Media Browser on, tests off)
+        run: cmake -S magic_dingus_box_cpp -B build-kiosk -DBUILD_KIOSK=ON -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
+      - name: Compile
+        run: cmake --build build-kiosk -j"$(nproc)" --target magic_dingus_box_cpp
