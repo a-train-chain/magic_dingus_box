@@ -363,12 +363,15 @@ if(BUILD_KIOSK)
     )
 endif()
 
-# Copy assets to build directory for development
-file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
+# Copy assets to build directory for development.
+# CMAKE_CURRENT_SOURCE_DIR, not CMAKE_SOURCE_DIR: identical for this project's
+# own top-level build, and still correct when a parent project (the headless
+# engine) add_subdirectory()s this tree.
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_BINARY_DIR})
 
 # Copy data directory structure but EXCLUDE large user data (roms, media)
 # These are user files that shouldn't be copied during build
-file(COPY ${CMAKE_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_BINARY_DIR}
     PATTERN "roms" EXCLUDE
     PATTERN "media" EXCLUDE
     PATTERN "*.chd" EXCLUDE
@@ -636,7 +639,10 @@ if(ENABLE_MEDIA_BROWSER)
 endif()
 list(REMOVE_DUPLICATES MDB_CORE_SOURCES)
 
-add_library(mdb_core STATIC ${MDB_CORE_SOURCES})
+# EXCLUDE_FROM_ALL: mdb_core is consumed by the headless engine (which
+# add_subdirectory()s this tree) and by test_core_unit. A plain `make all`
+# on the Pi must not pay for a second compile of the same sources.
+add_library(mdb_core STATIC EXCLUDE_FROM_ALL ${MDB_CORE_SOURCES})
 target_include_directories(mdb_core PUBLIC src ${JSONCPP_INCLUDE_DIRS} ${YAMLCPP_INCLUDE_DIRS})
 target_link_directories(mdb_core PUBLIC ${JSONCPP_LIBRARY_DIRS} ${YAMLCPP_LIBRARY_DIRS})
 find_package(Threads REQUIRED)
@@ -653,6 +659,10 @@ if(ENABLE_MEDIA_BROWSER)
         ${LIBTORRENT_LIBRARY_DIRS} ${SQLITE3_LIBRARY_DIRS} ${CURL_LIBRARY_DIRS})
     target_link_libraries(mdb_core PUBLIC
         ${LIBTORRENT_LIBRARIES} ${SQLITE3_LIBRARIES} ${CURL_LIBRARIES})
+    # PUBLIC so consumers (the headless engine) compile the same feature set;
+    # the top-level add_compile_definitions() only covers this project's own
+    # targets, not a parent project that add_subdirectory()s this tree.
+    target_compile_definitions(mdb_core PUBLIC MEDIA_BROWSER_ENABLED)
 endif()
 
 if(BUILD_TESTS)

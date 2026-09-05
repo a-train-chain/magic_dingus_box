@@ -98,4 +98,4 @@ jobs:
       - name: Configure kiosk (Media Browser on, tests off)
         run: cmake -S magic_dingus_box_cpp -B build-kiosk -DBUILD_KIOSK=ON -DENABLE_MEDIA_BROWSER=ON -DBUILD_TESTS=OFF
       - name: Compile
-        run: cmake --build build-kiosk -j"$(nproc)" --target magic_dingus_box_cpp
+        run: cmake --build build-kiosk -j"$(nproc)" --target magic_dingus_box_cpp mdb_core
