@@ -4,6 +4,7 @@
 #include "platform/input_manager.h"
 #include "platform/gpio_manager.h"
 #include "platform/platform_profile.h"
+#include "platform/pi_game_session_hooks.h"
 #include "video/gst_player.h"
 #include "video/gst_renderer.h"
 #include "ui/renderer.h"
@@ -644,8 +645,8 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Initialize controller and sample mode
     Controller controller(&player);
-    controller.set_display(&display);  // Set display reference for DRM cleanup
-    controller.set_input_manager(&input);  // Set input manager reference for controller release
+    platform::PiGameSessionHooks game_hooks(&display, &input);
+    controller.set_host_hooks(&game_hooks);
     controller.set_text_input_queue_path(
         config::get_data_path() + "/text_input_queue.jsonl");
     

@@ -6,9 +6,11 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <sstream>
+#include <thread>
 
 namespace media_browser {
 
@@ -39,8 +41,16 @@ std::string RadarrClient::http_get(const std::string& path) {
 }
 
 std::string RadarrClient::http_get_long(const std::string& path, int timeout_secs) {
+    return http_get_result(path, timeout_secs).body;
+}
+
+RadarrClient::HttpGetResult
+RadarrClient::http_get_result(const std::string& path, int timeout_secs) {
     CURL* curl = curl_easy_init();
-    if (!curl) { set_error("curl init failed"); return {}; }
+    if (!curl) {
+        set_error("curl init failed");
+        return {{}, "curl init failed"};
+    }
     std::string url = cfg_.base_url + path;
     std::string body;
     struct curl_slist* headers = nullptr;
@@ -56,13 +66,26 @@ std::string RadarrClient::http_get_long(const std::string& path, int timeout_sec
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-    if (rc != CURLE_OK) { set_error(curl_easy_strerror(rc)); return {}; }
+    if (rc != CURLE_OK) {
+        std::string error = curl_easy_strerror(rc);
+        set_error(error);
+        return {{}, std::move(error)};
+    }
     if (http_code >= 400) {
         std::ostringstream os; os << "HTTP " << http_code;
-        set_error(os.str());
-        return {};
+        std::string error = os.str();
+        set_error(error);
+        return {{}, std::move(error)};
     }
-    return body;
+    return {std::move(body), {}};
+}
+
+std::chrono::steady_clock::time_point RadarrClient::metadata_retry_now() const {
+    return std::chrono::steady_clock::now();
+}
+
+void RadarrClient::wait_for_metadata_retry(std::chrono::milliseconds delay) {
+    std::this_thread::sleep_for(delay);
 }
 
 std::string RadarrClient::http_post(const std::string& path, const std::string& body) {
@@ -175,9 +198,44 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
     // first to get the full object, then mutate the bits we control.
     std::string lookup_path = "/api/v3/movie/lookup?term=tmdb:"
                             + std::to_string(tmdb_id);
-    std::string lookup_resp = http_get(lookup_path);
+    std::string lookup_resp;
+    std::string lookup_failure;
+    const auto retry_window = std::chrono::milliseconds(
+        std::max(0, cfg_.metadata_lookup_retry_window_ms));
+    const auto retry_deadline = metadata_retry_now() + retry_window;
+    int attempt = 0;
+    for (;;) {
+        ++attempt;
+        HttpGetResult lookup = http_get_result(lookup_path, cfg_.timeout_secs);
+        lookup_resp = std::move(lookup.body);
+        if (!lookup_resp.empty()) {
+            // An earlier attempt may have recorded HTTP 503. The operation
+            // recovered, so do not leave that transient error behind.
+            set_error({});
+            break;
+        }
+
+        lookup_failure = std::move(lookup.error);
+        const auto now = metadata_retry_now();
+        if (now >= retry_deadline) break;
+
+        auto delay = std::chrono::milliseconds(
+            std::max(1, cfg_.metadata_lookup_retry_delay_ms));
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            retry_deadline - now);
+        if (delay > remaining) delay = remaining;
+        spdlog::warn("[radarr] metadata lookup tmdb:{} failed ({}, attempt "
+                     "{}); waiting {}ms for VPN recovery",
+                     tmdb_id,
+                     lookup_failure.empty() ? "no response" : lookup_failure,
+                     attempt, delay.count());
+        wait_for_metadata_retry(delay);
+    }
     if (lookup_resp.empty()) {
-        set_error("Radarr lookup failed for tmdb:" + std::to_string(tmdb_id));
+        std::string message = "Radarr metadata lookup unavailable for tmdb:"
+                            + std::to_string(tmdb_id);
+        if (!lookup_failure.empty()) message += " (" + lookup_failure + ")";
+        set_error(std::move(message));
         spdlog::error("[radarr] add_movie: {}", last_error());
         return false;
     }
@@ -278,10 +336,24 @@ bool RadarrClient::trigger_search(int radarr_id) {
     return !resp.empty();
 }
 
-std::vector<QueueItem> RadarrClient::get_queue() {
+std::optional<std::vector<QueueItem>> RadarrClient::get_queue_checked() {
     auto resp = http_get("/api/v3/queue?pageSize=100");
-    if (resp.empty()) return {};
+    if (resp.empty()) return std::nullopt;
+
+    Json::CharReaderBuilder rb;
+    Json::Value root;
+    std::string parse_error;
+    std::istringstream input(resp);
+    if (!Json::parseFromStream(rb, input, &root, &parse_error) ||
+        !root.isObject() || !root["records"].isArray()) {
+        set_error("Invalid Radarr queue response");
+        return std::nullopt;
+    }
     return RadarrParsers::parse_queue(resp);
+}
+
+std::vector<QueueItem> RadarrClient::get_queue() {
+    return get_queue_checked().value_or(std::vector<QueueItem>{});
 }
 
 ActiveSearches RadarrClient::get_active_searches() {

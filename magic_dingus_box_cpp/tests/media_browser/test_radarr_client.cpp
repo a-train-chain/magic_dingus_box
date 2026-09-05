@@ -172,3 +172,152 @@ TEST_CASE("RadarrMockClient::get_library_checked reports success with canned dat
     REQUIRE(checked.has_value());
     CHECK(checked->size() == mock.get_library().size());
 }
+
+namespace {
+class CheckedQueueRadarr : public mb::RadarrClient {
+public:
+    explicit CheckedQueueRadarr(bool fail)
+        : RadarrClient(Config{}), fail_(fail) {}
+
+    void seed_stale_error() { set_error("Radarr lookup failed for tmdb:558"); }
+
+protected:
+    std::string http_get(const std::string& path) override {
+        REQUIRE(path == "/api/v3/queue?pageSize=100");
+        if (fail_) {
+            set_error("HTTP 503");
+            return {};
+        }
+        return R"({"page":1,"pageSize":100,"totalRecords":0,"records":[]})";
+    }
+
+private:
+    bool fail_;
+};
+
+class MalformedQueueRadarr : public mb::RadarrClient {
+public:
+    MalformedQueueRadarr() : RadarrClient(Config{}) {}
+
+protected:
+    std::string http_get(const std::string& path) override {
+        REQUIRE(path == "/api/v3/queue?pageSize=100");
+        return "<html>proxy error</html>";
+    }
+};
+
+class RetryingAddRadarr : public mb::RadarrClient {
+public:
+    RetryingAddRadarr(int success_after_ms, int retry_window_ms)
+        : RadarrClient(make_config(retry_window_ms)),
+          success_after_ms_(success_after_ms) {}
+
+    int lookup_calls = 0;
+    int post_calls = 0;
+    int fake_elapsed_ms = 0;
+
+protected:
+    HttpGetResult http_get_result(const std::string& path,
+                                  int timeout_secs) override {
+        REQUIRE(path == "/api/v3/movie/lookup?term=tmdb:558");
+        REQUIRE(timeout_secs == 5);
+        ++lookup_calls;
+        if (fake_elapsed_ms < success_after_ms_) {
+            // Simulate another worker overwriting the shared diagnostic after
+            // this request obtained its own failure cause.
+            set_error("unrelated shared queue error");
+            return {{}, "HTTP 503"};
+        }
+        return {R"({"title":"Spider-Man 2","tmdbId":558})", {}};
+    }
+
+    std::string http_get(const std::string& path) override {
+        if (path == "/api/v3/rootfolder") {
+            return R"([{"id":1,"path":"/data/library","freeSpace":500000000000}])";
+        }
+        FAIL("Unexpected Radarr GET: " << path);
+        return {};
+    }
+
+    std::string http_post(const std::string& path,
+                          const std::string& /*body*/) override {
+        REQUIRE(path == "/api/v3/movie");
+        ++post_calls;
+        return R"({"id":42})";
+    }
+
+    std::chrono::steady_clock::time_point metadata_retry_now() const override {
+        return std::chrono::steady_clock::time_point{
+            std::chrono::milliseconds(fake_elapsed_ms)};
+    }
+
+    void wait_for_metadata_retry(std::chrono::milliseconds delay) override {
+        fake_elapsed_ms += static_cast<int>(delay.count());
+    }
+
+private:
+    static Config make_config(int retry_window_ms) {
+        Config cfg;
+        cfg.metadata_lookup_retry_window_ms = retry_window_ms;
+        cfg.metadata_lookup_retry_delay_ms = 1000;
+        return cfg;
+    }
+
+    int success_after_ms_;
+};
+}  // namespace
+
+TEST_CASE("Radarr checked queue distinguishes a successful empty queue from failure",
+          "[radarr][queue]") {
+    CheckedQueueRadarr empty_queue(/*fail=*/false);
+    empty_queue.seed_stale_error();
+    auto answered = empty_queue.get_queue_checked();
+    REQUIRE(answered.has_value());
+    CHECK(answered->empty());
+    // The shared diagnostic may still belong to an unrelated operation;
+    // callers must trust the engaged result rather than pairing the two.
+    CHECK(empty_queue.last_error() == "Radarr lookup failed for tmdb:558");
+
+    CheckedQueueRadarr unavailable(/*fail=*/true);
+    auto failed = unavailable.get_queue_checked();
+    CHECK_FALSE(failed.has_value());
+    CHECK(unavailable.last_error() == "HTTP 503");
+}
+
+TEST_CASE("Radarr checked queue rejects a malformed successful response",
+          "[radarr][queue]") {
+    MalformedQueueRadarr radarr;
+    CHECK_FALSE(radarr.get_queue_checked().has_value());
+    CHECK(radarr.last_error() == "Invalid Radarr queue response");
+}
+
+TEST_CASE("Radarr add retries metadata lookup but POSTs the movie only once",
+          "[radarr][add][retry]") {
+    // Production evidence: Gluetun recovered 32 seconds after the outage
+    // began. Immediate HTTP failures must not burn through the retry budget
+    // before that recovery point.
+    RetryingAddRadarr radarr(/*success_after_ms=*/32000,
+                             /*retry_window_ms=*/45000);
+
+    REQUIRE(radarr.add_movie(/*tmdb_id=*/558, /*quality_profile_id=*/7));
+    CHECK(radarr.fake_elapsed_ms >= 32000);
+    CHECK(radarr.lookup_calls >= 33);
+    CHECK(radarr.post_calls == 1);
+    CHECK(radarr.last_error().empty());
+}
+
+TEST_CASE("Radarr add reports the metadata cause and never POSTs after retry exhaustion",
+          "[radarr][add][retry]") {
+    RetryingAddRadarr radarr(/*success_after_ms=*/10000,
+                             /*retry_window_ms=*/3000);
+
+    CHECK_FALSE(radarr.add_movie(/*tmdb_id=*/558, /*quality_profile_id=*/7));
+    CHECK(radarr.fake_elapsed_ms == 3000);
+    CHECK(radarr.lookup_calls == 4);
+    CHECK(radarr.post_calls == 0);
+    CHECK(radarr.last_error().find("metadata lookup unavailable") !=
+          std::string::npos);
+    CHECK(radarr.last_error().find("HTTP 503") != std::string::npos);
+    CHECK(radarr.last_error().find("unrelated shared queue error") ==
+          std::string::npos);
+}

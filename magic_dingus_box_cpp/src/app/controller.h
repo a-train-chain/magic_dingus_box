@@ -4,14 +4,10 @@
 #include "../video/video_player.h"
 #include "../retroarch/retroarch_launcher.h"
 #include "../utils/result.h"
+#include "game_session_hooks.h"
 #include <string>
 #include <functional>
 #include <random>
-
-namespace platform {
-    class DrmDisplay;  // Forward declaration
-    class InputManager;  // Forward declaration
-}
 
 namespace app {
 
@@ -19,13 +15,16 @@ class Controller {
 public:
     Controller(video::VideoPlayer* player);
     // Default constructor for unit tests (player_ = nullptr, all player ops are no-ops).
-    Controller() : player_(nullptr), display_(nullptr), input_manager_(nullptr) {}
-    
-    // Set display reference for DRM cleanup before RetroArch launch
-    void set_display(platform::DrmDisplay* display) { display_ = display; }
-    
-    // Set input manager reference for controller release before RetroArch launch
-    void set_input_manager(platform::InputManager* input_manager) { input_manager_ = input_manager; }
+    Controller() : player_(nullptr) {}
+
+    // Set the host hooks used to release/reacquire the display and input
+    // devices around a RetroArch launch. Named set_host_hooks (not
+    // set_game_session_hooks) so it does not overload with the begin/end
+    // std::function pair below: two same-named overloads that take a
+    // pointer and two callables make a nullptr argument ambiguous and read
+    // as one API when they are two unrelated ones.
+    void set_host_hooks(GameSessionHooks* hooks) { hooks_ = hooks; }
+    GameSessionHooks* host_hooks() const { return hooks_; }
 
     // RetroArch session bracketing hooks — installed once from main().
     // begin runs at the top of load_playlist_item's emulated_game branch;
@@ -148,8 +147,7 @@ private:
     int last_applied_system_volume_ = -1;
     std::string text_input_queue_path_;
     std::string seek_request_path_;  // cached in poll_seek_request (per-tick)
-    platform::DrmDisplay* display_;  // For DRM cleanup before RetroArch launch
-    platform::InputManager* input_manager_;  // For controller release before RetroArch launch
+    GameSessionHooks* hooks_ = nullptr;  // Display/input handoff around a RetroArch launch
     int current_system_volume_ = 100;
     std::mt19937 rng_{std::random_device{}()};
 

@@ -10,7 +10,7 @@ namespace utils {
 
 // All videos are now pre-transcoded to the correct format
 // This function is kept for backward compatibility but videos are already in correct format
-static std::string check_30fps_version(const fs::path& path) {
+static std::string check_30fps_version(const fs::path& /*path*/) {
     // Since all videos are now transcoded, just return empty string
     // The calling code will use the original path
     return "";

@@ -87,6 +87,9 @@ bool RadarrMockClient::remove_movie(int radarr_id, bool /*del*/) {
 }
 
 bool RadarrMockClient::trigger_search(int /*id*/) { return true; }
+std::optional<std::vector<QueueItem>> RadarrMockClient::get_queue_checked() {
+    return queue_;
+}
 std::vector<QueueItem> RadarrMockClient::get_queue() { return queue_; }
 bool RadarrMockClient::cancel_queue_item(int id) {
     auto it = std::remove_if(queue_.begin(), queue_.end(),

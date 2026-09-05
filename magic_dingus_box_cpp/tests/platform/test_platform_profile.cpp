@@ -74,6 +74,10 @@ TEST_CASE("Unknown profile is conservative: no analog audio, tries all known lab
 // detect_platform (file-based)
 // ---------------------------------------------------------------
 
+// Only used by the two device-tree-file tests below, which are themselves
+// #ifndef __APPLE__ (detect_platform() short-circuits to PiModel::Mac under
+// __APPLE__, so this helper would otherwise be unused there).
+#ifndef __APPLE__
 namespace {
 std::string write_temp_model_file(const std::string& contents) {
     auto path = std::filesystem::temp_directory_path() /
@@ -83,7 +87,12 @@ std::string write_temp_model_file(const std::string& contents) {
     return path.string();
 }
 } // namespace
+#endif
 
+// These two assume device-tree-file-based detection, which only applies
+// off Apple hosts: detect_platform() short-circuits to PiModel::Mac under
+// __APPLE__ regardless of model_path (see the Mac host TEST_CASEs below).
+#ifndef __APPLE__
 TEST_CASE("detect_platform reads a device-tree model file") {
     std::string dt("Raspberry Pi 5 Model B Rev 1.0\0", 31);
     auto path = write_temp_model_file(dt);
@@ -97,6 +106,7 @@ TEST_CASE("detect_platform returns Unknown profile when file is missing") {
     PlatformProfile p = detect_platform("/nonexistent/dt/model");
     REQUIRE(p.model == PiModel::Unknown);
 }
+#endif
 
 // ---------------------------------------------------------------
 // PulseAudio sink resolution
@@ -429,3 +439,36 @@ TEST_CASE("read_mem_available_kib reads a meminfo-format file; missing file yiel
     std::remove(path.string().c_str());
     REQUIRE(read_mem_available_kib("/nonexistent/meminfo") == -1);
 }
+
+// ---------------------------------------------------------------
+// Mac host (mdb_headless spec §5.2)
+// ---------------------------------------------------------------
+
+TEST_CASE("Mac profile gates nothing off and never quiets services") {
+    PlatformProfile p = profile_for(PiModel::Mac);
+    REQUIRE(p.model == PiModel::Mac);
+    REQUIRE(p.has_analog_audio);
+    REQUIRE(p.unsupported_game_systems.empty());
+    REQUIRE_FALSE(p.pause_services_during_movie);
+    REQUIRE_FALSE(p.trickle_torrents_during_video);
+    REQUIRE(p.rotary_events_per_detent == 2);
+    REQUIRE(p.gpiochip_labels.empty());
+    REQUIRE(supports_game_system(p, "N64"));
+    REQUIRE(supports_game_system(p, "Dreamcast"));
+}
+
+TEST_CASE("host_model_name is stable wire vocabulary") {
+    REQUIRE(std::string(host_model_name(PiModel::Pi4)) == "pi4");
+    REQUIRE(std::string(host_model_name(PiModel::Pi5)) == "pi5");
+    REQUIRE(std::string(host_model_name(PiModel::Mac)) == "mac");
+    REQUIRE(std::string(host_model_name(PiModel::Unknown)) == "unknown");
+}
+
+#ifdef __APPLE__
+TEST_CASE("detect_platform reports Mac on an Apple host even with a Pi model file") {
+    const auto tmp = std::filesystem::temp_directory_path() / "mdb_model_pi5.txt";
+    { std::ofstream f(tmp); f << "Raspberry Pi 5 Model B Rev 1.0"; }
+    REQUIRE(detect_platform(tmp.string()).model == PiModel::Mac);
+    std::filesystem::remove(tmp);
+}
+#endif

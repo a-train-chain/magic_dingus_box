@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -75,7 +76,7 @@ namespace media_browser::ui {
 //     the "Sonarr offline" warning line below.
 //
 // Error / empty states:
-//   - Radarr side: queue_ empty and RadarrClient::last_error() non-empty
+//   - Radarr side: RadarrClient::get_queue_checked() returned nullopt
 //     -> "Radarr service offline" (centered, when nothing else is on
 //     screen) or a small "Radarr offline — <detail>" warning line
 //     stacked under the count/refresh sub-line (when TV rows keep the
@@ -142,6 +143,26 @@ public:
         if (count <= 0) return r;  // consume, but nothing to move through
         r.cursor = std::clamp(cursor + delta, 0, count - 1);
         return r;
+    }
+
+    // An engaged empty result is a real, healthy answer and must never
+    // inherit RadarrClient's shared stale error. Header-inline keeps the
+    // decision testable without linking the Renderer-dependent .cpp file.
+    static std::string radarr_queue_error(
+        const std::optional<std::vector<QueueItem>>& queue_result) {
+        return queue_result.has_value() ? std::string{}
+                                        : std::string{"Queue request failed"};
+    }
+
+    // The inline warning is suppressed only when the exact centered-offline
+    // state will render. Awaiting-release rows bypass that centered state, so
+    // they still need the inline warning when Radarr's queue request failed.
+    static bool show_inline_radarr_warning(bool has_error,
+                                           bool movie_queue_empty,
+                                           bool tv_queue_empty,
+                                           bool awaiting_empty) {
+        return has_error &&
+               !(movie_queue_empty && tv_queue_empty && awaiting_empty);
     }
 
 private:
@@ -217,8 +238,7 @@ private:
 
     std::chrono::steady_clock::time_point last_refresh_at_{};
     bool refreshing_ = false;
-    // Snapshotted at render time from radarr_.last_error() whenever the
-    // queue comes back empty.
+    // Non-empty only when the most recent checked queue request failed.
     std::string last_error_;
     // Mirrors PendingResult::qbit_overlay_failed for the most-recently-
     // applied refresh — used by render() to decide whether to surface a

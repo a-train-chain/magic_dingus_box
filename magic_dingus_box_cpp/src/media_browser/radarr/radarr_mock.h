@@ -19,6 +19,7 @@ public:
     bool add_movie(int tmdb_id, int quality_profile_id, bool monitor) override;
     bool remove_movie(int radarr_id, bool delete_files) override;
     bool trigger_search(int radarr_id) override;
+    std::optional<std::vector<QueueItem>> get_queue_checked() override;
     std::vector<QueueItem> get_queue() override;
     bool cancel_queue_item(int queue_id) override;
     ActiveSearches get_active_searches() override { return {}; }
