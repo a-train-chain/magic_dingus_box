@@ -646,7 +646,7 @@ int main(int /* argc */, char* /* argv */[]) {
     // Initialize controller and sample mode
     Controller controller(&player);
     platform::PiGameSessionHooks game_hooks(&display, &input);
-    controller.set_game_session_hooks(&game_hooks);
+    controller.set_host_hooks(&game_hooks);
     controller.set_text_input_queue_path(
         config::get_data_path() + "/text_input_queue.jsonl");
     

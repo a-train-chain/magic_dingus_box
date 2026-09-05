@@ -17,10 +17,14 @@ public:
     // Default constructor for unit tests (player_ = nullptr, all player ops are no-ops).
     Controller() : player_(nullptr) {}
 
-    // Set the game-session hooks used to release/reacquire the display and
-    // input devices around a RetroArch launch.
-    void set_game_session_hooks(GameSessionHooks* hooks) { hooks_ = hooks; }
-    GameSessionHooks* game_session_hooks() const { return hooks_; }
+    // Set the host hooks used to release/reacquire the display and input
+    // devices around a RetroArch launch. Named set_host_hooks (not
+    // set_game_session_hooks) so it does not overload with the begin/end
+    // std::function pair below: two same-named overloads that take a
+    // pointer and two callables make a nullptr argument ambiguous and read
+    // as one API when they are two unrelated ones.
+    void set_host_hooks(GameSessionHooks* hooks) { hooks_ = hooks; }
+    GameSessionHooks* host_hooks() const { return hooks_; }
 
     // RetroArch session bracketing hooks — installed once from main().
     // begin runs at the top of load_playlist_item's emulated_game branch;

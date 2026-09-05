@@ -23,10 +23,10 @@ struct RecordingHooks : app::GameSessionHooks {
 TEST_CASE("Controller accepts hooks and defaults to none", "[core][controller]") {
     app::Controller controller;
     RecordingHooks hooks;
-    controller.set_game_session_hooks(&hooks);
-    REQUIRE(controller.game_session_hooks() == &hooks);
-    controller.set_game_session_hooks(nullptr);
-    REQUIRE(controller.game_session_hooks() == nullptr);
+    controller.set_host_hooks(&hooks);
+    REQUIRE(controller.host_hooks() == &hooks);
+    controller.set_host_hooks(nullptr);
+    REQUIRE(controller.host_hooks() == nullptr);
 }
 
 TEST_CASE("Default hooks are no-ops that report success", "[core][controller]") {
