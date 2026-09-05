@@ -1,7 +1,6 @@
 #include "controller.h"
 #include "game_launch_recovery.h"
 #include "../video/video_player.h"
-#include "../video/gst_player.h"
 #include "../utils/path_resolver.h"
 #include "../retroarch/retroarch_launcher.h"
 #include "../platform/drm_display.h"
@@ -449,10 +448,8 @@ void Controller::wait_for_playback_start(int max_ms, std::function<void()> progr
     while (std::chrono::steady_clock::now() - start < budget) {
         // Tick the player state machine so is_playing_ can flip: drains the
         // GStreamer bus and does a 0-timeout state poll (which counts
-        // ASYNC+pending==PLAYING as playing — see GstPlayer::update_state).
-        if (auto gst_player = dynamic_cast<video::GstPlayer*>(player_)) {
-            gst_player->update_state();
-        }
+        // ASYNC+pending==PLAYING as playing — see the backend's update_state()).
+        player_->update_state();
         if (is_playing()) return;  // started — no reason to keep waiting
         if (progress_callback) progress_callback();
         std::this_thread::sleep_for(std::chrono::milliseconds(16));

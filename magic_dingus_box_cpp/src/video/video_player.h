@@ -27,10 +27,14 @@ public:
     virtual bool at_eos() const { return false; }
     virtual double get_position() const = 0;
     virtual double get_duration() const = 0;
-    
+    // Per-frame state pump. GStreamer needs one (ASYNC state reconciliation);
+    // other backends may not. Default is a no-op so Controller never has to
+    // know which backend it holds.
+    virtual void update_state() {}
+
     virtual void set_volume(double volume) = 0;
     virtual double get_volume() const = 0;
-    
+
     virtual void cleanup() = 0;
 };
 

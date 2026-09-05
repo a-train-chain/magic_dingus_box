@@ -58,7 +58,7 @@ public:
     void set_eos_callback(std::function<void()> cb) { eos_callback_ = std::move(cb); }
 
     // Poll for state updates (call this regularly from main loop)
-    void update_state();
+    void update_state() override;
 
 private:
     GstElement* pipeline_;
