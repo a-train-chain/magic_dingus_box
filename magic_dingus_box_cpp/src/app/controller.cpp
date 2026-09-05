@@ -3,7 +3,6 @@
 #include "../video/video_player.h"
 #include "../utils/path_resolver.h"
 #include "../retroarch/retroarch_launcher.h"
-#include "../platform/drm_display.h"
 #include "app_state.h"
 
 #include <sstream>
@@ -21,14 +20,12 @@
 #include <json/json.h>
 #include "../utils/config.h"
 
-#include "../platform/input_manager.h"
-
 namespace fs = std::filesystem;
 
 namespace app {
 
 Controller::Controller(video::VideoPlayer* player)
-    : player_(player), display_(nullptr), input_manager_(nullptr)
+    : player_(player)
 {
 }
 
@@ -711,32 +708,15 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
 
         // CRITICAL: Release controller input grab before launching RetroArch
         // This ensures the main app doesn't block RetroArch from accessing the controller
-        if (input_manager_) {
-            std::cout << "Releasing input devices for RetroArch..." << std::endl;
-            input_manager_->cleanup();
-            std::cout << "Input devices released" << std::endl;
-        }
+        if (hooks_) hooks_->release_input();
         state.loading_progress.store(0.55f);
         state.loading_phase = "RELEASING INPUT";
         if (progress_callback) progress_callback();
 
         // CRITICAL: Wake up controller before launching RetroArch
         // Controller may be in sleep mode after GStreamer/DRM cleanup
-        std::cout << "Waking up controller before RetroArch launch..." << std::endl;
-        auto run_udevadm = [](const char* match) {
-            pid_t pid = fork();
-            if (pid == 0) {
-                int devnull = open("/dev/null", O_WRONLY);
-                if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-                execlp("sudo", "sudo", "udevadm", "trigger", "--action=change",
-                       match, nullptr);
-                _exit(127);
-            }
-            if (pid > 0) { int s; waitpid(pid, &s, 0); }
-        };
-        run_udevadm("--sysname-match=js*");
+        if (hooks_) hooks_->wake_controllers();
         if (progress_callback) progress_callback();
-        run_udevadm("--sysname-match=event*");
         state.loading_progress.store(0.75f);
         state.loading_phase = "WAKING CONTROLLER";
         wait_with_callback(200, progress_callback);
@@ -777,19 +757,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
             if (progress_callback) {
                 progress_callback();
             }
-            if (display_) {
-                // CRITICAL: Keep CRTC enabled (disable_crtc = false) for Vulkan
-                // compatibility. Disabling it causes "QueuePresent failed" on
-                // startup for most cores (Genesis, SNES, NES, PS1). We rely on
-                // pkill and display restoration logic for clean exit.
-                const bool disable_crtc = false;
-                std::cout << "Releasing DRM master for RetroArch (disable_crtc="
-                          << disable_crtc << ")..." << std::endl;
-                display_->release_master(disable_crtc);
-                std::cout << "DRM master released" << std::endl;
-                // Let DRM resources settle before RetroArch grabs the display.
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            }
+            if (hooks_) hooks_->release_display();
         };
 
         bool launched = retroarch_launcher_.launch_game(game_info, current_system_volume_, state.audio_settings.retroarch_volume_offset_db, static_cast<int>(state.audio_settings.output), opts);
@@ -827,46 +795,13 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         std::cout << "Waiting for system to settle..." << std::endl;
         std::this_thread::sleep_for(kRetroArchSettleDelay);
 
-        // Re-acquire DRM master with retry logic
-        if (display_) {
-            std::cout << "Re-acquiring DRM master..." << std::endl;
-            bool acquired = false;
-            for (int i = 0; i < 5; ++i) {
-                if (display_->acquire_master()) {
-                    acquired = true;
-                    std::cout << "DRM master acquired successfully." << std::endl;
-                    break;
-                }
-                std::cerr << "Failed to acquire DRM master, retrying (" << (i+1) << "/5)..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            
-            if (!acquired) {
-                std::cerr << "CRITICAL: Failed to acquire DRM master after retries! Attempting to proceed anyway..." << std::endl;
-            }
-            
-            // Restore the mode the kiosk actually booted with — NOT 640x480.
-            // No unit boots at 640x480 (target_drm_mode gives 1280x720 /
-            // 1920x1080; 640x480 is only the boot cascade's last resort), so
-            // hardcoding it made every game exit do TWO mode changes: down to
-            // 640x480 here, then back up in main.cpp's reset_display handler
-            // — two black-screen TV resyncs per exit. On success the
-            // display_mode_restored flag tells that handler to skip its own
-            // set_mode, making this the ONLY mode change on the way back.
-            bool mode_restored = false;
-            if (kiosk_mode_w_ > 0 && kiosk_mode_h_ > 0) {
-                std::cout << "Restoring kiosk display mode "
-                          << kiosk_mode_w_ << "x" << kiosk_mode_h_ << "..." << std::endl;
-                mode_restored = display_->set_mode(kiosk_mode_w_, kiosk_mode_h_);
-            }
-            if (!mode_restored) {
-                // Legacy floor, preserved for the never-configured case and
-                // for a failed restore. Gives the dissolve SOMETHING to draw
-                // on; deliberately does NOT set the flag below.
-                std::cout << "Falling back to 640x480..." << std::endl;
-                display_->set_mode(640, 480);
-            }
+        // Re-acquire the display via the game-session hooks (the Pi
+        // implementation retries internally — see
+        // platform::PiGameSessionHooks::reacquire_display).
+        {
+            const bool mode_restored = hooks_ ? hooks_->reacquire_display(kiosk_mode_w_, kiosk_mode_h_) : true;
             state.display_mode_restored.store(mode_restored);
+            const bool acquired = true;  // the hook already retried; the dissolve below only needs a progress callback
 
             // First frames we may draw since the handover. MUST stay after
             // set_mode() — painting before it blocks on a page-flip event
@@ -913,39 +848,7 @@ utils::Result<> Controller::load_playlist_item(AppState& state, const app::Playl
         }
 
         // Re-initialize input devices after RetroArch exits with retry logic
-        if (input_manager_) {
-            std::cout << "Re-initializing input devices after RetroArch..." << std::endl;
-            
-            bool input_initialized = false;
-            for (int i = 0; i < 3; ++i) {
-                // Re-wake controller before initializing
-                run_udevadm("--sysname-match=js*");
-                run_udevadm("--sysname-match=event*");
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
-                
-                if (input_manager_->initialize()) {
-                    input_initialized = true;
-                    std::cout << "Input devices initialized successfully." << std::endl;
-                    break;
-                }
-                std::cerr << "Failed to initialize input devices, retrying (" << (i+1) << "/3)..." << std::endl;
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-            
-            if (!input_initialized) {
-                std::cerr << "CRITICAL: Failed to re-initialize input devices after 3 retries!" << std::endl;
-                // Last-resort attempt: sleep longer and try once more
-                std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-                run_udevadm("--sysname-match=js*");
-                run_udevadm("--sysname-match=event*");
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (input_manager_->initialize()) {
-                    std::cout << "Input devices initialized on final retry." << std::endl;
-                } else {
-                    std::cerr << "CRITICAL: Input devices permanently failed. Controller may not work." << std::endl;
-                }
-            }
-        }
+        if (hooks_) hooks_->reinit_input();
 
         // Restore PulseAudio default sink to match user's audio output preference
         // RetroArch uses ALSA directly, so PulseAudio state may have drifted

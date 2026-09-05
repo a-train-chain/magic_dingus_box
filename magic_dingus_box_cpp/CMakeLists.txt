@@ -117,6 +117,7 @@ set(PLATFORM_SOURCES
     src/platform/input_manager.cpp
     src/platform/gpio_manager.cpp
     src/platform/platform_profile.cpp
+    src/platform/pi_game_session_hooks.cpp
 )
 
 # Media Browser unlock sequence detector — compiled into the kiosk binary
@@ -602,6 +603,7 @@ endif()
 # directly until the kiosk-compile CI job has proven the seams (Phase 0).
 # ---------------------------------------------------------------------------
 set(MDB_CORE_SOURCES
+    src/app/controller.cpp
     src/app/game_launch_recovery.cpp
     src/app/game_quiet_mode.cpp
     src/app/playlist_loader.cpp
