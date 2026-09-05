@@ -595,6 +595,76 @@ if(ENABLE_MEDIA_BROWSER)
     endif()  # BUILD_TESTS
 endif()
 
+# ---------------------------------------------------------------------------
+# mdb_core — the portable kiosk logic as one library (mdb_headless spec §3).
+# Same source lists the kiosk compiles; nothing here includes a Linux-only
+# header. The Mac engine links this; the Pi kiosk keeps compiling the lists
+# directly until the kiosk-compile CI job has proven the seams (Phase 0).
+# ---------------------------------------------------------------------------
+set(MDB_CORE_SOURCES
+    src/app/game_launch_recovery.cpp
+    src/app/game_quiet_mode.cpp
+    src/app/playlist_loader.cpp
+    src/app/rom_title.cpp
+    src/app/controller_text_input.cpp
+    src/app/sample_mode.cpp
+    src/app/settings_persistence.cpp
+    src/app/mb_filter_persistence.cpp
+    src/app/status_writer.cpp
+    src/app/playback_stall_watchdog.cpp
+    src/utils/config.cpp
+    src/utils/path_resolver.cpp
+    src/utils/stb_image_impl.cpp
+    src/utils/time_format.cpp
+    src/platform/platform_profile.cpp
+    src/ui/virtual_keyboard.cpp
+    src/ui/pairing_screen.cpp
+    ${RETROARCH_SOURCES}
+)
+if(ENABLE_MEDIA_BROWSER)
+    list(APPEND MDB_CORE_SOURCES
+        src/platform/sequence_detector.cpp
+        src/media_browser/health/vpn_health_monitor.cpp
+        src/media_browser/movie_drive.cpp
+        src/media_browser/artwork/artwork_cache.cpp
+        ${MEDIA_BROWSER_SOURCES}
+    )
+endif()
+list(REMOVE_DUPLICATES MDB_CORE_SOURCES)
+
+add_library(mdb_core STATIC ${MDB_CORE_SOURCES})
+target_include_directories(mdb_core PUBLIC src ${JSONCPP_INCLUDE_DIRS} ${YAMLCPP_INCLUDE_DIRS})
+target_link_directories(mdb_core PUBLIC ${JSONCPP_LIBRARY_DIRS} ${YAMLCPP_LIBRARY_DIRS})
+find_package(Threads REQUIRED)
+target_link_libraries(mdb_core PUBLIC ${JSONCPP_LIBRARIES} ${YAMLCPP_LIBRARIES}
+    spdlog::spdlog_header_only Threads::Threads)
+# mdb_core is never the GL consumer of the artwork cache: the kiosk compiles
+# its own copy with the upload path, the engine serves artwork over HTTP.
+target_compile_definitions(mdb_core PRIVATE ARTWORK_CACHE_TEST_MODE)
+target_compile_options(mdb_core PRIVATE -Wall -Wextra -Wpedantic)
+if(ENABLE_MEDIA_BROWSER)
+    target_include_directories(mdb_core PUBLIC
+        ${LIBTORRENT_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
+    target_link_directories(mdb_core PUBLIC
+        ${LIBTORRENT_LIBRARY_DIRS} ${SQLITE3_LIBRARY_DIRS} ${CURL_LIBRARY_DIRS})
+    target_link_libraries(mdb_core PUBLIC
+        ${LIBTORRENT_LIBRARIES} ${SQLITE3_LIBRARIES} ${CURL_LIBRARIES})
+endif()
+
+if(BUILD_TESTS)
+    if(NOT TARGET Catch2::Catch2WithMain)
+        FetchContent_Declare(Catch2
+            GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+            GIT_TAG v3.5.2)
+        FetchContent_MakeAvailable(Catch2)
+    endif()
+    file(GLOB CORE_TEST_SOURCES "tests/core/*.cpp")
+    add_executable(test_core_unit ${CORE_TEST_SOURCES})
+    target_link_libraries(test_core_unit PRIVATE Catch2::Catch2WithMain mdb_core)
+    target_compile_options(test_core_unit PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME CoreUnit COMMAND test_core_unit)
+endif()
+
 # ============================================================
 # Phone Remote feature tests — no Linux-only deps, runs on Mac.
 # ============================================================
