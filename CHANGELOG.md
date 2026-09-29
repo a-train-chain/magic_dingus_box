@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **The Content Manager can no longer be used to take over a box from
+  the home network.** Anyone on the same Wi-Fi could send a crafted
+  "country" value through the Movies setup page, and the box would later
+  run it as a system command with full privileges. Setup values are now
+  checked before they are saved, so that can't happen — and a normal
+  country with a space in its name, like "United States", now saves
+  correctly too, where it used to break the file. There is still no
+  password or PIN anywhere: phones and laptops connect exactly as before.
+- **Web pages elsewhere can't reach the box behind your back.** A
+  malicious site open on a phone or laptop at home could previously talk
+  to the Content Manager as if it were you. The box now only answers to
+  its own names (its IP address, `magicpi-XXXX.local`, `dingus.box` over
+  the USB cable, and ordinary home-network names). Plugging in the USB
+  cable on a Mac still pops open the Content Manager.
+- **Other doors closed** — none of which change anything for normal use:
+  a crafted playlist can no longer delete files outside the videos
+  folder or point a game at a file that isn't an emulator; the plain
+  upload endpoint only accepts video files; a malicious package import
+  can no longer fill the SD card; pairing codes can no longer be guessed
+  in parallel to get around the attempt limit.
+
+### Fixed
+- **A broken video no longer freezes the box.** A truncated upload, a bad
+  SD-card sector or a format the box can't decode used to stop an
+  unattended playlist dead on that video until someone pressed Next. The
+  box now skips it and carries on. If *every* video in a playlist is
+  broken it stops after one try each and shows the menu with a message
+  instead of cycling forever. In Movies & TV, a file that won't play
+  shows "Couldn't play this file" and goes back — and it is **not**
+  marked as watched, and the next episode doesn't start counting down.
+- **Games are saved when the box is switched off or updated mid-game.**
+  Turning the box off, rebooting it or installing an update while a game
+  was running closed the emulator without its automatic save, losing
+  progress since the last in-game save. The emulator now gets to save
+  first.
+- **Every controller can always leave a game.** Controller Setup let you
+  skip Z (N64-style pads) or Select (PlayStation-style pads) — the
+  buttons that make Z+Start / Select+Start quit a game — leaving no way
+  out of a game except the restart button. Those buttons are now
+  required, and pads whose Z or trigger reports as analog work too.
+- **The emulator's own menu can no longer be opened by accident** by
+  holding L1+R1+Start+Select in a game, and its online updater is off.
+- **A game with a missing emulator now says so** ("Unable to start
+  game") instead of freezing on the launch screen.
+- **The box recovers by itself if the TV picture doesn't come back
+  after a game**, instead of sitting on a black screen until unplugged.
+- **A damaged settings file no longer stops the box from starting.** A
+  settings file with a wrong value in it — for example from an edited
+  backup — made the box crash on every start, with a black screen. The
+  bad file is now set aside as `settings.json.corrupt` and the box
+  starts on default settings.
+- **Videos at unusual sizes (such as 854×480) no longer look slanted**
+  or have their colours shifted.
+- **Multi-disc PlayStation and Dreamcast uploads now get their disc
+  playlist.** The step that ties the discs together never ran.
+- **The "some sources didn't respond" case in Movies is reported
+  honestly.** When the availability check found nothing but some sources
+  never answered, Detail said "No sources found" — even though the
+  source most likely to have an obscure film hadn't replied.
+
+### Changed
+- **Movie availability appears faster.** Detail's availability check
+  asks each source separately and at the same time, instead of waiting
+  up to a minute and a half for the slowest one.
+- **Pi 4B boxes convert one uploaded video at a time** (Pi 5 still does
+  two), so an upload no longer starves playback on the smaller board.
+- **N64 and Dreamcast games stay hidden on a Pi 4B** even when a
+  playlist names only the emulator and not the system.
+- **Log files no longer grow forever on the SD card**: the emulator log
+  starts fresh each game, and the Movies service logs are capped.
+
+### For operators
+- **Cloning can't damage the source box.** If the source box rebooted
+  partway through a clone, its first-boot cleanup ran on the source
+  itself and wiped its saves, pairings and settings. It now recognises
+  its own SD card and refuses.
+- **Freshly cloned units no longer pause at first power-on** when no
+  Wi-Fi is set up, and appear under their new network name straight
+  away.
+- **Less of the source box's private data travels in the image**: the
+  Movies service logs, SSH private keys and known hosts, git/GitHub
+  credentials and the list of Wi-Fi networks it has seen. (The shared
+  service password and SSH access keys are kept on every unit on
+  purpose.)
+- `verify_box.sh` now also fails a unit whose first boot didn't finish,
+  whose first-boot service is still enabled, or whose `config.txt`
+  Pi 4 / Pi 5 sections are wrong.
+- The release build now refuses to publish a binary with the power
+  button, LEDs and rotary encoder compiled out.
+- New off-Pi test loop, `magic_dingus_box_cpp/dev/pisim/pisim.sh`:
+  builds the real kiosk and runs every test suite in about a minute on
+  a Mac, and `push` installs a built binary on a box without compiling
+  there (keeping the previous one if the new one fails to start).
+
 ## [1.9.14] - 2026-08-13
 
 ### Changed
