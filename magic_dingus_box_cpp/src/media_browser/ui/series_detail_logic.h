@@ -325,7 +325,7 @@ inline const char* series_detail_state_message(SeriesDetailState s) {
 // PlayNextUp is deliberately FIRST (Task 6's dispatch contract pins it with a
 // test): it is the row's head whenever it exists, and keeping enumerator
 // order aligned with on-screen order keeps the focus fallback loop honest.
-enum class Action { PlayNextUp, AddSeason1, NextSeason, WholeSeries, Remove,
+enum class Action { PlayNextUp, AddSeason, NextSeason, WholeSeries, Remove,
                     ConfirmRemove };
 
 struct ActionButton {
@@ -361,8 +361,15 @@ struct ActionRowInputs {
     // refreshed it — EVERY season reads unmonitored there, so the add
     // controls must not be offered.
     bool series_settled = true;
-    // next_unmonitored_season(rows) — nullopt when everything is monitored.
-    std::optional<int> next_unmonitored;
+    // season_choice.h's suggested_season(rows, watch): the season the primary
+    // button targets. nullopt when nothing is eligible — the in-library
+    // button hides (as it did when every season was monitored); the
+    // not-in-library add falls back to Season 1.
+    std::optional<int> primary_season;
+    // The SeasonChooser's label while it is open ("\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA").
+    // Same button, same Action — only the text changes, so focus identity
+    // holds while choosing.
+    std::optional<std::string> primary_label_override;
     bool remove_pending = false;
     bool whole_armed = false;
     int64_t whole_estimate_bytes = 0;
@@ -407,7 +414,10 @@ struct ActionRow {
 inline ActionRow decide_action_row(const ActionRowInputs& in) {
     ActionRow out;
     if (in.state == SeriesDetailState::NotInLibrary) {
-        out.buttons.push_back({Action::AddSeason1, "Add Season 1"});
+        out.buttons.push_back(
+            {Action::AddSeason,
+             in.primary_label_override.value_or(
+                 "Add Season " + std::to_string(in.primary_season.value_or(1)))});
         out.buttons.push_back(
             {Action::WholeSeries,
              whole_series_label(in.whole_armed, in.whole_estimate_bytes)});
@@ -431,10 +441,11 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
         // season 1 and the primary button would read "Download Season 1".
         // Offer Remove only until the poll settles it; the meta line says
         // "syncing…" so the missing controls read as pending, not broken.
-        if (in.series_settled && in.next_unmonitored.has_value()) {
+        if (in.series_settled && in.primary_season.has_value()) {
             out.buttons.push_back(
                 {Action::NextSeason,
-                 "Download Season " + std::to_string(*in.next_unmonitored)});
+                 in.primary_label_override.value_or(
+                     "Download Season " + std::to_string(*in.primary_season))});
             out.buttons.push_back(
                 {Action::WholeSeries,
                  whole_series_label(in.whole_armed, in.whole_estimate_bytes)});

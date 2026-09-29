@@ -10,6 +10,7 @@
 #include "media_browser/sonarr/sonarr_client.h"
 #include "media_browser/ui/mb_chrome.h"
 #include "media_browser/ui/mb_ui_utils.h"
+#include "media_browser/ui/season_choice.h"
 #include "platform/input_manager.h"
 #include "spdlog/spdlog.h"
 #include "ui/renderer.h"
@@ -168,7 +169,7 @@ void SeriesDetailScreen::enter() {
     if (pending_intent_next_season_.has_value()) {
         const int want = *pending_intent_next_season_;
         pending_intent_next_season_.reset();
-        const auto target = next_unmonitored_season(rows_);
+        const auto target = suggested_season(rows_, episode_watch_);
         if (series_.has_value() && series_->sonarr_id > 0 && series_settled_ &&
             target.has_value() && *target == want) {
             dispatch_action(Action::NextSeason);
@@ -477,7 +478,7 @@ void SeriesDetailScreen::rebuild_buttons() {
         SeriesDetailInputs{tmdb_done_, tmdb_ok_, sonarr_configured_,
                            sonarr_done_, sonarr_ok_, in_library_});
     in.series_settled = series_settled_;
-    in.next_unmonitored = next_unmonitored_season(rows_);
+    in.primary_season = suggested_season(rows_, episode_watch_);
     // PlayNextUp inputs (Task 6): evidence-based — next_up's current==nullptr
     // form skips watched episodes and only ever returns one WITH a file, so
     // the button can never promise an episode that cannot start. "First"
@@ -813,7 +814,7 @@ void SeriesDetailScreen::start_season_download(int season) {
         return;
     }
     const int sid = series_->sonarr_id;
-    // Same immediate-feedback rule as AddSeason1.
+    // Same immediate-feedback rule as AddSeason.
     ::ui::Toast::show(title + ": starting Season " + std::to_string(season) +
                       "\xE2\x80\xA6");
     spawn_mutation([this, sid, season, title]() {
@@ -897,7 +898,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             start_playback_for(static_cast<int>(nu - episodes_.data()));
             break;
         }
-        case Action::AddSeason1: {
+        case Action::AddSeason: {
             const int id = tmdb_id_;
             const std::string title =
                 detail_.has_value() ? detail_->title : std::string("This series");
@@ -1038,7 +1039,7 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             break;
         }
         case Action::NextSeason: {
-            const auto next = next_unmonitored_season(rows_);
+            const auto next = suggested_season(rows_, episode_watch_);
             if (!next.has_value()) break;
             // Every guard, the toast and the worker live in the shared helper:
             // the season list's SELECT starts the SAME flow for a season with

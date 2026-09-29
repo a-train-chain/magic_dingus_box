@@ -272,7 +272,7 @@ TEST_CASE("action row: not-in-library offers the add pair, focused on add",
     auto in = row_inputs(SeriesDetailState::NotInLibrary);
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 2);
-    CHECK(row.buttons[0].action == Action::AddSeason1);
+    CHECK(row.buttons[0].action == Action::AddSeason);
     CHECK(row.buttons[0].label == "Add Season 1");
     CHECK(row.buttons[1].action == Action::WholeSeries);
     CHECK(row.buttons[1].label == "Whole series\xE2\x80\xA6");
@@ -287,7 +287,7 @@ TEST_CASE("action row: an UNSETTLED in-library record is [Remove] only",
     // adding season 1 is the bug this rule exists for.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
+    in.primary_season = 1;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 1);
     CHECK(row.buttons[0].action == Action::Remove);
@@ -298,7 +298,7 @@ TEST_CASE("action row: a settled in-library record offers next season + whole + 
           "[series_detail]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 3);
     CHECK(row.buttons[0].action == Action::NextSeason);
@@ -308,7 +308,7 @@ TEST_CASE("action row: a settled in-library record offers next season + whole + 
     CHECK(row.focus == 0);  // never the destructive one
 
     // Everything monitored: the add controls hide, Remove stays.
-    in.next_unmonitored = std::nullopt;
+    in.primary_season = std::nullopt;
     const auto only_remove = decide_action_row(in);
     REQUIRE(only_remove.buttons.size() == 1);
     CHECK(only_remove.buttons[0].action == Action::Remove);
@@ -318,7 +318,7 @@ TEST_CASE("action row: arming a confirm keeps focus on the SAME canonical button
           "[series_detail]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;  // row is [NextSeason, WholeSeries, Remove]
+    in.primary_season = 2;  // row is [NextSeason, WholeSeries, Remove]
 
     // Remove -> ConfirmRemove: one button in two states, focus must not move.
     in.prev_focus_action = Action::Remove;
@@ -349,11 +349,11 @@ TEST_CASE("action row: arming a confirm keeps focus on the SAME canonical button
 TEST_CASE("action row: focus biases AWAY from Remove when the kept action is gone",
           "[series_detail]") {
     // The user pressed Add on a not-in-library page; the add landed and the
-    // row became the in-library set. AddSeason1 no longer exists.
+    // row became the in-library set. AddSeason1 was renamed AddSeason.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
-    in.prev_focus_action = Action::AddSeason1;
+    in.primary_season = 2;
+    in.prev_focus_action = Action::AddSeason;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 3);
     CHECK(row.focus == 0);
@@ -366,8 +366,8 @@ TEST_CASE("action row: [Remove]-only falls back onto Remove itself",
     // only thing on offer — otherwise focus points at nothing.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
-    in.prev_focus_action = Action::AddSeason1;  // no match in the new row
+    in.primary_season = 1;
+    in.prev_focus_action = Action::AddSeason;  // no match in the new row
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 1);
     CHECK(row.buttons[0].action == Action::Remove);
@@ -393,12 +393,12 @@ TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the ro
     auto s1 = row_inputs(SeriesDetailState::NotInLibrary);
     const auto add_row = decide_action_row(s1);
     REQUIRE(add_row.buttons.size() == 2);
-    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason1);
+    REQUIRE(add_row.buttons[add_row.focus].action == Action::AddSeason);
 
     // --- step 2: the unsettled drain ---
     auto s2 = row_inputs(SeriesDetailState::InLibrary);
     s2.series_settled = false;
-    s2.next_unmonitored = 1;
+    s2.primary_season = 1;
     s2.prev_focus_action = add_row.buttons[add_row.focus].action;
     s2.prev_row_remove_only = false;  // the previous row was the add pair
     const auto forced = decide_action_row(s2);
@@ -409,7 +409,7 @@ TEST_CASE("action row: a FORCED [Remove]-only focus is not preserved when the ro
     // --- step 3: the poll settles and the row re-expands ---
     auto s3 = row_inputs(SeriesDetailState::InLibrary);
     s3.series_settled = true;
-    s3.next_unmonitored = 2;
+    s3.primary_season = 2;
     s3.prev_focus_action = forced.buttons[forced.focus].action;  // Remove
     s3.prev_row_remove_only = true;  // ...and it was the ONLY button
     const auto settled = decide_action_row(s3);
@@ -433,7 +433,7 @@ TEST_CASE("action row: the non-actionable states have an EMPTY row",
                     SeriesDetailState::NotConfigured,
                     SeriesDetailState::SonarrUnreachable}) {
         auto in = row_inputs(st);
-        in.next_unmonitored = 1;
+        in.primary_season = 1;
         in.prev_focus_action = Action::Remove;
         const auto row = decide_action_row(in);
         CHECK(row.buttons.empty());
@@ -454,7 +454,7 @@ TEST_CASE("action row: PlayNextUp leads the in-library row, labels pinned",
           "[series_detail][series_detail_logic]") {
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     in.has_next_up = true;
     in.next_up_season = 2;
     in.next_up_episode = 5;
@@ -489,12 +489,12 @@ TEST_CASE("action row: PlayNextUp requires InLibrary; absent when has_next_up is
     in.next_up_is_first = true;
     const auto row = decide_action_row(in);
     REQUIRE(row.buttons.size() == 2);
-    CHECK(row.buttons[0].action == Action::AddSeason1);
+    CHECK(row.buttons[0].action == Action::AddSeason);
 
     // In-library without a playable episode: the pre-Task-6 row, unchanged.
     auto lib = row_inputs(SeriesDetailState::InLibrary);
     lib.series_settled = true;
-    lib.next_unmonitored = 2;
+    lib.primary_season = 2;
     lib.has_next_up = false;
     const auto no_nu = decide_action_row(lib);
     REQUIRE(no_nu.buttons.size() == 3);
@@ -508,7 +508,7 @@ TEST_CASE("action row: an UNSETTLED record with a playable episode is [PlayNextU
     // on disk is safe in that window, so PlayNextUp stays.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = false;
-    in.next_unmonitored = 1;
+    in.primary_season = 1;
     in.has_next_up = true;
     in.next_up_season = 1;
     in.next_up_episode = 3;
@@ -526,7 +526,7 @@ TEST_CASE("action row: focus identity survives a PlayNextUp insertion and relabe
     // the head. Identity, not index: the ring must FOLLOW NextSeason to 1.
     auto in = row_inputs(SeriesDetailState::InLibrary);
     in.series_settled = true;
-    in.next_unmonitored = 2;
+    in.primary_season = 2;
     in.has_next_up = true;
     in.next_up_season = 1;
     in.next_up_episode = 1;
@@ -555,15 +555,15 @@ TEST_CASE("action row: the forced [Remove]-only escape lands on PlayNextUp when 
     // new head (index 0), never back on the delete button.
     auto s2 = row_inputs(SeriesDetailState::InLibrary);
     s2.series_settled = false;
-    s2.next_unmonitored = 1;
-    s2.prev_focus_action = Action::AddSeason1;
+    s2.primary_season = 1;
+    s2.prev_focus_action = Action::AddSeason;
     const auto forced = decide_action_row(s2);
     REQUIRE(forced.buttons.size() == 1);
     REQUIRE(forced.buttons[0].action == Action::Remove);
 
     auto s3 = row_inputs(SeriesDetailState::InLibrary);
     s3.series_settled = true;
-    s3.next_unmonitored = 2;
+    s3.primary_season = 2;
     s3.has_next_up = true;
     s3.next_up_season = 1;
     s3.next_up_episode = 1;
@@ -665,7 +665,7 @@ TEST_CASE("a deleted season above an un-downloaded one is NOT the action row's "
     CHECK(*next == 2);
     ActionRowInputs in;
     in.state = SeriesDetailState::InLibrary;
-    in.next_unmonitored = next;
+    in.primary_season = next;
     const auto row = decide_action_row(in);
     int download_buttons = 0;
     for (const auto& b : row.buttons) {
@@ -685,4 +685,42 @@ TEST_CASE("season_delete_label three states") {
     REQUIRE(season_delete_label(SeasonDeleteState::Idle, 3)    == "Delete Season 3\xE2\x80\xA6");
     REQUIRE(season_delete_label(SeasonDeleteState::Armed, 3)   == "Confirm delete Season 3");
     REQUIRE(season_delete_label(SeasonDeleteState::Removing, 3)== "Removing season\xE2\x80\xA6");
+}
+
+TEST_CASE("action row: not-in-library add targets the suggested season",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::NotInLibrary;
+    in.primary_season = 3;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    CHECK(row.buttons[0].action == Action::AddSeason);
+    CHECK(row.buttons[0].label == "Add Season 3");
+}
+
+TEST_CASE("action row: not-in-library with no suggestion still offers Season 1",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::NotInLibrary;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    CHECK(row.buttons[0].label == "Add Season 1");
+}
+
+TEST_CASE("action row: the chooser label replaces the primary label, same action",
+          "[series_detail]") {
+    using namespace media_browser::ui;
+    ActionRowInputs in;
+    in.state = SeriesDetailState::InLibrary;
+    in.series_settled = true;
+    in.primary_season = 5;
+    in.primary_label_override = "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA";
+    in.prev_focus_action = Action::NextSeason;
+    const auto row = decide_action_row(in);
+    REQUIRE_FALSE(row.buttons.empty());
+    const auto& b = row.buttons[static_cast<size_t>(row.focus)];
+    CHECK(b.action == Action::NextSeason);
+    CHECK(b.label == "\xE2\x80\xB9 Season 6 \xC2\xB7 ~20 GB \xE2\x80\xBA");
 }
