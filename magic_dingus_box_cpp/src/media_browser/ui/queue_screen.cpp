@@ -1,4 +1,5 @@
 #include "media_browser/ui/queue_screen.h"
+#include "media_browser/ui/worker_pool.h"
 #include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
@@ -248,7 +249,9 @@ void QueueScreen::refresh_async() {
     // accumulation at one.
     if (worker_.joinable()) worker_.join();
 
-    worker_ = std::thread(&QueueScreen::run_refresh, this);
+    worker_ = std::thread([this] {
+        run_guarded("queue refresh", [this] { run_refresh(); });
+    });
 }
 
 void QueueScreen::run_refresh() {

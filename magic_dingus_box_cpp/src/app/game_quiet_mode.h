@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -33,6 +34,9 @@ public:
 
     // Test seam: blocks until the worker has applied the latest request.
     void wait_until_idle();
+    // Bounded variant (cross-worker ordering with MovieQuietMode). Returns
+    // true if the latest request was applied within `timeout`.
+    bool wait_until_idle_for(std::chrono::milliseconds timeout);
 
 private:
     void run();

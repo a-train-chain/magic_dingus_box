@@ -149,13 +149,19 @@ bool RadarrClient::is_reachable() {
     return !http_get("/ping").empty();
 }
 
-std::optional<SystemStatus> RadarrClient::get_status() {
+std::optional<SystemStatus> RadarrClient::get_status() try {
     auto resp = http_get("/api/v3/system/status");
     if (resp.empty()) return std::nullopt;
     return RadarrParsers::parse_system_status(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_status: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<MovieSearchHit> RadarrClient::lookup(const std::string& query) {
+std::vector<MovieSearchHit> RadarrClient::lookup(const std::string& query) try {
     // URL-encode query (minimal)
     std::string encoded;
     for (char c : query) {
@@ -170,25 +176,43 @@ std::vector<MovieSearchHit> RadarrClient::lookup(const std::string& query) {
     auto resp = http_get("/api/v3/movie/lookup?term=" + encoded);
     if (resp.empty()) return {};
     return RadarrParsers::parse_movie_lookup(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] lookup: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::optional<std::vector<Movie>> RadarrClient::get_library_checked() {
+std::optional<std::vector<Movie>> RadarrClient::get_library_checked() try {
     auto resp = http_get("/api/v3/movie");
     if (resp.empty()) return std::nullopt;
     return RadarrParsers::parse_movie_list(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_library_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<Movie> RadarrClient::get_library() {
     return get_library_checked().value_or(std::vector<Movie>{});
 }
 
-std::optional<Movie> RadarrClient::get_movie(int radarr_id) {
+std::optional<Movie> RadarrClient::get_movie(int radarr_id) try {
     auto resp = http_get("/api/v3/movie/" + std::to_string(radarr_id));
     if (resp.empty()) return std::nullopt;
     return RadarrParsers::parse_movie(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_movie: unexpected response shape: {}", e.what());
+    return {};
 }
 
-bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) {
+bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) try {
     set_error({});
 
     // Radarr v3 requires the full movie record (title, year, slug, images,
@@ -316,6 +340,12 @@ bool RadarrClient::add_movie(int tmdb_id, int quality_profile_id, bool monitor) 
                  movie.get("title", "?").asString(),
                  roots.front().path);
     return true;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] add_movie: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool RadarrClient::remove_movie(int radarr_id, bool delete_files) {
@@ -336,7 +366,7 @@ bool RadarrClient::trigger_search(int radarr_id) {
     return !resp.empty();
 }
 
-std::optional<std::vector<QueueItem>> RadarrClient::get_queue_checked() {
+std::optional<std::vector<QueueItem>> RadarrClient::get_queue_checked() try {
     auto resp = http_get("/api/v3/queue?pageSize=100");
     if (resp.empty()) return std::nullopt;
 
@@ -350,16 +380,28 @@ std::optional<std::vector<QueueItem>> RadarrClient::get_queue_checked() {
         return std::nullopt;
     }
     return RadarrParsers::parse_queue(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_queue_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<QueueItem> RadarrClient::get_queue() {
     return get_queue_checked().value_or(std::vector<QueueItem>{});
 }
 
-ActiveSearches RadarrClient::get_active_searches() {
+ActiveSearches RadarrClient::get_active_searches() try {
     auto resp = http_get("/api/v3/command");
     if (resp.empty()) return {};
     return RadarrParsers::parse_active_searches(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_active_searches: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool RadarrClient::cancel_queue_item(int queue_id) {
@@ -378,7 +420,7 @@ bool RadarrClient::grab_release(const Json::Value& release) {
 }
 
 std::vector<Json::Value>
-RadarrClient::get_releases_for_movie(int radarr_movie_id) {
+RadarrClient::get_releases_for_movie(int radarr_movie_id) try {
     // Interactive search — Radarr hits every Prowlarr-synced indexer
     // synchronously and merges results. Empirically takes 10-30s on a
     // 5-indexer pool; the standard 5s http_get timeout truncates the
@@ -395,12 +437,20 @@ RadarrClient::get_releases_for_movie(int radarr_movie_id) {
     std::istringstream is(resp);
     if (!Json::parseFromStream(b, is, &root, &err)) return out;
     if (!root.isArray()) return out;
-    for (const auto& r : root) out.push_back(r);
+    for (const auto& r : root) {
+        if (r.isObject()) out.push_back(r);  // callers .get() on each
+    }
     return out;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_releases_for_movie: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<std::string>
-RadarrClient::get_movie_download_hashes(int movie_id) {
+RadarrClient::get_movie_download_hashes(int movie_id) try {
     // Radarr's /api/v3/history endpoint takes movieId as a filter and
     // returns events newest-first. We pull a generous pageSize because
     // grabbed/imported/failed events for a single movie can pile up
@@ -455,10 +505,16 @@ RadarrClient::get_movie_download_hashes(int movie_id) {
         }
     }
     return out;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_movie_download_hashes: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<RadarrClient::HistoryEvent>
-RadarrClient::get_history(int radarr_movie_id, int page_size) {
+RadarrClient::get_history(int radarr_movie_id, int page_size) try {
     std::vector<HistoryEvent> out;
     std::string path = "/api/v3/history?movieId=" + std::to_string(radarr_movie_id) +
                        "&pageSize=" + std::to_string(page_size) +
@@ -469,10 +525,12 @@ RadarrClient::get_history(int radarr_movie_id, int page_size) {
     Json::Value root;
     std::string err;
     std::istringstream is(resp);
-    if (!Json::parseFromStream(b, is, &root, &err)) return out;
+    // A non-object root (array / string) would throw on root["records"].
+    if (!Json::parseFromStream(b, is, &root, &err) || !root.isObject()) return out;
     const auto& recs = root["records"];
     if (!recs.isArray()) return out;
     for (const auto& r : recs) {
+        if (!r.isObject()) continue;
         HistoryEvent e;
         e.id           = r.get("id", 0).asInt();
         e.movie_id     = r.get("movieId", 0).asInt();
@@ -482,18 +540,36 @@ RadarrClient::get_history(int radarr_movie_id, int page_size) {
         out.push_back(std::move(e));
     }
     return out;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_history: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<QualityProfile> RadarrClient::get_quality_profiles() {
+std::vector<QualityProfile> RadarrClient::get_quality_profiles() try {
     auto resp = http_get("/api/v3/qualityprofile");
     if (resp.empty()) return {};
     return RadarrParsers::parse_quality_profiles(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_quality_profiles: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<RootFolder> RadarrClient::get_root_folders() {
+std::vector<RootFolder> RadarrClient::get_root_folders() try {
     auto resp = http_get("/api/v3/rootfolder");
     if (resp.empty()) return {};
     return RadarrParsers::parse_root_folders(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[radarr] get_root_folders: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::string RadarrClient::resolve_host_path(const std::string& container_path) const {

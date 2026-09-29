@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "app/movie_quiet_mode.h"
 #include "media_browser/sonarr/sonarr_types.h"  // EpisodeInfo (stored by value)
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
@@ -48,16 +49,10 @@ namespace media_browser::ui {
 //                                       deferred toast; cancels prefetch.
 class PlaybackScreen : public MbScreen {
 public:
-    // qbit pointer is optional. When provided, enter()/leave() quiet the
-    // torrent stack for the duration of playback — concurrent torrent
-    // writes contend with GStreamer's reads and cause scrubbing freezes.
-    // HOW they quiet it is per-board (state.platform_profile
-    // .trickle_torrents_during_video): Pi 5 engages qBit's alternative
-    // speed limits (~1.5 MB/s trickle — downloads keep progressing);
-    // Pi 4B / Unknown keep the full pause_all() (USB-flash media has no
-    // random-IO headroom to give away). When null, playback simply runs
-    // without managing qBit state (e.g., unit tests, devs running
-    // without the Docker stack).
+    // Torrent-stack quieting during playback (the contention guard) is
+    // delegated to an app::MovieQuietMode set via set_quiet_mode(); when
+    // none is set, playback simply runs without managing qBit/containers
+    // (unit tests, devs running without the Docker stack).
     //
     // tmdb is used by the PlaybackOverlay to fetch similar films in the
     // background when the user opens the overlay (rotary press).
@@ -66,8 +61,22 @@ public:
     // open) to quick-add the focused similar film via Radarr.
     PlaybackScreen(app::Controller& controller, app::AppState& state,
                    ::media_browser::TmdbClient& tmdb,
-                   ::media_browser::RadarrClient& radarr,
-                   QbittorrentClient* qbit = nullptr);
+                   ::media_browser::RadarrClient& radarr);
+
+    // The contention guard's executor (owned by main.cpp, outlives this
+    // screen). enter() requests a pause in the per-session mode; leave()
+    // requests the matching resume only if enter() requested a pause. Both
+    // return immediately — the qBit round-trips and the docker stop/start
+    // script run on the executor's worker, never on the render thread.
+    void set_quiet_mode(app::MovieQuietMode* quiet) { quiet_ = quiet; }
+
+    // Builds the executor's actions: Trickle = qBit alternative speed
+    // limits; FullPause = qBit pause_all() + playback_services_pause.sh
+    // pause. Resume undoes exactly what the pause reported. `barrier` (may
+    // be empty) runs first on the worker before each action — main.cpp
+    // uses it to let a pending game quiet-mode transition finish first.
+    static app::MovieQuietMode::Actions make_quiet_actions(
+        QbittorrentClient* qbit, std::function<void()> barrier);
 
     // The quick-add worker publishes into members — join before they
     // die (a joinable std::thread member at destruction is terminate()).
@@ -182,20 +191,13 @@ private:
     app::AppState&                state_;
     ::media_browser::TmdbClient&  tmdb_;
     ::media_browser::RadarrClient& radarr_;
-    QbittorrentClient*            qbit_ = nullptr;  // optional; pause/resume during playback
-
-    // Tracks whether enter() asked qBit to pause. leave() only resumes
-    // if pause actually succeeded — avoids accidentally starting
-    // torrents that the operator manually paused before entering
-    // playback (we'd be flipping their state without consent).
-    bool qbit_was_paused_by_us_ = false;
-
-    // Trickle-branch mirror of the flag above: set when enter() engaged
-    // qBit's alternative speed limits, so leave() clears the cap only if
-    // WE set it — an operator who had alt limits on for their own
-    // reasons keeps them. Exactly one of these two flags can be set per
-    // session (the enter() branch is either/or on the platform profile).
-    bool qbit_alt_limited_by_us_ = false;
+    // Contention-guard executor (null = no quieting). The consent records
+    // (alt-limits engaged by us / torrents paused by us / containers
+    // stopped by us) live on its worker — see app::MovieQuietMode::Consent.
+    app::MovieQuietMode*          quiet_ = nullptr;
+    // True when this session's enter() requested a pause, so leave()
+    // requests the resume exactly once and only then.
+    bool quiet_requested_ = false;
 
     std::string movie_title_;
     std::string movie_path_;       // host-side path

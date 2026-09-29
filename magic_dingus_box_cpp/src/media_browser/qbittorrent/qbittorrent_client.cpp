@@ -286,7 +286,7 @@ std::string QbittorrentClient::http_post(const std::string& path,
     return resp;
 }
 
-std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
+std::vector<QbitTorrent> QbittorrentClient::get_torrents() try {
     // Lazy-login: if we don't have a session yet, get one. Subsequent
     // calls reuse the cookie until qBit invalidates it (~1hr default).
     {
@@ -338,6 +338,12 @@ std::vector<QbitTorrent> QbittorrentClient::get_torrents() {
     }
     set_error({});
     return out;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[qbit] get_torrents: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool QbittorrentClient::delete_torrent(const std::string& hash,

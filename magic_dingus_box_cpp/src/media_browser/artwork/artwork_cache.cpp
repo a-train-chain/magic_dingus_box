@@ -184,8 +184,7 @@ void ArtworkCache::upload_one(PendingUpload&& p) {
     }
 
     Entry entry;
-    entry.bytes = static_cast<std::size_t>(p.width) *
-                  static_cast<std::size_t>(p.height) * 4u;
+    entry.bytes = texture_bytes(p.width, p.height);
     entry.width = p.width;
     entry.height = p.height;
     entry.last_access = std::chrono::steady_clock::now();
@@ -214,7 +213,7 @@ void ArtworkCache::upload_one(PendingUpload&& p) {
         std::lock_guard<std::mutex> lock(entries_mutex_);
         entries_[p.url] = entry;
         bytes_in_use_ += entry.bytes;
-        evict_lru_locked();
+        evict_lru_locked(max_bytes_);
     }
 
     // Drop the in-flight marker. (Not strictly needed — the entries_
@@ -226,11 +225,43 @@ void ArtworkCache::upload_one(PendingUpload&& p) {
     }
 }
 
-void ArtworkCache::evict_lru_locked() {
+std::size_t ArtworkCache::texture_bytes(int width, int height) {
+    if (width <= 0 || height <= 0) return 0;
+    std::size_t total = 0;
+    std::size_t w = static_cast<std::size_t>(width);
+    std::size_t h = static_cast<std::size_t>(height);
+    while (true) {
+        total += w * h * 4u;
+        if (w == 1 && h == 1) break;
+        w = std::max<std::size_t>(1, w / 2);
+        h = std::max<std::size_t>(1, h / 2);
+    }
+    return total;
+}
+
+std::size_t ArtworkCache::trim_textures_to(std::size_t target_bytes) {
+    std::size_t evicted = 0;
+    std::size_t before = 0;
+    std::size_t after = 0;
+    {
+        std::lock_guard<std::mutex> lock(entries_mutex_);
+        before = bytes_in_use_;
+        evicted = evict_lru_locked(target_bytes);
+        after = bytes_in_use_;
+    }
+    if (evicted > 0) {
+        spdlog::info("[artwork] trimmed {} textures ({} -> {} bytes)",
+                     evicted, before, after);
+    }
+    return evicted;
+}
+
+std::size_t ArtworkCache::evict_lru_locked(std::size_t limit) {
     // Called with entries_mutex_ held. Walk entries, find the oldest
     // last_access, drop it, repeat until under budget. Simple O(n*k)
     // algorithm — fine for n in the low thousands (our budget size).
-    while (bytes_in_use_ > max_bytes_ && !entries_.empty()) {
+    std::size_t evicted = 0;
+    while (bytes_in_use_ > limit && !entries_.empty()) {
         auto oldest = entries_.begin();
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
             if (it->second.last_access < oldest->second.last_access) {
@@ -246,7 +277,9 @@ void ArtworkCache::evict_lru_locked() {
         spdlog::debug("[artwork] evicted LRU entry url='{}' ({} bytes)",
                       oldest->first, oldest->second.bytes);
         entries_.erase(oldest);
+        ++evicted;
     }
+    return evicted;
 }
 
 std::size_t ArtworkCache::entries_count() const {
@@ -333,8 +366,8 @@ void ArtworkCache::clear_textures() {
         entries_.clear();
         bytes_in_use_ = 0;
     }
-    spdlog::info("[artwork] cleared {} textures + {} queued uploads "
-                 "for game session", dropped, discarded.size());
+    spdlog::info("[artwork] cleared {} textures + {} queued uploads",
+                 dropped, discarded.size());
 }
 
 // ---------------------------------------------------------------------------

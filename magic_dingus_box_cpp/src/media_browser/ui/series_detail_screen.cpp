@@ -1,4 +1,5 @@
 #include "media_browser/ui/series_detail_screen.h"
+#include "media_browser/ui/worker_pool.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -2246,9 +2247,12 @@ void SeriesDetailScreen::maybe_repoll_series() {
     poll_inflight_.store(true);
     const uint64_t gen = poll_gen_.fetch_add(1) + 1;
     try {
-        poll_worker_ = std::thread(&SeriesDetailScreen::run_series_poll, this,
-                                   gen, series_->sonarr_id, sonarr_ok_,
-                                   in_library_);
+        poll_worker_ = std::thread(
+            [this, gen, id = series_->sonarr_id, ok = sonarr_ok_,
+             lib = in_library_] {
+                run_guarded("series poll",
+                            [&] { run_series_poll(gen, id, ok, lib); });
+            });
     } catch (const std::system_error& e) {
         spdlog::warn("[SeriesDetail] poll spawn failed: {}", e.what());
         poll_inflight_.store(false);

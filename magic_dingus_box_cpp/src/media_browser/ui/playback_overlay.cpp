@@ -114,20 +114,50 @@ void cap_lines(::ui::Renderer& r, std::vector<std::string>& lines,
 PlaybackOverlay::PlaybackOverlay() = default;
 
 PlaybackOverlay::~PlaybackOverlay() {
-    cancel_prefetch();
-    if (fetch_thread_.joinable()) fetch_thread_.join();
+    // Cancellation aborts the workers' curl transfers at the next
+    // progress tick, so these joins are short even with TMDB unreachable.
+    // Joining (rather than detaching) keeps `this` and the TmdbClient
+    // reference valid for the workers' whole lifetime.
+    retire_current();
+    for (auto& w : retired_) {
+        if (w.thread.joinable()) w.thread.join();
+    }
+    retired_.clear();
+}
+
+void PlaybackOverlay::retire_current() {
+    if (current_.cancel) current_.cancel->store(true);
+    if (current_.thread.joinable()) {
+        retired_.push_back(std::move(current_));
+    }
+    current_ = Worker{};
+}
+
+void PlaybackOverlay::reap_retired() {
+    for (auto it = retired_.begin(); it != retired_.end();) {
+        if (it->done && it->done->load(std::memory_order_acquire)) {
+            if (it->thread.joinable()) it->thread.join();  // instant
+            it = retired_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
                                       const PlaybackOverlayMovieMeta& meta) {
     meta_ = meta;
+    reap_retired();
 
     if (meta.tmdb_id == 0) {
         // No TMDB binding — mark done with empty list, no thread needed.
+        retire_current();
         {
             std::lock_guard<std::mutex> lk(similar_mu_);
+            ++generation_;
             similar_.clear();
         }
+        prefetched_tmdb_id_ = 0;
         fetch_state_.store(FetchState::Loaded);
         spdlog::debug("[playback_overlay] tmdb_id=0, skipping similar-films fetch");
         return;
@@ -141,57 +171,96 @@ void PlaybackOverlay::start_prefetch(::media_browser::TmdbClient& tmdb,
         return;
     }
 
-    // Cancel any previous in-flight fetch and wait for it to exit.
-    cancel_prefetch();
-    if (fetch_thread_.joinable()) fetch_thread_.join();
+    // Cancel any previous in-flight fetch WITHOUT waiting for it: it is
+    // retired and reaped once it has noticed the cancel (never a blocking
+    // join on the render thread).
+    retire_current();
 
     prefetched_tmdb_id_ = meta.tmdb_id;
-    cancel_requested_.store(false);
     fetch_state_.store(FetchState::InFlight);
+    uint64_t gen = 0;
     {
         std::lock_guard<std::mutex> lk(similar_mu_);
+        gen = ++generation_;
         similar_.clear();
     }
 
     spdlog::info("[playback_overlay] start_prefetch tmdb_id={} title='{}'",
                  meta.tmdb_id, meta.title);
 
-    fetch_thread_ = std::thread([this, &tmdb, id = meta.tmdb_id]() {
-        // Try recommendations first — better algorithmic suggestions than
-        // /similar. Fall back to get_similar when recommendations is empty
-        // (some films have no data on TMDB's recommendations endpoint).
-        auto results = tmdb.get_recommendations(id, /*page=*/1).hits;
-        if (cancel_requested_.load()) {
-            spdlog::debug("[playback_overlay] prefetch cancelled for tmdb_id={}", id);
-            return;
-        }
-        spdlog::info("[playback_overlay] get_recommendations returned {} films for tmdb_id={}",
-                     results.size(), id);
-        if (results.empty()) {
-            results = tmdb.get_similar(id, /*page=*/1).hits;
-            if (cancel_requested_.load()) {
-                spdlog::debug("[playback_overlay] prefetch cancelled (fallback) for tmdb_id={}", id);
-                return;
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    auto done   = std::make_shared<std::atomic<bool>>(false);
+    try {
+        current_.thread = std::thread([this, &tmdb, id = meta.tmdb_id, gen,
+                                       cancel, done]() {
+            ::media_browser::TmdbClient::ScopedCancel guard(cancel.get());
+            std::vector<::media_browser::TmdbSearchHit> results;
+            bool ok = true;
+            try {
+                // Try recommendations first — better algorithmic
+                // suggestions than /similar. Fall back to get_similar when
+                // recommendations is empty (some films have no data on
+                // TMDB's recommendations endpoint).
+                results = tmdb.get_recommendations(id, /*page=*/1).hits;
+                if (!cancel->load()) {
+                    spdlog::info("[playback_overlay] get_recommendations returned {} films for tmdb_id={}",
+                                 results.size(), id);
+                    if (results.empty()) {
+                        results = tmdb.get_similar(id, /*page=*/1).hits;
+                        spdlog::info("[playback_overlay] get_similar (fallback) returned {} films for tmdb_id={}",
+                                     results.size(), id);
+                    }
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("[playback_overlay] prefetch threw: {}", e.what());
+                ok = false;
+            } catch (...) {
+                spdlog::error("[playback_overlay] prefetch threw");
+                ok = false;
             }
-            spdlog::info("[playback_overlay] get_similar (fallback) returned {} films for tmdb_id={}",
-                         results.size(), id);
-        }
-        if (results.size() > static_cast<size_t>(kMaxSimilar)) {
-            results.resize(static_cast<size_t>(kMaxSimilar));
-        }
-        auto count = results.size();
-        {
-            std::lock_guard<std::mutex> lk(similar_mu_);
-            similar_ = std::move(results);
-        }
-        fetch_state_.store(FetchState::Loaded);
-        spdlog::info("[playback_overlay] prefetch complete: {} films for tmdb_id={}",
-                     count, id);
-    });
+            if (results.size() > static_cast<size_t>(kMaxSimilar)) {
+                results.resize(static_cast<size_t>(kMaxSimilar));
+            }
+            const auto count = results.size();
+            {
+                // Publish only while still the current generation and not
+                // cancelled — checked under the same lock start_prefetch
+                // bumps the generation under, so there is no window.
+                std::lock_guard<std::mutex> lk(similar_mu_);
+                if (!cancel->load() && gen == generation_) {
+                    similar_ = std::move(results);
+                    fetch_state_.store(ok ? FetchState::Loaded
+                                          : FetchState::Failed);
+                    spdlog::info("[playback_overlay] prefetch complete: {} films for tmdb_id={}",
+                                 count, id);
+                } else {
+                    spdlog::debug("[playback_overlay] prefetch cancelled for tmdb_id={}", id);
+                }
+            }
+            done->store(true, std::memory_order_release);
+        });
+        current_.cancel = std::move(cancel);
+        current_.done   = std::move(done);
+    } catch (...) {
+        // std::thread construction failed (resource exhaustion). The
+        // overlay simply shows no similar films.
+        current_ = Worker{};
+        fetch_state_.store(FetchState::Failed);
+        spdlog::error("[playback_overlay] could not spawn prefetch worker");
+    }
 }
 
 void PlaybackOverlay::cancel_prefetch() {
-    cancel_requested_.store(true);
+    // Non-blocking: flag the worker (its curl transfer aborts), retire it
+    // for reaping. A cancelled fetch never publishes, so reset the state
+    // to Idle — otherwise a later start_prefetch for the SAME film would
+    // see InFlight and skip, leaving the carousel empty forever.
+    retire_current();
+    auto fs = fetch_state_.load();
+    if (fs == FetchState::InFlight) {
+        fetch_state_.store(FetchState::Idle);
+        prefetched_tmdb_id_ = 0;
+    }
 }
 
 void PlaybackOverlay::open() {

@@ -541,6 +541,7 @@ ProwlarrClient::parse_search_response(const std::string& json_body) {
     if (!Json::parseFromStream(b, is, &root, &err)) return out;
     if (!root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;  // .get() on a non-object throws
         ReleaseRecord rr;
         rr.title        = r.get("title", "").asString();
         rr.indexer      = r.get("indexer", "").asString();
@@ -607,13 +608,19 @@ ProwlarrClient::parse_indexer_list(const std::string& json_body) {
 }
 
 std::vector<ProwlarrClient::IndexerInfo>
-ProwlarrClient::list_indexers() {
+ProwlarrClient::list_indexers() try {
     if (!is_configured()) return {};
     std::string body = http_get("/api/v1/indexer");
     return parse_indexer_list(body);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[prowlarr] list_indexers: unexpected response shape: {}", e.what());
+    return {};
 }
 
-bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) {
+bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) try {
     if (!is_configured() || id <= 0) return false;
 
     // Step 1: fetch the full indexer entity. Prowlarr's PUT requires the
@@ -655,6 +662,12 @@ bool ProwlarrClient::set_indexer_enabled(int id, bool enabled) {
     spdlog::info("[prowlarr] indexer {} {}",
                  id, enabled ? "enabled" : "disabled");
     return true;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[prowlarr] set_indexer_enabled: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::string ProwlarrClient::http_get(const std::string& path) {

@@ -101,6 +101,19 @@ public:
     // round-trip.
     void clear_textures();
 
+    // Main thread only. Evicts least-recently-used textures until at most
+    // `target_bytes` remain (queued uploads are kept). Called when Media
+    // Browser movie playback starts: GPU texture memory on the Pi is
+    // unswappable system RAM, and a full 256 MB poster cache competes with
+    // the video pipeline on a 1.5 GB Pi 4B. Trim, not clear, so the posters
+    // touched most recently (the playing film's, the overlay's) survive.
+    // Returns the number of textures released.
+    std::size_t trim_textures_to(std::size_t target_bytes);
+
+    // GPU bytes of an RGBA8 w x h texture INCLUDING its full mipmap chain
+    // (glGenerateMipmap adds ~1/3). This is what the budget counts.
+    static std::size_t texture_bytes(int width, int height);
+
     // Diagnostics
     std::size_t entries_count() const;
     std::size_t bytes_in_use() const;
@@ -144,8 +157,8 @@ private:
         std::vector<std::uint8_t> pixels_rgba;  // always 4-channel (RGBA8)
     };
 
-    // One texture cached in GL. bytes tracks pixel byte size (w*h*4) so
-    // LRU eviction can hit a byte budget. texture_id == 0 in test mode.
+    // One texture cached in GL. bytes = texture_bytes(w, h) (base level +
+    // mipmap chain) so LRU eviction hits a real GPU-memory budget. texture_id == 0 in test mode.
     struct Entry {
         std::uint32_t texture_id = 0;
         std::size_t bytes = 0;
@@ -157,9 +170,9 @@ private:
     // Background thread entry point.
     void fetcher_thread_main();
 
-    // Evict LRU entries until bytes_in_use_ <= max_bytes_. Must be
-    // called with entries_mutex_ held.
-    void evict_lru_locked();
+    // Evict LRU entries until bytes_in_use_ <= limit. Must be called
+    // with entries_mutex_ held. Returns the number evicted.
+    std::size_t evict_lru_locked(std::size_t limit);
 
     // Actual GL upload of a pending item. Returns the new texture_id
     // and its byte size via out params. In TEST_MODE the GL portion is

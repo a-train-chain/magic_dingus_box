@@ -25,6 +25,7 @@ bool parse_json(const std::string& text, Json::Value& out) {
 std::string pick_image(const Json::Value& images, const std::string& coverType) {
     if (!images.isArray()) return "";
     for (const auto& img : images) {
+        if (!img.isObject()) continue;  // operator[] on a non-object throws
         if (img["coverType"].asString() == coverType) {
             // Sonarr mixes TMDB and TVDB/fanart.tv artwork. The TMDB ones get
             // downsized to w500 (shared artwork-cache key + the 256MB budget);
@@ -70,6 +71,7 @@ void fill_seasons(const Json::Value& r, std::vector<Season>& out) {
     const auto& seasons = r["seasons"];
     if (!seasons.isArray()) return;
     for (const auto& s : seasons) {
+        if (!s.isObject()) continue;
         Season season;
         season.season_number = s.get("seasonNumber", 0).asInt();
         season.monitored     = s.get("monitored", false).asBool();
@@ -125,6 +127,7 @@ std::vector<SeriesSearchHit> SonarrParsers::parse_series_lookup(const std::strin
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         SeriesSearchHit h;
         fill_search_hit(r, h);
         out.push_back(std::move(h));
@@ -137,6 +140,7 @@ std::vector<Series> SonarrParsers::parse_series_list(const std::string& json) {
     Json::Value root;
     if (!parse_json(json, root) || !root.isArray()) return out;
     for (const auto& r : root) {
+        if (!r.isObject()) continue;
         Series s;
         fill_search_hit(r, s);
         fill_library_fields(r, s);
@@ -157,10 +161,12 @@ std::optional<Series> SonarrParsers::parse_series(const std::string& json) {
 std::vector<SonarrQueueItem> SonarrParsers::parse_queue(const std::string& json) {
     std::vector<SonarrQueueItem> out;
     Json::Value root;
-    if (!parse_json(json, root)) return out;
+    // root["records"] on a non-object root throws Json::LogicError.
+    if (!parse_json(json, root) || !root.isObject()) return out;
     const auto& records = root["records"];
     if (!records.isArray()) return out;
     for (const auto& r : records) {
+        if (!r.isObject()) continue;
         SonarrQueueItem q;
         q.id            = r.get("id", 0).asInt();
         q.series_id     = r.get("seriesId", 0).asInt();

@@ -1,4 +1,5 @@
 #include "media_browser/ui/detail_screen.h"
+#include "media_browser/ui/worker_pool.h"
 #include "media_browser/ui/mb_chrome.h"
 
 #include <algorithm>
@@ -455,8 +456,10 @@ void DetailScreen::maybe_repoll_library() {
     // bail return), so the thread is at/near exit. join() reaps it (near-
     // instant, no render stall) before we reassign.
     if (lib_poll_worker_.joinable()) lib_poll_worker_.join();
-    lib_poll_worker_ = std::thread(&DetailScreen::run_library_poll, this,
-                                   gen, radarr_id);
+    lib_poll_worker_ = std::thread([this, gen, radarr_id] {
+        run_guarded("detail library poll",
+                    [&] { run_library_poll(gen, radarr_id); });
+    });
 }
 
 // Worker body (off the render thread). Re-reads the movie record for the
@@ -899,7 +902,9 @@ Screen DetailScreen::do_remove_confirm() {
     remove_in_flight_.store(true, std::memory_order_release);
     show_banner("Removing…");
     try {
-        remove_worker_ = std::thread(&DetailScreen::run_remove, this, radarr_id);
+        remove_worker_ = std::thread([this, radarr_id] {
+            run_guarded("detail remove", [&] { run_remove(radarr_id); });
+        });
     } catch (const std::system_error&) {
         remove_in_flight_.store(false, std::memory_order_release);
         show_banner("Remove failed to start; try again");

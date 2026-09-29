@@ -71,9 +71,7 @@ ReleasePickerScreen::~ReleasePickerScreen() {
     // before results land — load_state_ is already Idle by then so
     // there's nothing to race against.
     load_generation_.fetch_add(1);
-    for (auto& t : load_workers_) {
-        if (t.joinable()) t.join();
-    }
+    load_workers_.join_all();
 }
 
 void ReleasePickerScreen::load_async(int radarr_movie_id,
@@ -104,21 +102,37 @@ void ReleasePickerScreen::load_async(int radarr_movie_id,
     spdlog::info("[release_picker] load_async movie_id={} title='{}' gen={}",
                  radarr_movie_id, movie_title_, gen);
 
-    // Opportunistically reap older workers so a spam-clicking user doesn't
-    // accumulate dozens of threads — Radarr's interactive search timeout
-    // is 45s, so the front workers in this vector are usually long-done
-    // and join() returns immediately. Same heuristic ProwlarrClient uses.
-    if (load_workers_.size() > 4) {
-        if (load_workers_.front().joinable()) load_workers_.front().join();
-        load_workers_.erase(load_workers_.begin());
-    }
+    // Reap finished workers (instant joins only — never wait on one that
+    // is still inside Radarr's up-to-45 s interactive search). A stale
+    // worker's result is discarded by the generation check, so letting it
+    // run to completion in the background costs nothing but a thread.
+    load_workers_.reap();
 
     // Tracked rather than detached: ~ReleasePickerScreen joins every
     // worker so a thread mid-CURL doesn't outlive the screen and segfault
-    // on result publication. Same pattern DetailScreen's tmdb_workers_
-    // uses.
-    load_workers_.emplace_back(&ReleasePickerScreen::run_load, this,
-                               gen, radarr_movie_id);
+    // on result publication. Any exception (e.g. a Json::LogicError on an
+    // odd-shaped release) becomes Failed instead of std::terminate.
+    try {
+        load_workers_.spawn([this, gen, radarr_movie_id]() {
+            try {
+                run_load(gen, radarr_movie_id);
+            } catch (const std::exception& e) {
+                if (gen == load_generation_.load()) {
+                    load_state_.store(LoadState::Failed);
+                }
+                spdlog::warn("[release_picker] load gen={} threw: {}",
+                             gen, e.what());
+            } catch (...) {
+                if (gen == load_generation_.load()) {
+                    load_state_.store(LoadState::Failed);
+                }
+                spdlog::warn("[release_picker] load gen={} threw", gen);
+            }
+        });
+    } catch (...) {
+        load_state_.store(LoadState::Failed);
+        spdlog::error("[release_picker] could not spawn load worker");
+    }
 }
 
 void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
@@ -157,6 +171,7 @@ void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
     std::vector<ReleaseCandidate> candidates;
     candidates.reserve(json_releases.size());
     for (const auto& r : json_releases) {
+        if (!r.isObject()) continue;  // .get() on a non-object throws
         ReleaseCandidate c;
         c.title        = r.get("title", "").asString();
         c.indexer      = r.get("indexer", "").asString();
@@ -206,6 +221,7 @@ void ReleasePickerScreen::run_load(int gen, int radarr_movie_id) {
 }
 
 void ReleasePickerScreen::update() {
+    load_workers_.reap();
     if (load_state_.load() != LoadState::Ready) return;
     std::vector<ReleaseCandidate> candidates;
     std::string title;

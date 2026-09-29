@@ -5,6 +5,7 @@
 #include <spdlog/spdlog.h>
 
 #include "app/app_state.h"
+#include "app/torrent_pause_marker.h"
 #include "app/controller.h"
 #include "media_browser/qbittorrent/qbittorrent_client.h"
 #include "media_browser/radarr/radarr_client.h"
@@ -14,6 +15,7 @@
 #include "ui/renderer.h"
 #include "ui/theme.h"
 #include "ui/toast.h"
+#include "utils/config.h"
 #include "utils/result.h"
 #include "video/playback_error_policy.h"
 
@@ -21,9 +23,75 @@ namespace media_browser::ui {
 
 PlaybackScreen::PlaybackScreen(app::Controller& controller, app::AppState& state,
                                 ::media_browser::TmdbClient& tmdb,
-                                ::media_browser::RadarrClient& radarr,
-                                QbittorrentClient* qbit)
-    : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr), qbit_(qbit) {}
+                                ::media_browser::RadarrClient& radarr)
+    : controller_(controller), state_(state), tmdb_(tmdb), radarr_(radarr) {}
+
+app::MovieQuietMode::Actions PlaybackScreen::make_quiet_actions(
+        QbittorrentClient* qbit, std::function<void()> barrier) {
+    using Mode = app::MovieQuietMode::Mode;
+    using Consent = app::MovieQuietMode::Consent;
+    app::MovieQuietMode::Actions a;
+    // Runs on the MovieQuietMode worker thread — never the render thread.
+    a.pause = [qbit, barrier](Mode mode) -> Consent {
+        if (barrier) barrier();
+        Consent c;
+        if (qbit != nullptr) {
+            if (mode == Mode::Trickle) {
+                c.alt_limited = qbit->set_alt_speed_limits_enabled(true);
+                if (!c.alt_limited) {
+                    spdlog::warn("[playback] qbit trickle cap failed; "
+                                 "downloads run uncapped during playback");
+                }
+            } else {
+                c.qbit_paused = qbit->pause_all();
+                if (c.qbit_paused) {
+                    app::mark_torrents_paused_by_kiosk(
+                        config::get_data_path() + "/qbit_paused_by_kiosk", true);
+                }
+                if (!c.qbit_paused) {
+                    spdlog::warn("[playback] qbit pause_all failed; "
+                                 "playback may stutter on USB-flash media");
+                }
+            }
+        }
+        if (mode == Mode::FullPause) {
+            // Best-effort; fixed path, no user input in the command. The
+            // script is idempotent (no-op without Docker/containers).
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
+            c.services_paused = true;
+        }
+        return c;
+    };
+    // Undo ONLY what the pause reported — the consent records: never
+    // resume a torrent the operator had stopped, never clear an alt-limits
+    // cap the operator engaged, never start containers we did not stop.
+    // (A cap WE set that fails to clear is additionally covered by the
+    // unconditional clear at kiosk startup; stranded containers by the
+    // startup unpause — both crash recovery in main.cpp.)
+    a.resume = [qbit, barrier](const Consent& c) {
+        if (barrier) barrier();
+        if (qbit != nullptr && c.alt_limited &&
+            !qbit->set_alt_speed_limits_enabled(false)) {
+            spdlog::warn("[playback] qbit trickle cap clear failed; "
+                         "downloads stay capped until the next kiosk start");
+        }
+        if (qbit != nullptr && c.qbit_paused) {
+            if (qbit->resume_all()) {
+                app::mark_torrents_paused_by_kiosk(
+                    config::get_data_path() + "/qbit_paused_by_kiosk", false);
+            } else {
+                spdlog::warn("[playback] qbit resume_all failed; retried at "
+                             "next kiosk start");
+            }
+        }
+        if (c.services_paused) {
+            (void)std::system(
+                "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
+        }
+    };
+    return a;
+}
 
 void PlaybackScreen::bump_hud_visibility() {
     hud_visible_until_ = std::chrono::steady_clock::now()
@@ -124,8 +192,6 @@ void PlaybackScreen::enter() {
     exit_pending_ = false;
     ended_on_error_ = false;
     deferred_toast_.clear();
-    qbit_was_paused_by_us_ = false;
-    qbit_alt_limited_by_us_ = false;
     // EOS latch pair resets TOGETHER here and in advance_to_next_episode()
     // — the two session starts — so each playback session gets exactly one
     // consume-once report from take_eos_watched().
@@ -173,54 +239,22 @@ void PlaybackScreen::enter() {
     // the trickle on the MemAvailable actually measured right now (see
     // platform_profile.h for the stale-measurement history).
     //
-    // Best-effort either way: a qBit failure here doesn't abort playback
-    // — we just log and continue with whatever performance the disk can
-    // give us. Same rationale as the controller_.load_file fallback
-    // path below.
+    // Best-effort either way: a qBit failure doesn't abort playback.
+    //
+    // NON-BLOCKING: the work (qBit round-trips at 5 s each plus a possible
+    // 403 re-login, and the docker stop script) runs on the MovieQuietMode
+    // worker. It used to run right here on the render thread and could
+    // exceed WatchdogSec=10 with a wedged service. The cost is that the
+    // pipeline's first reads may overlap the pause by a second or two.
+    //
+    // Session-gated via quiet_mode: boards that pause by profile (Pi 4B)
+    // always pay the cost, and a trickle-profile board pays it only when
+    // MemAvailable at this instant is below the floor (the 2026-08-11
+    // zram freeze history lives in platform_profile.h). The 20-40s
+    // container restart on exit is the known cost of a FullPause session.
     const long mem_avail_kib = platform::read_mem_available_kib();
     const auto quiet_mode = platform::service_quiet_mode(
         state_.platform_profile, mem_avail_kib);
-    if (qbit_ != nullptr) {
-        if (quiet_mode == platform::ServiceQuietMode::Trickle) {
-            if (qbit_->set_alt_speed_limits_enabled(true)) {
-                qbit_alt_limited_by_us_ = true;
-            } else {
-                spdlog::warn("[playback] qbit trickle cap failed; "
-                             "downloads run uncapped during playback");
-            }
-        } else {
-            if (qbit_->pause_all()) {
-                qbit_was_paused_by_us_ = true;
-            } else {
-                spdlog::warn("[playback] qbit pause_all failed; "
-                             "playback may stutter on USB-flash media");
-            }
-        }
-    }
-
-    // Also pause the Radarr/Prowlarr/Byparr containers — frees ~300 MB
-    // RAM and ~6% CPU for the duration of the movie so the kiosk's
-    // video pipeline isn't competing with metadata syncs / indexer
-    // queries / Cloudflare-challenge solving. The helper is best-effort
-    // (no-op if Docker isn't installed, the user isn't in the docker
-    // group, or the containers don't exist on this Pi). Resumed on
-    // leave() via the symmetric "unpause" call. Output is logged via
-    // shell, not spdlog, so we discard the return code here.
-    //
-    // std::system() is acceptable for this fire-and-forget shell call
-    // because (a) the script is fixed-path / not derived from any
-    // user-controllable input, (b) we don't care about the exit code
-    // beyond a debug log line, (c) the script itself is idempotent.
-    //
-    // Session-gated via quiet_mode (computed above): boards that pause by
-    // profile (Pi 4B) always pay the cost, and a trickle-profile board
-    // pays it only when MemAvailable at this instant is below the floor.
-    // The old static skip trusted a 2026-07-26 measurement ("1122MB
-    // free") that the stack outgrew — by 2026-08-11 the same board sat
-    // 768MB into zram swap and the kiosk took 300k major faults during
-    // one movie. The 20-40s container restart on exit (the false "tunnel
-    // down" toast, the blank grid) is the known cost of a FullPause
-    // session; the marker-aware cascade keeps it merely cosmetic.
     if (quiet_mode == platform::ServiceQuietMode::FullPause) {
         if (state_.platform_profile.pause_services_during_movie) {
             spdlog::info("[playback] full service pause (profile)");
@@ -230,12 +264,16 @@ void PlaybackScreen::enter() {
                          mem_avail_kib / 1024,
                          platform::kServiceQuietMemFloorKiB / 1024);
         }
-        (void)std::system(
-            "/usr/local/bin/playback_services_pause.sh pause >/dev/null 2>&1");
     } else {
-        spdlog::info("[playback] skipping service pause "
-                     "(memory headroom: {} MiB available)",
+        spdlog::info("[playback] trickle (no service pause; memory "
+                     "headroom: {} MiB available)",
                      mem_avail_kib / 1024);
+    }
+    if (quiet_ != nullptr && !quiet_requested_) {
+        quiet_->request_pause(quiet_mode == platform::ServiceQuietMode::Trickle
+                                  ? app::MovieQuietMode::Mode::Trickle
+                                  : app::MovieQuietMode::Mode::FullPause);
+        quiet_requested_ = true;
     }
 
     // Empty playlist_dir disables the playlist-dir-relative resolution
@@ -301,8 +339,8 @@ void PlaybackScreen::enter() {
     // Start pre-fetching similar films in the background so they are ready
     // by the time the user presses the rotary to open the overlay.
     // Idempotent for the same tmdb_id; no-op when tmdb_id == 0.
-    // The fetch runs on a detached std::thread inside PlaybackOverlay; the
-    // overlay's destructor joins it, so lifetime is safe.
+    // The fetch runs on a worker owned by PlaybackOverlay; a superseded
+    // one is cancelled and reaped without ever blocking this thread.
     overlay_.start_prefetch(tmdb_, overlay_meta_);
 }
 
@@ -311,10 +349,10 @@ void PlaybackScreen::leave() {
     // the user long-presses BTN4 and the dispatcher hard-exits to MainMenu.
     controller_.stop();
 
-    // Cancel any in-flight similar-films prefetch so its thread doesn't
-    // outlive the screen's use of tmdb_ after we've left. The thread checks
-    // cancel_requested_ and exits early; join happens in PlaybackOverlay's
-    // destructor (or on the next start_prefetch call).
+    // Cancel any in-flight similar-films prefetch. Non-blocking: the cancel
+    // flag aborts the worker's curl transfer (TmdbClient::ScopedCancel) and
+    // the retired thread is reaped once finished, or joined in
+    // PlaybackOverlay's destructor — never waited on here.
     overlay_.cancel_prefetch();
     overlay_.close();
 
@@ -345,27 +383,15 @@ void PlaybackScreen::leave() {
         deferred_toast_.clear();
     }
 
-    // Undo whatever torrent quieting enter() did — and ONLY what enter()
-    // did. The two flags are the consent records: never resume a torrent
-    // the operator had manually stopped before entering playback, and
-    // never clear an alt-limits cap the operator engaged for their own
-    // reasons. (A cap WE set that fails to clear here is additionally
-    // covered by the unconditional clear at kiosk startup — crash
-    // recovery in main.cpp's qBit init.)
-    if (qbit_ != nullptr && qbit_alt_limited_by_us_) {
-        if (!qbit_->set_alt_speed_limits_enabled(false)) {
-            spdlog::warn("[playback] qbit trickle cap clear failed; "
-                         "downloads stay capped until the next kiosk start");
-        }
-        qbit_alt_limited_by_us_ = false;
+    // Undo whatever quieting enter() did — and ONLY what it did. The
+    // resume is queued behind enter()'s pause on the MovieQuietMode worker
+    // (a resume can never overtake it; a pause that has not started yet is
+    // simply cancelled), and the worker undoes exactly what that pause
+    // reported. Non-blocking: see enter().
+    if (quiet_ != nullptr && quiet_requested_) {
+        quiet_->request_resume();
     }
-    if (qbit_ != nullptr && qbit_was_paused_by_us_) {
-        if (!qbit_->resume_all()) {
-            spdlog::warn("[playback] qbit resume_all failed; "
-                         "operator may need to manually resume from web UI");
-        }
-        qbit_was_paused_by_us_ = false;
-    }
+    quiet_requested_ = false;
 
     // One-shot watch-state carriers die with the session. start_position_
     // must not leak into a later playback that never called
@@ -389,16 +415,6 @@ void PlaybackScreen::leave() {
     series_title_.clear();
     current_index_ = -1;
     end_overlay_ = {};
-
-    // Symmetric un-pause for the Radarr/Prowlarr/Byparr containers we
-    // froze in enter(). Deliberately left UNCONDITIONAL even though
-    // enter() is now platform-gated: the helper is idempotent (a no-op
-    // for un-paused or missing containers), and keeping it unconditional
-    // means a box that was paused by an older build — or by the game
-    // quiet-mode path — always gets recovered. The worst case
-    // (un-pausing something already running) is harmless.
-    (void)std::system(
-        "/usr/local/bin/playback_services_pause.sh unpause >/dev/null 2>&1");
 
     spdlog::info("[playback] left playback screen");
 }

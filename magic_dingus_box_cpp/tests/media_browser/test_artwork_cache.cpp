@@ -66,7 +66,7 @@ TEST_CASE("Injected upload is promoted to an entry by pump_for_tests", "[artwork
     std::size_t uploaded = cache.pump_for_tests();
     REQUIRE(uploaded == 1);
     REQUIRE(cache.entries_count() == 1);
-    REQUIRE(cache.bytes_in_use() == 20u * 30u * 4u);
+    REQUIRE(cache.bytes_in_use() == ArtworkCache::texture_bytes(20, 30));
     REQUIRE(cache.bytes_waiting_upload() == 0);
 
     // Subsequent get_or_fetch returns the synthetic non-zero texture id.
@@ -91,13 +91,14 @@ TEST_CASE("LRU eviction drops oldest entries when over budget", "[artwork]") {
     // Budget of 1KB. Each "poster" is 32x32x4 = 4096 bytes — exactly 4KB,
     // so inserting the 2nd one must evict the 1st. Adjust to a size
     // where exactly one poster fits at a time.
-    const int dim = 16;  // 16*16*4 = 1024 bytes per entry.
-    ArtworkCache cache(1024);
+    const int dim = 16;  // 16*16*4 = 1024 base bytes; 1364 with mips.
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(one);
 
     cache.test_inject_ready_upload(make_upload("a", dim, dim));
     REQUIRE(cache.pump_for_tests() == 1);
     REQUIRE(cache.entries_count() == 1);
-    REQUIRE(cache.bytes_in_use() == 1024);
+    REQUIRE(cache.bytes_in_use() == one);
 
     // A very short sleep ensures the second entry's last_access is
     // strictly later than the first's — the LRU picker uses <, so
@@ -109,16 +110,16 @@ TEST_CASE("LRU eviction drops oldest entries when over budget", "[artwork]") {
 
     // Still exactly one entry in the cache — "a" must have been evicted.
     REQUIRE(cache.entries_count() == 1);
-    REQUIRE(cache.bytes_in_use() == 1024);
+    REQUIRE(cache.bytes_in_use() == one);
     REQUIRE(cache.get_or_fetch("a") == 0);  // evicted, not present
     REQUIRE(cache.get_or_fetch("b") != 0);  // still there
 }
 
 TEST_CASE("LRU: touching the older entry keeps it alive across a new insert",
           "[artwork]") {
-    const int dim = 16;  // 1024 bytes each.
+    const int dim = 16;
     // Budget holds 2 entries exactly. Inserting a 3rd evicts one.
-    ArtworkCache cache(2048);
+    ArtworkCache cache(2 * ArtworkCache::texture_bytes(dim, dim));
 
     cache.test_inject_ready_upload(make_upload("a", dim, dim));
     cache.test_inject_ready_upload(make_upload("b", dim, dim));
@@ -228,4 +229,43 @@ TEST_CASE("clear_textures drops entries, queued uploads, and their "
     cache.test_inject_ready_upload(make_upload("https://example.com/p3.jpg", 8, 8));
     REQUIRE(cache.pump_for_tests() == 1);
     REQUIRE(cache.entries_count() == 1);
+}
+
+TEST_CASE("texture_bytes counts the full mipmap chain", "[artwork]") {
+    // 16x16: 1024 + 256 + 64 + 16 + 4 = 1364 (~+33%).
+    REQUIRE(ArtworkCache::texture_bytes(16, 16) == 1364u);
+    // Non-square: 4x1 -> 4x1, 2x1, 1x1 = (4+2+1)*4.
+    REQUIRE(ArtworkCache::texture_bytes(4, 1) == 28u);
+    REQUIRE(ArtworkCache::texture_bytes(1, 1) == 4u);
+    REQUIRE(ArtworkCache::texture_bytes(0, 10) == 0u);
+    // A w500 poster: ~1.33x the base level.
+    const std::size_t base = 500u * 750u * 4u;
+    const std::size_t full = ArtworkCache::texture_bytes(500, 750);
+    REQUIRE(full > base + base / 4);
+    REQUIRE(full < base + base / 2);
+}
+
+TEST_CASE("trim_textures_to evicts LRU down to the target and keeps the "
+          "most recent", "[artwork]") {
+    const int dim = 16;
+    const std::size_t one = ArtworkCache::texture_bytes(dim, dim);
+    ArtworkCache cache(10 * one);
+    for (const char* u : {"a", "b", "c", "d"}) {
+        cache.test_inject_ready_upload(make_upload(u, dim, dim));
+        cache.pump_for_tests();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    cache.test_touch("a");  // a becomes MRU
+    REQUIRE(cache.entries_count() == 4);
+
+    REQUIRE(cache.trim_textures_to(2 * one) == 2);
+    REQUIRE(cache.entries_count() == 2);
+    REQUIRE(cache.bytes_in_use() == 2 * one);
+    REQUIRE(cache.get_or_fetch("a") != 0);  // MRU kept
+    REQUIRE(cache.get_or_fetch("d") != 0);  // newest kept
+
+    // Already under target: no-op.
+    REQUIRE(cache.trim_textures_to(10 * one) == 0);
+    REQUIRE(cache.trim_textures_to(0) == 2);
+    REQUIRE(cache.bytes_in_use() == 0);
 }

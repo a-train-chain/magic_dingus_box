@@ -32,6 +32,12 @@ void GameQuietMode::wait_until_idle() {
     cv_.wait(lock, [this] { return desired_paused_ == applied_paused_; });
 }
 
+bool GameQuietMode::wait_until_idle_for(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, timeout,
+                        [this] { return desired_paused_ == applied_paused_; });
+}
+
 void GameQuietMode::run() {
     std::unique_lock<std::mutex> lock(mutex_);
     while (true) {

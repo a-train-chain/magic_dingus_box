@@ -1,4 +1,5 @@
 #include "media_browser/ui/library_screen.h"
+#include "media_browser/ui/worker_pool.h"
 #include <filesystem>
 #include <system_error>
 #include <cstdio>
@@ -270,7 +271,9 @@ void LibraryScreen::refresh_async() {
     // Join a previous finished-but-not-joined worker before reusing the
     // handle (its result was already drained; this just reaps the thread).
     if (refresh_worker_.joinable()) refresh_worker_.join();
-    refresh_worker_ = std::thread(&LibraryScreen::run_refresh, this);
+    refresh_worker_ = std::thread([this] {
+        run_guarded("library refresh", [this] { run_refresh(); });
+    });
 }
 
 void LibraryScreen::run_refresh() {

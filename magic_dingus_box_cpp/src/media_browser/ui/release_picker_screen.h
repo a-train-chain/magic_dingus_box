@@ -24,6 +24,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "media_browser/ui/worker_pool.h"
 #include <vector>
 
 namespace media_browser {
@@ -285,11 +287,14 @@ private:
     std::string                       loading_title_;      // guarded by load_mu_
     std::chrono::steady_clock::time_point loading_started_at_{};
 
-    // All worker threads spawned during this screen's lifetime. Joined
-    // in the destructor so a worker mid-CURL doesn't outlive the
-    // ReleasePickerScreen and segfault on result publication. Same
-    // tracking pattern DetailScreen uses for its TMDB workers.
-    std::vector<std::thread>          load_workers_;
+    // Worker threads spawned during this screen's lifetime. Finished ones
+    // are reaped (instant join, done flag) from load_async()/update();
+    // the destructor joins the rest so a worker mid-CURL doesn't outlive
+    // the screen and segfault on result publication. NEVER a blocking
+    // join on the render thread: the old ">4 workers -> join the oldest"
+    // reap could wait out a 45 s interactive search. Declared after every
+    // member the workers touch (members destruct in reverse order).
+    WorkerPool                        load_workers_;
 
     // Worker entry — runs on a background thread spawned by load_async.
     // Captures gen at spawn time and compares against load_generation_

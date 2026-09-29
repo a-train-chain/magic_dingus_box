@@ -168,7 +168,10 @@ void BrowseScreen::refresh_library_async() {
     if (lib_refresh_worker_.joinable()) lib_refresh_worker_.join();
     const bool fetch_quality = !library_cached_;
     lib_refresh_worker_ =
-        std::thread(&BrowseScreen::run_library_refresh, this, fetch_quality);
+        std::thread([this, fetch_quality] {
+            run_guarded("browse library refresh",
+                        [&] { run_library_refresh(fetch_quality); });
+        });
 }
 
 void BrowseScreen::run_library_refresh(bool fetch_quality) {

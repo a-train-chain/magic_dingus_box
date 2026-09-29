@@ -313,15 +313,21 @@ bool SonarrClient::is_reachable() {
     return !http_get("/ping").empty();
 }
 
-std::optional<SystemStatus> SonarrClient::get_status() {
+std::optional<SystemStatus> SonarrClient::get_status() try {
     auto resp = http_get("/api/v3/system/status");
     if (resp.empty()) return std::nullopt;
     // Same {version, buildTime} shape Radarr serves.
     return RadarrParsers::parse_system_status(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_status: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<SeriesSearchHit>
-SonarrClient::lookup_by_tmdb(int tmdb_id, const std::string& title_fallback) {
+SonarrClient::lookup_by_tmdb(int tmdb_id, const std::string& title_fallback) try {
     auto resp = http_get(build_lookup_path_tmdb(tmdb_id));
     auto hits = resp.empty() ? std::vector<SeriesSearchHit>{}
                              : SonarrParsers::parse_series_lookup(resp);
@@ -330,34 +336,64 @@ SonarrClient::lookup_by_tmdb(int tmdb_id, const std::string& title_fallback) {
     spdlog::info("[sonarr] tmdb:{} had no lookup match; falling back to "
                  "title search '{}'", tmdb_id, title_fallback);
     return lookup(title_fallback);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] lookup_by_tmdb: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<SeriesSearchHit> SonarrClient::lookup(const std::string& query) {
+std::vector<SeriesSearchHit> SonarrClient::lookup(const std::string& query) try {
     auto resp = http_get(build_lookup_path_term(query));
     if (resp.empty()) return {};
     return SonarrParsers::parse_series_lookup(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] lookup: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::optional<std::vector<Series>> SonarrClient::get_library_checked() {
+std::optional<std::vector<Series>> SonarrClient::get_library_checked() try {
     auto resp = http_get("/api/v3/series");
     if (resp.empty()) return std::nullopt;
     return SonarrParsers::parse_series_list(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_library_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<Series> SonarrClient::get_library() {
     return get_library_checked().value_or(std::vector<Series>{});
 }
 
-std::optional<Series> SonarrClient::get_series(int sonarr_id) {
+std::optional<Series> SonarrClient::get_series(int sonarr_id) try {
     auto resp = http_get("/api/v3/series/" + std::to_string(sonarr_id));
     if (resp.empty()) return std::nullopt;
     return SonarrParsers::parse_series(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_series: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::optional<std::vector<Series>> SonarrClient::find_series_by_tvdb(int tvdb_id) {
+std::optional<std::vector<Series>> SonarrClient::find_series_by_tvdb(int tvdb_id) try {
     auto resp = http_get("/api/v3/series?tvdbId=" + std::to_string(tvdb_id));
     if (resp.empty()) return std::nullopt;  // transport/HTTP failure — NOT "absent"
     return SonarrParsers::parse_series_list(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] find_series_by_tvdb: unexpected response shape: {}", e.what());
+    return {};
 }
 
 // True once the async refresh has visibly applied the REQUESTED monitoring
@@ -420,7 +456,7 @@ bool record_refreshed(const Series& s) {
 AddSeriesResult SonarrClient::add_series(int tmdb_id,
                                          int quality_profile_id,
                                          bool monitor,
-                                         const std::string& title_fallback) {
+                                         const std::string& title_fallback) try {
     AddSeriesResult result;
     set_error({});
 
@@ -458,6 +494,12 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
     }
 
     Json::Value series = root.isArray() ? root[0u] : root;
+    if (!series.isObject()) {  // .get() on a non-object throws
+        set_error("Sonarr lookup returned an unexpected shape for tmdb:"
+                  + std::to_string(tmdb_id));
+        spdlog::error("[sonarr] add_series: {}", last_error());
+        return result;  // ok=false
+    }
 
     // Already in the library? POSTing would 400 on seriesExistsValidator.
     //
@@ -622,10 +664,16 @@ AddSeriesResult SonarrClient::add_series(int tmdb_id,
                      series.get("title", "?").asString());
     }
     return result;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] add_series: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
-                                        bool monitored) {
+                                        bool monitored) try {
     set_error({});
     const std::string path = "/api/v3/series/" + std::to_string(sonarr_id);
     const std::string current = http_get(path);
@@ -650,6 +698,7 @@ bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
     }
     bool found = false;
     for (auto& s : seasons) {
+        if (!s.isObject()) continue;
         if (s.get("seasonNumber", -1).asInt() == season_number) {
             s["monitored"] = monitored;
             found = true;
@@ -666,6 +715,12 @@ bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
     Json::StreamWriterBuilder wb;
     wb["indentation"] = "";
     return !http_put(path, Json::writeString(wb, series)).empty();
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] set_season_monitored: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool SonarrClient::trigger_season_search(int sonarr_id, int season_number) {
@@ -712,7 +767,7 @@ bool SonarrClient::remove_series(int sonarr_id, bool delete_files) {
 }
 
 std::optional<std::vector<EpisodeInfo>>
-SonarrClient::get_episodes_checked(int sonarr_id) {
+SonarrClient::get_episodes_checked(int sonarr_id) try {
     // Mirrors get_library_checked verbatim, accepted misclassification
     // included: nullopt ONLY when transport failed (empty body); any
     // non-empty body goes through the parser, so malformed JSON collapses to
@@ -722,6 +777,12 @@ SonarrClient::get_episodes_checked(int sonarr_id) {
                          + "&includeEpisodeFile=true");
     if (resp.empty()) return std::nullopt;
     return parse_episode_list(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_episodes_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<EpisodeInfo> SonarrClient::parse_episode_list(const std::string& json) {
@@ -774,7 +835,7 @@ std::vector<EpisodeInfo> SonarrClient::parse_episode_list(const std::string& jso
     return out;
 }
 
-std::optional<std::vector<SonarrQueueItem>> SonarrClient::get_queue_checked() {
+std::optional<std::vector<SonarrQueueItem>> SonarrClient::get_queue_checked() try {
     // Sonarr's queue is per EPISODE, so a season pack contributes one record
     // per episode and the queue genuinely outgrows a single page — page
     // through it rather than silently truncating (a missing row is
@@ -840,6 +901,12 @@ std::optional<std::vector<SonarrQueueItem>> SonarrClient::get_queue_checked() {
                      kMaxPages, out.size(), total);
     }
     return out;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_queue_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<SonarrQueueItem> SonarrClient::get_queue() {
@@ -873,7 +940,7 @@ bool SonarrClient::cancel_queue_item(int queue_id) {
 }
 
 std::optional<std::vector<std::string>>
-SonarrClient::get_series_download_hashes_checked(int sonarr_id) {
+SonarrClient::get_series_download_hashes_checked(int sonarr_id) try {
     // Entry clear, same shape as cancel_queue_item / get_quality_profiles.
     // Load-bearing here, not merely tidy: http_get returns "" both on a
     // transport failure (curl error, HTTP >= 400 — set_error was called)
@@ -891,6 +958,12 @@ SonarrClient::get_series_download_hashes_checked(int sonarr_id) {
                          + std::to_string(sonarr_id));
     if (resp.empty()) return std::nullopt;  // transport/HTTP failure — NOT "no history"
     return SonarrParsers::parse_history_download_ids(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_series_download_hashes_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id) {
@@ -901,7 +974,7 @@ std::vector<std::string> SonarrClient::get_series_download_hashes(int sonarr_id)
 // --- season-delete surface -------------------------------------------------
 
 std::optional<SeasonHistory>
-SonarrClient::get_season_history_checked(int sonarr_id, int season_number) {
+SonarrClient::get_season_history_checked(int sonarr_id, int season_number) try {
     // Same doctrine as get_series_download_hashes_checked: entry clear,
     // nullopt = transport/HTTP failure, engaged-empty = real "no history
     // for this season". The seasonNumber param is REQUIRED, not optional
@@ -915,6 +988,12 @@ SonarrClient::get_season_history_checked(int sonarr_id, int season_number) {
                          + "&seasonNumber=" + std::to_string(season_number));
     if (resp.empty()) return std::nullopt;
     return SonarrParsers::parse_season_history(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_season_history_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool SonarrClient::mark_history_failed(int history_id) {
@@ -939,7 +1018,7 @@ bool SonarrClient::mark_history_failed(int history_id) {
 }
 
 std::optional<std::vector<EpisodeFileInfo>>
-SonarrClient::get_episode_files_checked(int sonarr_id) {
+SonarrClient::get_episode_files_checked(int sonarr_id) try {
     // Same discipline as get_episodes_checked: nullopt only on transport
     // failure (empty body); a malformed/unparseable non-empty body still
     // goes through the parser and reads as engaged-empty.
@@ -948,6 +1027,12 @@ SonarrClient::get_episode_files_checked(int sonarr_id) {
                          + std::to_string(sonarr_id));
     if (resp.empty()) return std::nullopt;
     return SonarrParsers::parse_episode_files(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_episode_files_checked: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool SonarrClient::delete_episode_files(const std::vector<int>& ids) {
@@ -996,7 +1081,7 @@ bool SonarrClient::set_episodes_monitored(const std::vector<int>& ids,
 }
 
 std::optional<DownloadClientConfig>
-SonarrClient::get_download_client_config() {
+SonarrClient::get_download_client_config() try {
     set_error({});
     auto resp = http_get("/api/v3/config/downloadclient");
     if (resp.empty()) return std::nullopt;
@@ -1006,10 +1091,16 @@ SonarrClient::get_download_client_config() {
     // suppression was unnecessary and re-introduce the re-grab it exists to
     // prevent.
     return SonarrParsers::parse_download_client_config(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_download_client_config: unexpected response shape: {}", e.what());
+    return {};
 }
 
 bool SonarrClient::set_auto_redownload_failed(const DownloadClientConfig& cfg,
-                                              bool enabled) {
+                                              bool enabled) try {
     if (cfg.id <= 0) return false;  // no usable PUT path; never guess "1"
     set_error({});
     // Round-trip the ORIGINAL document with exactly one key overwritten.
@@ -1033,6 +1124,12 @@ bool SonarrClient::set_auto_redownload_failed(const DownloadClientConfig& cfg,
         "/api/v3/config/downloadclient/" + std::to_string(cfg.id),
         Json::writeString(wb, doc));
     return code > 0 && code < 400;
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] set_auto_redownload_failed: unexpected response shape: {}", e.what());
+    return {};
 }
 
 // --- AutoRedownloadGuard ---------------------------------------------------
@@ -1187,7 +1284,7 @@ AutoRedownloadGuard::~AutoRedownloadGuard() {
     }
 }
 
-std::vector<QualityProfile> SonarrClient::get_quality_profiles() {
+std::vector<QualityProfile> SonarrClient::get_quality_profiles() try {
     // Without clearing first, an empty result here is ambiguous to callers
     // that read last_error() to tell "Sonarr answered, no profiles" from "we
     // never reached Sonarr" — a PRIOR call's error would be surfaced as if
@@ -1197,18 +1294,36 @@ std::vector<QualityProfile> SonarrClient::get_quality_profiles() {
     auto resp = http_get("/api/v3/qualityprofile");
     if (resp.empty()) return {};
     return SonarrParsers::parse_quality_profiles(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_quality_profiles: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<RootFolder> SonarrClient::get_root_folders() {
+std::vector<RootFolder> SonarrClient::get_root_folders() try {
     auto resp = http_get("/api/v3/rootfolder");
     if (resp.empty()) return {};
     return SonarrParsers::parse_root_folders(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_root_folders: unexpected response shape: {}", e.what());
+    return {};
 }
 
-std::vector<QualityDefinition> SonarrClient::get_quality_definitions() {
+std::vector<QualityDefinition> SonarrClient::get_quality_definitions() try {
     auto resp = http_get("/api/v3/qualitydefinition");
     if (resp.empty()) return {};
     return SonarrParsers::parse_quality_definitions(resp);
+} catch (const std::exception& e) {
+    // Unexpected JSON shape/type (Json::LogicError): report failure — the
+    // empty/nullopt/false this returns is each method's normal failure
+    // value — instead of letting it escape into a worker and terminate.
+    spdlog::error("[sonarr] get_quality_definitions: unexpected response shape: {}", e.what());
+    return {};
 }
 
 std::string SonarrClient::resolve_host_path(const std::string& container_path) const {

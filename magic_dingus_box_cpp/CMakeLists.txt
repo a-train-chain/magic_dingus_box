@@ -152,6 +152,7 @@ list(APPEND UI_SOURCES src/ui/toast.cpp)
 set(APP_SOURCES
     src/app/game_launch_recovery.cpp
     src/app/game_quiet_mode.cpp
+    src/app/movie_quiet_mode.cpp
     src/app/playlist_loader.cpp
     src/app/rom_title.cpp
     src/app/controller.cpp
@@ -500,6 +501,7 @@ if(ENABLE_MEDIA_BROWSER)
         tests/media_browser/test_library_view.cpp
         tests/media_browser/test_queue_screen.cpp
         tests/media_browser/test_mb_entry_gate.cpp
+        tests/media_browser/test_json_shapes.cpp
         src/media_browser/health/vpn_health_monitor.cpp
         src/media_browser/movie_drive.cpp
         src/media_browser/artwork/artwork_cache.cpp
@@ -622,6 +624,7 @@ if(RETROARCH_TEST_SOURCES)
         ${RETROARCH_TEST_SOURCES}
         src/app/game_launch_recovery.cpp
         src/app/game_quiet_mode.cpp
+        src/app/movie_quiet_mode.cpp
         ${RETROARCH_TESTABLE_SOURCES}
         src/utils/config.cpp
     )

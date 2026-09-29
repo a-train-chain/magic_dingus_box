@@ -2429,9 +2429,12 @@ void Renderer::mb_fill_triangle(float x1, float y1, float x2, float y2,
 
 media_browser::ArtworkCache& Renderer::artwork_cache() {
     if (!artwork_cache_) {
-        // 256MB budget matches the default from artwork_cache.h. Could
-        // be tuned per-hardware later; on Pi 4B this leaves plenty of
-        // headroom below our 2GB system RAM.
+        // 256MB budget matches the default from artwork_cache.h. It is a
+        // real GPU-memory budget: entries are charged base level + full
+        // mipmap chain (ArtworkCache::texture_bytes — the old w*h*4 count
+        // undercounted by ~1/3). On the Pi that memory is unswappable
+        // system RAM, so MB movie playback trims it to 32 MB and a game
+        // launch releases it entirely (main.cpp).
         //
         // Disk-cache directory: /mnt/ssd/cache/posters when the USB SSD
         // is mounted (it always is when the Media Browser is in use —

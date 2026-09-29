@@ -82,6 +82,7 @@ static int extract_year(const std::string& date) {
 static bool fill_list_row(const Json::Value& r, TmdbSearchHit& h,
                           const char* title_key, const char* original_key,
                           const char* date_key, MediaKind kind) {
+    if (!r.isObject()) return false;  // .get() on a non-object throws
     if (r.get("adult", false).asBool()) return false;
     h.tmdb_id        = r.get("id", 0).asInt();
     h.title          = r.get(title_key, "").asString();
@@ -93,7 +94,30 @@ static bool fill_list_row(const Json::Value& r, TmdbSearchHit& h,
     h.kind           = kind;
     return true;
 }
+// The calling thread's cancel flag (see TmdbClient::ScopedCancel).
+thread_local const std::atomic<bool>* t_cancel_flag = nullptr;
+
+bool cancel_requested() {
+    return t_cancel_flag && t_cancel_flag->load(std::memory_order_relaxed);
+}
+
+// libcurl progress callback: non-zero aborts the transfer with
+// CURLE_ABORTED_BY_CALLBACK. Same mechanism as ProwlarrClient's.
+int cancel_progress_cb(void* userdata, curl_off_t, curl_off_t,
+                       curl_off_t, curl_off_t) {
+    const auto* flag = static_cast<const std::atomic<bool>*>(userdata);
+    return flag && flag->load(std::memory_order_relaxed) ? 1 : 0;
+}
 }  // namespace
+
+TmdbClient::ScopedCancel::ScopedCancel(const std::atomic<bool>* flag)
+    : prev_(t_cancel_flag) {
+    t_cancel_flag = flag;
+}
+
+TmdbClient::ScopedCancel::~ScopedCancel() {
+    t_cancel_flag = prev_;
+}
 
 TmdbClient::TmdbClient(std::string api_key)
     : api_key_(std::move(api_key)) {
@@ -123,6 +147,10 @@ std::string TmdbClient::http_get(const std::string& url) {
     CURLcode rc = CURLE_OK;
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        if (cancel_requested()) {
+            set_error("cancelled");
+            return {};
+        }
         CURL* curl = curl_easy_init();
         if (!curl) {
             set_error("curl init failed");
@@ -163,12 +191,22 @@ std::string TmdbClient::http_get(const std::string& url) {
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT,        25L);
         curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE,  1L);
+        if (t_cancel_flag) {
+            curl_easy_setopt(curl, CURLOPT_NOPROGRESS,       0L);
+            curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, cancel_progress_cb);
+            curl_easy_setopt(curl, CURLOPT_XFERINFODATA,
+                             const_cast<std::atomic<bool>*>(t_cancel_flag));
+        }
 
         rc = curl_easy_perform(curl);
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_easy_cleanup(curl);
 
         if (rc == CURLE_OK && http_code < 500) break;  // success or 4xx (don't retry)
+        if (rc == CURLE_ABORTED_BY_CALLBACK || cancel_requested()) {
+            set_error("cancelled");
+            return {};
+        }
 
         if (attempt + 1 < kMaxAttempts) {
             spdlog::warn("[media_browser] TMDB HTTP attempt {} failed ({}), retrying",
@@ -489,7 +527,7 @@ std::vector<Genre> TmdbClient::get_genres() {
     return parse_genres_response(body);
 }
 
-std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& json) {
+std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& json) try {
     // Kept distinct from parse_list_response so search_movie() can preserve
     // the pre-Phase-2 behaviour (raw relative poster_path — unused callers
     // read the bare path). Tests still exercise both code paths.
@@ -502,6 +540,7 @@ std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& 
         spdlog::error("[media_browser] TMDB parse error: {}", err);
         return hits;
     }
+    if (!root.isObject()) return {};  // root["results"] would throw
     const auto& results = root["results"];
     if (!results.isArray()) return hits;
     for (const auto& r : results) {
@@ -510,6 +549,7 @@ std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& 
         // parser usable on cached/saved responses where the request param
         // can't be re-asserted, (2) covers the rare case where TMDB
         // mis-tags an item that we'd want to drop anyway.
+        if (!r.isObject()) continue;
         if (r.get("adult", false).asBool()) continue;
         TmdbSearchHit h;
         h.tmdb_id = r.get("id", 0).asInt();
@@ -522,9 +562,15 @@ std::vector<TmdbSearchHit> TmdbClient::parse_search_response(const std::string& 
         hits.push_back(std::move(h));
     }
     return hits;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_search_response: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& json) {
+std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& json) try {
     std::vector<TmdbSearchHit> hits;
     Json::CharReaderBuilder rb;
     Json::Value root;
@@ -534,10 +580,12 @@ std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& js
         spdlog::error("[media_browser] TMDB list parse error: {}", err);
         return hits;
     }
+    if (!root.isObject()) return {};  // root["results"] would throw
     const auto& results = root["results"];
     if (!results.isArray()) return hits;
     for (const auto& r : results) {
         // Same family-safe drop as parse_search_response — see comment there.
+        if (!r.isObject()) continue;
         if (r.get("adult", false).asBool()) continue;
         TmdbSearchHit h;
         h.tmdb_id = r.get("id", 0).asInt();
@@ -553,9 +601,15 @@ std::vector<TmdbSearchHit> TmdbClient::parse_list_response(const std::string& js
         hits.push_back(std::move(h));
     }
     return hits;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_list_response: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-TmdbList TmdbClient::parse_list(const std::string& json) {
+TmdbList TmdbClient::parse_list(const std::string& json) try {
     TmdbList list;
     Json::CharReaderBuilder rb;
     Json::Value root;
@@ -565,6 +619,7 @@ TmdbList TmdbClient::parse_list(const std::string& json) {
         spdlog::error("[media_browser] TMDB list parse error: {}", err);
         return list;  // ok=false
     }
+    if (!root.isObject()) return {};  // root["results"] would throw
     const auto& results = root["results"];
     if (!results.isArray()) return list;  // TMDB error payload — ok=false
     list.ok = true;
@@ -578,9 +633,15 @@ TmdbList TmdbClient::parse_list(const std::string& json) {
         list.hits.push_back(std::move(h));
     }
     return list;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_list: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-TmdbList TmdbClient::parse_tv_list(const std::string& json) {
+TmdbList TmdbClient::parse_tv_list(const std::string& json) try {
     TmdbList list;
     Json::CharReaderBuilder rb;
     Json::Value root;
@@ -590,6 +651,7 @@ TmdbList TmdbClient::parse_tv_list(const std::string& json) {
         spdlog::error("[media_browser] TMDB TV list parse error: {}", err);
         return list;  // ok=false
     }
+    if (!root.isObject()) return {};  // root["results"] would throw
     const auto& results = root["results"];
     if (!results.isArray()) return list;  // TMDB error payload — ok=false
     list.ok = true;
@@ -603,9 +665,15 @@ TmdbList TmdbClient::parse_tv_list(const std::string& json) {
         list.hits.push_back(std::move(h));
     }
     return list;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_tv_list: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-std::vector<Genre> TmdbClient::parse_genres_response(const std::string& json) {
+std::vector<Genre> TmdbClient::parse_genres_response(const std::string& json) try {
     std::vector<Genre> genres;
     Json::CharReaderBuilder rb;
     Json::Value root;
@@ -615,18 +683,26 @@ std::vector<Genre> TmdbClient::parse_genres_response(const std::string& json) {
         spdlog::error("[media_browser] TMDB genres parse error: {}", err);
         return genres;
     }
+    if (!root.isObject()) return genres;
     const auto& arr = root["genres"];
     if (!arr.isArray()) return genres;
     for (const auto& g : arr) {
+        if (!g.isObject()) continue;
         Genre gg;
         gg.id = g.get("id", 0).asInt();
         gg.name = g.get("name", "").asString();
         if (gg.id != 0) genres.push_back(std::move(gg));
     }
     return genres;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_genres_response: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string& json) {
+std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string& json) try {
     Json::CharReaderBuilder rb;
     Json::Value root;
     std::string err;
@@ -672,6 +748,7 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
     const auto& genres = root["genres"];
     if (genres.isArray()) {
         for (const auto& g : genres) {
+            if (!g.isObject()) continue;
             std::string name = g.get("name", "").asString();
             if (!name.empty()) d.genres.push_back(std::move(name));
         }
@@ -688,6 +765,7 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
             int taken = 0;
             for (const auto& c : cast) {
                 if (taken >= kMaxCast) break;
+                if (!c.isObject()) continue;
                 std::string name = c.get("name", "").asString();
                 if (!name.empty()) {
                     d.cast_top.push_back(std::move(name));
@@ -700,6 +778,7 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
         const auto& crew = credits["crew"];
         if (crew.isArray()) {
             for (const auto& c : crew) {
+                if (!c.isObject()) continue;
                 std::string job = c.get("job", "").asString();
                 if (job == "Director") {
                     std::string name = c.get("name", "").asString();
@@ -710,9 +789,15 @@ std::optional<TmdbMovieDetail> TmdbClient::parse_movie_detail(const std::string&
     }
 
     return d;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_movie_detail: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
-std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json) {
+std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json) try {
     Json::CharReaderBuilder rb;
     Json::Value root;
     std::string err;
@@ -753,6 +838,7 @@ std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json)
     const auto& genres = root["genres"];
     if (genres.isArray()) {
         for (const auto& g : genres) {
+            if (!g.isObject()) continue;
             std::string name = g.get("name", "").asString();
             if (!name.empty()) d.genres.push_back(std::move(name));
         }
@@ -761,6 +847,7 @@ std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json)
     const auto& created_by = root["created_by"];
     if (created_by.isArray()) {
         for (const auto& c : created_by) {
+            if (!c.isObject()) continue;
             std::string name = c.get("name", "").asString();
             if (!name.empty()) d.creators.push_back(std::move(name));
         }
@@ -769,6 +856,7 @@ std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json)
     const auto& seasons = root["seasons"];
     if (seasons.isArray()) {
         for (const auto& s : seasons) {
+            if (!s.isObject()) continue;
             TmdbTvSeason ts;
             ts.season_number = s.get("season_number", 0).asInt();
             ts.name          = s.get("name", "").asString();
@@ -794,6 +882,7 @@ std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json)
             int taken = 0;
             for (const auto& c : cast) {
                 if (taken >= kMaxCast) break;
+                if (!c.isObject()) continue;
                 std::string name = c.get("name", "").asString();
                 if (!name.empty()) {
                     d.cast_top.push_back(std::move(name));
@@ -804,6 +893,12 @@ std::optional<TmdbTvDetail> TmdbClient::parse_tv_detail(const std::string& json)
     }
 
     return d;
+} catch (const std::exception& e) {
+    // Wrong-typed field (e.g. asInt() on a string): Json::LogicError. A
+    // parser must degrade to "no data", never take a worker (and with it
+    // the process) down.
+    spdlog::error("[media_browser] TMDB parse_tv_detail: unexpected JSON shape: {}", e.what());
+    return {};
 }
 
 }  // namespace media_browser
