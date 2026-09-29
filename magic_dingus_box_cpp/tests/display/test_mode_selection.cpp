@@ -132,3 +132,27 @@ TEST_CASE("EDID-preferred outranks progressive-ness") {
     };
     REQUIRE(pick_mode(modes, 1920, 1080) == 1);
 }
+
+TEST_CASE("a 120 Hz timing never beats 60 Hz at the same size") {
+    // HDMI 2.1 TVs list 1080p120; page-flip pacing would double the
+    // kiosk's per-frame work on a Pi 4B for no visible gain.
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 120, false},
+        {1920, 1080, 60, false},
+        {1920, 1080, 100, false},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 1);
+}
+
+TEST_CASE("a size offered only above 60 Hz is still selectable") {
+    std::vector<ModeCandidate> modes = {{1920, 1080, 120, false}};
+    REQUIRE(pick_mode(modes, 1920, 1080) == 0);
+}
+
+TEST_CASE("the EDID-preferred timing still wins even above 60 Hz") {
+    std::vector<ModeCandidate> modes = {
+        {1920, 1080, 60, false},
+        {1920, 1080, 120, true},
+    };
+    REQUIRE(pick_mode(modes, 1920, 1080) == 1);
+}

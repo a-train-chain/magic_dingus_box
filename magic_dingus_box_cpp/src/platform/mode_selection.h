@@ -43,6 +43,8 @@ struct ModeCandidate {
 // asked for, that timing is the one most likely to be implemented
 // correctly, and disagreeing with it invites sync problems on exactly the
 // cheap displays a kiosk ends up attached to.
+inline constexpr uint32_t kMaxPreferredRefreshHz = 60;
+
 inline int pick_mode(const std::vector<ModeCandidate>& modes,
                      uint32_t want_w, uint32_t want_h) {
     const bool auto_mode = (want_w == 0 || want_h == 0);
@@ -75,6 +77,16 @@ inline int pick_mode(const std::vector<ModeCandidate>& modes,
         // the safer bet. Interlaced-only sizes remain selectable.
         if (m.interlaced != b.interlaced) {
             if (!m.interlaced) best = static_cast<int>(i);
+            continue;
+        }
+        // Above 60 Hz loses to 60 Hz and below. The main loop is paced by
+        // page flips, so 1080p120 on an HDMI 2.1 TV doubled every frame's
+        // UI and compositing work — real cost on a Pi 4B — for nothing:
+        // content is 24-60 fps. Faster-only sizes remain selectable.
+        const bool m_fast = m.vrefresh > kMaxPreferredRefreshHz;
+        const bool b_fast = b.vrefresh > kMaxPreferredRefreshHz;
+        if (m_fast != b_fast) {
+            if (!m_fast) best = static_cast<int>(i);
             continue;
         }
         // Same preferred-ness: higher refresh wins. Strictly greater, so

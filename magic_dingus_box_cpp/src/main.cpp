@@ -268,8 +268,10 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Get mode info for page flipping
     drmModeConnector* conn = drmModeGetConnector(display.get_fd(), display.get_connector_id());
-    drmModeModeInfo mode_info = {}; // Value initialization
-    if (conn && conn->count_modes > 0) {
+    // The exact timing pick_mode() chose and set; the size search below is
+    // only a fallback for a display that never recorded one.
+    drmModeModeInfo mode_info = display.get_current_mode_info();
+    if (mode_info.hdisplay == 0 && conn && conn->count_modes > 0) {
         // Find the mode matching our current resolution
         for (int i = 0; i < conn->count_modes; i++) {
             if (conn->modes[i].hdisplay == mode.width && 

@@ -354,6 +354,7 @@ bool DrmDisplay::set_connector_mode(uint32_t width, uint32_t height) {
     current_mode_.height = mode_to_set->vdisplay;
     current_mode_.refresh = mode_to_set->vrefresh;
     current_mode_.name = mode_to_set->name;
+    current_mode_info_ = *mode_to_set;
 
     drmModeFreeConnector(conn);
     return true;
