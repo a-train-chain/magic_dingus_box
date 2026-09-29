@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the Content Manager as if it were you. The box now only answers to
   its own names (its IP address, `magicpi-XXXX.local`, `dingus.box` over
   the USB cable, and ordinary home-network names). Plugging in the USB
-  cable on a Mac still pops open the Content Manager.
+  cable on a Mac still pops open the Content Manager — the update
+  restarts the small helper behind that pop-up so it works straight
+  away, not only after the next restart.
 - **Other doors closed** — none of which change anything for normal use:
   a crafted playlist can no longer delete files outside the videos
   folder or point a game at a file that isn't an emulator; the plain
@@ -42,7 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Turning the box off, rebooting it or installing an update while a game
   was running closed the emulator without its automatic save, losing
   progress since the last in-game save. The emulator now gets to save
-  first.
+  first. One exception: the update that *installs* this fix is still
+  carried out by the old version, so if a game is running while this
+  particular update installs, that game is closed the old way. Quit the
+  game first to be safe; every stop after this update saves properly.
 - **Every controller can always leave a game.** Controller Setup let you
   skip Z (N64-style pads) or Select (PlayStation-style pads) — the
   buttons that make Z+Start / Select+Start quit a game — leaving no way
@@ -63,6 +68,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or have their colours shifted.
 - **Multi-disc PlayStation and Dreamcast uploads now get their disc
   playlist.** The step that ties the discs together never ran.
+- **Controllers plugged in after the box starts now work in the
+  menus.** A pad (or keyboard) connected after power-on, a cable that
+  got bumped and reconnected, or a wireless pad waking up did nothing in
+  the menus until a game had been played or the box restarted. The box
+  now notices new controllers within a few seconds.
+- **Movies no longer freezes or restarts the box when the internet is
+  down.** Starting a second film, turning a download source on or off,
+  or opening the source list while the connection was down could hang
+  the screen long enough for the box to restart itself. That work now
+  happens in the background and the screen stays responsive.
+- **Downloads resume after the box is restarted in the middle of a
+  movie.** On a Pi 4B, downloads pause while a film plays; if the box
+  was restarted or updated before the film ended, they stayed paused
+  until someone resumed them by hand. They now pick up again on their
+  own. Downloads you paused yourself are left alone.
+- **Watch history can no longer be lost to a badly timed power cut.**
+  Losing power during the one-time database upgrade after an update
+  could switch off resume points and "watched" marks for good. The
+  upgrade now either finishes completely or not at all, and boxes
+  already stuck this way repair themselves.
+- **The picture uses the TV mode the box actually chose.** On some TVs
+  the first frame switched to an interlaced mode instead of the one the
+  box picked. And on newer 120 Hz TVs the box now runs at 60 Hz, which
+  is all films and games need and keeps the Pi 4B's workload normal.
+- **A movie drive plugged in after the box started is now picked up.**
+  If the box was switched on without its movie drive and the drive was
+  connected later, Movies kept looking at an empty folder on the SD
+  card: the library showed empty and new downloads filled the SD card
+  instead of the drive. The box now notices and reconnects Movies to the
+  drive within moments of plugging it in.
+- **Re-entering the VPN settings can no longer lock Movies out of its
+  own download service.** On some boxes the Content Manager couldn't
+  read the Movies settings file, treated it as empty, and saved it back
+  with only the VPN details — throwing away the download service's
+  password, after which downloads stopped working. It now stops with a
+  clear error and changes nothing.
+- **Movies setup finishes even when part of it is slow to start.** On a
+  Pi 4B, the TV service, the search service or one of the download
+  sources being slow on first start could stop setup halfway, leaving
+  Movies unable to download at all. Setup now waits longer for them and,
+  if one still isn't ready, finishes everything else and picks that part
+  up the next time it runs.
 - **The "some sources didn't respond" case in Movies is reported
   honestly.** When the availability check found nothing but some sources
   never answered, Detail said "No sources found" — even though the
@@ -76,8 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two), so an upload no longer starves playback on the smaller board.
 - **N64 and Dreamcast games stay hidden on a Pi 4B** even when a
   playlist names only the emulator and not the system.
+- **Movie playback has more memory to work with.** Film posters kept
+  in graphics memory are trimmed when a movie starts, instead of holding
+  on to as much as ~340 MB — memory the Pi 4B needs for smooth video.
 - **Log files no longer grow forever on the SD card**: the emulator log
-  starts fresh each game, and the Movies service logs are capped.
+  starts fresh each game, and the Movies service logs are capped at a
+  few tens of megabytes each. The cap takes effect the next time the
+  box is restarted after updating (Movies takes a little longer to come
+  up that one time).
 
 ### For operators
 - **Cloning can't damage the source box.** If the source box rebooted
@@ -92,6 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credentials and the list of Wi-Fi networks it has seen. (The shared
   service password and SSH access keys are kept on every unit on
   purpose.)
+- Re-running Movies setup on a box that already has it no longer
+  restarts Docker partway through (which could end in "container name
+  already in use"). The service log caps now live in
+  `services/docker-compose.yml`, so they reach updated boxes too.
 - `verify_box.sh` now also fails a unit whose first boot didn't finish,
   whose first-boot service is still enabled, or whose `config.txt`
   Pi 4 / Pi 5 sections are wrong.
