@@ -29,6 +29,7 @@ public:
 
 private:
     static std::string get_settings_path();
+    static utils::Result<> load_settings_unguarded(AppState& state);
 
 };
 

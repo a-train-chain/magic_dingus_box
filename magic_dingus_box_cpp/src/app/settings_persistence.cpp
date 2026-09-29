@@ -231,14 +231,40 @@ bool SettingsPersistence::peek_is_crt_native() {
     std::string errors;
     if (!Json::parseFromStream(builder, file, &root, &errors)) return true;
 
-    if (!root.isMember("display")) return true;
+    if (!root.isObject() || !root.isMember("display")) return true;
     const Json::Value& display = root["display"];
-    if (!display.isMember("mode")) return true;
+    if (!display.isObject() || !display.isMember("mode")) return true;
 
-    return display["mode"].asString() != "modern_tv";
+    try {
+        return display["mode"].asString() != "modern_tv";
+    } catch (const std::exception&) {
+        return true;  // wrong-typed mode: same safe default as unreadable
+    }
 }
 
+// jsoncpp's as*()/isMember() THROW on a type mismatch ("bezel_index":"2",
+// "display":[...]). settings.json arrives from web-admin restores and
+// hand edits, and an escaped exception here crashed the kiosk before the
+// first frame — then again on every systemd restart, a black screen that
+// only SSH could fix. A file that cannot be read is moved aside (kept for
+// diagnosis, never overwritten by the next save) and the box boots on
+// defaults plus whatever fields were applied before the bad one.
 utils::Result<> SettingsPersistence::load_settings(AppState& state) {
+    try {
+        return load_settings_unguarded(state);
+    } catch (const std::exception& e) {
+        const std::string path = get_settings_path();
+        const std::string quarantine = path + ".corrupt";
+        std::error_code ec;
+        std::filesystem::rename(path, quarantine, ec);
+        LOG_ERROR("settings.json unreadable ({}); moved to {}{} — using defaults",
+                  e.what(), quarantine,
+                  ec ? " FAILED: " + ec.message() : std::string());
+        return utils::Result<>::fail(std::string("settings.json unreadable: ") + e.what());
+    }
+}
+
+utils::Result<> SettingsPersistence::load_settings_unguarded(AppState& state) {
     std::string path = get_settings_path();
 
     std::ifstream file(path);
