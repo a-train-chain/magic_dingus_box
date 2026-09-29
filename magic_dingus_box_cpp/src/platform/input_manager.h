@@ -121,7 +121,18 @@ public:
     // Cheap and a no-op when the device is already healthy.
     void reprobe_phone_remote();
 
+    // Pick up controllers and keyboards plugged in AFTER startup (or
+    // replugged, or a wireless pad that woke up on a new node). initialize()
+    // scans once, and a disconnected device is dropped on ENODEV but was
+    // never reopened — so a pad plugged in after power-on was dead in the
+    // menus until a game was played or the kiosk restarted. Opens only
+    // nodes not already open; never touches the rotary scan (a mouse would
+    // otherwise be adopted as the encoder). Call on the same throttled
+    // cadence as reprobe_phone_remote().
+    void rescan_devices();
+
 private:
+    bool is_path_open(const std::string& path) const;
     struct Device;
     std::vector<std::unique_ptr<Device>> devices_;
     

@@ -2050,6 +2050,7 @@ int main(int /* argc */, char* /* argv */[]) {
             if (now_rp - last_remote_reprobe >= std::chrono::seconds(3)) {
                 last_remote_reprobe = now_rp;
                 input.reprobe_phone_remote();
+                input.rescan_devices();  // pads/keyboards plugged in after boot
             }
         }
 

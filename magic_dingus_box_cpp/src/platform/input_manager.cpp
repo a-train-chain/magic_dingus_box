@@ -22,6 +22,7 @@ struct InputManager::Device {
     int fd;
     struct libevdev* dev;
     std::string name;
+    std::string path;  // /dev/input/eventN — dedupes rescans
     bool is_joystick;
     bool is_keyboard;
     bool is_rotary;
@@ -208,6 +209,7 @@ bool InputManager::open_joystick_devices() {
         }
         
         std::string path = std::string(input_dir) + "/" + entry->d_name;
+        if (is_path_open(path)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) {
             continue;
@@ -237,6 +239,7 @@ bool InputManager::open_joystick_devices() {
             auto device = std::make_unique<Device>();
             device->fd = fd;
             device->dev = dev;
+            device->path = path;
             device->name = dev_name ? dev_name : "Unknown";
             device->is_joystick = true;
             device->vid = static_cast<uint16_t>(libevdev_get_id_vendor(dev));
@@ -291,6 +294,18 @@ bool InputManager::open_joystick_devices() {
     return found;
 }
 
+bool InputManager::is_path_open(const std::string& path) const {
+    for (const auto& d : devices_) {
+        if (d->path == path) return true;
+    }
+    return false;
+}
+
+void InputManager::rescan_devices() {
+    open_joystick_devices();
+    open_keyboard_devices();
+}
+
 void InputManager::reprobe_phone_remote() {
     // Single spelling of the name, shared with poll()'s raw-capture bypass
     // (the phone remote must keep producing InputActions during capture, so
@@ -340,6 +355,7 @@ void InputManager::reprobe_phone_remote() {
     while ((entry = readdir(dir)) != nullptr) {
         if (strncmp(entry->d_name, "event", 5) != 0) continue;
         std::string path = std::string(input_dir) + "/" + entry->d_name;
+        if (is_path_open(path)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
         struct libevdev* dev = nullptr;
@@ -358,6 +374,7 @@ void InputManager::reprobe_phone_remote() {
             auto device = std::make_unique<Device>();
             device->fd = fd;
             device->dev = dev;
+            device->path = path;
             device->name = kPhoneName;
             device->is_joystick = true;
             device->vid = static_cast<uint16_t>(libevdev_get_id_vendor(dev));
@@ -396,6 +413,7 @@ bool InputManager::open_keyboard_devices() {
         }
         
         std::string path = std::string(input_dir) + "/" + entry->d_name;
+        if (is_path_open(path)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) {
             continue;
@@ -424,6 +442,7 @@ bool InputManager::open_keyboard_devices() {
             auto device = std::make_unique<Device>();
             device->fd = fd;
             device->dev = dev;
+            device->path = path;
             device->name = dev_name ? dev_name : "Unknown";
             device->is_keyboard = true;
             
@@ -459,6 +478,7 @@ bool InputManager::open_rotary_devices() {
         if (strncmp(entry->d_name, "event", 5) != 0) continue;
         
         std::string path = std::string(input_dir) + "/" + entry->d_name;
+        if (is_path_open(path)) continue;
         int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
         if (fd < 0) continue;
         
@@ -483,6 +503,7 @@ bool InputManager::open_rotary_devices() {
             auto device = std::make_unique<Device>();
             device->fd = fd;
             device->dev = dev;
+            device->path = path;
             device->name = dev_name ? dev_name : "Unknown";
             device->is_rotary = true;
             
