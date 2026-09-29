@@ -106,6 +106,14 @@ PlatformProfile profile_for(PiModel model) {
 PlatformProfile detect_platform(const std::string& model_path) {
     std::ifstream f(model_path, std::ios::binary);
     if (!f.is_open()) {
+        // Dev-VM impersonation (dev/pisim/README.md): with no device tree
+        // to read, MDB_PI_MODEL_OVERRIDE supplies a model string so a Linux
+        // VM can exercise the Pi 4B / Pi 5 profile paths. Honored ONLY when
+        // the real file is absent — a stray env var can never re-profile an
+        // actual board.
+        if (const char* o = std::getenv("MDB_PI_MODEL_OVERRIDE"); o && *o) {
+            return profile_for(parse_pi_model(o));
+        }
         return profile_for(PiModel::Unknown);
     }
     std::stringstream ss;

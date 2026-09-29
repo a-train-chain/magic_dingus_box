@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -96,6 +97,24 @@ TEST_CASE("detect_platform reads a device-tree model file") {
 TEST_CASE("detect_platform returns Unknown profile when file is missing") {
     PlatformProfile p = detect_platform("/nonexistent/dt/model");
     REQUIRE(p.model == PiModel::Unknown);
+}
+
+TEST_CASE("MDB_PI_MODEL_OVERRIDE impersonates a board only when the device tree is absent") {
+    setenv("MDB_PI_MODEL_OVERRIDE", "Raspberry Pi 4 Model B Rev 1.5", 1);
+
+    // No device tree (dev VM): the override picks the profile.
+    PlatformProfile vm = detect_platform("/nonexistent/dt/model");
+    CHECK(vm.model == PiModel::Pi4);
+    CHECK_FALSE(supports_game_system(vm, "n64"));
+
+    // Real device tree present: the override is ignored.
+    auto path = std::filesystem::temp_directory_path() / "mdb_dt_model_override";
+    { std::ofstream(path, std::ios::binary) << std::string("Raspberry Pi 5 Model B Rev 1.0\0", 31); }
+    CHECK(detect_platform(path.string()).model == PiModel::Pi5);
+    std::filesystem::remove(path);
+
+    unsetenv("MDB_PI_MODEL_OVERRIDE");
+    CHECK(detect_platform("/nonexistent/dt/model").model == PiModel::Unknown);
 }
 
 // ---------------------------------------------------------------

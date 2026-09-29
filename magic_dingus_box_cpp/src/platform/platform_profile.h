@@ -119,7 +119,8 @@ PiModel parse_pi_model(const std::string& device_tree_model);
 PlatformProfile profile_for(PiModel model);
 
 // Read the device-tree model file and build the matching profile.
-// Missing/unreadable file yields the Unknown profile (dev machines).
+// Missing/unreadable file yields the Unknown profile (dev machines), or —
+// only then — the model named by MDB_PI_MODEL_OVERRIDE (dev VMs).
 PlatformProfile detect_platform(
     const std::string& model_path = "/proc/device-tree/model");
 
