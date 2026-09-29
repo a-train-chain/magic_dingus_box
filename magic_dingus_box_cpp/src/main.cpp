@@ -4959,10 +4959,14 @@ int main(int /* argc */, char* /* argv */[]) {
     // flushed and closed the log. The kernel reclaims the rest, exactly as it
     // would after the SIGKILL this replaces.
 #ifdef MEDIA_BROWSER_ENABLED
-    // The game-end hook resumes torrents asynchronously; on the display-lost
-    // path we get here right after the game, so let that finish rather than
-    // leave the swarm paused until the next boot.
-    if (controller.display_lost()) game_quiet_mode.wait_until_idle();
+    // The game-end hook restores the services it quieted (docker start of
+    // the arr containers, then qBit resume) asynchronously. A stop mid-game
+    // — or the display-lost exit — reaches here right after the game, and
+    // KillMode=mixed SIGKILLs whatever is still running once main exits:
+    // measured on a Pi 5, the stop killed the in-flight `docker start`.
+    // Bounded so the whole shutdown stays inside TimeoutStopSec (20 s);
+    // anything slower is still recovered at the next start.
+    (void)game_quiet_mode.wait_until_idle_for(std::chrono::seconds(10));
     // A movie resume queued by leave() (above, or a user exit moments
     // before the stop) runs asynchronously; give it a bounded window so
     // the qBit resume / cap clear land. Bounded well inside
