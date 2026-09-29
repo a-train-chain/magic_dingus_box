@@ -175,6 +175,7 @@ bool SonarrMockClient::set_season_monitored(int sonarr_id, int season_number,
         for (auto& season : s.seasons) {
             if (season.season_number == season_number) {
                 season.monitored = monitored;
+                if (monitored) s.monitored = true;  // mirrors the real client
                 return true;
             }
         }

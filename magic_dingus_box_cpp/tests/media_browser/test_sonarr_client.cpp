@@ -641,6 +641,49 @@ TEST_CASE("set_season_monitored flips exactly one season and PUTs the whole "
     }
 }
 
+TEST_CASE("set_season_monitored(true) also monitors an unmonitored series",
+          "[sonarr][seasons]") {
+    // The chosen-season add (Season > 1) creates the series with
+    // add_series(monitor=false), which writes series.monitored=false. Sonarr
+    // rejects every release for an unmonitored series, so monitoring the
+    // chosen season must turn the series on too — or the search downloads
+    // nothing, invisibly.
+    class Unmonitored : public PutSonarr {
+    public:
+        std::string http_get(const std::string& path) override {
+            std::string body = PutSonarr::http_get(path);
+            const std::string on = "\"monitored\": true,\n  \"added\"";
+            const auto at = body.find(on);
+            if (at != std::string::npos)
+                body.replace(at, on.size(),
+                             "\"monitored\": false,\n  \"added\"");
+            return body;
+        }
+    };
+    Unmonitored s;
+    REQUIRE(s.set_season_monitored(7, 3, true));
+    Json::Value sent;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(s.put_body);
+        REQUIRE(Json::parseFromStream(rb, is, &sent, &err));
+    }
+    CHECK(sent["monitored"].asBool());
+
+    // Unmonitoring a season never touches the series flag.
+    Unmonitored u;
+    REQUIRE(u.set_season_monitored(7, 1, false));
+    Json::Value sent2;
+    {
+        Json::CharReaderBuilder rb;
+        std::string err;
+        std::istringstream is(u.put_body);
+        REQUIRE(Json::parseFromStream(rb, is, &sent2, &err));
+    }
+    CHECK_FALSE(sent2["monitored"].asBool());
+}
+
 TEST_CASE("set_season_monitored reports failure for an unknown season",
           "[sonarr][seasons]") {
     PutSonarr s;

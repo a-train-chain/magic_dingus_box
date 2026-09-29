@@ -710,6 +710,15 @@ bool SonarrClient::set_season_monitored(int sonarr_id, int season_number,
                   + std::to_string(sonarr_id));
         return false;
     }
+    // Monitoring a season of an UNMONITORED series is meaningless: Sonarr's
+    // MonitoredEpisodeSpecification rejects every release for an unmonitored
+    // series, so the season search would run and grab nothing, invisibly.
+    // The one path that creates such a series is the chosen-season add
+    // (add_series(monitor=false) writes series.monitored=false and no other
+    // method flips it), so turning a season ON also turns the series on.
+    // Idempotent for every already-monitored series; unmonitoring a season
+    // never touches the series flag.
+    if (monitored) series["monitored"] = true;
     // PUT replaces the whole resource — send the object back intact apart from
     // the one flag we changed.
     Json::StreamWriterBuilder wb;

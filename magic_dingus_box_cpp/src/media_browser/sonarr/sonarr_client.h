@@ -198,7 +198,8 @@ public:
     // Flips one season's monitored flag. Sonarr's PUT replaces the whole
     // resource, so this GETs the current record, edits one season, and PUTs
     // it back untouched otherwise. false when the series or season is not
-    // found, or the PUT failed.
+    // found, or the PUT failed. monitored=true also sets the SERIES-level
+    // monitored flag (an unmonitored series downloads nothing — see the .cpp).
     virtual bool set_season_monitored(int sonarr_id, int season_number, bool monitored);
 
     // POST /api/v3/command. Command names are the C# class name minus

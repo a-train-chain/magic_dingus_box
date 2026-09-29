@@ -111,6 +111,34 @@ private:
     }
 };
 
+// What SELECT on the primary download button ("Add Season N" / "Download
+// Season N") does, given the chooser. Press 1 opens the chooser on the
+// suggested season (Season 1 when nothing is suggested yet); press 2 returns
+// the chosen season to start. Fallthrough = no eligible season to choose
+// between (e.g. TMDB listed no seasons): the caller keeps the pre-chooser
+// behaviour and dispatches the button's action directly, so the press is
+// never a silent no-op.
+struct PrimaryPress {
+    enum class Kind { Opened, Start, Fallthrough };
+    Kind kind = Kind::Fallthrough;
+    int season = 0;  // meaningful for Start only
+};
+inline PrimaryPress press_primary(SeasonChooser& chooser,
+                                  const std::vector<SeasonRow>& rows,
+                                  const watch_map& watch) {
+    if (chooser.choosing) {
+        const auto season = chooser.confirm();
+        if (season.has_value()) return {PrimaryPress::Kind::Start, *season};
+        return {};
+    }
+    const std::vector<int> eligible = eligible_seasons(rows);
+    const int start = suggested_season(rows, watch)
+                          .value_or(eligible.empty() ? 1 : eligible.front());
+    chooser.open(eligible, start);
+    if (chooser.choosing) return {PrimaryPress::Kind::Opened, 0};
+    return {};
+}
+
 // "‹ Season 5 · ~22 GB (est) ›". GiB, same unit as whole_series_label; the
 // "(est)" suffix whenever the runtime behind the estimate was assumed.
 inline std::string chooser_label(int season, int64_t estimate_bytes,

@@ -145,3 +145,63 @@ TEST_CASE("chooser label: arrows, season, GiB, (est) only when estimated",
     CHECK(chooser_label(12, 3 * gib, false) ==
           "\xE2\x80\xB9 Season 12 \xC2\xB7 ~3 GB \xE2\x80\xBA");
 }
+
+TEST_CASE("primary press: first press opens on the suggestion, second starts it",
+          "[season_choice][press]") {
+    // Emptied GoT, watched through S4: opens on 5, nothing started yet.
+    std::vector<SeasonRow> rows;
+    for (int s = 1; s <= 8; ++s) rows.push_back(row(s, SeasonState::None));
+    SeasonChooser c;
+    const auto p1 = press_primary(c, rows, watched_through(4));
+    CHECK(p1.kind == PrimaryPress::Kind::Opened);
+    REQUIRE(c.choosing);
+    CHECK(c.current() == 5);
+    const auto p2 = press_primary(c, rows, watched_through(4));
+    CHECK(p2.kind == PrimaryPress::Kind::Start);
+    CHECK(p2.season == 5);
+    CHECK_FALSE(c.choosing);  // back to idle after starting
+}
+
+TEST_CASE("primary press: a rotated choice is what starts", "[season_choice][press]") {
+    std::vector<SeasonRow> rows;
+    for (int s = 1; s <= 8; ++s) rows.push_back(row(s, SeasonState::None));
+    SeasonChooser c;
+    REQUIRE(press_primary(c, rows, watched_through(4)).kind ==
+            PrimaryPress::Kind::Opened);
+    c.step(+1);  // 6
+    const auto p = press_primary(c, rows, watched_through(4));
+    CHECK(p.kind == PrimaryPress::Kind::Start);
+    CHECK(p.season == 6);
+}
+
+TEST_CASE("primary press: new show opens on Season 1", "[season_choice][press]") {
+    std::vector<SeasonRow> rows = {row(0, SeasonState::None),
+                                   row(1, SeasonState::None),
+                                   row(2, SeasonState::None)};
+    SeasonChooser c;
+    CHECK(press_primary(c, rows, {}).kind == PrimaryPress::Kind::Opened);
+    CHECK(c.current() == 1);  // specials are never a candidate
+}
+
+TEST_CASE("primary press: nothing eligible falls through, chooser stays idle",
+          "[season_choice][press]") {
+    SeasonChooser c;
+    CHECK(press_primary(c, {}, {}).kind == PrimaryPress::Kind::Fallthrough);
+    CHECK_FALSE(c.choosing);
+    const std::vector<SeasonRow> all_on_disk = {
+        row(1, SeasonState::Complete, 10, 10)};
+    CHECK(press_primary(c, all_on_disk, {}).kind ==
+          PrimaryPress::Kind::Fallthrough);
+    CHECK_FALSE(c.choosing);
+}
+
+TEST_CASE("primary press: a cancelled chooser re-opens on the next press",
+          "[season_choice][press]") {
+    std::vector<SeasonRow> rows = {row(1, SeasonState::None),
+                                   row(2, SeasonState::None)};
+    SeasonChooser c;
+    REQUIRE(press_primary(c, rows, {}).kind == PrimaryPress::Kind::Opened);
+    c.cancel();  // BTN4 / page flip
+    CHECK(press_primary(c, rows, {}).kind == PrimaryPress::Kind::Opened);
+    CHECK(c.choosing);
+}

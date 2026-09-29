@@ -16,6 +16,7 @@
 #include "media_browser/tmdb_client.h"
 #include "media_browser/ui/episode_logic.h"
 #include "media_browser/ui/mb_screen.h"
+#include "media_browser/ui/season_choice.h"
 #include "media_browser/ui/series_detail_logic.h"
 
 namespace media_browser {
@@ -80,8 +81,8 @@ public:
     // One-shot "Start Season N" intent from Playback's season-end card.
     // Set by the dispatcher on the Playback->SeriesDetail transition
     // (PRE-leave); consumed in enter(), which re-derives the target via
-    // next_unmonitored_season and runs the EXISTING NextSeason dispatch
-    // only when they still agree — drift means the world changed while
+    // suggested_season (the primary button's own proposal) and runs the
+    // EXISTING NextSeason dispatch only when they still agree — drift means the world changed while
     // playing, and the safe answer is a no-op said out loud ("Season
     // update didn't apply — try from this screen").
     void set_pending_intent_next_season(int season) {
@@ -172,13 +173,20 @@ private:
     // RENDER thread. The ONE entry point for "download this one season":
     // monitor the season, re-monitor its EPISODES, search. Both callers go
     // through it — the action row's "Download Season N" (whose target is
-    // next_unmonitored_season, i.e. the LOWEST unmonitored season) and the
-    // season list's SELECT on a season with nothing on disk and nothing in
-    // flight (which is what closes the re-download loop for every OTHER
-    // season, the just-deleted one included). Owns its own guards and
+    // whatever season the chooser confirmed, opening on suggested_season)
+    // and the season list's SELECT on a season with nothing on disk and
+    // nothing in flight. Owns its own guards and
     // toasts: not-in-library and not-yet-settled are both reachable from
     // the season list, and neither may be a silent no-op.
     void start_season_download(int season);
+    // RENDER thread. "Add Season N" for a series not yet in the library.
+    // N == 1: add_series(monitor=true) — Sonarr's own firstSeason + search.
+    // N > 1: add_series(monitor=false) (nothing monitored, no search), then
+    // the worker publishes mut_start_season_ and drain_mutation runs
+    // start_season_download(N) on the settled record. Never monitors
+    // Season 1 when another season was chosen; an unsettled add stops with
+    // a "choose the season again" toast instead.
+    void start_add_at_season(int season);
     // WORKER thread. One get_episodes_checked + one bulk PUT re-monitoring
     // every episode of `seasons`. Probe P3: season->episode monitoring does
     // NOT cascade and SeasonSearch skips unmonitored episodes, so EVERY
@@ -237,6 +245,11 @@ private:
     bool remove_pending_ = false;
     std::chrono::steady_clock::time_point remove_pending_at_{};
     static constexpr int kRemovePendingMs = 2000;
+    // Primary-button season chooser (season_choice.h). Render-thread only,
+    // same discipline as whole_armed_ / remove_pending_: opened by SELECT on
+    // the primary download button, closed by confirm, BTN4, a page flip,
+    // any action-row press, or the primary button losing focus.
+    SeasonChooser season_chooser_;
     // Drain-set, consumed by handle_input's relay at the top (DetailScreen's
     // drain_remove_result idiom). CLEARED when consumed and in fetch() —
     // a latched flag would return origin_ on every frame forever.
@@ -260,6 +273,9 @@ private:
     std::mutex mut_mtx_;
     std::string mut_toast_;                          // guarded by mut_mtx_
     std::optional<Series> mut_series_;               // guarded
+    // Season > 1 add: the season the user chose, to be started on the
+    // render thread once the added record is applied (drain_mutation).
+    std::optional<int> mut_start_season_;            // guarded
     bool mut_settled_ = true;                        // guarded
     bool mut_removed_ = false;                       // guarded
     // Per-season remove (Task 6). Deliberately SEPARATE from mut_removed_:

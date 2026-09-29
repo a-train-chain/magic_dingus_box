@@ -158,6 +158,10 @@ void SeriesDetailScreen::enter() {
         // read; WatchStore is main-thread-only and enter() runs on the
         // render thread, so the direct read is legal.
         if (watch_ != nullptr) episode_watch_ = watch_->series_watch(tmdb_id_);
+        // A chooser left open when the page was last shown (the global exit
+        // modal can take the user away mid-choice) must not greet them with
+        // a half-finished choice: re-entry starts idle.
+        season_chooser_.cancel();
         rebuild_rows();
         rebuild_buttons();
     }
@@ -223,6 +227,7 @@ void SeriesDetailScreen::fetch() {
     focus_ = 0;
     whole_armed_ = false;
     remove_pending_ = false;
+    season_chooser_.cancel();
     navigate_back_ = false;
     // Task 8's poll gate must not inherit series A's timestamp — it would
     // delay series B's first poll by a full interval.
@@ -479,6 +484,20 @@ void SeriesDetailScreen::rebuild_buttons() {
                            sonarr_done_, sonarr_ok_, in_library_});
     in.series_settled = series_settled_;
     in.primary_season = suggested_season(rows_, episode_watch_);
+    // Chooser open: fresh rows may have moved the candidates under it (a
+    // poll flipped a season to Downloading) — snap or cancel, then label the
+    // primary button with the season being chosen and its size estimate.
+    season_chooser_.revalidate(eligible_seasons(rows_));
+    if (const auto cur = season_chooser_.current()) {
+        std::vector<SeasonRow> one;
+        for (const auto& r : rows_)
+            if (r.season_number == *cur) one.push_back(r);
+        const int runtime = (in_library_ && series_.has_value())
+                                ? series_->runtime_minutes : 0;
+        in.primary_label_override = chooser_label(
+            *cur, estimate_remaining_bytes(one, runtime, mb_per_min_),
+            /*estimated=*/runtime <= 0);
+    }
     // PlayNextUp inputs (Task 6): evidence-based — next_up's current==nullptr
     // form skips watched episodes and only ever returns one WITH a file, so
     // the button can never promise an episode that cannot start. "First"
@@ -518,6 +537,23 @@ void SeriesDetailScreen::rebuild_buttons() {
         });
 
     ActionRow row = decide_action_row(in);
+    // The chooser lives ON the primary button. If this rebuild left focus
+    // anywhere else (the button vanished — record went unsettled — or
+    // identity moved focus), the choice is no longer on screen: cancel it
+    // and relabel, so a later SELECT elsewhere can never act on it.
+    if (season_chooser_.choosing) {
+        const bool on_primary =
+            row.focus >= 0 && row.focus < static_cast<int>(row.buttons.size()) &&
+            (row.buttons[static_cast<size_t>(row.focus)].action ==
+                 Action::AddSeason ||
+             row.buttons[static_cast<size_t>(row.focus)].action ==
+                 Action::NextSeason);
+        if (!on_primary) {
+            season_chooser_.cancel();
+            in.primary_label_override.reset();
+            row = decide_action_row(in);
+        }
+    }
     buttons_ = std::move(row.buttons);
     focus_ = row.focus;
 }
@@ -594,12 +630,15 @@ void SeriesDetailScreen::drain_mutation() {
     bool have_verdict = false;
     DiskVerdict verdict = DiskVerdict::Block;
     int64_t estimate = 0;
+    std::optional<int> start_season;
     {
         std::lock_guard<std::mutex> lk(mut_mtx_);
         toast = std::move(mut_toast_);
         mut_toast_.clear();
         fresh = std::move(mut_series_);
         mut_series_.reset();
+        start_season = mut_start_season_;
+        mut_start_season_.reset();
         fresh_settled = mut_settled_;
         mut_settled_ = true;
         removed = mut_removed_;
@@ -648,6 +687,17 @@ void SeriesDetailScreen::drain_mutation() {
         // paint file counts and ✓ glyphs for episodes that no longer exist,
         // and offer to play them.
         if (removed || season_removed) needs_refresh_ = true;
+        // A chosen-season add whose start was never run: the series IS in
+        // Sonarr now, with nothing monitored. Starting it against a page
+        // that is not on screen would be the unasked-for mutation, so say
+        // what is left to do instead of dropping it silently. The page's
+        // pre-add snapshot is also stale now — refresh on the way back.
+        if (start_season.has_value()) {
+            needs_refresh_ = true;
+            ::ui::Toast::show("Added \xE2\x80\x94 open the show again to "
+                              "start Season " +
+                              std::to_string(*start_season));
+        }
         rebuild_buttons();
         return;
     }
@@ -704,6 +754,21 @@ void SeriesDetailScreen::drain_mutation() {
     }
     last_poll_at_ = {};  // Task 8: refresh badges next frame, not in 9 s
     rebuild_buttons();
+    // Chosen-season add (Season > 1), second half: the record the worker
+    // published was applied above (fresh -> series_, rows rebuilt), so the
+    // shared single-season path can run against it. Re-checked against the
+    // FRESH rows — the record may show that season on disk or in flight
+    // already (the find-existing branch), and starting it then would be a
+    // redundant search under a misleading toast.
+    if (start_season.has_value()) {
+        const auto elig = eligible_seasons(rows_);
+        if (std::find(elig.begin(), elig.end(), *start_season) != elig.end()) {
+            start_season_download(*start_season);
+        } else {
+            ::ui::Toast::show("Season " + std::to_string(*start_season) +
+                              " isn't available to download");
+        }
+    }
     // Deliberately NO focus_on(WholeSeries) here: the identity-preserving
     // rebuild already keeps focus on the button the user pressed, and if
     // they rotated away during the free-space fetch, yanking focus back
@@ -801,7 +866,7 @@ void SeriesDetailScreen::start_season_download(int season) {
         // library (rows_ are TMDB's there). Never a silent no-op — that
         // reads as a dead row.
         ::ui::Toast::show(title + ": not in your TV library yet \xE2\x80\x94 "
-                          "use Add Season 1 or Whole series\xE2\x80\xA6");
+                          "use Add Season or Whole series\xE2\x80\xA6");
         return;
     }
     if (!series_settled_) {
@@ -872,6 +937,193 @@ void SeriesDetailScreen::start_season_download(int season) {
     });
 }
 
+void SeriesDetailScreen::start_add_at_season(int season) {
+    // RENDER thread. See the header: Season 1 keeps Sonarr's own
+    // firstSeason + search; Season > 1 adds with nothing monitored and
+    // starts the chosen season once the record is applied.
+    const int id = tmdb_id_;
+    const std::string title =
+        detail_.has_value() ? detail_->title : std::string("This series");
+    // Immediate press feedback (operator-reported): the row dims,
+    // but the outcome toast can be ~13.5 s away (add_series' settle
+    // ceiling) and a dim alone reads as "nothing happened". Same
+    // precedent as whole-series press-1's "checking free space".
+    ::ui::Toast::show(title + ": adding Season " + std::to_string(season) +
+                      "\xE2\x80\xA6");
+    spawn_mutation([this, id, title, season]() {
+        // Quality profile BY NAME ("Any" is this box's profile; the
+        // id is not portable) — DetailScreen::pick_quality_profile_id's
+        // policy minus its movie-only fallbacks.
+        const auto profiles = sonarr_.get_quality_profiles();
+        int qp_id = 0;
+        for (const auto& qp : profiles) {
+            if (qp_id == 0) qp_id = qp.id;
+            if (qp.name == "Any") { qp_id = qp.id; break; }
+        }
+        if (qp_id == 0) {
+            // Distinguish "Sonarr answered, no profiles" from "we
+            // never reached Sonarr" — last_error() is set on every
+            // transport failure, so an empty vector alone is
+            // ambiguous and blaming the config would be wrong.
+            const std::string err = sonarr_.last_error();
+            std::lock_guard<std::mutex> lk(mut_mtx_);
+            mut_toast_ = err.empty()
+                ? title + ": Sonarr has no quality profile \xE2\x80\x94 not added"
+                : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
+            return;
+        }
+        if (season > 1) {
+            // ---- chosen season > 1: add with NOTHING monitored ----
+            // monitor=false => addOptions.monitor="none", no search.
+            // Never "firstSeason": the user chose another season, and
+            // monitoring Season 1 behind their back would download a
+            // season they did not ask for. The chosen season is started
+            // on the RENDER thread by drain_mutation via
+            // start_season_download (mut_start_season_), on the record
+            // published here — the same monitor + episode re-monitor +
+            // search every other single-season download goes through.
+            // (set_season_monitored also turns the series-level flag on:
+            // monitor=false wrote series.monitored=false, and Sonarr
+            // grabs nothing for an unmonitored series.)
+            //
+            // The find-existing branch (a library record this screen did
+            // not recognise by tmdbId) lands here too, settled by
+            // record_refreshed: starting the season explicitly is exactly
+            // right for it, since that branch applies no addOptions.
+            auto res = sonarr_.add_series(id, qp_id, /*monitor=*/false,
+                                          title);
+            if (!res.ok) {
+                const std::string err = sonarr_.last_error();
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
+                return;
+            }
+            std::lock_guard<std::mutex> lk(mut_mtx_);
+            if (!res.settled || res.series.sonarr_id <= 0) {
+                // Record kept (the settle poll brings the controls back
+                // once Sonarr finishes), nothing monitored, nothing
+                // searched — and NO fallback to Season 1. The user picks
+                // the season again once the page offers it.
+                mut_series_ = res.series;
+                mut_settled_ = false;
+                mut_toast_ = title + ": added \xE2\x80\x94 choose the "
+                             "season again in a moment";
+                return;
+            }
+            mut_series_ = res.series;
+            mut_settled_ = true;
+            mut_start_season_ = season;
+            return;
+        }
+        // monitor=true => addOptions.monitor="firstSeason" +
+        // searchForMissingEpisodes=true: exactly the spec's
+        // season-at-a-time default, applied by Sonarr itself.
+        auto res = sonarr_.add_series(id, qp_id, /*monitor=*/true, title);
+        if (!res.ok) {
+            const std::string err = sonarr_.last_error();
+            std::lock_guard<std::mutex> lk(mut_mtx_);
+            mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
+            return;
+        }
+        if (!res.settled) {
+            // settled==false: seasons[] is EMPTY by contract. The
+            // page keeps rendering TMDB rows and hides the add
+            // controls until the Task-8 poll settles the record.
+            std::lock_guard<std::mutex> lk(mut_mtx_);
+            mut_series_ = res.series;
+            mut_settled_ = false;
+            mut_toast_ =
+                title + ": added \xE2\x80\x94 syncing seasons\xE2\x80\xA6";
+            return;
+        }
+        // ---- settled: did the add actually DO anything? ----
+        // add_series returns ok=true from its find-existing branch
+        // without applying addOptions, monitoring anything or
+        // searching. That branch dedupes by tvdbId while this screen
+        // detects in-library by tmdbId, so a library record with
+        // tmdb_id == 0 still offers "Add Season 1" — and the press
+        // would toast "Season 1 search started" having done nothing
+        // at all. Read the outcome off the returned record instead
+        // of trusting ok=true.
+        //
+        // The season we check is the LOWEST NON-SPECIAL season
+        // NUMBER, never the literal 1: addOptions.monitor =
+        // "firstSeason" monitors the first AIRED season, which is
+        // not always numbered 1 (and season 0 is specials).
+        const int sid = res.series.sonarr_id;
+        int first_season = 0;
+        bool first_monitored = false;
+        int first_files = 0;
+        for (const auto& s : res.series.seasons) {
+            if (s.season_number <= 0) continue;
+            if (first_season != 0 && s.season_number >= first_season)
+                continue;
+            first_season = s.season_number;
+            first_monitored = s.monitored;
+            first_files = s.episode_file_count;
+        }
+        std::string toast;
+        std::optional<Series> fresh;
+        if (first_season == 0 || sid <= 0) {
+            // A settled record with no ordinary season, or with no
+            // id to act on: nothing to verify, so claim nothing.
+            toast = title + ": added to your TV library";
+        } else if (!first_monitored) {
+            // The idempotent branch (or any drift): the add did NOT
+            // apply monitoring, so do it explicitly and report THOSE
+            // outcomes — same shape as the NextSeason flow.
+            if (!sonarr_.set_season_monitored(sid, first_season, true)) {
+                const std::string err = sonarr_.last_error();
+                std::lock_guard<std::mutex> lk(mut_mtx_);
+                mut_toast_ = title + ": couldn't monitor season " +
+                             std::to_string(first_season) +
+                             " \xE2\x80\x94 " + err;
+                return;
+            }
+            const bool searched =
+                sonarr_.trigger_season_search(sid, first_season);
+            // Quick Start rides only on a search that actually
+            // started; on the RSS fallback there is no pack grab to
+            // outrun. Best-effort — see fire_episode1_search.
+            if (searched)
+                fire_episode1_search(sonarr_, sid, first_season, title);
+            fresh = sonarr_.get_series(sid);
+            toast = searched
+                ? title + ": Season " + std::to_string(first_season) +
+                      " search started"
+                : title + ": Season " + std::to_string(first_season) +
+                      " monitored, but the search didn't start "
+                      "\xE2\x80\x94 Sonarr will pick it up on RSS";
+        } else if (first_files > 0) {
+            // Monitored AND already has files: the box already had
+            // this series and nothing was started, so say that
+            // rather than promising a search.
+            toast = title + ": already in your TV library";
+        } else {
+            // Monitored with nothing on disk yet — the add path
+            // genuinely acted (or a prior add did) and
+            // searchForMissingEpisodes rode in with monitor=true.
+            toast = title + ": Season " + std::to_string(first_season) +
+                    " search started";
+            // Quick Start: the add-time search is already hunting the
+            // season pack; pair it with the fast E1 single. Settled
+            // (this whole branch is behind res.settled) means the
+            // metadata refresh is done, so episode ids are real.
+            // Best-effort — see fire_episode1_search.
+            fire_episode1_search(sonarr_, sid, first_season, title);
+        }
+        std::lock_guard<std::mutex> lk(mut_mtx_);
+        if (fresh.has_value()) {
+            mut_settled_ = record_refreshed(*fresh);
+            mut_series_ = std::move(fresh);
+        } else {
+            mut_series_ = res.series;
+            mut_settled_ = true;
+        }
+        mut_toast_ = std::move(toast);
+    });
+}
+
 void SeriesDetailScreen::dispatch_action(Action a) {
     // Pressing anything OTHER than the armed control disarms it first.
     if (a != Action::WholeSeries) whole_armed_ = false;
@@ -881,6 +1133,10 @@ void SeriesDetailScreen::dispatch_action(Action a) {
     // row press is unconditionally "something else", and two armed
     // destructive confirms at once is the state to avoid.
     season_del_armed_ = false;
+    // And the season chooser: every press routed here is a DIFFERENT
+    // control (the primary button's own presses go through press_primary
+    // in handle_input), so an open choice is abandoned, not carried along.
+    season_chooser_.cancel();
     switch (a) {
         case Action::PlayNextUp: {
             // Re-derive at press time — the button's label was decided on an
@@ -898,146 +1154,13 @@ void SeriesDetailScreen::dispatch_action(Action a) {
             start_playback_for(static_cast<int>(nu - episodes_.data()));
             break;
         }
-        case Action::AddSeason: {
-            const int id = tmdb_id_;
-            const std::string title =
-                detail_.has_value() ? detail_->title : std::string("This series");
-            // Immediate press feedback (operator-reported): the row dims,
-            // but the outcome toast can be ~13.5 s away (add_series' settle
-            // ceiling) and a dim alone reads as "nothing happened". Same
-            // precedent as whole-series press-1's "checking free space".
-            ::ui::Toast::show(title + ": adding\xE2\x80\xA6");
-            spawn_mutation([this, id, title]() {
-                // Quality profile BY NAME ("Any" is this box's profile; the
-                // id is not portable) — DetailScreen::pick_quality_profile_id's
-                // policy minus its movie-only fallbacks.
-                const auto profiles = sonarr_.get_quality_profiles();
-                int qp_id = 0;
-                for (const auto& qp : profiles) {
-                    if (qp_id == 0) qp_id = qp.id;
-                    if (qp.name == "Any") { qp_id = qp.id; break; }
-                }
-                if (qp_id == 0) {
-                    // Distinguish "Sonarr answered, no profiles" from "we
-                    // never reached Sonarr" — last_error() is set on every
-                    // transport failure, so an empty vector alone is
-                    // ambiguous and blaming the config would be wrong.
-                    const std::string err = sonarr_.last_error();
-                    std::lock_guard<std::mutex> lk(mut_mtx_);
-                    mut_toast_ = err.empty()
-                        ? title + ": Sonarr has no quality profile \xE2\x80\x94 not added"
-                        : title + ": couldn't reach Sonarr \xE2\x80\x94 " + err;
-                    return;
-                }
-                // monitor=true => addOptions.monitor="firstSeason" +
-                // searchForMissingEpisodes=true: exactly the spec's
-                // season-at-a-time default, applied by Sonarr itself.
-                auto res = sonarr_.add_series(id, qp_id, /*monitor=*/true, title);
-                if (!res.ok) {
-                    const std::string err = sonarr_.last_error();
-                    std::lock_guard<std::mutex> lk(mut_mtx_);
-                    mut_toast_ = title + ": add failed \xE2\x80\x94 " + err;
-                    return;
-                }
-                if (!res.settled) {
-                    // settled==false: seasons[] is EMPTY by contract. The
-                    // page keeps rendering TMDB rows and hides the add
-                    // controls until the Task-8 poll settles the record.
-                    std::lock_guard<std::mutex> lk(mut_mtx_);
-                    mut_series_ = res.series;
-                    mut_settled_ = false;
-                    mut_toast_ =
-                        title + ": added \xE2\x80\x94 syncing seasons\xE2\x80\xA6";
-                    return;
-                }
-                // ---- settled: did the add actually DO anything? ----
-                // add_series returns ok=true from its find-existing branch
-                // without applying addOptions, monitoring anything or
-                // searching. That branch dedupes by tvdbId while this screen
-                // detects in-library by tmdbId, so a library record with
-                // tmdb_id == 0 still offers "Add Season 1" — and the press
-                // would toast "Season 1 search started" having done nothing
-                // at all. Read the outcome off the returned record instead
-                // of trusting ok=true.
-                //
-                // The season we check is the LOWEST NON-SPECIAL season
-                // NUMBER, never the literal 1: addOptions.monitor =
-                // "firstSeason" monitors the first AIRED season, which is
-                // not always numbered 1 (and season 0 is specials).
-                const int sid = res.series.sonarr_id;
-                int first_season = 0;
-                bool first_monitored = false;
-                int first_files = 0;
-                for (const auto& s : res.series.seasons) {
-                    if (s.season_number <= 0) continue;
-                    if (first_season != 0 && s.season_number >= first_season)
-                        continue;
-                    first_season = s.season_number;
-                    first_monitored = s.monitored;
-                    first_files = s.episode_file_count;
-                }
-                std::string toast;
-                std::optional<Series> fresh;
-                if (first_season == 0 || sid <= 0) {
-                    // A settled record with no ordinary season, or with no
-                    // id to act on: nothing to verify, so claim nothing.
-                    toast = title + ": added to your TV library";
-                } else if (!first_monitored) {
-                    // The idempotent branch (or any drift): the add did NOT
-                    // apply monitoring, so do it explicitly and report THOSE
-                    // outcomes — same shape as the NextSeason flow.
-                    if (!sonarr_.set_season_monitored(sid, first_season, true)) {
-                        const std::string err = sonarr_.last_error();
-                        std::lock_guard<std::mutex> lk(mut_mtx_);
-                        mut_toast_ = title + ": couldn't monitor season " +
-                                     std::to_string(first_season) +
-                                     " \xE2\x80\x94 " + err;
-                        return;
-                    }
-                    const bool searched =
-                        sonarr_.trigger_season_search(sid, first_season);
-                    // Quick Start rides only on a search that actually
-                    // started; on the RSS fallback there is no pack grab to
-                    // outrun. Best-effort — see fire_episode1_search.
-                    if (searched)
-                        fire_episode1_search(sonarr_, sid, first_season, title);
-                    fresh = sonarr_.get_series(sid);
-                    toast = searched
-                        ? title + ": Season " + std::to_string(first_season) +
-                              " search started"
-                        : title + ": Season " + std::to_string(first_season) +
-                              " monitored, but the search didn't start "
-                              "\xE2\x80\x94 Sonarr will pick it up on RSS";
-                } else if (first_files > 0) {
-                    // Monitored AND already has files: the box already had
-                    // this series and nothing was started, so say that
-                    // rather than promising a search.
-                    toast = title + ": already in your TV library";
-                } else {
-                    // Monitored with nothing on disk yet — the add path
-                    // genuinely acted (or a prior add did) and
-                    // searchForMissingEpisodes rode in with monitor=true.
-                    toast = title + ": Season " + std::to_string(first_season) +
-                            " search started";
-                    // Quick Start: the add-time search is already hunting the
-                    // season pack; pair it with the fast E1 single. Settled
-                    // (this whole branch is behind res.settled) means the
-                    // metadata refresh is done, so episode ids are real.
-                    // Best-effort — see fire_episode1_search.
-                    fire_episode1_search(sonarr_, sid, first_season, title);
-                }
-                std::lock_guard<std::mutex> lk(mut_mtx_);
-                if (fresh.has_value()) {
-                    mut_settled_ = record_refreshed(*fresh);
-                    mut_series_ = std::move(fresh);
-                } else {
-                    mut_series_ = res.series;
-                    mut_settled_ = true;
-                }
-                mut_toast_ = std::move(toast);
-            });
+        case Action::AddSeason:
+            // Reached only through the chooser's Fallthrough (no eligible
+            // season to choose between) — the chooser's own confirm calls
+            // start_add_at_season directly.
+            start_add_at_season(
+                suggested_season(rows_, episode_watch_).value_or(1));
             break;
-        }
         case Action::NextSeason: {
             const auto next = suggested_season(rows_, episode_watch_);
             if (!next.has_value()) break;
@@ -2024,17 +2147,15 @@ Screen SeriesDetailScreen::handle_input(
                         mut_toast_ = title + ": Season " +
                             std::to_string(season) +
                             // Name the affordance the user is about to SEE.
-                            // The action row's "Download Season N" targets
-                            // next_unmonitored_season(rows_) — ONE season, the
-                            // lowest — so after deleting season 3 of a series
-                            // whose season 2 was never downloaded, that button
-                            // reads "Download Season 2" and naming it here
-                            // would send the user to the wrong control. The
-                            // season list's own row works for EVERY season
-                            // (selecting a season with nothing on disk starts
-                            // its download — see start_season_download), and
-                            // the season list is exactly where this drain
-                            // returns them.
+                            // The action row's "Download Season N" PROPOSES
+                            // suggested_season (the season after the viewer's
+                            // progress), which need not be the one just
+                            // deleted — reaching it there takes the chooser.
+                            // The season list's own row targets exactly this
+                            // season (selecting a season with nothing on disk
+                            // starts its download — see
+                            // start_season_download), and the season list is
+                            // exactly where this drain returns them.
                             " removed \xE2\x80\x94 pick Season " +
                             std::to_string(season) +
                             " in the list to download it again" +
@@ -2077,8 +2198,15 @@ Screen SeriesDetailScreen::handle_input(
             }
             continue;  // everything else is inert inside the drill-down
         }
-        // BTN4 (SETTINGS_MENU, black) — back to whoever opened us.
+        // BTN4 (SETTINGS_MENU, black) — back to whoever opened us. With
+        // the season chooser open, back closes the chooser instead: the
+        // user is one level "inside" the primary button.
         if (e.action == platform::InputAction::SETTINGS_MENU && e.pressed) {
+            if (season_chooser_.choosing) {
+                season_chooser_.cancel();
+                rebuild_buttons();
+                continue;
+            }
             return origin_;
         }
         // Rotary twist. platform::InputEvent has no `value` field — the
@@ -2093,6 +2221,14 @@ Screen SeriesDetailScreen::handle_input(
             // focus on a button the user never saw themselves select.
             const bool busy = mut_in_flight_.load() && mut_tmdb_id_ == tmdb_id_;
             if (busy) continue;
+            // The chooser owns rotation while open: it steps the season
+            // (clamped, no wrap) and focus never moves — so it can never
+            // leave the primary button by rotating.
+            if (season_chooser_.choosing) {
+                season_chooser_.step(e.delta);
+                rebuild_buttons();
+                continue;
+            }
             // ONE navigation chain: season rows top-to-bottom, then the
             // action buttons left-to-right. season_focus_ == -1 means the
             // ring is on the button row (focus_), preserving every pre-Task-6
@@ -2127,10 +2263,12 @@ Screen SeriesDetailScreen::handle_input(
             }
             // Any navigation cancels BOTH pending confirms, so the user can
             // never press-move-press their way into a mutation they were not
-            // looking at.
-            if (whole_armed_ || remove_pending_) {
+            // looking at. (The season chooser is closed here too for
+            // uniformity, though an open chooser consumed this rotate above.)
+            if (whole_armed_ || remove_pending_ || season_chooser_.choosing) {
                 whole_armed_ = false;
                 remove_pending_ = false;
+                season_chooser_.cancel();
                 rebuild_buttons();
             }
             continue;
@@ -2140,6 +2278,11 @@ Screen SeriesDetailScreen::handle_input(
         // never sit on an off-screen row; on the action row the pages browse
         // freely underneath, exactly as before.
         if (e.action == platform::InputAction::PREV && e.pressed) {
+            // A page flip is navigation: it closes the season chooser.
+            if (season_chooser_.choosing) {
+                season_chooser_.cancel();
+                rebuild_buttons();
+            }
             if (season_page_ > 0) {
                 --season_page_;
                 if (season_focus_ >= 0 && season_per_page_ > 0)
@@ -2148,6 +2291,10 @@ Screen SeriesDetailScreen::handle_input(
             continue;
         }
         if (e.action == platform::InputAction::NEXT && e.pressed) {
+            if (season_chooser_.choosing) {
+                season_chooser_.cancel();
+                rebuild_buttons();
+            }
             if (season_page_ + 1 < season_page_count_) {
                 ++season_page_;
                 if (season_focus_ >= 0 && season_per_page_ > 0)
@@ -2200,15 +2347,11 @@ Screen SeriesDetailScreen::handle_input(
                     episode_page_ = 0;
                 } else {
                     // Nothing on disk and nothing in flight. Offering the
-                    // download is the useful answer — and it is the ONLY
-                    // thing that closes the re-download loop for a season
-                    // that is not the lowest unmonitored one: the action
-                    // row's "Download Season N" targets
-                    // next_unmonitored_season(rows_) and nothing else, so a
-                    // season 3 deleted above a never-downloaded season 2 (or
-                    // any season left unmonitored by an abort after stage
-                    // (a)) had NO kiosk path back. Every guard and the
-                    // re-monitor live in the shared helper.
+                    // download is the useful answer: the direct, one-press
+                    // path to THIS season (the action row's "Download Season
+                    // N" proposes suggested_season and reaches any other
+                    // eligible season only through its chooser). Every guard
+                    // and the re-monitor live in the shared helper.
                     start_season_download(row.season_number);
                 }
                 continue;
@@ -2218,8 +2361,36 @@ Screen SeriesDetailScreen::handle_input(
                 ::ui::Toast::show("Still finishing the last action\xE2\x80\xA6");
                 continue;
             }
-            if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size()))
-                dispatch_action(buttons_[static_cast<size_t>(focus_)].action);
+            if (focus_ >= 0 && focus_ < static_cast<int>(buttons_.size())) {
+                const Action a = buttons_[static_cast<size_t>(focus_)].action;
+                if (a == Action::AddSeason || a == Action::NextSeason) {
+                    // The primary button is two presses (season_choice.h):
+                    // press 1 opens the chooser on the suggested season,
+                    // press 2 starts the chosen one. Pressing it is
+                    // "something else" to any armed confirm — the same
+                    // disarm dispatch_action does for every other button.
+                    whole_armed_ = false;
+                    remove_pending_ = false;
+                    season_del_armed_ = false;
+                    const PrimaryPress p =
+                        press_primary(season_chooser_, rows_, episode_watch_);
+                    if (p.kind == PrimaryPress::Kind::Opened) {
+                        rebuild_buttons();
+                        continue;
+                    }
+                    if (p.kind == PrimaryPress::Kind::Start) {
+                        rebuild_buttons();
+                        if (a == Action::NextSeason)
+                            start_season_download(p.season);
+                        else
+                            start_add_at_season(p.season);
+                        continue;
+                    }
+                    // Fallthrough: no eligible season to choose between —
+                    // keep the pre-chooser behaviour (never a dead press).
+                }
+                dispatch_action(a);
+            }
             // PlayNextUp arms the transition synchronously inside
             // dispatch_action (the navigate_back_ idiom, same-frame form).
             if (navigate_playback_) {
@@ -2722,7 +2893,12 @@ void SeriesDetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
                         (buttons_[i].action == Action::WholeSeries &&
                          whole_armed_)) {
                         kind = chrome::ButtonKind::Warn;
-                    } else if (buttons_[i].action == Action::WholeSeries) {
+                    } else if (buttons_[i].action == Action::WholeSeries ||
+                               (season_chooser_.choosing &&
+                                (buttons_[i].action == Action::AddSeason ||
+                                 buttons_[i].action == Action::NextSeason))) {
+                        // The open season chooser reads as "in a mode", the
+                        // way the whole-series button does.
                         kind = chrome::ButtonKind::Action;
                     }
                     // While a mutation runs the row stays put with its
