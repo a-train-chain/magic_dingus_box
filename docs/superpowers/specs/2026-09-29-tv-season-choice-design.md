@@ -160,8 +160,8 @@ so its behaviour is Mac-testable without the screen.
 - Candidate list changes under the chooser (a poll flips a season to
   Downloading): the chooser re-validates its index against fresh
   `eligible_seasons` on each rebuild; if the chosen season is no longer
-  eligible it snaps to the nearest eligible one, or cancels to Idle when
-  none remain.
+  eligible it snaps to the next eligible season at or above it (else
+  the last), or cancels to Idle when none remain.
 
 ## Testing
 

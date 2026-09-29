@@ -241,9 +241,9 @@ inline bool season_delete_row_exists(int episode_file_count, bool season_downloa
 // on files alone made that row unreachable in the exact case it was built
 // for (a wrong-language pack still downloading, nothing on disk yet).
 // A row that fails this offers to DOWNLOAD the season instead, which is
-// what closes the re-download loop for every season the action row's
-// single "Download Season N" (next_unmonitored_season — the LOWEST
-// unmonitored season, and only that one) cannot reach.
+// what closes the re-download loop for any season the primary button's
+// single proposal (suggested_season, adjustable through the chooser) does
+// not land on.
 inline bool season_row_opens_picker(const SeasonRow& row) {
     return season_delete_row_exists(row.episode_file_count,
                                     row.state == SeasonState::Downloading);
@@ -437,7 +437,7 @@ inline ActionRow decide_action_row(const ActionRowInputs& in) {
                      std::to_string(in.next_up_episode)});
         }
         // While the record is unsettled EVERY season reads unmonitored, so
-        // next_unmonitored would answer "1" one second after we added
+        // the primary target would answer "1" one second after we added
         // season 1 and the primary button would read "Download Season 1".
         // Offer Remove only until the poll settles it; the meta line says
         // "syncing…" so the missing controls read as pending, not broken.

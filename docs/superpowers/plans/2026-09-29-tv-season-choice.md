@@ -852,10 +852,10 @@ Expected: `✓ kiosk active on new binary`.
 - [ ] **Step 2: Record Sonarr state before (GoT = series id 7 on this box)**
 
 ```bash
-ssh magic@magicpi5.local 'set -a; . /opt/magic_dingus_box/services/.env; set +a; curl -s -H "X-Api-Key: $SONARR_API_KEY" http://127.0.0.1:8989/api/v3/series/7 | python3 -c "import json,sys; s=json.load(sys.stdin); print([(x[\"seasonNumber\"],x[\"monitored\"]) for x in s[\"seasons\"]])"'
+ssh magic@magicpi5.local 'set -a; . /opt/magic_dingus_box/services/.env; set +a; curl -s -H "X-Api-Key: $SONARR_API_KEY" http://127.0.0.1:8989/api/v3/series/7 | python3 -c "import json,sys; s=json.load(sys.stdin); print(\"series monitored:\", s[\"monitored\"], [(x[\"seasonNumber\"],x[\"monitored\"]) for x in s[\"seasons\"]])"'
 ```
 
-Expected: every season `False`.
+Expected: every season `False` (the series-level `monitored` may be either).
 
 - [ ] **Step 3: Owner at the TV**
 
@@ -866,13 +866,23 @@ Expected: every season `False`.
 
 - [ ] **Step 4: Verify Sonarr received exactly Season 6**
 
-Re-run Step 2's command. Expected: `(6, True)`, all others `False`. Then:
+Re-run Step 2's command. Expected: `series monitored: True`, `(6, True)`, all others `False`. Then:
 
 ```bash
 ssh magic@magicpi5.local 'set -a; . /opt/magic_dingus_box/services/.env; set +a; curl -s -H "X-Api-Key: $SONARR_API_KEY" "http://127.0.0.1:8989/api/v3/command" | python3 -c "import json,sys; [print(c[\"name\"], c.get(\"body\",{}).get(\"seasonNumber\"), c[\"status\"]) for c in json.load(sys.stdin)[:5]]"'
 ```
 
 Expected: a `SeasonSearch 6` entry.
+
+- [ ] **Step 4b: New show at Season 3**
+
+Pick a show NOT in the Library, open it from Browse/Search, press the primary button ("Add Season 1"), SELECT, step to Season 3, SELECT. Then verify over the Sonarr API (substitute the new series id from `/api/v3/series`):
+
+```bash
+ssh magic@magicpi5.local 'set -a; . /opt/magic_dingus_box/services/.env; set +a; ID=<new series id>; K="X-Api-Key: $SONARR_API_KEY"; curl -s -H "$K" http://127.0.0.1:8989/api/v3/series/$ID | python3 -c "import json,sys; s=json.load(sys.stdin); print(\"series monitored:\", s[\"monitored\"], [(x[\"seasonNumber\"],x[\"monitored\"]) for x in s[\"seasons\"]])"; curl -s -H "$K" "http://127.0.0.1:8989/api/v3/episode?seriesId=$ID" | python3 -c "import json,sys; from collections import defaultdict; d=defaultdict(set); [d[e[\"seasonNumber\"]].add(e[\"monitored\"]) for e in json.load(sys.stdin)]; print(dict(d))"; curl -s -H "$K" http://127.0.0.1:8989/api/v3/command | python3 -c "import json,sys; [print(c[\"name\"], c.get(\"body\",{}).get(\"seasonNumber\"), c[\"status\"]) for c in json.load(sys.stdin)[:5]]"'
+```
+
+Expected: `series monitored: True`; only `(3, True)` among the seasons (Season 1 NOT monitored); Season 3's episodes all `{True}`; a `SeasonSearch 3` command. Then Remove the show from the kiosk (arm + confirm).
 
 - [ ] **Step 5: Changelog**
 

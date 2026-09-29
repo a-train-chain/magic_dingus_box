@@ -295,7 +295,10 @@ pipeline in place — no screen transition — and at season end an offer
 card feeds the existing Start-Season-N monitor+search flow. The Library
 grid mixes movies and TV in one rail; its Unwatched filter uses real
 per-series watched counts with season 0 (specials) excluded from the
-episode totals.
+episode totals. The Library keeps every Sonarr series, including
+shows with nothing on disk (drawn dimmed with a NOTHING DOWNLOADED tag) —
+only Remove takes a show out; origin: Game of Thrones vanished from the
+grid after its last season was deleted (2026-08-22).
 
 ### Playback hardware notes
 
@@ -489,10 +492,21 @@ nothing on disk and nothing in flight starts that season's download
 (`start_season_download`, which monitors the season, re-monitors its
 EPISODES — probe P3: season→episode does NOT cascade and SeasonSearch
 skips unmonitored episodes — then searches). The season LIST is the
-path that matters, because the action row's "Download Season N"
-(`decide_action_row`) targets `next_unmonitored_season(rows_)` — the
-LOWEST unmonitored season and nothing else, so it cannot reach a
-deleted season 3 sitting above a never-downloaded season 2. The same
+path that matters for a season the button does not propose. The
+primary button targets `suggested_season(rows_, episode_watch_)`
+(`season_choice.h`: the first season with nothing on disk or in flight
+past the furthest one watched or on disk, else the lowest eligible) and
+takes two presses — the first opens a `SeasonChooser`
+("‹ Season 5 · ~22 GB ›", knob/D-pad steps, SELECT confirms, BTN4
+cancels), so any eligible season, including a deleted season 3 above a
+never-downloaded 2, is reachable. A show not yet in the library adds
+Season 1 with `add_series(monitor=true)`; "Add Season N" with N>1 adds
+with monitor `none` and, once the record settles, runs
+`start_season_download(N)` — so Season 1 is never grabbed as a side
+effect. `set_season_monitored(id, season, true)` also flips the
+SERIES-level monitored flag: an unmonitored series has every release
+rejected by Sonarr, so a monitor=none add would otherwise download
+nothing, invisibly. The same
 episode re-monitor runs in the whole-series worker
 (`monitor_episodes_for_seasons` is shared by both); without it "Whole
 series…" downloaded nothing for a previously deleted season while

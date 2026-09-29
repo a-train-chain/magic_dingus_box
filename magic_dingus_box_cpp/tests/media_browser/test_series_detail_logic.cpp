@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "media_browser/ui/series_detail_logic.h"
+#include "media_browser/ui/season_choice.h"
+#include <algorithm>
 
 using namespace media_browser;
 using namespace media_browser::ui;
@@ -282,7 +284,7 @@ TEST_CASE("action row: not-in-library offers the add pair, focused on add",
 TEST_CASE("action row: an UNSETTLED in-library record is [Remove] only",
           "[series_detail]") {
     // The window where Sonarr holds the record but has never refreshed it:
-    // every season reads unmonitored, so next_unmonitored answers the first
+    // every season reads unmonitored, so the primary target answers the first
     // season we JUST added. Offering "Download Season 1" one second after
     // adding season 1 is the bug this rule exists for.
     auto in = row_inputs(SeriesDetailState::InLibrary);
@@ -644,38 +646,40 @@ TEST_CASE("season_row_opens_picker: files OR a live download, never files alone"
     CHECK_FALSE(season_row_opens_picker(empty));
 }
 
-TEST_CASE("a deleted season above an un-downloaded one is NOT the action row's "
-          "target — the season list has to carry it") {
-    // Pins the reason the season list's SELECT starts a download. Delete
-    // season 3 of a series whose season 2 was never downloaded and the
-    // action row still reads "Download Season 2": next_unmonitored_season
-    // answers with the LOWEST unmonitored season and decide_action_row
-    // builds exactly ONE such button, so season 3 has no action-row path
-    // back at all. Both rows fail season_row_opens_picker, so both are
-    // reachable through the list.
+TEST_CASE("a deleted season above an un-downloaded one is reachable from the "
+          "primary button (suggested_season) and the season list") {
+    // Delete season 3 of a series whose season 2 was never downloaded. The
+    // old lowest-unmonitored targeting could only ever offer season 2. The
+    // screen now passes suggested_season(rows, watch) - the first eligible
+    // season past the furthest one watched/on disk (season 1 here), i.e.
+    // season 2 - and the chooser steps up to season 3. Both rows also fail
+    // season_row_opens_picker, so the list SELECT downloads either directly.
     using namespace media_browser::ui;
     std::vector<SeasonRow> rows;
     SeasonRow s1; s1.season_number = 1; s1.monitored = true;
     s1.episode_count = 10; s1.episode_file_count = 10; s1.state = SeasonState::Complete;
     SeasonRow s2; s2.season_number = 2; s2.monitored = false; s2.episode_count = 10;
     SeasonRow s3; s3.season_number = 3; s3.monitored = false; s3.episode_count = 10;
-    rows = {s1, s2, s3};  // s3: just deleted — unmonitored, no files
-    const auto next = next_unmonitored_season(rows);
-    REQUIRE(next.has_value());
-    CHECK(*next == 2);
+    rows = {s1, s2, s3};  // s3: just deleted - unmonitored, no files
+    const watch_map watch;
+    const auto target = suggested_season(rows, watch);
+    REQUIRE(target.has_value());
+    CHECK(*target == 2);
+    const auto elig = eligible_seasons(rows);
+    CHECK(std::find(elig.begin(), elig.end(), 3) != elig.end());  // reachable
     ActionRowInputs in;
     in.state = SeriesDetailState::InLibrary;
-    in.primary_season = next;
+    in.primary_season = target;
     const auto row = decide_action_row(in);
     int download_buttons = 0;
     for (const auto& b : row.buttons) {
         if (b.action == Action::NextSeason) {
             ++download_buttons;
-            CHECK(b.label == "Download Season 2");   // never "Download Season 3"
+            CHECK(b.label == "Download Season 2");
         }
     }
     CHECK(download_buttons == 1);
-    CHECK_FALSE(season_row_opens_picker(s3));        // ...so the LIST offers it
+    CHECK_FALSE(season_row_opens_picker(s3));
     CHECK_FALSE(season_row_opens_picker(s2));
 }
 

@@ -654,9 +654,10 @@ TEST_CASE("set_season_monitored(true) also monitors an unmonitored series",
             std::string body = PutSonarr::http_get(path);
             const std::string on = "\"monitored\": true,\n  \"added\"";
             const auto at = body.find(on);
-            if (at != std::string::npos)
-                body.replace(at, on.size(),
-                             "\"monitored\": false,\n  \"added\"");
+            // Loud on a fixture reformat: without this the edit silently
+            // no-ops and the positive assertion below passes vacuously.
+            REQUIRE(at != std::string::npos);
+            body.replace(at, on.size(), "\"monitored\": false,\n  \"added\"");
             return body;
         }
     };

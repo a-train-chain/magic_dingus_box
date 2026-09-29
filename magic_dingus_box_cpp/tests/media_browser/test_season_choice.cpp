@@ -98,11 +98,11 @@ TEST_CASE("chooser: opens on the suggested season and steps through candidates, 
     c.step(-9); CHECK(c.current() == 3);
 }
 
-TEST_CASE("chooser: open snaps a non-candidate start to the nearest candidate",
+TEST_CASE("chooser: open snaps a non-candidate start to the next candidate at or above",
           "[season_choice][chooser]") {
     SeasonChooser c;
     c.open({2, 7}, 5);
-    CHECK(c.current() == 7);  // nearest at or above wins a tie-break upward
+    CHECK(c.current() == 7);  // first candidate at or above wins; else the last
     SeasonChooser d;
     d.open({2, 7}, 9);
     CHECK(d.current() == 7);

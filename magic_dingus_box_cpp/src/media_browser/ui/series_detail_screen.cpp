@@ -166,16 +166,17 @@ void SeriesDetailScreen::enter() {
         rebuild_buttons();
     }
     // Season-end card intent ("Start Season N" pressed during playback).
-    // Re-derive the target through the SAME decision the button uses; only
-    // dispatch when it still agrees with the intent. Drift means the world
-    // changed while playing (another remote monitored it, the poll hasn't
-    // settled, the record vanished) — safest is no-op, said out loud.
+    // Honour the offered season exactly while it is still eligible
+    // (eligible_seasons). Drift means the world changed while playing
+    // (another remote monitored it, the poll hasn't settled, the record
+    // vanished, the season is already on disk) — safest is no-op, said out
+    // loud.
     if (pending_intent_next_season_.has_value()) {
         const int want = *pending_intent_next_season_;
         pending_intent_next_season_.reset();
         // The card offered the season after the one just finished. Honour
         // exactly that season while it is still downloadable; comparing it to
-        // next_unmonitored_season refused it on any show with a deleted
+        // the lowest unmonitored season (the old button target) refused it on any show with a deleted
         // earlier season (emptied GoT: finish S5, offered S6, refused).
         const auto elig = eligible_seasons(rows_);
         if (series_.has_value() && series_->sonarr_id > 0 && series_settled_ &&
@@ -635,6 +636,7 @@ void SeriesDetailScreen::drain_mutation() {
     DiskVerdict verdict = DiskVerdict::Block;
     int64_t estimate = 0;
     std::optional<int> start_season;
+    std::string start_title;
     {
         std::lock_guard<std::mutex> lk(mut_mtx_);
         toast = std::move(mut_toast_);
@@ -643,6 +645,8 @@ void SeriesDetailScreen::drain_mutation() {
         mut_series_.reset();
         start_season = mut_start_season_;
         mut_start_season_.reset();
+        start_title = std::move(mut_start_title_);
+        mut_start_title_.clear();
         fresh_settled = mut_settled_;
         mut_settled_ = true;
         removed = mut_removed_;
@@ -698,7 +702,9 @@ void SeriesDetailScreen::drain_mutation() {
         // pre-add snapshot is also stale now — refresh on the way back.
         if (start_season.has_value()) {
             needs_refresh_ = true;
-            ::ui::Toast::show("Added \xE2\x80\x94 open the show again to "
+            ::ui::Toast::show((start_title.empty() ? std::string("This series")
+                                                   : start_title) +
+                              ": added \xE2\x80\x94 open the show again to "
                               "start Season " +
                               std::to_string(*start_season));
         }
@@ -863,6 +869,12 @@ void SeriesDetailScreen::start_season_download(int season) {
     // RENDER thread. The one entry point for "download this one season":
     // the action row's "Download Season N" and the season list's SELECT on
     // a season with nothing on disk both land here.
+    // spawn_mutation drops a request made while one is running; say so up
+    // front instead of toasting "starting..." for a start that never runs.
+    if (mut_in_flight_.load()) {
+        ::ui::Toast::show("Still finishing the last action\xE2\x80\xA6");
+        return;
+    }
     const std::string title =
         detail_.has_value() ? detail_->title : std::string("This series");
     if (!in_library_ || !series_.has_value() || series_->sonarr_id <= 0) {
@@ -1017,6 +1029,7 @@ void SeriesDetailScreen::start_add_at_season(int season) {
             mut_series_ = res.series;
             mut_settled_ = true;
             mut_start_season_ = season;
+            mut_start_title_ = title;
             return;
         }
         // monitor=true => addOptions.monitor="firstSeason" +
@@ -1210,10 +1223,12 @@ void SeriesDetailScreen::dispatch_action(Action a) {
                         }
                         // *** monitor=true is REQUIRED here. *** add_series
                         // writes the SERIES-LEVEL monitored flag from this
-                        // same parameter (series["monitored"] = monitor) and
-                        // no client method exists to flip it afterwards.
-                        // "none" would leave the series permanently
-                        // unmonitored, and Sonarr's
+                        // same parameter (series["monitored"] = monitor).
+                        // (The chosen-season add, N>1, uses monitor=false
+                        // and relies on set_season_monitored(true) turning
+                        // the series flag on afterwards; THIS whole-series
+                        // path has no such follow-up.) "none" would leave
+                        // the series unmonitored, and Sonarr's
                         // MonitoredEpisodeSpecification rejects every release
                         // for an unmonitored series: seasons monitored,
                         // search runs, NOTHING ever downloads — invisibly.

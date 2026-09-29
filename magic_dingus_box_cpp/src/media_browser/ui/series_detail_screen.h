@@ -80,11 +80,11 @@ public:
 
     // One-shot "Start Season N" intent from Playback's season-end card.
     // Set by the dispatcher on the Playback->SeriesDetail transition
-    // (PRE-leave); consumed in enter(), which re-derives the target via
-    // suggested_season (the primary button's own proposal) and runs the
-    // EXISTING NextSeason dispatch only when they still agree — drift means the world changed while
-    // playing, and the safe answer is a no-op said out loud ("Season
-    // update didn't apply — try from this screen").
+    // (PRE-leave); consumed in enter(), which honours exactly that season
+    // (start_season_download) while it is still in eligible_seasons —
+    // drift (record gone, unsettled, season no longer downloadable) means
+    // the world changed while playing, and the safe answer is a no-op said
+    // out loud ("Season update didn't apply — try from this screen").
     void set_pending_intent_next_season(int season) {
         pending_intent_next_season_ = season;
     }
@@ -276,6 +276,9 @@ private:
     // Season > 1 add: the season the user chose, to be started on the
     // render thread once the added record is applied (drain_mutation).
     std::optional<int> mut_start_season_;            // guarded
+    // Title of the show mut_start_season_ belongs to, so the leave-mid-add
+    // toast can name it (the user may be on a different show by then).
+    std::string mut_start_title_;                    // guarded
     bool mut_settled_ = true;                        // guarded
     bool mut_removed_ = false;                       // guarded
     // Per-season remove (Task 6). Deliberately SEPARATE from mut_removed_:
