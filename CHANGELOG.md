@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can no longer fill the SD card; pairing codes can no longer be guessed
   in parallel to get around the attempt limit.
 
+### Added
+- **Choose which season to download.** A show's page now suggests the
+  season after the last one you watched or have — "Download Season 5"
+  if you've seen the first four — and pressing it lets you turn the knob
+  (or press Left/Right) to pick any other season before it starts. New
+  shows work the same way ("Add Season 3"). Press back to change your
+  mind; nothing downloads until you confirm. A season that was set to
+  download but never found a copy can now be picked again, which searches
+  for it once more.
+
 ### Fixed
 - **A broken video no longer freezes the box.** A truncated upload, a bad
   SD-card sector or a format the box can't decode used to stop an
@@ -114,6 +124,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   honestly.** When the availability check found nothing but some sources
   never answered, Detail said "No sources found" — even though the
   source most likely to have an obscure film hadn't replied.
+- **Deleting every season no longer makes a show disappear.** Clearing
+  old seasons to make room used to remove the show from your Library
+  entirely once the last one went, and downloading it again started
+  from Season 1. The show now stays in your Library, marked "Nothing
+  downloaded", ready for you to pick the next season.
+- **"Start Season N" after a season finale now works on shows where
+  earlier seasons were deleted** — it used to say the update didn't
+  apply.
 
 ### Changed
 - **Movie availability appears faster.** Detail's availability check
