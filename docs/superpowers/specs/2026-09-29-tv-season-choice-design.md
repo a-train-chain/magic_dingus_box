@@ -43,8 +43,11 @@ the season-row SELECT shortcut.
 set movies already get: everything the *arr holds). A series with no
 episode file and no active download renders as **empty**:
 
-- poster dimmed (same treatment as a movie `MissingFile` tile),
-- a "Nothing downloaded" tag in the tile's status slot,
+- poster dimmed by a translucent black overlay (`Color{0,0,0,150}`) —
+  file-less movie tiles have no dim treatment today, so this is new and
+  TV-only,
+- a "NOTHING DOWNLOADED" tag drawn in the badge style at the poster's
+  bottom edge (the top-left slot belongs to the TV chip / state badges),
 - normal sort position — no reordering.
 
 Counts and watched math are unchanged (season-0-excluded sums; the
@@ -72,6 +75,14 @@ std::vector<int> eligible_seasons(const std::vector<SeasonRow>& rows);
 std::optional<int> suggested_season(const std::vector<SeasonRow>& rows,
                                     const watch_map& watch);
 ```
+
+The playback season-end card ("Start Season N", `season_end_card` in
+`episode_logic.h`) already offers the season after the one just finished.
+Its hand-off (`pending_intent_next_season_`) is re-validated against
+`eligible_seasons` and started with `start_season_download(want)`
+directly — today it is re-validated against `next_unmonitored_season`,
+so on an emptied series finishing Season 5 offers Season 6 and then
+refuses it ("Season update didn't apply").
 
 Eligibility is by what is ON DISK / IN FLIGHT, not by the monitored flag:
 a monitored season whose search found nothing is still a legitimate
@@ -137,7 +148,8 @@ so its behaviour is Mac-testable without the screen.
 |---|---|
 | `ui/library_view.cpp/.h` | inclusion rule only — "empty" is derived from the existing `file_count == 0 && !downloading` |
 | `ui/library_screen.cpp` | render empty TV tile (dim + tag) |
-| `ui/series_detail_logic.h` | `eligible_seasons`, `suggested_season`, `SeasonChooser`, action-row label source |
+| `ui/season_choice.h` (new) | `eligible_seasons`, `suggested_season`, `SeasonChooser` — separate header because `episode_logic.h` (which defines `watch_map`) already includes `series_detail_logic.h` |
+| `ui/series_detail_logic.h` | action row: `AddSeason1` → `AddSeason`, primary season + label override inputs |
 | `ui/series_detail_screen.cpp/.h` | wire chooser input + render; not-in-library N>1 add path |
 | tests: `test_library_view.cpp`, `test_series_detail_logic.cpp` | table tests above + chooser transitions |
 
