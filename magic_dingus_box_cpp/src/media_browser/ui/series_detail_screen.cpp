@@ -173,10 +173,14 @@ void SeriesDetailScreen::enter() {
     if (pending_intent_next_season_.has_value()) {
         const int want = *pending_intent_next_season_;
         pending_intent_next_season_.reset();
-        const auto target = suggested_season(rows_, episode_watch_);
+        // The card offered the season after the one just finished. Honour
+        // exactly that season while it is still downloadable; comparing it to
+        // next_unmonitored_season refused it on any show with a deleted
+        // earlier season (emptied GoT: finish S5, offered S6, refused).
+        const auto elig = eligible_seasons(rows_);
         if (series_.has_value() && series_->sonarr_id > 0 && series_settled_ &&
-            target.has_value() && *target == want) {
-            dispatch_action(Action::NextSeason);
+            std::find(elig.begin(), elig.end(), want) != elig.end()) {
+            start_season_download(want);
         } else {
             ::ui::Toast::show(
                 "Season update didn't apply — try from this screen");
