@@ -25,6 +25,15 @@ public:
     // from "paused mid-stream" — both report is_playing()==false with a
     // position > 0. Default false for backends without EOS tracking.
     virtual bool at_eos() const { return false; }
+    // True after the pipeline posted a fatal error (corrupt/truncated file,
+    // unsupported codec, decoder failure), until the next load/stop. An
+    // errored pipeline often STAYS in PLAYING with a frozen position, so
+    // without this latch callers cannot tell "broken" from "stalled" and
+    // an unattended kiosk sits on the dead item forever. Deliberately NOT
+    // folded into at_eos(): an error is not a natural end (the Media
+    // Browser must never mark an errored episode watched). Default false
+    // for backends without error tracking.
+    virtual bool has_error() const { return false; }
     virtual double get_position() const = 0;
     virtual double get_duration() const = 0;
     

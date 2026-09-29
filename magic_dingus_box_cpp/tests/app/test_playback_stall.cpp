@@ -184,3 +184,69 @@ TEST_CASE("position going backwards counts as movement, not a stall",
     now += 1.0;
     REQUIRE(watchdog.update(true, 11.0, now) == Action::None);
 }
+
+TEST_CASE("a stall that survives repeated restarts escalates to Advance",
+          "[playback][watchdog]") {
+    // A corrupt or undecodable file wedges the pipeline for good. Retrying
+    // play() every 8 s forever stranded an unattended kiosk on it; after a
+    // bounded number of attempts the watchdog must ask to move on.
+    PlaybackStallWatchdog watchdog;
+    double now = 100.0;
+    watchdog.update(true, 4.0, now);
+    int recoveries = 0;
+    bool advanced = false;
+    for (int i = 0; i < 400 && !advanced; ++i) {
+        now += kTick;
+        const auto a = watchdog.update(true, 4.0, now);
+        if (a == Action::Recover) ++recoveries;
+        if (a == Action::Advance) advanced = true;
+    }
+    REQUIRE(advanced);
+    REQUIRE(recoveries == PlaybackStallWatchdog::kMaxRecoveriesBeforeAdvance);
+    // Bounded: well under a minute of frozen video.
+    REQUIRE(now - 100.0 < 40.0);
+}
+
+TEST_CASE("after Advance the watchdog re-arms with a full stall window",
+          "[playback][watchdog]") {
+    PlaybackStallWatchdog watchdog;
+    double now = 100.0;
+    watchdog.update(true, 4.0, now);
+    bool advanced = false;
+    for (int i = 0; i < 400 && !advanced; ++i) {
+        now += kTick;
+        advanced = watchdog.update(true, 4.0, now) == Action::Advance;
+    }
+    REQUIRE(advanced);
+    // A caller that could not advance (Media Browser) is still stalled: the
+    // next action is a fresh Recover after the threshold, not an instant
+    // second Advance.
+    REQUIRE(watchdog.update(true, 4.0, now + kTick) == Action::None);
+    (void)run_until_recovery(watchdog, 4.0, now + kTick);
+}
+
+TEST_CASE("movement between restarts resets the escalation count",
+          "[playback][watchdog]") {
+    // An item that recovers after a restart and later stalls again is a
+    // flaky pipeline, not a dead file — it gets the full retry budget again.
+    PlaybackStallWatchdog watchdog;
+    double now = 100.0;
+    double position = 10.0;
+    watchdog.update(true, position, now);
+    for (int round = 0; round < 5; ++round) {
+        bool recovered = false;
+        for (int i = 0; i < 200 && !recovered; ++i) {
+            now += kTick;
+            const auto a = watchdog.update(true, position, now);
+            REQUIRE(a != Action::Advance);
+            recovered = a == Action::Recover;
+        }
+        REQUIRE(recovered);
+        // Recovery works: position moves for a while.
+        for (int i = 0; i < 20; ++i) {
+            now += kTick;
+            position += kTick;
+            REQUIRE(watchdog.update(true, position, now) == Action::None);
+        }
+    }
+}

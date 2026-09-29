@@ -23,6 +23,13 @@ public:
     enum class Action {
         None,
         Recover,
+        // kMaxRecoveriesBeforeAdvance consecutive Recover attempts on the
+        // same item never got position moving: restarting this pipeline is
+        // not going to work, so the caller should move on (skip to the next
+        // playlist item). The watchdog re-arms from scratch after returning
+        // this, so a caller that CANNOT advance (e.g. Media Browser
+        // playback) may treat it as one more Recover.
+        Advance,
     };
 
     // expect_playing: the kiosk's own belief — video active and not paused.
@@ -45,6 +52,11 @@ public:
     // rather than 240.
     static constexpr double kRetryIntervalSec = 8.0;
 
+    // Recover attempts on a frozen position before escalating to Advance.
+    // Before this, a wedged item was retried every 8 s forever — an
+    // unattended kiosk never left it. 3 attempts = ~27 s of frozen video.
+    static constexpr int kMaxRecoveriesBeforeAdvance = 3;
+
 private:
     // Position is a double from GStreamer; compare with a tolerance rather
     // than for exact equality.
@@ -55,6 +67,7 @@ private:
     double last_movement_sec_ = 0.0;
     double last_recovery_sec_ = 0.0;
     bool ever_recovered_ = false;
+    int recoveries_without_progress_ = 0;
 };
 
 }  // namespace app

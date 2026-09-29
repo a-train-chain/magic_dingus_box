@@ -331,7 +331,13 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
                 LOG_DEBUG("GStreamer debug: {}", debug);
                 g_free(debug);
             }
+            // Latch it: the pipeline may keep reporting PLAYING with a
+            // frozen position, and update_state()'s poll must not undo
+            // this. Callers (main.cpp playlist advance, the Media Browser
+            // PlaybackScreen) read has_error() to leave the dead item.
+            player->has_error_ = true;
             player->is_playing_ = false;
+            player->is_paused_ = false;
             break;
         }
 
@@ -345,7 +351,10 @@ gboolean GstPlayer::bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
 
                 if (new_state == GST_STATE_PLAYING) {
                     LOG_DEBUG("Pipeline entering PLAYING state");
-                    player->is_playing_ = true;
+                    // Same gate as update_state(): a latched error/EOS
+                    // wins over a late state-change message.
+                    player->is_playing_ = !player->has_error_.load()
+                                          && !player->at_eos_.load();
                     player->is_paused_ = false;
 
                     // Inspect pipeline to see what decoder is used (only once per pipeline)
@@ -655,6 +664,7 @@ void GstPlayer::stop() {
     is_playing_ = false;
     is_paused_ = false;
     at_eos_ = false;
+    has_error_ = false;
     position_ = 0.0;
     duration_ = 0.0;
 
@@ -784,9 +794,18 @@ void GstPlayer::update_state() {
         if (at_eos_.load()) {
             now_playing = false;
         }
+        // Same for a fatal error: the pipeline can stay PLAYING (frozen
+        // position) after posting GST_MESSAGE_ERROR. Before this gate the
+        // poll re-set is_playing_=true every frame, so neither the
+        // playlist auto-advance nor the stall watchdog could ever leave a
+        // corrupt file. The latch clears only on stop()/load_file().
+        if (has_error_.load()) {
+            now_playing = false;
+        }
 
         is_playing_ = now_playing;
-        is_paused_ = (current_state == GST_STATE_PAUSED && !now_playing);
+        is_paused_ = (current_state == GST_STATE_PAUSED && !now_playing
+                      && !has_error_.load());
 
         // Log when playback starts (decoder inspection deferred to avoid blocking render loop)
         if (!was_playing && now_playing) {

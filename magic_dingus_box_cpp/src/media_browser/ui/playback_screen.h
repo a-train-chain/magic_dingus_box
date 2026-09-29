@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <optional>
 #include <string>
 #include <thread>
@@ -153,6 +154,23 @@ public:
     // ended" and bail out of playback) plus the on-TV scrub-bar flash.
     void notify_external_seek();
 
+    // Pipeline-error probe, wired by main.cpp to the shared GstPlayer's
+    // has_error() (the Controller does not expose it). Polled by update()
+    // BEFORE the natural-end edge detector: an errored file (corrupt,
+    // truncated, undecodable) exits playback with a toast and is never
+    // mistaken for end-of-stream — no watched mark, no next-episode
+    // countdown. Unset (tests, dev builds) = errors are not detected.
+    void set_error_probe(std::function<bool()> probe) {
+        error_probe_ = std::move(probe);
+    }
+
+    // True once this session was abandoned because of a pipeline error;
+    // reset by enter() / the in-place episode advance. main.cpp's exit
+    // sites skip the final watch-state flush for such a session, so an
+    // error near the end of a file cannot cross the watched threshold via
+    // the position write (a natural-end-only decision).
+    bool ended_on_error() const { return ended_on_error_; }
+
     void enter() override;
     void leave() override;
     Screen handle_input(const std::vector<platform::InputEvent>& events) override;
@@ -250,6 +268,8 @@ private:
 
     bool was_video_active_ = false;
     bool exit_pending_ = false;
+    std::function<bool()> error_probe_;   // see set_error_probe()
+    bool ended_on_error_ = false;         // see ended_on_error()
     std::string deferred_toast_;
 
     // Async quick-add (overlay SELECT). get_quality_profiles + add_movie

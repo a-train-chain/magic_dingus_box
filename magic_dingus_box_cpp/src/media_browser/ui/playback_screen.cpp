@@ -15,6 +15,7 @@
 #include "ui/theme.h"
 #include "ui/toast.h"
 #include "utils/result.h"
+#include "video/playback_error_policy.h"
 
 namespace media_browser::ui {
 
@@ -121,6 +122,7 @@ void PlaybackScreen::set_episode_context(std::vector<EpisodeInfo> episodes,
 
 void PlaybackScreen::enter() {
     exit_pending_ = false;
+    ended_on_error_ = false;
     deferred_toast_.clear();
     qbit_was_paused_by_us_ = false;
     qbit_alt_limited_by_us_ = false;
@@ -679,6 +681,27 @@ void PlaybackScreen::update() {
         --eos_suppress_frames_;
     }
 
+    // Pipeline error -> leave playback with a toast. Checked BEFORE the
+    // natural-end edge below and returns early, so an error can never be
+    // latched as EOS: no take_eos_watched() report (nothing marked
+    // watched) and no end-of-episode countdown. Without this an errored
+    // pipeline froze on its last frame forever (it often stays PLAYING
+    // with a stuck position, so video_active never drops) — or, errored
+    // before preroll, sat on a black screen.
+    if (error_probe_ &&
+        ::video::mb_should_abort_on_error(error_probe_(), eos_latched_,
+                                          exit_pending_)) {
+        spdlog::error("[playback] pipeline error while playing '{}' "
+                      "(path='{}') — leaving playback", movie_title_,
+                      movie_path_);
+        deferred_toast_ = "Couldn't play this file";  // surfaced by leave()
+        end_overlay_ = {};
+        ended_on_error_ = true;
+        exit_pending_ = true;
+        was_video_active_ = state_.video_active;
+        return;
+    }
+
     // Edge-detect natural end-of-stream: state.video_active flips
     // true→false when the GStreamer pipeline reaches EOS. We only
     // treat it as end-of-stream if WE didn't trigger the stop AND the
@@ -878,6 +901,7 @@ void PlaybackScreen::advance_to_next_episode() {
     // contract), and the edge detector needs a fresh false→true→false.
     eos_latched_ = false;
     eos_reported_ = false;
+    ended_on_error_ = false;
     was_video_active_ = false;
     eos_suppress_frames_ = 60;
     end_overlay_ = {};

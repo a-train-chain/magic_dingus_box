@@ -1,6 +1,9 @@
 #include "gst_renderer.h"
 #include "gst_player.h"
 #include "../utils/logger.h"
+#include "frame_layout.h"
+#include <gst/video/video.h>
+#include <array>
 #include <vector>
 #include <cstring>
 
@@ -363,7 +366,7 @@ void GstRenderer::upload_frame(GstSample* sample) {
 
     LOG_DEBUG("GstRenderer: Processing frame format={}", format_str);
 
-    int w, h;
+    int w = 0, h = 0;
     gst_structure_get_int(s, "width", &w);
     gst_structure_get_int(s, "height", &h);
 
@@ -384,25 +387,6 @@ void GstRenderer::upload_frame(GstSample* sample) {
     frame_par_num_ = par_n;
     frame_par_den_ = par_d;
 
-    // Get stride information for proper plane alignment
-    int y_stride = w;
-    int uv_stride = w / 2;
-    if (gst_structure_has_field(s, "stride")) {
-        const GValue* stride_val = gst_structure_get_value(s, "stride");
-        if (G_VALUE_HOLDS_INT(stride_val)) {
-            y_stride = g_value_get_int(stride_val);
-        } else if (GST_VALUE_HOLDS_ARRAY(stride_val)) {
-            // Multiple strides (one per plane)
-            GArray* strides = (GArray*)g_value_get_boxed(stride_val);
-            if (strides->len >= 1) {
-                y_stride = g_array_index(strides, int, 0);
-            }
-            if (strides->len >= 2) {
-                uv_stride = g_array_index(strides, int, 1);
-            }
-        }
-    }
-    
     // Determine format
     int format = -1;
     if (strcmp(format_str, "RGBA") == 0) format = 0;
@@ -411,123 +395,109 @@ void GstRenderer::upload_frame(GstSample* sample) {
     else if (strcmp(format_str, "YUY2") == 0) format = 3;
     else if (strcmp(format_str, "UYVY") == 0) format = 4;
 
-    LOG_DEBUG("GstRenderer: Detected format {} ({}) for {}x{}, strides: y={}, uv={}",
-              format, format_str, w, h, y_stride, uv_stride);
-
-    if (format == -1) {
-        LOG_WARN("Unsupported format: {} - will attempt RGBA conversion", format_str);
-        // For unsupported formats, try to force RGBA conversion
-        // This is a fallback that may not work perfectly
-        format = 0; // Treat as RGBA for now
+    if (format != 0 && format != 1 && format != 2) {
+        // The appsink caps (GstPlayer::initialize) only admit I420, NV12
+        // and RGBA, so this is unreachable in practice. The old fallback
+        // "treated it as RGBA", which uploads garbage; skip the frame.
+        LOG_WARN("GstRenderer: unsupported format {}; skipping frame", format_str);
+        return;
     }
-    
+
+    // Real plane layout. Raw video caps carry NO stride field — the old
+    // code looked for one, never found it, and assumed stride == width.
+    // GStreamer pads rows to 4 bytes, so e.g. an 854x480 clip (Y stride
+    // 856, chroma stride 428) was uploaded sheared with wrong chroma
+    // offsets. GstVideoInfo gives the default layout for these caps;
+    // gst_video_frame_map additionally honours a GstVideoMeta a decoder
+    // attached with its own (e.g. 64-byte aligned) strides/offsets.
+    GstVideoInfo info;
+    if (!gst_video_info_from_caps(&info, caps)) {
+        LOG_WARN("GstRenderer: could not parse video caps; skipping frame");
+        return;
+    }
+    w = static_cast<int>(GST_VIDEO_INFO_WIDTH(&info));
+    h = static_cast<int>(GST_VIDEO_INFO_HEIGHT(&info));
+    GstVideoFrame vframe;
+    if (!gst_video_frame_map(&vframe, &info, buffer, GST_MAP_READ)) {
+        LOG_WARN("GstRenderer: gst_video_frame_map failed; skipping frame");
+        return;
+    }
+
+    const RawFormat raw_format = format == 0 ? RawFormat::RGBA
+                               : format == 1 ? RawFormat::I420
+                                             : RawFormat::NV12;
+    const int n_planes = static_cast<int>(GST_VIDEO_FRAME_N_PLANES(&vframe));
+    std::array<int, 3> strides{0, 0, 0};
+    const guint8* plane_data[3] = {nullptr, nullptr, nullptr};
+    for (int i = 0; i < n_planes && i < 3; ++i) {
+        strides[static_cast<size_t>(i)] = GST_VIDEO_FRAME_PLANE_STRIDE(&vframe, i);
+        plane_data[i] = static_cast<const guint8*>(GST_VIDEO_FRAME_PLANE_DATA(&vframe, i));
+    }
+    const FrameUpload up = compute_frame_upload(raw_format, w, h, strides);
+
+    LOG_DEBUG("GstRenderer: Detected format {} ({}) for {}x{}, strides: {}/{}/{}",
+              format, format_str, w, h, strides[0], strides[1], strides[2]);
+
+    if (!up.valid() || n_planes < up.n_planes) {
+        LOG_WARN("GstRenderer: unusable plane layout for {} {}x{} "
+                 "(planes={}, strides={}/{}/{}); skipping frame",
+                 format_str, w, h, n_planes, strides[0], strides[1], strides[2]);
+        gst_video_frame_unmap(&vframe);
+        return;
+    }
+
     // Update shader if format changed
     if (format != frame_format_) {
         update_shader(format);
     }
-    
+
     frame_width_ = w;
     frame_height_ = h;
-    
+
     // Check if texture dimensions or format changed (need full reallocation)
     bool size_changed = !textures_allocated_ || w != allocated_width_ || h != allocated_height_ || format != allocated_format_;
 
-    GstMapInfo map;
-    if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-        if (format == 0) { // RGBA
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, map.data);
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, map.data);
-            }
-        }
-        else if (format == 1) { // I420 (Y, U, V planar)
-            // Calculate plane sizes using strides for proper alignment
-            int y_plane_size = y_stride * h;
-            int u_plane_size = uv_stride * ((h + 1) / 2);
-            int actual_uv_stride = uv_stride;
-
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-            // Upload Y plane
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            }
-            LOG_TRACE("GstRenderer: Uploaded Y plane {}x{} from offset 0", w, h);
-
-            // Upload U plane (handle optional swap)
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 2 : 1]);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_uv_stride, (h + 1) / 2, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size);
-            }
-            LOG_TRACE("GstRenderer: Uploaded U plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size);
-
-            // Upload V plane
-            glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[swap_uv_ ? 1 : 2]);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, actual_uv_stride);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, actual_uv_stride, (h + 1) / 2, 0, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, actual_uv_stride, (h + 1) / 2, GL_RED, GL_UNSIGNED_BYTE, map.data + y_plane_size + u_plane_size);
-            }
-            LOG_TRACE("GstRenderer: Uploaded V plane {}x{} from offset {}", actual_uv_stride, (h + 1) / 2, y_plane_size + u_plane_size);
-
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);  // Reset to default
-        }
-        else if (format == 2) { // NV12 (Y plane, then UV interleaved)
-            int uv_width = (w + 1) / 2;
-            int uv_height = (h + 1) / 2;
-
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride);  // Y plane: 1 byte/texel, stride in bytes = texels
-
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[0]);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, map.data);
-            }
-
-            // UV plane: GL_RG = 2 bytes/texel, row has y_stride bytes = y_stride/2 RG texels
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, y_stride / 2);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, texture_ids_[1]);
-            if (size_changed) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, uv_width, uv_height, 0, GL_RG, GL_UNSIGNED_BYTE,
-                             map.data + y_stride * h);  // Use stride for offset
-            } else {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uv_width, uv_height, GL_RG, GL_UNSIGNED_BYTE,
-                                map.data + y_stride * h);
-            }
-
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        }
-
-        // Track allocated dimensions and format for glTexSubImage2D optimization
+    // Upload one plane with its own row pitch. Row length is in texels
+    // (GL_UNPACK_ROW_LENGTH is core in OpenGL ES 3.0); alignment 1 because
+    // the row length already describes the exact pitch.
+    auto upload_plane = [&](GLenum unit, GLuint tex, GLenum gl_format,
+                            const PlaneUpload& p, const guint8* data) {
+        glActiveTexture(unit);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, p.row_length);
         if (size_changed) {
-            textures_allocated_ = true;
-            allocated_width_ = w;
-            allocated_height_ = h;
-            allocated_format_ = format;
+            glTexImage2D(GL_TEXTURE_2D, 0, gl_format, p.tex_width, p.tex_height,
+                         0, gl_format, GL_UNSIGNED_BYTE, data);
+        } else {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p.tex_width, p.tex_height,
+                            gl_format, GL_UNSIGNED_BYTE, data);
         }
+    };
 
-        gst_buffer_unmap(buffer, &map);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if (format == 0) { // RGBA
+        upload_plane(GL_TEXTURE0, texture_ids_[0], GL_RGBA, up.planes[0], plane_data[0]);
+    } else if (format == 1) { // I420 (Y, U, V planar)
+        upload_plane(GL_TEXTURE0, texture_ids_[0], GL_RED, up.planes[0], plane_data[0]);
+        // U/V (handle optional swap)
+        upload_plane(GL_TEXTURE1, texture_ids_[swap_uv_ ? 2 : 1], GL_RED, up.planes[1], plane_data[1]);
+        upload_plane(GL_TEXTURE2, texture_ids_[swap_uv_ ? 1 : 2], GL_RED, up.planes[2], plane_data[2]);
+    } else { // NV12 (Y plane, then UV interleaved as GL_RG)
+        upload_plane(GL_TEXTURE0, texture_ids_[0], GL_RED, up.planes[0], plane_data[0]);
+        upload_plane(GL_TEXTURE1, texture_ids_[1], GL_RG, up.planes[1], plane_data[1]);
     }
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);  // Reset to defaults
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+    // Track allocated dimensions and format for glTexSubImage2D optimization
+    if (size_changed) {
+        textures_allocated_ = true;
+        allocated_width_ = w;
+        allocated_height_ = h;
+        allocated_format_ = format;
+    }
+
+    gst_video_frame_unmap(&vframe);
 }
 
 void GstRenderer::render_quad() {

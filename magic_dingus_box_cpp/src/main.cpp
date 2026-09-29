@@ -58,6 +58,7 @@
 #include "app/settings_persistence.h"
 #include "app/status_writer.h"
 #include "app/playback_stall_watchdog.h"
+#include "video/playback_error_policy.h"
 #include "utils/config.h"
 #include "utils/path_resolver.h"
 #include "utils/wifi_manager.h"
@@ -167,6 +168,11 @@ static void flush_watch_state(media_browser::ui::PlaybackScreen& playback,
                               const app::AppState& state) {
     const auto id = playback.watch_identity();
     if (!id.has_value()) return;
+    // A session abandoned on a pipeline error is not a viewing: its final
+    // position must not be written, because upsert_position marks
+    // watched past the threshold and "watched" is a natural-end-only
+    // decision. The last 30 s checkpoint (real progress) still stands.
+    if (playback.ended_on_error()) return;
     const double pos = state.get_position();
     if (pos <= 0.0) return;
     store.upsert_position(id->ref, id->season, id->episode,
@@ -671,6 +677,68 @@ int main(int /* argc */, char* /* argv */[]) {
     
     // Store playlist directory for path resolution
     std::string playlist_directory = playlist_dir;
+
+    // ── Failed-item handling (main playlist / Master Shuffle) ────────────
+    // A GStreamer error (corrupt/truncated file, unsupported codec) or a
+    // stall the watchdog could not revive used to strand an unattended
+    // kiosk on the dead item forever: an errored stream never reaches
+    // position >= duration, so the natural-end auto-advance never fired.
+    // video::PlaybackErrorPolicy decides skip vs. give up (bounded, so a
+    // playlist where EVERY item is broken shows the UI instead of
+    // spinning); this lambda executes the decision.
+    video::PlaybackErrorPolicy playback_error_policy;
+    auto playlist_owns_pipeline = [&]() {
+        bool owns = state.current_playlist_index >= 0 &&
+                    state.current_item_index >= 0 &&
+                    state.intro_complete && !state.showing_intro_video &&
+                    !state.is_switching_playlist && !state.is_loading_game;
+#ifdef MEDIA_BROWSER_ENABLED
+        // MB PlaybackScreen owns its own error path (toast + exit).
+        owns = owns && state.current_screen != app::AppScreen::MediaBrowser;
+#endif
+        return owns;
+    };
+    auto failure_budget = [&]() {
+        int size = 1;
+        if (state.current_playlist_index >= 0 &&
+            state.current_playlist_index <
+                static_cast<int>(state.playlists.size())) {
+            size = static_cast<int>(
+                state.playlists[state.current_playlist_index].items.size());
+        }
+        return video::PlaybackErrorPolicy::failure_budget(
+            size, state.master_shuffle_active);
+    };
+    auto act_on_failed_item = [&](video::PlaybackErrorPolicy::Decision d,
+                                  const char* why) {
+        using Decision = video::PlaybackErrorPolicy::Decision;
+        if (d == Decision::Advance) {
+            std::cerr << "Playlist item " << state.current_item_index
+                      << " failed (" << why << ") — skipping to next item"
+                      << std::endl;
+            if (state.master_shuffle_active) {
+                // > 0: index 0 is the virtual Master Shuffle row — see the
+                // NEXT handler.
+                if (state.current_playlist_index > 0 &&
+                    state.current_item_index >= 0) {
+                    state.push_shuffle_history(state.current_playlist_index,
+                                               state.current_item_index);
+                }
+                controller.play_random_global_video(state, playlist_directory);
+            } else {
+                controller.load_next_item(state, playlist_directory);
+            }
+        } else if (d == Decision::GiveUp) {
+            std::cerr << "Playlist item failed (" << why << ") and too many "
+                      << "consecutive items failed — stopping playback"
+                      << std::endl;
+            // Same end state as load_next_item's all-items-failed branch.
+            controller.stop();
+            state.video_active = false;
+            state.ui_visible_when_playing = true;
+            state.set_error("Couldn't play these videos");
+        }
+    };
     
     // Initialize settings menu
     ui::SettingsMenuManager settings_menu(&state);
@@ -1027,6 +1095,8 @@ int main(int /* argc */, char* /* argv */[]) {
     media_browser::ui::PlaybackScreen   mb_playback(controller, state, *tmdb,
                                                      radarr,
                                                      qbit_owned.get());
+    // Pipeline errors end MB playback with a toast (never as natural EOS).
+    mb_playback.set_error_probe([&player]() { return player.has_error(); });
     // Manual release-picker screen — opened from Detail's "Pick a source"
     // button (Task 13) when the user wants to override Radarr's auto-pick.
     media_browser::ui::ReleasePickerScreen mb_release_picker(radarr);
@@ -3567,6 +3637,18 @@ int main(int /* argc */, char* /* argv */[]) {
             }
         }
         
+        // Pipeline error on a playlist item -> skip it (or give up after a
+        // run of failures). Not gated on video_active: an error before
+        // preroll leaves duration 0, so video_active never turned on.
+        if (playlist_owns_pipeline()) {
+            const auto decision = playback_error_policy.on_frame(
+                player.stream_generation(), player.has_error(),
+                player.get_position(), failure_budget());
+            if (decision != video::PlaybackErrorPolicy::Decision::None) {
+                act_on_failed_item(decision, "pipeline error");
+            }
+        }
+
         // Auto-advance to next item in playlist when current video ends
         if (state.video_active && state.current_playlist_index >= 0 && state.current_item_index >= 0) {
             // Snapshot the (position, duration) pair so the whole advance
@@ -4180,6 +4262,14 @@ int main(int /* argc */, char* /* argv */[]) {
         // nothing detected it. Logic and thresholds live in
         // app::PlaybackStallWatchdog — see tests/app/test_playback_stall.cpp.
         {
+            // A new stream (every load_file bumps the generation) starts at
+            // 0.0, which must not read as "frozen at 0.0" from the previous
+            // item's baseline — and its escalation count starts fresh.
+            static uint64_t watchdog_generation = 0;
+            if (player.stream_generation() != watchdog_generation) {
+                watchdog_generation = player.stream_generation();
+                playback_watchdog.reset();
+            }
             const bool expect_playing =
                 state.video_active && controller.is_playing() &&
                 !controller.is_paused() && !state.is_loading_game &&
@@ -4188,9 +4278,23 @@ int main(int /* argc */, char* /* argv */[]) {
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now().time_since_epoch())
                     .count();
-            if (playback_watchdog.update(expect_playing, state.get_position(),
-                                         watchdog_now) ==
-                app::PlaybackStallWatchdog::Action::Recover) {
+            const auto wd_action = playback_watchdog.update(
+                expect_playing, state.get_position(), watchdog_now);
+            if (wd_action == app::PlaybackStallWatchdog::Action::Advance &&
+                playlist_owns_pipeline()) {
+                // Repeated play() never got position moving: skip the item,
+                // counted in the same failure run as pipeline errors.
+                std::cerr << "Playback still stalled at "
+                          << state.get_position() << "s after "
+                          << app::PlaybackStallWatchdog::kMaxRecoveriesBeforeAdvance
+                          << " restarts — giving up on this item" << std::endl;
+                act_on_failed_item(
+                    playback_error_policy.on_failure(
+                        player.stream_generation(), failure_budget()),
+                    "stalled");
+            } else if (wd_action != app::PlaybackStallWatchdog::Action::None) {
+                // Recover — or Advance where there is no playlist to
+                // advance (Media Browser playback): one more restart.
                 std::cerr << "Playback stalled at " << state.get_position()
                           << "s while reported playing — restarting playback"
                           << std::endl;

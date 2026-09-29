@@ -454,6 +454,9 @@ void Controller::wait_for_playback_start(int max_ms, std::function<void()> progr
             gst_player->update_state();
         }
         if (is_playing()) return;  // started — no reason to keep waiting
+        if (player_ && player_->has_error()) return;  // broken file: the
+                                    // error policy in main skips it; waiting
+                                    // out the budget only delays that
         if (progress_callback) progress_callback();
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
