@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -221,9 +222,23 @@ def reap_revocations(data_dir: Path) -> int:
     return removed
 
 
+# Serializes the pairing session's read-modify-write. The web admin runs on a
+# threaded server, so without this N concurrent wrong guesses could all read
+# attempts_remaining=5 and each write back 4 — turning a 5-guess budget into
+# an unbounded one for a parallel brute-forcer — and two concurrent correct
+# submissions could both register a device off one code. In-process only:
+# the kiosk (a separate process) only ever creates/replaces the file.
+_pair_lock = threading.Lock()
+
+
 def handle_pair_param(submitted_code: str):
     """Called from the admin index handler when ?pair= is present.
     Returns a Flask response, or None to indicate 'not pairing — pass through'."""
+    with _pair_lock:
+        return _handle_pair_param_locked(submitted_code)
+
+
+def _handle_pair_param_locked(submitted_code: str):
     session_path = _session_path()
     ip = request.remote_addr or "?"
 

@@ -896,6 +896,147 @@ def get_local_ip() -> str:
         return "unknown"
 
 
+def _max_transcodes_for(pi_model: str, env_value: Optional[str]) -> int:
+    """Concurrent-transcode cap: env override, else 2 on Pi 5, else 1."""
+    if env_value is not None and str(env_value).strip():
+        try:
+            return max(1, int(env_value))
+        except ValueError:
+            pass
+    return 2 if pi_model == "pi5" else 1
+
+
+# ===== emulator_core VALIDATION =====
+#
+# The kiosk joins emulator_core straight into a shared-object path
+# (retroarch_launcher.cpp: libretro_dir + "/" + core_name + ".so") and hands
+# it to RetroArch as -L. A value like "../../../tmp/evil" would load an
+# arbitrary .so the moment someone picks that game. Every legitimate value is
+# a plain libretro core name (mupen64plus_next_libretro, pcsx_rearmed_libretro,
+# ...) or the legacy "auto" (resolved per-system by controller.cpp) — all
+# word characters — so anything else is refused at every web write path.
+_EMULATOR_CORE_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _invalid_emulator_core(playlist: Any) -> Optional[str]:
+    """Return the first offending emulator_core in `playlist`, else None.
+
+    Empty / missing values are fine (non-game items have none)."""
+    if not isinstance(playlist, dict):
+        return None
+    items = playlist.get("items")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        core = item.get("emulator_core")
+        if core is None or core == "":
+            continue
+        if not isinstance(core, str) or not _EMULATOR_CORE_RE.fullmatch(core):
+            return repr(core)[:80]
+    return None
+
+
+def _emulator_core_error(playlist: Any):
+    bad = _invalid_emulator_core(playlist)
+    if bad is None:
+        return None
+    return error_response(
+        "VALIDATION_ERROR",
+        f"Invalid emulator_core {bad}: must be a libretro core name "
+        "(letters, digits, underscores) or 'auto'.")
+
+
+# ===== HOST HEADER ALLOWLIST (DNS-rebinding defence) =====
+#
+# The web admin deliberately has NO login (owner decision: a customer must
+# never need a password or PIN). That makes it a DNS-rebinding target: a web
+# page on the internet can point its own hostname at this box's LAN IP and
+# then script same-origin requests at it from the victim's browser. The one
+# thing such a request cannot fake is the Host header — it carries the
+# ATTACKER's domain. So we accept only names a person on the LAN could
+# legitimately type, and refuse everything else. Zero friction for real
+# users; no credentials involved.
+#
+# Allowed:
+#   * any IP literal (v4 / bracketed v6, optional port) — the pairing QR and
+#     the typed address on the Connect screen are the LAN IP
+#   * single-label names ("localhost", "magicpi-ab12", "dingus") — not
+#     registrable on the public internet, so not rebindable
+#   * *.local (mDNS: magicpi-XXXX.local), *.localhost, and the router-local
+#     suffixes (.lan, .home, .home.arpa, .internal, .localdomain) — none are
+#     publicly delegated
+#   * dingus.box — the name advertised for the USB-C cable
+#     (scripts/data/dnsmasq-usb0.conf, pairing_screen_renderer.cpp)
+#   * this machine's own hostname / FQDN
+#   * anything in MAGIC_ALLOWED_HOSTS (comma-separated; ".example.com" allows
+#     a whole suffix) — an escape hatch that needs no release
+_LOCAL_HOST_SUFFIXES = (
+    ".local", ".localhost", ".lan", ".home", ".home.arpa", ".internal",
+    ".localdomain",
+)
+_BUILTIN_ALLOWED_HOSTS = frozenset({"dingus.box"})
+
+
+def _split_host_header(host_header: str) -> str:
+    """Return the lowercase host part of a Host header, port stripped."""
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end != -1 else host[1:]
+    if host.count(":") == 1:
+        host = host.rsplit(":", 1)[0]
+    return host.rstrip(".")
+
+
+def _host_is_allowed(host_header: str, own_names=(), extra=()) -> bool:
+    host = _split_host_header(host_header)
+    if not host:
+        # No Host header at all (HTTP/1.0 tooling). A browser — the only
+        # thing DNS rebinding can drive — always sends one.
+        return True
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return True
+    except ValueError:
+        pass
+    if "." not in host:
+        return True
+    if host in _BUILTIN_ALLOWED_HOSTS:
+        return True
+    if host.endswith(_LOCAL_HOST_SUFFIXES):
+        return True
+    if host in own_names:
+        return True
+    for entry in extra:
+        if entry.startswith("."):
+            if host.endswith(entry) or host == entry[1:]:
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+def _own_host_names() -> frozenset:
+    names = set()
+    for fn in (socket.gethostname, socket.getfqdn):
+        try:
+            n = (fn() or "").strip().lower().rstrip(".")
+        except Exception:
+            n = ""
+        if n:
+            names.add(n)
+            names.add(n.split(".", 1)[0] + ".local")
+    return frozenset(names)
+
+
+def _extra_allowed_hosts() -> tuple:
+    raw = os.getenv("MAGIC_ALLOWED_HOSTS", "")
+    return tuple(h.strip().lower().rstrip(".")
+                 for h in raw.split(",") if h.strip())
+
+
 def _is_within(child, parent) -> bool:
     """True iff `child` is `parent` itself or a descendant of it.
 
@@ -1489,6 +1630,42 @@ def _detect_vpn_brand(text: str, wg: dict | None = None) -> str:
     return ""
 
 
+# services/.env is consumed by bash `.`/`source` running as ROOT
+# (verify_services.sh, import_library_movies.sh), by docker compose, by
+# systemd EnvironmentFile= and by `grep | cut` readers — and several of its
+# values arrive from the LAN (the setup form's `country`, the uploaded
+# WireGuard .conf's keys and addresses). Written raw, `country=X;cmd` ran
+# `cmd` as root on the next smoke test, and a legitimate "United States"
+# made bash try to execute `States`. So every value is checked against a
+# charset that is inert in all of those readers. A value with spaces is
+# double-quoted (all four readers strip the quotes; none of the grep|cut
+# readers ever reads a spaced value); anything else outside the set is
+# refused rather than escaped, because no single escaping is correct for
+# all four parsers.
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:+=,@%-]*$")
+_ENV_QUOTED_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:+=,@% -]*$")
+
+
+def _format_env_line(key: str, value) -> str:
+    """Serialize one KEY=VALUE line for services/.env, or raise ValueError."""
+    value = "" if value is None else str(value)
+    if not _ENV_KEY_RE.match(key):
+        raise ValueError(f"invalid .env key: {key!r}")
+    if _ENV_BARE_VALUE_RE.match(value):
+        return f"{key}={value}"
+    if _ENV_QUOTED_VALUE_RE.match(value):
+        return f'{key}="{value}"'
+    raise ValueError(f"unsafe characters in .env value for {key}")
+
+
+def _unquote_env_value(value: str) -> str:
+    """Inverse of _format_env_line's quoting for a raw .env value."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
 def _vpn_provider_env(provider: str, wg: dict, country: str = "") -> dict:
     """Return the VPN_*/WIREGUARD_ENDPOINT_* env block for a chosen provider.
 
@@ -1727,6 +1904,23 @@ def create_app(data_dir: Path, config=None) -> Flask:
               flush=True)
 
     
+    # DNS-rebinding defence — see _host_is_allowed. Registered first so it
+    # runs ahead of every other hook, including the phone-remote WebSocket
+    # upgrade (flask-sock routes are ordinary Flask routes).
+    _own_names = _own_host_names()
+    _extra_hosts = _extra_allowed_hosts()
+
+    @app.before_request
+    def _check_host_header():  # type: ignore[no-redef]
+        host = request.headers.get("Host", "")
+        if _host_is_allowed(host, _own_names, _extra_hosts):
+            return None
+        return error_response(
+            "FORBIDDEN_HOST",
+            "Open the Content Manager by the box's address (its IP, "
+            "<name>.local, or http://dingus.box over USB).",
+            status=403)
+
     # Optional simple token auth for admin APIs (disabled by default)
     _admin_token = os.getenv("MAGIC_ADMIN_TOKEN")
     if _admin_token:
@@ -2167,7 +2361,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         try:
                             content = zf.read(name)
                             # Validate it's valid YAML
-                            yaml.safe_load(content.decode('utf-8'))
+                            restored_doc = yaml.safe_load(content.decode('utf-8'))
+                            bad = _invalid_emulator_core(restored_doc)
+                            if bad is not None:
+                                errors.append(
+                                    f"Skipped {playlist_name}: invalid emulator_core {bad}")
+                                continue
 
                             dest = playlists_dir / safe_name
                             # Atomic + fsync'd: the kiosk reads these files
@@ -2315,6 +2514,9 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 data = request.get_json()
                 if not data:
                     return error_response("VALIDATION_ERROR", "Invalid JSON body")
+                bad_core = _emulator_core_error(data)
+                if bad_core:
+                    return bad_core
                 # Convert to clean YAML matching the expected format
                 yaml_content = format_playlist_yaml(data)
             else:
@@ -2322,6 +2524,13 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Validate it's valid YAML
                 if not yaml_content.strip():
                     return error_response("VALIDATION_ERROR", "Empty content")
+                try:
+                    raw_doc = yaml.safe_load(yaml_content)
+                except yaml.YAMLError as e:
+                    return error_response("VALIDATION_ERROR", f"Invalid YAML: {e}")
+                bad_core = _emulator_core_error(raw_doc)
+                if bad_core:
+                    return bad_core
                 yaml.safe_load(yaml_content)
 
             if not yaml_content.strip():
@@ -2442,13 +2651,21 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     dev_media_dir = data_dir.parent / "dev_data" / "media"
                     dev_video_path = dev_media_dir / normalized_filename
 
-                    # Security check: ensure we're deleting within allowed directories
-                    for candidate in [video_path, dev_video_path]:
+                    # Security check: each candidate must resolve inside ITS
+                    # OWN media directory. This used to accept anything under
+                    # data_dir.parent, and _normalize_video_path only strips
+                    # LEADING ../ — so a playlist item path like
+                    # "media/x/../../flask_secret.key" (or ../config/settings.json)
+                    # resolved outside media/ but still inside the install
+                    # tree, and delete_videos=true unlinked it. Videos only
+                    # ever live in data/media or dev_data/media (list_media
+                    # and delete_media scan exactly those two).
+                    for candidate, base in ((video_path, media_dir),
+                                            (dev_video_path, dev_media_dir)):
                         if candidate.exists() and candidate.is_file():
                             candidate_resolved = candidate.resolve()
-                            # Verify path is within data directories
-                            data_parent = data_dir.parent.resolve()
-                            if _is_within(candidate_resolved, data_parent):
+                            if (_is_within(candidate_resolved, base.resolve())
+                                    and candidate_resolved != base.resolve()):
                                 try:
                                     candidate.unlink()
                                     videos_deleted += 1
@@ -2521,6 +2738,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     "VALIDATION_ERROR", 
                     "Playlist must have an 'items' list"
                 )
+
+            bad_core = _emulator_core_error(data)
+            if bad_core:
+                return bad_core
             
             # Determine output filename.
             # Prefer 'title' from YAML, fall back to the uploaded filename —
@@ -2738,6 +2959,12 @@ def create_app(data_dir: Path, config=None) -> Flask:
                     if 'items' not in playlist_data or not isinstance(playlist_data.get('items'), list):
                         return error_response("VALIDATION_ERROR", "Playlist must have an 'items' list")
 
+                    # Before ANY file is extracted: a refused package must
+                    # leave nothing behind.
+                    bad_core = _emulator_core_error(playlist_data)
+                    if bad_core:
+                        return bad_core
+
                     # Determine output filename for playlist BEFORE extracting
                     # videos. This slugged the title inline and skipped
                     # _sanitize_filename entirely — unlike the single-YAML
@@ -2810,9 +3037,41 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         if len(parts) >= 3 and parts[0] == 'roms' and parts[-1]:
                             rom_files.append((name, parts[1], parts[-1]))
 
-                    # Guard against ZIP bombs: limit total extracted size (default 10GB)
+                    # Guard against ZIP bombs: limit total extracted size to
+                    # the configured cap (default 10GB) AND to what the card
+                    # can actually take. The fixed 10 GB alone let a bomb fill
+                    # a box with 3 GB free to the last byte — and the kiosk's
+                    # settings.json, RetroArch saves and paired-remote state
+                    # live on the same volume. Measured NOW, after the ZIP is
+                    # staged, and keeping the same reserve every upload keeps.
                     MAX_EXTRACT_BYTES = int(os.getenv("MAGIC_MAX_EXTRACT_MB", "10240")) * 1024 * 1024
+                    _free_now = [
+                        fb for fb in (get_free_bytes(d) for d in (
+                            media_dir if media_dir.exists() else data_dir,
+                            roms_dir if roms_dir.exists() else data_dir))
+                        if fb is not None
+                    ]
+                    extract_limited_by_space = False
+                    if _free_now:
+                        _space_cap = max(0, min(_free_now) - STORAGE_HEADROOM_BYTES)
+                        if _space_cap < MAX_EXTRACT_BYTES:
+                            MAX_EXTRACT_BYTES = _space_cap
+                            extract_limited_by_space = True
                     total_extracted = 0
+
+                    def _too_large_response():
+                        if extract_limited_by_space:
+                            return error_response(
+                                "INSUFFICIENT_STORAGE",
+                                "Not enough free space on this box to unpack that package.",
+                                status=507,
+                                details={"free_gb": round(MAX_EXTRACT_BYTES / BYTES_PER_GB, 2)},
+                            )
+                        return error_response(
+                            "VALIDATION_ERROR",
+                            f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
+                            status=413
+                        )
 
                     def _stage_extract(member, dest_path):
                         """Extract one ZIP member to dest_path, atomically.
@@ -2878,11 +3137,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         try:
                             _stage_extract(rom_entry, rom_out)
                         except _ExtractTooLarge:
-                            return error_response(
-                                "VALIDATION_ERROR",
-                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
-                                status=413
-                            )
+                            return _too_large_response()
                         rom_renames[rom_name] = f"data/roms/{safe_system}/{safe_rom}"
                         roms_imported += 1
 
@@ -2908,11 +3163,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                         # below by counting bytes actually written.
                         info = zf.getinfo(media_file)
                         if total_extracted + info.file_size > MAX_EXTRACT_BYTES:
-                            return error_response(
-                                "VALIDATION_ERROR",
-                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
-                                status=413
-                            )
+                            return _too_large_response()
 
                         output_path = media_dir / safe_filename
 
@@ -2965,11 +3216,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                                 os.fsync(dst.fileno())
                         except _ExtractTooLarge:
                             tmp_media.unlink(missing_ok=True)
-                            return error_response(
-                                "VALIDATION_ERROR",
-                                f"Package exceeds maximum extraction size ({MAX_EXTRACT_BYTES // (1024*1024)}MB)",
-                                status=413
-                            )
+                            return _too_large_response()
                         except BaseException:
                             tmp_media.unlink(missing_ok=True)
                             raise
@@ -3105,6 +3352,8 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
         return success_response(data=media_list)
 
+    MEDIA_VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
+
     @app.post("/admin/upload")
     @require_csrf
     def upload_media():  # type: ignore[no-redef]
@@ -3120,9 +3369,15 @@ def create_app(data_dir: Path, config=None) -> Flask:
             return error_response("VALIDATION_ERROR", "File field required")
         f = request.files["file"]
 
-        # Sanitize filename to prevent path traversal
+        # Sanitize filename to prevent path traversal, and accept only the
+        # video containers the media library actually lists (list_media scans
+        # exactly these). Anything else landing in data/media was invisible to
+        # the operator — unlistable, undeletable from the UI — and served no
+        # purpose; the web UI never uses this raw endpoint (it goes through
+        # /admin/smart-upload), so this narrows nothing a real flow needs.
         try:
-            safe_filename = _sanitize_filename(f.filename)
+            safe_filename = _sanitize_filename(
+                f.filename, allowed_extensions=list(MEDIA_VIDEO_EXTENSIONS))
         except ValueError as e:
             return error_response("VALIDATION_ERROR", str(e))
 
@@ -3209,13 +3464,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking transcoding jobs (in-memory, cleared on restart)
     transcode_jobs: dict = {}
 
-    # Cap concurrent ffmpeg encodes. The Pi 4 has 4 cores / limited RAM
-    # shared with the kiosk and (optionally) the Media Browser Docker stack;
-    # one libx264 encode already saturates it. 2 lets a second upload start
-    # transcoding while a first finishes without thrashing. Excess jobs block
-    # in run_transcode_job() and report 'queued' to the UI.
-    _TRANSCODE_SEMAPHORE = threading.Semaphore(
-        int(os.getenv("MAGIC_MAX_TRANSCODES", "2")))
 
     def _detect_pi_model() -> str:
         """Return 'pi5', 'pi4', or 'unknown' from the device-tree model.
@@ -3249,6 +3497,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # a Pi 4B sharing 1.5 GB RAM with the kiosk. Env-overridable for
     # experiments without a release.
     _PI_MODEL = _detect_pi_model()
+
+    # Cap concurrent ffmpeg encodes, per board at runtime. One libx264 encode
+    # already saturates a Pi 4B (4 cores / 1.5 GB shared with the kiosk and
+    # optionally the Media Browser Docker stack), so a second concurrent
+    # encode there only thrashes — Pi 4B and unknown boards get 1 (the
+    # performance envelope is the Pi 4B's). The Pi 5 has the headroom for 2,
+    # letting a second upload start while the first finishes. Excess jobs
+    # block in run_transcode_job() and report 'queued' to the UI.
+    # MAGIC_MAX_TRANSCODES overrides on any board.
+    _max_transcodes = _max_transcodes_for(
+        _PI_MODEL, os.getenv("MAGIC_MAX_TRANSCODES"))
+    app.config["MAX_TRANSCODES"] = _max_transcodes
+    _TRANSCODE_SEMAPHORE = threading.Semaphore(_max_transcodes)
     if _PI_MODEL == 'pi5':
         _tier_preset, _tier_crf = 'veryfast', '23'
     else:
@@ -3921,10 +4182,18 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 # Acquire lock to ensure only one script instance runs at a time
                 with m3u_lock:
                     try:
-                        script_path = data_dir.parent / "magic_dingus_box_cpp" / "scripts" / "generate_m3u_playlists.sh"
+                        # Same base as UPDATE_SCRIPT: data_dir.parent IS
+                        # .../magic_dingus_box_cpp, so the script lives at
+                        # data_dir.parent/scripts. This used to insert a second
+                        # "magic_dingus_box_cpp" component — a path that exists
+                        # on no box, so exists() was always False and multi-disc
+                        # .m3u generation silently never ran after an upload.
+                        script_path = data_dir.parent / "scripts" / "generate_m3u_playlists.sh"
                         if script_path.exists():
+                            # Via bash, not exec: immune to a tarball that
+                            # drops the mode bit (see network_doctor).
                             subprocess.run(
-                                [str(script_path), str(system_rom_dir)],
+                                ["/bin/bash", str(script_path), str(system_rom_dir)],
                                 capture_output=True,
                                 timeout=30
                             )
@@ -3968,8 +4237,44 @@ def create_app(data_dir: Path, config=None) -> Flask:
     # Store for tracking update jobs (in-memory, cleared on restart)
     update_jobs: dict = {}
 
+    # One Network Doctor run at a time. Each run is a ~20-45 s probe ladder
+    # (curl, DNS, ping) and every GET used to spawn its own — a few open tabs,
+    # a double-click, or anyone on the LAN looping the URL stacked them up on
+    # a Pi 4B that has no CPU to spare. A request that arrives while a run is
+    # in flight waits for THAT run and returns its result (same answer, one
+    # set of probes); if it can't get one it gets a 429.
+    _doctor_lock = threading.Lock()
+    _doctor_state: dict = {"seq": 0, "result": None}
+    DOCTOR_WAIT_SECONDS = 60
+
     @app.get("/admin/network/doctor")
     def network_doctor():  # type: ignore[no-redef]
+        if _doctor_lock.acquire(blocking=False):
+            try:
+                resp, status = _run_network_doctor()
+                try:
+                    body = resp.get_json()
+                except Exception:
+                    body = None
+                _doctor_state["result"] = (body, status) if body is not None else None
+                _doctor_state["seq"] += 1
+                return resp, status
+            finally:
+                _doctor_lock.release()
+
+        seq_at_arrival = _doctor_state["seq"]
+        if _doctor_lock.acquire(timeout=DOCTOR_WAIT_SECONDS):
+            _doctor_lock.release()
+            result = _doctor_state["result"]
+            if _doctor_state["seq"] != seq_at_arrival and result is not None:
+                return jsonify(result[0]), result[1]
+        resp, status = error_response(
+            "BUSY", "A network test is already running — try again in a moment.",
+            status=429)
+        resp.headers["Retry-After"] = "30"
+        return resp, status
+
+    def _run_network_doctor():
         """Run the Network Doctor ladder and return its verdict.
 
         Deliberately NOT behind the Media Browser gate: network problems hit
@@ -3977,7 +4282,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         most valuable precisely when nothing else works. Read-only probes,
         bounded at ~20s by the script itself; the subprocess timeout is the
         backstop. Runs synchronously — the UI shows a spinner for the
-        duration, and a second click just runs it again.
+        duration; concurrent requests share one run (see _doctor_lock).
         """
         doctor = data_dir.parent / "scripts" / "network_doctor.sh"
         if not doctor.exists():
@@ -4284,7 +4589,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
                 if "=" not in line:
                     continue
                 key, _, value = line.partition("=")
-                result[key.strip()] = value.strip()
+                result[key.strip()] = _unquote_env_value(value.strip())
         except Exception:
             return {}
         return result
@@ -4294,7 +4599,7 @@ def create_app(data_dir: Path, config=None) -> Flask:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write to a tempfile in the same dir, then atomic rename, so a crash
         # mid-write can't leave a partial .env.
-        lines = [f"{k}={v}" for k, v in env.items()]
+        lines = [_format_env_line(k, v) for k, v in env.items()]
         # Was already tmp+rename, but with no fsync: the rename could survive a
         # power cut while the contents behind it did not. This file holds the
         # WireGuard private key and the qBittorrent password.

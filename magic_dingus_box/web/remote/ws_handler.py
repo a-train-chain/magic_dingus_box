@@ -9,6 +9,7 @@ Each connected phone gets one Connection. The handler:
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -107,13 +108,34 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                 continue
             try:
                 msg = json.loads(raw)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            # Valid JSON is not necessarily an object: a bare list, number or
+            # string used to reach msg.get() and raise AttributeError, which
+            # tore down the whole socket (and this phone's session) over one
+            # malformed frame. Ignore anything that isn't a message object.
+            if not isinstance(msg, dict):
                 continue
 
             t = msg.get("t")
             if t == "press":
                 btn = msg.get("btn", "")
                 phase = msg.get("phase", "tap")
+                if uinput_writer is None:
+                    # /dev/uinput failed to open at startup (see create_app).
+                    # Tell the phone instead of dereferencing None and
+                    # dropping the connection.
+                    ws.send(json.dumps({"t": "error",
+                                        "code": "uinput_unavailable",
+                                        "msg": "virtual gamepad unavailable"}))
+                    continue
+                if not isinstance(btn, str) or phase not in ("down", "up", "tap"):
+                    # Non-string btn (number/list/object) raised KeyError or
+                    # TypeError inside press() rather than the ValueError
+                    # handled below, killing the socket.
+                    ws.send(json.dumps({"t": "error",
+                                        "code": "bad_button", "msg": str(btn)[:64]}))
+                    continue
                 try:
                     uinput_writer.press(btn, phase=phase)
                     # Track hold state so a mid-hold disconnect can be
@@ -127,7 +149,18 @@ def handle_connection(ws, *, uinput_writer, text_input_writer, data_dir: Path,
                     ws.send(json.dumps({"t": "error",
                                         "code": "bad_button", "msg": btn}))
             elif t == "seek":
-                pos = float(msg.get("pos", 0.0))
+                # A non-numeric pos ("abc", null, a list) used to raise out of
+                # float() and drop the socket; NaN/inf would be written to the
+                # kiosk's seek file. Ignore the bad frame instead.
+                raw_pos = msg.get("pos", 0.0)
+                if isinstance(raw_pos, bool):
+                    continue
+                try:
+                    pos = float(raw_pos)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(pos):
+                    continue
                 pos = max(0.0, min(1.0, pos))
                 seek_path = data_dir / "seek_request.json"
                 # Unique staging name per write: each WS connection runs in
