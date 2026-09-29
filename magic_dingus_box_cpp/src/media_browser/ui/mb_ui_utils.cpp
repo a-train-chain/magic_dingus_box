@@ -98,4 +98,9 @@ std::string format_bytes(int64_t bytes) {
     return buf;
 }
 
+std::string availability_searching_message() {
+    return "Checking each source in background  \xE2\x80\xA2  "
+           "Add to Library now";
+}
+
 }  // namespace media_browser::ui

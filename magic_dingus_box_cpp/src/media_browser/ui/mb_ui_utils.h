@@ -149,4 +149,8 @@ float ease_out_cubic(float t);
 //     sizes ever make it worth doing.
 std::string format_bytes(int64_t bytes);
 
+// Detail-screen copy shown while the informational availability probe runs.
+// Kept renderer-free so the exact user guidance can be unit-tested.
+std::string availability_searching_message();
+
 }  // namespace media_browser::ui

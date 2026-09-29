@@ -42,6 +42,14 @@ float measure_size_scaled(const std::string& s, int font_size) {
 
 }  // namespace
 
+TEST_CASE("availability wait copy says the check is background-only and add is ready",
+          "[mb_ui_utils][availability]") {
+    const std::string message = mbu::availability_searching_message();
+
+    CHECK(message.find("background") != std::string::npos);
+    CHECK(message.find("Add to Library now") != std::string::npos);
+}
+
 // =====================================================================
 // truncate_to_width
 // =====================================================================

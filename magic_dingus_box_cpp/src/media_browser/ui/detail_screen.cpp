@@ -1388,7 +1388,8 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
     // AVAILABILITY readout — shown only on the Add path. Tells the user
     // up front whether sources exist before they spend a slot in their
     // library on something with no seeders. Three visual states:
-    //   - Searching:    dim "Checking sources..." (italic feel via dim)
+    //   - Searching:    explains the background check and that Add remains
+    //                   immediately available (italic feel via dim)
     //   - No sources:   red "No sources found" + sub-line explaining
     //                   Radarr will keep watching once added.
     //   - Sources:      green "X seeders available across N releases"
@@ -1410,7 +1411,7 @@ void DetailScreen::render(::ui::Renderer& r, int screen_w, int screen_h) {
         switch (prowlarr_->state()) {
             case ProwlarrClient::State::Idle:
             case ProwlarrClient::State::Searching: {
-                body = "Checking sources...";
+                body = availability_searching_message();
                 border_col = th.dim;
                 text_col   = th.dim;
                 break;
