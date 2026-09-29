@@ -39,6 +39,19 @@ teardown() {
         "$MAGIC_TUNING_ROOT/etc/sysctl.d/99-mdb-zram.conf"
 }
 
+@test "installs kiosk TimeoutStopSec=20 drop-in, idempotently" {
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    dropin="$MAGIC_TUNING_ROOT/etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf"
+    grep -qx "TimeoutStopSec=20" "$dropin"
+    grep -qx "\[Service\]" "$dropin"
+    first="$(cat "$dropin")"
+    run bash "$TUNING_SCRIPT"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$dropin")" = "$first" ]
+    [ "$(grep -c "TimeoutStopSec" "$dropin")" -eq 1 ]
+}
+
 @test "appends cgroup flags to cmdline.txt exactly once, keeping it single-line" {
     run bash "$TUNING_SCRIPT"
     [ "$status" -eq 0 ]

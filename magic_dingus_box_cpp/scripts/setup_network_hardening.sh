@@ -103,3 +103,26 @@ if [[ -n "$EGRESS_IF" ]]; then
         log "NOTE: resolv.conf not yet showing 1.1.1.1 first (applies on reconnect)"
     fi
 fi
+
+# --- 5. pick up a changed port-80 redirect server ---------------------------
+# content-manager-redirect.service is long-running and runs
+# scripts/content_manager_redirect.py straight out of the tree, so an OTA
+# that changes the script rsyncs the new file under a process still
+# serving the OLD code until the next reboot. The OTA restarts only
+# magic-dingus-web, and this script is one of the two things it runs as
+# root — so this is where the redirect gets restarted. Concretely: the
+# captive-portal redirect now targets the box IP because the web admin
+# 403s unknown Host headers; left on the old code, the Mac USB-cable
+# popup 403s until reboot. try-restart is a no-op when the unit is
+# stopped/disabled; a box without the unit is skipped; nothing here may
+# fail the script.
+REDIRECT_UNIT="content-manager-redirect.service"
+if systemctl cat "$REDIRECT_UNIT" >/dev/null 2>&1; then
+    if systemctl try-restart "$REDIRECT_UNIT" 2>/dev/null; then
+        log "port-80 redirect service reloaded (${REDIRECT_UNIT})"
+    else
+        log "WARNING: could not restart ${REDIRECT_UNIT} (new code applies on next reboot)"
+    fi
+else
+    log "no ${REDIRECT_UNIT} on this box — skipping redirect restart"
+fi

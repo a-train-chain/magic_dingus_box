@@ -44,6 +44,20 @@ These flow through from the GitHub release tarball, replacing whatever was on th
 | `/etc/systemd/system/*.service`, `*.timer` (the installed copies of `magic_dingus_box_cpp/systemd/**`) | **NOT reinstalled.** This table claimed otherwise until v1.9.8. `update.sh` rsyncs the unit *sources* into `/opt` and runs `systemctl daemon-reload`, but it never writes `/etc/systemd/system` — daemon-reload re-reads a directory the OTA never touched. Unit files on a fielded box are frozen at provisioning time. Harmless so far (the only unit changed between v1.9.3 and v1.9.7 was a comment), but **a unit-file change is not a shippable fix**: it reaches a box only via the Content Manager's Media Browser Configure/Reconfigure flow, which re-runs `setup_services.sh`. |
 | `/etc/NetworkManager/**`, `/etc/sysctl.d/**`, `/etc/resolv.conf` | Not written by any rsync. Delivered by `setup_network_hardening.sh`, which `update.sh` *does* invoke as root on every OTA — that is the one supported route for network posture. |
 | Anything else outside `/opt/magic_dingus_box` | Not touched, except the explicitly enumerated refresh row above. |
+| Long-running services that execute tree code (e.g. `content-manager-redirect.service` → `scripts/content_manager_redirect.py`) | The new file lands, but the process keeps running the OLD code until something restarts it. The OTA restarts only `magic-dingus-web` and the kiosk. |
+| Docker containers | Not recreated by the OTA. A `docker-compose.yml` change applies at the next `compose up -d` — which `magic-dingus-services` runs on every boot — so compose-level fixes (e.g. per-container log rotation) arm on the box's next restart. `/etc/docker/daemon.json` is never written by OTA. |
+
+**Reaching field boxes — the rule.** Boxes in the field update with the
+`update.sh` they already have, not the one in the new release. That
+version rsyncs the tree, then runs the NEW tree's
+`setup_network_hardening.sh` and `setup_memory_tuning.sh` as root, then
+`daemon-reload` and starts the kiosk. Those two scripts are therefore the
+only root-level delivery path a fix has on the update that ships it. A
+system-side fix (a unit setting, a service restart, anything under `/etc`)
+must ride one of them — as a systemd drop-in rather than a unit-file edit,
+idempotent, and never able to fail the script. Examples: the kiosk's
+`TimeoutStopSec=20` is a drop-in written by `setup_memory_tuning.sh`; the
+port-80 redirect is `try-restart`ed by `setup_network_hardening.sh`.
 
 ## What's PRESERVED — the contract
 

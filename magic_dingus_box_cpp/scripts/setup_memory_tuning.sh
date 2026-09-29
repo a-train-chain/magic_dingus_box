@@ -10,6 +10,9 @@
 #        -> MemoryLow=512M: below this usage the kiosk's pages are
 #           exempt from reclaim, so service memory pressure swaps the
 #           latency-tolerant arr stack, never the video pipeline.
+#   1b. /etc/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf
+#        -> TimeoutStopSec=20 so a mid-game stop lets RetroArch auto-save
+#           (the OTA delivery path for a unit-file change; see step 1b)
 #   2. /etc/systemd/system/system.slice.d/mdb-memory.conf
 #        -> cgroup v2 distributes protection top-down; without at least
 #           as much memory.low on system.slice, (1) is silently inert.
@@ -68,6 +71,24 @@ cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/memory-protect.conf"
 MemoryLow=512M
 EOF
 log "kiosk MemoryLow drop-in installed"
+
+# --- 1b. kiosk stop timeout drop-in -----------------------------------------
+# Not memory posture, but this script is the root-run hook every delivery
+# path (deploy, OTA, first boot, source-box sync) already executes, and a
+# drop-in overrides whatever TimeoutStopSec the installed unit carries.
+# The in-tree unit already says 20, but OTA never installs unit files into
+# /etc/systemd/system — field boxes keep the unit they were imaged with
+# (5 s). See OTA_UPDATE_GUARANTEES.md "Reaching field boxes".
+cat > "${ETC}/systemd/system/magic-dingus-box-cpp.service.d/stop-timeout.conf" << 'EOF'
+# Magic Dingus Box kiosk stop timeout (setup_memory_tuning.sh).
+# A stop mid-game forwards SIGTERM to RetroArch, which writes its
+# auto-save state before the kiosk re-acquires DRM and exits. The old
+# 5 s value SIGKILLed that save. Overrides the installed unit, which
+# OTA never replaces.
+[Service]
+TimeoutStopSec=20
+EOF
+log "kiosk TimeoutStopSec=20 drop-in installed"
 
 # --- 2. system.slice companion ----------------------------------------------
 install -d -m 0755 "${ETC}/systemd/system/system.slice.d"

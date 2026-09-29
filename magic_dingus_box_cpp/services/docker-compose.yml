@@ -3,10 +3,25 @@
 # Managed by magic-dingus-services.service (systemd).
 # All images pinned to known-good versions for reproducibility.
 
+# Container log rotation for EVERY service. Docker's json-file driver
+# never rotates by default, so each container log grew without bound on
+# the SD card (and carried the operator's activity into golden images).
+# Set here rather than in /etc/docker/daemon.json because this file rides
+# every OTA to every box, and needs no dockerd restart: compose sees the
+# changed config and recreates each container on the next `compose up -d`
+# (magic-dingus-services runs one at every boot). Every service below
+# MUST carry `logging: *default-logging`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   radarr:
     image: lscr.io/linuxserver/radarr:5.14.0
     container_name: mdb_radarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns. Even Radarr's TMDB metadata
     # fetches now exit via VPN (was direct via Comcast residential IP).
     # No per-service ports: block — Radarr's :7878 must be exposed via
@@ -73,6 +88,7 @@ services:
   sonarr:
     image: lscr.io/linuxserver/sonarr:4.0.19.2979-ls320
     container_name: mdb_sonarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns beside Radarr. Sonarr's TMDB/TVDB
     # metadata fetches exit via the VPN like the rest of the stack.
     # No per-service ports: block — Sonarr's :8989 is exposed via
@@ -119,6 +135,7 @@ services:
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:2.3.5
     container_name: mdb_prowlarr
+    logging: *default-logging
     # Behind Gluetun: shares VPN netns. DNS handled by gluetun, no
     # per-service dns: block needed. No per-service ports: block —
     # Prowlarr's :9696 must be exposed via gluetun's ports: section
@@ -149,6 +166,7 @@ services:
   gluetun:
     image: qmcgaw/gluetun:v3
     container_name: mdb_gluetun
+    logging: *default-logging
     cap_add:
       - NET_ADMIN
     devices:
@@ -336,6 +354,7 @@ services:
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:5.0.3
     container_name: mdb_qbittorrent
+    logging: *default-logging
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -366,6 +385,7 @@ services:
     # byparr now.
     image: ghcr.io/thephaseless/byparr@sha256:01a46a2865d9a6db5eb8ead04ec0dd33b8fbe233e8565ae70b50d4cc0af4cfb0
     container_name: mdb_byparr
+    logging: *default-logging
     network_mode: "service:gluetun"
     depends_on:
       gluetun:

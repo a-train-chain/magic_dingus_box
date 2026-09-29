@@ -1666,6 +1666,40 @@ def _unquote_env_value(value: str) -> str:
     return value
 
 
+class EnvFileReadError(Exception):
+    """services/.env exists but could not be read (permissions, I/O, encoding)."""
+
+
+def _read_env_file(path: Path) -> dict:
+    """Parse a KEY=VALUE .env file into a dict.
+
+    Returns {} ONLY when the file does not exist. Any other failure raises
+    EnvFileReadError. It used to return {} on every exception, and that was
+    destructive: a root-owned 0600 .env raised PermissionError, the setup
+    route took the {} as "empty .env", merged in only the WireGuard keys and
+    wrote that back — erasing QBITTORRENT_ADMIN_PASSWORD and the API keys.
+    setup_services.sh then generated a fresh qBit password qBittorrent did
+    not have, and the kiosk, port-sync and password-sync all lost qBit auth.
+    Callers that WRITE must treat the exception as "abort, write nothing".
+    """
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError) as e:
+        raise EnvFileReadError(f"Could not read {path}: {e}") from e
+    result = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = _unquote_env_value(value.strip())
+    return result
+
+
 def _vpn_provider_env(provider: str, wg: dict, country: str = "") -> dict:
     """Return the VPN_*/WIREGUARD_ENDPOINT_* env block for a chosen provider.
 
@@ -4576,24 +4610,6 @@ def create_app(data_dir: Path, config=None) -> Flask:
     _MB_LOG_BUFFER_LIMIT = 500  # keep at most this many lines per job
     _MB_LOG_TAIL_LINES = 30     # return this many lines on each status poll
 
-    def _read_env_file(path: Path) -> dict:
-        """Parse a KEY=VALUE .env file into a dict. Returns {} if missing."""
-        if not path.exists():
-            return {}
-        result = {}
-        try:
-            for raw in path.read_text().splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                result[key.strip()] = _unquote_env_value(value.strip())
-        except Exception:
-            return {}
-        return result
-
     def _write_env_file(path: Path, env: dict) -> None:
         """Write a dict back to a .env file with chmod 600. Creates parent dir."""
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -4690,7 +4706,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
 
     def _env_has_wireguard_key(path: Path) -> bool:
         """True iff .env exists AND has a non-empty WIREGUARD_PRIVATE_KEY=."""
-        env = _read_env_file(path)
+        try:
+            env = _read_env_file(path)
+        except EnvFileReadError:
+            return False  # fail closed — an unreadable .env allows nothing
         return bool(env.get("WIREGUARD_PRIVATE_KEY", "").strip())
 
     def _vpn_configured() -> bool:
@@ -5068,8 +5087,19 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _require_nopasswd_sudo()):
             return resp
 
-        # Merge WG vars + sensible defaults into existing .env
-        env = _read_env_file(SERVICES_ENV)
+        # Merge WG vars + sensible defaults into existing .env. An existing
+        # .env we cannot READ must abort the request: treating it as empty
+        # would rewrite it with only the WireGuard keys and destroy the qBit
+        # password + API keys (see _read_env_file).
+        try:
+            env = _read_env_file(SERVICES_ENV)
+        except EnvFileReadError as e:
+            return error_response(
+                "env_read_failed",
+                f"{e}. Nothing was changed. The file's owner or permissions "
+                "need fixing before the VPN can be reconfigured.",
+                status=500,
+            )
         env.update(wg)
 
         # Host-level defaults: fill only when absent, so a box that has been
@@ -5229,7 +5259,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _check_media_browser_gates()):
             return resp
 
-        env = _read_env_file(SERVICES_ENV)
+        try:
+            env = _read_env_file(SERVICES_ENV)
+        except EnvFileReadError as e:
+            return error_response("env_read_failed", str(e), status=500)
         radarr_key = env.get("RADARR_API_KEY", "").strip()
         prowlarr_key = env.get("PROWLARR_API_KEY", "").strip()
         qbit_password = env.get("QBITTORRENT_ADMIN_PASSWORD", "").strip()
@@ -5396,7 +5429,10 @@ def create_app(data_dir: Path, config=None) -> Flask:
         if (resp := _check_media_browser_gates()):
             return resp
 
-        env = _read_env_file(SERVICES_ENV)
+        try:
+            env = _read_env_file(SERVICES_ENV)
+        except EnvFileReadError as e:
+            return error_response("env_read_failed", str(e), status=500)
         library_count = _radarr_library_count(env)
         queue = _radarr_queue_summary(env)
         qbit = _qbit_torrent_summary(env)

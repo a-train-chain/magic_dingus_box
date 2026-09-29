@@ -165,32 +165,14 @@ fi
 echo "Ensuring ${TARGET_USER} is in docker group..."
 usermod -aG docker "${TARGET_USER}"
 
-# 1b. Container log rotation. Docker's json-file driver never rotates by
-# default, so every container log grew without bound on the SD card (and
-# carried the operator's activity into golden images). Merged into
-# /etc/docker/daemon.json without clobbering other keys; see
-# configure_docker_logging.sh. dockerd only reads log-opts at start, so it is
-# restarted when (and only when) the file changed — containers with restart
-# policies come straight back. EXISTING containers keep their old (unrotated)
-# log config until they are recreated; the `compose up -d` below does not
-# recreate unchanged services, so on an already-provisioned box run
-# `docker compose up -d --force-recreate` in ${SERVICES_DIR:-services/} once
-# (or let the next compose-file change recreate them).
-if ! command -v jq &>/dev/null; then
-    apt-get install -y -qq jq
-fi
-if _dlog="$(bash "${SCRIPT_DIR}/configure_docker_logging.sh" /etc/docker/daemon.json)"; then
-    if [ "$_dlog" = "changed" ]; then
-        echo "Docker log rotation configured (json-file, 10m x 3) — restarting dockerd"
-        systemctl restart docker.service \
-            || echo "WARN: docker restart failed; rotation applies after the next dockerd start"
-    else
-        echo "Docker log rotation already configured"
-    fi
-else
-    echo "WARN: could not configure Docker log rotation (see message above) — continuing"
-fi
-unset _dlog
+# 1b. Container log rotation lives in docker-compose.yml (the x-logging
+# anchor: json-file, 10m x 3 per container), NOT in /etc/docker/daemon.json.
+# The daemon.json route needed a dockerd restart mid-setup, which on an
+# already-provisioned box also restarts magic-dingus-services
+# (Requires=docker) — its `compose down` + background `up -d` then raced
+# this script's own compose run into "container name already in use". It
+# also never reached OTA'd boxes. Compose-level options ride the tree to
+# every box and apply when compose recreates the containers.
 
 # 2. Storage layout
 echo "Creating storage layout at ${STORAGE_ROOT}..."
@@ -1243,11 +1225,40 @@ MAGIC_SERVICES_DIR="${SERVICES_DIR}" bash "${SCRIPT_DIR}/converge_custom_formats
 # the two and routes requests for tagged indexers via the tagged proxy.
 #
 # We seed the tag first so Steps 12 + 13 can reference it by id.
+#
+# 10.5. Prowlarr API readiness probe — gates Steps 11-14.
+#
+# Same shape and rationale as the Radarr/Sonarr probes in 9.5/9.6: Steps
+# 11-14 are unguarded `VAR=$(python3 ...)` heredocs, so under `set -e` the
+# first urllib error against a Prowlarr that is still migrating its DB (a
+# cold Pi 4B SD card is the slow case) killed the whole run before the
+# Radarr download client, root folder, quality definitions, qBit category
+# and smoke test (Steps 15+) ever ran. Generous budget (up to ~5 min) because
+# a first boot on a Pi 4B is genuinely that slow; a Prowlarr that never
+# answers skips 11-14 with a WARN and the next run applies them.
+echo "Probing Prowlarr API readiness..."
+PROWLARR_READY=0
+for i in {1..60}; do
+    if curl -fsS --max-time 5 -o /dev/null -H "X-Api-Key: ${PROWLARR_KEY}" \
+        http://localhost:9696/api/v1/system/status 2>/dev/null; then
+        PROWLARR_READY=1
+        break
+    fi
+    sleep 3
+done
+if [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable after ~5 min — Prowlarr steps (11-14) will skip and self-heal on the next run."
+else
+    echo "  ✓ Prowlarr API responding"
+fi
+
 echo "Configuring Prowlarr 'cloudflare' tag..."
 PROWLARR_TAGS_FILE="${SCRIPT_DIR}/data/prowlarr_tags.json"
+PROWLARR_CLOUDFLARE_TAG_ID=""
 if [[ ! -f "${PROWLARR_TAGS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_TAGS_FILE} not found — skipping. Tag may already be configured manually; verify via web UI."
-    PROWLARR_CLOUDFLARE_TAG_ID=""
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping tag (later runs will apply it)."
 else
     # Idempotent: GET /tag, find by label, POST only if missing. Capture
     # the resulting id (live or just-created) to a single-line stdout
@@ -1311,10 +1322,33 @@ fi
 # The fixture stores the tag membership as `tags_by_label` (a list of
 # human-readable labels) so the file stays diff-friendly across
 # deploys. We translate label → id at apply time using Step 11's map.
+#
+# Byparr readiness: Prowlarr TESTS a proxy when it is saved, so saving it
+# while Byparr is still starting (its first start sets up a headless
+# browser — minutes on a Pi 4B) returns 400 and, under `set -e`, used to
+# abort the run. Wait for Byparr's own endpoint first (the same URL its
+# compose healthcheck uses); if it never answers, skip the proxy with a
+# WARN — the cloudflare-tagged indexers in Step 13 then soft-fail
+# individually and a later run wires everything up.
 echo "Configuring Prowlarr FlareSolverr indexer proxy..."
 PROWLARR_PROXIES_FILE="${SCRIPT_DIR}/data/prowlarr_indexerproxies.json"
+BYPARR_READY=0
+if [[ -f "${PROWLARR_PROXIES_FILE}" ]] && [ "${PROWLARR_READY}" -eq 1 ]; then
+    echo "  Waiting for Byparr to answer..."
+    for i in {1..60}; do
+        if curl -fsS --max-time 10 -o /dev/null http://localhost:8191/ 2>/dev/null; then
+            BYPARR_READY=1
+            break
+        fi
+        sleep 5
+    done
+fi
 if [[ ! -f "${PROWLARR_PROXIES_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_PROXIES_FILE} not found — skipping. Proxy may already be configured manually; verify via web UI."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping indexer proxy (later runs will apply it)."
+elif [ "${BYPARR_READY}" -ne 1 ]; then
+    echo "  WARN: Byparr not answering on :8191 after ~5 min — skipping indexer proxy (later runs will apply it)."
 else
     PROXY_SUMMARY=$(python3 - "${PROWLARR_PROXIES_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
 import json, sys, urllib.request
@@ -1429,18 +1463,22 @@ echo "Configuring Prowlarr indexers..."
 PROWLARR_INDEXERS_FILE="${SCRIPT_DIR}/data/prowlarr_indexers.json"
 if [[ ! -f "${PROWLARR_INDEXERS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_INDEXERS_FILE} not found — skipping."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping indexers (later runs will apply them)."
 else
     INDEXER_SUMMARY=$(python3 - "${PROWLARR_INDEXERS_FILE}" "${PROWLARR_KEY}" "${PROWLARR_CLOUDFLARE_TAG_ID:-}" <<'PYEOF'
-import json, sys, urllib.request
+import json, sys, urllib.error, urllib.request
 indexers_path, api_key, cloudflare_tag_id = sys.argv[1], sys.argv[2], sys.argv[3]
 BASE = "http://localhost:9696/api/v1"
 
-# EZTV is enabled for season-pack coverage but is cloudflare-tagged and
-# routes through Byparr — its Cardigann definition can 404/challenge at
-# apply time. Treat an EZTV apply failure as a warning, not fatal, so a
-# transient Byparr/EZTV outage never bricks a whole setup run. The stable
-# indexers the smoke test asserts on are unaffected.
-NON_FATAL_ENABLED = {"EZTV"}
+# Prowlarr TESTS an indexer on save, so one enabled indexer whose site is
+# down, Cloudflare-challenged, or behind a Byparr that is still starting
+# returns 400 and — when this was fatal — aborted the whole provisioning
+# run under `set -e` (EZTV used to be the lone hard-coded exception). Now
+# ANY single enabled indexer failing is a warning; only ALL enabled
+# indexers failing is fatal, because that means Prowlarr itself (or the
+# tunnel) is broken and the operator must see it. The smoke test still
+# asserts on live search results, so a degraded set is not silent.
 
 LABEL_TO_ID = {}
 if cloudflare_tag_id:
@@ -1501,6 +1539,7 @@ live_indexers = http("GET", "/indexer") or []
 live_by_name = {i["name"]: i for i in live_indexers}
 
 created, updated, unchanged, skipped = [], [], [], []
+enabled_ok, enabled_failed = [], []
 for desired in desired_indexers:
     name = desired["name"]
     payload = shape_payload(desired)
@@ -1524,18 +1563,20 @@ for desired in desired_indexers:
         else:
             http("POST", "/indexer", payload)
             created.append(name)
+        if desired.get("enable", False):
+            enabled_ok.append(name)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
-        # Re-raise for ENABLED indexers — a live/active indexer failing
-        # is a real problem the operator needs to see fail loudly. EZTV is
-        # the deliberate exception: enabled but allowed to fail soft
-        # (HTTP error OR Byparr-challenge timeout).
-        if desired.get("enable", False) and name not in NON_FATAL_ENABLED:
-            sys.stderr.write("FATAL: enabled indexer %r failed: %s\n" % (name, e))
-            raise
+        if desired.get("enable", False):
+            sys.stderr.write("  WARN: enabled indexer %r failed: %s\n" % (name, e))
+            enabled_failed.append(name)
         skipped.append(name)
 
 print(json.dumps({"created": created, "updated": updated,
                   "unchanged": unchanged, "skipped": skipped}))
+if enabled_failed and not enabled_ok:
+    sys.stderr.write("FATAL: every enabled indexer failed (%s) — Prowlarr or the "
+                     "VPN tunnel is not working\n" % ", ".join(enabled_failed))
+    sys.exit(1)
 PYEOF
 )
     echo "${INDEXER_SUMMARY}" | python3 -c '
@@ -1579,12 +1620,22 @@ echo "Configuring Prowlarr → Radarr Apps integration..."
 PROWLARR_APPS_FILE="${SCRIPT_DIR}/data/prowlarr_applications.json"
 if [[ ! -f "${PROWLARR_APPS_FILE}" ]]; then
     echo "  WARN: ${PROWLARR_APPS_FILE} not found — skipping."
+elif [ "${PROWLARR_READY}" -ne 1 ]; then
+    echo "  WARN: Prowlarr not reachable — skipping Apps integration (later runs will apply it)."
 elif [ "${RADARR_READY:-0}" -ne 1 ]; then
     echo "  WARN: Radarr not reachable — skipping Prowlarr → Radarr Apps integration (later runs will apply it)."
 else
-    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" <<'PYEOF'
-import json, sys, urllib.request
+    # The Sonarr app is gated on SONARR_READY (Step 9.6, which also fails
+    # closed on an empty SONARR_KEY). Prowlarr TESTS an application on
+    # create/update, so POSTing the Sonarr app with no key or with Sonarr
+    # down returned 400 — the python raised, `set -e` killed setup, and
+    # Steps 15+ (Radarr download client, root folder, quality definitions,
+    # qBit category, smoke test) never ran. Sonarr-only faults degrade to
+    # a WARN here, as promised at Step 6; the Radarr app still applies.
+    APPS_SUMMARY=$(python3 - "${PROWLARR_APPS_FILE}" "${PROWLARR_KEY}" "${RADARR_KEY}" "${SONARR_KEY}" "${SONARR_READY:-0}" <<'PYEOF'
+import json, sys, urllib.error, urllib.request
 apps_path, prowlarr_key, radarr_key, sonarr_key = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sonarr_ready = sys.argv[5] == "1" and bool(sonarr_key)
 BASE = "http://localhost:9696/api/v1"
 
 def http(method, path, body=None):
@@ -1653,23 +1704,39 @@ with open(apps_path) as f:
 live_apps = http("GET", "/applications") or []
 live_by_name = {a["name"]: a for a in live_apps}
 
-created, updated, unchanged = [], [], []
+created, updated, unchanged, skipped = [], [], [], []
 for desired in desired_apps:
     name = desired["name"]
+    is_sonarr = desired.get("implementation") == "Sonarr"
+    if is_sonarr and not sonarr_ready:
+        sys.stderr.write("  WARN: Sonarr not ready (or no API key) — skipping "
+                         "Prowlarr app %r; a later run applies it\n" % name)
+        skipped.append(name)
+        continue
     payload = shape_payload(desired)
-    if name in live_by_name:
-        live = live_by_name[name]
-        if match(live, payload):
-            unchanged.append(name)
+    try:
+        if name in live_by_name:
+            live = live_by_name[name]
+            if match(live, payload):
+                unchanged.append(name)
+            else:
+                payload["id"] = live["id"]
+                http("PUT", "/applications/%d" % live["id"], payload)
+                updated.append(name)
         else:
-            payload["id"] = live["id"]
-            http("PUT", "/applications/%d" % live["id"], payload)
-            updated.append(name)
-    else:
-        http("POST", "/applications", payload)
-        created.append(name)
+            http("POST", "/applications", payload)
+            created.append(name)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        # Radarr is the product's core path — its app failing stays fatal.
+        # A Sonarr-only fault must not take Radarr's setup down with it.
+        if not is_sonarr:
+            raise
+        sys.stderr.write("  WARN: Prowlarr app %r failed: %s — a later run "
+                         "applies it\n" % (name, e))
+        skipped.append(name)
 
-print(json.dumps({"created": created, "updated": updated, "unchanged": unchanged}))
+print(json.dumps({"created": created, "updated": updated,
+                  "unchanged": unchanged, "skipped": skipped}))
 PYEOF
 )
     echo "${APPS_SUMMARY}" | python3 -c '
@@ -1681,6 +1748,7 @@ def show(label, items):
 show("created  ", s["created"])
 show("updated  ", s["updated"])
 show("unchanged", s["unchanged"])
+show("skipped  ", s.get("skipped", []))
 '
 fi
 
